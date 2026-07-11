@@ -32,6 +32,11 @@ def seed_servill():
 
         if not admin_user:
             print(f"Creating admin user '{admin_email}'...")
+            bootstrap_password = str(os.getenv("SERVILL_ADMIN_BOOTSTRAP_PASSWORD") or "").strip()
+            if not bootstrap_password:
+                raise RuntimeError(
+                    "SERVILL_ADMIN_BOOTSTRAP_PASSWORD is required to create the Servill admin"
+                )
             admin_user = User(
                 name="Admin Servill",
                 email=admin_email,
@@ -43,7 +48,7 @@ def seed_servill():
                 acepto_terminos=True,
                 fecha_aceptacion_terminos=datetime.utcnow()
             )
-            admin_user.set_password("Servill2030!")
+            admin_user.set_password(bootstrap_password)
             db.session.add(admin_user)
             db.session.commit()
         else:

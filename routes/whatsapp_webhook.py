@@ -52,6 +52,7 @@ from services.response_formatter import repair_common_mojibake, render_audio_tex
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+from utils.roles import is_authorized_superadmin_email
 from services.contact_service import resolve_contact, sanitize_profile_name
 from services.ticket_service import servicio_tickets
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
@@ -202,17 +203,12 @@ def _chatboc_demo_owner_email() -> str:
 def _find_or_create_chatboc_demo_owner() -> User:
     email = _chatboc_demo_owner_email()
     owner = User.query.filter_by(email=email).first()
-    if not owner:
-        owner = (
-            User.query.filter(User.rol.in_(["super_admin", "platform_admin"]))
-            .order_by(User.id.asc())
-            .first()
-        )
+    desired_role = "super_admin" if is_authorized_superadmin_email(email) else "admin"
     if not owner:
         owner = User(
-            name="Chatboc Superadmin",
+            name="Chatboc Demo Owner",
             email=email,
-            rol="super_admin",
+            rol=desired_role,
             tipo_chat="pyme",
             nombre_empresa="Chatboc.ar",
             plan="enterprise",
@@ -224,8 +220,8 @@ def _find_or_create_chatboc_demo_owner() -> User:
         db.session.flush()
 
     changed = False
-    if owner.rol not in {"super_admin", "platform_admin"}:
-        owner.rol = "super_admin"
+    if owner.rol != desired_role:
+        owner.rol = desired_role
         changed = True
     if not owner.tipo_chat:
         owner.tipo_chat = "pyme"

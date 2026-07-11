@@ -8,13 +8,17 @@ from routes.auth import _add_cors, token_requerido
 from services.notification_orchestrator import NotificationOrchestrator
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.auth_helpers import _set_anon_cookie, get_or_create_anon_id
+from utils.roles import ROLE_EMPLEADO, ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role, is_authorized_superadmin_user
 from utils.tenant import get_current_tenant, require_tenant
 
 notifications_bp = Blueprint('notifications', __name__)
 
 
 def _ensure_admin_role(user: User):
-    if getattr(user, "rol", None) not in {"admin", "super_admin", "empleado"}:
+    role = canonical_role(getattr(user, "rol", None))
+    if role not in {ROLE_TENANT_ADMIN, ROLE_SUPERADMIN, ROLE_EMPLEADO}:
+        abort(403, description="Permisos insuficientes")
+    if role == ROLE_SUPERADMIN and not is_authorized_superadmin_user(user):
         abort(403, description="Permisos insuficientes")
 
 

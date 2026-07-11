@@ -208,16 +208,17 @@ def register_commands(app):
             )
 
         email = "mauricio@junin.com"
-        raw_password = "123456"
+        raw_password = os.getenv("JUNIN_ADMIN_BOOTSTRAP_PASSWORD")
 
-        widget_token = (
-            os.getenv("DEMO_WIDGET_TOKEN_JUNIN")
-            or "1146cb3e-eaef-4230-b54e-1c340ac062d8"
-        )
+        widget_token = os.getenv("DEMO_WIDGET_TOKEN_JUNIN")
         official_whatsapp = "+17432643718"
 
         user = User.query.filter_by(email=email).first()
         if not user:
+            if not raw_password:
+                raise click.ClickException(
+                    "JUNIN_ADMIN_BOOTSTRAP_PASSWORD is required to create the Junin admin"
+                )
             current_app.logger.info("Creando usuario municipal demo Junín...")
             user = User(
                 email=email,
@@ -241,16 +242,12 @@ def register_commands(app):
             db.session.add(user)
         else:
             current_app.logger.info(
-                "Usuario municipal ya existe, refrescando password..."
+                "Usuario municipal ya existe; se conserva su credencial actual."
             )
             user.rol = "admin"
             user.tipo_chat = "municipio"
             user.tenant_slug = "municipio"
             user.nombre_empresa = user.nombre_empresa or "Municipio de Junin"
-            if hasattr(user, "set_password"):
-                user.set_password(raw_password)
-            else:
-                user.password_hash = generate_password_hash(raw_password)
 
         if hasattr(user, "is_admin"):
             user.is_admin = True

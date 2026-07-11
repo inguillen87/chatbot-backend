@@ -6,7 +6,7 @@ from functools import wraps
 from typing import Callable, TypeVar
 
 from flask import abort, g
-from utils.roles import canonical_role, has_permission, ROLE_SUPERADMIN
+from utils.roles import canonical_role, has_permission, is_authorized_superadmin_user, ROLE_SUPERADMIN
 
 F = TypeVar("F", bound=Callable[..., object])
 
@@ -42,7 +42,10 @@ def require_role(role: str) -> Callable[[F], F]:
             if viewer is None:
                 abort(401, description="Autenticación requerida")
 
-            if viewer.rol != role and viewer.rol != ROLE_SUPERADMIN:
+            viewer_role = canonical_role(getattr(viewer, "rol", None))
+            if viewer_role == ROLE_SUPERADMIN and not is_authorized_superadmin_user(viewer):
+                abort(403, description="Acceso superadmin no autorizado")
+            if viewer_role != canonical_role(role) and viewer_role != ROLE_SUPERADMIN:
                 abort(403, description=f"Rol requerido: {role}")
 
             return func(*args, **kwargs)
@@ -58,6 +61,8 @@ def require_permission(permission: str) -> Callable[[F], F]:
             if viewer is None:
                 abort(401, description="Autenticación requerida")
 
+            if canonical_role(getattr(viewer, "rol", None)) == ROLE_SUPERADMIN and not is_authorized_superadmin_user(viewer):
+                abort(403, description="Acceso superadmin no autorizado")
             if not has_permission(viewer.rol, permission):
                 abort(403, description=f"Permiso requerido: {permission}")
 
@@ -85,7 +90,7 @@ def _is_authorized_for_tenant(
     # deliberately not global: a gobierno/colegio/pyme admin must stay inside
     # its own tenant.
     if role == ROLE_SUPERADMIN:
-        return True
+        return is_authorized_superadmin_user(user)
 
     # Direct tenant membership
     if tenant_id is not None and str(getattr(user, "tenant_id", "") or "") == str(tenant_id):

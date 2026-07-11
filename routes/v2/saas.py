@@ -2919,7 +2919,7 @@ def _e2e_flow_qa_guidance(flow_id: str, *, endpoint: str, surface: str) -> dict[
             "suggested_command": "python -m pytest tests/test_v2_saas_contracts.py -q",
         },
         "claim_live_or_offline_helpdesk": {
-            "frontend_entry": "/tracking/claim/{nro_ticket}?pin={pin}",
+            "frontend_entry": "/tracking/claim/{nro_ticket}#pin={pin}",
             "manual_test_steps": [
                 "Abrir el seguimiento publico del reclamo desde el link seguro.",
                 "Enviar una consulta desde la mesa de ayuda del ticket.",
@@ -3116,7 +3116,7 @@ def _build_production_e2e_readiness(
             label="Municipio: reclamo por WhatsApp hasta seguimiento publico",
             surface="municipios_gobiernos",
             ready=scenario_ready("gov_claim_text_to_tracking") and bool(lead_summary.get("total_recent") is not None),
-            endpoint="/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
+            endpoint="/api/public/tracking/experience?kind=claim&code={code}",
             qa_scenario_id="gov_claim_text_to_tracking",
             meta_flow_ready=flow_meta_ready("claim_tracking_helpdesk"),
             evidence={
@@ -3848,12 +3848,12 @@ def _legacy_claim_tracking_links(ticket: MunicipioTicket) -> dict[str, str]:
     public_code = str(ticket.nro_ticket or ticket.id)
     encoded_code = quote_plus(public_code)
     pin = str(ticket.consulta_pin or "").strip()
-    pin_query = f"&pin={quote_plus(pin)}" if pin else ""
-    pin_path_query = f"?pin={quote_plus(pin)}" if pin else ""
+    pin_fragment = f"#pin={quote_plus(pin)}" if pin else ""
     return {
         "code": public_code,
-        "endpoint": f"/api/public/tracking/experience?kind=claim&code={encoded_code}{pin_query}",
-        "href": f"/tracking/claim/{encoded_code}{pin_path_query}",
+        "endpoint": f"/api/public/tracking/experience?kind=claim&code={encoded_code}",
+        "href": f"/tracking/claim/{encoded_code}{pin_fragment}",
+        "credential_transport": "x-tracking-pin-header",
     }
 
 
@@ -3910,6 +3910,7 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "endpoint": tracking_links["endpoint"],
             "href": tracking_links["href"],
             "frontend_path": tracking_links["href"],
+            "credential_transport": tracking_links["credential_transport"],
             "requires": [],
         }
     )
@@ -4014,6 +4015,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
             "tracking_code": tracking_links["code"],
             "tracking_endpoint": tracking_links["endpoint"],
             "tracking_href": tracking_links["href"],
+            "tracking_credential_transport": tracking_links["credential_transport"],
         },
         "handoff": None,
         "live_chat": live_chat,
@@ -4474,6 +4476,89 @@ def _dispatch_legacy_claim_reply(
         return {"email": False, "sms": False, "whatsapp": False}, "notification_dispatch_failed"
 
 
+def _emit_legacy_claim_realtime_reply(
+    ticket: MunicipioTicket,
+    comment: TicketComentario,
+    actor: User,
+) -> bool:
+    """Emit a durable public CRM reply to the ticket's signed citizen room."""
+
+    try:
+        from socket_service import emit_ticket_comment
+
+        emit_ticket_comment(
+            {
+                "tenant_type": "municipio",
+                "tipo": "municipio",
+                "tenant_profile_id": getattr(ticket, "tenant_id", None),
+                "municipio_id": getattr(ticket, "municipio_id", None),
+                "ticket_id": ticket.id,
+                "ticketId": ticket.id,
+                "nro_ticket": ticket.nro_ticket,
+                "estado": ticket.estado,
+                "comment": {
+                    "id": comment.id,
+                    "comentario": comment.comentario,
+                    "texto": comment.comentario,
+                    "es_admin": True,
+                    "origen": "agent",
+                    "visibility": "public",
+                    "estado_ticket": ticket.estado,
+                    "fecha": comment.fecha.isoformat() if comment.fecha else None,
+                    "autor": getattr(actor, "name", None) or "Equipo",
+                },
+            }
+        )
+        return True
+    except Exception as exc:  # pragma: no cover - reply remains durable and pollable
+        current_app.logger.exception(
+            "Error emitting legacy claim reply ticket=%s: %s",
+            getattr(ticket, "id", None),
+            exc,
+        )
+        return False
+
+
+def _emit_legacy_claim_realtime_state(
+    ticket: MunicipioTicket,
+    *,
+    action: str,
+    previous_status: str | None,
+) -> list[str]:
+    """Publish citizen-safe state changes while keeping full events tenant-scoped."""
+
+    emitted: list[str] = []
+    try:
+        from socket_service import emit_ticket_assignment_changed, emit_ticket_status_changed
+
+        event_payload = {
+            "tenant_type": "municipio",
+            "tipo": "municipio",
+            "tenant_profile_id": getattr(ticket, "tenant_id", None),
+            "municipio_id": getattr(ticket, "municipio_id", None),
+            "ticket_id": ticket.id,
+            "ticketId": ticket.id,
+            "nro_ticket": ticket.nro_ticket,
+            "estado": ticket.estado,
+            "previous_status": previous_status,
+            "changed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if str(previous_status or "") != str(ticket.estado or ""):
+            emit_ticket_status_changed(event_payload)
+            emitted.append("ticket.status.changed")
+        if action == "assign":
+            emit_ticket_assignment_changed({**event_payload, "assignment_state": "assigned"})
+            emitted.append("ticket.assignment.changed")
+    except Exception as exc:  # pragma: no cover - polling remains authoritative
+        current_app.logger.exception(
+            "Error emitting legacy claim state ticket=%s action=%s: %s",
+            getattr(ticket, "id", None),
+            action,
+            exc,
+        )
+    return emitted
+
+
 def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfile, ticket_id: int, payload: Mapping[str, Any]):
     ticket = _legacy_claim_for_tenant(tenant, ticket_id)
     if not ticket:
@@ -4488,6 +4573,9 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     recent_comment: TicketComentario | None = None
     delivery_results: dict[str, bool] | None = None
     dispatch_error_reason: str | None = None
+    realtime_emitted = False
+    realtime_state_events: list[str] = []
+    previous_status = str(ticket.estado or "")
 
     if action == "assign":
         assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
@@ -4572,8 +4660,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     db.session.add(ticket)
     db.session.commit()
 
+    realtime_state_events = _emit_legacy_claim_realtime_state(
+        ticket,
+        action=action,
+        previous_status=previous_status,
+    )
+
     if action == "reply" and recent_comment is not None:
         delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(ticket, body, recent_comment)
+        realtime_emitted = _emit_legacy_claim_realtime_reply(ticket, recent_comment, current_user)
 
     external_dispatch = bool(delivery_results and any(delivery_results.values()))
     delivery_reason = None
@@ -4593,6 +4688,13 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
     )
+    delivery["realtime"] = {
+        "emitted": bool(realtime_emitted or realtime_state_events),
+        "event": "new_chat_message" if realtime_emitted else (realtime_state_events[0] if realtime_state_events else None),
+        "events": (["new_chat_message"] if realtime_emitted else []) + realtime_state_events,
+        "room": f"ticket_municipio_{ticket.id}",
+        "fallback": "http_polling",
+    }
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
     ticket_payload = _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status)
 

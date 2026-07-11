@@ -84,6 +84,28 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(live_chat["fallback_mode"], "http_chat")
         self.assertTrue(live_chat["fallback_available"])
 
+    def test_support_channels_exposes_offline_ticket_cta_outside_hours(self):
+        with self.app.app_context():
+            payload = _support_channels_payload(
+                _FakeTenant(),
+                {
+                    "socket_enabled": False,
+                    "live_chat_schedule": {
+                        "enabled": False,
+                        "days": "mon-fri",
+                        "start_time": "09:00",
+                        "end_time": "13:00",
+                    },
+                },
+            )
+
+        live_chat = payload["live_chat"]
+        self.assertFalse(live_chat["available"])
+        self.assertTrue(live_chat["offline_message_enabled"])
+        self.assertEqual(live_chat["availability_state"], "offline_accepting_messages")
+        self.assertEqual(live_chat["cta"]["primary"]["action"], "queue_offline_message")
+        self.assertEqual(live_chat["ui"]["primary_cta_label"], "Dejar mensaje")
+
     def test_widget_config_without_tenant_returns_platform_selector(self):
         response = self.client.get(
             "/api/public/widget-config",

@@ -8,6 +8,7 @@ from sqlalchemy import text
 from database import db
 from models import User, TenantProfile, Rubro, WidgetSettings, WidgetConfig
 from werkzeug.security import generate_password_hash
+from utils.roles import is_authorized_superadmin_email, is_super_admin_role
 
 
 def _safe_console_text(value):
@@ -17,6 +18,35 @@ def _safe_console_text(value):
 
 def print(*args, **kwargs):  # noqa: A001 - keep legacy bootstrap output safe.
     builtins.print(*[_safe_console_text(arg) for arg in args], **kwargs)
+
+
+def _revoke_unauthorized_superadmins() -> int:
+    """Remove global privileges and rotate credentials for legacy fixed accounts."""
+
+    revoked = 0
+    for user in User.query.all():
+        if not is_super_admin_role(getattr(user, "rol", None)):
+            continue
+        if is_authorized_superadmin_email(getattr(user, "email", None)):
+            continue
+
+        tenant_bound = any(
+            getattr(user, field, None)
+            for field in ("tenant_id", "tenant_slug", "municipio_id", "pyme_id", "empresa_id")
+        )
+        user.rol = "admin" if tenant_bound else "usuario"
+        user.set_password(uuid.uuid4().hex + uuid.uuid4().hex)
+        user.token = str(uuid.uuid4())
+        user.entity_token = None
+        user.password_reset_selector = None
+        user.password_reset_verifier_hash = None
+        user.password_reset_sent_at = None
+        db.session.add(user)
+        revoked += 1
+
+    if revoked:
+        db.session.commit()
+    return revoked
 
 
 def fix_schema_issues():
@@ -300,7 +330,8 @@ def init_tenants():
         if not user and token: user = User.query.filter_by(token=token).first()
 
         if not user:
-            password = "Servill2030!" if key == "servill" else "demo1234"
+            password_env = "SERVILL_BOOTSTRAP_PASSWORD" if key == "servill" else "DEMO_BOOTSTRAP_PASSWORD"
+            password = os.getenv(password_env) or uuid.uuid4().hex + uuid.uuid4().hex
             rol = "admin_pyme" if key == "servill" else "admin"
             user = User(
                 name=nombre,
@@ -424,11 +455,11 @@ def init_tenants():
 
         # Special logic for 'municipio' tenant (Widget Token)
         if key == "municipio":
-            specific_token = "1146cb3e-eaef-4230-b54e-1c340ac062d8"
+            specific_token = str(os.getenv("DEMO_WIDGET_TOKEN_JUNIN") or "").strip()
             cfg = tenant.configuracion or {}
             tokens = cfg.get("widget_tokens", [])
             if isinstance(tokens, str): tokens = [tokens]
-            if specific_token not in tokens:
+            if specific_token and specific_token not in tokens:
                 tokens.append(specific_token)
                 cfg["widget_tokens"] = tokens
                 tenant.configuracion = cfg
@@ -436,22 +467,11 @@ def init_tenants():
 
         db.session.commit()
 
-    # Super Admin & Legacy Fixes (Same as before)
-    admin_email = "marcelo@chatboc.ar"
-    admin_user = User.query.filter_by(email=admin_email).first()
-    if not admin_user:
-        admin_user = User(
-            name="Marcelo SuperAdmin",
-            email=admin_email,
-            rol="super_admin",
-            tipo_chat="pyme",
-            plan="enterprise",
-            nombre_empresa="Chatboc Platform",
-            token=str(uuid.uuid4())
-        )
-        admin_user.set_password("Marcelog123")
-        db.session.add(admin_user)
-        db.session.commit()
+    # Platform superadmin access is provisioned through the explicit email
+    # allowlist and Clerk. Reconcile historical fixed-credential accounts too.
+    revoked_superadmins = _revoke_unauthorized_superadmins()
+    if revoked_superadmins:
+        print(f"  Revoked {revoked_superadmins} unauthorized legacy superadmin account(s).")
 
     mauricio = User.query.filter_by(email="mauricio@junin.com").first()
     municipio_tenant = TenantProfile.query.filter_by(slug="municipio").first()

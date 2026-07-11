@@ -12,6 +12,9 @@ LIVE_CHAT_TOKEN_AUDIENCE = "chatboc-ticket-room"
 LIVE_CHAT_TOKEN_ISSUER = "chatboc-live-chat"
 LIVE_CHAT_TOKEN_SCOPE = "ticket_room:read"
 SUPPORTED_TICKET_TYPES = {"municipio", "pyme"}
+DEFAULT_LIVE_CHAT_TOKEN_TTL_SECONDS = 900
+MIN_LIVE_CHAT_TOKEN_TTL_SECONDS = 300
+MAX_LIVE_CHAT_TOKEN_TTL_SECONDS = 3600
 
 
 class LiveChatAccessError(ValueError):
@@ -47,11 +50,21 @@ def issue_ticket_room_token(
     room = build_ticket_room(ticket_type, ticket_id)
     normalized_type = str(ticket_type).strip().lower()
     normalized_id = int(ticket_id)
-    configured_ttl = ttl_seconds or current_app.config.get("LIVE_CHAT_ROOM_TOKEN_TTL_SECONDS", 14400)
+    configured_ttl = (
+        ttl_seconds
+        if ttl_seconds is not None
+        else current_app.config.get(
+            "LIVE_CHAT_ROOM_TOKEN_TTL_SECONDS",
+            DEFAULT_LIVE_CHAT_TOKEN_TTL_SECONDS,
+        )
+    )
     try:
-        ttl = max(300, min(int(configured_ttl), 86400))
+        ttl = max(
+            MIN_LIVE_CHAT_TOKEN_TTL_SECONDS,
+            min(int(configured_ttl), MAX_LIVE_CHAT_TOKEN_TTL_SECONDS),
+        )
     except (TypeError, ValueError):
-        ttl = 14400
+        ttl = DEFAULT_LIVE_CHAT_TOKEN_TTL_SECONDS
     now = datetime.now(timezone.utc)
     token = jwt.encode(
         {

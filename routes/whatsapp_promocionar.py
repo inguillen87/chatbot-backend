@@ -5,6 +5,7 @@ from utils.whatsapp import enviar_imagen_whatsapp
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from utils.roles import is_authorized_superadmin_user
 
 whatsapp_promocionar_bp = Blueprint('whatsapp_promocionar', __name__, url_prefix='/api/whatsapp')
 
@@ -91,14 +92,15 @@ def promocionar_whatsapp(current_user):
         return jsonify({'error': 'url_imagen es requerido.'}), 400
 
     scope_all = bool(data.get('todos') or request.args.get('todos'))
-    if scope_all and current_user.rol != 'super_admin':
+    actor_is_superadmin = is_authorized_superadmin_user(current_user)
+    if scope_all and not actor_is_superadmin:
         scope_all = False
     query = User.query.filter(
         User.telefono.isnot(None),
         User.acepta_marketing.is_(True)
     )
 
-    if current_user.rol == 'super_admin' and scope_all:
+    if actor_is_superadmin and scope_all:
         empresa_id = None
         usuarios = query.all()
     else:
@@ -123,7 +125,7 @@ def promocionar_whatsapp(current_user):
 @token_requerido
 @admin_o_empleado_requerido
 def estado_promocion(current_user):
-    scope_all = bool(request.args.get('todos')) and current_user.rol == 'super_admin'
+    scope_all = bool(request.args.get('todos')) and is_authorized_superadmin_user(current_user)
     empresa_id = None if scope_all else (
         current_user.id if current_user.rol == 'admin' and current_user.empresa_id is None else current_user.empresa_id
     )

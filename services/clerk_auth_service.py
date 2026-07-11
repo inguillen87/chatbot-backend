@@ -4,11 +4,14 @@ import hmac
 import os
 import re
 import secrets
+import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, Optional, Tuple
+from urllib.parse import quote
 
 import jwt
+import requests
 from flask import current_app
 from jwt import PyJWKClient
 from sqlalchemy.orm.attributes import flag_modified
@@ -23,11 +26,16 @@ from services.channel_activation import build_channel_activation_payload
 from services.logic import es_rubro_publico
 from services.tenant_factory import create_tenant_from_template
 from services.user_service import get_user_profile_identity, set_user_profile_avatar
-from utils.auth_helpers import generar_token
+from utils.auth_helpers import (
+    auth_session_version,
+    bump_auth_session_version,
+    generar_token,
+)
 from utils.roles import (
     ROLE_CLIENTE,
     ROLE_SUPERADMIN,
     is_authorized_superadmin_email,
+    is_authorized_superadmin_user,
     is_super_admin_role,
     normalize_tenant_type,
     role_for_tenant_type,
@@ -35,8 +43,15 @@ from utils.roles import (
 )
 
 CLERK_AUTH_CONTRACT_VERSION = "auth.clerk.v1"
+CLERK_TERMS_VERSION = "2026-07-11"
 DEFAULT_SOCIAL_PROVIDERS = ("google", "facebook", "linkedin")
+DEFAULT_CLERK_AUTHORIZED_PARTIES = (
+    "https://chatboc.ar",
+    "https://www.chatboc.ar",
+)
 DEFAULT_REQUIRED_DASHBOARD_SETUP: tuple[str, ...] = ()
+_REVOKED_CLERK_SESSIONS: dict[str, dict[str, Any]] = {}
+_REVOKED_CLERK_SESSIONS_LOCK = threading.Lock()
 ONBOARDING_STARTER_MODULES = [
     {
         "id": "crm_operativo",
@@ -172,6 +187,88 @@ def _env_list(name: str, fallback: Iterable[str]) -> list[str]:
     return [item.strip().lower() for item in raw.split(",") if item.strip()]
 
 
+def _clerk_secret_key() -> Optional[str]:
+    value = os.getenv("CLERK_SECRET_KEY")
+    return str(value).strip() if value and str(value).strip() else None
+
+
+def _clerk_webhook_secret() -> Optional[str]:
+    value = os.getenv("CLERK_WEBHOOK_SIGNING_SECRET") or os.getenv("CLERK_WEBHOOK_SECRET")
+    return str(value).strip() if value and str(value).strip() else None
+
+
+def _clerk_revocation_ttl_seconds() -> int:
+    try:
+        configured = int(os.getenv("CLERK_REVOKED_SESSION_TTL_SECONDS") or "86400")
+    except (TypeError, ValueError):
+        configured = 86400
+    return max(3600, min(configured, 604800))
+
+
+def register_revoked_clerk_session(session_id: str | None, *, reason: str) -> bool:
+    """Remember terminal Clerk sessions for immediate single-worker revocation."""
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    now = time.time()
+    expires_at = now + _clerk_revocation_ttl_seconds()
+    with _REVOKED_CLERK_SESSIONS_LOCK:
+        expired = [key for key, value in _REVOKED_CLERK_SESSIONS.items() if value["expires_at"] <= now]
+        for key in expired:
+            _REVOKED_CLERK_SESSIONS.pop(key, None)
+        _REVOKED_CLERK_SESSIONS[sid] = {
+            "reason": str(reason or "session_terminal"),
+            "revoked_at": now,
+            "expires_at": expires_at,
+        }
+    return True
+
+
+def is_clerk_session_revoked(session_id: str | None) -> bool:
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    now = time.time()
+    with _REVOKED_CLERK_SESSIONS_LOCK:
+        entry = _REVOKED_CLERK_SESSIONS.get(sid)
+        if not entry:
+            return False
+        if entry["expires_at"] <= now:
+            _REVOKED_CLERK_SESSIONS.pop(sid, None)
+            return False
+        return True
+
+
+def _clerk_authorized_parties() -> list[str]:
+    parties = _env_list("CLERK_AUTHORIZED_PARTIES", DEFAULT_CLERK_AUTHORIZED_PARTIES)
+    if current_app.config.get("TESTING") or current_app.config.get("DEBUG"):
+        parties.extend(
+            [
+                "http://127.0.0.1:4174",
+                "http://localhost:4174",
+                "http://127.0.0.1:5173",
+                "http://localhost:5173",
+            ]
+        )
+    return list(dict.fromkeys(party.rstrip("/") for party in parties if party))
+
+
+def _clerk_authorized_parties_explicitly_configured() -> bool:
+    return bool(str(os.getenv("CLERK_AUTHORIZED_PARTIES") or "").strip())
+
+
+def _clerk_requires_authorized_party() -> bool:
+    configured = os.getenv("CLERK_REQUIRE_AZP")
+    if configured is not None:
+        return _truthy(configured)
+    return not bool(current_app.config.get("TESTING") or current_app.config.get("DEBUG"))
+
+
+def _current_terms_version() -> str:
+    return str(os.getenv("CHATBOC_TERMS_VERSION") or CLERK_TERMS_VERSION).strip()
+
+
 def _vertical_preset(value: str | None) -> dict:
     key = str(value or "").strip().lower()
     return ONBOARDING_VERTICAL_PRESETS.get(key) or ONBOARDING_VERTICAL_PRESETS["otro"]
@@ -252,6 +349,8 @@ def _clerk_configuration_warnings(
     verification_configured: bool,
     social_providers: list[str],
     runtime_environment: str,
+    backend_api_configured: bool,
+    webhook_configured: bool,
 ) -> list[dict]:
     warnings: list[dict] = []
     if not publishable_key:
@@ -275,6 +374,34 @@ def _clerk_configuration_warnings(
                 "message": "Clerk esta usando claves de development/test. Para produccion configure claves pk_live/sk_live, issuer/JWKS de produccion y dominio productivo.",
             }
         )
+    if runtime_environment == "production" and not backend_api_configured:
+        warnings.append(
+            {
+                "code": "backend_identity_api_missing",
+                "message": "Configure CLERK_SECRET_KEY para obtener la identidad verificada desde Clerk y no confiar en datos enviados por el navegador.",
+            }
+        )
+    if runtime_environment == "production" and not webhook_configured:
+        warnings.append(
+            {
+                "code": "webhook_signing_secret_missing",
+                "message": "Configure CLERK_WEBHOOK_SIGNING_SECRET para reconciliar altas, cambios y bajas de identidad.",
+            }
+        )
+    if runtime_environment == "production" and not _clerk_authorized_parties_explicitly_configured():
+        warnings.append(
+            {
+                "code": "authorized_parties_missing",
+                "message": "Configure CLERK_AUTHORIZED_PARTIES explicitamente para limitar el origen de los session tokens.",
+            }
+        )
+    if runtime_environment == "production" and not _clerk_requires_authorized_party():
+        warnings.append(
+            {
+                "code": "authorized_party_not_required",
+                "message": "Configure CLERK_REQUIRE_AZP=true en produccion.",
+            }
+        )
     if str(publishable_key or "").startswith("pk_live_") and not social_providers:
         warnings.append(
             {
@@ -290,13 +417,24 @@ def build_clerk_frontend_contract() -> dict:
     runtime_environment = _clerk_runtime_environment(publishable_key)
     providers = _configured_clerk_social_providers(publishable_key)
     verification_configured = _clerk_verification_configured()
-    ui_enabled = bool(clerk_enabled() and publishable_key and verification_configured)
-    webhook_configured = bool(os.getenv("CLERK_WEBHOOK_SECRET"))
+    base_ui_enabled = bool(clerk_enabled() and publishable_key and verification_configured)
+    backend_api_configured = bool(_clerk_secret_key())
+    webhook_configured = bool(_clerk_webhook_secret())
+    authorized_parties = _clerk_authorized_parties()
+    authorized_parties_explicit = _clerk_authorized_parties_explicitly_configured()
+    authorized_party_required = _clerk_requires_authorized_party()
     production_ready = bool(
-        ui_enabled
+        base_ui_enabled
         and runtime_environment == "production"
+        and backend_api_configured
         and webhook_configured
+        and authorized_parties_explicit
+        and authorized_party_required
         and superadmin_email_allowlist_configured()
+    )
+    ui_enabled = bool(
+        base_ui_enabled
+        and (runtime_environment != "production" or production_ready)
     )
     return {
         "contract_version": CLERK_AUTH_CONTRACT_VERSION,
@@ -307,23 +445,42 @@ def build_clerk_frontend_contract() -> dict:
         "session_sync_endpoint": "/auth/clerk/session",
         "onboarding_endpoint": "/auth/clerk/onboarding",
         "webhook_endpoint": "/auth/clerk/webhook",
+        "webhook_required_events": [
+            "user.created",
+            "user.updated",
+            "user.deleted",
+            "session.ended",
+            "session.removed",
+            "session.revoked",
+        ],
         "oauth_callback_path": "/sso-callback",
         "publishable_key": publishable_key,
         "publishable_key_configured": bool(publishable_key),
         "issuer_configured": bool(_clerk_issuer()),
         "jwks_configured": verification_configured,
+        "backend_identity_api_configured": backend_api_configured,
         "webhook_configured": webhook_configured,
-        "ready_for_session_sync": verification_configured,
+        "authorized_parties_configured": authorized_parties_explicit,
+        "authorized_party_required": authorized_party_required,
+        "ready_for_session_sync": bool(
+            verification_configured
+            and (runtime_environment != "production" or production_ready)
+        ),
         "configuration_warnings": _clerk_configuration_warnings(
             publishable_key=publishable_key,
             verification_configured=verification_configured,
             social_providers=providers,
             runtime_environment=runtime_environment,
+            backend_api_configured=backend_api_configured,
+            webhook_configured=webhook_configured,
         ),
         "production_requirements": {
             "live_publishable_key": runtime_environment == "production",
             "session_verification": verification_configured,
+            "backend_identity_api": backend_api_configured,
             "webhook_secret": webhook_configured,
+            "authorized_parties": authorized_parties_explicit,
+            "authorized_party_required": authorized_party_required,
             "superadmin_allowlist": superadmin_email_allowlist_configured(),
             "custom_domain_or_production_instance": runtime_environment == "production",
         },
@@ -341,7 +498,10 @@ def build_clerk_frontend_contract() -> dict:
             "CLERK_ISSUER": "required unless CLERK_JWKS_URL is set",
             "CLERK_JWKS_URL": "optional",
             "CLERK_AUDIENCE": "optional",
-            "CLERK_WEBHOOK_SECRET": "recommended",
+            "CLERK_AUTHORIZED_PARTIES": "required explicit allowlist for azp",
+            "CLERK_REQUIRE_AZP": "must be true in production",
+            "CLERK_SECRET_KEY": "required for trusted identity lookup",
+            "CLERK_WEBHOOK_SIGNING_SECRET": "recommended",
             "ZOHO_SMTP_USER": "recommended for email verification",
             "ZOHO_SMTP_PASSWORD": "recommended for email verification",
         },
@@ -371,9 +531,117 @@ def verify_clerk_session_token(token: str) -> dict:
 
     try:
         signing_key = PyJWKClient(jwks_url).get_signing_key_from_jwt(token)
-        return jwt.decode(token, signing_key.key, **decode_kwargs)
+        claims = jwt.decode(token, signing_key.key, **decode_kwargs)
     except jwt.PyJWTError as exc:
         raise ClerkAuthError("Invalid Clerk session token") from exc
+
+    authorized_parties = _clerk_authorized_parties()
+    authorized_party = str(claims.get("azp") or "").strip().lower().rstrip("/")
+    require_authorized_party = _clerk_requires_authorized_party()
+    if authorized_party and authorized_party not in authorized_parties:
+        raise ClerkAuthError("Clerk session authorized party is not allowed")
+    if require_authorized_party and not authorized_party:
+        raise ClerkAuthError("Clerk session authorized party is required")
+    if not str(claims.get("sid") or "").strip():
+        raise ClerkAuthError("Clerk session id is required")
+    if str(claims.get("sts") or "").strip().lower() == "pending":
+        raise ClerkAuthError("Clerk session is not active")
+    verify_active_clerk_session(claims)
+    return claims
+
+
+def _clerk_session_lookup_required() -> bool:
+    if current_app.config.get("TESTING") and not _clerk_secret_key():
+        return False
+    runtime_environment = _clerk_runtime_environment(_clerk_publishable_key())
+    flask_environment = str(
+        os.getenv("FLASK_ENV") or os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or ""
+    ).strip().lower()
+    return runtime_environment == "production" or flask_environment == "production" or bool(_clerk_secret_key())
+
+
+def verify_active_clerk_session(claims: dict) -> dict:
+    """Confirm that the signed JWT still belongs to an active Clerk session."""
+
+    sid = str(claims.get("sid") or "").strip()
+    clerk_user_id = str(claims.get("sub") or "").strip()
+    if not sid:
+        raise ClerkAuthError("Clerk session id is required")
+    if is_clerk_session_revoked(sid):
+        raise ClerkAuthError("Clerk session has been revoked")
+
+    secret_key = _clerk_secret_key()
+    if not secret_key:
+        if _clerk_session_lookup_required():
+            raise ClerkNotConfigured("CLERK_SECRET_KEY is required for active session verification")
+        return {}
+
+    base_url = str(os.getenv("CLERK_BACKEND_API_URL") or "https://api.clerk.com").rstrip("/")
+    try:
+        response = requests.get(
+            f"{base_url}/v1/sessions/{quote(sid, safe='')}",
+            headers={"Authorization": f"Bearer {secret_key}"},
+            timeout=5,
+        )
+    except requests.RequestException as exc:
+        raise ClerkNotConfigured("Clerk Backend API session lookup is unavailable") from exc
+
+    if response.status_code in {404, 410}:
+        register_revoked_clerk_session(sid, reason="backend_api_not_found")
+        raise ClerkAuthError("Clerk session no longer exists")
+    if response.status_code >= 400:
+        raise ClerkNotConfigured("Clerk Backend API session lookup failed")
+
+    try:
+        session_data = response.json()
+    except ValueError as exc:
+        raise ClerkNotConfigured("Clerk Backend API returned invalid session data") from exc
+    if not isinstance(session_data, dict) or str(session_data.get("id") or "").strip() != sid:
+        raise ClerkAuthError("Clerk Backend API session mismatch")
+    if clerk_user_id and str(session_data.get("user_id") or "").strip() != clerk_user_id:
+        raise ClerkAuthError("Clerk Backend API session user mismatch")
+
+    status = str(session_data.get("status") or "").strip().lower()
+    if status != "active":
+        register_revoked_clerk_session(sid, reason=f"backend_api_status:{status or 'missing'}")
+        raise ClerkAuthError("Clerk session is not active")
+    return session_data
+
+
+def fetch_trusted_clerk_profile(claims: dict) -> dict:
+    """Load security-sensitive identity fields from Clerk's authenticated Backend API."""
+
+    clerk_user_id = str(claims.get("sub") or "").strip()
+    if not clerk_user_id:
+        raise ClerkAuthError("Clerk user id is missing")
+    secret_key = _clerk_secret_key()
+    if not secret_key:
+        if current_app.config.get("TESTING"):
+            return {}
+        raise ClerkNotConfigured("CLERK_SECRET_KEY is required for trusted identity lookup")
+
+    base_url = str(os.getenv("CLERK_BACKEND_API_URL") or "https://api.clerk.com").rstrip("/")
+    try:
+        response = requests.get(
+            f"{base_url}/v1/users/{quote(clerk_user_id, safe='')}",
+            headers={"Authorization": f"Bearer {secret_key}"},
+            timeout=5,
+        )
+    except requests.RequestException as exc:
+        raise ClerkNotConfigured("Clerk Backend API identity lookup is unavailable") from exc
+
+    if response.status_code == 404:
+        raise ClerkAuthError("Clerk user no longer exists")
+    if response.status_code >= 400:
+        raise ClerkNotConfigured("Clerk Backend API identity lookup failed")
+
+    try:
+        profile = response.json()
+    except ValueError as exc:
+        raise ClerkNotConfigured("Clerk Backend API returned invalid identity data") from exc
+    if not isinstance(profile, dict) or str(profile.get("id") or "") != clerk_user_id:
+        raise ClerkAuthError("Clerk Backend API identity mismatch")
+    return profile
 
 
 def _primary_email_from_profile(profile: dict) -> Tuple[Optional[str], bool]:
@@ -471,28 +739,41 @@ def _avatar_url_from_profile(profile: dict, claims: dict) -> Optional[str]:
     return None
 
 
-def extract_clerk_identity(claims: dict, profile: Optional[dict] = None) -> dict:
-    profile = profile or {}
-    clerk_user_id = claims.get("sub") or profile.get("id") or profile.get("user_id")
+def extract_clerk_identity(
+    claims: dict,
+    profile: Optional[dict] = None,
+    *,
+    profile_is_trusted: bool = False,
+) -> dict:
+    trusted_profile = profile if profile_is_trusted and isinstance(profile, dict) else {}
+    clerk_user_id = claims.get("sub") or trusted_profile.get("id") or trusted_profile.get("user_id")
     if not clerk_user_id:
         raise ClerkAuthError("Clerk user id is missing")
 
-    email, profile_verified = _primary_email_from_profile(profile)
-    if not email:
+    profile_email, profile_verified = _primary_email_from_profile(trusted_profile)
+    if profile_is_trusted:
+        email = profile_email
+        email_verified = bool(profile_verified)
+    else:
         email = (
             claims.get("email")
             or claims.get("primary_email_address")
             or claims.get("email_address")
         )
         email = str(email).strip().lower() if email else None
+        email_verified = bool(
+            claims.get("email_verified")
+            or claims.get("email_verified_at")
+            or claims.get("evt") == "email_verified"
+        )
 
-    first = profile.get("first_name") or claims.get("first_name")
-    last = profile.get("last_name") or claims.get("last_name")
+    first = trusted_profile.get("first_name") or claims.get("first_name")
+    last = trusted_profile.get("last_name") or claims.get("last_name")
     name = (
-        profile.get("full_name")
+        trusted_profile.get("full_name")
         or claims.get("name")
         or " ".join(part for part in [first, last] if part).strip()
-        or profile.get("username")
+        or trusted_profile.get("username")
         or claims.get("username")
         or (email.split("@")[0] if email else "Usuario Chatboc")
     )
@@ -501,41 +782,55 @@ def extract_clerk_identity(claims: dict, profile: Optional[dict] = None) -> dict
         "clerk_user_id": str(clerk_user_id),
         "email": email,
         "name": str(name).strip() or "Usuario Chatboc",
-        "phone": _phone_from_profile(profile),
-        "email_verified": bool(
-            profile_verified
-            or claims.get("email_verified")
-            or claims.get("email_verified_at")
-            or claims.get("evt") == "email_verified"
-        ),
-        "social_providers": _providers_from_profile(profile, claims),
-        "avatar_url": _avatar_url_from_profile(profile, claims),
-        "created_at": profile.get("created_at") or claims.get("iat"),
-        "updated_at": profile.get("updated_at"),
+        "phone": _phone_from_profile(trusted_profile),
+        "email_verified": email_verified,
+        "identity_trusted": bool(profile_is_trusted),
+        "social_providers": _providers_from_profile(trusted_profile, claims),
+        "avatar_url": _avatar_url_from_profile(trusted_profile, claims),
+        "created_at": trusted_profile.get("created_at") or claims.get("iat"),
+        "updated_at": trusted_profile.get("updated_at"),
+        "identity_source": "clerk_backend_api" if profile_is_trusted else "clerk_session_claims",
     }
 
 
 def _find_user_by_clerk_id(clerk_user_id: str) -> Optional[User]:
-    # JSON contains queries differ across SQLite/PostgreSQL. This bounded scan is
-    # only a fallback for users whose session token lacks email.
-    candidates = User.query.filter(User.accesibilidad.isnot(None)).limit(1000).all()
-    for user in candidates:
-        metadata = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+    try:
+        direct_match = User.query.filter(
+            User.accesibilidad["auth"]["clerk"]["user_id"].as_string() == clerk_user_id
+        ).first()
+        if direct_match:
+            return direct_match
+    except Exception:
+        # Older SQLite builds may lack JSON path support. The portable fallback
+        # below is unbounded but streams only IDs and metadata.
+        db.session.rollback()
+
+    candidates = (
+        db.session.query(User.id, User.accesibilidad)
+        .filter(User.accesibilidad.isnot(None))
+        .execution_options(yield_per=500)
+    )
+    for user_id, raw_metadata in candidates:
+        metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
         auth_meta = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
         clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
         if clerk_meta.get("user_id") == clerk_user_id:
-            return user
+            return User.query.get(user_id)
     return None
 
 
 def _merge_clerk_metadata(user: User, identity: dict) -> None:
     meta = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
     auth_meta = meta.get("auth") if isinstance(meta.get("auth"), dict) else {}
+    previous_clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
     auth_meta["provider"] = "clerk"
+    auth_meta["session_version"] = auth_session_version(user)
     auth_meta["clerk"] = {
+        **previous_clerk_meta,
         "user_id": identity["clerk_user_id"],
         "email": identity.get("email"),
         "social_providers": identity.get("social_providers") or [],
+        "identity_source": identity.get("identity_source"),
         "last_sync_at": datetime.now(timezone.utc).isoformat(),
     }
     meta["auth"] = auth_meta
@@ -555,7 +850,10 @@ def _fallback_role_for_clerk_user(user: User) -> str:
 def apply_clerk_role_guardrail(user: User, identity: dict) -> None:
     """Keep platform-wide superadmin access bound to an explicit email allowlist."""
 
-    if is_clerk_superadmin_email(identity.get("email")):
+    if not identity.get("identity_trusted"):
+        return
+
+    if identity.get("email_verified") and is_clerk_superadmin_email(identity.get("email")):
         user.rol = ROLE_SUPERADMIN
         user.tipo_chat = user.tipo_chat or "plataforma"
         return
@@ -564,24 +862,43 @@ def apply_clerk_role_guardrail(user: User, identity: dict) -> None:
         user.rol = _fallback_role_for_clerk_user(user)
 
 
-def upsert_user_from_clerk(claims: dict, profile: Optional[dict] = None) -> User:
-    identity = extract_clerk_identity(claims, profile)
+def upsert_user_from_clerk(
+    claims: dict,
+    profile: Optional[dict] = None,
+    *,
+    profile_is_trusted: bool = False,
+) -> User:
+    identity = extract_clerk_identity(
+        claims,
+        profile,
+        profile_is_trusted=profile_is_trusted,
+    )
     email = identity.get("email")
-    user = User.query.filter_by(email=email).first() if email else None
-    if user is None:
-        user = _find_user_by_clerk_id(identity["clerk_user_id"])
+    user = _find_user_by_clerk_id(identity["clerk_user_id"])
+    email_match = User.query.filter_by(email=email).first() if email else None
+    if user is None and email_match is not None:
+        if not identity.get("email_verified"):
+            raise ClerkAuthError("Verified Clerk email is required to link an existing Chatboc account")
+        user = email_match
+
+    if user is not None:
+        user_meta = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+        auth_meta = user_meta.get("auth") if isinstance(user_meta.get("auth"), dict) else {}
+        clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
+        if auth_meta.get("disabled") or clerk_meta.get("disabled") or clerk_meta.get("deleted_at"):
+            raise ClerkAuthError("This Clerk identity is disabled in Chatboc")
 
     if user is None:
         if not email:
-            raise ClerkAuthError("Clerk user does not include an email address")
+            raise ClerkNotConfigured("Trusted Clerk identity does not include an email address")
         user = User(
             name=identity["name"],
             email=email,
             token=generate_token(),
             rol=ROLE_CLIENTE,
             plan="gratis",
-            acepto_terminos=True,
-            fecha_aceptacion_terminos=datetime.now(timezone.utc),
+            acepto_terminos=False,
+            fecha_aceptacion_terminos=None,
             email_verified=identity["email_verified"],
         )
         user.set_password(secrets.token_urlsafe(32))
@@ -642,16 +959,49 @@ def _session_identity_payload(user: User) -> dict:
     }
 
 
-def build_chatboc_session_payload(user: User, tenant: Optional[TenantProfile] = None) -> dict:
-    tenant = tenant or tenant_for_user(user)
-    token = generar_token(
+def _issue_clerk_chatboc_token(
+    user: User,
+    tenant: Optional[TenantProfile],
+    clerk_claims: Optional[dict],
+) -> str:
+    claims = clerk_claims if isinstance(clerk_claims, dict) else {}
+    clerk_sid = str(claims.get("sid") or "").strip()
+    clerk_user_id = str(claims.get("sub") or "").strip()
+    if not clerk_sid:
+        raise ClerkAuthError("Clerk session id is required to issue a Chatboc session")
+
+    return generar_token(
         user.id,
         user.rol,
         user.tipo_chat,
         user.municipio_id,
         user.pyme_id,
+        expires_in=timedelta(hours=1),
+        extra_claims={
+            "auth_provider": "clerk",
+            "session_kind": "clerk",
+            "clerk_sid": clerk_sid,
+            "clerk_user_id": clerk_user_id or None,
+            "sid": clerk_sid,
+            "jti": secrets.token_urlsafe(24),
+            "sv": auth_session_version(user),
+            "tenant_id": getattr(tenant, "id", None),
+            "tenant_slug": getattr(tenant, "slug", None),
+            "empresa_id": user.empresa_id,
+        },
     )
+
+
+def build_chatboc_session_payload(
+    user: User,
+    tenant: Optional[TenantProfile] = None,
+    clerk_claims: Optional[dict] = None,
+) -> dict:
+    tenant = tenant or tenant_for_user(user)
     onboarding = build_onboarding_contract(user, tenant)
+    token = None
+    if not onboarding.get("required"):
+        token = _issue_clerk_chatboc_token(user, tenant, clerk_claims)
     channel_activation = build_channel_activation_payload(tenant)
     identity = _session_identity_payload(user)
     return {
@@ -698,8 +1048,65 @@ def serialize_tenant(tenant: Optional[TenantProfile]) -> Optional[dict]:
     }
 
 
+def _accepted_clerk_terms_version(user: User) -> Optional[str]:
+    metadata = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+    auth_meta = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
+    clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
+    terms = clerk_meta.get("terms") if isinstance(clerk_meta.get("terms"), dict) else {}
+    version = str(terms.get("version") or "").strip()
+    return version or None
+
+
+def _has_current_terms_acceptance(user: User) -> bool:
+    return bool(
+        getattr(user, "acepto_terminos", False)
+        and _accepted_clerk_terms_version(user) == _current_terms_version()
+    )
+
+
+def _record_clerk_terms_acceptance(
+    user: User,
+    tenant: Optional[TenantProfile],
+    *,
+    source: str,
+) -> datetime:
+    accepted_at = datetime.now(timezone.utc)
+    terms_version = _current_terms_version()
+    user.acepto_terminos = True
+    user.fecha_aceptacion_terminos = accepted_at
+
+    user_meta = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+    user_auth_meta = user_meta.get("auth") if isinstance(user_meta.get("auth"), dict) else {}
+    clerk_meta = user_auth_meta.get("clerk") if isinstance(user_auth_meta.get("clerk"), dict) else {}
+    clerk_meta["terms"] = {
+        "accepted": True,
+        "version": terms_version,
+        "accepted_at": accepted_at.isoformat(),
+        "source": source,
+    }
+    user_auth_meta["clerk"] = clerk_meta
+    user_meta["auth"] = user_auth_meta
+    user.accesibilidad = user_meta
+    flag_modified(user, "accesibilidad")
+
+    if tenant is not None:
+        cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        auth_cfg = cfg.get("auth") if isinstance(cfg.get("auth"), dict) else {}
+        auth_cfg["terms"] = {
+            "accepted": True,
+            "version": terms_version,
+            "accepted_at": accepted_at.isoformat(),
+            "source": source,
+        }
+        cfg["auth"] = auth_cfg
+        tenant.configuracion = cfg
+        flag_modified(tenant, "configuracion")
+
+    return accepted_at
+
+
 def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None) -> dict:
-    if is_super_admin_role(getattr(user, "rol", None)):
+    if is_authorized_superadmin_user(user):
         return {
             "required": False,
             "status": "platform_admin",
@@ -710,13 +1117,22 @@ def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None
         }
 
     tenant = tenant or tenant_for_user(user)
+    terms_pending = bool(tenant and not _has_current_terms_acceptance(user))
+    onboarding_required = tenant is None or terms_pending
+    onboarding_status = "terms_pending" if terms_pending else ("complete" if tenant else "pending")
     return {
-        "required": tenant is None,
-        "status": "complete" if tenant else "pending",
-        "title": "Completa tu espacio Chatboc",
-        "description": "Con estos datos creamos el tenant, plantilla inicial, CRM y canales.",
+        "required": onboarding_required,
+        "status": onboarding_status,
+        "title": "Actualiza tu consentimiento" if terms_pending else "Completa tu espacio Chatboc",
+        "description": (
+            "Acepta la version vigente de los Terminos y la Politica de Privacidad para continuar."
+            if terms_pending
+            else "Con estos datos creamos el tenant, plantilla inicial, CRM y canales."
+        ),
         "submit_endpoint": "/auth/clerk/onboarding",
         "modal": {
+            "mode": "terms_only" if terms_pending else "tenant_setup",
+            "existing_tenant": serialize_tenant(tenant),
             "summary_cards": [
                 {
                     "id": "identity",
@@ -812,6 +1228,13 @@ def build_onboarding_contract(user: User, tenant: Optional[TenantProfile] = None
                 "upgrade_requires": "superadmin_or_commercial_approval",
                 "message": "El registro publico siempre crea un espacio Free. El plan Full se solicita para revision comercial y solo se concede desde administracion.",
             },
+            "terms": {
+                "required": True,
+                "version": _current_terms_version(),
+                "terms_url": "/terminos",
+                "privacy_url": "/privacidad",
+                "label": "Acepto los Terminos y la Politica de Privacidad",
+            },
             "profile_picture_policy": "consented_upload_or_social_only",
         },
     }
@@ -858,8 +1281,25 @@ def _unique_tenant_slug(base: str) -> str:
 
 
 def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
+    if not _truthy(payload.get("terms_accepted")):
+        raise ClerkAuthError("Debes aceptar los Terminos y la Politica de Privacidad para crear el tenant")
+    terms_version = _current_terms_version()
+    if not terms_version:
+        raise ClerkAuthError("terms_version is required")
+    submitted_terms_version = str(payload.get("terms_version") or "").strip()
+    if submitted_terms_version != terms_version:
+        raise ClerkAuthError("La version de Terminos cambio. Recarga la pagina antes de aceptar")
+
     existing = tenant_for_user(user)
     if existing:
+        _record_clerk_terms_acceptance(
+            user,
+            existing,
+            source="clerk_terms_reacceptance",
+        )
+        db.session.add(user)
+        db.session.add(existing)
+        db.session.commit()
         return existing
 
     tenant_name = (
@@ -907,6 +1347,11 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
     user.ciudad = str(payload.get("ciudad") or payload.get("city") or user.ciudad or "").strip() or None
     user.provincia = str(payload.get("provincia") or payload.get("state") or user.provincia or "").strip() or None
     user.pais = str(payload.get("pais") or payload.get("country") or user.pais or "").strip() or None
+    accepted_at = _record_clerk_terms_acceptance(
+        user,
+        tenant,
+        source="clerk_tenant_onboarding",
+    )
 
     cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
     cfg["auth"] = {
@@ -927,6 +1372,11 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
         "requested_plan": requested_plan,
         "granted_plan": plan_for_factory,
         "plan_policy": "self_service_creates_free_until_admin_upgrade",
+        "terms": {
+            "accepted": True,
+            "version": terms_version,
+            "accepted_at": accepted_at.isoformat(),
+        },
     }
     tenant.configuracion = cfg
     tenant.vertical = tenant.vertical or str(payload.get("vertical") or tenant_type)
@@ -949,9 +1399,9 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
 
 
 def verify_clerk_webhook_signature(raw_body: bytes, headers: dict) -> None:
-    secret = os.getenv("CLERK_WEBHOOK_SECRET")
+    secret = _clerk_webhook_secret()
     if not secret:
-        raise ClerkNotConfigured("CLERK_WEBHOOK_SECRET is required")
+        raise ClerkNotConfigured("CLERK_WEBHOOK_SIGNING_SECRET is required")
 
     msg_id = headers.get("svix-id") or headers.get("Svix-Id")
     timestamp = headers.get("svix-timestamp") or headers.get("Svix-Timestamp")
@@ -984,14 +1434,64 @@ def verify_clerk_webhook_signature(raw_body: bytes, headers: dict) -> None:
         raise ClerkAuthError("Invalid Clerk webhook signature")
 
 
+def _revoke_chatboc_sessions_for_clerk_user(user: User, *, reason: str) -> int:
+    next_version = bump_auth_session_version(user)
+    meta = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+    auth_meta = meta.get("auth") if isinstance(meta.get("auth"), dict) else {}
+    auth_meta["last_revocation"] = {
+        "reason": reason,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    meta["auth"] = auth_meta
+    user.accesibilidad = meta
+    flag_modified(user, "accesibilidad")
+    return next_version
+
+
 def sync_clerk_webhook_event(event: dict) -> dict:
     event_type = event.get("type") or ""
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     if event_type in {"user.created", "user.updated"}:
+        clerk_user_id = str(data.get("id") or "").strip()
+        existing = _find_user_by_clerk_id(clerk_user_id) if clerk_user_id else None
+        if existing:
+            existing_meta = existing.accesibilidad if isinstance(existing.accesibilidad, dict) else {}
+            existing_auth = existing_meta.get("auth") if isinstance(existing_meta.get("auth"), dict) else {}
+            existing_clerk = existing_auth.get("clerk") if isinstance(existing_auth.get("clerk"), dict) else {}
+            if existing_auth.get("disabled") or existing_clerk.get("disabled") or existing_clerk.get("deleted_at"):
+                return {
+                    "status": "ignored_disabled",
+                    "user_id": existing.id,
+                    "event_type": event_type,
+                }
         claims = {"sub": data.get("id")}
-        user = upsert_user_from_clerk(claims, data)
+        user = upsert_user_from_clerk(claims, data, profile_is_trusted=True)
         db.session.commit()
         return {"status": "synced", "user_id": user.id, "event_type": event_type}
+
+    if event_type in {"session.ended", "session.removed", "session.revoked"}:
+        clerk_session_id = str(data.get("id") or data.get("session_id") or "").strip()
+        register_revoked_clerk_session(clerk_session_id, reason=event_type)
+        clerk_user_id = str(data.get("user_id") or "").strip()
+        user = _find_user_by_clerk_id(clerk_user_id) if clerk_user_id else None
+        if user:
+            session_version = _revoke_chatboc_sessions_for_clerk_user(user, reason=event_type)
+            db.session.add(user)
+            db.session.commit()
+            return {
+                "status": "sessions_revoked",
+                "user_id": user.id,
+                "session_version": session_version,
+                "event_type": event_type,
+                "clerk_session_id": clerk_session_id or None,
+                "clerk_user_id": clerk_user_id or None,
+            }
+        return {
+            "status": "session_revoked_unlinked",
+            "event_type": event_type,
+            "clerk_session_id": clerk_session_id or None,
+            "clerk_user_id": clerk_user_id or None,
+        }
     if event_type == "user.deleted":
         clerk_user_id = data.get("id")
         user = _find_user_by_clerk_id(str(clerk_user_id)) if clerk_user_id else None
@@ -1000,10 +1500,19 @@ def sync_clerk_webhook_event(event: dict) -> dict:
             auth_meta = meta.get("auth") if isinstance(meta.get("auth"), dict) else {}
             clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
             clerk_meta["deleted_at"] = datetime.now(timezone.utc).isoformat()
+            clerk_meta["disabled"] = True
             auth_meta["clerk"] = clerk_meta
             meta["auth"] = auth_meta
             user.accesibilidad = meta
             flag_modified(user, "accesibilidad")
+            user.rol = ROLE_CLIENTE
+            user.set_password(secrets.token_urlsafe(48))
+            user.token = generate_token()
+            user.entity_token = None
+            user.password_reset_selector = None
+            user.password_reset_verifier_hash = None
+            user.password_reset_sent_at = None
+            _revoke_chatboc_sessions_for_clerk_user(user, reason=event_type)
             db.session.add(user)
             db.session.commit()
             return {"status": "marked_deleted", "user_id": user.id, "event_type": event_type}

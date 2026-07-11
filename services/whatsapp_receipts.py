@@ -129,7 +129,7 @@ def render_ticket_whatsapp(
     if ticket_nro:
         ticket_id_numeric = str(ticket_nro).replace("M-", "").replace("S-", "")
         link = (
-            f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}?pin={consulta_pin}"
+            f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}#pin={consulta_pin}"
             if consulta_pin
             else f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
         )
@@ -170,7 +170,7 @@ def build_claim_created_template_pre_message(
     """Build a Twilio Content pre-message for a municipal claim receipt.
 
     The approved v2 template has a CTA at /t/{{2}}. Until that template is
-    replaced in Meta/Twilio, {{2}} remains chat/<ticket>?pin=<pin> because the
+    replaced in Meta/Twilio, {{2}} remains chat/<ticket>#pin=<pin> because the
     frontend redirects /t/chat/<ticket> to the public tracking page. The body
     and all backend metadata use /tracking/claim directly.
     """
@@ -180,7 +180,7 @@ def build_claim_created_template_pre_message(
     pin_value = str(consulta_pin or "").strip()
     tracking_path = f"chat/{ticket_numeric}" if ticket_numeric else "chat"
     if pin_value:
-        tracking_path = f"{tracking_path}?pin={pin_value}"
+        tracking_path = f"{tracking_path}#pin={pin_value}"
 
     tracking_url = build_claim_tracking_url(base_chat_url, ticket_numeric, pin_value) or str(
         base_chat_url or "https://www.chatboc.ar"

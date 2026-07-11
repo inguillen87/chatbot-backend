@@ -1,7 +1,7 @@
 """Bootstrap helpers for the Junín municipality tenant.
 
 This script creates (or updates) the Junín tenant, ensures the municipal
-administrator user exists with a known password, and optionally copies the
+administrator user exists without embedding credentials, and optionally copies the
 default configuration JSON into the tenant profile. It is intended to make it
 easy to recover a rollback by re-seeding the essentials with a single command.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -21,10 +22,8 @@ from services.user_service import assign_whatsapp_numbers
 
 DEFAULT_CONFIG_PATH = Path("data/municipios/default/config.json")
 DEFAULT_EMAIL = "mauricio@junin.com"
-DEFAULT_PASSWORD = "123456"
 DEFAULT_TENANT_SLUG = "municipio"
 DEFAULT_TENANT_NAME = "Municipio de Junín"
-DEFAULT_WIDGET_TOKEN = "1146cb3e-eaef-4230-b54e-1c340ac062d8"
 OFFICIAL_WHATSAPP = "+17432643718"
 
 
@@ -49,11 +48,13 @@ def _ensure_rubro() -> Rubro:
     return rubro
 
 
-def _ensure_user(password: str, rubro: Rubro, tenant_slug: str) -> User:
+def _ensure_user(password: Optional[str], rubro: Rubro, tenant_slug: str) -> User:
     user = User.query.filter_by(email=DEFAULT_EMAIL).first()
     created = False
 
     if not user:
+        if not password:
+            raise ValueError("JUNIN_ADMIN_BOOTSTRAP_PASSWORD or --password is required for a new user")
         user = User(
             name="Mauricio",
             email=DEFAULT_EMAIL,
@@ -72,12 +73,13 @@ def _ensure_user(password: str, rubro: Rubro, tenant_slug: str) -> User:
         if not user.rubro_id:
             user.rubro_id = rubro.id
 
-    user.set_password(password)
+    if password:
+        user.set_password(password)
     db.session.add(user)
     db.session.flush()
 
     action = "creado" if created else "actualizado"
-    print(f"✅ Usuario {DEFAULT_EMAIL} {action} con contraseña asegurada.")
+    print(f"✅ Usuario {DEFAULT_EMAIL} {action}.")
     return user
 
 
@@ -174,7 +176,7 @@ def _remove_widget_token_from_others(widget_token: str, keep_slug: str) -> None:
         print(f"🔁 Removido widget_token {widget_token} del tenant {tenant.slug}.")
 
 
-def bootstrap(password: str, config_path: Path, *, tenant_slug: str, widget_token: str) -> None:
+def bootstrap(password: Optional[str], config_path: Path, *, tenant_slug: str, widget_token: str) -> None:
     config_data = _load_config(config_path)
     rubro = _ensure_rubro()
     user = _ensure_user(password, rubro, tenant_slug)
@@ -199,8 +201,8 @@ def main() -> None:
     parser.add_argument(
         "--password",
         dest="password",
-        default=DEFAULT_PASSWORD,
-        help="Contraseña a asignar al usuario municipal (default: 123456)",
+        default=os.getenv("JUNIN_ADMIN_BOOTSTRAP_PASSWORD"),
+        help="Nueva contraseña; también puede definirse con JUNIN_ADMIN_BOOTSTRAP_PASSWORD",
     )
     parser.add_argument(
         "--config",
@@ -218,7 +220,7 @@ def main() -> None:
     parser.add_argument(
         "--widget-token",
         dest="widget_token",
-        default=DEFAULT_WIDGET_TOKEN,
+        default=os.getenv("DEMO_WIDGET_TOKEN_JUNIN", ""),
         help="Widget token a registrar para el tenant municipal",
     )
     args = parser.parse_args()

@@ -47,9 +47,18 @@ New variables introduced for Multi-tenant Modules:
 *   `CLERK_ISSUER`: Expected issuer for Clerk session JWT verification. Required unless `CLERK_JWKS_URL` is set.
 *   `CLERK_JWKS_URL`: Optional explicit JWKS URL for Clerk session JWT verification.
 *   `CLERK_AUDIENCE`: Optional JWT audience check for Clerk session tokens.
-*   `CLERK_WEBHOOK_SECRET`: Clerk webhook signing secret used by `/auth/clerk/webhook`.
+*   `CLERK_WEBHOOK_SIGNING_SECRET`: Clerk webhook signing secret used by `/auth/clerk/webhook`. `CLERK_WEBHOOK_SECRET` remains supported as a legacy alias.
+    Subscribe the endpoint to `user.created`, `user.updated`, `user.deleted`, `session.ended`, `session.removed`, and `session.revoked`; terminal session events revoke Chatboc JWTs.
+*   `CLERK_AUTHORIZED_PARTIES`: comma-separated frontend origins accepted from the signed Clerk `azp` claim. Production: `https://chatboc.ar,https://www.chatboc.ar`.
+*   `CLERK_REQUIRE_AZP`: when `true`, reject session tokens without an authorized-party claim.
+*   `CLERK_SUPERADMIN_EMAILS`: verified Clerk emails allowed to receive `super_admin`; keep this list explicit and minimal.
+*   `CHATBOC_TERMS_VERSION`: version recorded when a tenant owner accepts the platform terms during onboarding.
 *   `CLERK_WEBHOOK_TOLERANCE_SECONDS`: Allowed webhook timestamp drift. Defaults to `300`.
 *   `CLERK_SOCIAL_PROVIDERS`: Comma-separated enabled providers for the frontend contract. Defaults to `google,facebook,linkedin`.
+*   `LIVE_CHAT_ROOM_TOKEN_TTL_SECONDS`: Signed public ticket-room token lifetime. Defaults to `900` seconds and is capped at `3600`.
+*   `TRACKING_FAILURE_RATE_LIMIT_ATTEMPTS`: Failed PIN attempts per IP and ticket in the configured window. Defaults to `5`.
+*   `TRACKING_SUBJECT_FAILURE_RATE_LIMIT_ATTEMPTS`: Failed attempts per ticket across all IPs. Defaults to `20`.
+*   `TRACKING_FAILURE_RATE_LIMIT_WINDOW_SECONDS`: Tracking failure window. Defaults to `60` seconds.
 
 ## General
 *   `ADMIN_EMAIL`: (Existing) Fallback email for admin notifications.

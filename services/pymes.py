@@ -77,6 +77,31 @@ _LIVE_CHAT_PERSISTENCE_STATES = {
     "en_vivo",
 }
 
+_LIVE_CHAT_CTA_ACTIONS = {
+    "open_live_chat",
+    "queue_offline_message",
+    "request_agent",
+}
+
+
+def _resolve_live_chat_cta_action(payload: dict[str, Any], question: Any = None) -> Optional[str]:
+    candidates = [
+        payload.get("action"),
+        payload.get("action_id"),
+        payload.get("id_accion"),
+        payload.get("id"),
+    ]
+    cta = payload.get("cta")
+    if isinstance(cta, dict):
+        candidates.extend((cta.get("action"), cta.get("id")))
+    candidates.append(question)
+
+    for candidate in candidates:
+        normalized = str(candidate or "").strip().lower()
+        if normalized in _LIVE_CHAT_CTA_ACTIONS:
+            return normalized
+    return None
+
 
 def _resolve_pyme_chat_persistence_ticket_id(
     pyme_context: dict[str, Any],
@@ -2341,6 +2366,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         pregunta_str = pregunta_original
         received_payload["pregunta"] = pregunta_original
     if kwargs: received_payload.update(kwargs)
+    live_chat_cta_action = _resolve_live_chat_cta_action(received_payload, pregunta_str)
 
     if "mensajes_previos_llm_formato" not in chat_db_context.context_data:
         old_hist = chat_db_context.context_data.pop("mensajes_previos_gemini_formato", [])
@@ -2539,6 +2565,73 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if config_data.get("nombre_pyme"):
         nombre_pyme_display = config_data["nombre_pyme"]
     pyme_ctx_actual["nombre_pyme_cache"] = nombre_pyme_display
+
+    if live_chat_cta_action:
+        from services.actions.pyme_actions import DerivarHumanoActionHandlerPyme
+
+        cta_message = str(
+            received_payload.get("mensaje")
+            or received_payload.get("message")
+            or received_payload.get("texto")
+            or pregunta_str
+            or ""
+        ).strip()
+        if cta_message.lower() in _LIVE_CHAT_CTA_ACTIONS or not cta_message:
+            cta_message = "Solicitud de atencion humana"
+        handler_context = {
+            CONTEXTO_PYME: pyme_ctx_actual,
+            "user_obj": owner_user,
+            "viewer_user_obj": viewer_user,
+            "cliente_id": getattr(viewer_user, "id", None),
+            "anon_id": anon_id,
+            "user_id": getattr(owner_user, "id", None),
+            "tenant_id": getattr(tenant_profile, "id", None) if tenant_profile else None,
+            "tenant_profile": tenant_profile,
+            "chat_db_context_data": chat_db_context.context_data,
+            "channel": channel,
+            "target_entity_type": "pyme",
+            "pregunta_actual_usuario": cta_message,
+            "intencion": "hablar_con_agente",
+            "action": live_chat_cta_action,
+        }
+        handler_result = DerivarHumanoActionHandlerPyme(handler_context).execute(
+            {
+                "motivo_derivacion": received_payload.get("motivo_derivacion")
+                or received_payload.get("reason")
+                or live_chat_cta_action,
+                "cta_action": live_chat_cta_action,
+            }
+        )
+        data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
+        ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
+        if ticket_id:
+            pyme_ctx_actual["live_chat_ticket_id"] = ticket_id
+            pyme_ctx_actual["live_chat_estado"] = data.get("status")
+            pyme_ctx_actual["live_chat_socket_room"] = data.get("socket_room")
+            pyme_ctx_actual["live_chat_cta_action"] = live_chat_cta_action
+        return _finalize_early_response(
+            PymeFlowResult(
+                message_body=(
+                    handler_result.get("message_to_user")
+                    if isinstance(handler_result, dict)
+                    else None
+                )
+                or "No pudimos iniciar la atencion con un asesor.",
+                source=f"live_chat_cta_{live_chat_cta_action}",
+                options_list=(
+                    handler_result.get("options_list", [])
+                    if isinstance(handler_result, dict)
+                    else []
+                ),
+                message_type=(
+                    handler_result.get("message_type", "text")
+                    if isinstance(handler_result, dict)
+                    else "text"
+                ),
+                data=data,
+            ),
+            intent=live_chat_cta_action,
+        )
 
     urgency_reason = detect_urgency_reason(pregunta_str or "")
     if (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import random
+import secrets
 from datetime import datetime, timedelta
 from typing import List
 
@@ -49,7 +50,7 @@ def ensure_user(tenant_id: int, scope: str) -> User:
         municipio_id=tenant_id if scope == 'municipio' else None,
         pyme_id=tenant_id if scope == 'pyme' else None,
     )
-    user.set_password('demo1234')
+    user.set_password(secrets.token_urlsafe(48))
     db.session.add(user)
     db.session.commit()
     return user

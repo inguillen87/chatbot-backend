@@ -1,5 +1,8 @@
 import json
 import logging
+import os
+import secrets
+import uuid
 
 from models import db, Rubro, QA, Sugerencia, User
 from werkzeug.security import generate_password_hash
@@ -101,47 +104,40 @@ def cargar_usuarios_demo():
             "email": "demo+almacen@chatboc.ar",
             "name": "Demo Almacén",
             "nombre_empresa": "ByM almacen de bebidas",
-            "password": "demo1234",
             "rubro_clave": "almacen"
         },
         {
             "email": "demo+bodega@chatboc.ar",
             "name": "Demo Bodega",
             "nombre_empresa": "Bodega Cuatro Fincas Winery",
-            "password": "demo1234",
             "rubro_clave": "bodega"
         },
         {
             "email": "demo+ferreteria@chatboc.ar",
             "name": "Demo Ferretería",
             "nombre_empresa": "Ferretería Central",
-            "password": "demo1234",
             "rubro_clave": "ferreteria"
         },
         {
             "email": "demo+local@chatboc.ar",
             "name": "Demo Local Comercial",
             "nombre_empresa": "Local Comercial Demo",
-            "password": "demo1234",
             "rubro_clave": "local_comercial"
         },
         {
             "email": "demo+medico@chatboc.ar",
             "name": "Demo Médico",
             "nombre_empresa": "Clínica San Dona",
-            "password": "demo1234",
             "rubro_clave": "medico"
         },
         {
             "email": "franco@cuatrofincas.com",
             "name": "Franco Cuatro Fincas",
             "nombre_empresa": "Bodega Cuatro Fincas",
-            "password": "123456",
             "rubro_clave": "bodega",
             "rol": "admin",
             "plan": "premium",
             "limite_preguntas": 250,
-            "token": "cuatrofincas-live-token",
             "tipo_chat": "pyme",
             "whatsapp_numbers": ["+18564858589"]
         }
@@ -154,7 +150,7 @@ def cargar_usuarios_demo():
             continue
 
         tipo_chat = data.get("tipo_chat") or ("municipio" if es_rubro_publico(rubro) else "pyme")
-        token = data.get("token") or f"demo-token-{data['rubro_clave']}"
+        token = data.get("token")
         plan = data.get("plan", "gratis")
         preguntas_usadas = data.get("preguntas_usadas", 0)
         limite_preguntas = data.get("limite_preguntas", 50)
@@ -168,13 +164,11 @@ def cargar_usuarios_demo():
             existente.plan = plan
             existente.preguntas_usadas = preguntas_usadas
             existente.limite_preguntas = limite_preguntas
-            existente.token = token
+            if token:
+                existente.token = token
 
             if data.get("rol"):
                 existente.rol = data["rol"]
-
-            if data.get("password"):
-                existente.password_hash = generate_password_hash(data["password"])
 
             for optional_field in [
                 "telefono",
@@ -190,16 +184,14 @@ def cargar_usuarios_demo():
             user_obj = existente
             print(f"🔄 Usuario actualizado: {data['email']}")
         else:
-            if not data.get("password"):
-                print(f"⚠️ No se pudo crear {data['email']} sin contraseña definida.")
-                continue
+            bootstrap_password = os.getenv("DEMO_USERS_BOOTSTRAP_PASSWORD") or secrets.token_urlsafe(48)
 
             nuevo_user = User(
                 name=data.get("name", data["email"]),
                 email=data["email"],
                 nombre_empresa=data.get("nombre_empresa"),
-                password_hash=generate_password_hash(data["password"]),
-                token=token,
+                password_hash=generate_password_hash(bootstrap_password),
+                token=token or str(uuid.uuid4()),
                 plan=plan,
                 preguntas_usadas=preguntas_usadas,
                 limite_preguntas=limite_preguntas,

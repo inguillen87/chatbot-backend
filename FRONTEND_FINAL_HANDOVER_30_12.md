@@ -65,7 +65,7 @@ The bot now processes images and files intelligently.
 
 | Tenant | Slug | User | Password | Feature to Test |
 | :--- | :--- | :--- | :--- | :--- |
-| **Servill Indumentaria** | `servill` | `info@servill.ar` | `Servill2030!` | Clothing Catalog, No Wine, No Banner |
+| **Servill Indumentaria** | `servill` | `info@servill.ar` | Rotated; provision only through `SERVILL_ADMIN_BOOTSTRAP_PASSWORD` | Clothing Catalog, No Wine, No Banner |
 | **Bodega Demo** | `bodega` | `demo+bodega@chatboc.ar` | `demo1234` | Wine Catalog, External ML Links (if configured) |
 | **Municipio** | `municipio` | `municipio@chatboc.ar` | `demo1234` | Recycling Banner, Claims, Public Posts |
 

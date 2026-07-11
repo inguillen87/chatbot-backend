@@ -1,7 +1,9 @@
 from flask import Blueprint, render_template, request, jsonify, abort, current_app
 from models import PymePedido, TenantProfile, db, Order, User, PymeTicket, TicketComentario, MunicipioTicket
 from services.pedido_service import servicio_pedidos
+from extensions import limiter
 import json
+import hashlib
 from datetime import datetime
 from services.ticket_service import servicio_tickets
 from socket_service import emit_new_chat_message, emit_ticket_unread_changed
@@ -21,6 +23,149 @@ from services.tracking_experience import (
 tracking_ui_bp = Blueprint('tracking_ui_bp', __name__)
 
 
+_DEFAULT_TRACKING_FAILURE_LIMIT = 5
+_DEFAULT_TRACKING_FAILURE_WINDOW_SECONDS = 60
+_DEFAULT_TRACKING_SUBJECT_FAILURE_LIMIT = 20
+
+
+def _tracking_pin(payload: dict | None = None) -> str:
+    """Read public tracking credentials without requiring URL query secrets."""
+
+    body = payload if isinstance(payload, dict) else {}
+    return str(
+        request.headers.get("X-Tracking-Pin")
+        or request.headers.get("pin")
+        or body.get("pin")
+        or request.args.get("pin")
+        or ""
+    ).strip()
+
+
+def _tracking_access_token(payload: dict | None = None) -> str:
+    body = payload if isinstance(payload, dict) else {}
+    return str(
+        request.headers.get("X-Tracking-Token")
+        or body.get("tracking_token")
+        or body.get("access_token")
+        or request.args.get("token")
+        or request.args.get("access_token")
+        or ""
+    ).strip()
+
+
+def _positive_config_int(name: str, default: int) -> int:
+    try:
+        value = int(current_app.config.get(name, default))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _tracking_failure_rate_limit() -> str:
+    configured = current_app.config.get("TRACKING_FAILURE_RATE_LIMIT")
+    if configured:
+        return str(configured)
+    limit = _positive_config_int(
+        "TRACKING_FAILURE_RATE_LIMIT_ATTEMPTS",
+        _DEFAULT_TRACKING_FAILURE_LIMIT,
+    )
+    window = _positive_config_int(
+        "TRACKING_FAILURE_RATE_LIMIT_WINDOW_SECONDS",
+        _DEFAULT_TRACKING_FAILURE_WINDOW_SECONDS,
+    )
+    return f"{limit} per {window} seconds"
+
+
+def _tracking_subject_failure_rate_limit() -> str:
+    configured = current_app.config.get("TRACKING_SUBJECT_FAILURE_RATE_LIMIT")
+    if configured:
+        return str(configured)
+    limit = _positive_config_int(
+        "TRACKING_SUBJECT_FAILURE_RATE_LIMIT_ATTEMPTS",
+        _DEFAULT_TRACKING_SUBJECT_FAILURE_LIMIT,
+    )
+    window = _positive_config_int(
+        "TRACKING_FAILURE_RATE_LIMIT_WINDOW_SECONDS",
+        _DEFAULT_TRACKING_FAILURE_WINDOW_SECONDS,
+    )
+    return f"{limit} per {window} seconds"
+
+
+def _tracking_failure_subject_key() -> str:
+    payload = request.get_json(silent=True) if request.method != "GET" else None
+    payload = payload if isinstance(payload, dict) else {}
+    view_args = request.view_args or {}
+    kind = str(
+        request.args.get("kind")
+        or request.args.get("type")
+        or payload.get("kind")
+        or "claim"
+    ).strip().lower()
+    kind = {"reclamo": "claim", "pedido": "order"}.get(kind, kind)
+    ticket_reference = (
+        view_args.get("ticket_id")
+        or view_args.get("nro_ticket")
+        or request.args.get("code")
+        or request.args.get("nro_ticket")
+        or request.args.get("nro_pedido")
+        or request.args.get("order_id")
+        or payload.get("ticket_id")
+        or payload.get("nro_ticket")
+        or payload.get("nro_pedido")
+    )
+    pin = _tracking_pin(payload)
+
+    # Group attempts by stable ticket when possible so rotating PIN guesses
+    # cannot create fresh buckets. The PIN fingerprint is only a fallback.
+    if ticket_reference is not None and str(ticket_reference).strip():
+        normalized_reference = str(ticket_reference).strip().lower()
+        if kind == "claim" and normalized_reference.upper().startswith(("M-", "S-")):
+            normalized_reference = normalized_reference[2:].strip()
+        subject = f"{kind}:ticket:{normalized_reference}"
+    elif pin is not None and str(pin).strip():
+        pin_fingerprint = hashlib.sha256(str(pin).strip().encode("utf-8")).hexdigest()
+        subject = f"{kind}:pin:{pin_fingerprint}"
+    else:
+        subject = f"{kind}:unknown"
+
+    subject_fingerprint = hashlib.sha256(subject.encode("utf-8")).hexdigest()
+    return f"tracking-subject-failure:{subject_fingerprint}"
+
+
+def _tracking_failure_rate_key() -> str:
+    client_ip = request.remote_addr or "0.0.0.0"
+    return f"tracking-ip-failure:{client_ip}:{_tracking_failure_subject_key()}"
+
+
+def _deduct_tracking_failure(response) -> bool:
+    return response.status_code in {403, 404}
+
+
+def _tracking_failure_rate_limited(_request_limit):
+    response = _tracking_error(
+        "Demasiados intentos fallidos. Intenta nuevamente mas tarde.",
+        429,
+        "tracking_rate_limited",
+        "retry_later",
+        retryable=True,
+    )
+    response.headers["Retry-After"] = str(
+        _positive_config_int(
+            "TRACKING_FAILURE_RATE_LIMIT_WINDOW_SECONDS",
+            _DEFAULT_TRACKING_FAILURE_WINDOW_SECONDS,
+        )
+    )
+    return response
+
+
+@tracking_ui_bp.errorhandler(429)
+def _handle_tracking_rate_limit(error):
+    embedded_response = getattr(error, "response", None)
+    if embedded_response is not None:
+        return embedded_response
+    return _tracking_failure_rate_limited(None)
+
+
 def _tracking_request_id() -> str:
     incoming = (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip()
     return incoming or uuid.uuid4().hex
@@ -33,16 +178,25 @@ def _tracking_json(payload: dict, status: int = 200):
     response = jsonify(body)
     response.status_code = status
     response.headers["X-Request-Id"] = request_id
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
     return response
 
 
-def _tracking_error(message: str, status_code: int, reason_code: str, action_hint: str):
+def _tracking_error(
+    message: str,
+    status_code: int,
+    reason_code: str,
+    action_hint: str,
+    *,
+    retryable: bool = False,
+):
     return _tracking_json(
         {
             "contract_version": TRACKING_EXPERIENCE_CONTRACT_VERSION,
             "status_code": status_code,
             "reason_code": reason_code,
-            "retryable": False,
+            "retryable": retryable,
             "action_hint": action_hint,
             "error": {"code": status_code, "message": message},
         },
@@ -312,6 +466,18 @@ def _persist_public_claim_tracking_message(ticket: MunicipioTicket, mensaje: str
 
 @tracking_ui_bp.route('/tracking/api/experience', methods=['GET'])
 @tracking_ui_bp.route('/api/public/tracking/experience', methods=['GET'])
+@limiter.limit(
+    _tracking_subject_failure_rate_limit,
+    key_func=_tracking_failure_subject_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+@limiter.limit(
+    _tracking_failure_rate_limit,
+    key_func=_tracking_failure_rate_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
 def tracking_experience():
     kind = (request.args.get("kind") or request.args.get("type") or "").strip().lower()
     code = (
@@ -328,7 +494,7 @@ def tracking_experience():
         return _tracking_error("code requerido.", 400, "tracking_code_required", "send_tracking_code")
 
     if kind in {"claim", "reclamo"}:
-        pin = (request.args.get("pin") or "").strip()
+        pin = _tracking_pin()
         if not pin:
             return _tracking_error("pin requerido.", 400, "tracking_pin_required", "send_pin")
         ticket = _find_claim_by_public_code(code, pin)
@@ -340,7 +506,7 @@ def tracking_experience():
     order = resolve_order_by_code(code)
     if not order:
         return _tracking_error("Pedido no encontrado.", 404, "order_not_found", "check_order_code")
-    token = (request.args.get("token") or request.args.get("access_token") or "").strip()
+    token = _tracking_access_token()
     access_granted, access_reason = validate_order_tracking_access(order, token)
     if not access_granted:
         return _tracking_error(
@@ -354,6 +520,18 @@ def tracking_experience():
 
 
 @tracking_ui_bp.route('/api/public/tracking/claims/<int:ticket_id>/messages', methods=['POST'])
+@limiter.limit(
+    _tracking_subject_failure_rate_limit,
+    key_func=_tracking_failure_subject_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+@limiter.limit(
+    _tracking_failure_rate_limit,
+    key_func=_tracking_failure_rate_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
 def send_public_claim_tracking_message(ticket_id):
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
@@ -366,7 +544,7 @@ def send_public_claim_tracking_message(ticket_id):
         or ""
     )
     mensaje = str(mensaje).strip()
-    pin = (data.get("pin") or request.args.get("pin") or "").strip()
+    pin = _tracking_pin(data)
 
     if not mensaje:
         return _tracking_error(
@@ -475,6 +653,18 @@ def tracking_page(nro_pedido):
     )
 
 @tracking_ui_bp.route('/tracking/claim/<nro_ticket>')
+@limiter.limit(
+    _tracking_subject_failure_rate_limit,
+    key_func=_tracking_failure_subject_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+@limiter.limit(
+    _tracking_failure_rate_limit,
+    key_func=_tracking_failure_rate_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
 def tracking_claim(nro_ticket):
     # 1. Fetch Ticket
     ticket = _find_claim_by_public_code(nro_ticket)
@@ -641,11 +831,23 @@ def send_message():
     })
 
 @tracking_ui_bp.route('/tracking/api/send-claim-message', methods=['POST'])
+@limiter.limit(
+    _tracking_subject_failure_rate_limit,
+    key_func=_tracking_failure_subject_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+@limiter.limit(
+    _tracking_failure_rate_limit,
+    key_func=_tracking_failure_rate_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
 def send_claim_message():
     data = request.json or {}
     raw_ticket = str(data.get('nro_ticket') or '').strip()
     mensaje = str(data.get('mensaje') or '').strip()
-    pin = (data.get('pin') or request.args.get('pin') or '').strip()
+    pin = _tracking_pin(data)
 
     if not raw_ticket or not mensaje:
         return jsonify({'error': 'Faltan datos'}), 400

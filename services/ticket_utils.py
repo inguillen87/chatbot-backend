@@ -49,7 +49,9 @@ def build_claim_tracking_url(
 
     pin_value = str(consulta_pin or "").strip()
     if pin_value:
-        path = f"{path}?pin={quote(pin_value, safe='')}"
+        # URL fragments never reach CDN/proxy access logs. The SPA consumes the
+        # PIN once, sends it as X-Tracking-Pin and immediately clears the hash.
+        path = f"{path}#pin={quote(pin_value, safe='')}"
 
     if not absolute:
         return path

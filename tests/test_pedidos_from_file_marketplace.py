@@ -350,7 +350,7 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert tracking_action["type"] == "link"
     assert tracking_action["reference"] == f"pedido:{payload['pedido_id']}"
     assert tracking_action["tracking_code"] == f"pc-{payload['pedido_id']}"
-    assert tracking_action["href"].startswith(f"/tracking/order/pc-{payload['pedido_id']}?tenant_slug={tenant.slug}&token=")
+    assert tracking_action["href"].startswith(f"/tracking/order/pc-{payload['pedido_id']}?tenant_slug={tenant.slug}#token=")
     whatsapp_action = next(action for action in payload["next_actions"] if action.get("id") == "whatsapp_handoff")
     assert whatsapp_action["type"] == "link"
     assert whatsapp_action["href"].startswith("https://wa.me/?text=")
@@ -360,7 +360,8 @@ def test_marketplace_order_note_upload_creates_assisted_request_contract(client,
     assert payload["public_follow_up"]["tracking"]["access"] == "signed_link"
     assert len(payload["public_follow_up"]["tracking"]["token"]) >= 24
     assert f"token={payload['public_follow_up']['tracking']['token']}" in payload["public_follow_up"]["tracking"]["path"]
-    assert f"token={payload['public_follow_up']['tracking']['token']}" in payload["public_follow_up"]["tracking"]["api_endpoint"]
+    assert "token=" not in payload["public_follow_up"]["tracking"]["api_endpoint"]
+    assert payload["public_follow_up"]["tracking"]["credential_transport"] == "x-tracking-token-header"
     assert payload["public_follow_up"]["tracking"]["path"] == tracking_action["href"]
 
     pedido = PedidoConversacional.query.get(payload["pedido_id"])
@@ -846,7 +847,7 @@ def test_marketplace_order_note_upload_is_manageable_from_tenant_crm(client, app
     detail_tracking = detail_payload["assisted_request"]["public_follow_up"]["tracking"]
     assert detail_tracking["token_required"] is True
     assert detail_tracking["access"] == "signed_link"
-    assert detail_tracking["path"].startswith(f"/tracking/order/pc-{pedido_id}?tenant_slug={tenant.slug}&token=")
+    assert detail_tracking["path"].startswith(f"/tracking/order/pc-{pedido_id}?tenant_slug={tenant.slug}#token=")
     assert f"token={detail_tracking['token']}" in detail_tracking["path"]
     assert detail_payload["assisted_request"]["intake_experience"]["anonymous_intake"] is True
     assert detail_payload["assisted_request"]["intake_experience"]["display_name"] == "Vega Marketplace IA"

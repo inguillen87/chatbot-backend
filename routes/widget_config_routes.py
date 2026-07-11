@@ -7,6 +7,7 @@ from services.plan_access import (
     plan_allows_full_integrations,
 )
 from services.widget_config_service import WidgetConfigService
+from utils.roles import is_authorized_superadmin_user
 
 widget_config_bp = Blueprint('widget_config_bp', __name__)
 
@@ -18,7 +19,7 @@ def _check_auth(current_user, tenant):
     """
     Checks if current_user has access to manage this tenant.
     """
-    if current_user.rol in ("platform_admin", "super_admin"):
+    if is_authorized_superadmin_user(current_user):
         return True
 
     # Direct Tenant ID match

@@ -1,3 +1,4 @@
+import os
 import uuid
 from functools import wraps
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -10,12 +11,18 @@ from flask import current_app, g, jsonify, make_response, request
 from flask_login import current_user
 import jwt
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
 from models import Rubro, TenantProfile, User
 import secrets
 from services.demo_registry import demo_rubro_for_token
-from utils.roles import ROLE_EMPLEADO, canonical_role
+from utils.roles import (
+    ROLE_EMPLEADO,
+    canonical_role,
+    is_authorized_superadmin_user,
+    is_super_admin_role,
+)
 from utils.user_query import _safe_user_query
 
 
@@ -68,6 +75,13 @@ _WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {
 
 _DEMO_TOKEN_WARNED: Set[str] = set()
 
+_DEMO_ALLOWED_PREFIXES: Tuple[str, ...] = (
+    "/api/demo",
+    "/api/public",
+    "/api/encuestas/public",
+    "/api/surveys/public",
+)
+
 
 def _normalize_path(path: Optional[str]) -> str:
     """Return a normalized absolute path used for widget access checks."""
@@ -116,6 +130,74 @@ def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
         return True
 
     return False
+
+
+def _demo_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
+    """Restrict demo JWTs to guided public/widget experiences."""
+
+    normalized_path = _normalize_path(path)
+    if _widget_session_allowed(normalized_path, method):
+        return True
+    return any(normalized_path.startswith(prefix) for prefix in _DEMO_ALLOWED_PREFIXES)
+
+
+def _truthy_env(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _clerk_auth_enforced() -> bool:
+    if _truthy_env(os.getenv("CLERK_DISABLED")):
+        return False
+    return _truthy_env(os.getenv("CLERK_ENABLED")) or bool(
+        os.getenv("CLERK_ISSUER") or os.getenv("CLERK_JWKS_URL")
+    )
+
+
+def _auth_metadata(user: Optional[User]) -> tuple[dict, dict]:
+    metadata = (
+        user.accesibilidad
+        if user is not None and isinstance(getattr(user, "accesibilidad", None), dict)
+        else {}
+    )
+    auth_meta = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
+    return metadata, auth_meta
+
+
+def auth_session_version(user: Optional[User]) -> int:
+    _metadata, auth_meta = _auth_metadata(user)
+    try:
+        return max(1, int(auth_meta.get("session_version") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def bump_auth_session_version(user: User) -> int:
+    metadata, auth_meta = _auth_metadata(user)
+    next_version = auth_session_version(user) + 1
+    auth_meta["session_version"] = next_version
+    metadata["auth"] = auth_meta
+    user.accesibilidad = metadata
+    flag_modified(user, "accesibilidad")
+    return next_version
+
+
+def is_demo_user_account(user: Optional[User]) -> bool:
+    if user is None:
+        return False
+    _metadata, auth_meta = _auth_metadata(user)
+    demo_meta = auth_meta.get("demo") if isinstance(auth_meta.get("demo"), dict) else {}
+    email = str(getattr(user, "email", "") or "").strip().lower()
+    return bool(demo_meta.get("restricted")) or (
+        email.startswith(("demo.", "demo+")) and email.endswith("@chatboc.ar")
+    )
+
+
+def is_clerk_managed_user(user: Optional[User]) -> bool:
+    if user is None:
+        return False
+    _metadata, auth_meta = _auth_metadata(user)
+    clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
+    return bool(auth_meta.get("provider") == "clerk" or clerk_meta.get("user_id"))
 
 
 def _normalize_alias_value(value: Optional[object]) -> Optional[str]:
@@ -593,18 +675,43 @@ def obtener_entity_token() -> Optional[str]:
 
     return None
 
-def generar_token(user_id, rol, tipo_chat, municipio_id, pyme_id):
+def generar_token(
+    user_id,
+    rol,
+    tipo_chat,
+    municipio_id,
+    pyme_id,
+    *,
+    expires_in: Optional[timedelta] = None,
+    extra_claims: Optional[Dict[str, Any]] = None,
+):
     """Genera un token de autenticación para un usuario."""
+    now = datetime.now(timezone.utc)
     payload = {
-        'exp': datetime.now(timezone.utc) + timedelta(days=1),
-        'iat': datetime.now(timezone.utc),
+        'exp': now + (expires_in or timedelta(days=1)),
+        'iat': now,
         'user_id': user_id,
         'rol': rol,
         'tipo_chat': tipo_chat,
         'municipio_id': municipio_id,
         'pyme_id': pyme_id,
     }
+    if extra_claims:
+        payload.update(extra_claims)
+        payload['user_id'] = user_id
+        payload['rol'] = rol
+        payload['exp'] = now + (expires_in or timedelta(days=1))
+        payload['iat'] = now
     return jwt.encode(payload, current_app.config['SECRET_KEY'], algorithm="HS256")
+
+
+def is_user_auth_disabled(user: Optional[User]) -> bool:
+    if user is None:
+        return False
+    metadata = user.accesibilidad if isinstance(getattr(user, "accesibilidad", None), dict) else {}
+    auth_meta = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
+    clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
+    return bool(auth_meta.get("disabled") or clerk_meta.get("disabled"))
 
 def user_from_token(token: str) -> Optional[User]:
     """
@@ -621,6 +728,51 @@ def user_from_token(token: str) -> Optional[User]:
             current_app.logger.warning(f"[user_from_token] No user_id in payload: {payload}")
             return None
         user = User.query.get(user_id)
+        if is_user_auth_disabled(user):
+            current_app.logger.warning("[user_from_token] Disabled user rejected: %s", user_id)
+            return None
+        if not user:
+            return None
+
+        session_kind = str(payload.get("session_kind") or "").strip().lower()
+        auth_provider = str(payload.get("auth_provider") or "").strip().lower()
+
+        if is_clerk_managed_user(user) and auth_provider != "clerk":
+            current_app.logger.warning("[user_from_token] Legacy token rejected for Clerk user: %s", user_id)
+            return None
+
+        if is_demo_user_account(user):
+            if not payload.get("demo_mode") or session_kind != "demo" or payload.get("rol") != "demo":
+                current_app.logger.warning("[user_from_token] Non-demo token rejected for demo user: %s", user_id)
+                return None
+        elif payload.get("demo_mode") or session_kind == "demo":
+            current_app.logger.warning("[user_from_token] Demo token rejected for non-demo user: %s", user_id)
+            return None
+
+        if auth_provider == "clerk" or session_kind == "clerk":
+            sid = str(payload.get("clerk_sid") or payload.get("sid") or "").strip()
+            jti = str(payload.get("jti") or "").strip()
+            try:
+                token_version = int(payload.get("sv"))
+            except (TypeError, ValueError):
+                token_version = 0
+            if (
+                auth_provider != "clerk"
+                or session_kind != "clerk"
+                or not sid
+                or not jti
+                or token_version != auth_session_version(user)
+            ):
+                current_app.logger.warning("[user_from_token] Invalid or revoked Clerk session: %s", user_id)
+                return None
+
+        if is_super_admin_role(getattr(user, "rol", None)):
+            if not is_authorized_superadmin_user(user):
+                current_app.logger.warning("[user_from_token] Unauthorized superadmin rejected: %s", user_id)
+                return None
+            if auth_provider != "clerk":
+                current_app.logger.warning("[user_from_token] Legacy superadmin session rejected: %s", user_id)
+                return None
         current_app.logger.debug("[user_from_token] Found user: %s", user.email if user else "None")
         return user
     except jwt.ExpiredSignatureError as e:
@@ -1072,6 +1224,20 @@ def token_requerido(f):
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+            if is_demo_user_account(current_user):
+                return _auth_error(
+                    "La sesion demo solo puede usarse en la experiencia publica",
+                    403,
+                    "demo_scope_denied",
+                )
+            if is_clerk_managed_user(current_user) or is_super_admin_role(getattr(current_user, "rol", None)):
+                token_user = user_from_token(raw_token) if raw_token else None
+                if not token_user or token_user.id != current_user.id:
+                    return _auth_error(
+                        "El superadmin debe iniciar sesion con Clerk",
+                        403,
+                        "clerk_required",
+                    )
             g.auth_token = raw_token
             g.current_user = current_user
             g.owner_user = _resolve_owner_user(current_user)
@@ -1113,6 +1279,13 @@ def token_requerido(f):
 
         if token_payload.get("session_kind") == "widget" and not _widget_session_allowed(request.path, request.method):
             return _auth_error("Token inválido o sesión expirada", 403)
+
+        if token_payload.get("session_kind") == "demo" and not _demo_session_allowed(request.path, request.method):
+            return _auth_error(
+                "La sesion demo no tiene acceso a este modulo",
+                403,
+                "demo_scope_denied",
+            )
 
         g.token_payload = dict(token_payload) if token_payload else {}
         g.auth_token = token

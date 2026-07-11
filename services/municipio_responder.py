@@ -106,6 +106,31 @@ from services.feature_flag_service import get_feature_toggle
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 
+_LIVE_CHAT_CTA_ACTIONS = {
+    "open_live_chat",
+    "queue_offline_message",
+    "request_agent",
+}
+
+
+def _resolve_live_chat_cta_action(payload: dict[str, Any], question: Any = None) -> Optional[str]:
+    candidates = [
+        payload.get("action"),
+        payload.get("action_id"),
+        payload.get("id_accion"),
+        payload.get("id"),
+    ]
+    cta = payload.get("cta")
+    if isinstance(cta, dict):
+        candidates.extend((cta.get("action"), cta.get("id")))
+    candidates.append(question)
+
+    for candidate in candidates:
+        normalized = str(candidate or "").strip().lower()
+        if normalized in _LIVE_CHAT_CTA_ACTIONS:
+            return normalized
+    return None
+
 LOCATION_KEYWORD_TOKENS = {
     "barrio": {"barrio", "b°", "bº"},
     "distrito": {"distrito", "zona", "localidad", "ciudad"},
@@ -9534,6 +9559,11 @@ def responder_municipio(
         pregunta_str = ""
         received_payload["pregunta"] = ""
 
+    live_chat_cta_action = _resolve_live_chat_cta_action(
+        {**received_payload, **kwargs},
+        pregunta_str,
+    )
+
     placeholder_tokens = {
         "[ubicación compartida por el usuario]",
         "[ubicacion compartida por el usuario]",
@@ -9623,7 +9653,11 @@ def responder_municipio(
         ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name,
     }
 
-    if normalized_question and context_state_token not in selection_states:
+    if (
+        normalized_question
+        and context_state_token not in selection_states
+        and not live_chat_cta_action
+    ):
         owner_cache_key = None
         if owner_user is not None:
             owner_cache_key = getattr(owner_user, "id", None) or getattr(owner_user, "municipio_id", None)
@@ -9728,21 +9762,81 @@ def responder_municipio(
         "municipio_id": owner_user_municipio_id_str,
         "chat_session_uuid": kwargs.get("chat_session_uuid"),
         "chat_db_context_data": chat_db_context_live_data, # Usar el dict vivo
-        "intencion": kwargs.get("intencion"),
+        "intencion": "hablar_con_agente" if live_chat_cta_action else kwargs.get("intencion"),
         "ubicacion_usuario": normalized_location or received_payload.get("ubicacion_usuario"),
         "es_foto": received_payload.get("es_foto", False),
         "foto_url": received_payload.get("foto_url"),
         "es_ubicacion": received_payload.get("es_ubicacion", False),
         "es_archivo": received_payload.get("es_archivo", False),
-        "action": received_payload.get("action"),
+        "action": live_chat_cta_action or received_payload.get("action"),
         "datos_interpretados_archivo": kwargs.get("datos_interpretados_archivo"),
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "location_link_info": location_link_info,
         "demo_metadata": demo_metadata if isinstance(demo_metadata, dict) else None,
+        "tenant_profile": tenant_profile,
+        "target_entity_type": "municipio",
     }
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    if live_chat_cta_action:
+        from services.actions.municipio_actions import DerivarHumanoActionHandler
+
+        cta_message = str(
+            received_payload.get("mensaje")
+            or received_payload.get("message")
+            or received_payload.get("texto")
+            or pregunta_str
+            or ""
+        ).strip()
+        if cta_message.lower() in _LIVE_CHAT_CTA_ACTIONS or not cta_message:
+            cta_message = "Solicitud de atencion humana"
+        context["pregunta_actual_usuario"] = cta_message
+        handler_result = DerivarHumanoActionHandler(context).execute(
+            {
+                "motivo_derivacion": received_payload.get("motivo_derivacion")
+                or received_payload.get("reason")
+                or live_chat_cta_action,
+                "cta_action": live_chat_cta_action,
+            }
+        )
+        data = handler_result.get("data", {}) if isinstance(handler_result, dict) else {}
+        ticket_id = data.get("ticket_id") if isinstance(data, dict) else None
+        if ticket_id:
+            contexto_municipio_actual["live_chat_ticket_id"] = ticket_id
+            contexto_municipio_actual["live_chat_estado"] = data.get("status")
+            contexto_municipio_actual["live_chat_socket_room"] = data.get("socket_room")
+            contexto_municipio_actual["live_chat_cta_action"] = live_chat_cta_action
+        if chat_db_context:
+            chat_db_context.context_data[CONTEXTO_MUNICIPIO] = serializar_enum(
+                contexto_municipio_actual
+            )
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(
+            {
+                "success": bool(handler_result.get("success"))
+                if isinstance(handler_result, dict)
+                else False,
+                "message_body": (
+                    handler_result.get("message_to_user")
+                    if isinstance(handler_result, dict)
+                    else None
+                )
+                or "No pudimos iniciar la atencion con un agente.",
+                "options_list": handler_result.get("options_list", [])
+                if isinstance(handler_result, dict)
+                else [],
+                "message_type": handler_result.get("message_type", "text")
+                if isinstance(handler_result, dict)
+                else "text",
+                "fuente": f"live_chat_cta_{live_chat_cta_action}",
+                "data": data,
+                "contexto_actualizado": {
+                    CONTEXTO_MUNICIPIO: serializar_enum(contexto_municipio_actual)
+                },
+            }
+        )
 
     urgency_reason = detect_urgency_reason(pregunta_str or "")
     if (

@@ -7,7 +7,7 @@ import jwt
 
 from app import create_app, db
 from config import TestConfig
-from models import MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
+from models import ChatSessionContext, MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
 from services.live_chat_access import (
     LIVE_CHAT_TOKEN_AUDIENCE,
     LIVE_CHAT_TOKEN_ISSUER,
@@ -24,7 +24,19 @@ from services.pymes import (
     _resolve_pyme_chat_persistence_ticket_id,
 )
 from services.ticket_service import servicio_tickets
-from socket_service import handle_send_chat_message, on_join, on_new_chat, on_subscribe_ticket_updates
+from socket_service import (
+    disconnect_clerk_session_sockets,
+    emit_ticket_assignment_changed,
+    emit_ticket_status_changed,
+    handle_send_chat_message,
+    on_connect,
+    on_join,
+    on_location,
+    on_new_chat,
+    on_subscribe_ticket_updates,
+    socketio,
+)
+from utils.auth_helpers import bump_auth_session_version
 
 
 class LiveChatRoomAccessTest(unittest.TestCase):
@@ -60,6 +72,169 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
+
+    def _revoked_clerk_token(self):
+        self.admin.accesibilidad = {
+            "auth": {
+                "provider": "clerk",
+                "session_version": 1,
+                "clerk": {"user_id": "user_socket_admin"},
+            }
+        }
+        db.session.commit()
+        now = datetime.now(timezone.utc)
+        token = jwt.encode(
+            {
+                "user_id": self.admin.id,
+                "rol": self.admin.rol,
+                "auth_provider": "clerk",
+                "session_kind": "clerk",
+                "sid": "sess_socket_revoked",
+                "clerk_sid": "sess_socket_revoked",
+                "jti": "jti_socket_revoked",
+                "sv": 1,
+                "iat": now,
+                "exp": now + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        bump_auth_session_version(self.admin)
+        db.session.commit()
+        return token
+
+    def test_revoked_clerk_session_cannot_connect_socket(self):
+        token = self._revoked_clerk_token()
+
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="revoked-connect")
+        ), patch("socket_service.join_room") as join_room:
+            result = on_connect({"token": token})
+
+        self.assertFalse(result)
+        join_room.assert_not_called()
+
+    def test_revoked_clerk_session_cannot_subscribe_socket(self):
+        token = self._revoked_clerk_token()
+
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="revoked-subscribe")
+        ), patch("socket_service.join_room") as join_room, patch(
+            "socket_service.emit"
+        ) as emit:
+            on_subscribe_ticket_updates({"token": token})
+
+        join_room.assert_not_called()
+        emit.assert_called_once_with("subscription_error", {"error": "invalid_token"})
+
+    def test_revoked_clerk_session_cannot_send_socket_message(self):
+        token = self._revoked_clerk_token()
+
+        with patch(
+            "socket_service.servicio_tickets.crear_comentario"
+        ) as create_comment, patch("socket_service.emit") as emit:
+            handle_send_chat_message(
+                {
+                    "token": token,
+                    "room": build_ticket_room("municipio", self.ticket.id),
+                    "ticket_id": self.ticket.id,
+                    "ticket_type": "municipio",
+                    "message": "No debe persistirse",
+                }
+            )
+
+        create_comment.assert_not_called()
+        emit.assert_called_once_with("chat_error", {"error": "invalid_token"})
+
+    def test_authenticated_clerk_socket_joins_session_and_user_rooms(self):
+        self.admin.accesibilidad = {
+            "auth": {
+                "provider": "clerk",
+                "session_version": 1,
+                "clerk": {"user_id": "user_socket_identity"},
+            }
+        }
+        db.session.commit()
+        now = datetime.now(timezone.utc)
+        token = jwt.encode(
+            {
+                "user_id": self.admin.id,
+                "rol": self.admin.rol,
+                "auth_provider": "clerk",
+                "session_kind": "clerk",
+                "sid": "sess_socket_identity",
+                "clerk_sid": "sess_socket_identity",
+                "clerk_user_id": "user_socket_identity",
+                "jti": "jti_socket_identity",
+                "sv": 1,
+                "iat": now,
+                "exp": now + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="active-clerk-connect")
+        ), patch("socket_service.join_room") as join_room:
+            result = on_connect({"token": token})
+
+        self.assertIsNone(result)
+        joined_rooms = {item.args[0] for item in join_room.call_args_list}
+        self.assertIn("clerk_session:sess_socket_identity", joined_rooms)
+        self.assertIn("clerk_user:user_socket_identity", joined_rooms)
+
+    def test_terminal_clerk_event_disconnects_each_bound_socket_once(self):
+        participants = {
+            "clerk_session:sess_disconnect": [("socket-one", "engine-one"), ("socket-two", "engine-two")],
+            "clerk_user:user_disconnect": [("socket-one", "engine-one")],
+        }
+
+        with patch.object(
+            socketio.server.manager,
+            "get_participants",
+            side_effect=lambda namespace, room: participants.get(room, []),
+        ), patch.object(socketio.server, "disconnect") as disconnect:
+            count = disconnect_clerk_session_sockets(
+                clerk_session_id="sess_disconnect",
+                clerk_user_id="user_disconnect",
+            )
+
+        self.assertEqual(count, 2)
+        self.assertEqual({item.args[0] for item in disconnect.call_args_list}, {"socket-one", "socket-two"})
+        self.assertTrue(all(item.kwargs == {"namespace": "/"} for item in disconnect.call_args_list))
+
+    def test_location_requires_previously_authorized_socket_room(self):
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="unscoped-location")
+        ), patch.object(
+            socketio.server, "rooms",
+            return_value=["unscoped-location", "encuesta:junin:consulta"],
+        ), patch("services.municipio_responder.handle_location_update") as handle_location, patch(
+            "socket_service.socketio.emit"
+        ) as socket_emit, patch("socket_service.emit") as emit:
+            on_location({"lat": -34.6, "lon": -58.4})
+
+        handle_location.assert_not_called()
+        socket_emit.assert_not_called()
+        emit.assert_called_once_with("location_error", {"error": "authorized_room_required"})
+
+    def test_location_emits_only_to_joined_high_entropy_session_room(self):
+        room = "e193f1d7-261d-43b7-a2a8-54b62e559f45"
+        response = {"respuesta": "Ubicacion actualizada"}
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="scoped-location")
+        ), patch.object(
+            socketio.server, "rooms",
+            return_value=["scoped-location", room],
+        ), patch(
+            "services.municipio_responder.handle_location_update",
+            return_value=response,
+        ) as handle_location, patch("socket_service.socketio.emit") as socket_emit:
+            on_location({"lat": -34.6, "lon": -58.4, "room": room})
+
+        handle_location.assert_called_once()
+        socket_emit.assert_called_once_with("message", response, room=room)
 
     def test_unsigned_ticket_room_join_is_rejected(self):
         room = build_ticket_room("municipio", self.ticket.id)
@@ -130,12 +305,22 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             {"error": "invalid_access_token", "room": room},
         )
 
-    def test_public_survey_room_remains_joinable(self):
+    def test_tenant_scoped_public_survey_room_remains_joinable(self):
+        with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
+            on_join({"room": "encuesta:junin:consulta-barrial"})
+
+        join_room.assert_called_once_with("encuesta:junin:consulta-barrial")
+        emit.assert_not_called()
+
+    def test_legacy_unscoped_survey_room_is_rejected(self):
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
             on_join({"room": "encuesta_consulta-barrial"})
 
-        join_room.assert_called_once_with("encuesta_consulta-barrial")
-        emit.assert_not_called()
+        join_room.assert_not_called()
+        emit.assert_called_once_with(
+            "join_error",
+            {"error": "room_not_joinable", "room": "encuesta_consulta-barrial"},
+        )
 
     def test_anonymous_tenant_room_join_is_rejected(self):
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
@@ -149,11 +334,24 @@ class LiveChatRoomAccessTest(unittest.TestCase):
 
     def test_high_entropy_web_session_room_remains_joinable(self):
         room = "e193f1d7-261d-43b7-a2a8-54b62e559f45"
+        db.session.add(ChatSessionContext(chat_session_id=room, context_data={}))
+        db.session.commit()
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
             on_join({"room": room, "channel": "web"})
 
         join_room.assert_called_once_with(room)
         emit.assert_not_called()
+
+    def test_unpersisted_web_session_room_is_rejected(self):
+        room = "bd4f90bf-dc81-4ad0-af64-aa70c08472bf"
+        with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
+            on_join({"room": room, "channel": "web"})
+
+        join_room.assert_not_called()
+        emit.assert_called_once_with(
+            "join_error",
+            {"error": "room_not_joinable", "room": room},
+        )
 
     def test_closed_ticket_room_cannot_be_rejoined(self):
         room = build_ticket_room("municipio", self.ticket.id)
@@ -248,6 +446,57 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         public_chat = next(item for item in public_events if item.args[0] == "new_chat_message")
         self.assertNotIn("user_id", public_chat.args[1]["message"])
         self.assertNotIn("anon_id", public_chat.args[1]["message"])
+
+    def test_ticket_status_event_reaches_signed_room_with_sanitized_payload(self):
+        room = build_ticket_room("municipio", self.ticket.id)
+        event = {
+            "tenant_type": "municipio",
+            "tipo": "municipio",
+            "municipio_id": 910,
+            "ticket_id": self.ticket.id,
+            "estado": "cerrado",
+            "previous_status": "en_proceso",
+            "changed_at": "2026-07-11T12:00:00+00:00",
+            "internal_note": "never public",
+        }
+
+        with patch("socket_service.socketio.emit") as socket_emit:
+            emit_ticket_status_changed(event)
+
+        public_status = next(
+            item
+            for item in socket_emit.call_args_list
+            if item.args[0] == "ticket.status.changed" and item.kwargs.get("room") == room
+        )
+        self.assertEqual(public_status.args[1]["estado"], "cerrado")
+        self.assertEqual(public_status.args[1]["previous_status"], "en_proceso")
+        self.assertNotIn("internal_note", public_status.args[1])
+        self.assertNotIn("municipio_id", public_status.args[1])
+
+    def test_ticket_assignment_event_reaches_signed_room_without_agent_identity(self):
+        room = build_ticket_room("municipio", self.ticket.id)
+        event = {
+            "tenant_type": "municipio",
+            "tipo": "municipio",
+            "municipio_id": 910,
+            "ticket_id": self.ticket.id,
+            "estado": "en_proceso",
+            "assignment_state": "assigned",
+            "assignee_name": "Private Agent",
+            "assignee_email": "private-agent@example.com",
+        }
+
+        with patch("socket_service.socketio.emit") as socket_emit:
+            emit_ticket_assignment_changed(event)
+
+        public_assignment = next(
+            item
+            for item in socket_emit.call_args_list
+            if item.args[0] == "ticket.assignment.changed" and item.kwargs.get("room") == room
+        )
+        self.assertEqual(public_assignment.args[1]["assignment_state"], "assigned")
+        self.assertNotIn("assignee_name", public_assignment.args[1])
+        self.assertNotIn("assignee_email", public_assignment.args[1])
 
     def test_widget_cannot_write_foreign_ticket_without_signed_ticket_token(self):
         self.admin.entity_token = "attacker-tenant-entity-token"

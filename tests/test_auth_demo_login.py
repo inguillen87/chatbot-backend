@@ -58,7 +58,37 @@ class AuthDemoLoginTest(unittest.TestCase):
 
         decoded = jwt.decode(payload["token"], self.app.config["SECRET_KEY"], algorithms=["HS256"])
         self.assertTrue(decoded.get("demo_mode"))
+        self.assertEqual(decoded.get("session_kind"), "demo")
+        self.assertEqual(decoded.get("rol"), "demo")
         self.assertEqual(decoded.get("tenant_slug"), payload.get("tenant_slug"))
+
+    def test_demo_account_cannot_use_legacy_or_admin_login(self):
+        demo = self.client.post("/auth/demo", json={"rubro": "municipio"}).get_json()
+
+        legacy = self.client.post(
+            "/auth/login",
+            json={"email": demo["email"], "password": "demo"},
+        )
+        admin = self.client.post(
+            "/auth/admin/login",
+            json={"email": demo["email"], "password": "demo"},
+        )
+
+        self.assertEqual(legacy.status_code, 403)
+        self.assertEqual(legacy.get_json().get("reason_code"), "demo_login_required")
+        self.assertEqual(admin.status_code, 403)
+        self.assertEqual(admin.get_json().get("reason_code"), "demo_scope_denied")
+
+    def test_demo_token_cannot_open_admin_dashboard(self):
+        demo = self.client.post("/auth/demo", json={"rubro": "municipio"}).get_json()
+
+        response = self.client.get(
+            "/auth/me/dashboard",
+            headers={"Authorization": f"Bearer {demo['token']}"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json().get("reason_code"), "demo_scope_denied")
 
     def test_demo_login_rejects_unknown_rubro(self):
         resp = self.client.post("/auth/demo", json={"rubro": "no-existe-xyz"})
@@ -88,17 +118,17 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
-    def test_demo_catalog_returns_superadmin_and_languages(self):
+    def test_demo_catalog_returns_languages_without_privileged_credentials(self):
         resp = self.client.get('/auth/demo/catalog')
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
-        self.assertIn('super_admin_demo', payload)
+        self.assertNotIn('super_admin_demo', payload)
+        self.assertNotIn('password', str(payload).lower())
         self.assertTrue(payload.get('demo_login_enabled'))
         self.assertTrue(payload.get('request_id'))
         self.assertEqual(payload.get('demo_login_endpoint'), '/auth/demo')
         self.assertEqual(payload.get('demo_login_methods'), ['POST'])
         self.assertTrue((payload.get('quick_login_payload') or {}).get('tenant_slug'))
-        self.assertEqual(payload['super_admin_demo']['role'], 'super_admin')
         languages = payload.get('supported_languages') or []
         codes = {item.get('code') for item in languages}
         self.assertTrue({'es', 'en', 'pt'}.issubset(codes))
@@ -107,14 +137,13 @@ class AuthDemoLoginTest(unittest.TestCase):
         self.assertTrue(all(item.get('enabled') is True for item in tenant_demos))
         self.assertTrue(all(item.get('login_endpoint') == '/auth/demo' for item in tenant_demos))
 
-    def test_demo_catalog_can_bootstrap_superadmin(self):
+    def test_demo_catalog_never_bootstraps_superadmin_from_public_query(self):
         resp = self.client.get('/auth/demo/catalog?ensure_users=true')
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
-        email = payload['super_admin_demo']['email']
-        user = User.query.filter_by(email=email).first()
-        self.assertIsNotNone(user)
-        self.assertIn(user.rol, {'super_admin', 'superadmin'})
+        self.assertNotIn('super_admin_demo', payload)
+        privileged = User.query.filter(User.rol.in_(['super_admin', 'superadmin', 'platform_admin'])).all()
+        self.assertEqual(privileged, [])
 
 
 

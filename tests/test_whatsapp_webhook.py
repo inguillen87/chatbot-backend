@@ -3514,11 +3514,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(pre_message["template_name"], "chatboc_gov_claim_created_v2")
         self.assertEqual(
             pre_message["variables"],
-            {"1": "M-12345", "2": "chat/12345?pin=654321"},
+            {"1": "M-12345", "2": "chat/12345#pin=654321"},
         )
         self.assertEqual(pre_message["content_variables"], pre_message["variables"])
         self.assertEqual(pre_message["fallback"]["mode"], "plain_text")
-        self.assertIn("https://example.com/tracking/claim/12345?pin=654321", pre_message["fallback"]["body"])
+        self.assertIn("https://example.com/tracking/claim/12345#pin=654321", pre_message["fallback"]["body"])
         self.assertEqual(
             pre_message["template_contract"]["receipt_contract"]["kind"],
             "municipal_claim_receipt",

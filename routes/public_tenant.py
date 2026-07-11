@@ -28,6 +28,7 @@ from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
 from services.commerce_contracts import build_checkout_experience_payload
 from services.marketplace_analytics import track_marketplace_event
+from utils.roles import is_authorized_superadmin_user
 from services.public_market_catalog import (
     build_public_market_catalog_contract,
     public_market_api_contract,
@@ -537,8 +538,6 @@ def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: i
             code = getattr(ticket, "nro_ticket", None) or ticket.id
             pin = getattr(ticket, "consulta_pin", None)
             detail = f"/api/public/tracking/experience?kind=claim&code={code_prefix}-{code}"
-            if pin:
-                detail = f"{detail}&pin={pin}"
             items.append(
                 _public_history_item(
                     item_id=f"{model.__tablename__}_{ticket.id}",
@@ -548,6 +547,10 @@ def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: i
                     status=getattr(ticket, "estado", None),
                     created_at=getattr(ticket, "fecha", None),
                     detail_endpoint=detail,
+                    extra={
+                        "pin": str(pin),
+                        "credential_transport": "x-tracking-pin-header",
+                    } if pin else None,
                 )
             )
 
@@ -1365,7 +1368,7 @@ def tenant_config_api(current_user):
     # Allow if user is admin/owner of this tenant
     # Using existing helper from admin_tenant if available, or simple logic
     authorized = False
-    if current_user.rol in ('super_admin', 'platform_admin'):
+    if is_authorized_superadmin_user(current_user):
         authorized = True
     elif current_user.tenant_id == tenant.id:
         authorized = True

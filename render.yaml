@@ -44,12 +44,28 @@ services:
         sync: false
       - key: CLERK_JWKS_URL
         sync: false
+      - key: CLERK_WEBHOOK_SIGNING_SECRET
+        sync: false
       - key: CLERK_WEBHOOK_SECRET
         sync: false
+      - key: CLERK_AUTHORIZED_PARTIES
+        value: https://chatboc.ar,https://www.chatboc.ar
+      - key: CLERK_REQUIRE_AZP
+        value: "true"
+      - key: CHATBOC_TERMS_VERSION
+        value: "2026-07-11"
       - key: CLERK_SOCIAL_PROVIDERS
         sync: false
       - key: CLERK_SUPERADMIN_EMAILS
         sync: false
+      - key: LIVE_CHAT_ROOM_TOKEN_TTL_SECONDS
+        value: "900"
+      - key: TRACKING_FAILURE_RATE_LIMIT_ATTEMPTS
+        value: "5"
+      - key: TRACKING_SUBJECT_FAILURE_RATE_LIMIT_ATTEMPTS
+        value: "20"
+      - key: TRACKING_FAILURE_RATE_LIMIT_WINDOW_SECONDS
+        value: "60"
       - key: AUTH_EMAIL_VERIFY_BASE_URL
         value: https://www.chatboc.ar
       - key: AUTH_EMAIL_FROM

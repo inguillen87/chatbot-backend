@@ -279,7 +279,7 @@ def test_channel_activation_contract_surfaces_clerk_identity_readiness(client, m
     identity = by_id["identity_auth"]
     assert identity["status"] == "pending"
     assert identity["reason_code"] == "clerk_webhook_recommended"
-    assert "CLERK_WEBHOOK_SECRET" in identity["progress_hint"]
+    assert "CLERK_WEBHOOK_SIGNING_SECRET" in identity["progress_hint"]
     assert "pk_live_visible_key" not in str(payload)
 
     monkeypatch.setenv("CLERK_WEBHOOK_SECRET", "whsec_secret_value")

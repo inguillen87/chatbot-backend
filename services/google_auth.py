@@ -1,7 +1,6 @@
 import logging
 import uuid
 import os
-from datetime import datetime
 try:  # pragma: no cover - puede faltar google-auth en tests
     from google.oauth2 import id_token
     from google.auth.transport import requests as google_requests
@@ -73,8 +72,8 @@ def login_o_crear_usuario(token_id: str, *, rol: str | None = None, tipo_chat: s
             plan="gratis",
             rol=rol_final,
             tipo_chat=tipo_normalizado,
-            acepto_terminos=True,
-            fecha_aceptacion_terminos=datetime.utcnow(),
+            acepto_terminos=False,
+            fecha_aceptacion_terminos=None,
         )
         user.set_password(str(uuid.uuid4()))
         db.session.add(user)

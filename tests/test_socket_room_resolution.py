@@ -67,8 +67,12 @@ def test_socket_room_merge_preserves_user_and_tenant_rooms():
 
         merged_rooms = _merge_rooms_for_subscription(user, tenant.slug)
 
-        assert "pyme_99" in merged_rooms
+        # Rubro IDs are shared by unrelated businesses and must never define
+        # an operator room. Realtime access is scoped to owner and tenant.
+        assert "pyme_99" not in merged_rooms
         assert f"pyme_{owner.id}" in merged_rooms
+        assert f"tenant_{tenant.id}" in merged_rooms
+        assert f"crm_{tenant.id}" in merged_rooms
 
         db.session.remove()
         db.drop_all()

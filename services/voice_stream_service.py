@@ -1902,7 +1902,7 @@ class VoiceStreamService:
                                 ticket_id_numeric = str(nro).replace("M-", "").replace("S-", "")
                                 tracking_url = f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
                                 if data.get("consulta_pin"):
-                                    tracking_url = f"{tracking_url}?pin={data.get('consulta_pin')}"
+                                    tracking_url = f"{tracking_url}#pin={data.get('consulta_pin')}"
                                 updates["latest_tracking_url"] = tracking_url
 
                             self._update_session_contexts(session_context, updates)

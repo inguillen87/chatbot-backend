@@ -5,12 +5,47 @@ import secrets
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from models import MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
+from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from services.live_chat_schedule import build_tenant_live_chat_status
 
 
 TRACKING_EXPERIENCE_CONTRACT_VERSION = "tracking.experience.v1"
+
+
+def _tracking_path_without_query_secret(path: Any) -> str:
+    """Move legacy tracking credentials from query strings into URL fragments."""
+
+    raw = str(path or "").strip()
+    if not raw:
+        return raw
+    parts = urlsplit(raw)
+    query_items = parse_qsl(parts.query, keep_blank_values=True)
+    safe_query: list[tuple[str, str]] = []
+    secret_items: list[tuple[str, str]] = []
+    for key, value in query_items:
+        if key.lower() in {"token", "access_token", "pin"}:
+            canonical = "token" if key.lower() in {"token", "access_token"} else "pin"
+            secret_items.append((canonical, value))
+        else:
+            safe_query.append((key, value))
+    if not secret_items:
+        return raw
+
+    fragment_items = parse_qsl(parts.fragment, keep_blank_values=True)
+    existing_keys = {key for key, _value in fragment_items}
+    fragment_items.extend((key, value) for key, value in secret_items if key not in existing_keys)
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(safe_query),
+            urlencode(fragment_items),
+        )
+    )
 
 CLAIM_MILESTONES = [
     {"key": "recibido", "label": "Recibido"},
@@ -265,14 +300,20 @@ def _claim_support_contract(
     code: str,
     conversation: list[dict[str, Any]],
 ) -> dict[str, Any]:
+    ticket_id = getattr(ticket, "id", None)
+    socket_room = build_ticket_room("municipio", ticket_id) if ticket_id else None
     live_chat = _tenant_live_chat_status(tenant)
+    if ticket_id:
+        live_chat = attach_ticket_room_access(
+            live_chat,
+            ticket_type="municipio",
+            ticket_id=ticket_id,
+        )
     available = bool(live_chat.get("enabled") and live_chat.get("available"))
     mode = "live" if available else "offline"
-    ticket_id = getattr(ticket, "id", None)
     public_endpoint = f"/api/public/tracking/claims/{ticket_id}/messages" if ticket_id else None
     timeline_endpoint = f"/tickets/municipio/{ticket_id}/timeline" if ticket_id else None
     municipio_id = getattr(ticket, "municipio_id", None)
-    socket_room = f"municipio_{municipio_id}" if municipio_id else None
     schedule_label = live_chat.get("description") or (
         f"{live_chat.get('start_time')} a {live_chat.get('end_time')}"
         if live_chat.get("start_time") and live_chat.get("end_time")
@@ -388,9 +429,11 @@ def _claim_support_contract(
             "timeline": timeline_endpoint,
         },
         "socket": {
-            "enabled": available,
-            "event": "ticket.comment.created",
+            "enabled": bool(available and socket_room and live_chat.get("access_token")),
+            "event": "new_chat_message",
             "room": socket_room,
+            "access_token": live_chat.get("access_token"),
+            "access_mode": live_chat.get("access_mode"),
             "requires_auth": True,
             "fallback_transport": "http_polling",
         },
@@ -752,7 +795,7 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
     pin = str(getattr(ticket, "consulta_pin", "") or "")
     tracking_page_url = f"/tracking/claim/{code}"
     if pin:
-        tracking_page_url = f"{tracking_page_url}?pin={pin}"
+        tracking_page_url = f"{tracking_page_url}#pin={pin}"
     support = _claim_support_contract(ticket, tenant, code=display_code, conversation=conversation)
     support_primary_cta = (support.get("cta") or {}).get("primary") or {}
     return {
@@ -807,7 +850,9 @@ def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = N
     items = serialized.get("items") or []
     tracking = serialized.get("tracking") if isinstance(serialized.get("tracking"), dict) else {}
     code = serialized.get("legacy_number") or serialized.get("id") or str(getattr(order, "id", ""))
-    tracking_url = tracking.get("path") or f"/tracking/order/{code}"
+    tracking_url = _tracking_path_without_query_secret(
+        tracking.get("path") or f"/tracking/order/{code}"
+    )
     location = {
         "address": getattr(order, "direccion", None) or (serialized.get("metadata") or {}).get("direccion"),
         "lat": getattr(order, "latitud", None),

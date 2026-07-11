@@ -1149,11 +1149,10 @@ def _assisted_public_follow_up(
     tracking_api = f"/api/public/tracking/experience?kind=order&code={quote_plus(tracking_code)}"
     if tenant_slug:
         encoded_tenant = quote_plus(str(tenant_slug))
-        tracking_path = f"{tracking_path}?tenant_slug={encoded_tenant}&token={quote_plus(tracking_token)}"
-        tracking_api = f"{tracking_api}&tenant_slug={encoded_tenant}&token={quote_plus(tracking_token)}"
+        tracking_path = f"{tracking_path}?tenant_slug={encoded_tenant}#token={quote_plus(tracking_token)}"
+        tracking_api = f"{tracking_api}&tenant_slug={encoded_tenant}"
     else:
-        tracking_path = f"{tracking_path}?token={quote_plus(tracking_token)}"
-        tracking_api = f"{tracking_api}&token={quote_plus(tracking_token)}"
+        tracking_path = f"{tracking_path}#token={quote_plus(tracking_token)}"
     return {
         "contract_version": "marketplace.assisted_followup.v1",
         "kind": "order",
@@ -1169,6 +1168,7 @@ def _assisted_public_follow_up(
             "token": tracking_token,
             "token_required": True,
             "access": "signed_link",
+            "credential_transport": "x-tracking-token-header",
             "label": "Seguimiento publico",
         },
         "channels": [

@@ -1524,8 +1524,7 @@ def _build_public_follow_up(
         tracking_api = f"/api/public/tracking/experience?kind=claim&code={quote_plus(display_code)}"
         if pin:
             encoded_pin = quote_plus(pin)
-            tracking_path = f"{tracking_path}?pin={encoded_pin}"
-            tracking_api = f"{tracking_api}&pin={encoded_pin}"
+            tracking_path = f"{tracking_path}#pin={encoded_pin}"
         whatsapp_text = (
             f"Hola, quiero continuar mi {request_kind_label}. "
             f"Reclamo {display_code}. PIN {pin}. {customer_message}"
@@ -1538,6 +1537,7 @@ def _build_public_follow_up(
                 "code": display_code,
                 "raw_code": raw_code,
                 "pin": pin,
+                "credential_transport": "x-tracking-pin-header",
                 "ticket_id": linked_claim.get("id"),
                 "path": tracking_path,
                 "api_endpoint": tracking_api,
@@ -1568,11 +1568,10 @@ def _build_public_follow_up(
     encoded_token = quote_plus(tracking_token)
     if tenant_slug:
         encoded_tenant = quote_plus(tenant_slug)
-        tracking_path = f"{tracking_path}?tenant_slug={encoded_tenant}&token={encoded_token}"
-        tracking_api = f"{tracking_api}&tenant_slug={encoded_tenant}&token={encoded_token}"
+        tracking_path = f"{tracking_path}?tenant_slug={encoded_tenant}#token={encoded_token}"
+        tracking_api = f"{tracking_api}&tenant_slug={encoded_tenant}"
     else:
-        tracking_path = f"{tracking_path}?token={encoded_token}"
-        tracking_api = f"{tracking_api}&token={encoded_token}"
+        tracking_path = f"{tracking_path}#token={encoded_token}"
 
     whatsapp_text = (
         f"Hola, quiero continuar mi {request_kind_label}. "
@@ -1587,6 +1586,7 @@ def _build_public_follow_up(
             "token": tracking_token,
             "token_required": True,
             "access": "signed_link",
+            "credential_transport": "x-tracking-token-header",
             "path": tracking_path,
             "api_endpoint": tracking_api,
             "label": "Seguimiento de solicitud",

@@ -359,7 +359,21 @@ def create_app(config_class=Config):
         @login_manager.user_loader
         def load_user(user_id):
             try:
-                return User.query.get(int(user_id))
+                from utils.auth_helpers import (
+                    is_clerk_managed_user,
+                    is_demo_user_account,
+                    is_user_auth_disabled,
+                )
+                from utils.roles import is_super_admin_role
+
+                user = User.query.get(int(user_id))
+                if is_user_auth_disabled(user) or is_demo_user_account(user):
+                    return None
+                if user and is_clerk_managed_user(user):
+                    return None
+                if user and is_super_admin_role(getattr(user, "rol", None)):
+                    return None
+                return user
             except Exception:
                 return None
 
@@ -390,12 +404,20 @@ def create_app(config_class=Config):
 
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
+        credentialed_origins = [
+            origin
+            for origin in ALLOWED_ORIGINS
+            if not (isinstance(origin, str) and origin.strip() == "*")
+        ]
         cors_resources = {
             r"/public/*": {"origins": "*"},
             r"/pwa/*": {"origins": "*"},
             r"/api/pwa/*": {"origins": "*"},
             r"/api/public/*": {"origins": "*"},
-            r"/api/analytics/*": {"origins": "*"},
+            r"/api/analytics/*": {
+                "origins": credentialed_origins,
+                "supports_credentials": True,
+            },
             r"/api/rubros": {"origins": "*"},
             r"/api/rubros/*": {"origins": "*"},
             r"/admin/*": {
@@ -439,6 +461,9 @@ def create_app(config_class=Config):
             "X-Turnstile-Token",
             "X-Contact-Key",
             "X-Conversation-Id",
+            "X-Tracking-Pin",
+            "X-Tracking-Token",
+            "pin",
         ]
 
         allow_methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
@@ -480,6 +505,17 @@ def create_app(config_class=Config):
 
             return False
 
+        def _credentialed_origin_is_allowed(origin: str | None) -> bool:
+            if not origin:
+                return False
+            for allowed in credentialed_origins:
+                if isinstance(allowed, Pattern):
+                    if allowed.match(origin):
+                        return True
+                elif origin.rstrip("/") == str(allowed).rstrip("/"):
+                    return True
+            return False
+
         def _set_single_header(resp, header_name: str, value: str) -> None:
             while header_name in resp.headers:
                 del resp.headers[header_name]
@@ -488,6 +524,18 @@ def create_app(config_class=Config):
         @app.after_request
         def ensure_cors_headers(resp):
             origin = request.headers.get("Origin")
+            is_analytics_api = request.path == "/api/analytics" or request.path.startswith("/api/analytics/")
+            if is_analytics_api and not _credentialed_origin_is_allowed(origin):
+                for header_name in (
+                    "Access-Control-Allow-Origin",
+                    "Access-Control-Allow-Credentials",
+                    "Access-Control-Allow-Headers",
+                    "Access-Control-Allow-Methods",
+                    "Access-Control-Expose-Headers",
+                ):
+                    while header_name in resp.headers:
+                        del resp.headers[header_name]
+                return resp
             if not _origin_is_allowed(origin):
                 return resp
 

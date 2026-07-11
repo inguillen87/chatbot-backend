@@ -10,7 +10,7 @@ from flask_cors import cross_origin
 from sqlalchemy import desc
 
 from models import AnalyticsEventV2, ChatSessionContext, Conversacion, TenantProfile, TenantTicket, User, WidgetSettings, Rubro, db
-from services.live_chat_schedule import build_live_chat_status
+from services.live_chat_schedule import build_live_chat_status, build_tenant_live_chat_status
 from services.tenant_resolver import (
     RESERVED_TENANT_SLUGS,
     TenantResolutionError,
@@ -732,9 +732,7 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
     realtime_model = realtime_voice.get("recommended_model")
     realtime_voice_name = realtime_voice.get("voice")
     socket_realtime = _socket_realtime_contract(cfg)
-    live_status = build_live_chat_status(
-        schedule_override=(cfg.get("live_chat_schedule") if isinstance(cfg.get("live_chat_schedule"), dict) else None)
-    )
+    live_status = build_tenant_live_chat_status(tenant, config_override=cfg)
     fallback_mode = socket_realtime.get("fallback_mode") or "http_chat"
     live_chat_fallback_available = fallback_mode not in {"disabled", "none", "polling_disabled"}
     live_chat_available = bool(live_status.get("available")) and (

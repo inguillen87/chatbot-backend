@@ -25,6 +25,7 @@ from sqlalchemy.orm import joinedload, load_only
 from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
 from database import db
 from utils.db_utils import ensure_enc_encuesta_schema
+from utils.roles import is_authorized_superadmin_user
 from models import (
     EncEncuesta,
     EncPregunta,
@@ -883,7 +884,7 @@ def _generate_unique_slug(initial_slug: str) -> str:
 
 def _determine_tenant_id(user: Any) -> int:
     tenant_profile = getattr(g, "tenant_profile", None)
-    if tenant_profile and getattr(user, "rol", None) == "super_admin":
+    if tenant_profile and is_authorized_superadmin_user(user):
         return tenant_profile.id
 
     tenant_candidate = (

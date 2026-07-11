@@ -5,13 +5,17 @@ from flask import Blueprint, abort, g, jsonify, request
 from models import AuditEvent, OrgUnit, Role, User, UserOrgUnit, UserRole, db
 from utils.auth_decorators import _is_authorized_for_tenant
 from utils.auth_helpers import token_requerido
+from utils.roles import ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role, is_authorized_superadmin_user
 from utils.tenant import require_tenant
 
 access_control_bp = Blueprint("access_control_bp", __name__)
 
 
 def _require_admin_for_tenant(current_user, tenant):
-    if getattr(current_user, "rol", None) not in {"admin", "super_admin"}:
+    role = canonical_role(getattr(current_user, "rol", None))
+    if role not in {ROLE_TENANT_ADMIN, ROLE_SUPERADMIN}:
+        abort(403, description="Permisos insuficientes")
+    if role == ROLE_SUPERADMIN and not is_authorized_superadmin_user(current_user):
         abort(403, description="Permisos insuficientes")
     if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id, tenant_slug=tenant.slug):
         abort(403, description="Acceso denegado")

@@ -8,6 +8,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 from models import MunicipioTicket, PedidoConversacional, PymePedido, TenantProfile, TicketComentario, User
+from services.live_chat_access import verify_ticket_room_token
 from services.tracking_experience import TRACKING_EXPERIENCE_CONTRACT_VERSION
 
 
@@ -112,6 +113,20 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["contract_version"], "tracking.experience.v1")
         self.assertEqual(payload["request_id"], "track-claim-1")
         self.assertEqual(response.headers.get("X-Request-Id"), "track-claim-1")
+        self.assertEqual(response.headers.get("Cache-Control"), "private, no-store, max-age=0")
+        self.assertEqual(response.headers.get("Pragma"), "no-cache")
+
+    def test_public_claim_tracking_accepts_pin_header_without_url_secret(self):
+        response = self.client.get(
+            "/api/public/tracking/experience?kind=claim&code=M-123456",
+            headers={"X-Tracking-Pin": "654321"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["resource"]["code"], "M-123456")
+        tracking_action = next(item for item in payload["actions"] if item["id"] == "open_tracking_page")
+        self.assertEqual(tracking_action["url"], "/tracking/claim/123456#pin=654321")
         self.assertEqual(payload["kind"], "claim")
         self.assertEqual(payload["tenant"]["slug"], self.tenant.slug)
         self.assertEqual(payload["resource"]["code"], "M-123456")
@@ -136,6 +151,13 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertTrue(payload["support"]["service_window"]["accepts_messages"])
         self.assertEqual(payload["support"]["service_window"]["outside_hours_mode"], "offline_message")
         self.assertEqual(payload["support"]["socket"]["fallback_transport"], "http_polling")
+        self.assertEqual(payload["support"]["socket"]["room"], f"ticket_municipio_{self.claim.id}")
+        self.assertEqual(payload["support"]["socket"]["access_mode"], "signed_ticket_room")
+        verified_access = verify_ticket_room_token(
+            payload["support"]["socket"]["access_token"],
+            expected_room=f"ticket_municipio_{self.claim.id}",
+        )
+        self.assertEqual(verified_access["ticket_id"], self.claim.id)
         self.assertEqual(payload["support"]["polling"]["endpoint"], f"/tickets/municipio/{self.claim.id}/timeline")
         self.assertTrue(payload["support"]["webview_policy"]["stay_inside_tracking"])
         self.assertFalse(payload["support"]["webview_policy"]["external_redirect_required"])
@@ -173,7 +195,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         )
         self.assertEqual(
             action_by_id["open_tracking_page"]["url"],
-            "/tracking/claim/123456?pin=654321",
+            "/tracking/claim/123456#pin=654321",
         )
         self.assertTrue(action_by_id["open_tracking_page"]["requires_pin"])
 
@@ -227,6 +249,10 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(live_support["availability"]["state"], "online")
         self.assertEqual(live_support["cta"]["primary"]["label"], "Chatear con un agente")
         self.assertEqual(live_support["cta"]["primary"]["action"], "socket_live_message")
+        self.assertTrue(live_support["socket"]["enabled"])
+        self.assertEqual(live_support["socket"]["event"], "new_chat_message")
+        self.assertEqual(live_support["socket"]["room"], f"ticket_municipio_{self.claim.id}")
+        self.assertTrue(live_support["socket"]["access_token"])
         self.assertEqual(live_support["ui"]["response_expectation_label"], "Respuesta esperada en hasta 30 min")
         live_action = {item["id"]: item for item in live_payload["actions"]}["send_message"]
         self.assertEqual(live_action["action"], "socket_live_message")
@@ -398,7 +424,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["kind"], "order")
         self.assertEqual(payload["resource"]["code"], f"pc-{assisted.id}")
         self.assertEqual(payload["frontend_contract"]["access"], "signed_link")
-        self.assertEqual(payload["actions"][1]["url"], f"/tracking/order/pc-{assisted.id}?token=signed-token-123")
+        self.assertEqual(payload["actions"][1]["url"], f"/tracking/order/pc-{assisted.id}#token=signed-token-123")
         self.assertTrue(payload["actions"][1]["requires_token"])
         self.assertEqual(payload["customer"]["name"], "Marcelo")
         self.assertEqual(payload["customer"]["phone"], "+5492613168608")
@@ -417,6 +443,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["reason_code"], "tracking_pin_required")
         self.assertEqual(payload["contract_version"], "tracking.experience.v1")
         self.assertIn("request_id", payload)
+        self.assertEqual(response.headers.get("Cache-Control"), "private, no-store, max-age=0")
 
     def test_legacy_claim_tracking_page_requires_pin_before_rendering_private_data(self):
         rejected = self.client.get("/tracking/claim/123456")
@@ -435,6 +462,13 @@ class TrackingExperienceContractTest(unittest.TestCase):
             json={"nro_ticket": "123456", "mensaje": "hola"},
         )
         self.assertEqual(rejected.status_code, 403)
+
+        accepted_by_header = self.client.post(
+            "/tracking/api/send-claim-message",
+            headers={"X-Tracking-Pin": "654321"},
+            json={"nro_ticket": "123456", "mensaje": "pin por header"},
+        )
+        self.assertEqual(accepted_by_header.status_code, 200)
 
         accepted = self.client.post(
             "/tracking/api/send-claim-message?pin=654321",

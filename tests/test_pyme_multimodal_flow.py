@@ -180,7 +180,8 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(assisted_tracking["access"], "signed_link")
         self.assertGreaterEqual(len(assisted_tracking["token"]), 24)
         self.assertIn(f"token={assisted_tracking['token']}", assisted_tracking["path"])
-        self.assertIn(f"token={assisted_tracking['token']}", assisted_tracking["api_endpoint"])
+        self.assertNotIn("token=", assisted_tracking["api_endpoint"])
+        self.assertEqual(assisted_tracking["credential_transport"], "x-tracking-token-header")
 
         pedido = db.session.get(PedidoConversacional, assisted_request["pedido_id"])
         self.assertIsNotNone(pedido)
@@ -329,7 +330,11 @@ class PymeMultimodalTest(unittest.TestCase):
         self.assertEqual(pedido.metadata_payload["linked_record"]["kind"], "tenant_ticket")
         self.assertEqual(pedido.metadata_payload["public_follow_up"]["tracking"]["code"], f"pc-{pedido.id}")
         self.assertTrue(pedido.metadata_payload["public_follow_up"]["tracking"]["token_required"])
-        self.assertIn("token=", pedido.metadata_payload["public_follow_up"]["tracking"]["api_endpoint"])
+        self.assertNotIn("token=", pedido.metadata_payload["public_follow_up"]["tracking"]["api_endpoint"])
+        self.assertEqual(
+            pedido.metadata_payload["public_follow_up"]["tracking"]["credential_transport"],
+            "x-tracking-token-header",
+        )
         self.assertEqual(pedido.items[0]["extraction_error"], "pdf_sin_match")
         self.assertIn("clavos", pedido.metadata_payload["source"]["text_preview"])
         intake_ticket = db.session.get(TenantTicket, assisted_request["intake_ticket_id"])

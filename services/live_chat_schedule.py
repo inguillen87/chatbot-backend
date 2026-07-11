@@ -517,8 +517,13 @@ def build_tenant_live_chat_status(
     *,
     now: Optional[datetime] = None,
     socket_room: Optional[str] = None,
+    config_override: Optional[Mapping[str, Any]] = None,
 ) -> dict:
-    tenant_config = getattr(tenant, "configuracion", None) if tenant is not None else None
+    tenant_config = (
+        config_override
+        if isinstance(config_override, Mapping)
+        else getattr(tenant, "configuracion", None) if tenant is not None else None
+    )
     schedule_config = (
         tenant_config.get("live_chat_schedule")
         if isinstance(tenant_config, dict)

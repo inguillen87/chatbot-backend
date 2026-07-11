@@ -1,56 +1,124 @@
-import unittest
 from unittest.mock import patch
-from app import create_app, db
-from models_analytics_k import TenantBudget
+
+import pytest
+
+from database import db
+from models import TenantProfile, User
 from utils.auth_helpers import generar_token
 
-class TestAnalyticsKPIs(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.app = create_app()
 
-    def setUp(self):
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-        self.client = self.app.test_client()
+def _create_actor(*, email: str, role: str, tenant: TenantProfile, owner: User) -> tuple[User, str]:
+    actor = User(
+        name=email.split("@", 1)[0],
+        email=email,
+        rol=role,
+        tipo_chat="pyme",
+        tenant_id=tenant.id,
+        empresa_id=owner.id if role == "empleado" else None,
+    )
+    actor.set_password("safe-password")
+    db.session.add(actor)
+    db.session.commit()
+    token = generar_token(
+        actor.id,
+        actor.rol,
+        actor.tipo_chat,
+        municipio_id=None,
+        pyme_id=owner.id,
+    )
+    return actor, token
 
-        # Assuming user_id=1, role=admin
-        self.admin_token = generar_token(1, "admin", "municipio", municipio_id=999, pyme_id=None)
 
-    def tearDown(self):
-        db.session.rollback()
-        db.session.remove()
-        self.app_context.pop()
+@pytest.fixture
+def analytics_tenant(client):
+    owner = User(
+        name="Analytics owner",
+        email="analytics-owner@test.com",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner.set_password("safe-password")
+    db.session.add(owner)
+    db.session.flush()
 
-    @patch('services.analytics_kpis_service.analytics_kpi_service.get_operational_metrics')
-    def test_get_kpis_admin(self, mock_get_metrics):
-        mock_get_metrics.return_value = {"chat": {"handoff_rate_percent": 15.5}}
+    tenant = TenantProfile(
+        slug="analytics-tenant",
+        nombre="Analytics tenant",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    owner.tenant_slug = tenant.slug
+    db.session.commit()
+    return owner, tenant
 
-        response = self.client.get('/api/analytics/kpis?tenant_id=999', headers={'Authorization': f'Bearer {self.admin_token}'})
-        self.assertIn(response.status_code, [200, 404])
-        if response.status_code == 200:
-            data = response.get_json()
-            self.assertEqual(data["chat"]["handoff_rate_percent"], 15.5)
 
-    def test_get_costs_no_tenant(self):
-        response = self.client.get('/api/analytics/costs', headers={'Authorization': f'Bearer {self.admin_token}'})
-        self.assertIn(response.status_code, [400, 404])
+@pytest.mark.parametrize("role", ["admin", "empleado"])
+def test_operational_roles_can_read_own_tenant_kpis(client, analytics_tenant, role):
+    owner, tenant = analytics_tenant
+    _actor, token = _create_actor(
+        email=f"{role}@analytics.test",
+        role=role,
+        tenant=tenant,
+        owner=owner,
+    )
 
-    def test_get_costs_with_budget(self):
-        budget = TenantBudget.query.filter_by(tenant_id=999).first()
-        if not budget:
-            budget = TenantBudget(tenant_id=999, monthly_budget=100.0, current_spend=25.0)
-            db.session.add(budget)
-        else:
-            budget.current_spend = 25.0
-        db.session.commit()
+    with patch(
+        "routes.analytics_kpis.analytics_kpi_service.get_operational_metrics",
+        return_value={"chat": {"handoff_rate_percent": 15.5}},
+    ) as get_metrics:
+        response = client.get(
+            f"/api/analytics/kpis?tenant_id={tenant.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
-        response = self.client.get('/api/analytics/costs?tenant_id=999', headers={'Authorization': f'Bearer {self.admin_token}'})
-        self.assertIn(response.status_code, [200, 404])
-        if response.status_code == 200:
-            data = response.get_json()
-            self.assertEqual(data["budget"], 100.0)
-            self.assertEqual(data["current_spend"], 25.0)
+    assert response.status_code == 200
+    assert response.get_json()["chat"]["handoff_rate_percent"] == 15.5
+    get_metrics.assert_called_once_with(tenant.id, 30)
 
-if __name__ == '__main__':
-    unittest.main()
+
+@pytest.mark.parametrize("role", ["usuario", "lead"])
+@pytest.mark.parametrize("endpoint", ["kpis", "costs"])
+def test_customer_roles_cannot_read_tenant_analytics(
+    client, analytics_tenant, role, endpoint
+):
+    owner, tenant = analytics_tenant
+    _actor, token = _create_actor(
+        email=f"{role}-{endpoint}@analytics.test",
+        role=role,
+        tenant=tenant,
+        owner=owner,
+    )
+
+    service_method = (
+        "get_operational_metrics" if endpoint == "kpis" else "get_cost_metrics"
+    )
+    with patch(
+        f"routes.analytics_kpis.analytics_kpi_service.{service_method}"
+    ) as analytics_call:
+        response = client.get(
+            f"/api/analytics/{endpoint}?tenant_id={tenant.id}",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 403
+    analytics_call.assert_not_called()
+
+
+def test_costs_require_tenant_id(client, analytics_tenant):
+    owner, tenant = analytics_tenant
+    _actor, token = _create_actor(
+        email="cost-admin@analytics.test",
+        role="admin",
+        tenant=tenant,
+        owner=owner,
+    )
+
+    response = client.get(
+        "/api/analytics/costs",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400

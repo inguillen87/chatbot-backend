@@ -193,3 +193,109 @@ def test_tenant_live_chat_status_exposes_online_and_offline_cta(app):
         assert offline_status["ui"]["primary_cta_label"] == "Dejar mensaje"
         assert offline_status["offline_message"]["safe_when_outside_hours"] is True
         assert offline_status["channel_policy"]["frontend_must_keep_user_in_ticket_context"] is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_action"),
+    [
+        ({"pregunta": "", "action": "open_live_chat"}, "open_live_chat"),
+        (
+            {"pregunta": "Necesito dejar este mensaje", "action_id": "queue_offline_message"},
+            "queue_offline_message",
+        ),
+        ({"pregunta": "request_agent"}, "request_agent"),
+    ],
+)
+def test_municipio_live_chat_ctas_use_deterministic_handoff(
+    app,
+    owner_user,
+    viewer_user,
+    municipio_context,
+    payload,
+    expected_action,
+):
+    from services.municipio_responder import responder_municipio
+
+    handler_payload = {
+        "success": True,
+        "message_to_user": "Solicitud registrada",
+        "data": {
+            "ticket_id": 71,
+            "status": "esperando_agente_en_vivo",
+            "socket_room": "ticket_municipio_71",
+        },
+    }
+    with app.app_context(), patch(
+        "services.actions.municipio_actions.DerivarHumanoActionHandler.execute",
+        return_value=handler_payload,
+    ) as execute, patch(
+        "services.municipio_responder.handle_llm_interaction"
+    ) as llm_interaction:
+        response = responder_municipio(
+            payload,
+            owner_user,
+            owner_user.rubro,
+            viewer_user=viewer_user,
+            chat_db_context=municipio_context,
+            anon_id="cta-municipio",
+            channel="web",
+        )
+
+    assert response["fuente"] == f"live_chat_cta_{expected_action}"
+    assert response["data"]["ticket_id"] == 71
+    assert response["contexto_actualizado"][CONTEXTO_MUNICIPIO]["live_chat_cta_action"] == expected_action
+    assert execute.call_args.args[0]["cta_action"] == expected_action
+    llm_interaction.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_action"),
+    [
+        ({"pregunta": "", "action": "open_live_chat"}, "open_live_chat"),
+        (
+            {"pregunta": "Consulta para manana", "action_id": "queue_offline_message"},
+            "queue_offline_message",
+        ),
+        ({"pregunta": "request_agent"}, "request_agent"),
+    ],
+)
+def test_pyme_live_chat_ctas_use_deterministic_handoff(
+    app,
+    pyme_owner,
+    viewer_user,
+    pyme_context,
+    payload,
+    expected_action,
+):
+    from services.pymes import responder_pyme
+
+    handler_payload = {
+        "success": True,
+        "message_to_user": "Solicitud registrada",
+        "data": {
+            "ticket_id": 72,
+            "status": "esperando_agente_en_vivo",
+            "socket_room": "ticket_pyme_72",
+        },
+    }
+    with app.app_context(), patch(
+        "services.actions.pyme_actions.DerivarHumanoActionHandlerPyme.execute",
+        return_value=handler_payload,
+    ) as execute, patch(
+        "services.pymes.llamar_llm_con_fallback"
+    ) as llm_call:
+        response = responder_pyme(
+            payload,
+            pyme_owner,
+            pyme_owner.rubro,
+            viewer_user=viewer_user,
+            chat_db_context=pyme_context,
+            anon_id="cta-pyme",
+            channel="web",
+        )
+
+    assert response["fuente"] == f"live_chat_cta_{expected_action}"
+    assert response["data"]["ticket_id"] == 72
+    assert response["contexto_actualizado"][CONTEXTO_PYME]["live_chat_cta_action"] == expected_action
+    assert execute.call_args.args[0]["cta_action"] == expected_action
+    llm_call.assert_not_called()

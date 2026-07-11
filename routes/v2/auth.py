@@ -4,9 +4,11 @@ from datetime import datetime, timedelta
 
 import jwt
 from flask import Blueprint, current_app, jsonify, request
+from flask_login import logout_user
 
 from models import User
 from routes.auth import google_login as legacy_google_login, login as legacy_login, me_perfil as legacy_me
+from utils.auth_helpers import is_user_auth_disabled, user_from_token
 
 v2_auth_bp = Blueprint("v2_auth", __name__, url_prefix="/api/v2/auth")
 
@@ -47,8 +49,18 @@ def refresh_v2():
     if not payload:
         return jsonify({"error": "token inválido"}), 401
 
-    user = User.query.get(int(payload.get("user_id"))) if payload.get("user_id") else None
-    if not user:
+    if (
+        payload.get("auth_provider") == "clerk"
+        or payload.get("session_kind") in {"clerk", "demo"}
+        or payload.get("demo_mode")
+    ):
+        return jsonify({
+            "error": "Esta sesion debe renovarse con su proveedor de identidad.",
+            "reason_code": "provider_resync_required",
+        }), 401
+
+    user = user_from_token(raw_token)
+    if not user or is_user_auth_disabled(user):
         return jsonify({"error": "Usuario no encontrado"}), 401
 
     renewed_payload = {
@@ -67,9 +79,22 @@ def refresh_v2():
 
 @v2_auth_bp.route('/logout', methods=['POST'])
 def logout_v2():
+    logout_user()
     response = jsonify({"ok": True, "message": "logout exitoso"})
     cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-    response.set_cookie(cookie_name, "", expires=0, httponly=True)
+    widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
+    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+    cookie_options = {
+        "path": "/",
+        "secure": current_app.config.get("SESSION_COOKIE_SECURE", True),
+        "httponly": True,
+        "samesite": current_app.config.get("SESSION_COOKIE_SAMESITE", "None"),
+    }
+    for name in {cookie_name, widget_cookie_name}:
+        # Clear both the production domain cookie and older host-only variants.
+        if cookie_domain:
+            response.delete_cookie(name, domain=cookie_domain, **cookie_options)
+        response.delete_cookie(name, **cookie_options)
     return response
 
 

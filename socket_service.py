@@ -1,16 +1,17 @@
 from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
 from config import ALLOWED_ORIGINS
-from models import User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
-import jwt
+from models import ChatSessionContext, EncEncuesta, EncLink, User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
 from services.conversation_stream import build_realtime_envelope
 from services.live_chat_access import LiveChatAccessError, build_ticket_room, verify_ticket_room_token
+from utils.auth_helpers import user_from_token
 from utils.response_utils import ensure_buttons_compatibility
 from utils.roles import canonical_role, is_authorized_superadmin_user
 from typing import Any, Optional, Set
 from uuid import UUID
+import jwt
 import os
 
 SOCKET_CORS_ORIGINS = list(
@@ -37,6 +38,62 @@ PUBLIC_TICKET_COMMENT_ORIGINS = {
     "whatsapp",
     "widget",
 }
+
+
+def _clerk_user_id_for_user(user: Optional[User]) -> str:
+    metadata = user.accesibilidad if user and isinstance(getattr(user, "accesibilidad", None), dict) else {}
+    auth_meta = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
+    clerk_meta = auth_meta.get("clerk") if isinstance(auth_meta.get("clerk"), dict) else {}
+    return str(clerk_meta.get("user_id") or "").strip()
+
+
+def _decode_chatboc_socket_token(token: str) -> dict:
+    try:
+        return jwt.decode(token, current_app.config["SECRET_KEY"], algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return {}
+
+
+def _clerk_identity_rooms(user: Optional[User], token: str) -> list[str]:
+    claims = _decode_chatboc_socket_token(token)
+    if str(claims.get("auth_provider") or "").strip().lower() != "clerk":
+        return []
+    if str(claims.get("session_kind") or "").strip().lower() != "clerk":
+        return []
+
+    sid = str(claims.get("clerk_sid") or claims.get("sid") or "").strip()
+    clerk_user_id = str(claims.get("clerk_user_id") or "").strip() or _clerk_user_id_for_user(user)
+    rooms: list[str] = []
+    if sid:
+        rooms.append(f"clerk_session:{sid}")
+    if clerk_user_id:
+        rooms.append(f"clerk_user:{clerk_user_id}")
+    return rooms
+
+
+def disconnect_clerk_session_sockets(
+    *,
+    clerk_session_id: str | None = None,
+    clerk_user_id: str | None = None,
+) -> int:
+    """Disconnect every socket bound to a terminal Clerk session or user."""
+
+    identity_rooms = []
+    if str(clerk_session_id or "").strip():
+        identity_rooms.append(f"clerk_session:{str(clerk_session_id).strip()}")
+    if str(clerk_user_id or "").strip():
+        identity_rooms.append(f"clerk_user:{str(clerk_user_id).strip()}")
+
+    socket_sids: set[str] = set()
+    for room in identity_rooms:
+        for participant in socketio.server.manager.get_participants("/", room):
+            socket_sid = participant[0] if isinstance(participant, (tuple, list)) else participant
+            if socket_sid:
+                socket_sids.add(str(socket_sid))
+
+    for socket_sid in socket_sids:
+        socketio.server.disconnect(socket_sid, namespace="/")
+    return len(socket_sids)
 
 def _resolve_socket_async_mode() -> str:
     """Use threading by default; allow explicit override via env."""
@@ -208,6 +265,14 @@ def _merge_rooms_for_subscription(user: User, tenant_slug: Optional[str]) -> lis
             rooms.append(room)
     return rooms
 
+
+def _merge_authenticated_socket_rooms(user: User, tenant_slug: Optional[str], token: str) -> list[str]:
+    rooms = _merge_rooms_for_subscription(user, tenant_slug)
+    for room in _clerk_identity_rooms(user, token):
+        if room not in rooms:
+            rooms.append(room)
+    return rooms
+
 def _resolve_tenant_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
@@ -292,6 +357,35 @@ def emit_ticket_update(data: Any) -> None:
     _emit_standard_ticket_event('ticket.updated', data)
 
 
+def _emit_public_ticket_state_event(event_name: str, data: Any) -> bool:
+    """Emit only citizen-safe ticket state to the signed ticket room."""
+
+    if not isinstance(data, dict):
+        return False
+    ticket_type = data.get("tipo") or data.get("tenant_type")
+    ticket_id = data.get("ticket_id") or data.get("ticketId") or data.get("id")
+    try:
+        public_room = build_ticket_room(ticket_type, ticket_id)
+    except LiveChatAccessError:
+        return False
+
+    payload = {
+        "contract_version": "live_chat.public_state.v1",
+        "event": event_name,
+        "ticket_id": int(ticket_id),
+        "ticketId": int(ticket_id),
+        "tenant_type": str(ticket_type or "").strip().lower(),
+        "tipo": str(ticket_type or "").strip().lower(),
+        "estado": data.get("estado") or data.get("status"),
+        "previous_status": data.get("previous_status"),
+        "assignment_state": data.get("assignment_state"),
+        "changed_at": data.get("changed_at") or data.get("updated_at"),
+        "socket_room": public_room,
+    }
+    socketio.emit(event_name, payload, room=public_room)
+    return True
+
+
 def emit_crm_contact_update(tenant: TenantProfile, contact_payload: Any) -> None:
     """Broadcast CRM contact enrichment to subscribed admin clients."""
     if not tenant:
@@ -346,12 +440,14 @@ def emit_ticket_status_changed(data: Any) -> None:
     """Broadcast a normalized status event while preserving legacy consumers."""
     _emit_standard_ticket_event('ticket.status.changed', data)
     emit_ticket_update(data)
+    _emit_public_ticket_state_event('ticket.status.changed', data)
 
 
 def emit_ticket_assignment_changed(data: Any) -> None:
     """Broadcast assignment changes with a normalized contract for new clients."""
     _emit_standard_ticket_event('ticket.assignment.changed', data)
     emit_ticket_update(data)
+    _emit_public_ticket_state_event('ticket.assignment.changed', data)
 
 
 def emit_ticket_presence_changed(data: Any) -> None:
@@ -511,19 +607,78 @@ def emit_new_chat_message(data: Any) -> None:
     _emit_standard_ticket_event_to_room("whatsapp.message.created", data, admin_room)
 
 
-def _survey_realtime_rooms(slug_publico: str, data: Any = None, tenant_slug: str | None = None) -> list[str]:
+def _tenant_slug_for_survey_tenant_id(tenant_id: Any) -> str:
+    try:
+        normalized_tenant_id = int(tenant_id)
+    except (TypeError, ValueError):
+        return ""
+
+    mapped = TenantProfile.query.filter_by(encuestas_tenant_id=normalized_tenant_id).limit(2).all()
+    if len(mapped) == 1:
+        return str(mapped[0].slug or "").strip()
+    if len(mapped) > 1:
+        current_app.logger.warning(
+            "Dropped ambiguous survey socket tenant mapping encuestas_tenant_id=%s",
+            normalized_tenant_id,
+        )
+        return ""
+    direct = db.session.get(TenantProfile, normalized_tenant_id)
+    return str(getattr(direct, "slug", "") or "").strip()
+
+
+def _is_valid_survey_room_segment(value: Any) -> bool:
+    normalized = str(value or "").strip()
+    return bool(
+        normalized
+        and len(normalized) <= 160
+        and ":" not in normalized
+        and not any(ch.isspace() for ch in normalized)
+    )
+
+
+def _resolve_survey_tenant_slug(slug_publico: str, data: Any, tenant_slug: str | None) -> str:
+    resolved = str(tenant_slug or "").strip()
+    if not resolved and isinstance(data, dict):
+        resolved = str(data.get("tenant_slug") or data.get("tenant") or "").strip()
+    if resolved and _is_valid_survey_room_segment(resolved):
+        return resolved
+
+    if isinstance(data, dict) and data.get("tenant_id") is not None:
+        resolved = _tenant_slug_for_survey_tenant_id(data.get("tenant_id"))
+        if resolved:
+            return resolved
+
     slug = str(slug_publico or "").strip()
     if not slug:
-        return []
-    resolved_tenant = (tenant_slug or "").strip()
-    if not resolved_tenant and isinstance(data, dict):
-        resolved_tenant = str(data.get("tenant_slug") or data.get("tenant") or "").strip()
+        return ""
+    try:
+        candidates: dict[int, EncEncuesta] = {}
+        for survey in EncEncuesta.query.filter_by(slug=slug).limit(2).all():
+            candidates[survey.id] = survey
+        for link in EncLink.query.filter_by(slug_publico=slug).limit(3).all():
+            if link.encuesta:
+                candidates[link.encuesta.id] = link.encuesta
+        if len(candidates) != 1:
+            current_app.logger.warning(
+                "Dropped unscoped or ambiguous survey socket event slug=%s candidates=%s",
+                slug,
+                len(candidates),
+            )
+            return ""
+        return _tenant_slug_for_survey_tenant_id(next(iter(candidates.values())).tenant_id)
+    except Exception:
+        current_app.logger.exception("Survey socket tenant resolution failed slug=%s", slug)
+        return ""
 
-    rooms: list[str] = []
-    if resolved_tenant:
-        rooms.append(f"encuesta:{resolved_tenant}:{slug}")
-    rooms.append(f"encuesta_{slug}")
-    return list(dict.fromkeys(rooms))
+
+def _survey_realtime_rooms(slug_publico: str, data: Any = None, tenant_slug: str | None = None) -> list[str]:
+    slug = str(slug_publico or "").strip()
+    if not _is_valid_survey_room_segment(slug):
+        return []
+    resolved_tenant = _resolve_survey_tenant_slug(slug, data, tenant_slug)
+    if not resolved_tenant:
+        return []
+    return [f"encuesta:{resolved_tenant}:{slug}"]
 
 
 def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
@@ -622,23 +777,16 @@ def on_connect(auth):
 
     if token:
         try:
-            secret = current_app.config.get('SECRET_KEY')
-            if not secret:
-                current_app.logger.error("Socket.IO rejected sid %s: SECRET_KEY is not configured.", request.sid)
-                return False
-
-            payload = jwt.decode(token, secret, algorithms=["HS256"])
-            user_id = payload.get('user_id')
-            tenant_slug = payload.get('tenant_slug')
-            user = User.query.get(user_id) if user_id else None
+            user = user_from_token(str(token))
             if not user:
                 current_app.logger.warning(
-                    "Socket.IO connection rejected for sid %s due to unknown user in token.",
+                    "Socket.IO connection rejected for sid %s due to invalid or revoked token.",
                     request.sid,
                 )
                 return False
 
-            rooms = _merge_rooms_for_subscription(user, tenant_slug)
+            tenant_slug = auth_payload.get('tenant_slug') or getattr(user, 'tenant_slug', None)
+            rooms = _merge_authenticated_socket_rooms(user, tenant_slug, str(token))
             for room in rooms:
                 join_room(room)
                 current_app.logger.debug(
@@ -650,9 +798,6 @@ def on_connect(auth):
                 request.sid,
                 rooms,
             )
-        except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
-            current_app.logger.warning(f"Socket.IO connection rejected for sid {request.sid} due to invalid token: {e}")
-            return False
         except Exception as e:
             current_app.logger.exception("Socket.IO unexpected connect error for sid %s: %s", request.sid, e)
             return False
@@ -669,17 +814,10 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'missing_token'})
         return
 
-    try:
-        payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as exc:
-        current_app.logger.warning("Socket subscribe rejected for sid %s: %s", request.sid, exc)
-        emit('subscription_error', {'error': 'invalid_token'})
-        return
-
-    user_id = payload.get('user_id')
-    user = db.session.get(User, user_id) if user_id else None
+    user = user_from_token(str(token))
     if not user:
-        emit('subscription_error', {'error': 'unknown_user'})
+        current_app.logger.warning("Socket subscribe rejected for sid %s: invalid or revoked token", request.sid)
+        emit('subscription_error', {'error': 'invalid_token'})
         return
 
     if tenant_slug and not _user_can_access_tenant_slug(user, tenant_slug):
@@ -691,7 +829,7 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'tenant_forbidden'})
         return
 
-    rooms = _merge_rooms_for_subscription(user, tenant_slug)
+    rooms = _merge_authenticated_socket_rooms(user, tenant_slug, str(token))
     for room in rooms:
         join_room(room)
     emit('subscribed_ticket_updates', {'rooms': rooms or []})
@@ -704,7 +842,12 @@ def on_join(data):
         emit('join_error', {'error': 'missing_room'})
         return
 
-    if room.startswith(('encuesta_', 'encuesta:')):
+    survey_room_parts = room.split(':')
+    if (
+        len(survey_room_parts) == 3
+        and survey_room_parts[0] == 'encuesta'
+        and all(_is_valid_survey_room_segment(part) for part in survey_room_parts[1:])
+    ):
         join_room(room)
         current_app.logger.debug("Client joined public survey room: %s", room)
         return
@@ -743,8 +886,9 @@ def on_join(data):
         except (TypeError, ValueError, AttributeError):
             pass
         else:
-            join_room(room)
-            return
+            if db.session.get(ChatSessionContext, room):
+                join_room(room)
+                return
 
     current_app.logger.warning("Socket generic room join rejected room=%s", room)
     emit('join_error', {'error': 'room_not_joinable', 'room': room})
@@ -772,15 +916,19 @@ def handle_send_chat_message(data):
         current_app.logger.error(f"Socket 'send_chat_message' recibió datos incompletos: {data}")
         return
 
-    try:
-        token_data = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
-        current_user = db.session.get(User, token_data['user_id'])
-        if not _is_ticket_operator(current_user):
-            current_app.logger.warning(f"Intento de envío de mensaje de chat por usuario no autorizado: {token_data.get('user_id')}")
-            emit('chat_error', {'error': 'operator_forbidden'})
-            return
-    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError) as e:
-        current_app.logger.error(f"Token inválido en 'send_chat_message': {e}")
+    current_user = user_from_token(str(token))
+    if not current_user:
+        current_app.logger.warning("Token invalido o revocado en 'send_chat_message'")
+        emit('chat_error', {'error': 'invalid_token'})
+        return
+    for identity_room in _clerk_identity_rooms(current_user, str(token)):
+        join_room(identity_room)
+    if not _is_ticket_operator(current_user):
+        current_app.logger.warning(
+            "Intento de envio de mensaje de chat por usuario no autorizado: %s",
+            getattr(current_user, 'id', None),
+        )
+        emit('chat_error', {'error': 'operator_forbidden'})
         return
 
     TicketModel = MunicipioTicket if ticket_type == "municipio" else PymeTicket if ticket_type == "pyme" else None
@@ -869,13 +1017,67 @@ def handle_send_chat_message(data):
         current_app.logger.error(f"No se pudo guardar el comentario para el ticket {ticket_type} {ticket_id}")
 
 
+def _is_authorized_location_room(room: str) -> bool:
+    normalized = str(room or "").strip()
+    if normalized.startswith(
+        ("clerk_session:", "clerk_user:", "ticket_", "tenant_", "tenant_slug_", "municipio_", "pyme_", "crm_")
+    ):
+        return True
+    try:
+        UUID(normalized)
+        return True
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def _resolve_location_response_room(data: Any) -> Optional[str]:
+    socket_sid = str(request.sid or "").strip()
+    joined_rooms = set(socketio.server.rooms(socket_sid, namespace="/") or [])
+    joined_rooms.discard(socket_sid)
+    authorized_rooms = {room for room in joined_rooms if _is_authorized_location_room(room)}
+
+    requested_room = str(data.get("room") or "").strip() if isinstance(data, dict) else ""
+    if requested_room:
+        return requested_room if requested_room in authorized_rooms else None
+    if not authorized_rooms:
+        return None
+
+    def priority(room: str) -> tuple[int, str]:
+        if room.startswith("clerk_session:"):
+            return (0, room)
+        if room.startswith("ticket_"):
+            return (1, room)
+        try:
+            UUID(room)
+            return (2, room)
+        except (TypeError, ValueError, AttributeError):
+            return (3, room)
+
+    return sorted(authorized_rooms, key=priority)[0]
+
+
 @socketio.on('location')
 def on_location(data):
-    """
-    Handles a location update from the client.
-    The data is expected to be a dictionary with 'lat' and 'lon' keys.
-    e.g., {'lat': -34.6037, 'lon': -58.3816}
-    """
+    """Geocode location only for sockets already bound to an authorized room."""
+
+    payload = data if isinstance(data, dict) else {}
+    response_room = _resolve_location_response_room(payload)
+    if not response_room:
+        current_app.logger.warning("Rejected unscoped socket location event sid=%s", request.sid)
+        emit('location_error', {'error': 'authorized_room_required'})
+        return
+
+    try:
+        lat = float(payload.get("lat"))
+        lon = float(payload.get("lon"))
+    except (TypeError, ValueError):
+        emit('location_error', {'error': 'invalid_coordinates'})
+        return
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        emit('location_error', {'error': 'invalid_coordinates'})
+        return
+
     from services.municipio_responder import handle_location_update
-    response = handle_location_update(data)
-    socketio.emit('message', response)
+
+    response = handle_location_update({**payload, "lat": lat, "lon": lon})
+    socketio.emit('message', response, room=response_room)

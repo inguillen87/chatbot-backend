@@ -41,7 +41,9 @@ from services.clerk_auth_service import (
     ClerkNotConfigured,
     build_chatboc_session_payload,
     build_clerk_frontend_contract,
+    clerk_enabled,
     complete_clerk_onboarding,
+    fetch_trusted_clerk_profile,
     sync_clerk_webhook_event,
     upsert_user_from_clerk,
     verify_clerk_session_token,
@@ -109,12 +111,15 @@ from utils.auth_helpers import (
     obtener_token,
     get_or_create_anon_id,
     generar_token,
+    is_user_auth_disabled,
+    is_clerk_managed_user,
+    is_demo_user_account,
     user_from_token,
     get_or_create_entity_token,
     _safe_user_query,
 )
 from flask_login import current_user
-from utils.roles import canonical_role
+from utils.roles import canonical_role, is_super_admin_role
 from utils.plan_limits import limite_para_usuario
 from services.plan_config import (
     get_plan_metadata,
@@ -405,14 +410,8 @@ def _extract_bearer_token() -> Optional[str]:
     return None
 
 
-def _clerk_profile_from_payload(data: dict) -> dict:
-    profile = data.get("user") or data.get("clerk_user") or data.get("profile") or {}
-    return profile if isinstance(profile, dict) else {}
-
-
 @auth_api_bp.route("/clerk/config", methods=["GET"])
 @auth_bp.route("/clerk/config", methods=["GET"])
-@cross_origin()
 def clerk_config():
     """Frontend contract for Clerk-based auth and tenant onboarding."""
 
@@ -421,7 +420,6 @@ def clerk_config():
 
 @auth_api_bp.route("/clerk/session", methods=["POST"])
 @auth_bp.route("/clerk/session", methods=["POST"])
-@cross_origin()
 def clerk_session_sync():
     """Verify a Clerk session JWT and exchange it for a Chatboc JWT."""
 
@@ -429,7 +427,12 @@ def clerk_session_sync():
     clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
     try:
         claims = verify_clerk_session_token(clerk_token)
-        user = upsert_user_from_clerk(claims, _clerk_profile_from_payload(data))
+        trusted_profile = fetch_trusted_clerk_profile(claims)
+        user = upsert_user_from_clerk(
+            claims,
+            trusted_profile,
+            profile_is_trusted=bool(trusted_profile),
+        )
         if not user.email_verified and not user.email_verification_token:
             user.email_verification_token = _generate_email_verification_token()
             user.email_verification_sent_at = datetime.now(timezone.utc)
@@ -439,7 +442,7 @@ def clerk_session_sync():
         if not user.email_verified and user.email_verification_token:
             _send_verification_email(user)
 
-        payload = build_chatboc_session_payload(user)
+        payload = build_chatboc_session_payload(user, clerk_claims=claims)
         status_code = 200 if not payload.get("onboarding", {}).get("required") else 202
         return jsonify(payload), status_code
     except ClerkNotConfigured as exc:
@@ -456,7 +459,6 @@ def clerk_session_sync():
 
 @auth_api_bp.route("/clerk/onboarding", methods=["POST"])
 @auth_bp.route("/clerk/onboarding", methods=["POST"])
-@cross_origin()
 def clerk_onboarding():
     """Complete tenant creation for a Clerk-authenticated owner."""
 
@@ -464,10 +466,15 @@ def clerk_onboarding():
     clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
     try:
         claims = verify_clerk_session_token(clerk_token)
-        user = upsert_user_from_clerk(claims, _clerk_profile_from_payload(data))
+        trusted_profile = fetch_trusted_clerk_profile(claims)
+        user = upsert_user_from_clerk(
+            claims,
+            trusted_profile,
+            profile_is_trusted=bool(trusted_profile),
+        )
         db.session.commit()
         tenant = complete_clerk_onboarding(user, data)
-        payload = build_chatboc_session_payload(user, tenant)
+        payload = build_chatboc_session_payload(user, tenant, clerk_claims=claims)
         payload["message"] = "Tenant creado y onboarding completado"
         return jsonify(payload), 201
     except ClerkNotConfigured as exc:
@@ -495,6 +502,23 @@ def clerk_webhook():
         verify_clerk_webhook_signature(raw_body, request.headers)
         event = json.loads(raw_body.decode("utf-8") or "{}")
         result = sync_clerk_webhook_event(event)
+        event_type = str(event.get("type") or "").strip()
+        if event_type in {"session.ended", "session.removed", "session.revoked", "user.deleted"}:
+            from socket_service import disconnect_clerk_session_sockets
+
+            event_data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            result["disconnected_sockets"] = disconnect_clerk_session_sockets(
+                clerk_session_id=(
+                    event_data.get("id") or event_data.get("session_id")
+                    if event_type.startswith("session.")
+                    else None
+                ),
+                clerk_user_id=(
+                    event_data.get("user_id")
+                    if event_type.startswith("session.")
+                    else event_data.get("id")
+                ),
+            )
         return jsonify(result), 200
     except ClerkNotConfigured as exc:
         current_app.logger.warning("[clerk_auth] Webhook not configured: %s", exc)
@@ -1379,42 +1403,6 @@ def _resolve_demo_rubro_for_tenant(tenant: TenantProfile) -> Optional[Rubro]:
     )
 
 
-def _demo_superadmin_credentials() -> dict:
-    return {
-        "email": os.getenv("DEMO_SUPERADMIN_EMAIL", "superadmin.demo@chatboc.ar"),
-        "password": os.getenv("DEMO_SUPERADMIN_PASSWORD", "demo1234"),
-    }
-
-
-def _ensure_demo_superadmin() -> User:
-    creds = _demo_superadmin_credentials()
-    email = (creds.get("email") or "").strip().lower()
-    user = _user_query().filter(func.lower(User.email) == email).first() if email else None
-    if user:
-        updated = False
-        if user.rol not in {"super_admin", "superadmin"}:
-            user.rol = "super_admin"
-            updated = True
-        if user.tipo_chat != "admin":
-            user.tipo_chat = "admin"
-            updated = True
-        if updated:
-            db.session.add(user)
-            db.session.commit()
-        return user
-
-    user = User(
-        name="Super Admin Demo",
-        email=creds["email"],
-        rol="super_admin",
-        tipo_chat="admin",
-    )
-    user.set_password(creds["password"])
-    db.session.add(user)
-    db.session.commit()
-    return user
-
-
 def _supported_demo_languages() -> list[dict[str, str]]:
     return [
         {"code": "es", "label": "Español", "locale": "es-AR"},
@@ -1451,7 +1439,7 @@ def _run_post_login_migrations(*, app, user_id: int, tenant_id: Optional[int], a
             app.logger.warning("Failed to migrate anon cart during deferred login flow: %s", exc)
 
 def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
-    """Return an isolated demo admin account for the tenant.
+    """Return an isolated, non-privileged demo account for the tenant.
 
     We intentionally avoid reusing tenant owner/admin accounts to prevent demo
     logins from inheriting real operator identities.
@@ -1462,30 +1450,36 @@ def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     user = _user_query().filter_by(email=demo_email).first()
     if user:
         _attach_user_to_tenant(user, tenant)
-        updated = False
         if demo_rubro and getattr(user, "rubro_id", None) != demo_rubro.id:
             user.rubro_id = demo_rubro.id
-            updated = True
-        if user.rol != "admin":
-            user.rol = "admin"
-            updated = True
-        if updated:
-            db.session.add(user)
-            db.session.commit()
-        return user
+    else:
+        user = User(
+            name=f"Demo {tenant.nombre}",
+            email=demo_email,
+            rol="demo",
+            tipo_chat=(tenant.tipo or "pyme").lower(),
+            tenant_slug=tenant.slug,
+            tenant_id=getattr(tenant, "id", None),
+            pyme_id=tenant.pyme_id,
+            municipio_id=tenant.municipio_id,
+            rubro_id=getattr(demo_rubro, "id", None),
+        )
 
-    user = User(
-        name=f"Demo {tenant.nombre}",
-        email=demo_email,
-        rol="admin",
-        tipo_chat=(tenant.tipo or "pyme").lower(),
-        tenant_slug=tenant.slug,
-        tenant_id=getattr(tenant, "id", None),
-        pyme_id=tenant.pyme_id,
-        municipio_id=tenant.municipio_id,
-        rubro_id=getattr(demo_rubro, "id", None),
-    )
-    user.set_password("demo")
+    user.rol = "demo"
+    user.set_password(secrets.token_urlsafe(48))
+    user.token = generate_token()
+    user.entity_token = None
+    metadata = user.accesibilidad if isinstance(user.accesibilidad, dict) else {}
+    auth_meta = metadata.get("auth") if isinstance(metadata.get("auth"), dict) else {}
+    auth_meta["demo"] = {
+        "restricted": True,
+        "tenant_id": getattr(tenant, "id", None),
+        "tenant_slug": tenant.slug,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    metadata["auth"] = auth_meta
+    user.accesibilidad = metadata
+    flag_modified(user, "accesibilidad")
     db.session.add(user)
     db.session.commit()
     return user
@@ -1632,9 +1626,6 @@ def demo_catalog():
             cached_response.headers.setdefault("X-Request-Id", request_id)
             return cached_response
 
-    if ensure_users:
-        _ensure_demo_superadmin()
-
     demo_items = []
     try:
         demos = _load_demo_rubros_cached()
@@ -1688,11 +1679,6 @@ def demo_catalog():
             {"key": "pyme", "label": "Demo PyME", "enabled": True, "login_payload": {"rubro": "pyme", "tipo_chat": "pyme"}},
         ],
         "quick_login_payload": {"tenant_slug": quick_login_slug},
-        "super_admin_demo": {
-            **_demo_superadmin_credentials(),
-            "role": "super_admin",
-            "login_endpoint": "/auth/login",
-        },
         "tenant_demos": [{**item, "enabled": True, "login_endpoint": "/auth/demo"} for item in demo_items],
         "supported_languages": _supported_demo_languages(),
         "onboarding": {
@@ -1845,13 +1831,16 @@ def login_demo():
         tipo_chat = "pyme"
     jwt_payload = {
         'user_id': demo_user.id,
-        'rol': demo_user.rol,
+        'rol': 'demo',
         'tipo_chat': tipo_chat,
         'empresa_id': demo_user.empresa_id,
         'municipio_id': demo_user.municipio_id,
         'tenant_slug': tenant_obj.slug,
         'demo_mode': True,
-        'exp': datetime.utcnow() + timedelta(hours=12),
+        'session_kind': 'demo',
+        'scope': ['demo_public'],
+        'jti': secrets.token_urlsafe(24),
+        'exp': datetime.now(timezone.utc) + timedelta(minutes=30),
     }
     jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm='HS256')
 
@@ -1861,7 +1850,7 @@ def login_demo():
         "token": jwt_token,
         "email": demo_user.email,
         "name": demo_user.name,
-        "rol": demo_user.rol,
+        "rol": "demo",
         "empresa_id": demo_user.empresa_id,
         "municipio_id": demo_user.municipio_id,
         "tipo_chat": tipo_chat,
@@ -1978,8 +1967,32 @@ def login():
 
     stage_timings["db_lookup_ms"] = round((time.perf_counter() - db_lookup_started) * 1000.0, 2)
 
+    if user and is_demo_user_account(user):
+        resp = jsonify({
+            "error": "Las cuentas demo solo ingresan desde el selector publico.",
+            "reason_code": "demo_login_required",
+        })
+        resp, _ = _finalize_auth_response(resp)
+        return resp, 403
+
+    if user and is_clerk_managed_user(user):
+        resp = jsonify({
+            "error": "Esta cuenta debe iniciar sesion con Clerk.",
+            "reason_code": "clerk_required",
+        })
+        resp, _ = _finalize_auth_response(resp)
+        return resp, 403
+
+    if user and is_super_admin_role(getattr(user, "rol", None)):
+        resp = jsonify({
+            "error": "El superadmin debe iniciar sesion con Clerk.",
+            "reason_code": "clerk_required",
+        })
+        resp, _ = _finalize_auth_response(resp)
+        return resp, 403
+
     password_verify_started = time.perf_counter()
-    password_ok = bool(user and user.check_password(data.get("password")))
+    password_ok = bool(user and not is_user_auth_disabled(user) and user.check_password(data.get("password")))
     stage_timings["password_verify_ms"] = round(
         (time.perf_counter() - password_verify_started) * 1000.0, 2
     )
@@ -2241,6 +2254,31 @@ def google_login():
     try:
         user = login_o_crear_usuario(token_id, rol=rol, tipo_chat=tipo_chat)
         current_app.logger.info(f"Login Google para: {user.email}")
+
+        if is_clerk_managed_user(user):
+            return jsonify({
+                "error": "Esta cuenta debe iniciar sesion con Clerk.",
+                "reason_code": "clerk_required",
+            }), 403
+
+        if is_super_admin_role(getattr(user, "rol", None)):
+            return jsonify({
+                "error": "El superadmin debe iniciar sesion con Clerk.",
+                "reason_code": "clerk_required",
+            }), 403
+
+        if not bool(getattr(user, "acepto_terminos", False)):
+            return jsonify({
+                "error": "Debes aceptar los Terminos y la Politica de Privacidad antes de continuar.",
+                "reason_code": "terms_required",
+                "auth_provider": "clerk" if clerk_enabled() else "legacy_google",
+                "token": None,
+                "terms": {
+                    "required": True,
+                    "terms_url": "/terminos",
+                    "privacy_url": "/privacidad",
+                },
+            }), 409
 
         owner_token = _resolve_owner_token(user)
         profile_identity = get_user_profile_identity(user)
@@ -2784,7 +2822,7 @@ def login_from_widget(owner_user):
     user = _user_query().filter_by(
         email=email.strip().lower(), empresa_id=owner_user.id
     ).first()
-    if not user or not user.check_password(password):
+    if not user or is_user_auth_disabled(user) or not user.check_password(password):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
     if anon_id:
@@ -3093,7 +3131,7 @@ def chatuser_login_panel():
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
     user = _user_query().filter_by(email=email.strip().lower(), empresa_id=owner_user.id).first()
-    if not user or not user.check_password(password):
+    if not user or is_user_auth_disabled(user) or not user.check_password(password):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
     if anon_id:
@@ -3609,10 +3647,24 @@ def refresh_token_endpoint():
 
     try:
         payload = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"])
+        if (
+            payload.get("auth_provider") == "clerk"
+            or payload.get("session_kind") in {"clerk", "demo"}
+            or payload.get("demo_mode")
+        ):
+            return jsonify({
+                "error": "Esta sesion debe renovarse con su proveedor de identidad.",
+                "reason_code": "provider_resync_required",
+            }), 401
         user_id = payload.get('user_id')
         user = _user_query().get(user_id)
-        if not user:
+        if not user or is_user_auth_disabled(user):
             return jsonify({"error": "Usuario no encontrado"}), 401
+        if is_clerk_managed_user(user) or is_super_admin_role(getattr(user, "rol", None)):
+            return jsonify({
+                "error": "Esta sesion debe renovarse con su proveedor de identidad.",
+                "reason_code": "provider_resync_required",
+            }), 401
 
         # Re-issue logic (duplicated for now, refactor later)
         tenant_slug = getattr(user, "tenant_slug", None)
@@ -3659,6 +3711,24 @@ def admin_login():
         current_app.logger.warning(f"[admin_login] User not found for email: {email.strip().lower()}")
         return jsonify({"error": "Credenciales inválidas"}), 401
 
+    if is_demo_user_account(user):
+        return jsonify({
+            "error": "Las cuentas demo no tienen acceso administrativo.",
+            "reason_code": "demo_scope_denied",
+        }), 403
+
+    if is_clerk_managed_user(user):
+        return jsonify({
+            "error": "Esta cuenta debe iniciar sesion con Clerk.",
+            "reason_code": "clerk_required",
+        }), 403
+
+    if is_super_admin_role(getattr(user, "rol", None)):
+        return jsonify({
+            "error": "El superadmin debe iniciar sesion con Clerk.",
+            "reason_code": "clerk_required",
+        }), 403
+
     current_app.logger.info(
         "[admin_login] Found user: %s, email: %s, role: %s",
         user.id,
@@ -3666,7 +3736,7 @@ def admin_login():
         user.rol,
     )
 
-    if not user.check_password(password):
+    if is_user_auth_disabled(user) or not user.check_password(password):
         current_app.logger.warning(f"[admin_login] Invalid password for user: {user.email}")
         return jsonify({"error": "Credenciales inválidas"}), 401
 

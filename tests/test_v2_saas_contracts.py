@@ -284,6 +284,13 @@ class V2SaasContractsTest(unittest.TestCase):
 
         self.super_admin = User(name="Super", email="super@test.com", rol="super_admin")
         self.super_admin.set_password("secret123")
+        self.super_admin.accesibilidad = {
+            "auth": {
+                "provider": "clerk",
+                "session_version": 1,
+                "clerk": {"user_id": "user_test_superadmin"},
+            }
+        }
         db.session.add(self.super_admin)
         db.session.commit()
 
@@ -293,13 +300,25 @@ class V2SaasContractsTest(unittest.TestCase):
         self.ctx.pop()
 
     def _auth(self, user: User):
-        token = jwt.encode(
-            {
+        payload = {
                 "user_id": user.id,
                 "rol": user.rol,
                 "tenant_slug": getattr(user, "tenant_slug", None),
                 "exp": datetime.utcnow() + timedelta(hours=1),
-            },
+            }
+        if user.rol == "super_admin":
+            payload.update(
+                {
+                    "auth_provider": "clerk",
+                    "session_kind": "clerk",
+                    "sid": "sess_test_superadmin",
+                    "clerk_sid": "sess_test_superadmin",
+                    "jti": "jti_test_superadmin",
+                    "sv": 1,
+                }
+            )
+        token = jwt.encode(
+            payload,
             self.app.config["SECRET_KEY"],
             algorithm="HS256",
         )
@@ -1510,16 +1529,21 @@ class V2SaasContractsTest(unittest.TestCase):
         tracking_action = next(action for action in legacy_item["allowed_actions"] if action["id"] == "open_tracking")
         self.assertEqual(
             tracking_action["endpoint"],
-            "/api/public/tracking/experience?kind=claim&code=M-900144&pin=900144",
+            "/api/public/tracking/experience?kind=claim&code=M-900144",
         )
-        self.assertEqual(tracking_action["href"], "/tracking/claim/M-900144?pin=900144")
-        self.assertEqual(tracking_action["frontend_path"], "/tracking/claim/M-900144?pin=900144")
+        self.assertEqual(tracking_action["href"], "/tracking/claim/M-900144#pin=900144")
+        self.assertEqual(tracking_action["frontend_path"], "/tracking/claim/M-900144#pin=900144")
+        self.assertEqual(tracking_action["credential_transport"], "x-tracking-pin-header")
         self.assertEqual(legacy_item["source_metadata"]["tracking_code"], "M-900144")
         self.assertEqual(
             legacy_item["source_metadata"]["tracking_endpoint"],
-            "/api/public/tracking/experience?kind=claim&code=M-900144&pin=900144",
+            "/api/public/tracking/experience?kind=claim&code=M-900144",
         )
-        self.assertEqual(legacy_item["source_metadata"]["tracking_href"], "/tracking/claim/M-900144?pin=900144")
+        self.assertEqual(legacy_item["source_metadata"]["tracking_href"], "/tracking/claim/M-900144#pin=900144")
+        self.assertEqual(
+            legacy_item["source_metadata"]["tracking_credential_transport"],
+            "x-tracking-pin-header",
+        )
         self.assertIsNone(legacy_item["contact"]["avatar"]["url"])
         self.assertEqual(legacy_item["frontend_contract"]["avatar_policy"], "consented_real_image_or_deterministic_fallback")
 
@@ -1533,7 +1557,7 @@ class V2SaasContractsTest(unittest.TestCase):
         with patch(
             "services.notification_dispatcher.dispatch_ticket_update",
             return_value={"email": False, "sms": False, "whatsapp": False},
-        ) as dispatch_update:
+        ) as dispatch_update, patch("socket_service.socketio.emit") as socket_emit:
             reply = self.client.post(
                 "/api/v2/inbox/omnichannel/actions",
                 json={
@@ -1557,9 +1581,60 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(delivery["external_dispatch"])
         self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": False})
         self.assertTrue(delivery["timeline_updated"])
+        self.assertEqual(
+            delivery["realtime"],
+            {
+                "emitted": True,
+                "event": "new_chat_message",
+                "events": ["new_chat_message", "ticket.status.changed"],
+                "room": f"ticket_municipio_{legacy.id}",
+                "fallback": "http_polling",
+            },
+        )
+        public_calls = [
+            item for item in socket_emit.call_args_list
+            if item.args and item.args[0] == "new_chat_message"
+        ]
+        self.assertEqual(len(public_calls), 1)
+        public_payload = public_calls[0].args[1]
+        self.assertEqual(public_calls[0].kwargs["room"], f"ticket_municipio_{legacy.id}")
+        self.assertEqual(public_payload["mensaje"], "Te respondemos desde mesa de ayuda.")
+        self.assertEqual(public_payload["actor"], "agent")
+        self.assertNotIn("user_id", public_payload["comment"])
+        self.assertNotIn("anon_id", public_payload["comment"])
+        public_status = next(
+            item
+            for item in socket_emit.call_args_list
+            if item.args
+            and item.args[0] == "ticket.status.changed"
+            and item.kwargs.get("room") == f"ticket_municipio_{legacy.id}"
+        )
+        self.assertEqual(public_status.args[1]["estado"], "en_proceso")
+        self.assertNotIn("municipio_id", public_status.args[1])
         updated = reply_payload["ticket"]
         self.assertEqual(updated["status"], "en_proceso")
         self.assertTrue(any("mesa de ayuda" in event["body"].lower() for event in updated["timeline"]))
+
+        with patch("socket_service.socketio.emit") as close_socket_emit:
+            closed = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "source_model": "MunicipioTicket",
+                    "legacy_id": legacy.id,
+                    "action": "close",
+                },
+                headers=self._auth(self.owner),
+            )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        self.assertEqual(closed.get_json()["delivery"]["realtime"]["events"], ["ticket.status.changed"])
+        closed_public_status = next(
+            item
+            for item in close_socket_emit.call_args_list
+            if item.args
+            and item.args[0] == "ticket.status.changed"
+            and item.kwargs.get("room") == f"ticket_municipio_{legacy.id}"
+        )
+        self.assertEqual(closed_public_status.args[1]["estado"], "cerrado")
 
     def test_omnichannel_legacy_claim_reply_reports_real_whatsapp_delivery(self):
         legacy = MunicipioTicket(
@@ -1704,7 +1779,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("analytics_heatmap", flow_ids)
         claim_flow = next(item for item in e2e["flows"] if item["id"] == "gov_claim_text_to_tracking")
         self.assertEqual(claim_flow["qa_scenario_id"], "gov_claim_text_to_tracking")
-        self.assertEqual(claim_flow["endpoint"], "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}")
+        self.assertEqual(claim_flow["endpoint"], "/api/public/tracking/experience?kind=claim&code={code}")
         self.assertEqual(claim_flow["frontend_entry"], "/perfil?tab=tickets")
         self.assertGreaterEqual(len(claim_flow["manual_test_steps"]), 3)
         self.assertGreaterEqual(len(claim_flow["acceptance_criteria"]), 3)
@@ -2058,7 +2133,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["content_modules"]["links"]["tenant_config_links"], 1)
         self.assertEqual(payload["tracking"]["claims"]["open"], 1)
         self.assertEqual(payload["tracking"]["orders"]["total"], 1)
-        self.assertEqual(payload["tracking"]["claims"]["experience_endpoint"], "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}")
+        self.assertEqual(payload["tracking"]["claims"]["experience_endpoint"], "/api/public/tracking/experience?kind=claim&code={code}")
+        self.assertEqual(payload["tracking"]["claims"]["credential_transport"], "x-tracking-pin-header")
         self.assertEqual(payload["tracking"]["orders"]["experience_endpoint"], "/api/public/tracking/experience?kind=order&code={code}")
         self.assertEqual(payload["tracking"]["courier_style_map"]["render_contract"]["fallback_when_no_coordinates"], "timeline_only")
         self.assertIn("route_progress", payload["tracking"]["courier_style_map"]["render_contract"]["animations"])
@@ -2267,7 +2343,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("document_delivery", webview_flows)
         self.assertEqual(
             webview_flows["claim_tracking_helpdesk"]["url_template"],
-            "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
+            "/api/public/tracking/experience?kind=claim&code={code}",
         )
         self.assertEqual(
             webview_flows["claim_live_or_offline_helpdesk"]["availability"]["outside_hours_mode"],

@@ -196,7 +196,7 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
     if not current_user or not tenant:
         return False
 
-    if current_user.rol in ("platform_admin", "super_admin"):
+    if is_authorized_superadmin_user(current_user):
         return True
 
     if current_user.tenant_id and current_user.tenant_id == tenant.id:
@@ -1820,7 +1820,7 @@ def assign_whatsapp_number(current_user, slug):
         return jsonify({"error": "Tenant not found"}), 404
 
     # IDOR Check
-    if current_user.tenant_id != tenant.id and current_user.rol != 'platform_admin':
+    if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
     number = assign_number_to_tenant(tenant)

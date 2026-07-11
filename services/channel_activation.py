@@ -318,7 +318,7 @@ def _identity_auth_status(
     publishable = bool(publishable_key)
     clerk_environment = _clerk_environment_from_key(publishable_key)
     jwt_verification = bool(_env_value("CLERK_JWKS_URL", "CLERK_ISSUER", "CLERK_JWT_ISSUER", "NEXT_PUBLIC_CLERK_FRONTEND_API"))
-    webhook = bool(_env_value("CLERK_WEBHOOK_SECRET"))
+    webhook = bool(_env_value("CLERK_WEBHOOK_SIGNING_SECRET", "CLERK_WEBHOOK_SECRET"))
     enabled = not _truthy_env("CLERK_DISABLED") and (
         _truthy_env("CLERK_ENABLED") or publishable or jwt_verification
     )
@@ -374,7 +374,7 @@ def _identity_auth_status(
             "pending",
             evidence,
             "clerk_webhook_recommended",
-            "Configurar CLERK_WEBHOOK_SECRET para sincronizar altas, bajas, avatar social consentido y cambios de email.",
+            "Configurar CLERK_WEBHOOK_SIGNING_SECRET para sincronizar altas, bajas, avatar social consentido y cambios de email.",
         )
     return "ready", evidence, None, "Login social, portal y guardrail superadmin listos para operar."
 

@@ -1077,7 +1077,8 @@ def _tracking_modules_payload(tenant: TenantProfile) -> dict[str, Any]:
             "enabled": ticket_count + municipio_count + pyme_ticket_count > 0,
             "total": ticket_count + municipio_count + pyme_ticket_count,
             "open": open_ticket_count,
-            "experience_endpoint": "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}",
+            "experience_endpoint": "/api/public/tracking/experience?kind=claim&code={code}",
+            "credential_transport": "x-tracking-pin-header",
             "public_status_endpoint": "/tickets/public/status",
             "public_status_alias": "/api/tickets/public/status",
             "tracking_page_template": "/tracking/claim/{nro_ticket}",
@@ -1386,7 +1387,7 @@ def _sample_value_for_variable(variable: str, *, tenant: TenantProfile | None = 
         "case_code": "M-123456",
         "case_or_order_code": "M-123456",
         "status": "Recibido",
-        "tracking_url": "https://www.chatboc.ar/tracking/claim/123456?pin=900144",
+        "tracking_url": "https://www.chatboc.ar/tracking/claim/123456#pin=900144",
         "order_code": "P-123456",
         "total": "$ 12.500",
         "checkout_url": "https://www.chatboc.ar/checkout/123456",
@@ -1513,7 +1514,7 @@ def _cta_route_suffix_sample(
             return f"finanzas/{tenant_slug}/seguros/SIN-1001?session={session}"
         if template_id.startswith("finance_remittance"):
             return f"finanzas/{tenant_slug}/transferencias/TRF-1001?session={session}"
-        return f"tracking/claim/123456?pin=900144&tenant_slug={tenant_slug}"
+        return f"tracking/claim/123456?tenant_slug={tenant_slug}#pin=900144"
     return f"t/{tenant_slug}/portal/dashboard"
 
 
@@ -2447,7 +2448,7 @@ def _webview_blueprint_payload(
 ) -> dict[str, Any]:
     slug = tenant.slug
     endpoints = checkout_experience.get("endpoints") if isinstance(checkout_experience.get("endpoints"), Mapping) else {}
-    claim_tracking_url = "/api/public/tracking/experience?kind=claim&code={code}&pin={pin}"
+    claim_tracking_url = "/api/public/tracking/experience?kind=claim&code={code}"
     order_tracking_url = "/api/public/tracking/experience?kind=order&code={code}"
     checkout_session_url = endpoints.get("public_checkout_session") or "/api/checkout/crear-preferencia"
     survey_public_url = "/e/{survey_slug}"
@@ -2460,6 +2461,7 @@ def _webview_blueprint_payload(
             "template_ids": ["gov_claim_created", "gov_claim_status_update", "case_created"],
             "url_template": claim_tracking_url,
             "requires": ["code", "pin"],
+            "credential_transport": "x-tracking-pin-header",
             "signed_params": ["tenant_slug", "ticket_id", "pin", "expires_at"],
             "server_confirmation": ["public_comment_created", "ticket_timeline_refreshed"],
             "fallback": "plain_tracking_url_with_pin",
@@ -2626,7 +2628,7 @@ def _webview_blueprint_payload(
             "verticals": ["gobierno", "consorcio", "soporte"],
             "surface": "ticket_bound_websocket_or_offline_thread",
             "template_ids": ["gov_claim_created", "gov_claim_status_update", "human_handoff", "standard_handoff"],
-            "url_template": "/tracking/claim/{nro_ticket}?pin={pin}&mode=claim_helpdesk",
+            "url_template": "/tracking/claim/{nro_ticket}?mode=claim_helpdesk#pin={pin}",
             "requires": ["ticket_id", "nro_ticket", "pin", "tenant_slug"],
             "signed_params": ["tenant_slug", "ticket_id", "nro_ticket", "pin", "contact_key", "expires_at"],
             "server_confirmation": ["message_saved_to_ticket_timeline", "admin_inbox_unread_incremented"],

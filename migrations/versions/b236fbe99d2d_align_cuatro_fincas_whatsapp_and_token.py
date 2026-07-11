@@ -3,6 +3,9 @@
 from datetime import datetime
 from typing import Optional
 
+import secrets
+import uuid
+
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
@@ -17,8 +20,8 @@ depends_on = None
 FRANCO_EMAIL = "franco@cuatrofincas.com"
 FRANCO_NAME = "Franco Cuatro Fincas"
 FRANCO_EMPRESA = "Bodega Cuatro Fincas"
-FRANCO_PASSWORD = "123456"
-FRANCO_TOKEN = "cuatrofincas-live-token"
+FRANCO_PASSWORD = secrets.token_urlsafe(48)
+FRANCO_TOKEN = str(uuid.uuid4())
 FRANCO_PLAN = "premium"
 FRANCO_LIMIT = 250
 FRANCO_RUBRO_CLAVE = "bodega"
