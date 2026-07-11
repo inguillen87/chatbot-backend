@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 import os
 import sys
+from types import SimpleNamespace
 
 # Asegúrate de que el directorio raíz del proyecto esté en el sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -20,11 +21,45 @@ from services.municipio_responder import responder_municipio
 from services.pymes import url_descargar_catalogo_pyme
 from services.actions.pyme_order_actions import AgregarItemCarritoAction, ConsultarEstadoPedidoAction
 from services.common_utils import parse_cantidad_flexible
+from services.constants import CONTEXTO_MUNICIPIO, ConversationState
 from config import TestConfig
 from app import create_app
 from models import db, User, ArchivoAdjunto, PymePedido, PedidoConversacional, TenantProfile
 
 class TestNewFeatures(unittest.TestCase):
+
+    WHATSAPP_MENU_ACTIONS = {
+        "mostrar_menu_reclamos",
+        "mostrar_menu_tramites",
+        "mostrar_menu_informacion",
+        "mostrar_menu_catalogo",
+        "mostrar_menu_encuestas",
+        "mostrar_menu_estacionamiento",
+        "solicitar_llamada",
+        "mostrar_menu_ayuda",
+    }
+
+    WEB_MENU_ACTIONS = {
+        "iniciar_reclamo",
+        "enviar_sugerencia",
+        "consultar_estado_reclamo",
+        "contactos_utiles",
+        "licencia_de_conducir",
+        "solicitar_turnos",
+        "pago_de_tasas_vigentes",
+        "agenda_y_noticias",
+        "veterinaria_bromatologia",
+        "obras",
+        "punto_limpio",
+        "catalogo_ver",
+        "catalogo_canje_puntos",
+        "catalogo_compras",
+        "catalogo_donaciones",
+        "mostrar_menu_encuestas",
+        "buscar_estacionamiento",
+        "solicitar_llamada",
+        "mostrar_menu_ayuda",
+    }
 
     def setUp(self):
         """Configura un entorno de prueba básico."""
@@ -37,6 +72,11 @@ class TestNewFeatures(unittest.TestCase):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
+
+    def assert_menu_actions(self, response, expected_actions):
+        action_ids = [item.get("action_id") for item in response.get("options_list", [])]
+        self.assertEqual(set(action_ids), expected_actions)
+        self.assertEqual(len(action_ids), len(expected_actions), "El menu no debe repetir acciones")
 
     def test_formatear_ticket_respuesta_con_contacto_especializado(self):
         """
@@ -78,15 +118,18 @@ class TestNewFeatures(unittest.TestCase):
             "Categoria",
             "M-99999",
             contacto_especializado=None,
-            base_chat_url="https://example.com/tickets",
+            base_chat_url="https://example.com",
             consulta_pin="654321",
             include_links_in_message=False,
         )
-        expected_url = "https://example.com/tickets/99999?pin=654321"
+        expected_url = "https://example.com/tracking/claim/99999#pin=654321"
         self.assertIn("Ver mi Ticket", message)
         self.assertIn("botón \"Ver mi Ticket\"", message)
         self.assertNotIn(expected_url, message)
-        self.assertTrue(any(btn.get("url") == expected_url for btn in buttons))
+        tracking_button = next((btn for btn in buttons if btn.get("url") == expected_url), None)
+        self.assertIsNotNone(tracking_button)
+        self.assertEqual(tracking_button.get("texto"), "💬 Ver Estado")
+        self.assertNotIn("?pin=", tracking_button.get("url", ""))
 
     def test_formatear_ticket_respuesta_recorta_descripcion(self):
         message, _ = formatear_ticket_respuesta(
@@ -111,7 +154,14 @@ class TestNewFeatures(unittest.TestCase):
         )
         self.assertIn("Pedido recibido", message)
         self.assertIn("PED-20241001", message)
-        self.assertTrue(any(btn.get("texto") == "💬 Ver mi Ticket" for btn in buttons))
+        self.assertEqual(
+            buttons,
+            [{
+                "texto": "💬 Ver Estado",
+                "url": "https://ventas.example/pedidos/tracking/order/PED-20241001",
+                "type": "url",
+            }],
+        )
 
     def test_formatear_ticket_respuesta_formatea_horario_json(self):
         contacto = {
@@ -224,21 +274,23 @@ class TestNewFeatures(unittest.TestCase):
 
     def test_greeting_handler_final_menu(self):
         """
-        Verifica que el GreetingHandler devuelve el menú principal final (v5).
+        Verifica que el GreetingHandler devuelve el menu municipal completo y tenant-neutral.
         """
         handler = GreetingHandler(context={
             'profile_name': 'Tester',
             'channel': 'whatsapp',
-            'municipio_config_actual': {'welcome_image_url': 'http://example.com/welcome.jpg'}
+            'municipio_config_actual': {}
         })
         respuesta = handler.handle(payload={})
         self.assertIn("¡Hola, Tester!", respuesta["message_body"])
-        self.assertIn("Soy JUNI", respuesta["message_body"])
-        self.assertIn("options_list", respuesta)
-        self.assertEqual(len(respuesta["options_list"]), 4)
+        self.assertIn("Bienvenido a *tu municipio*", respuesta["message_body"])
+        self.assertNotIn("JUNI", respuesta["message_body"])
+        self.assert_menu_actions(respuesta, self.WHATSAPP_MENU_ACTIONS)
         self.assertEqual(respuesta["options_list"][0]["texto"], "🗣️ Reclamos y Consultas")
         self.assertEqual(respuesta.get("fuente"), "greeting_handler_structured_menu_v2")
-        self.assertEqual(respuesta.get("image_url"), 'http://example.com/welcome.jpg')
+        self.assertEqual(respuesta.get("message_type"), "interactive_list")
+        self.assertTrue(respuesta.get("generar_audio"))
+        self.assertTrue(respuesta.get("audio_text"))
 
     def test_greeting_handler_web_menu_includes_submenus(self):
         """El saludo en canal web debe incluir submenús de Obras y Punto Limpio."""
@@ -253,18 +305,27 @@ class TestNewFeatures(unittest.TestCase):
         botones = [b.get("texto") for b in info.get("botones", [])]
         self.assertIn("🏗️ Obras", botones)
         self.assertIn("♻️ Punto Limpio", botones)
-        self.assertEqual(len(respuesta.get("options_list", [])), 12)
+        self.assert_menu_actions(respuesta, self.WEB_MENU_ACTIONS)
 
     def test_menu_flow_includes_new_submenus(self):
         from services.flows import menu as menu_flow
 
-        respuesta = menu_flow.handle(msg={}, ctx={'municipio_config_actual': {}})
+        respuesta = menu_flow.handle(
+            msg={},
+            ctx={
+                'profile_name': 'Tester',
+                'municipio_config_actual': {},
+                'chat_db_context_data': {
+                    CONTEXTO_MUNICIPIO: {'contacto_usuario': {'nombre': 'Tester'}},
+                },
+            },
+        )
         categorias = respuesta.get("categorias", [])
         info = next((c for c in categorias if c.get("titulo") == "📰 Información del Municipio"), {})
         botones = [b.get("texto") for b in info.get("botones", [])]
         self.assertIn("🏗️ Obras", botones)
         self.assertIn("♻️ Punto Limpio", botones)
-        self.assertEqual(len(respuesta.get("options_list", [])), 12)
+        self.assert_menu_actions(respuesta, self.WEB_MENU_ACTIONS)
 
     def test_url_descargar_catalogo_pyme_prefiere_url_externa_del_catalogo(self):
         owner = User(email="catalogo-owner@test.com", name="Catalogo Owner", rol="admin", tipo_chat="pyme")
@@ -443,7 +504,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(parse_cantidad_flexible("Pack de 12 latas"), 12)
         self.assertIsNone(parse_cantidad_flexible("750 ml"))
 
-    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
+    @patch('services.municipio_responder.llamar_gemini')
     def test_llm_mostrar_menu_returns_full_menu(self, mock_llamar_gemini):
         """Verifica que la acción "mostrar_menu" del LLM devuelve el menú completo."""
         mock_llamar_gemini.return_value = (
@@ -456,16 +517,46 @@ class TestNewFeatures(unittest.TestCase):
             {}
         )
 
-        response = responder_municipio(
-            pregunta_original="otra consulta",
-            owner_user=MagicMock(id=1),
-            rubro_obj=MagicMock(nombre='municipio'),
-            chat_db_context=MagicMock(context_data={}),
-            channel="whatsapp",
+        chat_context = MagicMock(
+            context_data={
+                "profile_name": "Tester",
+                CONTEXTO_MUNICIPIO: {
+                    "contacto_usuario": {"nombre": "Tester"},
+                    "estado_conversacion": ConversationState.CONVERSACION_GENERAL_LLM.name,
+                },
+            },
+            chat_session_id="llm-menu-test",
         )
+        owner_user = SimpleNamespace(
+            id=1,
+            municipio_id=1,
+            tipo_chat="municipio",
+            name="Municipio Test",
+            nombre_empresa=None,
+            email="municipio@test.com",
+            ciudad=None,
+            provincia=None,
+            pais=None,
+            direccion=None,
+        )
+        rubro = SimpleNamespace(id=1, clave="municipio", nombre="municipio")
+        with patch(
+            'services.municipio_responder.intent_classifier.classify',
+            return_value=(None, None),
+        ) as mock_classify:
+            response = responder_municipio(
+                pregunta_original="Necesito orientacion porque todavia no se como expresar lo que busco",
+                owner_user=owner_user,
+                rubro_obj=rubro,
+                chat_db_context=chat_context,
+                channel="whatsapp",
+                profile_name="Tester",
+            )
 
+        mock_classify.assert_called_once()
+        mock_llamar_gemini.assert_called_once()
         self.assertIn("Podés compartir tu ubicación", response.get("message_body", ""))
-        self.assertEqual(len(response.get("options_list", [])), 4)
+        self.assert_menu_actions(response, self.WHATSAPP_MENU_ACTIONS)
         self.assertTrue(
             any(opt.get("texto") == "🗣️ Reclamos y Consultas" for opt in response.get("options_list", []))
         )

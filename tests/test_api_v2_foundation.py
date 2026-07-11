@@ -68,10 +68,64 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual((first_rubro.get("openai_runtime") or {}).get("provider"), "openai_server_side")
         self.assertFalse((first_rubro.get("openai_runtime") or {}).get("frontend_api_keys_allowed"))
 
-        flattened = str(payload).lower()
-        self.assertNotIn("password", flattened)
-        self.assertNotIn("token", flattened)
-        self.assertNotIn("secret", flattened)
+        def iter_fields(value, path="$"):
+            if isinstance(value, dict):
+                for key, nested in value.items():
+                    field_path = f"{path}.{key}"
+                    yield field_path, str(key).lower(), nested
+                    yield from iter_fields(nested, field_path)
+            elif isinstance(value, list):
+                for index, nested in enumerate(value):
+                    yield from iter_fields(nested, f"{path}[{index}]")
+
+        fields = list(iter_fields(payload))
+        sensitive_suffixes = {
+            "password",
+            "password_hash",
+            "secret",
+            "secret_key",
+            "client_secret",
+            "api_key",
+            "api_keys",
+            "private_key",
+            "credential",
+            "credentials",
+            "token",
+            "tokens",
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "auth_token",
+            "bearer_token",
+            "authorization",
+        }
+
+        def is_sensitive_field(field_name):
+            if field_name == "public_token":
+                return False
+            return any(
+                field_name == suffix or field_name.endswith(f"_{suffix}")
+                for suffix in sensitive_suffixes
+            )
+
+        exposed_sensitive_paths = [
+            path for path, field_name, _ in fields if is_sensitive_field(field_name)
+        ]
+        self.assertEqual(exposed_sensitive_paths, [])
+
+        public_tokens = [value for _, field_name, value in fields if field_name == "public_token"]
+        self.assertTrue(public_tokens)
+        self.assertTrue(
+            all(isinstance(token, str) and token.startswith("demo-") for token in public_tokens)
+        )
+
+        frontend_key_flags = [
+            value
+            for _, field_name, value in fields
+            if field_name == "frontend_api_keys_allowed"
+        ]
+        self.assertTrue(frontend_key_flags)
+        self.assertTrue(all(flag is False for flag in frontend_key_flags))
 
     def test_v2_demo_session_returns_workspace_contract(self):
         owner = User(name="Demo Pyme", email="demo-pyme@test.com", password_hash="hash", tipo_chat="pyme")
