@@ -496,6 +496,48 @@ def _public_assisted_items(order: PedidoConversacional, metadata: dict[str, Any]
     if metadata.get("contract_version") != "marketplace.assisted_request.v1":
         return order.items or []
 
+    crm_order_draft = metadata.get("crm_order_draft") if isinstance(metadata.get("crm_order_draft"), dict) else {}
+    draft_lines = crm_order_draft.get("lines") if isinstance(crm_order_draft.get("lines"), list) else []
+    if draft_lines:
+        items: list[dict[str, Any]] = []
+        for index, line in enumerate(draft_lines):
+            if not isinstance(line, dict):
+                continue
+            catalog_match = line.get("catalog_match") if isinstance(line.get("catalog_match"), dict) else {}
+            status = str(line.get("status") or "").strip().lower()
+            matched = bool(
+                status == "catalog_matched"
+                or line.get("catalog_item_id")
+                or line.get("catalogo_item_id")
+                or catalog_match.get("id")
+                or catalog_match.get("catalog_item_id")
+            ) and line.get("needs_operator_review") is not True
+            title = (
+                line.get("source_name")
+                or line.get("nombre")
+                or line.get("name")
+                or catalog_match.get("nombre")
+                or catalog_match.get("name")
+                or line.get("sku")
+                or "Item detectado"
+            )
+            items.append(
+                {
+                    "id": (
+                        line.get("catalog_item_id")
+                        or line.get("catalogo_item_id")
+                        or catalog_match.get("id")
+                        or line.get("line_id")
+                        or f"draft-{index + 1}"
+                    ),
+                    "title": title,
+                    "quantity": line.get("quantity") or line.get("cantidad") or 1,
+                    "status": "matched_catalog" if matched else "operator_review",
+                }
+            )
+        if items:
+            return items
+
     raw_payload = order.items[0] if order.items and isinstance(order.items[0], dict) else {}
     items: list[dict[str, Any]] = []
     for index, item in enumerate(raw_payload.get("items_detectados") or []):

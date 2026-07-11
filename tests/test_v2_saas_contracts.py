@@ -1723,28 +1723,103 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("next_action", claim_flow)
 
     def test_omnichannel_inbox_action_updates_ticket(self):
-        response = self.client.post(
-            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
-            json={"action": "reply", "body": "Estamos revisando tu caso.", "visibility": "public"},
-            headers={**self._auth(self.owner), "X-Request-Id": "inbox-action-1"},
-        )
+        with patch(
+            "utils.whatsapp.enviar_mensaje_whatsapp_con_fallback",
+            return_value=True,
+        ) as send_whatsapp:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={"action": "reply", "body": "Estamos revisando tu caso.", "visibility": "public"},
+                headers={**self._auth(self.owner), "X-Request-Id": "inbox-action-1"},
+            )
 
         self.assertEqual(response.status_code, 200)
+        send_whatsapp.assert_called_once_with(
+            "+5491111111111",
+            "Estamos revisando tu caso.",
+            from_number="whatsapp:+100",
+        )
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "inbox.omnichannel.action.v1")
         self.assertEqual(payload.get("request_id"), "inbox-action-1")
         self.assertEqual(payload["delivery"]["contract_version"], "inbox.action_delivery.v1")
-        self.assertEqual(payload["delivery"]["mode"], "timeline_only")
-        self.assertEqual(payload["delivery"]["delivery_mode"], "timeline_only")
-        self.assertEqual(payload["delivery"]["status"], "saved_to_crm")
-        self.assertEqual(payload["delivery"]["fallback"], "saved_to_crm_no_external_dispatch")
-        self.assertEqual(payload["delivery"]["reply_status"], "saved_to_timeline")
+        self.assertEqual(payload["delivery"]["mode"], "real_message")
+        self.assertEqual(payload["delivery"]["delivery_mode"], "real_message")
+        self.assertEqual(payload["delivery"]["status"], "sent")
+        self.assertEqual(payload["delivery"]["fallback"], "none")
+        self.assertEqual(payload["delivery"]["reply_status"], "sent_to_contact")
         self.assertEqual(payload["delivery"]["admin_surface"], "omnichannel_inbox")
-        self.assertFalse(payload["delivery"]["external_dispatch"])
+        self.assertTrue(payload["delivery"]["external_dispatch"])
         self.assertTrue(payload["delivery"]["timeline_updated"])
-        self.assertIn("No se envio", payload["delivery"]["operator_message"])
+        self.assertEqual(payload["delivery"]["requested_channels"], ["whatsapp"])
+        self.assertEqual(
+            payload["delivery"]["delivery_results"],
+            {"email": False, "sms": False, "whatsapp": True},
+        )
+        self.assertIn("enviado", payload["delivery"]["operator_message"].lower())
         self.assertTrue(payload["ticket"]["timeline"])
         self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
+        db.session.refresh(self.ticket)
+        delivery_history = self.ticket.datos_extra.get("reply_delivery_history") or []
+        self.assertEqual(delivery_history[-1]["mode"], "real_message")
+        self.assertTrue(delivery_history[-1]["external_dispatch"])
+
+    def test_omnichannel_tenant_reply_can_remain_timeline_only(self):
+        with patch("utils.whatsapp.enviar_mensaje_whatsapp_con_fallback") as send_whatsapp:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "body": "Nota operativa sin envio externo.",
+                    "visibility": "internal",
+                    "send_external": True,
+                    "delivery_channels": ["whatsapp"],
+                },
+                headers=self._auth(self.owner),
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        send_whatsapp.assert_not_called()
+        delivery = response.get_json()["delivery"]
+        self.assertEqual(delivery["mode"], "timeline_only")
+        self.assertEqual(delivery["status"], "saved_to_crm")
+        self.assertEqual(delivery["reason"], "external_dispatch_no_channel_requested")
+        self.assertEqual(delivery["requested_channels"], [])
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertEqual(
+            delivery["delivery_results"],
+            {"email": False, "sms": False, "whatsapp": False},
+        )
+
+    def test_omnichannel_tenant_reply_dispatches_email_from_user_profile(self):
+        with patch("services.email_service.enviar_email", return_value=True) as send_email:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "body": "<Gracias>\nSeguimos con tu caso.",
+                    "visibility": "public",
+                    "delivery_channels": ["email"],
+                },
+                headers=self._auth(self.owner),
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        send_email.assert_called_once_with(
+            self.owner.email,
+            f"Respuesta de {self.tenant.nombre} - solicitud #{self.ticket.id}",
+            "<p>&lt;Gracias&gt;<br>Seguimos con tu caso.</p>",
+            cuerpo_texto="<Gracias>\nSeguimos con tu caso.",
+        )
+        delivery = response.get_json()["delivery"]
+        self.assertEqual(delivery["mode"], "real_message")
+        self.assertEqual(delivery["channel"], "email")
+        self.assertEqual(delivery["requested_channels"], ["email"])
+        self.assertEqual(
+            delivery["delivery_results"],
+            {"email": True, "sms": False, "whatsapp": False},
+        )
+        self.assertTrue(delivery["external_dispatch"])
 
     def test_tenant_admin_experience_contract_unifies_profile_operations_and_modules(self):
         response = self.client.get(

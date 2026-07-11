@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from html import escape
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote_plus
@@ -4186,6 +4187,8 @@ def _inbox_action_delivery_payload(
     reason: str | None = None,
     external_dispatch: bool = False,
     delivery_results: Mapping[str, Any] | None = None,
+    requested_channels: list[str] | None = None,
+    delivery_skipped: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_action = str(action or "").strip().lower()
     normalized_channel = str(channel or "crm").strip().lower() or "crm"
@@ -4231,6 +4234,10 @@ def _inbox_action_delivery_payload(
             "sms": bool(delivery_results.get("sms")),
             "whatsapp": bool(delivery_results.get("whatsapp")),
         }
+    if requested_channels is not None:
+        payload["requested_channels"] = list(requested_channels)
+    if delivery_skipped:
+        payload["delivery_skipped"] = dict(delivery_skipped)
     return payload
 
 
@@ -4240,6 +4247,199 @@ def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | 
         if normalized_results.get(channel):
             return channel
     return str(fallback or "crm").strip().lower() or "crm"
+
+
+def _tenant_ticket_reply_contact(ticket: TenantTicket) -> dict[str, str]:
+    extra = _ticket_extra(ticket)
+    assisted_request = extra.get("assisted_request") if isinstance(extra.get("assisted_request"), Mapping) else {}
+    public_follow_up = extra.get("public_follow_up") if isinstance(extra.get("public_follow_up"), Mapping) else {}
+    assisted_follow_up = (
+        assisted_request.get("public_follow_up")
+        if isinstance(assisted_request.get("public_follow_up"), Mapping)
+        else {}
+    )
+    crm_review_card = extra.get("crm_review_card") if isinstance(extra.get("crm_review_card"), Mapping) else {}
+    ticket_user = getattr(ticket, "user", None)
+    candidates = [
+        extra.get("contact"),
+        extra.get("customer_profile"),
+        assisted_request.get("contact"),
+        crm_review_card.get("contact"),
+        public_follow_up.get("contact"),
+        assisted_follow_up.get("contact"),
+        extra,
+        {
+            "name": getattr(ticket_user, "name", None),
+            "phone": getattr(ticket_user, "telefono", None),
+            "email": getattr(ticket_user, "email", None),
+        },
+    ]
+
+    contact: dict[str, str] = {}
+    aliases = {
+        "name": ("name", "nombre", "contact_name"),
+        "phone": ("phone", "telefono", "whatsapp", "contact_phone", "phone_number", "wa_id"),
+        "email": ("email", "correo", "contact_email", "email_address"),
+    }
+    for field, keys in aliases.items():
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            value = next((candidate.get(key) for key in keys if candidate.get(key)), None)
+            if value is not None and str(value).strip():
+                contact[field] = str(value).strip()
+                break
+    return contact
+
+
+def _tenant_ticket_delivery_channels(
+    ticket: TenantTicket,
+    payload: Mapping[str, Any],
+    *,
+    visibility: str,
+) -> list[str]:
+    if visibility != "public" or payload.get("send_external") is False:
+        return []
+
+    raw_channels = payload.get("delivery_channels")
+    if raw_channels is None and "channels" in payload:
+        raw_channels = payload.get("channels")
+    if raw_channels is not None:
+        values = raw_channels if isinstance(raw_channels, (list, tuple, set)) else [raw_channels]
+        normalized = []
+        for value in values:
+            channel = str(value or "").strip().lower()
+            if channel in {"wa", "twilio", "whatsapp_business"}:
+                channel = "whatsapp"
+            elif channel in {"mail", "correo"}:
+                channel = "email"
+            if channel in {"whatsapp", "email"} and channel not in normalized:
+                normalized.append(channel)
+        return normalized
+
+    source_channel = _ticket_channel(ticket)
+    if source_channel in {"whatsapp", "wa", "twilio", "whatsapp_business"}:
+        return ["whatsapp"]
+    if source_channel in {"email", "mail", "correo"}:
+        return ["email"]
+    return []
+
+
+def _tenant_whatsapp_sender(tenant: TenantProfile) -> str | None:
+    sender = str(getattr(tenant, "whatsapp_sender_id", None) or "").strip()
+    if sender:
+        return sender
+    config = tenant.configuracion if isinstance(tenant.configuracion, Mapping) else {}
+    sender = str(config.get("whatsapp_sender_id") or config.get("twilio_messaging_service_sid") or "").strip()
+    return sender or None
+
+
+def _dispatch_tenant_ticket_reply(
+    *,
+    tenant: TenantProfile,
+    ticket: TenantTicket,
+    body: str,
+    requested_channels: list[str],
+) -> tuple[dict[str, bool], str | None, dict[str, str]]:
+    results = {"email": False, "sms": False, "whatsapp": False}
+    skipped: dict[str, str] = {}
+    if not requested_channels:
+        return results, "external_dispatch_no_channel_requested", skipped
+
+    contact = _tenant_ticket_reply_contact(ticket)
+    attempted = False
+
+    if "whatsapp" in requested_channels:
+        phone = contact.get("phone")
+        sender = _tenant_whatsapp_sender(tenant)
+        if not phone:
+            skipped["whatsapp"] = "contact_phone_missing"
+        elif not sender:
+            skipped["whatsapp"] = "tenant_whatsapp_sender_missing"
+        else:
+            attempted = True
+            try:
+                from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
+
+                results["whatsapp"] = bool(
+                    enviar_mensaje_whatsapp_con_fallback(
+                        phone,
+                        body,
+                        from_number=sender,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive production logging
+                current_app.logger.exception(
+                    "Error dispatching TenantTicket WhatsApp reply ticket=%s tenant=%s: %s",
+                    ticket.id,
+                    tenant.slug,
+                    exc,
+                )
+                skipped["whatsapp"] = "provider_error"
+
+    if "email" in requested_channels:
+        email = contact.get("email")
+        if not email:
+            skipped["email"] = "contact_email_missing"
+        else:
+            attempted = True
+            try:
+                from services.email_service import enviar_email
+
+                tenant_name = str(getattr(tenant, "nombre", None) or "el equipo").strip()
+                subject = f"Respuesta de {tenant_name} - solicitud #{ticket.id}"
+                body_html = "<p>" + escape(body).replace("\n", "<br>") + "</p>"
+                results["email"] = bool(
+                    enviar_email(
+                        email,
+                        subject,
+                        body_html,
+                        cuerpo_texto=body,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive production logging
+                current_app.logger.exception(
+                    "Error dispatching TenantTicket email reply ticket=%s tenant=%s: %s",
+                    ticket.id,
+                    tenant.slug,
+                    exc,
+                )
+                skipped["email"] = "provider_error"
+
+    if any(results.values()):
+        return results, None, skipped
+    if attempted:
+        return results, "external_dispatch_failed", skipped
+    return results, "external_dispatch_contact_or_sender_missing", skipped
+
+
+def _record_tenant_ticket_delivery(
+    ticket: TenantTicket,
+    *,
+    delivery: Mapping[str, Any],
+    actor: User,
+) -> None:
+    extra = deepcopy(_ticket_extra(ticket))
+    history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
+    history.append(
+        {
+            "contract_version": delivery.get("contract_version"),
+            "mode": delivery.get("mode"),
+            "status": delivery.get("status"),
+            "reason": delivery.get("reason"),
+            "channel": delivery.get("channel"),
+            "external_dispatch": bool(delivery.get("external_dispatch")),
+            "delivery_results": delivery.get("delivery_results") or {},
+            "requested_channels": delivery.get("requested_channels") or [],
+            "delivery_skipped": delivery.get("delivery_skipped") or {},
+            "actor_user_id": actor.id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    extra["reply_delivery_history"] = history[-100:]
+    ticket.datos_extra = extra
+    flag_modified(ticket, "datos_extra")
+    db.session.add(ticket)
 
 
 def _dispatch_legacy_claim_reply(
@@ -4439,6 +4639,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     extra = deepcopy(_ticket_extra(ticket))
     event_body = ""
     timeline_updated = False
+    reply_visibility = "public"
 
     if action == "assign":
         assignee_id = payload.get("assignee_id") or payload.get("user_id")
@@ -4461,8 +4662,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         if not body:
             return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
         visibility = str(payload.get("visibility") or "public").strip().lower()
+        reply_visibility = "internal" if visibility == "internal" else "public"
         event_body = body
-        _append_ticket_event(extra, action=action, actor=current_user, body=body, visibility=visibility)
+        _append_ticket_event(extra, action=action, actor=current_user, body=body, visibility=reply_visibility)
         timeline_updated = True
 
     elif action == "handoff":
@@ -4505,12 +4707,52 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     ticket.updated_at = datetime.now(timezone.utc)
     db.session.add(ticket)
     db.session.commit()
+
+    delivery_results: dict[str, bool] | None = None
+    dispatch_reason: str | None = None
+    requested_channels: list[str] | None = None
+    delivery_skipped: dict[str, str] | None = None
+    external_dispatch = False
+    if action == "reply":
+        requested_channels = _tenant_ticket_delivery_channels(
+            ticket,
+            payload,
+            visibility=reply_visibility,
+        )
+        delivery_results, dispatch_reason, delivery_skipped = _dispatch_tenant_ticket_reply(
+            tenant=tenant,
+            ticket=ticket,
+            body=event_body,
+            requested_channels=requested_channels,
+        )
+        external_dispatch = any(delivery_results.values())
+
     delivery = _inbox_action_delivery_payload(
         action=action,
-        channel=_ticket_channel(ticket),
+        channel=_ticket_delivery_channel(
+            delivery_results,
+            requested_channels[0] if requested_channels else _ticket_channel(ticket),
+        ),
         timeline_updated=timeline_updated,
         source_model="TenantTicket",
+        status="sent" if external_dispatch else None,
+        reason=("external_dispatch_confirmed" if external_dispatch else dispatch_reason),
+        external_dispatch=external_dispatch,
+        delivery_results=delivery_results,
+        requested_channels=requested_channels,
+        delivery_skipped=delivery_skipped,
     )
+    if action == "reply":
+        try:
+            _record_tenant_ticket_delivery(ticket, delivery=delivery, actor=current_user)
+            db.session.commit()
+        except Exception as exc:  # pragma: no cover - reply is already durable in the timeline
+            db.session.rollback()
+            current_app.logger.exception(
+                "Error recording TenantTicket reply delivery audit ticket=%s: %s",
+                ticket.id,
+                exc,
+            )
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
     ticket_payload = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
 
