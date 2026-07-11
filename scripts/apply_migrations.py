@@ -15,6 +15,7 @@ from sqlalchemy import create_engine
 
 # Importar la Config de la app (ahora sí la encuentra)
 from config import Config as AppConfig
+from utils.safe_logging import describe_database_uri
 
 # Usar una URL explícita para migraciones si existe,
 # si no, la misma que usa la app en runtime.
@@ -38,7 +39,7 @@ cfg.set_main_option("sqlalchemy.url", dburl)
 with engine.connect() as conn:
     # Inyectamos la conexión al entorno Alembic
     cfg.attributes["connection"] = conn
-    print(f"Running migrations with existing connection on: {dburl}")
+    print(f"Running migrations with existing connection on: {describe_database_uri(dburl)}")
     try:
         command.upgrade(cfg, "head")
     except CommandError as exc:

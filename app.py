@@ -47,45 +47,7 @@ from extensions import db, migrate, login_manager, sock, limiter  # livianos + l
 from middleware import tenant_middleware
 from utils.errors import ApiError
 from utils.contact_identity import resolve_contact_identity_from_request
-
-
-def _mask_token(value: str | None) -> str | None:
-    """Return a partially masked token for diagnostic logging."""
-
-    if not value:
-        return value
-
-    text = str(value)
-    if len(text) <= 4:
-        return "*" * len(text)
-
-    return f"{text[:2]}{'*' * (len(text) - 4)}{text[-2:]}"
-
-
-def _describe_database_uri(database_uri: str | None) -> str:
-    """Return a sanitised representation of the configured database URI."""
-
-    if not database_uri:
-        return "<unset>"
-
-    try:
-        from sqlalchemy.engine.url import make_url
-
-        url = make_url(database_uri)
-        user_segment = ""
-        if url.username:
-            user_segment = _mask_token(url.username) or "*"
-            password_segment = ":***" if url.password else ""
-            user_segment = f"{user_segment}{password_segment}@"
-
-        host = url.host or "localhost"
-        port = f":{url.port}" if url.port else ""
-        database = f"/{url.database}" if url.database else ""
-        query = f"?{url.query}" if url.query else ""
-
-        return f"{url.drivername}://{user_segment}{host}{port}{database}{query}"
-    except Exception:
-        return "<configured>"
+from utils.safe_logging import describe_database_uri
 
 
 def _truthy_env(name: str) -> bool:
@@ -146,7 +108,7 @@ def create_app(config_class=Config):
     app.logger.info("Loaded config: %s", config_class)
     app.logger.info(
         "Database URI: %s",
-        _describe_database_uri(app.config.get("SQLALCHEMY_DATABASE_URI")),
+        describe_database_uri(app.config.get("SQLALCHEMY_DATABASE_URI")),
     )
     app.logger.debug("DB object: %s", db)
 
@@ -400,7 +362,10 @@ def create_app(config_class=Config):
     app.logger.setLevel(log_level)
     app.logger.propagate = False
     app.logger.info(f"Aplicación creada. Nivel de logging: {log_level}")
-    app.logger.info(f"Usando base de datos: {app.config.get('SQLALCHEMY_DATABASE_URI')}")
+    app.logger.info(
+        "Usando base de datos: %s",
+        describe_database_uri(app.config.get("SQLALCHEMY_DATABASE_URI")),
+    )
 
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
