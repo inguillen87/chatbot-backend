@@ -415,11 +415,12 @@ def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> 
     if not owner:
         return False
 
-    existing = (
-        CatalogoItem.query.options(*CatalogoItem.legacy_safe_options())
-        .filter_by(user_id=owner.id)
-        .first()
+    existing_query = CatalogoItem.query.options(*CatalogoItem.legacy_safe_options()).filter_by(
+        user_id=owner.id
     )
+    if tenant and tenant.id:
+        existing_query = existing_query.filter_by(tenant_id=tenant.id)
+    existing = existing_query.first()
     if existing:
         return False
 
@@ -451,4 +452,3 @@ def ensure_seed_catalog(owner: User, tenant: Optional[TenantProfile] = None) -> 
         owner.id,
     )
     return True
-
