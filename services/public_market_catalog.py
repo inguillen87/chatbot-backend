@@ -75,6 +75,11 @@ def _format_catalog_product(item: CatalogoItem, tenant: TenantProfile) -> dict[s
             "descripcion_corta": item.descripcion_corta,
             "promocion_info": item.promocion_info,
             "precio_float": price_value,
+            "precio_puntos": item.precio_puntos,
+            "modalidad": item.modalidad,
+            "disponible": _product_available(item),
+            "checkout_type": item.checkout_type,
+            "external_url": item.external_url,
             "extra_metadata": item.extra_metadata,
         }
     )

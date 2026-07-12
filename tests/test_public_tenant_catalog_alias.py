@@ -213,6 +213,33 @@ def test_public_market_catalog_contract_includes_promotions(client):
     assert event.metadata_payload["assisted_intake_mode"] == payload["assisted_intake"]["mode"]
 
 
+def test_public_market_catalog_preserves_donation_modality_with_points(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    donation = CatalogoItem(
+        user_id=tenant.pyme_id,
+        tenant_id=tenant.id,
+        nombre="Bono solidario",
+        categoria="Comunidad",
+        precio="2500 pts",
+        precio_puntos=2500,
+        modalidad="donacion",
+        disponible=True,
+        checkout_type="chatboc",
+        sku="bono-solidario",
+    )
+    db.session.add(donation)
+    db.session.commit()
+
+    response = client.get(f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace")
+
+    assert response.status_code == 200
+    product = next(item for item in response.get_json()["products"] if item["sku"] == donation.sku)
+    assert product["modalidad"] == "donacion"
+    assert product["precio_puntos"] == 2500
+    assert product["disponible"] is True
+    assert product["checkout_type"] == "chatboc"
+
+
 def test_public_catalog_download_json_exports_marketplace_contract(client):
     tenant = _seed_pyme_tenant_with_catalog()
 
