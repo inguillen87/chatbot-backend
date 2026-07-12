@@ -245,7 +245,9 @@ class SocketServiceEventTests(unittest.TestCase):
             "legacy_results": legacy_payload,
         }
 
-        with patch('socket_service.socketio.emit') as mock_emit:
+        with patch('socket_service._resolve_survey_tenant_slug', return_value='junin'), patch(
+            'socket_service.socketio.emit'
+        ) as mock_emit:
             emit_survey_update("consulta-barrial", modern_payload, tenant_slug="junin")
 
         self.assertEqual(mock_emit.call_args_list[0], call('survey_update', legacy_payload, room='encuesta:junin:consulta-barrial'))
@@ -269,7 +271,9 @@ class SocketServiceEventTests(unittest.TestCase):
             "legacy_results": legacy_payload,
         }
 
-        with patch('socket_service.socketio.emit') as mock_emit:
+        with patch('socket_service._resolve_survey_tenant_slug', return_value='junin'), patch(
+            'socket_service.socketio.emit'
+        ) as mock_emit:
             emit_survey_update("consulta-barrial", modern_payload, tenant_slug="junin")
 
         self.assertEqual(mock_emit.call_args_list[0], call('survey_update', legacy_payload, room='encuesta:junin:consulta-barrial'))

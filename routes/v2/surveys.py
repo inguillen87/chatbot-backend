@@ -12,6 +12,7 @@ import uuid
 from flask import Blueprint, current_app, g, jsonify, request
 
 from extensions import db
+from models import TenantProfile
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.encuestas_analytics_service import get_dashboard_bundle
 from services.encuestas_analytics_service import calculate_live_results
@@ -401,6 +402,26 @@ def _tenant_slug_value(tenant=None) -> str | None:
     return None
 
 
+def _tenant_slug_for_resolved_survey(encuesta) -> str | None:
+    tenant_id = getattr(encuesta, "tenant_id", None)
+    try:
+        normalized_tenant_id = int(tenant_id)
+    except (TypeError, ValueError):
+        return None
+
+    mapped = TenantProfile.query.filter_by(encuestas_tenant_id=normalized_tenant_id).limit(2).all()
+    if len(mapped) == 1:
+        return _tenant_slug_value(mapped[0])
+    if len(mapped) > 1:
+        current_app.logger.warning(
+            "Survey realtime contract has ambiguous tenant mapping encuestas_tenant_id=%s",
+            normalized_tenant_id,
+        )
+        return None
+
+    return _tenant_slug_value(db.session.get(TenantProfile, normalized_tenant_id))
+
+
 def _datetime_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
@@ -529,26 +550,26 @@ def _build_realtime_contract(
     result_version: Any = None,
     snapshot_version: Any = None,
 ) -> dict[str, Any]:
-    legacy_room = f"encuesta_{token}"
+    normalized_token = str(token or "").strip()
     normalized_tenant = (tenant_slug or "").strip()
-    primary_room = f"encuesta:{normalized_tenant}:{token}" if normalized_tenant else legacy_room
-    rooms = [primary_room]
-    if legacy_room not in rooms:
-        rooms.append(legacy_room)
+    socket_enabled = bool(enabled and normalized_token and normalized_tenant)
+    primary_room = f"encuesta:{normalized_tenant}:{normalized_token}" if socket_enabled else None
+    rooms = [primary_room] if primary_room else []
     live_results_endpoint = _build_survey_links(token, tenant_slug=tenant_slug)["live_results_endpoint"]
     return {
         "contract_version": "surveys.realtime.v2",
         "enabled": bool(enabled),
-        "transports": ["socket.io", "polling"] if enabled else [],
-        "room": primary_room if enabled else None,
-        "primary_room": primary_room if enabled else None,
-        "legacy_room": legacy_room if enabled else None,
-        "rooms": rooms if enabled else [],
+        "transports": (["socket.io", "polling"] if socket_enabled else ["polling"]) if enabled else [],
+        "room": primary_room,
+        "primary_room": primary_room,
+        # Keep the compatibility key, but never advertise the retired unscoped room.
+        "legacy_room": primary_room,
+        "rooms": rooms,
         "socket": {
-            "enabled": bool(enabled),
+            "enabled": socket_enabled,
             "path": "/api/socket.io",
             "join_event": "join",
-            "join_payload": {"room": primary_room},
+            "join_payload": {"room": primary_room} if primary_room else None,
             "join_payloads": [{"room": room} for room in rooms],
             "events": [
                 {"name": "survey_update_v2", "contract_version": "surveys.live_results.v2"},
@@ -735,6 +756,11 @@ def _build_operational_next_steps(
     operations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     links = _build_survey_links(token, tenant_slug=tenant_slug)
+    realtime = _build_realtime_contract(
+        token,
+        tenant_slug=tenant_slug,
+        enabled=live_results_enabled,
+    )
     status = (public_state or {}).get("status")
     items = [
         {
@@ -751,28 +777,25 @@ def _build_operational_next_steps(
         },
     ]
     if live_results_enabled:
-        items.extend(
-            [
-                {
-                    "id": "open_live_results",
-                    "label": "Abrir resultados en vivo",
-                    "href": links["live_results_endpoint"],
-                    "priority": 3,
-                },
+        items.append(
+            {
+                "id": "open_live_results",
+                "label": "Abrir resultados en vivo",
+                "href": links["live_results_endpoint"],
+                "priority": 3,
+            }
+        )
+        if realtime["room"]:
+            items.append(
                 {
                     "id": "subscribe_realtime_room",
                     "label": "Suscribirse a realtime",
-                    "room": (
-                        f"encuesta:{tenant_slug.strip()}:{token}"
-                        if tenant_slug and tenant_slug.strip()
-                        else f"encuesta_{token}"
-                    ),
-                    "legacy_room": f"encuesta_{token}",
+                    "room": realtime["room"],
+                    "legacy_room": realtime["legacy_room"],
                     "event": "survey_update_v2",
                     "priority": 4,
-                },
-            ]
-        )
+                }
+            )
     else:
         items.append(
             {
@@ -1374,7 +1397,7 @@ def publish_survey_v2(current_user, survey_id: int):
         payload,
         encuesta,
         link.slug_publico,
-        tenant_slug=_tenant_slug_value(tenant),
+        tenant_slug=_tenant_slug_for_resolved_survey(encuesta),
         responses_count=0,
     )
     return jsonify(payload)
@@ -1446,7 +1469,7 @@ def survey_public_by_token_v2(token: str):
         payload,
         encuesta,
         token,
-        tenant_slug=_tenant_slug_value(tenant),
+        tenant_slug=_tenant_slug_for_resolved_survey(encuesta),
         responses_count=_survey_response_count(encuesta),
     )
     return _json_response(payload)
@@ -1561,7 +1584,7 @@ def respond_public_survey_v2(token: str):
 
     encuesta = getattr(respuesta, "encuesta", None)
     live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
-    tenant_slug = _tenant_slug_value(tenant)
+    tenant_slug = _tenant_slug_for_resolved_survey(encuesta)
     links = _build_survey_links(token, tenant_slug=tenant_slug)
     public_state = _survey_public_state(encuesta) if encuesta is not None else None
     operations = (
@@ -1700,5 +1723,10 @@ def survey_live_results_v2(token: str):
             "empty_state": "Todavia no hay respuestas para mostrar.",
         },
     )
-    _attach_live_results_contract(results, encuesta, token, tenant_slug=_tenant_slug_value(tenant))
+    _attach_live_results_contract(
+        results,
+        encuesta,
+        token,
+        tenant_slug=_tenant_slug_for_resolved_survey(encuesta),
+    )
     return _json_response(results)

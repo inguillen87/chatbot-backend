@@ -1069,10 +1069,15 @@ def provision_twilio_voice_application(tenant, payload: Mapping[str, Any], app_c
 
 
 def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
+    cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
+    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     request_payload = build_provisioning_request(tenant, payload, app_config)
     live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")
-    account_sid = _clean(app_config.get("TWILIO_ACCOUNT_SID"))
-    auth_token = _clean(app_config.get("TWILIO_AUTH_TOKEN"))
+    parent_account_sid = _clean(app_config.get("TWILIO_ACCOUNT_SID"))
+    parent_auth_token = _clean(app_config.get("TWILIO_AUTH_TOKEN"))
+    existing_subaccount_sid = _clean(state.get("twilio_account_sid"))
+    existing_messaging_service_sid = _clean(state.get("messaging_service_sid"))
+    tenant_slug = getattr(tenant, "slug", None)
     env = _env_status(app_config)
 
     result = {
@@ -1097,48 +1102,149 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
         result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
         return result
 
-    if not (account_sid and auth_token):
+    if existing_messaging_service_sid and not existing_subaccount_sid:
         result["ok"] = False
         result["mode"] = "blocked"
-        result["reason_code"] = "twilio_credentials_missing"
-        result["missing_env"] = env["missing"]
-        return result
-
-    try:
-        subaccount = _twilio_post_form(
-            url="https://api.twilio.com/2010-04-01/Accounts.json",
-            account_sid=account_sid,
-            auth_token=auth_token,
-            data={"FriendlyName": request_payload["friendly_name"]},
+        result["reason_code"] = "twilio_provisioning_state_inconsistent"
+        result["missing"] = ["twilio_account_sid"]
+        result["steps"].append(
+            {
+                "id": "create_messaging_service",
+                "status": "blocked_missing_subaccount",
+                "sid": existing_messaging_service_sid,
+            }
         )
-    except Exception as exc:
-        result["ok"] = False
-        result["mode"] = "blocked"
-        result["reason_code"] = "twilio_subaccount_creation_failed"
-        result["error"] = str(exc)
-        result["state_patch"].update({"status": "provisioning_failed", "last_step": "create_subaccount"})
+        result["state_patch"].update({"status": "provisioning_blocked", "last_step": "validate_existing_state"})
         return result
 
-    subaccount_sid = subaccount.get("sid")
-    subaccount_token = subaccount.get("auth_token")
-    token_refs = _subaccount_token_ref_names(subaccount_sid, getattr(tenant, "slug", None))
-    result["steps"].append({"id": "create_subaccount", "status": "done", "sid": subaccount_sid})
-    result["state_patch"].update(
-        {
-            "status": "subaccount_created" if not subaccount_token else "creating_messaging_service",
-            "last_step": "create_subaccount",
-            "twilio_account_sid": subaccount_sid,
-            "twilio_subaccount_token_present": bool(subaccount_token),
-            "twilio_subaccount_token_ref": token_refs[0],
-            "twilio_subaccount_token_ref_aliases": token_refs[1:],
-        }
-    )
+    subaccount_sid = existing_subaccount_sid
+    subaccount_token: str | None = None
+    token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
+
+    if subaccount_sid:
+        result["steps"].append(
+            {
+                "id": "create_subaccount",
+                "status": "done",
+                "operation": "reuse",
+                "sid": subaccount_sid,
+            }
+        )
+        result["state_patch"].update(
+            {
+                "status": "subaccount_reused",
+                "last_step": "reuse_subaccount",
+                "twilio_account_sid": subaccount_sid,
+            }
+        )
+    else:
+        if not (parent_account_sid and parent_auth_token):
+            result["ok"] = False
+            result["mode"] = "blocked"
+            result["reason_code"] = "twilio_credentials_missing"
+            result["missing_env"] = env["missing"]
+            return result
+
+        try:
+            subaccount = _twilio_post_form(
+                url="https://api.twilio.com/2010-04-01/Accounts.json",
+                account_sid=parent_account_sid,
+                auth_token=parent_auth_token,
+                data={"FriendlyName": request_payload["friendly_name"]},
+            )
+        except Exception as exc:
+            result["ok"] = False
+            result["mode"] = "blocked"
+            result["reason_code"] = "twilio_subaccount_creation_failed"
+            result["error"] = str(exc)
+            result["state_patch"].update({"status": "provisioning_failed", "last_step": "create_subaccount"})
+            return result
+
+        subaccount_sid = _clean(subaccount.get("sid"))
+        subaccount_token = _clean(subaccount.get("auth_token"))
+        token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
+        result["steps"].append({"id": "create_subaccount", "status": "done", "sid": subaccount_sid})
+        result["state_patch"].update(
+            {
+                "status": "subaccount_created" if not subaccount_token else "creating_messaging_service",
+                "last_step": "create_subaccount",
+                "twilio_account_sid": subaccount_sid,
+                "twilio_subaccount_token_present": bool(subaccount_token),
+                "twilio_subaccount_token_ref": token_refs[0],
+                "twilio_subaccount_token_ref_aliases": token_refs[1:],
+            }
+        )
+
+        if subaccount_sid and subaccount_token:
+            render_env_sync = sync_render_env_var(token_refs[0], subaccount_token, app_config)
+            result["secure_secret_required"] = {
+                "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
+                "required_env": token_refs,
+                "render_env_sync": render_env_sync,
+                "do_not_store_in_database": True,
+            }
+            result["state_patch"].update(
+                {
+                    "render_subaccount_secret_synced": bool(render_env_sync.get("secret_value_stored")),
+                    "render_subaccount_secret_sync_status": render_env_sync.get("mode"),
+                }
+            )
+
+    if existing_messaging_service_sid:
+        onboarding_already_advanced = bool(
+            state.get("waba_id")
+            or state.get("phone_number_id")
+            or state.get("sender_sid")
+        )
+        result["idempotent_replay"] = True
+        result["steps"].append(
+            {
+                "id": "create_messaging_service",
+                "status": "done",
+                "operation": "reuse",
+                "sid": existing_messaging_service_sid,
+            }
+        )
+        result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
+        result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
+        result["state_patch"].update(
+            {
+                "status": (
+                    state.get("status")
+                    if onboarding_already_advanced and state.get("status")
+                    else "ready_for_embedded_signup"
+                ),
+                "last_step": (
+                    state.get("last_step")
+                    if onboarding_already_advanced and state.get("last_step")
+                    else "reuse_messaging_service"
+                ),
+                "twilio_account_sid": subaccount_sid,
+                "messaging_service_sid": existing_messaging_service_sid,
+            }
+        )
+        return result
+
+    if subaccount_sid and not subaccount_token:
+        subaccount_token, token_refs = _resolve_subaccount_auth_token(
+            state={**state, "twilio_account_sid": subaccount_sid},
+            tenant_slug=tenant_slug,
+            app_config=app_config,
+        )
+        result["state_patch"].update(
+            {
+                "twilio_subaccount_token_ref": token_refs[0],
+                "twilio_subaccount_token_ref_aliases": token_refs[1:],
+            }
+        )
 
     if not (subaccount_sid and subaccount_token):
         result["ok"] = False
         result["mode"] = "blocked"
         result["reason_code"] = "twilio_subaccount_token_missing"
+        result["required_env"] = token_refs
         result["steps"].append({"id": "create_messaging_service", "status": "blocked_subaccount_token_missing"})
+        result["state_patch"].update({"status": "messaging_service_blocked", "last_step": "resolve_subaccount_token"})
         return result
 
     try:
@@ -1165,23 +1271,22 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
         return result
 
     messaging_service_sid = messaging_service.get("sid")
-    render_env_sync = sync_render_env_var(token_refs[0], subaccount_token, app_config)
     result["steps"].append({"id": "create_messaging_service", "status": "done", "sid": messaging_service_sid})
     result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
     result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
-    result["secure_secret_required"] = {
-        "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
-        "required_env": token_refs,
-        "render_env_sync": render_env_sync,
-        "do_not_store_in_database": True,
-    }
+    result.setdefault(
+        "secure_secret_required",
+        {
+            "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
+            "required_env": token_refs,
+            "do_not_store_in_database": True,
+        },
+    )
     result["state_patch"].update(
         {
             "status": "ready_for_embedded_signup",
             "last_step": "create_messaging_service",
             "messaging_service_sid": messaging_service_sid,
-            "render_subaccount_secret_synced": bool(render_env_sync.get("secret_value_stored")),
-            "render_subaccount_secret_sync_status": render_env_sync.get("mode"),
         }
     )
     return result

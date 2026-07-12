@@ -13,6 +13,7 @@ from typing import Any, Optional, Set
 from uuid import UUID
 import jwt
 import os
+import re
 
 SOCKET_CORS_ORIGINS = list(
     dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
@@ -636,36 +637,86 @@ def _is_valid_survey_room_segment(value: Any) -> bool:
     )
 
 
-def _resolve_survey_tenant_slug(slug_publico: str, data: Any, tenant_slug: str | None) -> str:
-    resolved = str(tenant_slug or "").strip()
-    if not resolved and isinstance(data, dict):
-        resolved = str(data.get("tenant_slug") or data.get("tenant") or "").strip()
-    if resolved and _is_valid_survey_room_segment(resolved):
-        return resolved
+def _survey_candidates_for_slug(slug_publico: str) -> list[EncEncuesta]:
+    normalized_slug = str(slug_publico or "").strip().lower()
+    if not normalized_slug:
+        return []
 
-    if isinstance(data, dict) and data.get("tenant_id") is not None:
-        resolved = _tenant_slug_for_survey_tenant_id(data.get("tenant_id"))
-        if resolved:
-            return resolved
+    candidates: dict[int, EncEncuesta] = {}
+    for survey in (
+        EncEncuesta.query.filter_by(slug=normalized_slug)
+        .limit(3)
+        .all()
+    ):
+        candidates[survey.id] = survey
+    for link in (
+        EncLink.query.filter_by(slug_publico=normalized_slug)
+        .limit(5)
+        .all()
+    ):
+        if link.encuesta:
+            candidates[link.encuesta.id] = link.encuesta
 
-    slug = str(slug_publico or "").strip()
-    if not slug:
-        return ""
-    try:
-        candidates: dict[int, EncEncuesta] = {}
-        for survey in EncEncuesta.query.filter_by(slug=slug).limit(2).all():
-            candidates[survey.id] = survey
-        for link in EncLink.query.filter_by(slug_publico=slug).limit(3).all():
+    if not candidates:
+        base_slug, separator, alias_token = normalized_slug.rpartition("-")
+        if separator and len(alias_token) >= 6 and all(ch in "0123456789abcdef" for ch in alias_token):
+            for survey in (
+                EncEncuesta.query.filter_by(slug=base_slug)
+                .limit(3)
+                .all()
+            ):
+                candidates[survey.id] = survey
+
+    if not candidates and re.fullmatch(r"[0-9a-z]{5,12}", normalized_slug):
+        for link in (
+            EncLink.query.filter(EncLink.slug_publico.endswith(f"-{normalized_slug}", autoescape=True))
+            .limit(5)
+            .all()
+        ):
             if link.encuesta:
                 candidates[link.encuesta.id] = link.encuesta
-        if len(candidates) != 1:
-            current_app.logger.warning(
-                "Dropped unscoped or ambiguous survey socket event slug=%s candidates=%s",
-                slug,
-                len(candidates),
-            )
-            return ""
-        return _tenant_slug_for_survey_tenant_id(next(iter(candidates.values())).tenant_id)
+    return list(candidates.values())
+
+
+def _resolve_survey_tenant_slug(slug_publico: str, data: Any, tenant_slug: str | None) -> str:
+    slug = str(slug_publico or "").strip()
+    if not _is_valid_survey_room_segment(slug):
+        return ""
+    try:
+        candidates = _survey_candidates_for_slug(slug)
+        if len(candidates) == 1:
+            return _tenant_slug_for_survey_tenant_id(candidates[0].tenant_id)
+
+        tenant_id_hint = data.get("tenant_id") if isinstance(data, dict) else None
+        try:
+            normalized_tenant_id = int(tenant_id_hint)
+        except (TypeError, ValueError):
+            normalized_tenant_id = None
+        if normalized_tenant_id is not None:
+            tenant_matches = [
+                survey for survey in candidates if int(survey.tenant_id or 0) == normalized_tenant_id
+            ]
+            if len(tenant_matches) == 1:
+                return _tenant_slug_for_survey_tenant_id(tenant_matches[0].tenant_id)
+
+        tenant_hint = str(tenant_slug or "").strip()
+        if not tenant_hint and isinstance(data, dict):
+            tenant_hint = str(data.get("tenant_slug") or data.get("tenant") or "").strip()
+        if _is_valid_survey_room_segment(tenant_hint):
+            slug_matches = [
+                survey
+                for survey in candidates
+                if _tenant_slug_for_survey_tenant_id(survey.tenant_id).lower() == tenant_hint.lower()
+            ]
+            if len(slug_matches) == 1:
+                return _tenant_slug_for_survey_tenant_id(slug_matches[0].tenant_id)
+
+        current_app.logger.warning(
+            "Dropped unresolved or ambiguous survey socket event slug=%s candidates=%s",
+            slug,
+            len(candidates),
+        )
+        return ""
     except Exception:
         current_app.logger.exception("Survey socket tenant resolution failed slug=%s", slug)
         return ""
@@ -679,6 +730,27 @@ def _survey_realtime_rooms(slug_publico: str, data: Any = None, tenant_slug: str
     if not resolved_tenant:
         return []
     return [f"encuesta:{resolved_tenant}:{slug}"]
+
+
+def _authorized_survey_room(room: str) -> str:
+    normalized_room = str(room or "").strip()
+    parts = normalized_room.split(":")
+    if (
+        len(parts) != 3
+        or parts[0] != "encuesta"
+        or not all(_is_valid_survey_room_segment(part) for part in parts[1:])
+    ):
+        return ""
+
+    tenant_slug, slug_publico = parts[1:]
+    canonical_rooms = _survey_realtime_rooms(slug_publico, tenant_slug=tenant_slug)
+    if canonical_rooms == [normalized_room]:
+        return normalized_room
+    return ""
+
+
+def _is_authorized_survey_room(room: str) -> bool:
+    return bool(_authorized_survey_room(room))
 
 
 def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
@@ -842,14 +914,10 @@ def on_join(data):
         emit('join_error', {'error': 'missing_room'})
         return
 
-    survey_room_parts = room.split(':')
-    if (
-        len(survey_room_parts) == 3
-        and survey_room_parts[0] == 'encuesta'
-        and all(_is_valid_survey_room_segment(part) for part in survey_room_parts[1:])
-    ):
-        join_room(room)
-        current_app.logger.debug("Client joined public survey room: %s", room)
+    authorized_survey_room = _authorized_survey_room(room)
+    if authorized_survey_room:
+        join_room(authorized_survey_room)
+        current_app.logger.debug("Client joined public survey room: %s", authorized_survey_room)
         return
 
     if room.startswith('ticket_'):

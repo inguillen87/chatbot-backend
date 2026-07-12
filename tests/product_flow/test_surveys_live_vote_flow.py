@@ -146,10 +146,12 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         ack = response.get_json()
         self.assertTrue(ack["ok"])
         self.assertEqual(ack["contract_version"], "surveys.public_response.v2")
-        self.assertEqual(ack["live_results_url"], f"/api/v2/public/surveys/{token}/live-results")
+        expected_live_url = f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant.slug}"
+        expected_room = f"encuesta:{self.tenant.slug}:{token}"
+        self.assertEqual(ack["live_results_url"], expected_live_url)
         self.assertEqual(ack["public_state"]["status"], "live")
-        self.assertEqual(ack["realtime"]["room"], f"encuesta_{token}")
-        self.assertEqual(ack["realtime"]["socket"]["join_payload"], {"room": f"encuesta_{token}"})
+        self.assertEqual(ack["realtime"]["room"], expected_room)
+        self.assertEqual(ack["realtime"]["socket"]["join_payload"], {"room": expected_room})
         event_names = {event["name"] for event in ack["realtime"]["socket"]["events"]}
         self.assertIn("survey_update_v2", event_names)
         self.assertIn("survey.vote.created", event_names)
@@ -157,7 +159,7 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertIn("download_qr", [step["id"] for step in ack["next_steps"]])
         self.assertIn("open_admin_analytics", [step["id"] for step in ack["next_steps"]])
         self.assertIn("open_heatmap_admin", [step["id"] for step in ack["next_steps"]])
-        self._assert_admin_operations(ack, token, survey_id)
+        self._assert_admin_operations(ack, token, survey_id, tenant_slug=self.tenant.slug)
 
         emit_update.assert_called_once()
         self.assertEqual(emit_update.call_args.args[0], token)
@@ -192,11 +194,11 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(data["render_contract"]["product_surface"]["name"], "Noether Analytics Maps")
         self.assertEqual(data["render_contract"]["product_surface"]["scope"], "surveys_live_heatmap")
         self.assertIn("privacy_safe_geo_aggregation", data["render_contract"]["product_surface"]["supports"])
-        self.assertEqual(data["realtime"]["room"], f"encuesta_{token}")
-        self.assertEqual(data["realtime"]["polling"]["href"], f"/api/v2/public/surveys/{token}/live-results")
+        self.assertEqual(data["realtime"]["room"], expected_room)
+        self.assertEqual(data["realtime"]["polling"]["href"], expected_live_url)
         self.assertIn("admin_next_steps", data["render_contract"]["supports"])
         self.assertIn("admin_operations", data["render_contract"]["supports"])
-        self._assert_admin_operations(data, token, survey_id)
+        self._assert_admin_operations(data, token, survey_id, tenant_slug=self.tenant.slug)
         self.assertTrue(data["live_telemetry"]["has_responses"])
 
     def test_live_results_with_heatmap_returns_privacy_safe_vote_coordinates(self):
@@ -223,7 +225,7 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(live.status_code, 200, live.get_json())
         data = live.get_json()
         self.assertEqual(data["contract_version"], "surveys.live_results.v2")
-        self.assertEqual(data["realtime"]["room"], f"encuesta_{token}")
+        self.assertEqual(data["realtime"]["room"], f"encuesta:{self.tenant.slug}:{token}")
         self.assertIn("heatmap", data["render_contract"]["supports"])
         self.assertEqual(data["render_contract"]["product_surface"]["name"], "Noether Analytics Maps")
         self.assertEqual(data["heatmap"]["enabled"], True)
@@ -244,7 +246,7 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertTrue(data["heatmap"]["metadata"]["raw_points_redacted"])
         self.assertEqual(data["heatmap"]["metadata"]["coordinate_precision"], "rounded_3_decimals")
         self.assertEqual(data["heatmap"]["metadata"]["raw_points_count"], 1)
-        self._assert_admin_operations(data, token, survey_id)
+        self._assert_admin_operations(data, token, survey_id, tenant_slug=self.tenant.slug)
 
     def test_pwa_survey_response_matches_realtime_contract_for_whatsapp_webview(self):
         survey_id, token, question_id, option_id = self._create_live_vote()
@@ -270,8 +272,8 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
             f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant.slug}",
         )
         self.assertEqual(ack["realtime"]["room"], f"encuesta:{self.tenant.slug}:{token}")
-        self.assertEqual(ack["realtime"]["legacy_room"], f"encuesta_{token}")
-        self.assertIn(f"encuesta_{token}", ack["realtime"]["rooms"])
+        self.assertEqual(ack["realtime"]["legacy_room"], f"encuesta:{self.tenant.slug}:{token}")
+        self.assertEqual(ack["realtime"]["rooms"], [f"encuesta:{self.tenant.slug}:{token}"])
         event_names = {event["name"] for event in ack["realtime"]["socket"]["events"]}
         self.assertIn("survey_update_v2", event_names)
         self.assertIn("survey.vote.created", event_names)

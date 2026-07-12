@@ -11,6 +11,7 @@ from app import create_app, db
 from config import Config
 from models import EncRespuesta, TenantProfile, User
 from routes.v2.surveys import _public_response_rate_buckets
+from socket_service import _is_authorized_survey_room, emit_survey_update
 from services.demo_surveys import (
     build_demo_public_survey_payload,
     build_demo_survey_response_ack,
@@ -139,9 +140,10 @@ class V2SurveysApiTest(unittest.TestCase):
         token = publish_payload.get("public_token")
         self.assertTrue(token)
         self.assertEqual(publish_payload.get("public_state", {}).get("status"), "live")
-        self.assertEqual(publish_payload.get("realtime", {}).get("room"), f"encuesta:{self.tenant_1.slug}:{token}")
-        self.assertEqual(publish_payload.get("realtime", {}).get("legacy_room"), f"encuesta_{token}")
-        self.assertIn(f"encuesta_{token}", publish_payload.get("realtime", {}).get("rooms", []))
+        expected_room = f"encuesta:{self.tenant_1.slug}:{token}"
+        self.assertEqual(publish_payload.get("realtime", {}).get("room"), expected_room)
+        self.assertEqual(publish_payload.get("realtime", {}).get("legacy_room"), expected_room)
+        self.assertEqual(publish_payload.get("realtime", {}).get("rooms"), [expected_room])
         event_names = {
             event.get("name")
             for event in publish_payload.get("realtime", {}).get("socket", {}).get("events", [])
@@ -168,7 +170,7 @@ class V2SurveysApiTest(unittest.TestCase):
         )
         self.assertEqual(
             public_payload.get("links", {}).get("respond_endpoint"),
-            f"/api/v2/public/surveys/{token}/respond",
+            f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_1.slug}",
         )
         self.assertEqual(public_payload.get("share", {}).get("qr", {}).get("size"), 320)
 
@@ -185,11 +187,12 @@ class V2SurveysApiTest(unittest.TestCase):
         ack = respond_resp.get_json()
         self.assertTrue(ack.get("ok"))
         self.assertEqual(ack.get("contract_version"), "surveys.public_response.v2")
-        self.assertEqual(ack.get("live_results_url"), f"/api/v2/public/surveys/{token}/live-results")
-        self.assertEqual(ack.get("realtime", {}).get("room"), f"encuesta_{token}")
+        expected_live_url = f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant_1.slug}"
+        self.assertEqual(ack.get("live_results_url"), expected_live_url)
+        self.assertEqual(ack.get("realtime", {}).get("room"), expected_room)
         self.assertEqual(
             ack.get("realtime", {}).get("polling", {}).get("href"),
-            f"/api/v2/public/surveys/{token}/live-results",
+            expected_live_url,
         )
         self.assertEqual(
             ack.get("links", {}).get("qr_endpoint"),
@@ -212,13 +215,42 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertIn("ai_summary", live_payload.get("render_contract", {}).get("supports", []))
         self.assertIn("realtime_socket", live_payload.get("render_contract", {}).get("supports", []))
         self.assertIn("qr_share", live_payload.get("render_contract", {}).get("supports", []))
-        self.assertEqual(live_payload.get("realtime", {}).get("room"), f"encuesta_{token}")
+        self.assertEqual(live_payload.get("realtime", {}).get("room"), expected_room)
         self.assertEqual(
             live_payload.get("realtime", {}).get("versioning", {}).get("result_version"),
             live_payload.get("result_version"),
         )
         self.assertFalse(live_payload.get("empty_state", {}).get("is_empty"))
         self.assertTrue(live_payload.get("live_telemetry", {}).get("has_responses"))
+
+    def test_public_realtime_room_matches_socket_with_and_without_tenant_slug(self):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
+        token = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers).get_json()["public_token"]
+        expected_room = f"encuesta:{self.tenant_1.slug}:{token}"
+
+        for query in ("", f"?tenant_slug={self.tenant_1.slug}"):
+            with self.subTest(query=query or "without_tenant_slug"):
+                response = self.client.get(f"/api/v2/public/surveys/{token}{query}")
+                self.assertEqual(response.status_code, 200, response.get_json())
+                realtime = response.get_json()["realtime"]
+                contract_room = realtime["room"]
+
+                self.assertEqual(contract_room, expected_room)
+                self.assertEqual(realtime["rooms"], [expected_room])
+                self.assertEqual(realtime["socket"]["join_payload"], {"room": expected_room})
+                self.assertTrue(_is_authorized_survey_room(contract_room))
+
+                with patch("socket_service.socketio.emit") as socket_emit:
+                    emit_survey_update(
+                        token,
+                        {"tenant_id": self.tenant_1.id, "total_respuestas": 1},
+                    )
+
+                emitted_rooms = {call.kwargs.get("room") for call in socket_emit.call_args_list}
+                self.assertEqual(emitted_rooms, {contract_room})
+
+        self.assertFalse(_is_authorized_survey_room(f"encuesta:{self.tenant_2.slug}:{token}"))
 
     def test_v2_public_live_results_hidden_when_not_enabled(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}

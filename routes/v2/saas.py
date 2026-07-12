@@ -2427,12 +2427,48 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
     result = register_whatsapp_sender(tenant, payload, current_app.config)
     merged_state = merge_twilio_state(tenant, result.get("state_patch") or {})
     voice_result = None
+    voice_retry = None
+    warnings = []
     if result.get("ok", True):
-        voice_result = provision_twilio_voice_application(tenant, payload, current_app.config)
+        try:
+            voice_result = provision_twilio_voice_application(tenant, payload, current_app.config)
+        except Exception as exc:
+            current_app.logger.exception(
+                "Optional Twilio Voice provisioning failed after sender registration for tenant=%s",
+                getattr(tenant, "slug", None),
+            )
+            voice_result = {
+                "contract_version": "twilio.tech_provider.voice_application.v1",
+                "ok": False,
+                "mode": "failed",
+                "reason_code": "twilio_voice_optional_step_failed",
+                "error": str(exc),
+                "steps": [],
+                "state_patch": {
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "voice_status": "voice_application_failed",
+                    "voice_last_step": "optional_voice_provisioning",
+                },
+            }
+        voice_result["optional"] = True
         merged_state = merge_twilio_state(tenant, voice_result.get("state_patch") or {})
         cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
         cfg.update({key: value for key, value in (voice_result.get("tenant_config_patch") or {}).items() if value is not None})
         tenant.configuracion = cfg
+        if not voice_result.get("ok", True):
+            voice_retry = {
+                "required": True,
+                "method": "POST",
+                "endpoint": f"/api/v2/tenants/{tenant.slug}/whatsapp/tech-provider/voice-app",
+                "reason_code": voice_result.get("reason_code") or "twilio_voice_optional_step_failed",
+            }
+            warnings.append(
+                {
+                    "code": "optional_voice_provisioning_failed",
+                    "message": "WhatsApp sender registration succeeded; Voice setup remains pending.",
+                    "retry": voice_retry,
+                }
+            )
     sync_twilio_provider_records(
         tenant,
         merged_state,
@@ -2453,6 +2489,8 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
         {
             **result,
             "voice_app": voice_result,
+            "voice_retry": voice_retry,
+            "warnings": warnings,
             "tenant": _tenant_ref(tenant),
             "state": {
                 "status": merged_state.get("status"),
@@ -2475,7 +2513,7 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
             "channel_activation": channel_activation,
             "contract": build_twilio_tech_provider_contract(tenant, current_app.config),
         },
-        200 if result.get("ok", True) and (not voice_result or voice_result.get("ok", True)) else 400,
+        200 if result.get("ok", True) else 400,
     )
 
 
