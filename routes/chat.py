@@ -4143,36 +4143,8 @@ def _procesar_chat(
              chat_context_obj.context_data.pop('just_logged_in_flag', None)
              flag_modified(chat_context_obj, "context_data")
 
-        # --- Audio Synthesis (Post-Processing) ---
+        # Access metadata used by the response contract.
         es_publico = es_rubro_publico(rubro_obj_global) if rubro_obj_global else (tipo_chat == "municipio")
-
-        # Only synthesize speech if:
-        # 1. The response requests it ('generar_audio' is True)
-        # 2. It's a public municipality chat OR the authenticated user has it enabled.
-        # 3. AND the source was audio (optional constraint, can be relaxed)
-        should_synthesize = False
-        if isinstance(resultado, dict) and resultado.get("generar_audio"):
-             should_synthesize = True
-        elif isinstance(resultado, dict) and not es_publico and actor_principal and actor_principal.preferences.get("audio_response_enabled"):
-             # User preference override (example)
-             should_synthesize = True
-
-        if should_synthesize: # and chat_context_obj.context_data.get('source_is_audio'):
-            from services.google_text_to_speech import TextToSpeechService
-            tts_service = TextToSpeechService()
-            # Always synthesize from the normalized message_body.
-            text_to_synthesize = resultado.get("message_body")
-            if text_to_synthesize:
-                try:
-                    audio_url = tts_service.synthesize_speech(text_to_synthesize)
-                    if audio_url:
-                        resultado["audio_url"] = audio_url
-                        current_app.logger.info(f"Audio generado y añadido a la respuesta: {audio_url}")
-                except Exception as e:
-                    # Log the error, but don't crash the main response flow
-                    current_app.logger.error(f"Error durante la síntesis de voz: {e}", exc_info=True)
-
-        # We just need to pass it through after adding any necessary metadata.
 
         if isinstance(resultado, tuple):
             # Handle error cases where responder_chatboc returns a tuple

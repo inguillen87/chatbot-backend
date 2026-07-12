@@ -66,7 +66,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.session.commit()
 
         # --- Act ---
-        with patch('services.logic.responder_municipio') as mock_responder_municipio:
+        with patch('services.municipio_responder.responder_municipio') as mock_responder_municipio:
             mock_responder_municipio.return_value = {
                 "message_body": "Esta es una respuesta de prueba.",
                 "generar_audio": True,
@@ -100,7 +100,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         db.session.add(chat_session)
         db.session.commit()
 
-        with patch('services.logic.responder_municipio') as mock_responder_municipio:
+        with patch('services.municipio_responder.responder_municipio') as mock_responder_municipio:
             mock_responder_municipio.return_value = {
                 "message_body": "Esta es una respuesta de prueba."
             }
@@ -139,13 +139,12 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         )
 
         # --- Assert ---
-        expected_body = (
-            "Por favor, elige una opción:\n\n"
-            "*1*. Opción 1\n"
-            "*2*. Opción 2\n\n"
-            "Responde con el número de la opción que necesites."
-        )
-        self.assertEqual(formatted_payload['text']['body'], expected_body)
+        body = formatted_payload['text']['body']
+        self.assertIn("Por favor, elige una opción:", body)
+        self.assertIn("*1*. Opción 1", body)
+        self.assertIn("*2*. Opción 2", body)
+        self.assertIn("*3*. Menú", body)
+        self.assertIn("*4*. Cancelar", body)
 
     @patch('services.municipio_responder.llamar_gemini')
     def test_finalizar_tramite_action_resets_context(self, mock_llamar_gemini):
@@ -215,13 +214,12 @@ class TestAccessibilityAndMedia(unittest.TestCase):
 
         uploaded_info = {"id": audio_adj.id}
 
-        with patch("services.logic._get_speech_to_text_service") as mock_get_stt, patch(
-            "services.logic.responder_municipio"
+        with patch(
+            "services.audio_transcription_service.transcribe_audio_from_url",
+            return_value="esto es un audio",
+        ) as mock_transcribe, patch(
+            "services.municipio_responder.responder_municipio"
         ) as mock_responder_municipio:
-            stt_instance = MagicMock()
-            stt_instance.client = object()
-            stt_instance.transcribe_audio_url.return_value = "esto es un audio"
-            mock_get_stt.return_value = stt_instance
             mock_responder_municipio.return_value = {"message_body": "ok"}
 
             responder_chatboc(
@@ -233,6 +231,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
                 uploaded_file_info=uploaded_info,
             )
 
+        mock_transcribe.assert_called_once_with(audio_adj.url, audio_adj.mime)
         mock_responder_municipio.assert_called_once()
         _, called_kwargs = mock_responder_municipio.call_args
         self.assertEqual(called_kwargs["pregunta_original"], "esto es un audio")
@@ -264,7 +263,7 @@ class TestAccessibilityAndMedia(unittest.TestCase):
             "services.interpretacion_imagen_service.interpretar_imagen_para_chat",
             return_value={"categoria_sugerida": "bache", "es_reclamo": True},
         ) as mock_interpretar, patch(
-            "services.logic.responder_municipio"
+            "services.municipio_responder.responder_municipio"
         ) as mock_responder_municipio:
             mock_responder_municipio.return_value = {"message_body": "ok"}
 

@@ -3,6 +3,7 @@ import os
 import hashlib
 import shutil
 import re
+import tempfile
 import textwrap
 from collections import OrderedDict
 from threading import Lock
@@ -32,6 +33,7 @@ _TTS_CACHE_METRIC_KEYS = (
 )
 _TTS_CACHE_METRICS = {key: 0 for key in _TTS_CACHE_METRIC_KEYS}
 _TTS_CACHE_METRICS_LOCK = Lock()
+_TTS_GENERATION_LOCKS = tuple(Lock() for _ in range(64))
 
 
 def _increment_metric(name: str, amount: int = 1) -> None:
@@ -323,7 +325,20 @@ def generar_audio(
 
         try:
             if os.path.exists(generated_path):
-                shutil.copyfile(generated_path, cached_rel_path)
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(
+                        dir=cache_dir,
+                        prefix=f".{text_hash}.",
+                        suffix=".tmp",
+                        delete=False,
+                    ) as temp_file:
+                        temp_path = temp_file.name
+                    shutil.copyfile(generated_path, temp_path)
+                    os.replace(temp_path, cached_rel_path)
+                finally:
+                    if temp_path and os.path.exists(temp_path):
+                        os.remove(temp_path)
                 logger.info(f"TTS Service: Cached audio at {cached_rel_path}")
                 _increment_metric("cache_writes")
                 return _public_backend_url(cached_rel_path)
@@ -378,38 +393,47 @@ def generar_audio(
 
         return providers
 
-    providers = _provider_factory()
+    generation_lock = _TTS_GENERATION_LOCKS[
+        int(text_hash[:8], 16) % len(_TTS_GENERATION_LOCKS)
+    ]
+    with generation_lock:
+        if cache_enabled and os.path.exists(cached_rel_path):
+            logger.info("TTS Service: Returning audio cached by another request.")
+            _increment_metric("cache_hits")
+            return _public_backend_url(cached_rel_path)
 
-    for provider_name in _provider_order_from_env():
-        provider = providers.get(provider_name)
-        if not provider:
-            logger.debug("TTS Service: Provider '%s' is not available", provider_name)
-            continue
+        providers = _provider_factory()
 
-        try:
-            logger.info("TTS Service: Trying %s provider...", provider_name.title())
-            audio_url = provider(text)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.error(
-                "TTS Service: Provider %s raised an exception: %s",
-                provider_name,
-                exc,
-                exc_info=True,
+        for provider_name in _provider_order_from_env():
+            provider = providers.get(provider_name)
+            if not provider:
+                logger.debug("TTS Service: Provider '%s' is not available", provider_name)
+                continue
+
+            try:
+                logger.info("TTS Service: Trying %s provider...", provider_name.title())
+                audio_url = provider(text)
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error(
+                    "TTS Service: Provider %s raised an exception: %s",
+                    provider_name,
+                    exc,
+                    exc_info=True,
+                )
+                continue
+
+            if audio_url:
+                logger.info(
+                    "TTS Service: %s provider returned audio successfully.",
+                    provider_name.title(),
+                )
+                _increment_metric("provider_successes")
+                return cache_and_return(audio_url)
+
+            logger.warning(
+                "TTS Service: %s provider returned no audio.", provider_name.title()
             )
-            continue
-
-        if audio_url:
-            logger.info(
-                "TTS Service: %s provider returned audio successfully.",
-                provider_name.title(),
-            )
-            _increment_metric("provider_successes")
-            return cache_and_return(audio_url)
-
-        logger.warning(
-            "TTS Service: %s provider returned no audio.", provider_name.title()
-        )
-        _increment_metric("provider_failures")
+            _increment_metric("provider_failures")
 
     _increment_metric("generation_failures")
     return None

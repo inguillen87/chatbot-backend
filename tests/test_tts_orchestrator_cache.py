@@ -1,6 +1,8 @@
 import os
 import tempfile
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -47,6 +49,41 @@ class TestTTSOrchestratorCache(unittest.TestCase):
                 self.assertEqual(metrics["cache_misses"], 1)
                 self.assertEqual(metrics["cache_hits"], 1)
                 self.assertEqual(metrics["cache_writes"], 1)
+            finally:
+                os.chdir(original_cwd)
+
+    def test_concurrent_fixed_menu_requests_generate_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                generated = Path("static/audio_responses/generated.mp3")
+                generated.parent.mkdir(parents=True, exist_ok=True)
+                generated.write_bytes(b"audio")
+
+                def delayed_provider(_text, **_kwargs):
+                    time.sleep(0.05)
+                    return str(generated)
+
+                with patch.dict(os.environ, {"TTS_CACHE_ENABLED": "true"}, clear=False):
+                    with patch(
+                        "services.openai_tts_bridge.generar_audio_openai",
+                        side_effect=delayed_provider,
+                    ) as mock_openai_tts:
+                        with ThreadPoolExecutor(max_workers=4) as executor:
+                            urls = list(
+                                executor.map(
+                                    lambda _index: generar_audio(
+                                        "Menu accesible estable. Opcion 1, Reclamos.",
+                                        cache_namespace="menu:junin:accessible:v1",
+                                    ),
+                                    range(4),
+                                )
+                            )
+
+                self.assertEqual(len(set(urls)), 1)
+                self.assertIn("/static/audio_cache/", urls[0])
+                self.assertEqual(mock_openai_tts.call_count, 1)
             finally:
                 os.chdir(original_cwd)
 

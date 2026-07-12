@@ -556,15 +556,17 @@ def responder_chatboc(
                 accion=response_data.get('accion_backend'),
             )
         if text_to_speak:
-            from services.tts_orchestrator import generar_audio
+            from services.google_text_to_speech import generate_audio_url
             tts_speed = response_data.get("tts_speed")
             try:
                 tts_speed = float(tts_speed) if tts_speed is not None else None
             except (TypeError, ValueError):
                 tts_speed = None
 
-            audio_url = generar_audio(
+            audio_url = generate_audio_url(
                 text_to_speak,
+                rubro_obj,
+                current_user,
                 voice=response_data.get("tts_voice"),
                 model=response_data.get("tts_model"),
                 style=response_data.get("tts_style"),
