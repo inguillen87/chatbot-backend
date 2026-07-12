@@ -9,7 +9,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import EncRespuesta, TenantProfile, User
+from models import EncEncuesta, EncRespuesta, PointsTransaction, TenantProfile, User
 from routes.v2.surveys import _public_response_rate_buckets
 from socket_service import _is_authorized_survey_room, emit_survey_update
 from services.demo_surveys import (
@@ -280,6 +280,8 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(live_resp.get_json().get("reason_code"), "live_results_hidden")
 
     def test_v2_public_response_requires_identity_when_anonymous_is_disabled(self):
+        voter = self._create_user("identified-voter@test.com", "usuario", self.tenant_1.slug)
+        db.session.commit()
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         payload = self._create_payload()
         payload["allow_anonymous"] = False
@@ -293,25 +295,183 @@ class V2SurveysApiTest(unittest.TestCase):
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
         answer = {"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]}
 
-        missing_identity = self.client.post(f"/api/v2/public/surveys/{token}/respond", json=answer)
-        self.assertEqual(missing_identity.status_code, 400, missing_identity.get_json())
+        missing_identity = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={**answer, "user_id": voter.id, "dni": "32877851"},
+        )
+        self.assertEqual(missing_identity.status_code, 401, missing_identity.get_json())
         missing_payload = missing_identity.get_json()
         self.assertEqual(missing_payload.get("contract_version"), "surveys.public_response.v2")
-        self.assertEqual(missing_payload.get("reason_code"), "identity_required")
-        self.assertEqual(missing_payload.get("action_hint"), "provide_identity")
-        self.assertEqual(missing_payload.get("required_identity"), ["dni"])
+        self.assertEqual(missing_payload.get("reason_code"), "authentication_required")
+        self.assertEqual(missing_payload.get("action_hint"), "authenticate")
+        self.assertEqual(missing_payload.get("required_identity"), ["bearer"])
 
         identified = self.client.post(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "dni": "32877851"},
+            headers=self._auth(voter),
         )
         self.assertEqual(identified.status_code, 201, identified.get_json())
 
         duplicate = self.client.post(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "dni": "32877851"},
+            headers=self._auth(voter),
         )
         self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+
+    def test_public_response_body_user_ids_are_ignored_for_anonymous_votes(self):
+        forged_target = self._create_user("forged-target@test.com", "usuario", self.tenant_1.slug)
+        db.session.commit()
+
+        payload = self._create_payload()
+        payload["uniqueness_policy"] = "libre"
+        _, survey_id, token, _, answer = self._create_published_answer_context(payload)
+        encuesta = db.session.get(EncEncuesta, survey_id)
+        encuesta.puntos_recompensa = 35
+        db.session.commit()
+
+        submissions = (
+            (f"/api/v2/public/surveys/{token}/respond", "user_id", "anon-v2-forged"),
+            (f"/api/public/encuestas/{token}/responder", "userId", "anon-v1-forged"),
+            (
+                f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+                "user_id",
+                "anon-pwa-forged",
+            ),
+        )
+        for endpoint, identity_key, anon_id in submissions:
+            with self.subTest(endpoint=endpoint, identity_key=identity_key):
+                response = self.client.post(
+                    endpoint,
+                    json={**answer, identity_key: forged_target.id, "anon_id": anon_id},
+                    headers={"X-Anon-Id": anon_id},
+                )
+                self.assertEqual(response.status_code, 201, response.get_json())
+
+        responses = EncRespuesta.query.filter_by(encuesta_id=survey_id).order_by(EncRespuesta.id.asc()).all()
+        self.assertEqual(len(responses), 3)
+        self.assertEqual([response.user_id for response in responses], [None, None, None])
+        db.session.refresh(forged_target)
+        self.assertEqual(forged_target.saldo_puntos or 0, 0)
+        self.assertEqual(
+            PointsTransaction.query.filter_by(user_id=forged_target.id, tipo="encuesta").count(),
+            0,
+        )
+
+    def test_por_usuario_requires_bearer_on_all_public_response_routes(self):
+        forged_target = self._create_user("required-forged-target@test.com", "usuario", self.tenant_1.slug)
+        db.session.commit()
+
+        payload = self._create_payload()
+        payload["uniqueness_policy"] = "por_usuario"
+        _, survey_id, token, _, answer = self._create_published_answer_context(payload)
+
+        endpoints = (
+            f"/api/v2/public/surveys/{token}/respond",
+            f"/api/public/encuestas/{token}/responder",
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+        )
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(
+                    endpoint,
+                    json={**answer, "user_id": forged_target.id},
+                )
+                self.assertEqual(response.status_code, 401, response.get_json())
+                self.assertEqual(response.get_json().get("reason_code"), "authentication_required")
+
+        self.assertEqual(EncRespuesta.query.filter_by(encuesta_id=survey_id).count(), 0)
+
+    def test_authenticated_identity_wins_and_duplicate_reward_is_unique_across_public_routes(self):
+        voter = self._create_user("reward-voter@test.com", "usuario", self.tenant_1.slug)
+        forged_target = self._create_user("reward-forged-target@test.com", "usuario", self.tenant_1.slug)
+        db.session.commit()
+
+        payload = self._create_payload()
+        payload["uniqueness_policy"] = "por_usuario"
+        _, survey_id, token, _, answer = self._create_published_answer_context(payload)
+        encuesta = db.session.get(EncEncuesta, survey_id)
+        encuesta.puntos_recompensa = 45
+        db.session.commit()
+
+        first = self.client.post(
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+            json={**answer, "userId": forged_target.id},
+            headers=self._auth(voter),
+        )
+        self.assertEqual(first.status_code, 201, first.get_json())
+
+        legacy_duplicate = self.client.post(
+            f"/api/public/encuestas/{token}/responder",
+            json={**answer, "userId": forged_target.id},
+            headers=self._auth(voter),
+        )
+        self.assertEqual(legacy_duplicate.status_code, 200, legacy_duplicate.get_json())
+        self.assertTrue(legacy_duplicate.get_json().get("duplicate"))
+
+        duplicate = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={**answer, "user_id": forged_target.id},
+            headers=self._auth(voter),
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+
+        responses = EncRespuesta.query.filter_by(encuesta_id=survey_id).all()
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0].user_id, voter.id)
+        db.session.refresh(voter)
+        db.session.refresh(forged_target)
+        self.assertEqual(voter.saldo_puntos, 45)
+        self.assertEqual(forged_target.saldo_puntos or 0, 0)
+        reward_transactions = PointsTransaction.query.filter_by(
+            user_id=voter.id,
+            tenant_id=self.tenant_1.id,
+            tipo="encuesta",
+        ).all()
+        self.assertEqual(len(reward_transactions), 1)
+        self.assertEqual(reward_transactions[0].delta, 45)
+
+    def test_authenticated_free_responses_only_grant_one_survey_reward(self):
+        voter = self._create_user("free-reward-voter@test.com", "usuario", self.tenant_1.slug)
+        db.session.commit()
+
+        payload = self._create_payload()
+        payload["uniqueness_policy"] = "libre"
+        _, survey_id, token, _, answer = self._create_published_answer_context(payload)
+        encuesta = db.session.get(EncEncuesta, survey_id)
+        encuesta.puntos_recompensa = 30
+        db.session.commit()
+
+        submissions = (
+            f"/api/v2/public/surveys/{token}/respond",
+            f"/api/public/encuestas/{token}/responder",
+        )
+        for index, endpoint in enumerate(submissions, start=1):
+            response = self.client.post(
+                endpoint,
+                json={**answer, "anon_id": f"free-reward-{index}"},
+                headers={**self._auth(voter), "X-Anon-Id": f"free-reward-{index}"},
+            )
+            self.assertEqual(response.status_code, 201, response.get_json())
+
+        responses = EncRespuesta.query.filter_by(encuesta_id=survey_id).all()
+        self.assertEqual(len(responses), 2)
+        self.assertEqual({response.user_id for response in responses}, {voter.id})
+        db.session.refresh(voter)
+        self.assertEqual(voter.saldo_puntos, 30)
+        reward_transactions = PointsTransaction.query.filter_by(
+            user_id=voter.id,
+            tenant_id=self.tenant_1.id,
+            tipo="encuesta",
+        ).all()
+        self.assertEqual(len(reward_transactions), 1)
+        reward_metadata = reward_transactions[0].metadata_payload or {}
+        self.assertEqual(reward_metadata.get("survey_id"), survey_id)
+        self.assertEqual(
+            reward_metadata.get("idempotency_key"),
+            f"survey_reward:{survey_id}:user:{voter.id}",
+        )
 
     def test_v2_por_cookie_rejects_duplicate_x_anon_id(self):
         payload = self._create_payload()

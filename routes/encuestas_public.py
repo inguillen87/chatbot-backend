@@ -40,6 +40,7 @@ from services.encuestas_service import (
     create_comentario,
     list_comentarios,
     reportar_comentario,
+    resolve_optional_survey_bearer_user,
     verify_social_comment_token,
 )
 from services.encuestas_analytics_service import calculate_live_results
@@ -951,11 +952,16 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return response, 201
 
         try:
+            authenticated_user = resolve_optional_survey_bearer_user(
+                request.headers.get("Authorization"),
+                contract_version=ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
+            )
             respuesta = save_respuesta(
                 slug,
                 payload,
                 request_ctx,
                 preferred_tenant_id=tenant_id,
+                authenticated_user=authenticated_user,
             )
         except EncuestaError as err:
             if err.status_code == 409:

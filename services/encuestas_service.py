@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote_plus
 
-from flask import current_app, g
+from flask import current_app, g, has_request_context, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from sqlalchemy import func, or_, inspect
 from sqlalchemy.exc import IntegrityError
@@ -24,6 +24,7 @@ from sqlalchemy.orm import joinedload, load_only
 
 from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
 from database import db
+from utils.auth_helpers import user_from_token
 from utils.db_utils import ensure_enc_encuesta_schema
 from utils.roles import is_authorized_superadmin_user
 from models import (
@@ -35,10 +36,10 @@ from models import (
     EncLink,
     EncSegmento,
     EncComentario,
+    PointsTransaction,
     TenantProfile,
     User,
 )
-from services.rewards import recompensas_service
 from services.user_service import get_user_profile_identity
 try:
     from socket_service import emit_survey_update, emit_survey_comment
@@ -2550,8 +2551,117 @@ def build_unique_fingerprint(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _validate_required_identity(encuesta: EncEncuesta, payload: Mapping[str, Any]) -> None:
-    if not (bool(getattr(encuesta, "requiere_identidad", False)) or not bool(getattr(encuesta, "anonimo_permitido", True))):
+_AUTHENTICATED_USER_POLICIES = {"por_usuario", "usuario", "user_id", "por_user_id"}
+
+
+def resolve_optional_survey_bearer_user(
+    authorization_header: Optional[str],
+    *,
+    contract_version: str = "surveys.public_response.v2",
+) -> Optional[User]:
+    authorization = str(authorization_header or "").strip()
+    if not authorization:
+        return None
+
+    scheme, separator, raw_token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    if not separator or not raw_token.strip():
+        raise EncuestaError(
+            "El token Bearer es invalido.",
+            status_code=401,
+            payload={
+                "contract_version": contract_version,
+                "reason_code": "invalid_auth_token",
+                "action_hint": "authenticate",
+                "required_identity": ["bearer"],
+            },
+        )
+
+    user = user_from_token(raw_token.strip())
+    if user is None:
+        raise EncuestaError(
+            "El token Bearer es invalido o expiro.",
+            status_code=401,
+            payload={
+                "contract_version": contract_version,
+                "reason_code": "invalid_auth_token",
+                "action_hint": "authenticate",
+                "required_identity": ["bearer"],
+            },
+        )
+    return user
+
+
+def _resolve_authenticated_response_user(authenticated_user: Optional[User]) -> Optional[User]:
+    candidate = authenticated_user
+    if candidate is None and has_request_context():
+        candidate = resolve_optional_survey_bearer_user(request.headers.get("Authorization"))
+        if candidate is None and request.blueprint == "portal_api":
+            candidate = getattr(g, "viewer", None)
+    if candidate is None:
+        return None
+
+    try:
+        candidate_id = int(getattr(candidate, "id", None))
+    except (TypeError, ValueError):
+        candidate_id = None
+    if not candidate_id:
+        raise EncuestaError(
+            "La identidad autenticada no es valida.",
+            status_code=401,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "invalid_authenticated_identity",
+                "action_hint": "authenticate",
+                "required_identity": ["bearer"],
+            },
+        )
+
+    persisted_user = db.session.get(User, candidate_id)
+    if persisted_user is None:
+        raise EncuestaError(
+            "La identidad autenticada no existe.",
+            status_code=401,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "invalid_authenticated_identity",
+                "action_hint": "authenticate",
+                "required_identity": ["bearer"],
+            },
+        )
+    return persisted_user
+
+
+def _validate_required_identity(
+    encuesta: EncEncuesta,
+    payload: Mapping[str, Any],
+    *,
+    authenticated_user_id: Optional[int],
+) -> None:
+    policy = str(getattr(encuesta, "politica_unicidad", "") or "libre").strip().lower()
+    authentication_required = (
+        not bool(getattr(encuesta, "anonimo_permitido", True))
+        or policy in _AUTHENTICATED_USER_POLICIES
+    )
+    if authentication_required and authenticated_user_id is None:
+        raise EncuestaError(
+            "Esta votacion requiere una sesion autenticada para registrar la participacion.",
+            status_code=401,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "authentication_required",
+                "action_hint": "authenticate",
+                "required_identity": ["bearer"],
+                "message": "Inicia sesion para participar en esta votacion.",
+            },
+        )
+
+    if not (
+        bool(getattr(encuesta, "requiere_identidad", False))
+        or not bool(getattr(encuesta, "anonimo_permitido", True))
+        or policy in _AUTHENTICATED_USER_POLICIES
+    ):
         return
 
     def _clean_identity(value: Any) -> Optional[str]:
@@ -2560,8 +2670,7 @@ def _validate_required_identity(encuesta: EncEncuesta, payload: Mapping[str, Any
         cleaned = str(value).strip()
         return cleaned or None
 
-    policy = str(getattr(encuesta, "politica_unicidad", "") or "libre").strip().lower()
-    user_id = _clean_identity(payload.get("user_id") or payload.get("userId"))
+    user_id = _clean_identity(authenticated_user_id)
     dni = _clean_identity(payload.get("dni") or payload.get("documento") or payload.get("document"))
     phone = _clean_identity(
         payload.get("phone")
@@ -3112,12 +3221,88 @@ def _track_survey_response_analytics(
             )
 
 
+def _grant_survey_reward_once(
+    encuesta: EncEncuesta,
+    respuesta: EncRespuesta,
+    authenticated_user: User,
+) -> bool:
+    try:
+        reward_points = int(encuesta.puntos_recompensa or 0)
+    except (TypeError, ValueError):
+        reward_points = 0
+    if reward_points <= 0:
+        return False
+
+    tenant_id = encuesta.tenant_id
+    idempotency_key = f"survey_reward:{encuesta.id}:user:{authenticated_user.id}"
+
+    try:
+        locked_user = (
+            User.query.filter_by(id=authenticated_user.id)
+            .with_for_update()
+            .first()
+        )
+        if locked_user is None:
+            raise ValueError("Usuario no encontrado para acreditar puntos")
+
+        existing_rewards = PointsTransaction.query.filter_by(
+            user_id=locked_user.id,
+            tenant_id=tenant_id,
+            tipo="encuesta",
+        ).all()
+        for transaction in existing_rewards:
+            metadata = (
+                transaction.metadata_payload
+                if isinstance(transaction.metadata_payload, dict)
+                else {}
+            )
+            if metadata.get("idempotency_key") == idempotency_key:
+                db.session.commit()
+                return False
+
+        prior_response = (
+            EncRespuesta.query.filter(
+                EncRespuesta.encuesta_id == encuesta.id,
+                EncRespuesta.user_id == locked_user.id,
+                EncRespuesta.id != respuesta.id,
+            )
+            .order_by(EncRespuesta.id.asc())
+            .first()
+        )
+        if prior_response is not None:
+            db.session.commit()
+            return False
+
+        locked_user.saldo_puntos = (locked_user.saldo_puntos or 0) + reward_points
+        db.session.add(
+            PointsTransaction(
+                user_id=locked_user.id,
+                tenant_id=tenant_id,
+                tipo="encuesta",
+                delta=reward_points,
+                saldo_final=locked_user.saldo_puntos,
+                metadata_payload={
+                    "idempotency_key": idempotency_key,
+                    "source": "survey_response",
+                    "survey_id": encuesta.id,
+                    "response_id": respuesta.id,
+                },
+            )
+        )
+        db.session.commit()
+        return True
+    except Exception:
+        db.session.rollback()
+        raise
+
+
 def save_respuesta(
     slug_publico: str,
     payload: Dict[str, Any],
     request_ctx: Dict[str, Any],
     *,
     preferred_tenant_id: Optional[int] = None,
+    authenticated_user: Optional[User] = None,
 ) -> EncRespuesta:
     encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
     if not isinstance(payload, dict):
@@ -3125,6 +3310,18 @@ def save_respuesta(
             payload = dict(payload)
         else:
             raise EncuestaError("Debe enviar respuestas")
+    else:
+        payload = dict(payload)
+
+    # Public callers may send these legacy fields, but they never establish identity.
+    payload.pop("user_id", None)
+    payload.pop("userId", None)
+    authenticated_response_user = _resolve_authenticated_response_user(authenticated_user)
+    authenticated_user_id = (
+        int(authenticated_response_user.id)
+        if authenticated_response_user is not None
+        else None
+    )
 
     raw_respuestas = payload.get("respuestas")
     if raw_respuestas is None and "answers" in payload:
@@ -3140,11 +3337,15 @@ def save_respuesta(
     metadata_payload = metadata if isinstance(metadata, (dict, list)) else None
 
     tenant_id = encuesta.tenant_id
-    _validate_required_identity(encuesta, payload)
+    _validate_required_identity(
+        encuesta,
+        payload,
+        authenticated_user_id=authenticated_user_id,
+    )
 
     dni = payload.get("dni") or payload.get("documento") or payload.get("document")
     phone = payload.get("phone") or payload.get("telefono") or payload.get("tel") or payload.get("whatsapp")
-    user_id = payload.get("user_id") or payload.get("userId")
+    user_id = authenticated_user_id
     anon_cookie = request_ctx.get("anon_id")
     ip = request_ctx.get("ip")
 
@@ -3305,22 +3506,15 @@ def save_respuesta(
     )
 
     # Otorgar puntos si corresponde
-    if encuesta.puntos_recompensa and encuesta.puntos_recompensa > 0:
-        target_user = None
-        if respuesta.user_id:
-            target_user = db.session.get(User, respuesta.user_id)
-
-        if target_user:
-            try:
-                tenant = db.session.get(TenantProfile, tenant_id)
-                recompensas_service().acreditar_puntos_manual(
-                    target_user,
-                    tenant,
-                    "encuesta",
-                    encuesta.puntos_recompensa
-                )
-            except Exception:
-                current_app.logger.exception("[encuestas] Error al otorgar puntos por encuesta")
+    if (
+        encuesta.puntos_recompensa
+        and encuesta.puntos_recompensa > 0
+        and authenticated_response_user
+    ):
+        try:
+            _grant_survey_reward_once(encuesta, respuesta, authenticated_response_user)
+        except Exception:
+            current_app.logger.exception("[encuestas] Error al otorgar puntos por encuesta")
 
     # Emitir actualizaciones en tiempo real si corresponde
     if encuesta.mostrar_resultados_envivo and emit_survey_update:

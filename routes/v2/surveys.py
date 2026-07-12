@@ -24,6 +24,7 @@ from services.encuestas_service import (
     get_public_encuesta,
     list_encuestas,
     publicar_encuesta,
+    resolve_optional_survey_bearer_user,
     save_respuesta,
     serialize_encuesta,
     serialize_public_encuesta,
@@ -1573,7 +1574,16 @@ def respond_public_survey_v2(token: str):
         return _attach_rate_limit_headers(response, rate_limit)
 
     try:
-        respuesta = save_respuesta(token, payload, request_ctx, preferred_tenant_id=preferred_tenant_id)
+        authenticated_user = resolve_optional_survey_bearer_user(
+            request.headers.get("Authorization")
+        )
+        respuesta = save_respuesta(
+            token,
+            payload,
+            request_ctx,
+            preferred_tenant_id=preferred_tenant_id,
+            authenticated_user=authenticated_user,
+        )
         db.session.commit()
     except EncuestaError as exc:
         db.session.rollback()

@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from typing import Any, Mapping
 
 from flask import Blueprint, jsonify, request
 
 from models import AnalyticsEventV2, TenantProfile, TenantTicket, db
+from services.finance_webview_access import (
+    FinanceWebviewAccessError,
+    normalize_finance_webview_values,
+    verify_finance_webview_token,
+)
 
 
 FINANCE_WEBVIEW_CONTRACT_VERSION = "finance.webview.v1"
@@ -265,18 +269,6 @@ def _json(payload: dict, status: int = 200):
     return response
 
 
-def _money(value: str | None) -> str | None:
-    if not value:
-        return None
-    try:
-        parsed = Decimal(str(value).replace(",", "."))
-    except (InvalidOperation, ValueError):
-        return None
-    if parsed <= 0:
-        return None
-    return f"{parsed.quantize(Decimal('0.01'))}"
-
-
 def _request_value(data: Mapping[str, Any] | None, *keys: str) -> str:
     data = data if isinstance(data, Mapping) else {}
     for key in keys:
@@ -287,6 +279,110 @@ def _request_value(data: Mapping[str, Any] | None, *keys: str) -> str:
         if raw not in (None, ""):
             return str(raw).strip()
     return ""
+
+
+def _finance_access_token(data: Mapping[str, Any] | None) -> str:
+    authorization = str(request.headers.get("Authorization") or "").strip()
+    if authorization:
+        scheme, separator, credentials = authorization.partition(" ")
+        if separator and scheme.lower() == "bearer":
+            return credentials.strip()
+        return authorization
+    return _request_value(data, "session", "token", "session_token")
+
+
+def _finance_contact_key(data: Mapping[str, Any] | None) -> str:
+    data = data if isinstance(data, Mapping) else {}
+    raw = data.get("contact_key")
+    if raw not in (None, ""):
+        return str(raw).strip()
+    contact = data.get("contact")
+    if isinstance(contact, Mapping):
+        return str(contact.get("contact_key") or "").strip()
+    return str(contact or "").strip()
+
+
+def _finance_request_values(data: Mapping[str, Any] | None) -> dict[str, str | None]:
+    if request.method == "GET":
+        amount = request.args.get("amount") or request.args.get("monto")
+        currency = request.args.get("currency") or request.args.get("moneda") or "ARS"
+        contact_key = request.args.get("contact_key") or request.args.get("contact")
+    else:
+        body = data if isinstance(data, Mapping) else {}
+        amount = body.get("amount") or body.get("monto")
+        currency = body.get("currency") or body.get("moneda") or "ARS"
+        contact_key = _finance_contact_key(body)
+    return normalize_finance_webview_values(
+        amount=amount,
+        currency=currency,
+        contact_key=contact_key,
+    )
+
+
+def _verify_finance_session(
+    *,
+    tenant_slug: str,
+    flow: str,
+    operation_code: str,
+    data: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str, FinanceWebviewAccessError | None]:
+    token = _finance_access_token(data)
+    if not token:
+        error = FinanceWebviewAccessError("missing_access_token")
+        return None, "missing", error
+
+    values = _finance_request_values(data)
+    try:
+        claims = verify_finance_webview_token(
+            token,
+            expected_tenant_slug=tenant_slug,
+            expected_flow=flow,
+            expected_operation_code=operation_code,
+            **values,
+        )
+    except FinanceWebviewAccessError as exc:
+        state = "expired" if exc.code == "expired_access_token" else "invalid"
+        return None, state, exc
+    return claims, "verified", None
+
+
+def _finance_session_error(error: FinanceWebviewAccessError, *, action_id: str):
+    if error.code == "missing_access_token":
+        status = 401
+        reason_code = "finance_session_required"
+        message = "Falta el token firmado de la sesion financiera."
+    elif error.code == "expired_access_token":
+        status = 401
+        reason_code = "finance_session_expired"
+        message = "La sesion financiera vencio. Abri un enlace nuevo."
+    elif error.code in {"tenant_slug_mismatch", "flow_mismatch", "operation_code_mismatch"}:
+        status = 403
+        reason_code = "finance_session_context_mismatch"
+        message = "El token no pertenece a esta operacion financiera."
+    elif error.code == "finance_values_mismatch":
+        status = 403
+        reason_code = "finance_session_values_mismatch"
+        message = "Los valores de la operacion no coinciden con el enlace firmado."
+    elif error.code == "secret_key_not_configured":
+        status = 503
+        reason_code = "finance_session_unavailable"
+        message = "La validacion de sesiones financieras no esta configurada."
+    else:
+        status = 401
+        reason_code = "finance_session_invalid"
+        message = "El token de la sesion financiera no es valido."
+
+    return _json(
+        {
+            "contract_version": "finance.action.v1",
+            "status_code": status,
+            "reason_code": reason_code,
+            "action_hint": "open_from_signed_whatsapp_link",
+            "action": {"id": action_id},
+            "error": {"message": message},
+        },
+        status,
+    )
 
 
 def _clean_text(value: Any, *, limit: int = 500) -> str:
@@ -323,10 +419,8 @@ def _available_actions(flow: str, definition: Mapping[str, Any], session_ready: 
         action.update(
             {
                 "id": action_id,
-                "enabled": action_id != "continue_secure_flow" or session_ready,
-                "disabled_reason": None
-                if action_id != "continue_secure_flow" or session_ready
-                else "Falta token de sesion del link de WhatsApp.",
+                "enabled": session_ready,
+                "disabled_reason": None if session_ready else "Falta token firmado del link de WhatsApp.",
             }
         )
         actions.append(action)
@@ -340,7 +434,7 @@ def _available_actions(flow: str, definition: Mapping[str, Any], session_ready: 
                 "status": "registered",
                 "next_step": next_step,
                 "enabled": session_ready,
-                "disabled_reason": None if session_ready else "Falta token de sesion del link de WhatsApp.",
+                "disabled_reason": None if session_ready else "Falta token firmado del link de WhatsApp.",
             }
         )
     return actions
@@ -402,12 +496,18 @@ def _flow_steps(definition: dict, session_ready: bool) -> list[dict]:
 
 
 def _finance_payload(tenant_slug: str, flow: str, operation_code: str, data: Mapping[str, Any] | None = None) -> dict:
-    session_token = _request_value(data, "session", "token", "session_token")
-    amount = _money(_request_value(data, "amount", "monto"))
-    currency = (_request_value(data, "currency", "moneda") or "ARS").strip().upper()[:8]
-    contact_key = _request_value(data, "contact_key", "contact")
+    values = _finance_request_values(data)
+    claims, session_state, _ = _verify_finance_session(
+        tenant_slug=tenant_slug,
+        flow=flow,
+        operation_code=operation_code,
+        data=data,
+    )
+    amount = values["amount"]
+    currency = values["currency"]
+    contact_key = values["contact_key"]
     definition = _flow_definition(flow)
-    session_ready = len(session_token) >= 8
+    session_ready = claims is not None
     actions = _available_actions(flow, definition, session_ready)
 
     return {
@@ -428,7 +528,7 @@ def _finance_payload(tenant_slug: str, flow: str, operation_code: str, data: Map
             "card_data_in_chat_allowed": False,
             "identity_data_in_chat_allowed": False,
             "requires_session_token": True,
-            "session_state": "present" if session_ready else "missing_or_short",
+            "session_state": session_state,
             "server_to_server_confirmation_required": True,
             "requires_idempotency_key": True,
             "audit_trail_required": True,
@@ -441,12 +541,13 @@ def _finance_payload(tenant_slug: str, flow: str, operation_code: str, data: Map
                 "id": "continue_secure_flow",
                 "label": definition["primary_label"],
                 "enabled": session_ready,
-                "disabled_reason": None if session_ready else "Falta token de sesion del link de WhatsApp.",
+                "disabled_reason": None if session_ready else "Falta token firmado del link de WhatsApp.",
             },
             "support": {
                 "id": "request_agent_help",
                 "label": definition["support_label"],
-                "enabled": True,
+                "enabled": session_ready,
+                "disabled_reason": None if session_ready else "Falta token firmado del link de WhatsApp.",
             },
         },
         "experience": {
@@ -567,6 +668,7 @@ def _create_or_get_finance_ticket(
     operation_code: str,
     action: Mapping[str, Any],
     data: Mapping[str, Any],
+    access_claims: Mapping[str, Any],
 ) -> tuple[TenantTicket, bool]:
     definition = _flow_definition(flow)
     idempotency_key = _request_value(data, "idempotency_key", "request_id") or uuid.uuid4().hex
@@ -575,12 +677,13 @@ def _create_or_get_finance_ticket(
     if existing:
         return existing, True
 
+    values = _finance_request_values(data)
     comment = _clean_text(data.get("comment") or data.get("message") or data.get("consulta"), limit=1200)
     contact = _contact_payload(data)
-    amount = _money(_request_value(data, "amount", "monto"))
-    currency = (_request_value(data, "currency", "moneda") or "ARS").strip().upper()[:8]
-    session_token = _request_value(data, "session", "token", "session_token")
-    session_ready = len(session_token) >= 8
+    contact["contact_key"] = values["contact_key"]
+    amount = values["amount"]
+    currency = values["currency"]
+    session_jti = str(access_claims["jti"])
     title = f"{definition['title']} {operation_code}".strip()
     description_parts = [
         f"Accion financiera: {action['label']}",
@@ -627,7 +730,8 @@ def _create_or_get_finance_ticket(
                 "next_step": action["next_step"],
                 "amount": amount,
                 "currency": currency,
-                "session_state": "present" if session_ready else "missing_or_short",
+                "session_state": "verified",
+                "session_jti": session_jti,
                 "crm_queue": definition["crm_queue"],
                 "templates": definition["templates"],
                 "idempotency_key": idempotency_key,
@@ -648,7 +752,7 @@ def _create_or_get_finance_ticket(
         tenant_type=tenant.tipo or "pyme",
         channel="whatsapp_webview",
         event_name=action["event"],
-        session_id=session_token or None,
+        session_id=session_jti,
         entity_ref=f"tenant_ticket:{ticket.id}",
         metadata_payload={
             "contract_version": "finance.action.v1",
@@ -660,6 +764,7 @@ def _create_or_get_finance_ticket(
             "crm_queue": definition["crm_queue"]["id"],
             "webview_flow_id": definition["webview_flow_id"],
             "contact_key": contact.get("contact_key"),
+            "session_jti": session_jti,
             "source": "public_finance_webview",
         },
     )
@@ -698,6 +803,19 @@ def public_finance_action(tenant_slug: str, flow: str, operation_code: str):
     if not isinstance(data, Mapping):
         data = {}
 
+    action_id = _request_value(data, "action_id", "action") or "continue_secure_flow"
+    access_claims, _, access_error = _verify_finance_session(
+        tenant_slug=tenant_slug,
+        flow=flow,
+        operation_code=operation_code,
+        data=data,
+    )
+    if access_error or not access_claims:
+        return _finance_session_error(
+            access_error or FinanceWebviewAccessError("invalid_access_token"),
+            action_id=action_id,
+        )
+
     tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
     if not tenant:
         return _json(
@@ -712,10 +830,7 @@ def public_finance_action(tenant_slug: str, flow: str, operation_code: str):
         )
 
     definition = _flow_definition(flow)
-    session_token = _request_value(data, "session", "token", "session_token")
-    session_ready = len(session_token) >= 8
-    action_id = _request_value(data, "action_id", "action") or "continue_secure_flow"
-    action = _action_contract(flow, definition, action_id, session_ready)
+    action = _action_contract(flow, definition, action_id, True)
     if not action:
         return _json(
             {
@@ -723,24 +838,11 @@ def public_finance_action(tenant_slug: str, flow: str, operation_code: str):
                 "status_code": 400,
                 "reason_code": "finance_action_not_supported",
                 "action_hint": "use_action_catalog",
-                "supported_actions": [item["id"] for item in _available_actions(flow, definition, session_ready)],
+                "supported_actions": [item["id"] for item in _available_actions(flow, definition, True)],
                 "error": {"message": "La accion solicitada no existe para este flujo financiero."},
             },
             400,
         )
-    if not action.get("enabled"):
-        return _json(
-            {
-                "contract_version": "finance.action.v1",
-                "status_code": 409,
-                "reason_code": "finance_session_required",
-                "action_hint": "open_from_signed_whatsapp_link",
-                "action": {"id": action["id"], "label": action["label"]},
-                "error": {"message": action.get("disabled_reason") or "Falta sesion segura."},
-            },
-            409,
-        )
-
     comment = _clean_text(data.get("comment") or data.get("message") or data.get("consulta"), limit=1200)
     if _contains_sensitive_finance_text(comment):
         return _json(
@@ -767,6 +869,7 @@ def public_finance_action(tenant_slug: str, flow: str, operation_code: str):
         operation_code=operation_code,
         action=action,
         data=data,
+        access_claims=access_claims,
     )
     return _json(
         _finance_action_response(
