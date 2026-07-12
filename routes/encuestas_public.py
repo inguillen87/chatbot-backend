@@ -1018,10 +1018,21 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         include_heatmap = request.args.get("include_heatmap", "1").strip().lower() not in {"0", "false", "no", "off"}
         max_points = request.args.get("max_points", default=2000, type=int) or 2000
         max_cells = request.args.get("max_cells", default=200, type=int) or 200
-        window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
+        momentum_window_minutes = request.args.get("momentum_window_minutes", type=int)
+        if momentum_window_minutes is None:
+            momentum_window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
         filtros = {
             key: value
-            for key in ("canal", "barrio", "ciudad", "provincia")
+            for key in (
+                "range_preset",
+                "range_timezone",
+                "desde",
+                "hasta",
+                "canal",
+                "barrio",
+                "ciudad",
+                "provincia",
+            )
             if (value := (request.args.get(key) or "").strip())
         }
 
@@ -1033,7 +1044,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 include_heatmap=include_heatmap,
                 max_points=max(100, min(max_points, 5000)),
                 max_cells=max(50, min(max_cells, 1000)),
-                momentum_window_minutes=window_minutes,
+                momentum_window_minutes=momentum_window_minutes,
                 filtros=filtros,
             )
             request_id = _resolve_request_id()

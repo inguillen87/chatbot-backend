@@ -1,6 +1,7 @@
 import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from unittest.mock import patch
 
 import jwt
@@ -9,7 +10,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import AnalyticsEventV2, TenantProfile, User
+from models import AnalyticsEventV2, EncRespuesta, TenantProfile, User
 from routes.v2.surveys import _public_response_rate_buckets
 
 
@@ -247,6 +248,108 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertEqual(data["heatmap"]["metadata"]["coordinate_precision"], "rounded_3_decimals")
         self.assertEqual(data["heatmap"]["metadata"]["raw_points_count"], 1)
         self._assert_admin_operations(data, token, survey_id, tenant_slug=self.tenant.slug)
+
+    def test_live_results_apply_explicit_analytics_range_to_all_surfaces(self):
+        survey_id, token, question_id, option_id = self._create_live_vote()
+        fixed_now = datetime(2026, 7, 12, 15, 0, tzinfo=timezone.utc)
+
+        for index, (lat, lng) in enumerate(((-33.08149, -68.46849), (-33.09149, -68.47849)), start=1):
+            response = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json={
+                    "anon_id": f"range-voter-{index}",
+                    "source": "web",
+                    "lat": lat,
+                    "lng": lng,
+                    "barrio": "Centro",
+                    "ciudad": "Junin",
+                    "provincia": "Mendoza",
+                    "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+                },
+                headers={"X-Forwarded-For": f"203.0.113.{40 + index}"},
+            )
+            self.assertEqual(response.status_code, 201, response.get_json())
+
+        respuestas = EncRespuesta.query.filter_by(encuesta_id=survey_id).order_by(EncRespuesta.id.asc()).all()
+        self.assertEqual(len(respuestas), 2)
+        respuestas[0].submitted_at = fixed_now - timedelta(hours=2)
+        respuestas[1].submitted_at = fixed_now - timedelta(minutes=30)
+        db.session.commit()
+
+        def fetch_v2(preset: str):
+            query = urlencode(
+                {
+                    "include_heatmap": 1,
+                    "range_preset": preset,
+                    "range_timezone": "America/Argentina/Buenos_Aires",
+                    "momentum_window_minutes": 60,
+                }
+            )
+            response = self.client.get(f"/api/v2/public/surveys/{token}/live-results?{query}")
+            self.assertEqual(response.status_code, 200, response.get_json())
+            return response.get_json()
+
+        def assert_consistent(payload, expected_total: int):
+            self.assertEqual(payload["total_respuestas"], expected_total)
+            self.assertEqual(payload["preguntas"][0]["total_votos"], expected_total)
+            self.assertEqual(payload["preguntas"][0]["opciones"][0]["votos"], expected_total)
+            self.assertEqual(sum(point["total"] for point in payload["timeline_minute"]), expected_total)
+            self.assertEqual(payload["heatmap"]["metadata"]["raw_points_count"], expected_total)
+
+        with patch("services.encuestas_analytics_service._utc_now", return_value=fixed_now):
+            last_60m = fetch_v2("last_60m")
+            assert_consistent(last_60m, 1)
+            self.assertEqual(last_60m["analytics_range"]["preset"], "last_60m")
+            self.assertEqual(last_60m["analytics_range"]["label"], "Últimos 60 minutos")
+            self.assertEqual(last_60m["analytics_range"]["desde"], "2026-07-12T14:00:00+00:00")
+            self.assertEqual(last_60m["momentum"]["window_minutes"], 30)
+
+            last_24h = fetch_v2("last_24h")
+            assert_consistent(last_24h, 2)
+            self.assertEqual(last_24h["analytics_range"]["preset"], "last_24h")
+            self.assertEqual(last_24h["analytics_range"]["label"], "Últimas 24 horas")
+            self.assertEqual(last_24h["analytics_range"]["desde"], "2026-07-11T15:00:00+00:00")
+
+            today = fetch_v2("today")
+            assert_consistent(today, 2)
+            self.assertEqual(today["analytics_range"]["preset"], "today")
+            self.assertEqual(today["analytics_range"]["label"], "Hoy (desde las 00:00)")
+            self.assertEqual(today["analytics_range"]["timezone"], "America/Argentina/Buenos_Aires")
+            self.assertEqual(today["analytics_range"]["desde"], "2026-07-12T03:00:00+00:00")
+
+            custom_query = urlencode(
+                {
+                    "include_heatmap": 1,
+                    "desde": (fixed_now - timedelta(minutes=90)).isoformat(),
+                    "hasta": fixed_now.isoformat(),
+                    "range_timezone": "America/Argentina/Buenos_Aires",
+                    "momentum_window_minutes": 10,
+                }
+            )
+            custom_response = self.client.get(
+                f"/api/public/encuestas/v1/{token}/live-results?{custom_query}"
+            )
+            self.assertEqual(custom_response.status_code, 200, custom_response.get_json())
+            custom = custom_response.get_json()
+            assert_consistent(custom, 1)
+            self.assertEqual(custom["analytics_range"]["mode"], "custom")
+            self.assertIsNone(custom["analytics_range"]["preset"])
+
+            ambiguous_query = urlencode(
+                {
+                    "range_preset": "last_60m",
+                    "desde": (fixed_now - timedelta(minutes=90)).isoformat(),
+                    "hasta": fixed_now.isoformat(),
+                }
+            )
+            ambiguous_response = self.client.get(
+                f"/api/v2/public/surveys/{token}/live-results?{ambiguous_query}"
+            )
+            self.assertEqual(ambiguous_response.status_code, 400, ambiguous_response.get_json())
+            self.assertEqual(
+                ambiguous_response.get_json()["reason_code"],
+                "ambiguous_analytics_range",
+            )
 
     def test_pwa_survey_response_matches_realtime_contract_for_whatsapp_webview(self):
         survey_id, token, question_id, option_id = self._create_live_vote()

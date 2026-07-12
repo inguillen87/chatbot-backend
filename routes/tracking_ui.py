@@ -11,6 +11,7 @@ import random
 import uuid
 from sqlalchemy import func
 from services.ticket_realtime_state import build_ticket_collaboration_state
+from utils.time_utils import get_local_now
 from services.tracking_experience import (
     TRACKING_EXPERIENCE_CONTRACT_VERSION,
     build_claim_tracking_experience,
@@ -409,7 +410,7 @@ def _build_public_claim_message_payload(
 
 
 def _persist_public_claim_tracking_message(ticket: MunicipioTicket, mensaje: str) -> dict:
-    now = datetime.now()
+    now = get_local_now()
     previous_status = getattr(ticket, "estado", None)
     comment = TicketComentario(
         municipio_ticket_id=ticket.id,

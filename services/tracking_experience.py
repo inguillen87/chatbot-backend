@@ -183,7 +183,10 @@ def _comment_timeline(comments_rel: Any) -> list[dict[str, Any]]:
     if not hasattr(comments_rel, "order_by"):
         return []
     try:
-        comments = comments_rel.order_by(TicketComentario.fecha.asc()).limit(20).all()
+        comments = comments_rel.order_by(
+            TicketComentario.fecha.asc(),
+            TicketComentario.id.asc(),
+        ).limit(20).all()
     except Exception:
         try:
             comments = comments_rel.order_by("fecha").limit(20).all()
@@ -240,6 +243,7 @@ def _claim_helpdesk_queue_state(
         author = str(item.get("author") or "").strip().lower()
         if author in {"team", "admin", "agent", "municipio", "pyme"}:
             latest_team_index = index
+            pending_customer_messages.clear()
             continue
         if author != "customer":
             continue

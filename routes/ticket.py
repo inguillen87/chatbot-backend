@@ -69,6 +69,17 @@ TICKET_BACKOFFICE_ROLES = {
     "manager",
     "supervisor",
 }
+TICKET_PUBLIC_RECIPIENT_ROLES = {
+    "anonymous",
+    "citizen",
+    "ciudadano",
+    "customer",
+    "lead",
+    "neighbor",
+    "public_pin",
+    "user",
+    "usuario",
+}
 TICKET_READ_REQUIRED_CAPABILITIES = [
     "tickets.read",
     "crm.tickets.read",
@@ -112,27 +123,93 @@ def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | 
     return str(fallback or "crm").strip().lower() or "crm"
 
 
+def _is_public_ticket_recipient(viewer: Mapping[str, Any] | None) -> bool:
+    viewer = viewer or {}
+    role = canonical_role(viewer.get("viewer_role"))
+    if role in TICKET_BACKOFFICE_ROLES:
+        return False
+    if role in TICKET_PUBLIC_RECIPIENT_ROLES:
+        return True
+
+    viewer_key = str(viewer.get("viewer_key") or "").strip().lower()
+    return bool(viewer.get("viewer_anon_id")) or viewer_key.startswith(("anon:", "pin:"))
+
+
+def _build_agent_reply_recipient_evidence(
+    *,
+    ticket_type: str,
+    ticket_id: int,
+    comment_ids: list[int | None],
+) -> dict[str, Any]:
+    summary = build_ticket_realtime_summary(ticket_type=ticket_type, ticket_id=ticket_id)
+    active_viewers = (summary.get("presence") or {}).get("active_viewers") or []
+    read_viewers = (summary.get("read_state") or {}).get("viewers") or []
+    recipient_presence_confirmed = any(
+        isinstance(viewer, Mapping) and _is_public_ticket_recipient(viewer)
+        for viewer in active_viewers
+    )
+
+    normalized_comment_ids = []
+    for comment_id in comment_ids:
+        try:
+            normalized_comment_ids.append(int(comment_id))
+        except (TypeError, ValueError):
+            continue
+    latest_reply_comment_id = max(normalized_comment_ids, default=0)
+
+    recipient_read_confirmed = False
+    if latest_reply_comment_id:
+        for viewer in read_viewers:
+            if not isinstance(viewer, Mapping) or not _is_public_ticket_recipient(viewer):
+                continue
+            try:
+                last_read_comment_id = int(viewer.get("last_read_comment_id") or 0)
+            except (TypeError, ValueError):
+                last_read_comment_id = 0
+            if last_read_comment_id >= latest_reply_comment_id and viewer.get("last_read_at"):
+                recipient_read_confirmed = True
+                break
+
+    return {
+        "recipient_presence_confirmed": recipient_presence_confirmed,
+        "recipient_read_confirmed": recipient_read_confirmed,
+        "reply_comment_ids": normalized_comment_ids,
+        "latest_reply_comment_id": latest_reply_comment_id or None,
+    }
+
+
 def _build_agent_ticket_delivery_payload(
     *,
     tipo: str,
     notification_results: Mapping[str, Any] | None,
     socket_emitted: bool,
+    recipient_room_emitted: bool,
     timeline_updated: bool,
+    recipient_presence_confirmed: bool = False,
+    recipient_read_confirmed: bool = False,
+    reply_comment_ids: list[int] | None = None,
+    latest_reply_comment_id: int | None = None,
     notification_error_reason: str | None = None,
     socket_error_reason: str | None = None,
 ) -> dict[str, Any]:
     delivery_results = _normalize_ticket_delivery_results(notification_results)
     delivery_results["socket"] = bool(socket_emitted)
     external_dispatch = any(delivery_results[channel] for channel in ("email", "sms", "whatsapp"))
-    realtime_dispatch = bool(delivery_results["socket"])
+    realtime_dispatch = bool(recipient_room_emitted and recipient_presence_confirmed)
     delivered = external_dispatch or realtime_dispatch
-    channel = _ticket_delivery_channel(delivery_results, "whatsapp" if tipo == "municipio" else "crm")
+    channel = (
+        _ticket_delivery_channel(delivery_results, "crm")
+        if external_dispatch
+        else "live_socket"
+        if realtime_dispatch
+        else "crm"
+    )
 
     if external_dispatch:
         reason = "external_dispatch_confirmed"
         reply_status = "sent_to_contact"
     elif realtime_dispatch:
-        reason = "socket_dispatch_confirmed"
+        reason = "recipient_read_confirmed" if recipient_read_confirmed else "recipient_presence_confirmed"
         reply_status = "sent_to_live_chat"
     elif notification_error_reason:
         reason = notification_error_reason
@@ -140,27 +217,48 @@ def _build_agent_ticket_delivery_payload(
     elif socket_error_reason:
         reason = socket_error_reason
         reply_status = "saved_to_timeline"
+    elif recipient_presence_confirmed and not recipient_room_emitted:
+        reason = "recipient_room_dispatch_not_confirmed"
+        reply_status = "saved_to_timeline"
+    elif delivery_results["socket"]:
+        reason = "recipient_presence_not_confirmed"
+        reply_status = "saved_to_timeline"
     else:
-        reason = "external_dispatch_no_channel_confirmed"
+        reason = "recipient_delivery_not_confirmed"
         reply_status = "saved_to_timeline"
 
+    if external_dispatch:
+        operator_message = "Mensaje enviado por un canal externo y registrado en el CRM."
+    elif realtime_dispatch and recipient_read_confirmed:
+        operator_message = "Entrega y lectura del ciudadano confirmadas en el chat del ticket."
+    elif realtime_dispatch:
+        operator_message = "Presencia publica activa confirmada; lectura aun no confirmada."
+    elif recipient_presence_confirmed and not recipient_room_emitted:
+        operator_message = "Guardado en el CRM; la sala publica estaba activa pero su emision no se confirmo."
+    elif delivery_results["socket"]:
+        operator_message = "Emitido por socket y guardado en el CRM, sin presencia publica confirmada."
+    else:
+        operator_message = "Guardado en el CRM; no hay entrega al ciudadano confirmada."
+
     return {
-        "contract_version": "tickets.agent_reply_delivery.v1",
+        "contract_version": "tickets.agent_reply_delivery.v2",
+        "legacy_contract_version": "tickets.agent_reply_delivery.v1",
         "mode": "real_message" if delivered else "timeline_only",
         "channel": channel,
-        "status": "sent" if delivered else "saved_to_crm",
+        "status": "sent" if delivered else "queued",
         "reason": reason,
         "external_dispatch": external_dispatch,
-        "socket_emitted": realtime_dispatch,
+        "socket_emitted": bool(delivery_results["socket"]),
+        "recipient_room_emitted": bool(recipient_room_emitted),
+        "recipient_presence_confirmed": bool(recipient_presence_confirmed),
+        "recipient_read_confirmed": bool(recipient_read_confirmed),
+        "reply_comment_ids": list(reply_comment_ids or []),
+        "latest_reply_comment_id": latest_reply_comment_id,
         "timeline_updated": timeline_updated,
         "reply_status": reply_status,
         "delivery_results": delivery_results,
         "admin_surface": "tenant_claims_inbox" if tipo == "municipio" else "tenant_commerce_inbox",
-        "operator_message": (
-            "Mensaje enviado y registrado en el CRM."
-            if delivered
-            else "Guardado en el CRM. No se confirmo envio externo ni socket en tiempo real."
-        ),
+        "operator_message": operator_message,
     }
 
 
@@ -3363,6 +3461,12 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     notification_error_reason: str | None = None
     socket_error_reason: str | None = None
     socket_emitted = False
+    recipient_room_comment_ids: set[int] = set()
+    expected_reply_comment_ids = {
+        int(comment.id)
+        for comment in comentarios_creados
+        if getattr(comment, "id", None) is not None
+    }
 
     # El objeto 'ticket_obj' ya está cargado.
     # 'archivos_adjuntados_db' es la lista de objetos ArchivoAdjunto recién creados y guardados.
@@ -3405,9 +3509,11 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                     ticket_snapshot=ticket_json,
                 )
                 emit_ticket_comment(comment_payload)
-                emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
                 socket_emitted = True
+                recipient_room_comment_ids.add(int(comentario.id))
+                emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
             except Exception as socket_exc:  # pragma: no cover - defensive log
+                socket_error_reason = "recipient_room_dispatch_failed"
                 current_app.logger.exception(
                     "Error emitting comment event for ticket %s: %s",
                     ticket_id,
@@ -3420,29 +3526,62 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de ticket {ticket_id}: {e_notif}", exc_info=True)
         # No devolver error al cliente por fallo en notificaciones, ya que el ticket/comentario se guardó.
 
-    if not socket_emitted:
+    missing_recipient_comment_ids = expected_reply_comment_ids - recipient_room_comment_ids
+    if missing_recipient_comment_ids:
         try:
             ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
-            emit_ticket_update(ticket_json)
-            socket_emitted = True
-
-            for comentario in comentarios_creados:
-                comment_payload = build_ticket_comment_payload(
-                    ticket_obj,
-                    tipo,
-                    comentario,
-                    ticket_snapshot=ticket_json,
-                )
-                emit_ticket_comment(comment_payload)
-                emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
-                socket_emitted = True
         except Exception as socket_exc:  # pragma: no cover - defensive log
             socket_error_reason = "socket_dispatch_failed"
             current_app.logger.exception(
-                "Error emitting websocket events for ticket %s: %s",
+                "Error serializing websocket payloads for ticket %s: %s",
                 ticket_id,
                 socket_exc,
             )
+        else:
+            if not socket_emitted:
+                try:
+                    emit_ticket_update(ticket_json)
+                    socket_emitted = True
+                except Exception as socket_exc:  # pragma: no cover - defensive log
+                    socket_error_reason = "socket_dispatch_failed"
+                    current_app.logger.exception(
+                        "Error emitting admin websocket event for ticket %s: %s",
+                        ticket_id,
+                        socket_exc,
+                    )
+
+            for comentario in comentarios_creados:
+                comment_id = int(comentario.id)
+                if comment_id not in missing_recipient_comment_ids:
+                    continue
+                try:
+                    comment_payload = build_ticket_comment_payload(
+                        ticket_obj,
+                        tipo,
+                        comentario,
+                        ticket_snapshot=ticket_json,
+                    )
+                    emit_ticket_comment(comment_payload)
+                    socket_emitted = True
+                    recipient_room_comment_ids.add(comment_id)
+                    emit_ticket_unread_changed(_build_ticket_unread_event_payload(ticket_obj, tipo))
+                except Exception as socket_exc:  # pragma: no cover - defensive log
+                    socket_error_reason = "recipient_room_dispatch_failed"
+                    current_app.logger.exception(
+                        "Error emitting recipient websocket event for ticket %s: %s",
+                        ticket_id,
+                        socket_exc,
+                    )
+
+    recipient_room_emitted = bool(expected_reply_comment_ids) and expected_reply_comment_ids.issubset(
+        recipient_room_comment_ids
+    )
+
+    recipient_evidence = _build_agent_reply_recipient_evidence(
+        ticket_type=tipo,
+        ticket_id=ticket_id,
+        comment_ids=[getattr(comment, "id", None) for comment in comentarios_creados],
+    )
 
     # --- Preparar respuesta JSON ---
     # La función detalle_ticket ya serializa los archivos, así que podemos reusar esa lógica
@@ -3480,7 +3619,12 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             tipo=tipo,
             notification_results=resultados_notif,
             socket_emitted=socket_emitted,
+            recipient_room_emitted=recipient_room_emitted,
             timeline_updated=bool(comentarios_creados or archivos_adjuntados_db),
+            recipient_presence_confirmed=recipient_evidence["recipient_presence_confirmed"],
+            recipient_read_confirmed=recipient_evidence["recipient_read_confirmed"],
+            reply_comment_ids=recipient_evidence["reply_comment_ids"],
+            latest_reply_comment_id=recipient_evidence["latest_reply_comment_id"],
             notification_error_reason=notification_error_reason,
             socket_error_reason=socket_error_reason,
         ),

@@ -13,6 +13,7 @@ from datetime import datetime, timezone, timedelta
 from statistics import mean, median
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy.orm import joinedload
 
@@ -69,6 +70,12 @@ SURVEY_AI_ADVISORY_POLICY = {
     "state_mutation_allowed": False,
     "python_handlers_remain_authority": True,
     "requires_operator_confirmation": True,
+}
+LIVE_ANALYTICS_RANGE_CONTRACT_VERSION = "surveys.analytics_range.v1"
+LIVE_ANALYTICS_RANGE_PRESETS = {
+    "last_60m": "Últimos 60 minutos",
+    "last_24h": "Últimas 24 horas",
+    "today": "Hoy (desde las 00:00)",
 }
 _TEXT_TYPES = {
     "abierta",
@@ -254,6 +261,119 @@ NOETHER_ANALYTICS_MAPS_SURFACE = {
         "operator_actions",
     ],
 }
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _as_utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _resolve_live_analytics_range(
+    filtros: Optional[Mapping[str, Any]],
+    *,
+    now: Optional[datetime] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    requested_filters = dict(filtros or {})
+    effective_filters = {
+        key: value
+        for key, value in requested_filters.items()
+        if key not in {"range_preset", "range_timezone"}
+    }
+    preset = str(requested_filters.get("range_preset") or "").strip().lower() or None
+    timezone_name = str(requested_filters.get("range_timezone") or "UTC").strip() or "UTC"
+    custom_desde = requested_filters.get("desde")
+    custom_hasta = requested_filters.get("hasta")
+
+    try:
+        range_timezone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise EncuestaError(
+            f"Zona horaria invalida: {timezone_name}",
+            status_code=400,
+            payload={"reason_code": "invalid_analytics_range_timezone"},
+        ) from exc
+
+    if preset and preset not in LIVE_ANALYTICS_RANGE_PRESETS:
+        raise EncuestaError(
+            f"Preset de rango analitico invalido: {preset}",
+            status_code=400,
+            payload={
+                "reason_code": "invalid_analytics_range_preset",
+                "allowed_values": sorted(LIVE_ANALYTICS_RANGE_PRESETS),
+            },
+        )
+    if preset and (custom_desde or custom_hasta):
+        raise EncuestaError(
+            "Usa range_preset o desde/hasta, no ambos.",
+            status_code=400,
+            payload={"reason_code": "ambiguous_analytics_range"},
+        )
+    if bool(custom_desde) != bool(custom_hasta):
+        raise EncuestaError(
+            "El rango personalizado requiere desde y hasta.",
+            status_code=400,
+            payload={"reason_code": "incomplete_analytics_range"},
+        )
+
+    now_utc = _as_utc_datetime(now or _utc_now())
+    desde: Optional[datetime] = None
+    hasta: Optional[datetime] = None
+    mode = "all_time"
+    label = "Todo el histórico"
+
+    if preset:
+        mode = "preset"
+        hasta = now_utc
+        label = LIVE_ANALYTICS_RANGE_PRESETS[preset]
+        if preset == "last_60m":
+            desde = now_utc - timedelta(minutes=60)
+        elif preset == "last_24h":
+            desde = now_utc - timedelta(hours=24)
+        else:
+            local_now = now_utc.astimezone(range_timezone)
+            desde = local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    elif custom_desde and custom_hasta:
+        mode = "custom"
+        label = "Rango personalizado"
+        desde = _parse_datetime(str(custom_desde))
+        hasta = _parse_datetime(str(custom_hasta))
+        if desde is None or hasta is None:
+            raise EncuestaError(
+                "El rango personalizado requiere fechas validas.",
+                status_code=400,
+                payload={"reason_code": "invalid_analytics_range"},
+            )
+
+    if desde is not None and hasta is not None:
+        if desde > hasta:
+            raise EncuestaError(
+                "El inicio del rango analitico no puede ser posterior al fin.",
+                status_code=400,
+                payload={"reason_code": "invalid_analytics_range_order"},
+            )
+        effective_filters["desde"] = desde.isoformat()
+        effective_filters["hasta"] = hasta.isoformat()
+
+    duration_minutes = None
+    if desde is not None and hasta is not None:
+        duration_minutes = max(0, int((hasta - desde).total_seconds() // 60))
+
+    analytics_range = {
+        "contract_version": LIVE_ANALYTICS_RANGE_CONTRACT_VERSION,
+        "mode": mode,
+        "preset": preset,
+        "label": label,
+        "timezone": timezone_name,
+        "desde": desde.isoformat() if desde is not None else None,
+        "hasta": hasta.isoformat() if hasta is not None else None,
+        "duration_minutes": duration_minutes,
+    }
+    return effective_filters, analytics_range
 
 
 def _build_synthetic_heatmap_points(
@@ -2886,13 +3006,18 @@ def calculate_live_results(
             },
         )
 
-    filtros = dict(filtros or {})
-    respuestas_filtradas = _collect_respuestas(encuesta, filtros)
+    requested_filters = dict(filtros or {})
+    now = _utc_now()
+    effective_filters, analytics_range = _resolve_live_analytics_range(
+        requested_filters,
+        now=now,
+    )
+    respuestas_filtradas = _collect_respuestas(encuesta, effective_filters)
     response_ids = [respuesta.id for respuesta in respuestas_filtradas if getattr(respuesta, "id", None) is not None]
     responses_count = len(respuestas_filtradas)
     result_version = max(response_ids) if response_ids else 0
     filters_fingerprint = hashlib.sha1(
-        json.dumps(filtros, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(requested_filters, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:12]
     snapshot_version = f"{encuesta.id}:{responses_count}:{result_version}:{filters_fingerprint}"
 
@@ -2959,38 +3084,33 @@ def calculate_live_results(
             }
         )
 
-    now = datetime.now(timezone.utc)
-    window = max(5, min(momentum_window_minutes, 30))
-    last_hour = now.timestamp() - 3600
-    recent_responses = sorted(
-        [respuesta for respuesta in respuestas_filtradas if getattr(respuesta, "submitted_at", None)],
-        key=lambda respuesta: respuesta.submitted_at,
-        reverse=True,
-    )[:1000]
+    window = max(5, min(int(momentum_window_minutes or 10), 30))
+    last_hour_cutoff = now - timedelta(hours=1)
     bucket_counts: Counter = Counter()
-    last_10m = 0
-    previous_10m = 0
-    for respuesta in recent_responses:
+    responses_last_hour = 0
+    last_window = 0
+    previous_window = 0
+    for respuesta in respuestas_filtradas:
         submitted_at = respuesta.submitted_at
         if not submitted_at:
             continue
-        dt = submitted_at.astimezone(timezone.utc)
-        ts = dt.timestamp()
-        if ts < last_hour:
-            continue
+        dt = _as_utc_datetime(submitted_at)
         minute_bucket = dt.replace(second=0, microsecond=0)
         bucket_counts[minute_bucket] += 1
 
+        if last_hour_cutoff <= dt <= now:
+            responses_last_hour += 1
+
         delta_seconds = (now - dt).total_seconds()
-        if delta_seconds <= window * 60:
-            last_10m += 1
-        elif delta_seconds <= window * 120:
-            previous_10m += 1
+        if 0 <= delta_seconds <= window * 60:
+            last_window += 1
+        elif window * 60 < delta_seconds <= window * 120:
+            previous_window += 1
 
     trend = "estable"
-    if last_10m > previous_10m:
+    if last_window > previous_window:
         trend = "subiendo"
-    elif last_10m < previous_10m:
+    elif last_window < previous_window:
         trend = "bajando"
 
     timeline = [
@@ -3007,10 +3127,8 @@ def calculate_live_results(
     points: List[Dict[str, Any]] = []
     cells: List[Dict[str, Any]] = []
     if include_heatmap:
-        heatmap_filters = dict(filtros)
-        heatmap_filters.setdefault("desde", (now.replace(hour=0, minute=0, second=0, microsecond=0)).isoformat())
         points, cells = _aggregate_heatmap_cells(
-            _collect_respuestas(encuesta, filtros=heatmap_filters),
+            respuestas_filtradas,
             resolution=9,
         )
     heatmap_points, heatmap_cells, heatmap_privacy = _prepare_live_heatmap_payload(
@@ -3030,7 +3148,6 @@ def calculate_live_results(
             f"{top_highlights}"
         )
 
-    responses_last_hour = sum(bucket_counts.values())
     participation_per_minute = round(responses_last_hour / 60.0, 3) if responses_last_hour else 0.0
     top_question = None
     for pregunta in preguntas:
@@ -3050,7 +3167,7 @@ def calculate_live_results(
         "heatmap_coverage_cells": len(cells),
         "leader": top_question,
         "leader_label": (top_question or {}).get("lider", {}).get("label") if top_question else None,
-        "active_filters": filtros,
+        "active_filters": requested_filters,
     }
 
     ai_insights: List[str] = []
@@ -3083,7 +3200,8 @@ def calculate_live_results(
         "participation_per_minute": participation_per_minute,
         "trend": trend,
         "polling_interval_ms": polling_interval_ms,
-        "active_filters": filtros,
+        "active_filters": requested_filters,
+        "analytics_range": analytics_range,
     }
     live_ai_items: List[Dict[str, Any]] = []
     for pregunta in preguntas:
@@ -3216,18 +3334,19 @@ def calculate_live_results(
         "slug": slug_publico,
         "slug_publico": slug_publico,
         "total_respuestas": responses_count,
+        "analytics_range": analytics_range,
         "empty_state": empty_state,
         "live_telemetry": live_telemetry,
         "preguntas": preguntas,
         "timeline_minute": timeline,
         "momentum": {
             "window_minutes": window,
-            "last_window": last_10m,
-            "previous_window": previous_10m,
+            "last_window": last_window,
+            "previous_window": previous_window,
             "trend": trend,
-            "delta": last_10m - previous_10m,
-            "last_10m": last_10m,
-            "previous_10m": previous_10m,
+            "delta": last_window - previous_window,
+            "last_10m": last_window,
+            "previous_10m": previous_window,
         },
         "kpis": kpis,
         "heatmap": {
@@ -3240,6 +3359,7 @@ def calculate_live_results(
                 "cells_count": len(heatmap_cells),
                 "truncated_points": max(0, len(heatmap_points) - max_points),
                 "truncated_cells": max(0, len(heatmap_cells) - max_cells),
+                "analytics_range": analytics_range,
                 **heatmap_privacy,
             },
         },
@@ -3265,7 +3385,16 @@ def calculate_live_results(
             ],
             "polling_interval_ms": polling_interval_ms,
             "empty_state": "Todavia no hay respuestas para mostrar.",
-            "filter_keys": ["canal", "barrio", "ciudad", "provincia"],
+            "filter_keys": [
+                "range_preset",
+                "range_timezone",
+                "desde",
+                "hasta",
+                "canal",
+                "barrio",
+                "ciudad",
+                "provincia",
+            ],
             "map_experience": "interactive_heatmap_with_ai_layers",
         },
         "ui_actions": [
