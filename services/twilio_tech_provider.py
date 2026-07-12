@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
 from urllib.parse import urlencode
@@ -15,6 +16,18 @@ from services.render_env_sync import sync_render_env_var
 
 CONTRACT_VERSION = "twilio.tech_provider.v1"
 STATE_KEY = "twilio_tech_provider"
+
+
+@dataclass(frozen=True)
+class TwilioRuntimeCredentials:
+    account_sid: str | None
+    scope: str
+    auth_token: str | None = field(default=None, repr=False)
+    token_refs: tuple[str, ...] = ()
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.account_sid and self.auth_token)
 
 
 def _clean(value: Any) -> str:
@@ -472,6 +485,7 @@ def _resolve_subaccount_auth_token(
     state: Mapping[str, Any],
     tenant_slug: str | None,
     app_config: Mapping[str, Any],
+    allow_global_fallback: bool = True,
 ) -> tuple[str | None, list[str]]:
     subaccount_sid = _clean(state.get("twilio_account_sid"))
     candidates: list[str] = []
@@ -482,13 +496,84 @@ def _resolve_subaccount_auth_token(
         alias_key = _clean(alias)
         if alias_key:
             candidates.append(alias_key)
-    candidates.extend(_subaccount_token_ref_names(subaccount_sid, tenant_slug))
+    generated_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
+    if not allow_global_fallback:
+        generated_refs = [
+            key for key in generated_refs
+            if key != "TWILIO_SUBACCOUNT_AUTH_TOKEN"
+        ]
+    candidates.extend(generated_refs)
     candidates = list(dict.fromkeys(candidates))
     for key in candidates:
         token = _read_config_or_env(app_config, key)
         if token:
             return token, candidates
     return None, candidates
+
+
+def resolve_twilio_runtime_credentials(
+    *,
+    tenant: Any,
+    app_config: Mapping[str, Any],
+    provider_connection: Any = None,
+) -> TwilioRuntimeCredentials:
+    """Resolve Twilio credentials without falling back across account scopes.
+
+    A configured subaccount must have its own token. Parent credentials are
+    returned only for legacy tenants that have no subaccount marker.
+    """
+
+    cfg = (
+        tenant.configuracion
+        if tenant is not None and isinstance(getattr(tenant, "configuracion", None), dict)
+        else {}
+    )
+    state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    parent_sid = _read_config_or_env(app_config, "TWILIO_ACCOUNT_SID")
+    parent_token = _read_config_or_env(app_config, "TWILIO_AUTH_TOKEN")
+
+    state_sid = _clean(state.get("twilio_account_sid"))
+    connection_sid = _clean(getattr(provider_connection, "external_account_id", None))
+    if state_sid and connection_sid and state_sid != connection_sid:
+        return TwilioRuntimeCredentials(
+            account_sid=None,
+            auth_token=None,
+            scope="conflict",
+        )
+
+    scoped_sid = state_sid or connection_sid
+    # Older ProviderConnection rows may point at the parent account. That is
+    # not a subaccount marker unless tenant state explicitly says it is one.
+    is_subaccount = bool(state_sid or (scoped_sid and scoped_sid != parent_sid))
+    if is_subaccount:
+        token_state = dict(state)
+        token_state["twilio_account_sid"] = scoped_sid
+
+        credentials_ref = _clean(getattr(provider_connection, "credentials_ref", None))
+        if credentials_ref.startswith("env:"):
+            explicit_ref = credentials_ref.removeprefix("env:").strip()
+            if explicit_ref and explicit_ref != "twilio_parent":
+                token_state.setdefault("twilio_subaccount_token_ref", explicit_ref)
+
+        token, token_refs = _resolve_subaccount_auth_token(
+            state=token_state,
+            tenant_slug=getattr(tenant, "slug", None),
+            app_config=app_config,
+            allow_global_fallback=False,
+        )
+        return TwilioRuntimeCredentials(
+            account_sid=scoped_sid or None,
+            auth_token=token,
+            scope="subaccount",
+            token_refs=tuple(token_refs),
+        )
+
+    return TwilioRuntimeCredentials(
+        account_sid=parent_sid or None,
+        auth_token=parent_token or None,
+        scope="parent_legacy" if parent_sid or parent_token else "unconfigured",
+        token_refs=("TWILIO_AUTH_TOKEN",),
+    )
 
 
 def _twilio_sender_response_sid(payload: Mapping[str, Any]) -> str | None:

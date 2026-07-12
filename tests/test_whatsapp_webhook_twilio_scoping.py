@@ -1,0 +1,329 @@
+import os
+import unittest
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+
+os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("SKIP_INIT_TENANTS", "1")
+os.environ.setdefault("OPENAI_API_KEY", "test")
+
+from twilio.request_validator import RequestValidator
+
+from app import create_app
+from config import Config
+from extensions import db
+from models import MessagingEventLedger, ProviderSender, TenantProfile, User, WhatsappNumero
+from routes import whatsapp_webhook as webhook_module
+
+
+PARENT_ACCOUNT_SID = "ACparent_scoped_test"
+PARENT_AUTH_TOKEN = "parent-scoped-secret"
+CHILD_ACCOUNT_SID = "ACchild_scoped_test"
+CHILD_AUTH_TOKEN = "child-scoped-secret"
+CHILD_TOKEN_REF = "TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD_SCOPED_TEST"
+MESSAGING_SERVICE_SID = "MG_scoped_test"
+SENDER_NUMBER = "+15550102030"
+RECIPIENT_NUMBER = "+15550908070"
+
+
+class ScopedTwilioConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    WTF_CSRF_ENABLED = False
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+    SKIP_INIT_TENANTS = True
+    TWILIO_ACCOUNT_SID = PARENT_ACCOUNT_SID
+    TWILIO_AUTH_TOKEN = PARENT_AUTH_TOKEN
+    BACKEND_URL = "http://localhost"
+    PUBLIC_API_BASE_URL = "http://localhost"
+    WHATSAPP_AUDIO_ENABLED = False
+
+
+class TwilioWebhookCredentialScopingTestCase(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(ScopedTwilioConfig)
+        self.app.config[CHILD_TOKEN_REF] = CHILD_AUTH_TOKEN
+        self.app_context = self.app.app_context()
+        self.app_context.push()
+        db.create_all()
+        self.client = self.app.test_client()
+
+        self.parent_client = MagicMock()
+        self.parent_client.messages.create.return_value = SimpleNamespace(sid="SM_parent_reply")
+        self.validator_patch = patch.object(
+            webhook_module,
+            "validator",
+            RequestValidator(PARENT_AUTH_TOKEN),
+        )
+        self.parent_client_patch = patch.object(
+            webhook_module,
+            "twilio_client",
+            self.parent_client,
+        )
+        self.validator_patch.start()
+        self.parent_client_patch.start()
+
+    def tearDown(self):
+        self.parent_client_patch.stop()
+        self.validator_patch.stop()
+        db.session.remove()
+        db.drop_all()
+        self.app_context.pop()
+
+    def _create_sender(
+        self,
+        *,
+        child_scoped: bool,
+        create_provider_sender: bool = True,
+    ) -> ProviderSender | None:
+        owner = User(
+            name="Scoped Tenant",
+            email=f"scoped-{int(child_scoped)}@example.com",
+            rol="empresa",
+            tipo_chat="pyme",
+            nombre_empresa="Scoped Tenant",
+        )
+        owner.set_password("test-password")
+        db.session.add(owner)
+        db.session.flush()
+
+        state = {}
+        if child_scoped:
+            state = {
+                "twilio_account_sid": CHILD_ACCOUNT_SID,
+                "twilio_subaccount_token_ref": CHILD_TOKEN_REF,
+                "messaging_service_sid": MESSAGING_SERVICE_SID,
+            }
+        tenant = TenantProfile(
+            slug=f"scoped-tenant-{int(child_scoped)}",
+            nombre="Scoped Tenant",
+            tipo="pyme",
+            pyme_id=owner.id,
+            configuracion={"twilio_tech_provider": state} if state else {},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+
+        sender = None
+        if create_provider_sender:
+            sender = ProviderSender(
+                tenant_id=tenant.id,
+                channel="whatsapp",
+                phone_number=SENDER_NUMBER,
+                sender_id=f"whatsapp:{SENDER_NUMBER}",
+                messaging_service_sid=MESSAGING_SERVICE_SID,
+                status="active",
+            )
+        mapping = WhatsappNumero(
+            numero_whatsapp=SENDER_NUMBER,
+            user_id=owner.id,
+            is_active=True,
+        )
+        db.session.add(mapping)
+        if sender:
+            db.session.add(sender)
+        db.session.commit()
+        return sender
+
+    @staticmethod
+    def _signature(path: str, payload: dict, token: str) -> str:
+        return RequestValidator(token).compute_signature(f"http://localhost{path}", payload)
+
+    @staticmethod
+    def _bot_response() -> dict:
+        return {
+            "message_body": "Respuesta del tenant.",
+            "message_type": "text",
+            "options_list": [],
+        }
+
+    def test_child_signature_is_accepted_and_reply_uses_child_client(self):
+        self._create_sender(child_scoped=True)
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "Necesito informacion",
+            "MessageSid": "SM_child_inbound",
+        }
+        child_client = MagicMock()
+        child_client.messages.create.return_value = SimpleNamespace(sid="SM_child_reply")
+
+        with (
+            patch.object(webhook_module, "Client", return_value=child_client) as client_factory,
+            patch.object(webhook_module, "responder_chatboc", return_value=self._bot_response()),
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": self._signature(
+                        "/webhook/whatsapp",
+                        payload,
+                        CHILD_AUTH_TOKEN,
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        client_factory.assert_called_once_with(CHILD_ACCOUNT_SID, CHILD_AUTH_TOKEN)
+        child_client.messages.create.assert_called()
+        self.parent_client.messages.create.assert_not_called()
+
+    def test_parent_signature_is_rejected_for_child_sender(self):
+        self._create_sender(child_scoped=True)
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "Necesito informacion",
+        }
+
+        with (
+            patch.object(webhook_module, "Client") as client_factory,
+            patch.object(webhook_module, "responder_chatboc") as responder,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": self._signature(
+                        "/webhook/whatsapp",
+                        payload,
+                        PARENT_AUTH_TOKEN,
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 403)
+        client_factory.assert_not_called()
+        responder.assert_not_called()
+        self.parent_client.messages.create.assert_not_called()
+
+    def test_child_status_signature_is_accepted_and_parent_is_rejected(self):
+        sender = self._create_sender(child_scoped=True)
+        accepted_payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "MessageSid": "SM_child_status",
+            "MessageStatus": "delivered",
+            "From": f"whatsapp:{SENDER_NUMBER}",
+            "To": f"whatsapp:{RECIPIENT_NUMBER}",
+        }
+        accepted = self.client.post(
+            "/twilio/whatsapp/status",
+            data=accepted_payload,
+            headers={
+                "X-Twilio-Signature": self._signature(
+                    "/twilio/whatsapp/status",
+                    accepted_payload,
+                    CHILD_AUTH_TOKEN,
+                )
+            },
+        )
+
+        rejected_payload = dict(accepted_payload, MessageSid="SM_parent_status")
+        rejected = self.client.post(
+            "/twilio/whatsapp/status",
+            data=rejected_payload,
+            headers={
+                "X-Twilio-Signature": self._signature(
+                    "/twilio/whatsapp/status",
+                    rejected_payload,
+                    PARENT_AUTH_TOKEN,
+                )
+            },
+        )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(rejected.status_code, 403)
+        event = MessagingEventLedger.query.filter_by(
+            tenant_id=sender.tenant_id,
+            provider_event_id="SM_child_status:delivered",
+        ).one()
+        self.assertEqual(event.provider_sender_id, sender.id)
+        self.assertIsNone(
+            MessagingEventLedger.query.filter_by(
+                tenant_id=sender.tenant_id,
+                provider_event_id="SM_parent_status:delivered",
+            ).first()
+        )
+
+    def test_legacy_sender_uses_parent_validator_and_parent_client(self):
+        self._create_sender(child_scoped=False, create_provider_sender=False)
+        payload = {
+            "AccountSid": PARENT_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "Necesito informacion",
+            "MessageSid": "SM_legacy_inbound",
+        }
+
+        with (
+            patch.object(webhook_module, "Client") as client_factory,
+            patch.object(webhook_module, "responder_chatboc", return_value=self._bot_response()),
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": self._signature(
+                        "/webhook/whatsapp",
+                        payload,
+                        PARENT_AUTH_TOKEN,
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        client_factory.assert_not_called()
+        self.parent_client.messages.create.assert_called()
+
+    def test_missing_child_secret_does_not_fall_back_to_parent(self):
+        self._create_sender(child_scoped=True)
+        self.app.config[CHILD_TOKEN_REF] = ""
+        tenant_ref = "TWILIO_SUBACCOUNT_AUTH_TOKEN_SCOPED_TENANT_1"
+        self.app.config[tenant_ref] = ""
+        self.app.config["TWILIO_SUBACCOUNT_AUTH_TOKEN"] = "unrelated-child-secret"
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "Necesito informacion",
+        }
+        empty_secrets = {
+            CHILD_TOKEN_REF: "",
+            tenant_ref: "",
+            "TWILIO_SUBACCOUNT_AUTH_TOKEN": "unrelated-child-secret",
+        }
+
+        with (
+            patch.dict(os.environ, empty_secrets, clear=False),
+            patch.object(webhook_module, "Client") as client_factory,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": self._signature(
+                        "/webhook/whatsapp",
+                        payload,
+                        PARENT_AUTH_TOKEN,
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 503)
+        client_factory.assert_not_called()
+        self.parent_client.messages.create.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

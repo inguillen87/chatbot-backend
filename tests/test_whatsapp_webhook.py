@@ -590,7 +590,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ).first()
         self.assertIsNotNone(mapping)
         self.assertTrue(mapping.is_active)
-        self.assertEqual(mapping.user.rol, "super_admin")
+        self.assertEqual(mapping.user.rol, "admin")
 
         tenant = TenantProfile.query.filter_by(slug=CHATBOC_DEMO_TENANT_SLUG).first()
         self.assertIsNotNone(tenant)

@@ -58,6 +58,10 @@ from services.ticket_service import servicio_tickets
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_surveys import build_demo_survey_chat_menu
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
+from services.twilio_tech_provider import (
+    TwilioRuntimeCredentials,
+    resolve_twilio_runtime_credentials,
+)
 from services.education_contracts import (
     build_education_case_ack_payload,
     build_education_pending_case,
@@ -2002,13 +2006,14 @@ def _extract_requested_contact_name(raw_text: str, extracted: Optional[dict[str,
 
 def _send_welcome_sticker(
     *,
+    client,
     to_number_raw: str,
     from_number_raw: str,
     resolved_sticker_url: Optional[str],
     session_context: ChatSessionContext,
     state_key: str,
 ) -> bool:
-    if not twilio_client or not resolved_sticker_url:
+    if not client or not resolved_sticker_url:
         return False
     if not isinstance(session_context.context_data, dict):
         session_context.context_data = {}
@@ -2018,7 +2023,7 @@ def _send_welcome_sticker(
         return False
     try:
         _send_twilio_message(
-            twilio_client,
+            client,
             from_=to_number_raw,
             to=from_number_raw,
             media_url=[resolved_sticker_url],
@@ -3637,12 +3642,12 @@ def _tenant_owner_for_sender(tenant: Optional[TenantProfile]) -> Optional[User]:
     return tenant.municipio or tenant.pyme
 
 
-def _provider_sender_for_inbound(
+def _resolve_provider_sender_for_twilio_request(
     *,
     to_number_raw: str,
     normalized_to: Optional[str],
     messaging_service_sid: Optional[str],
-) -> Optional[ProviderSender]:
+) -> Tuple[Optional[ProviderSender], Optional[str]]:
     cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
     candidates = {value for value in {cleaned, normalized_to} if value}
     if normalized_to and normalized_to.startswith("+549") and len(normalized_to) == 13:
@@ -3651,30 +3656,116 @@ def _provider_sender_for_inbound(
     sender_candidates = set(candidates)
     sender_candidates.update({f"whatsapp:{value}" for value in candidates if value})
 
-    base_query = ProviderSender.query.options(joinedload(ProviderSender.tenant)).filter(
-        ProviderSender.channel == "whatsapp"
+    base_query = ProviderSender.query.options(
+        joinedload(ProviderSender.tenant),
+        joinedload(ProviderSender.provider_connection),
+    ).filter(
+        ProviderSender.channel == "whatsapp",
     )
 
-    for value in candidates:
-        sender = base_query.filter(ProviderSender.phone_number == value).order_by(ProviderSender.id.desc()).first()
-        if sender:
-            return sender
-
-    for value in sender_candidates:
-        sender = base_query.filter(ProviderSender.sender_id == value).order_by(ProviderSender.id.desc()).first()
-        if sender:
-            return sender
-
-    if messaging_service_sid:
-        sender = (
-            base_query.filter(ProviderSender.messaging_service_sid == str(messaging_service_sid).strip())
+    address_matches: List[ProviderSender] = []
+    if candidates or sender_candidates:
+        address_matches = (
+            base_query.filter(
+                or_(
+                    ProviderSender.phone_number.in_(candidates),
+                    ProviderSender.sender_id.in_(sender_candidates),
+                )
+            )
             .order_by(ProviderSender.id.desc())
-            .first()
+            .all()
         )
-        if sender:
-            return sender
 
-    return None
+    service_matches: List[ProviderSender] = []
+    service_sid = str(messaging_service_sid or "").strip()
+    if service_sid:
+        service_matches = (
+            base_query.filter(ProviderSender.messaging_service_sid == service_sid)
+            .order_by(ProviderSender.id.desc())
+            .all()
+        )
+
+    def _by_id(senders: Iterable[ProviderSender]) -> Dict[int, ProviderSender]:
+        return {
+            int(sender.id): sender
+            for sender in senders
+            if getattr(sender, "id", None) is not None
+        }
+
+    address_by_id = _by_id(address_matches)
+    service_by_id = _by_id(service_matches)
+    if address_by_id and service_by_id:
+        shared_ids = set(address_by_id).intersection(service_by_id)
+        if len(shared_ids) == 1:
+            sender_id = next(iter(shared_ids))
+            return address_by_id[sender_id], None
+        if not shared_ids:
+            return None, "conflicting_sender_hints"
+        return None, "ambiguous_sender_hints"
+
+    selected = address_matches or service_matches
+    selected_by_id = _by_id(selected)
+    if len(selected_by_id) == 1:
+        return next(iter(selected_by_id.values())), None
+    if len(selected_by_id) > 1:
+        return None, "ambiguous_sender_hints"
+    return None, None
+
+
+def _provider_sender_for_inbound(
+    *,
+    to_number_raw: str,
+    normalized_to: Optional[str],
+    messaging_service_sid: Optional[str],
+) -> Optional[ProviderSender]:
+    sender, _ = _resolve_provider_sender_for_twilio_request(
+        to_number_raw=to_number_raw,
+        normalized_to=normalized_to,
+        messaging_service_sid=messaging_service_sid,
+    )
+    return sender
+
+
+def _twilio_credentials_for_provider_sender(
+    provider_sender: Optional[ProviderSender],
+    *,
+    tenant: Optional[TenantProfile] = None,
+) -> TwilioRuntimeCredentials:
+    return resolve_twilio_runtime_credentials(
+        tenant=getattr(provider_sender, "tenant", None) or tenant,
+        provider_connection=getattr(provider_sender, "provider_connection", None),
+        app_config=current_app.config,
+    )
+
+
+def _twilio_validator_for_credentials(
+    credentials: TwilioRuntimeCredentials,
+) -> Optional[RequestValidator]:
+    if credentials.scope == "parent_legacy" and validator:
+        return validator
+    if not credentials.ready:
+        return None
+    return RequestValidator(credentials.auth_token)
+
+
+def _twilio_client_for_credentials(
+    credentials: TwilioRuntimeCredentials,
+) -> Optional[Client]:
+    if credentials.scope == "parent_legacy" and twilio_client:
+        return twilio_client
+    if not credentials.ready:
+        return None
+    return Client(credentials.account_sid, credentials.auth_token)
+
+
+def _twilio_account_sid_matches(
+    post_vars: Dict[str, Any],
+    credentials: TwilioRuntimeCredentials,
+) -> bool:
+    request_account_sid = str(post_vars.get("AccountSid") or "").strip()
+    if not request_account_sid:
+        return True
+    return bool(credentials.account_sid and request_account_sid == credentials.account_sid)
 
 
 def _ensure_whatsapp_mapping_from_provider_sender(
@@ -3787,8 +3878,15 @@ def _resolve_status_callback_tenant_and_sender(
     return None, provider_sender
 
 
-def _persist_twilio_whatsapp_status_event(post_vars: Dict[str, Any]) -> Optional[MessagingEventLedger]:
-    tenant, provider_sender = _resolve_status_callback_tenant_and_sender(post_vars)
+def _persist_twilio_whatsapp_status_event(
+    post_vars: Dict[str, Any],
+    *,
+    tenant: Optional[TenantProfile] = None,
+    provider_sender: Optional[ProviderSender] = None,
+) -> Optional[MessagingEventLedger]:
+    if tenant is None:
+        tenant, resolved_sender = _resolve_status_callback_tenant_and_sender(post_vars)
+        provider_sender = provider_sender or resolved_sender
     if not tenant or not getattr(tenant, "id", None):
         current_app.logger.warning(
             "[TWILIO_WHATSAPP_STATUS] Could not resolve tenant for From=%s ServiceSid=%s MessageSid=%s",
@@ -4277,28 +4375,73 @@ else:
 def whatsapp_webhook():
     _log("info", "Whatsapp webhook called.")
     _log("debug", "Request form: %s", request.form)
-    if not validator:
-        _log("error", "Twilio RequestValidator not initialized. Ensure TWILIO_AUTH_TOKEN is set.")
-        abort(500, "Twilio validator not configured")
-
     signature = request.headers.get("X-Twilio-Signature", "")
     url = request.url
     post_vars = request.form.to_dict()
-
-    if not validator.validate(url, post_vars, signature):
-        abort(403, "Invalid Twilio signature")
-
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
-
-    whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
+    to_number_normalized = _normalize_whatsapp_address(to_number_raw)
     service_sid = post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid")
-    if not whatsapp_mapping:
-        provider_sender = _provider_sender_for_inbound(
-            to_number_raw=to_number_raw,
-            normalized_to=to_number_normalized,
-            messaging_service_sid=service_sid,
+
+    provider_sender, sender_resolution_error = _resolve_provider_sender_for_twilio_request(
+        to_number_raw=to_number_raw,
+        normalized_to=to_number_normalized,
+        messaging_service_sid=service_sid,
+    )
+    if sender_resolution_error:
+        current_app.logger.warning(
+            "[WHATSAPP_WEBHOOK] Rejected ambiguous Twilio sender scope reason=%s ServiceSid=%s",
+            sender_resolution_error,
+            service_sid,
         )
+        abort(403, "Invalid Twilio sender scope")
+
+    whatsapp_mapping = None
+    to_number_cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
+    credential_tenant = getattr(provider_sender, "tenant", None)
+    if not provider_sender:
+        whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
+        if whatsapp_mapping and whatsapp_mapping.user:
+            credential_tenant = _tenant_profile_for_user(whatsapp_mapping.user)
+
+    if provider_sender and not getattr(provider_sender, "tenant", None):
+        current_app.logger.error(
+            "[WHATSAPP_WEBHOOK] ProviderSender id=%s has no tenant credentials scope",
+            getattr(provider_sender, "id", None),
+        )
+        abort(503, "Twilio sender credentials unavailable")
+
+    credentials = _twilio_credentials_for_provider_sender(
+        provider_sender,
+        tenant=credential_tenant,
+    )
+    request_validator = _twilio_validator_for_credentials(credentials)
+    if not request_validator:
+        current_app.logger.error(
+            "[WHATSAPP_WEBHOOK] Twilio credentials unavailable sender_id=%s tenant_id=%s scope=%s",
+            getattr(provider_sender, "id", None),
+            getattr(provider_sender, "tenant_id", None) or getattr(credential_tenant, "id", None),
+            credentials.scope,
+        )
+        abort(503 if provider_sender or credential_tenant else 500, "Twilio validator not configured")
+
+    if not _twilio_account_sid_matches(post_vars, credentials):
+        current_app.logger.warning(
+            "[WHATSAPP_WEBHOOK] Rejected Twilio AccountSid mismatch sender_id=%s tenant_id=%s",
+            getattr(provider_sender, "id", None),
+            getattr(provider_sender, "tenant_id", None) or getattr(credential_tenant, "id", None),
+        )
+        abort(403, "Invalid Twilio sender scope")
+
+    if not request_validator.validate(url, request.form, signature):
+        abort(403, "Invalid Twilio signature")
+
+    # Keep all dispatch paths in this request on the same validated account.
+    twilio_client = _twilio_client_for_credentials(credentials)
+
+    if provider_sender:
+        whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
+    if not whatsapp_mapping:
         if provider_sender:
             whatsapp_mapping = _ensure_whatsapp_mapping_from_provider_sender(
                 provider_sender=provider_sender,
@@ -4974,6 +5117,7 @@ def whatsapp_webhook():
             _remember_contact_name(session_context_db_entry, new_name)
             session_context_db_entry.context_data.pop("awaiting_user_name", None)
             personalized_sticker_sent = _send_welcome_sticker(
+                client=twilio_client,
                 to_number_raw=to_number_raw,
                 from_number_raw=from_number_raw,
                 resolved_sticker_url=resolved_sticker_url,
@@ -5705,6 +5849,7 @@ def whatsapp_webhook():
                 request_root_stripped,
             )
             _send_welcome_sticker(
+                client=twilio_client,
                 to_number_raw=to_number_raw,
                 from_number_raw=from_number_raw,
                 resolved_sticker_url=chatboc_demo_sticker_url,
@@ -6329,12 +6474,59 @@ def whatsapp_webhook():
 @webhook_bp.route("/twilio/whatsapp/status", methods=["POST"])
 def twilio_whatsapp_status():
     """Log WhatsApp delivery status callbacks from Twilio."""
-    if TWILIO_AUTH_TOKEN:
-        status_validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        if not status_validator.validate(
-            request.url, request.form, request.headers.get("X-Twilio-Signature", "")
-        ):
-            return "Forbidden", 403
+    post_vars = request.form.to_dict()
+    from_number = post_vars.get("From") or ""
+    provider_sender, sender_resolution_error = _resolve_provider_sender_for_twilio_request(
+        to_number_raw=from_number,
+        normalized_to=_normalize_whatsapp_address(from_number),
+        messaging_service_sid=post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid"),
+    )
+    if sender_resolution_error:
+        current_app.logger.warning(
+            "[TWILIO_WHATSAPP_STATUS] Rejected ambiguous sender scope reason=%s ServiceSid=%s",
+            sender_resolution_error,
+            post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid"),
+        )
+        return "Forbidden", 403
+
+    if provider_sender and not getattr(provider_sender, "tenant", None):
+        current_app.logger.error(
+            "[TWILIO_WHATSAPP_STATUS] ProviderSender id=%s has no tenant credentials scope",
+            getattr(provider_sender, "id", None),
+        )
+        return "Twilio sender credentials unavailable", 503
+
+    credential_tenant = getattr(provider_sender, "tenant", None)
+    if not provider_sender:
+        whatsapp_mapping, _, _ = _lookup_whatsapp_mapping(from_number)
+        if whatsapp_mapping and whatsapp_mapping.user:
+            credential_tenant = _tenant_profile_for_user(whatsapp_mapping.user)
+
+    credentials = _twilio_credentials_for_provider_sender(
+        provider_sender,
+        tenant=credential_tenant,
+    )
+    status_validator = _twilio_validator_for_credentials(credentials)
+    if not status_validator:
+        current_app.logger.error(
+            "[TWILIO_WHATSAPP_STATUS] Twilio credentials unavailable sender_id=%s tenant_id=%s scope=%s",
+            getattr(provider_sender, "id", None),
+            getattr(provider_sender, "tenant_id", None) or getattr(credential_tenant, "id", None),
+            credentials.scope,
+        )
+        return "Twilio validator not configured", 503 if provider_sender or credential_tenant else 500
+
+    if not _twilio_account_sid_matches(post_vars, credentials):
+        return "Forbidden", 403
+
+    if not status_validator.validate(
+        request.url, request.form, request.headers.get("X-Twilio-Signature", "")
+    ):
+        return "Forbidden", 403
+
+    tenant, resolved_sender = _resolve_status_callback_tenant_and_sender(post_vars)
+    tenant = tenant or credential_tenant
+    provider_sender = provider_sender or resolved_sender
 
     message_sid = request.form.get("MessageSid")
     message_status = request.form.get("MessageStatus")
@@ -6353,7 +6545,11 @@ def twilio_whatsapp_status():
         from_number,
     )
     try:
-        _persist_twilio_whatsapp_status_event(request.form.to_dict())
+        _persist_twilio_whatsapp_status_event(
+            post_vars,
+            tenant=tenant,
+            provider_sender=provider_sender,
+        )
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
