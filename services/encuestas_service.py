@@ -1101,6 +1101,15 @@ def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str
     return payload
 
 
+def _normalize_identity_aliases(data: Mapping[str, Any]) -> Dict[str, Any]:
+    normalized = dict(data)
+    if "anonimo_permitido" not in normalized and "anonimato" in normalized:
+        normalized["anonimo_permitido"] = normalized["anonimato"]
+    if "requiere_identidad" not in normalized and "requiere_datos_contacto" in normalized:
+        normalized["requiere_identidad"] = normalized["requiere_datos_contacto"]
+    return normalized
+
+
 def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
     encuesta.titulo = data.get("titulo", encuesta.titulo)
     encuesta.descripcion = data.get("descripcion", encuesta.descripcion)
@@ -1507,7 +1516,7 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
     if not data:
         raise EncuestaError("Payload vacío")
 
-    payload = deepcopy(data)
+    payload = _normalize_identity_aliases(deepcopy(data))
     raw_auto_seed_cfg = payload.pop("auto_seed_demo", None)
     payload.pop("quick_actions", None)
     municipality_hint = payload.get("municipality") or payload.get("municipio")
@@ -1573,6 +1582,7 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
 
 
 def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEncuesta:
+    data = _normalize_identity_aliases(data)
     encuesta = db.session.get(EncEncuesta, encuesta_id)
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
@@ -2477,7 +2487,7 @@ def build_unique_fingerprint(
     ip: Optional[str] = None,
     anon_cookie: Optional[str] = None,
 ) -> Optional[str]:
-    policy = (encuesta.politica_unicidad or "libre").lower()
+    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
     if policy == "libre":
         return None
 
@@ -3147,6 +3157,35 @@ def save_respuesta(
         ip=ip,
         anon_cookie=anon_cookie,
     )
+    policy = str(encuesta.politica_unicidad or "libre").strip().lower()
+    if fingerprint is None and policy != "libre":
+        required_identifiers = {
+            "por_cookie": ["anon_id"],
+            "cookie": ["anon_id"],
+            "por_dni": ["dni"],
+            "dni": ["dni"],
+            "por_phone": ["phone"],
+            "phone": ["phone"],
+            "por_ip": ["ip"],
+            "ip": ["ip"],
+            "por_dni_o_phone": ["dni", "phone"],
+            "dni_o_phone": ["dni", "phone"],
+            "por_usuario": ["user_id"],
+            "usuario": ["user_id"],
+            "user_id": ["user_id"],
+            "por_user_id": ["user_id"],
+        }.get(policy, ["stable_identifier"])
+        raise EncuestaError(
+            "No se pudo formar una huella estable para validar la participacion",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "stable_fingerprint_required",
+                "action_hint": "provide_anon_id" if "anon_id" in required_identifiers else "provide_identity",
+                "uniqueness_policy": policy,
+                "required_identifiers": required_identifiers,
+            },
+        )
     if fingerprint:
         existing = EncRespuesta.query.filter_by(encuesta_id=encuesta.id, huella_unica=fingerprint).first()
         if existing:
@@ -4132,8 +4171,10 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "fin_at": encuesta.fin_at.isoformat() if encuesta.fin_at else None,
         "puntos_recompensa": encuesta.puntos_recompensa or 0,
         "requiere_identidad": encuesta.requiere_identidad,
+        "requiere_datos_contacto": encuesta.requiere_identidad,
         "politica_unicidad": encuesta.politica_unicidad,
         "anonimo_permitido": encuesta.anonimo_permitido,
+        "anonimato": encuesta.anonimo_permitido,
         "es_votacion_envivo": encuesta.es_votacion_envivo,
         "mostrar_resultados_envivo": encuesta.mostrar_resultados_envivo,
         "permitir_comentarios": encuesta.permitir_comentarios,

@@ -147,6 +147,18 @@ def _public_client_ip() -> str:
     return request.remote_addr or "0.0.0.0"
 
 
+def _public_anon_id(payload: dict[str, Any]) -> Any:
+    return (
+        request.headers.get("X-Anon-Id")
+        or request.headers.get("Anon-Id")
+        or request.cookies.get(current_app.config.get("ANON_SESSION_COOKIE_NAME", "chatboc_anon_id"))
+        or request.cookies.get("anon_id")
+        or request.cookies.get("Anon-Id")
+        or payload.get("anon_id")
+        or payload.get("anonId")
+    )
+
+
 def _public_response_rate_settings() -> tuple[int, int]:
     limit = current_app.config.get("PUBLIC_ENCUESTAS_RATE_LIMIT")
     period = current_app.config.get("PUBLIC_ENCUESTAS_RATE_PERIOD")
@@ -1133,7 +1145,7 @@ def _normalize_question(question: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
-def _normalize_admin_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _normalize_admin_payload(payload: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
     questions = payload.get("questions") if isinstance(payload.get("questions"), list) else payload.get("preguntas")
     normalized_questions = []
     for index, question in enumerate(questions or [], start=1):
@@ -1142,7 +1154,7 @@ def _normalize_admin_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
     channel = str(payload.get("channel") or payload.get("canal") or "web").strip().lower()
 
-    return {
+    normalized = {
         "titulo": payload.get("title") or payload.get("titulo"),
         "descripcion": payload.get("description") or payload.get("descripcion"),
         "tipo": payload.get("survey_type") or payload.get("tipo") or "opinion",
@@ -1150,7 +1162,6 @@ def _normalize_admin_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "fin_at": payload.get("closes_at") or payload.get("fin_at"),
         "preguntas": normalized_questions,
         "tags": payload.get("tags") or [f"channel:{channel}"],
-        "anonimo_permitido": bool(payload.get("allow_anonymous", True)),
         "politica_unicidad": payload.get("uniqueness_policy") or payload.get("politica_unicidad") or "anon_id",
         "es_votacion_envivo": bool(payload.get("live_vote") or payload.get("es_votacion_envivo", False)),
         "mostrar_resultados_envivo": bool(
@@ -1158,6 +1169,41 @@ def _normalize_admin_payload(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "permitir_comentarios": bool(payload.get("allow_comments") or payload.get("permitir_comentarios", False)),
     }
+
+    identity_aliases = {
+        "anonimo_permitido": ("anonimo_permitido", "anonimato", "allow_anonymous"),
+        "requiere_identidad": ("requiere_identidad", "requiere_datos_contacto"),
+    }
+    identity_defaults = {
+        "anonimo_permitido": True,
+        "requiere_identidad": False,
+    }
+    for target, aliases in identity_aliases.items():
+        source = next((key for key in aliases if key in payload), None)
+        if source is not None:
+            normalized[target] = bool(payload[source])
+        elif not partial:
+            normalized[target] = identity_defaults[target]
+
+    if partial:
+        field_sources = {
+            "titulo": ("title", "titulo"),
+            "descripcion": ("description", "descripcion"),
+            "tipo": ("survey_type", "tipo"),
+            "inicio_at": ("opens_at", "inicio_at"),
+            "fin_at": ("closes_at", "fin_at"),
+            "preguntas": ("questions", "preguntas"),
+            "tags": ("tags", "channel", "canal"),
+            "politica_unicidad": ("uniqueness_policy", "politica_unicidad"),
+            "es_votacion_envivo": ("live_vote", "es_votacion_envivo"),
+            "mostrar_resultados_envivo": ("show_live_results", "mostrar_resultados_envivo"),
+            "permitir_comentarios": ("allow_comments", "permitir_comentarios"),
+        }
+        for target, aliases in field_sources.items():
+            if not any(key in payload for key in aliases):
+                normalized.pop(target, None)
+
+    return normalized
 
 
 @v2_surveys_bp.route("/surveys", methods=["GET"])
@@ -1290,7 +1336,7 @@ def update_survey_v2(current_user, survey_id: int):
     if not _survey_writes_allowed(tenant):
         return _survey_plan_required_response(tenant)
 
-    payload = _normalize_admin_payload(request.get_json(silent=True) or {})
+    payload = _normalize_admin_payload(request.get_json(silent=True) or {}, partial=True)
     g.tenant_profile = tenant
     try:
         encuesta = update_encuesta(survey_id, payload, current_user)
@@ -1419,7 +1465,7 @@ def respond_public_survey_v2(token: str):
         "ip": client_ip,
         "user_agent": request.headers.get("User-Agent"),
         "referer": request.headers.get("Referer"),
-        "anon_id": payload.get("anon_id") or payload.get("anonId") or request.cookies.get("anon_id"),
+        "anon_id": _public_anon_id(payload),
         "canal": payload.get("source") or payload.get("channel") or payload.get("canal") or "public_link",
     }
     preferred_tenant_id = tenant.id if tenant is not None else None

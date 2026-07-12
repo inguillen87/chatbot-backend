@@ -108,6 +108,24 @@ class V2SurveysApiTest(unittest.TestCase):
             ],
         }
 
+    def _create_published_answer_context(self, payload):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        create_resp = self.client.post("/api/v2/surveys", json=payload, headers=headers)
+        self.assertEqual(create_resp.status_code, 201, create_resp.get_json())
+        survey_id = create_resp.get_json()["id"]
+
+        publish_resp = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers)
+        self.assertEqual(publish_resp.status_code, 200, publish_resp.get_json())
+        token = publish_resp.get_json()["public_token"]
+
+        public_resp = self.client.get(f"/api/v2/public/surveys/{token}")
+        self.assertEqual(public_resp.status_code, 200, public_resp.get_json())
+        public_payload = public_resp.get_json()
+        question_id = public_payload["preguntas"][0]["id"]
+        option_id = public_payload["preguntas"][0]["opciones"][0]["id"]
+        answer = {"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]}
+        return headers, survey_id, token, public_payload, answer
+
     def test_admin_can_create_publish_and_public_respond(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
 
@@ -262,6 +280,103 @@ class V2SurveysApiTest(unittest.TestCase):
             json={**answer, "dni": "32877851"},
         )
         self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+
+    def test_v2_por_cookie_rejects_duplicate_x_anon_id(self):
+        payload = self._create_payload()
+        payload["uniqueness_policy"] = "por_cookie"
+        _, survey_id, token, _, answer = self._create_published_answer_context(payload)
+        anon_headers = {"X-Anon-Id": "stable-browser-visitor"}
+
+        first = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={**answer, "anon_id": "changing-body-id-1"},
+            headers=anon_headers,
+        )
+        self.assertEqual(first.status_code, 201, first.get_json())
+
+        duplicate = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={**answer, "anon_id": "changing-body-id-2"},
+            headers=anon_headers,
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+        self.assertEqual(EncRespuesta.query.filter_by(encuesta_id=survey_id).count(), 1)
+
+    def test_v2_por_cookie_rejects_response_without_stable_fingerprint(self):
+        payload = self._create_payload()
+        payload["uniqueness_policy"] = "por_cookie"
+        _, survey_id, token, _, answer = self._create_published_answer_context(payload)
+
+        no_cookie_client = self.app.test_client(use_cookies=False)
+        response = no_cookie_client.post(f"/api/v2/public/surveys/{token}/respond", json=answer)
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        error = response.get_json()
+        self.assertEqual(error.get("reason_code"), "stable_fingerprint_required")
+        self.assertEqual(error.get("action_hint"), "provide_anon_id")
+        self.assertEqual(error.get("required_identifiers"), ["anon_id"])
+        self.assertEqual(EncRespuesta.query.filter_by(encuesta_id=survey_id).count(), 0)
+
+    def test_v2_identity_aliases_roundtrip_create_update_public_and_respond(self):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        payload = self._create_payload()
+        payload.update(
+            {
+                "anonimato": False,
+                "requiere_datos_contacto": True,
+                "uniqueness_policy": "libre",
+            }
+        )
+
+        create_resp = self.client.post("/api/v2/surveys", json=payload, headers=headers)
+        self.assertEqual(create_resp.status_code, 201, create_resp.get_json())
+        created = create_resp.get_json()
+        survey_id = created["id"]
+        self.assertFalse(created["anonimo_permitido"])
+        self.assertFalse(created["anonimato"])
+        self.assertTrue(created["requiere_identidad"])
+        self.assertTrue(created["requiere_datos_contacto"])
+
+        admin_resp = self.client.get(f"/api/v2/surveys/{survey_id}", headers=headers)
+        self.assertEqual(admin_resp.status_code, 200, admin_resp.get_json())
+        self.assertFalse(admin_resp.get_json()["anonimato"])
+        self.assertTrue(admin_resp.get_json()["requiere_datos_contacto"])
+
+        update_resp = self.client.patch(
+            f"/api/v2/surveys/{survey_id}",
+            json={"anonimato": True, "requiere_datos_contacto": False},
+            headers=headers,
+        )
+        self.assertEqual(update_resp.status_code, 200, update_resp.get_json())
+        updated = update_resp.get_json()
+        self.assertTrue(updated["anonimo_permitido"])
+        self.assertTrue(updated["anonimato"])
+        self.assertFalse(updated["requiere_identidad"])
+        self.assertFalse(updated["requiere_datos_contacto"])
+        self.assertEqual(len(updated["preguntas"]), 1)
+
+        publish_resp = self.client.post(f"/api/v2/surveys/{survey_id}/publish", headers=headers)
+        self.assertEqual(publish_resp.status_code, 200, publish_resp.get_json())
+        token = publish_resp.get_json()["public_token"]
+        public_resp = self.client.get(f"/api/v2/public/surveys/{token}")
+        self.assertEqual(public_resp.status_code, 200, public_resp.get_json())
+        public_payload = public_resp.get_json()
+        self.assertTrue(public_payload["anonimo_permitido"])
+        self.assertTrue(public_payload["anonimato"])
+        self.assertFalse(public_payload["requiere_identidad"])
+        self.assertFalse(public_payload["requiere_datos_contacto"])
+
+        question_id = public_payload["preguntas"][0]["id"]
+        option_id = public_payload["preguntas"][0]["opciones"][0]["id"]
+        respond_resp = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]},
+        )
+        self.assertEqual(respond_resp.status_code, 201, respond_resp.get_json())
+
+        public_after = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        self.assertTrue(public_after["anonimato"])
+        self.assertFalse(public_after["requiere_datos_contacto"])
 
     def test_v2_public_response_live_action_preserves_tenant_slug(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
