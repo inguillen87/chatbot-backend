@@ -1022,6 +1022,38 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(len(account_calls), 1)
         self.assertEqual(len(messaging_service_calls), 2)
 
+    def test_twilio_provision_retry_never_uses_an_unscoped_child_token(self):
+        self.app.config.update(
+            TWILIO_ACCOUNT_SID="ACparent",
+            TWILIO_AUTH_TOKEN="parent-secret",
+            TWILIO_SUBACCOUNT_AUTH_TOKEN="unrelated-child-secret",
+            TWILIO_META_APP_ID="meta-app",
+            TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID="cfg-123",
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+            PUBLIC_API_BASE_URL="https://www.chatboc.ar",
+        )
+        self.tenant.configuracion = {
+            "twilio_tech_provider": {
+                "twilio_account_sid": "ACchild-without-specific-secret",
+                "status": "messaging_service_failed",
+            }
+        }
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        with patch("services.twilio_tech_provider.requests.post") as post_request:
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
+                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-unscoped-secret-1"},
+                json={"phone_number": "+5491112223333"},
+            )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["reason_code"], "twilio_subaccount_token_missing")
+        self.assertNotIn("TWILIO_SUBACCOUNT_AUTH_TOKEN", payload.get("required_env", []))
+        post_request.assert_not_called()
+
     def test_twilio_live_provision_syncs_subaccount_secret_to_render_when_enabled(self):
         self.app.config.update(
             TWILIO_ACCOUNT_SID="ACparent",

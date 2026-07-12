@@ -1230,6 +1230,7 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
             state={**state, "twilio_account_sid": subaccount_sid},
             tenant_slug=tenant_slug,
             app_config=app_config,
+            allow_global_fallback=False,
         )
         result["state_patch"].update(
             {
