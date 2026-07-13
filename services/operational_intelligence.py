@@ -13,16 +13,20 @@ from models import (
     ChatSessionContext,
     EncEncuesta,
     EncRespuesta,
+    MarketOrder,
     MunicipioTicket,
+    Order,
     PedidoConversacional,
     PublicSurvey,
     PublicSurveyResponse,
+    PymePedido,
     PymeTicket,
     TenantProfile,
     TenantTicket,
     TicketRealtimeState,
     User,
 )
+from services.commerce_unified import dedupe_unified_orders, summarize_unified_orders
 from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
 
 
@@ -266,6 +270,8 @@ def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bo
                 "surveys": "survey",
                 "analytics_events": "analytics_event",
                 "events": "analytics_event",
+                "orders": "commerce",
+                "commerce_activity": "commerce",
             }
             source_allowed.update(aliases.get(value, value) for value in allowed)
             if _norm(filter_map.get(key), "") not in source_allowed:
@@ -313,11 +319,14 @@ def _heatmap_source_quality(
     points: list[dict[str, Any]],
     records: list[dict[str, Any]],
     geocoding_candidates: list[dict[str, Any]],
+    commerce_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source_counts = Counter(point.get("source") or "unknown" for point in points)
     ticket_records = [record for record in records if record.get("source") in {"tenant_ticket", "municipio_ticket"}]
     ticket_points = source_counts.get("ticket", 0)
     ticket_total = len(ticket_records)
+    commerce_total = len(commerce_records or [])
+    commerce_points = int(source_counts.get("commerce", 0))
 
     sources = {
         "ticket": {
@@ -340,6 +349,14 @@ def _heatmap_source_quality(
             "points": int(source_counts.get("analytics_event", 0)),
             "pending_geocode": 0,
             "coordinate_coverage_pct": 100.0 if source_counts.get("analytics_event", 0) else 0.0,
+        },
+        "commerce": {
+            "label": "Pedidos y ventas",
+            "records": commerce_total,
+            "points": commerce_points,
+            "pending_geocode": 0,
+            "coordinate_coverage_pct": round((commerce_points / commerce_total) * 100, 2) if commerce_total else 0.0,
+            "privacy_mode": "coordinates_without_customer_pii",
         },
     }
 
@@ -425,6 +442,18 @@ def _heatmap_map_layers(
                 "type": "heatmap_collection",
                 "available_categories": [item.get("key") for item in category_layers],
                 "available": bool(category_layers),
+            },
+            {
+                "id": "commerce_activity",
+                "label": "Pedidos y ventas",
+                "source": "geo_layers.points",
+                "source_filter": {"source": "commerce"},
+                "type": "heatmap",
+                "weight_field": "weight",
+                "available": bool(
+                    ((source_quality.get("sources") or {}).get("commerce") or {}).get("points")
+                ),
+                "privacy_mode": "coordinates_without_customer_pii",
             },
         ],
         "telemetry": {
@@ -773,15 +802,225 @@ def _order_is_assisted(order: PedidoConversacional, metadata: dict[str, Any]) ->
     )
 
 
-def _commerce_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
-    orders = (
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coordinates_from_payload(value: Any) -> tuple[float | None, float | None]:
+    if not isinstance(value, dict):
+        return None, None
+
+    lat = _float_or_none(_first_value(value, "lat", "latitude", "latitud"))
+    lng = _float_or_none(_first_value(value, "lng", "lon", "longitude", "longitud"))
+    if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
+        return lat, lng
+
+    for key in (
+        "coordinates",
+        "coordenadas",
+        "location",
+        "ubicacion",
+        "delivery",
+        "delivery_address",
+        "shipping_address",
+        "destination",
+        "destino",
+    ):
+        lat, lng = _coordinates_from_payload(value.get(key))
+        if lat is not None and lng is not None:
+            return lat, lng
+    return None, None
+
+
+def _commerce_record_location(record: Any, metadata: dict[str, Any]) -> tuple[float | None, float | None]:
+    if isinstance(record, PymePedido):
+        lat = _float_or_none(record.latitud)
+        lng = _float_or_none(record.longitud)
+        if lat is not None and lng is not None and -90 <= lat <= 90 and -180 <= lng <= 180:
+            return lat, lng
+    if isinstance(record, Order):
+        return _coordinates_from_payload(record.delivery_address)
+    return _coordinates_from_payload(metadata)
+
+
+def _commerce_safe_record(record: Any) -> dict[str, Any]:
+    if isinstance(record, PedidoConversacional):
+        metadata = _order_metadata(record)
+        needs_review, review_payload = _order_needs_operator_review(record)
+        lat, lng = _commerce_record_location(record, metadata)
+        return {
+            "id": f"conversational:{record.id}",
+            "source_model": "PedidoConversacional",
+            "source_id": record.id,
+            "status": _norm(record.estado, "unknown"),
+            "channel": _norm(record.origen, "unknown"),
+            "request_kind": _clean_text(metadata.get("request_kind")) or _clean_text(record.tipo) or "pedido",
+            "total": _float_or_none(record.monto_monetario) or 0.0,
+            "created_at": _iso(record.created_at),
+            "updated_at": _iso(record.updated_at),
+            "metadata": metadata,
+            "external_refs": {
+                "mp_preference_id": record.mp_preference_id,
+                "mp_payment_id": record.mp_payment_id,
+            },
+            "needs_review": needs_review,
+            "review_summary": review_payload.get("summary") or {},
+            "assisted": _order_is_assisted(record, metadata),
+            "location": {"lat": lat, "lng": lng},
+        }
+
+    if isinstance(record, PymePedido):
+        metadata = {
+            "idempotency_key": record.idempotency_key,
+            "tenant_id": record.tenant_id,
+            "pyme_id": record.pyme_id,
+        }
+        lat, lng = _commerce_record_location(record, metadata)
+        return {
+            "id": f"legacy:{record.id}",
+            "source_model": "PymePedido",
+            "source_id": record.id,
+            "status": _norm(record.estado, "unknown"),
+            "channel": "whatsapp",
+            "request_kind": "pedido",
+            "total": _float_or_none(record.monto_total) or 0.0,
+            "created_at": _iso(record.fecha),
+            "updated_at": _iso(record.fecha),
+            "metadata": metadata,
+            "external_refs": {
+                "nro_pedido": record.nro_pedido,
+                "idempotency_key": record.idempotency_key,
+            },
+            "needs_review": False,
+            "review_summary": {},
+            "assisted": str(record.idempotency_key or "").startswith("conv_order_"),
+            "location": {"lat": lat, "lng": lng},
+        }
+
+    if isinstance(record, MarketOrder):
+        metadata = _as_dict(record.metadata_payload)
+        lat, lng = _commerce_record_location(record, metadata)
+        return {
+            "id": f"market:{record.id}",
+            "source_model": "MarketOrder",
+            "source_id": record.id,
+            "status": _norm(record.status, "unknown"),
+            "channel": _norm(record.channel, "web"),
+            "request_kind": "marketplace_order",
+            "total": _float_or_none(record.total_monetary) or 0.0,
+            "created_at": _iso(record.created_at),
+            "updated_at": _iso(record.updated_at),
+            "metadata": metadata,
+            "external_refs": {
+                "provider": record.external_provider,
+                "order_id": record.external_order_id,
+            },
+            "needs_review": False,
+            "review_summary": {},
+            "assisted": bool(metadata.get("source_conversational_id")),
+            "location": {"lat": lat, "lng": lng},
+        }
+
+    metadata = {"delivery_address": _as_dict(record.delivery_address)}
+    lat, lng = _commerce_record_location(record, metadata)
+    return {
+        "id": f"order:{record.id}",
+        "source_model": "Order",
+        "source_id": record.id,
+        "status": _norm(record.status, "unknown"),
+        "channel": _norm(record.channel, "web_widget"),
+        "request_kind": "order",
+        "total": _float_or_none(record.total) or 0.0,
+        "created_at": _iso(record.created_at),
+        "updated_at": _iso(record.updated_at),
+        "metadata": metadata,
+        "external_refs": {},
+        "needs_review": False,
+        "review_summary": {},
+        "assisted": False,
+        "location": {"lat": lat, "lng": lng},
+    }
+
+
+def _collect_commerce_records(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+) -> tuple[list[dict[str, Any]], int]:
+    records: list[Any] = []
+    legacy_scope = PymePedido.tenant_id == tenant.id
+    if tenant.pyme_id:
+        legacy_scope = or_(
+            legacy_scope,
+            (PymePedido.tenant_id.is_(None)) & (PymePedido.pyme_id == tenant.pyme_id),
+        )
+    records.extend(
+        _between(PymePedido.query.filter(legacy_scope), PymePedido.fecha, start_date, end_date)
+        .order_by(PymePedido.fecha.desc())
+        .all()
+    )
+    records.extend(
+        _between(MarketOrder.legacy_safe_query().filter_by(tenant_id=tenant.id), MarketOrder.created_at, start_date, end_date)
+        .order_by(MarketOrder.created_at.desc())
+        .all()
+    )
+    records.extend(
         _between(PedidoConversacional.query.filter_by(tenant_id=tenant.id), PedidoConversacional.created_at, start_date, end_date)
         .order_by(PedidoConversacional.created_at.desc())
         .all()
     )
+    records.extend(
+        _between(Order.query.filter_by(tenant_id=tenant.id), Order.created_at, start_date, end_date)
+        .order_by(Order.created_at.desc())
+        .all()
+    )
+    safe_records = [_commerce_safe_record(record) for record in records]
+    deduped = dedupe_unified_orders(safe_records)
+    conversational_by_id = {
+        str(item.get("source_id")): item
+        for item in safe_records
+        if item.get("source_model") == "PedidoConversacional"
+    }
+    for item in deduped:
+        if item.get("source_model") != "MarketOrder":
+            continue
+        metadata = _as_dict(item.get("metadata"))
+        external_refs = _as_dict(item.get("external_refs"))
+        linked_id = metadata.get("source_conversational_id")
+        if not linked_id and external_refs.get("provider") == "pedido_conversacional":
+            linked_id = external_refs.get("order_id")
+        linked = conversational_by_id.get(str(linked_id or ""))
+        if not linked:
+            continue
+        item["assisted"] = bool(linked.get("assisted"))
+        item["needs_review"] = bool(linked.get("needs_review"))
+        item["review_summary"] = _as_dict(linked.get("review_summary"))
+        item["request_kind"] = linked.get("request_kind") or item.get("request_kind")
+        if not _as_dict(item.get("location")).get("lat"):
+            item["location"] = _as_dict(linked.get("location"))
+    deduped.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or "", reverse=True)
+    return deduped, len(safe_records)
+
+
+def _commerce_metrics(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    commerce_records: list[dict[str, Any]] | None = None,
+    raw_record_count: int | None = None,
+) -> dict[str, Any]:
+    if commerce_records is None:
+        commerce_records, raw_record_count = _collect_commerce_records(tenant, start_date, end_date)
+    orders = commerce_records
+    raw_count = int(raw_record_count if raw_record_count is not None else len(orders))
 
     by_state: Counter[str] = Counter()
     by_origin: Counter[str] = Counter()
+    by_source_model: Counter[str] = Counter()
     by_request_kind: Counter[str] = Counter()
     review_items: list[dict[str, Any]] = []
     assisted_orders = 0
@@ -791,30 +1030,32 @@ def _commerce_metrics(tenant: TenantProfile, start_date: datetime, end_date: dat
     unmatched_items = 0
 
     for order in orders:
-        metadata = _order_metadata(order)
-        needs_review, payload = _order_needs_operator_review(order)
-        summary = payload.get("summary") or {}
+        metadata = _as_dict(order.get("metadata"))
+        needs_review = bool(order.get("needs_review"))
+        summary = _as_dict(order.get("review_summary"))
         source = _json_object(metadata.get("source"))
         request_kind = (
-            _clean_text(metadata.get("request_kind"))
+            _clean_text(order.get("request_kind"))
+            or _clean_text(metadata.get("request_kind"))
             or _clean_text(source.get("request_kind"))
-            or _clean_text(getattr(order, "tipo", None))
             or "pedido"
         )
-        origin = _norm(getattr(order, "origen", None), "unknown")
-        state = _norm(getattr(order, "estado", None), "unknown")
+        origin = _norm(order.get("channel"), "unknown")
+        state = _norm(order.get("status"), "unknown")
+        source_model = str(order.get("source_model") or "Unknown")
         detected = int(summary.get("detected") or 0)
         matched = int(summary.get("matched") or 0)
         unmatched = int(summary.get("unmatched") or 0)
 
         by_state[state] += 1
         by_origin[origin] += 1
+        by_source_model[source_model] += 1
         by_request_kind[_norm(request_kind, "pedido")] += 1
         detected_items += detected
         matched_items += matched
         unmatched_items += unmatched
 
-        is_assisted = _order_is_assisted(order, metadata)
+        is_assisted = bool(order.get("assisted"))
         if is_assisted:
             assisted_orders += 1
         if not needs_review:
@@ -822,13 +1063,14 @@ def _commerce_metrics(tenant: TenantProfile, start_date: datetime, end_date: dat
 
         orders_needing_review += 1
         priority = "high" if unmatched >= 2 or detected == 0 else "medium"
-        admin_order_id = _conversational_order_admin_id(order)
+        record_id = order.get("source_id")
+        admin_order_id = str(order.get("id") or f"conversational:{record_id}")
         review_items.append(
             {
-                "id": f"assisted_order:{order.id}",
-                "record_id": order.id,
+                "id": f"assisted_order:{record_id}",
+                "record_id": record_id,
                 "title": "Pedido asistido requiere revision",
-                "label": f"Pedido asistido #{order.id}",
+                "label": f"Pedido asistido #{record_id}",
                 "priority": priority,
                 "reason_code": "assisted_order_review",
                 "state": state,
@@ -838,32 +1080,37 @@ def _commerce_metrics(tenant: TenantProfile, start_date: datetime, end_date: dat
                 "matched": matched,
                 "unmatched": unmatched,
                 "channel": origin,
-                "endpoint": f"/api/admin/tenants/{tenant.slug}/orders/{admin_order_id}",
-                "frontend_path": f"/t/{quote(str(tenant.slug), safe='')}/pedidos/{quote(str(order.id), safe='')}",
+                "endpoint": f"/api/admin/tenants/{tenant.slug}/orders/{quote(admin_order_id, safe=':')}",
+                "frontend_path": f"/t/{quote(str(tenant.slug), safe='')}/pedidos/{quote(str(record_id), safe='')}",
                 "ui_hint": "open_assisted_order_review",
                 "pii": {"redacted": True},
             }
         )
 
     review_items.sort(key=lambda item: {"high": 0, "medium": 1, "low": 2}.get(_norm(item.get("priority"), "low"), 9))
+    unified_summary = summarize_unified_orders(orders)
     return {
         "contract_version": "operations.commerce.v1",
         "summary": {
             "orders": len(orders),
+            "source_records": raw_count,
+            "deduplicated_mirrors": max(0, raw_count - len(orders)),
             "assisted_orders": assisted_orders,
             "orders_needing_review": orders_needing_review,
             "detected_items": detected_items,
             "matched_items": matched_items,
             "unmatched_items": unmatched_items,
             "review_rate": round((orders_needing_review / len(orders)) * 100, 2) if orders else 0.0,
+            "total_monetary": (unified_summary.get("totals") or {}).get("monetary", 0.0),
         },
         "by_state": _counter(by_state),
         "by_origin": _counter(by_origin),
+        "by_source_model": _counter(by_source_model),
         "by_request_kind": _counter(by_request_kind),
         "review_items": review_items[:8],
         "frontend_contract": {
             "render_as": "commerce_assisted_ops",
-            "recommended_widgets": ["assisted_order_queue", "source_mix", "operator_review_rate"],
+            "recommended_widgets": ["orders_pipeline", "assisted_order_queue", "source_mix", "operator_review_rate", "commerce_heatmap"],
             "empty_state_behavior": "show_upload_or_whatsapp_intake_cta",
             "safe_for_public_demo": True,
             "pii_policy": "redacted",
@@ -1061,9 +1308,14 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
     chat_count = _between(chat_query, ChatSessionContext.last_updated, start_date, end_date).count()
     chat_latest = _latest_from_query(chat_query, ChatSessionContext.last_updated)
 
-    order_query = PedidoConversacional.query.filter_by(tenant_id=tenant.id)
-    order_count = _between(order_query, PedidoConversacional.created_at, start_date, end_date).count()
-    order_latest = _latest_from_query(order_query, PedidoConversacional.created_at)
+    commerce_records, _ = _collect_commerce_records(tenant, start_date, end_date)
+    order_count = len(commerce_records)
+    order_latest = _max_datetime(
+        *(
+            _parse_datetime(order.get("updated_at") or order.get("created_at"))
+            for order in commerce_records
+        )
+    )
 
     employee_count = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).count()
     heatmap = build_operational_heatmap(
@@ -1073,6 +1325,7 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
         ticket_records=ticket_records,
         max_points=250,
         include_ai=False,
+        commerce_records=commerce_records,
     )
     heatmap_latest = None
     for point in heatmap.get("points") or []:
@@ -1124,12 +1377,12 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
         ),
         _freshness_item(
             key="commerce",
-            label="Pedidos asistidos y marketplace",
+            label="Pedidos, ventas y marketplace",
             latest_at=order_latest,
             period_count=order_count,
             stale_after_seconds=6 * 60 * 60,
-            empty_reason="no_assisted_orders_in_period",
-            recommended_action={"endpoint": "/api/v2/saas/admin?module=marketplace", "ui_hint": "open_assisted_order_queue"},
+            empty_reason="no_orders_in_period",
+            recommended_action={"endpoint": f"/api/admin/tenants/{tenant.slug}/orders", "ui_hint": "open_orders_pipeline"},
         ),
         _freshness_item(
             key="heatmap",
@@ -1374,7 +1627,10 @@ def _heatmap_quality_contract(
     pending_geocode = len(geocoding_candidates or [])
     visible_points = len(points or [])
     ticket_coverage_rate = round(ticket_records_with_coordinates / total_ticket_records, 4) if total_ticket_records else 0.0
-    has_survey_or_event_points = any(point.get("source") in {"survey", "analytics_event"} for point in points or [])
+    has_survey_or_event_points = any(
+        point.get("source") in {"survey", "analytics_event", "commerce"}
+        for point in points or []
+    )
 
     if visible_points:
         if total_ticket_records and ticket_coverage_rate < 0.35 and not has_survey_or_event_points:
@@ -1694,6 +1950,7 @@ def _heatmap_layer_style_contract(
         "risk": "#EF4444",
         "whatsapp": "#10B981",
         "survey": "#7C3AED",
+        "commerce": "#0EA5E9",
         "attention": "#F59E0B",
         "neutral": "#2563EB",
     }
@@ -1751,6 +2008,15 @@ def _heatmap_layer_style_contract(
                 "default_visible": True,
                 "style": {"type": "heatmap", "color": style_tokens.get("survey")},
                 "interaction": {"click": "open_survey_context"},
+            },
+            {
+                "id": "commerce_activity",
+                "source": "points[source=commerce]",
+                "geometry": "weighted_points",
+                "default_visible": True,
+                "style": {"type": "heatmap", "color": style_tokens.get("commerce") or "#0EA5E9"},
+                "interaction": {"click": "open_order_detail", "filter_key": "source"},
+                "privacy": {"customer_pii_redacted": True, "exact_address_redacted": True},
             },
             {
                 "id": "geocoding_queue",
@@ -2089,8 +2355,11 @@ def build_operational_heatmap(
     segment_filters: dict[str, Any] | None = None,
     include_ai: bool = True,
     bbox: dict[str, float] | None = None,
+    commerce_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     records = ticket_records if ticket_records is not None else _collect_ticket_records(tenant, start_date, end_date)
+    if commerce_records is None:
+        commerce_records, _ = _collect_commerce_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
     filters = segment_filters or {}
     geocoding_candidates = [
@@ -2193,6 +2462,52 @@ def build_operational_heatmap(
         if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
             points.append(point)
 
+    for order in commerce_records:
+        location = _as_dict(order.get("location"))
+        lat = _float_or_none(location.get("lat"))
+        lng = _float_or_none(location.get("lng"))
+        if lat is None or lng is None:
+            continue
+        order_id = str(order.get("id") or "")
+        record_id = order.get("source_id")
+        request_kind = _norm(order.get("request_kind"), "commerce_order")
+        point = {
+            "layer": "commerce_activity",
+            "source": "commerce",
+            "record_source": _norm(order.get("source_model"), "order"),
+            "id": order_id,
+            "lat": lat,
+            "lng": lng,
+            "weight": 0.9 if _norm(order.get("status"), "") not in _CLOSED_STATES else 0.5,
+            "category": request_kind,
+            "channel": _norm(order.get("channel"), "unknown"),
+            "status": _norm(order.get("status"), "unknown"),
+            "label": "Pedido comercial",
+            "timestamp": order.get("updated_at") or order.get("created_at"),
+            "gender": "unknown",
+            "age_range": "unknown",
+            "demographics_source": "not_collected",
+            "privacy": {
+                "customer_pii_redacted": True,
+                "exact_address_redacted": True,
+                "coordinate_source": "order_fulfillment",
+            },
+            "actions": [
+                {
+                    "id": "open_order",
+                    "label": "Abrir pedido",
+                    "method": "GET",
+                    "endpoint": f"/api/admin/tenants/{tenant.slug}/orders/{quote(order_id, safe=':')}",
+                    "href": f"/perfil?tab=pedidos&order_id={quote(order_id, safe='')}",
+                    "frontend_path": f"/perfil?tab=pedidos&order_id={quote(order_id, safe='')}",
+                    "ui_hint": "open_order_detail",
+                    "writes_enabled": False,
+                }
+            ],
+        }
+        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
+            points.append(point)
+
     points = points[:max_points]
     cells: dict[str, dict[str, Any]] = {}
     recent_cutoff = (_aware_datetime(end_date) or datetime.now(timezone.utc)) - timedelta(hours=24)
@@ -2216,6 +2531,7 @@ def build_operational_heatmap(
                 "ticket_count": 0,
                 "survey_count": 0,
                 "event_count": 0,
+                "commerce_count": 0,
                 "overdue_count": 0,
                 "unassigned_count": 0,
                 "breached_sla_count": 0,
@@ -2249,6 +2565,8 @@ def build_operational_heatmap(
             cell["survey_count"] += 1
         elif source == "analytics_event":
             cell["event_count"] += 1
+        elif source == "commerce":
+            cell["commerce_count"] += 1
         if parsed_timestamp:
             if parsed_timestamp >= recent_cutoff:
                 cell["recent_24h_count"] += 1
@@ -2271,6 +2589,7 @@ def build_operational_heatmap(
                 "ticket_count": int(cell["ticket_count"]),
                 "survey_count": int(cell["survey_count"]),
                 "event_count": int(cell["event_count"]),
+                "commerce_count": int(cell["commerce_count"]),
                 "overdue_count": int(cell["overdue_count"]),
                 "unassigned_count": int(cell["unassigned_count"]),
                 "breached_sla_count": int(cell["breached_sla_count"]),
@@ -2351,6 +2670,7 @@ def build_operational_heatmap(
         "ticket_points": len([point for point in points if point["source"] == "ticket"]),
         "survey_points": len([point for point in points if point["source"] == "survey"]),
         "event_points": len([point for point in points if point["source"] == "analytics_event"]),
+        "commerce_points": len([point for point in points if point["source"] == "commerce"]),
         "points_with_gender": points_with_gender,
         "points_with_age": points_with_age,
         "unknown_gender_points": len(points) - points_with_gender,
@@ -2401,6 +2721,7 @@ def build_operational_heatmap(
         points=points,
         records=records,
         geocoding_candidates=geocoding_candidates,
+        commerce_records=commerce_records,
     )
     geo_layers = _heatmap_geo_layers(
         points=points,
@@ -2423,7 +2744,7 @@ def build_operational_heatmap(
             "can_render_heatmap": bool(points),
             "empty_reason": None if points else "no_real_geo_points",
             "map_engine": "maplibre",
-            "layers": ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity"],
+            "layers": ["tickets", "surveys", "analytics_events", "commerce_activity", "ai_risk", "whatsapp_activity"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
             "segment_filters": ["categoria", "estado", "genero", "rango_edad", "source", "channel", "zona", "sla_state", "assignee_id"],
             "category_layers": True,
@@ -2441,6 +2762,7 @@ def build_operational_heatmap(
                 "ai_risk_layers",
                 "whatsapp_activity_layer",
                 "survey_participation_layer",
+                "commerce_activity_layer",
             ],
             "premium_metadata": [
                 "map_narrative",
@@ -2470,7 +2792,7 @@ def build_operational_heatmap(
             "contract_version": "operations.map_experience.v1",
             "preferred_visualization": "interactive_globe_heatmap",
             "map_engines": ["maplibre", "deckgl", "google"],
-            "layer_groups": ["base_heatmap", "category_layers", "ai_risk_layers", "whatsapp_activity", "survey_participation"],
+            "layer_groups": ["base_heatmap", "category_layers", "ai_risk_layers", "whatsapp_activity", "survey_participation", "commerce_activity"],
             "empty_state_behavior": "show_geocoding_queue_and_ai_summary",
             "supports_reduced_motion": True,
             "narrative_contract": map_narrative.get("contract_version"),
@@ -3226,10 +3548,17 @@ def build_ai_ops_queue(tenant: TenantProfile, start_date: datetime, end_date: da
 
 def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
     ticket_records = _collect_ticket_records(tenant, start_date, end_date)
+    commerce_records, commerce_raw_count = _collect_commerce_records(tenant, start_date, end_date)
     ticket_metrics = _ticket_metrics(ticket_records)
     survey_metrics = _survey_metrics(tenant, start_date, end_date)
     chat_metrics = _chat_metrics(tenant, start_date, end_date)
-    commerce_metrics = _commerce_metrics(tenant, start_date, end_date)
+    commerce_metrics = _commerce_metrics(
+        tenant,
+        start_date,
+        end_date,
+        commerce_records=commerce_records,
+        raw_record_count=commerce_raw_count,
+    )
     employee_metrics = _employee_metrics(tenant, ticket_records)
     live_chat = _active_presence(ticket_records)
     heatmap = build_operational_heatmap(
@@ -3239,6 +3568,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         ticket_records=ticket_records,
         max_points=500,
         include_ai=False,
+        commerce_records=commerce_records,
     )
     alerts = _build_alerts(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, commerce_metrics)
     summary = _summary_from_metrics(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts, commerce_metrics)
@@ -3246,10 +3576,21 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
     previous_start = start_date - period
     previous_end = start_date
     previous_ticket_records = _collect_ticket_records(tenant, previous_start, previous_end)
+    previous_commerce_records, previous_commerce_raw_count = _collect_commerce_records(
+        tenant,
+        previous_start,
+        previous_end,
+    )
     previous_ticket_metrics = _ticket_metrics(previous_ticket_records)
     previous_survey_metrics = _survey_metrics(tenant, previous_start, previous_end)
     previous_chat_metrics = _chat_metrics(tenant, previous_start, previous_end)
-    previous_commerce_metrics = _commerce_metrics(tenant, previous_start, previous_end)
+    previous_commerce_metrics = _commerce_metrics(
+        tenant,
+        previous_start,
+        previous_end,
+        commerce_records=previous_commerce_records,
+        raw_record_count=previous_commerce_raw_count,
+    )
     previous_employee_metrics = _employee_metrics(tenant, previous_ticket_records)
     previous_heatmap = build_operational_heatmap(
         tenant,
@@ -3258,6 +3599,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         ticket_records=previous_ticket_records,
         max_points=250,
         include_ai=False,
+        commerce_records=previous_commerce_records,
     )
     previous_summary = _summary_from_metrics(
         previous_ticket_metrics,

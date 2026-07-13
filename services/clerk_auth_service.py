@@ -170,6 +170,10 @@ class ClerkNotConfigured(ClerkAuthError):
     pass
 
 
+class ClerkTenantInactive(ClerkAuthError):
+    pass
+
+
 def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
@@ -948,6 +952,12 @@ def tenant_for_user(user: User) -> Optional[TenantProfile]:
     ).first()
 
 
+def require_active_tenant(tenant: Optional[TenantProfile]) -> Optional[TenantProfile]:
+    if tenant is not None and getattr(tenant, "is_active", True) is False:
+        raise ClerkTenantInactive("El tenant esta desactivado")
+    return tenant
+
+
 def _session_identity_payload(user: User) -> dict:
     identity = get_user_profile_identity(user)
     avatar_url = identity.get("avatar_url")
@@ -997,7 +1007,7 @@ def build_chatboc_session_payload(
     tenant: Optional[TenantProfile] = None,
     clerk_claims: Optional[dict] = None,
 ) -> dict:
-    tenant = tenant or tenant_for_user(user)
+    tenant = require_active_tenant(tenant or tenant_for_user(user))
     onboarding = build_onboarding_contract(user, tenant)
     token = None
     if not onboarding.get("required"):
@@ -1292,6 +1302,7 @@ def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
 
     existing = tenant_for_user(user)
     if existing:
+        require_active_tenant(existing)
         _record_clerk_terms_acceptance(
             user,
             existing,

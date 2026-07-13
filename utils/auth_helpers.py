@@ -734,6 +734,28 @@ def user_from_token(token: str) -> Optional[User]:
         if not user:
             return None
 
+        tenant_id = payload.get("tenant_id") or getattr(user, "tenant_id", None)
+        tenant_slug = payload.get("tenant_slug") or getattr(user, "tenant_slug", None)
+        tenant = None
+        if tenant_id:
+            try:
+                tenant = db.session.get(TenantProfile, int(tenant_id))
+            except (TypeError, ValueError):
+                tenant = None
+        if tenant is None and tenant_slug:
+            tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
+        if tenant is None:
+            tenant = TenantProfile.query.filter(
+                (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
+            ).first()
+        if tenant is not None and getattr(tenant, "is_active", True) is False:
+            current_app.logger.warning(
+                "[user_from_token] Inactive tenant rejected: user_id=%s tenant_id=%s",
+                user_id,
+                tenant.id,
+            )
+            return None
+
         session_kind = str(payload.get("session_kind") or "").strip().lower()
         auth_provider = str(payload.get("auth_provider") or "").strip().lower()
 

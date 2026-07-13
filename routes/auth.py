@@ -39,6 +39,7 @@ from services.channel_activation import build_channel_activation_payload
 from services.clerk_auth_service import (
     ClerkAuthError,
     ClerkNotConfigured,
+    ClerkTenantInactive,
     build_chatboc_session_payload,
     build_clerk_frontend_contract,
     clerk_enabled,
@@ -445,6 +446,9 @@ def clerk_session_sync():
         payload = build_chatboc_session_payload(user, clerk_claims=claims)
         status_code = 200 if not payload.get("onboarding", {}).get("required") else 202
         return jsonify(payload), status_code
+    except ClerkTenantInactive as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc), "reason_code": "tenant_inactive"}), 403
     except ClerkNotConfigured as exc:
         current_app.logger.warning("[clerk_auth] Not configured: %s", exc)
         return jsonify({"error": "Clerk auth is not configured", "reason_code": "clerk_not_configured"}), 503
@@ -477,6 +481,9 @@ def clerk_onboarding():
         payload = build_chatboc_session_payload(user, tenant, clerk_claims=claims)
         payload["message"] = "Tenant creado y onboarding completado"
         return jsonify(payload), 201
+    except ClerkTenantInactive as exc:
+        db.session.rollback()
+        return jsonify({"error": str(exc), "reason_code": "tenant_inactive"}), 403
     except ClerkNotConfigured as exc:
         current_app.logger.warning("[clerk_auth] Onboarding not configured: %s", exc)
         return jsonify({"error": "Clerk auth is not configured", "reason_code": "clerk_not_configured"}), 503

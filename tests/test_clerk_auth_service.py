@@ -8,6 +8,7 @@ import services.clerk_auth_service as clerk_service
 from services.clerk_auth_service import (
     ClerkAuthError,
     ClerkNotConfigured,
+    ClerkTenantInactive,
     build_chatboc_session_payload,
     build_onboarding_contract,
     complete_clerk_onboarding,
@@ -125,6 +126,47 @@ def test_clerk_session_is_not_issued_before_onboarding(client):
 
         assert payload["onboarding"]["required"] is True
         assert payload["token"] is None
+
+
+def test_inactive_tenant_cannot_receive_or_reuse_clerk_session(client):
+    with client.application.app_context():
+        user = upsert_user_from_clerk(_claims(), _profile(), profile_is_trusted=True)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="inactive-clerk-tenant",
+            nombre="Inactive Clerk Tenant",
+            tipo="pyme",
+            pyme_id=user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        user.tenant_id = tenant.id
+        user.tenant_slug = tenant.slug
+        db.session.commit()
+        complete_clerk_onboarding(
+            user,
+            {"terms_accepted": True, "terms_version": "2026-07-11"},
+        )
+
+        active_token = build_chatboc_session_payload(
+            user,
+            tenant,
+            clerk_claims=_claims(),
+        )["token"]
+        assert active_token
+        assert user_from_token(active_token).id == user.id
+
+        tenant.is_active = False
+        db.session.commit()
+
+        assert user_from_token(active_token) is None
+        try:
+            build_chatboc_session_payload(user, tenant, clerk_claims=_claims())
+        except ClerkTenantInactive:
+            pass
+        else:
+            raise AssertionError("Inactive tenants must not receive new Chatboc sessions")
 
 
 def test_clerk_linked_user_cannot_reuse_legacy_password_token(client):

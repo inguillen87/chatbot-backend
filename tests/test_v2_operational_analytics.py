@@ -11,7 +11,22 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 import config.feature_flags as feature_flags
-from models import AnalyticsEventV2, ChatSessionContext, EncEncuesta, EncLink, EncRespuesta, MunicipioTicket, PedidoConversacional, TenantProfile, TenantTicket, TicketRealtimeState, User
+from models import (
+    AnalyticsEventV2,
+    ChatSessionContext,
+    EncEncuesta,
+    EncLink,
+    EncRespuesta,
+    MarketOrder,
+    MunicipioTicket,
+    Order,
+    PedidoConversacional,
+    PymePedido,
+    TenantProfile,
+    TenantTicket,
+    TicketRealtimeState,
+    User,
+)
 
 
 class V2OperationalAnalyticsTestConfig(Config):
@@ -290,6 +305,116 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         self.assertTrue(any(alert.get("reason_code") == "tickets_overdue" for alert in payload.get("alerts") or []))
         self.assertTrue(any(alert.get("reason_code") == "assisted_orders_need_review" for alert in payload.get("alerts") or []))
+
+    def test_operations_commerce_unifies_normal_orders_and_maps_only_privacy_safe_locations(self):
+        legacy = PymePedido(
+            pyme_id=self.admin.id,
+            tenant_id=self.tenant.id,
+            asunto="Pedido ferreteria",
+            detalles='[{"nombre": "Clavos", "cantidad": 2}]',
+            monto_total=1500,
+            nombre_cliente="Cliente privado legacy",
+            email_cliente="legacy-private@example.com",
+            direccion="Direccion legacy secreta 123",
+            latitud=-34.605,
+            longitud=-58.383,
+        )
+        canonical = Order(
+            tenant_id=self.tenant.id,
+            buyer_name="Cliente privado canonical",
+            buyer_email="canonical-private@example.com",
+            buyer_phone="+5492611111111",
+            status="created",
+            channel="web_widget",
+            total=2500,
+            delivery_address={
+                "address": "Direccion canonical secreta 456",
+                "coordinates": {"lat": -34.606, "lng": -58.384},
+            },
+        )
+        mirror = MarketOrder(
+            tenant_id=self.tenant.id,
+            status="pending",
+            channel="marketplace",
+            external_provider="pedido_conversacional",
+            external_order_id=str(self.assisted_order.id),
+            total_monetary=0,
+            currency="ARS",
+        )
+        foreign_tenant = TenantProfile(
+            slug="foreign-commerce",
+            nombre="Foreign Commerce",
+            tipo="pyme",
+            pyme_id=self.admin.id,
+            plan="full",
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_legacy = PymePedido(
+            pyme_id=self.admin.id,
+            tenant_id=foreign_tenant.id,
+            asunto="Pedido de otro tenant",
+            detalles="[]",
+            monto_total=9999,
+            latitud=-34.607,
+            longitud=-58.385,
+        )
+        db.session.add_all([legacy, canonical, mirror, foreign_legacy])
+        db.session.commit()
+
+        dashboard_response = self.client.get("/api/v2/analytics/operations/dashboard", headers=self._auth())
+        self.assertEqual(dashboard_response.status_code, 200)
+        commerce = dashboard_response.get_json().get("commerce") or {}
+        summary = commerce.get("summary") or {}
+        self.assertEqual(summary.get("source_records"), 4)
+        self.assertEqual(summary.get("orders"), 3)
+        self.assertEqual(summary.get("deduplicated_mirrors"), 1)
+        self.assertEqual(summary.get("assisted_orders"), 1)
+        self.assertEqual(summary.get("orders_needing_review"), 1)
+        self.assertEqual(summary.get("total_monetary"), 4000.0)
+        source_counts = {item.get("key"): item.get("count") for item in commerce.get("by_source_model") or []}
+        self.assertEqual(source_counts.get("MarketOrder"), 1)
+        self.assertEqual(source_counts.get("PymePedido"), 1)
+        self.assertEqual(source_counts.get("Order"), 1)
+
+        heatmap_response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?source=orders&include_ai=0",
+            headers=self._auth(),
+        )
+        self.assertEqual(heatmap_response.status_code, 200)
+        heatmap = heatmap_response.get_json()
+        self.assertEqual((heatmap.get("summary") or {}).get("commerce_points"), 2)
+        self.assertEqual((heatmap.get("summary") or {}).get("points"), 2)
+        self.assertIn("commerce_activity", (heatmap.get("render_contract") or {}).get("layers") or [])
+        self.assertIn(
+            "commerce_activity",
+            {item.get("id") for item in (heatmap.get("map_layers") or {}).get("layers") or []},
+        )
+        commerce_quality = ((heatmap.get("source_quality") or {}).get("sources") or {}).get("commerce") or {}
+        self.assertEqual(commerce_quality.get("records"), 3)
+        self.assertEqual(commerce_quality.get("points"), 2)
+        self.assertEqual(commerce_quality.get("privacy_mode"), "coordinates_without_customer_pii")
+        for point in heatmap.get("points") or []:
+            self.assertEqual(point.get("source"), "commerce")
+            self.assertTrue((point.get("privacy") or {}).get("customer_pii_redacted"))
+
+        serialized_heatmap = json.dumps(heatmap).lower()
+        for secret in (
+            "cliente privado",
+            "legacy-private@example.com",
+            "canonical-private@example.com",
+            "+5492611111111",
+            "direccion legacy secreta",
+            "direccion canonical secreta",
+        ):
+            self.assertNotIn(secret, serialized_heatmap)
+
+        detail_response = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/orders/order:{canonical.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(detail_response.get_json().get("source_model"), "Order")
 
     def test_operations_heatmap_returns_points_cells_and_layers(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())

@@ -148,7 +148,8 @@ def test_anonymous_handwritten_marketplace_order_lifecycle(
     assert tracking["token_required"] is True
     assert len(tracking_token) >= 24
     assert f"token={tracking_token}" in tracking_path
-    assert f"token={tracking_token}" in tracking_api
+    assert f"token={tracking_token}" not in tracking_api
+    assert tracking["credential_transport"] == "x-tracking-token-header"
     assert intake["crm_handoff"]["materialized_record"]["id"] == ticket_id
 
     pedido = db.session.get(PedidoConversacional, pedido_id)
@@ -300,7 +301,10 @@ def test_anonymous_handwritten_marketplace_order_lifecycle(
 
     tracking_response = client.get(
         tracking_api,
-        headers={"X-Request-Id": "marketplace-handwritten-lifecycle-tracking"},
+        headers={
+            "X-Request-Id": "marketplace-handwritten-lifecycle-tracking",
+            "X-Tracking-Token": tracking_token,
+        },
     )
     assert tracking_response.status_code == 200, tracking_response.get_json()
     public_tracking = tracking_response.get_json()

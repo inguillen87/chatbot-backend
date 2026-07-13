@@ -3014,9 +3014,13 @@ def list_tenant_orders(current_user, slug):
 
     order_records = []
 
-    legacy_query = PymePedido.query.filter(
-        (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == tenant.pyme_id)
-    )
+    legacy_scope = PymePedido.tenant_id == tenant.id
+    if tenant.pyme_id:
+        legacy_scope = or_(
+            legacy_scope,
+            (PymePedido.tenant_id.is_(None)) & (PymePedido.pyme_id == tenant.pyme_id),
+        )
+    legacy_query = PymePedido.query.filter(legacy_scope)
     if status_filter:
         legacy_query = legacy_query.filter(func.lower(PymePedido.estado) == status_filter)
     order_records.extend(legacy_query.order_by(PymePedido.fecha.desc()).limit(limit).all())
@@ -3062,12 +3066,17 @@ def _resolve_tenant_order_record(tenant: TenantProfile, order_id: str):
         source_prefix = source_prefix.strip().lower()
         source_id = source_id.strip()
 
+    legacy_pyme_filter = tenant.pyme_id if tenant.pyme_id else -1
+
+    if source_prefix == "order":
+        return Order.query.filter_by(id=source_id, tenant_id=tenant.id).first()
+    if source_prefix not in {None, "market", "conversational", "legacy"}:
+        return None
+
     try:
         numeric_id = int(source_id)
     except (TypeError, ValueError):
-        return None
-
-    legacy_pyme_filter = tenant.pyme_id if tenant.pyme_id else -1
+        return Order.query.filter_by(id=source_id, tenant_id=tenant.id).first() if source_prefix is None else None
 
     if source_prefix == "market":
         return MarketOrder.legacy_safe_query().filter(MarketOrder.id == numeric_id, MarketOrder.tenant_id == tenant.id).first()
@@ -3076,18 +3085,22 @@ def _resolve_tenant_order_record(tenant: TenantProfile, order_id: str):
     if source_prefix == "legacy":
         return PymePedido.query.filter(
             PymePedido.id == numeric_id,
-            (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == legacy_pyme_filter),
+            or_(
+                PymePedido.tenant_id == tenant.id,
+                (PymePedido.tenant_id.is_(None)) & (PymePedido.pyme_id == legacy_pyme_filter),
+            ),
         ).first()
-    if source_prefix == "order":
-        return Order.query.filter_by(id=numeric_id, tenant_id=tenant.id).first()
 
     return (
-        Order.query.filter_by(id=numeric_id, tenant_id=tenant.id).first()
+        Order.query.filter_by(id=source_id, tenant_id=tenant.id).first()
         or MarketOrder.legacy_safe_query().filter(MarketOrder.id == numeric_id, MarketOrder.tenant_id == tenant.id).first()
         or PedidoConversacional.query.filter_by(id=numeric_id, tenant_id=tenant.id).first()
         or PymePedido.query.filter(
             PymePedido.id == numeric_id,
-            (PymePedido.tenant_id == tenant.id) | (PymePedido.pyme_id == legacy_pyme_filter),
+            or_(
+                PymePedido.tenant_id == tenant.id,
+                (PymePedido.tenant_id.is_(None)) & (PymePedido.pyme_id == legacy_pyme_filter),
+            ),
         ).first()
     )
 

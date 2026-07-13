@@ -4379,6 +4379,27 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
 
 def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str] = None) -> Dict[str, Any]:
     data = serialize_encuesta(encuesta)
+    uniqueness_policy = str(encuesta.politica_unicidad or "libre").strip().lower()
+    authentication_required = (
+        uniqueness_policy in _AUTHENTICATED_USER_POLICIES
+        or not bool(encuesta.anonimo_permitido)
+    )
+    rewards_available = int(getattr(encuesta, "puntos_recompensa", 0) or 0) > 0
+    data["auth_mode"] = (
+        "required"
+        if authentication_required
+        else "optional"
+        if rewards_available
+        else "anonymous"
+    )
+    data["frontend_contract"] = {
+        **(data.get("frontend_contract") if isinstance(data.get("frontend_contract"), dict) else {}),
+        "auth_mode": data["auth_mode"],
+        "identity": {
+            "mode": data["auth_mode"],
+            "provider": "chatboc_session",
+        },
+    }
     canonical_slug = _resolve_public_slug(encuesta) or encuesta.slug
     requested_slug = slug_publico or canonical_slug
     data["slug"] = requested_slug

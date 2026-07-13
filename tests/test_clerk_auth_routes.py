@@ -235,6 +235,56 @@ def test_clerk_session_sync_returns_chatboc_token_and_onboarding(client, monkeyp
         assert user.accesibilidad["auth"]["clerk"]["social_providers"] == ["linkedin"]
 
 
+def test_clerk_session_sync_rejects_inactive_tenant(client, monkeypatch):
+    with client.application.app_context():
+        user = upsert_user_from_clerk(
+            {"sub": "user_inactive", "sid": "sess_inactive", "email": "inactive@chatboc.test", "email_verified": True},
+            _profile() | {
+                "id": "user_inactive",
+                "email_addresses": [
+                    {
+                        "id": "email_1",
+                        "email_address": "inactive@chatboc.test",
+                        "verification": {"status": "verified"},
+                    }
+                ],
+            },
+            profile_is_trusted=True,
+        )
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="inactive-route-tenant",
+            nombre="Inactive Route Tenant",
+            tipo="pyme",
+            pyme_id=user.id,
+            is_active=False,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        user.tenant_id = tenant.id
+        user.tenant_slug = tenant.slug
+        db.session.commit()
+        user_id = user.id
+
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {"sub": "user_inactive", "sid": "sess_inactive", "email": "inactive@chatboc.test", "email_verified": True},
+    )
+    monkeypatch.setattr("routes.auth.fetch_trusted_clerk_profile", lambda claims: _profile())
+    monkeypatch.setattr(
+        "routes.auth.upsert_user_from_clerk",
+        lambda *args, **kwargs: db.session.get(User, user_id),
+    )
+
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer inactive.clerk.token"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "tenant_inactive"
+
+
 def test_clerk_session_sync_rejects_revoked_sid(client, monkeypatch):
     monkeypatch.setattr(
         "routes.auth.verify_clerk_session_token",

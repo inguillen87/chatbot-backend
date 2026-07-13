@@ -367,6 +367,14 @@ class V2SurveysApiTest(unittest.TestCase):
         payload["uniqueness_policy"] = "por_usuario"
         _, survey_id, token, _, answer = self._create_published_answer_context(payload)
 
+        public_payload = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
+        self.assertEqual(public_payload.get("auth_mode"), "required")
+        self.assertEqual((public_payload.get("frontend_contract") or {}).get("auth_mode"), "required")
+        self.assertEqual(
+            ((public_payload.get("frontend_contract") or {}).get("identity") or {}).get("provider"),
+            "chatboc_session",
+        )
+
         endpoints = (
             f"/api/v2/public/surveys/{token}/respond",
             f"/api/public/encuestas/{token}/responder",
@@ -557,6 +565,7 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertTrue(public_payload["anonimato"])
         self.assertFalse(public_payload["requiere_identidad"])
         self.assertFalse(public_payload["requiere_datos_contacto"])
+        self.assertEqual(public_payload.get("auth_mode"), "anonymous")
 
         question_id = public_payload["preguntas"][0]["id"]
         option_id = public_payload["preguntas"][0]["opciones"][0]["id"]
