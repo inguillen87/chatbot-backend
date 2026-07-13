@@ -176,6 +176,47 @@ class ProductFlowMunicipioClaimTrackingChatTest(unittest.TestCase):
         serialized = str(body)
         self.assertIn("Sigue sin luz", serialized)
 
+    def test_demo_claim_creation_exposes_public_tracking_action_from_http_payload(self):
+        from routes.v2.tenants import create_demo_session_token
+
+        demo_session_id = create_demo_session_token(tenant_slug=self.tenant.slug, sector="gobierno", rubro="gobierno")
+        response = self.client.post(
+            f"/api/ask/municipio?tenant_slug={self.tenant.slug}&demo_session_id={demo_session_id}",
+            json={
+                "pregunta": "Hay un bache peligroso frente a la plaza",
+                "demo_mode": True,
+                "tenant_slug": self.tenant.slug,
+                "location": {"lat": -34.61, "lng": -58.44, "address": "San Martin 500"},
+            },
+            headers={
+                "Origin": "https://www.chatboc.ar",
+                "X-Request-Id": "claim-public-tracking-action-1",
+                "X-Chat-Session-Id": "sid_claim_public_tracking_action",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        ticket_payload = payload.get("ticket") or {}
+        ticket_code = str(ticket_payload.get("nro_ticket") or "")
+        if ticket_code.upper().startswith(("M-", "S-")):
+            ticket_code = ticket_code[2:]
+        pin = str(ticket_payload.get("consulta_pin") or "")
+        expected_url = f"/tracking/claim/{ticket_code}#pin={pin}"
+
+        self.assertTrue(ticket_code)
+        self.assertTrue(pin)
+        self.assertEqual(ticket_payload.get("detail_endpoint"), expected_url)
+        self.assertEqual((payload.get("lead") or {}).get("detail_endpoint"), expected_url)
+        tracking_action = next(
+            (action for action in payload.get("next_actions") or [] if action.get("id") == "track_claim"),
+            None,
+        )
+        self.assertIsNotNone(tracking_action)
+        self.assertEqual(tracking_action.get("label"), "Ver seguimiento")
+        self.assertEqual(tracking_action.get("endpoint"), expected_url)
+        self.assertNotIn("/api/v2/inbox/omnichannel", str(payload))
+
     def test_conversational_claim_intake_opens_tracking_and_public_thread(self):
         from routes.v2.tenants import create_demo_session_token
 

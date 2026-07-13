@@ -109,6 +109,22 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             "X-Tenant-Slug": self.tenant.slug,
         }
 
+    def _citizen_headers(self):
+        token = jwt.encode(
+            {
+                "user_id": self.citizen.id,
+                "rol": self.citizen.rol,
+                "tenant_slug": self.tenant.slug,
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        return {
+            "Authorization": f"Bearer {token}",
+            "X-Tenant-Slug": self.tenant.slug,
+        }
+
     def _set_live_chat_enabled(self, enabled):
         tenant_config = dict(self.tenant.configuracion or {})
         schedule = dict(tenant_config.get("live_chat_schedule") or {})
@@ -171,7 +187,16 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             self.assertEqual(intake_payload["fuente"], "demo_municipio_runtime")
             self.assertEqual(intake_payload["accion_backend"], "demo_crear_reclamo")
             self.assertTrue(intake_payload["result"]["traceable"])
-            self.assertEqual(intake_payload["result"]["target"], "inbox")
+            self.assertEqual(intake_payload["result"]["target"], "public_tracking")
+            tracking_href = intake_payload["ticket"]["detail_endpoint"]
+            self.assertEqual((intake_payload.get("lead") or {}).get("detail_endpoint"), tracking_href)
+            self.assertTrue(
+                any(
+                    action.get("id") == "track_claim" and action.get("endpoint") == tracking_href
+                    for action in intake_payload.get("next_actions") or []
+                )
+            )
+            self.assertNotIn("/api/v2/inbox/omnichannel", str(intake_payload))
 
             ticket = db.session.get(MunicipioTicket, intake_payload["ticket"]["id"])
             self.assertIsNotNone(ticket)
@@ -180,6 +205,10 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             self.assertEqual(ticket.categoria, "Baches y calzada")
             self.assertEqual(ticket.direccion, "Escuela 12, San Martin 500")
             self.assertTrue(ticket.consulta_pin)
+            self.assertEqual(
+                tracking_href,
+                f"/tracking/claim/{ticket.nro_ticket}#pin={ticket.consulta_pin}",
+            )
 
             offline_tracking = self._tracking(ticket, "gov-claim-track-offline-1")
             self.assertEqual(offline_tracking.status_code, 200, offline_tracking.get_json())
@@ -424,6 +453,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             published_payload["links"]["respond_endpoint"],
             json=first_vote_body,
             headers={
+                **self._citizen_headers(),
                 "X-Forwarded-For": "203.0.113.41",
                 "X-Request-Id": "gov-vote-first-1",
             },
@@ -461,6 +491,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
                 ],
             },
             headers={
+                **self._citizen_headers(),
                 "X-Forwarded-For": "198.51.100.92",
                 "X-Request-Id": "gov-vote-duplicate-1",
             },

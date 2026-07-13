@@ -26,7 +26,7 @@ from models import (
     TicketRealtimeState,
     User,
 )
-from services.commerce_unified import dedupe_unified_orders, summarize_unified_orders
+from services.commerce_unified import dedupe_unified_orders
 from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
 
 
@@ -34,6 +34,24 @@ _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "do
 _OVERDUE_STATES = {"vencido", "overdue", "breached"}
 _ACTIVE_PRESENCE = {"active", "online", "typing", "present"}
 _LIVE_SURVEY_STATES = {"publicada", "published", "activa", "active", "en_vivo", "live"}
+_COMMERCE_REQUEST_KINDS = {
+    "pedido",
+    "order",
+    "compra",
+    "order_note",
+    "quote_request",
+    "handwritten_order",
+    "document_order",
+    "marketplace_order",
+    "receipt",
+    "tax_bill",
+    "certificate",
+    "service_request",
+    "other",
+    "municipal_service_request",
+    "certificate_or_procedure_review",
+    "tax_or_payment_support",
+}
 
 
 def _iso(value: Any) -> str | None:
@@ -563,7 +581,10 @@ def _municipio_ticket_query(tenant: TenantProfile):
     conditions = [MunicipioTicket.tenant_id == tenant.id]
     municipio_id = getattr(tenant, "municipio_id", None)
     if municipio_id:
-        conditions.append(MunicipioTicket.municipio_id == municipio_id)
+        conditions.append(
+            (MunicipioTicket.tenant_id.is_(None))
+            & (MunicipioTicket.municipio_id == municipio_id)
+        )
     return MunicipioTicket.query.filter(or_(*conditions))
 
 
@@ -809,6 +830,16 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _commerce_request_kind(value: Any, fallback: str = "pedido") -> str:
+    normalized = _norm(value, "")
+    return normalized if normalized in _COMMERCE_REQUEST_KINDS else fallback
+
+
+def _commerce_currency(value: Any, fallback: str = "UNKNOWN") -> str:
+    normalized = str(value or "").strip().upper()
+    return normalized or fallback
+
+
 def _coordinates_from_payload(value: Any) -> tuple[float | None, float | None]:
     if not isinstance(value, dict):
         return None, None
@@ -850,6 +881,16 @@ def _commerce_safe_record(record: Any) -> dict[str, Any]:
     if isinstance(record, PedidoConversacional):
         metadata = _order_metadata(record)
         needs_review, review_payload = _order_needs_operator_review(record)
+        source = _json_object(metadata.get("source"))
+        first_item = record.items[0] if record.items and isinstance(record.items[0], dict) else {}
+        currency = (
+            metadata.get("currency")
+            or metadata.get("moneda")
+            or source.get("currency")
+            or source.get("moneda")
+            or first_item.get("currency")
+            or first_item.get("moneda")
+        )
         lat, lng = _commerce_record_location(record, metadata)
         return {
             "id": f"conversational:{record.id}",
@@ -857,8 +898,9 @@ def _commerce_safe_record(record: Any) -> dict[str, Any]:
             "source_id": record.id,
             "status": _norm(record.estado, "unknown"),
             "channel": _norm(record.origen, "unknown"),
-            "request_kind": _clean_text(metadata.get("request_kind")) or _clean_text(record.tipo) or "pedido",
+            "request_kind": _commerce_request_kind(metadata.get("request_kind") or record.tipo),
             "total": _float_or_none(record.monto_monetario) or 0.0,
+            "currency": _commerce_currency(currency),
             "created_at": _iso(record.created_at),
             "updated_at": _iso(record.updated_at),
             "metadata": metadata,
@@ -887,6 +929,7 @@ def _commerce_safe_record(record: Any) -> dict[str, Any]:
             "channel": "whatsapp",
             "request_kind": "pedido",
             "total": _float_or_none(record.monto_total) or 0.0,
+            "currency": "ARS",
             "created_at": _iso(record.fecha),
             "updated_at": _iso(record.fecha),
             "metadata": metadata,
@@ -911,6 +954,7 @@ def _commerce_safe_record(record: Any) -> dict[str, Any]:
             "channel": _norm(record.channel, "web"),
             "request_kind": "marketplace_order",
             "total": _float_or_none(record.total_monetary) or 0.0,
+            "currency": _commerce_currency(record.currency),
             "created_at": _iso(record.created_at),
             "updated_at": _iso(record.updated_at),
             "metadata": metadata,
@@ -934,6 +978,7 @@ def _commerce_safe_record(record: Any) -> dict[str, Any]:
         "channel": _norm(record.channel, "web_widget"),
         "request_kind": "order",
         "total": _float_or_none(record.total) or 0.0,
+        "currency": _commerce_currency(record.currency),
         "created_at": _iso(record.created_at),
         "updated_at": _iso(record.updated_at),
         "metadata": metadata,
@@ -998,8 +1043,8 @@ def _collect_commerce_records(
         item["assisted"] = bool(linked.get("assisted"))
         item["needs_review"] = bool(linked.get("needs_review"))
         item["review_summary"] = _as_dict(linked.get("review_summary"))
-        item["request_kind"] = linked.get("request_kind") or item.get("request_kind")
-        if not _as_dict(item.get("location")).get("lat"):
+        item["request_kind"] = _commerce_request_kind(linked.get("request_kind") or item.get("request_kind"))
+        if _as_dict(item.get("location")).get("lat") is None:
             item["location"] = _as_dict(linked.get("location"))
     deduped.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or "", reverse=True)
     return deduped, len(safe_records)
@@ -1022,6 +1067,8 @@ def _commerce_metrics(
     by_origin: Counter[str] = Counter()
     by_source_model: Counter[str] = Counter()
     by_request_kind: Counter[str] = Counter()
+    currency_counts: Counter[str] = Counter()
+    amounts_by_currency: defaultdict[str, float] = defaultdict(float)
     review_items: list[dict[str, Any]] = []
     assisted_orders = 0
     orders_needing_review = 0
@@ -1034,15 +1081,16 @@ def _commerce_metrics(
         needs_review = bool(order.get("needs_review"))
         summary = _as_dict(order.get("review_summary"))
         source = _json_object(metadata.get("source"))
-        request_kind = (
+        request_kind = _commerce_request_kind(
             _clean_text(order.get("request_kind"))
             or _clean_text(metadata.get("request_kind"))
             or _clean_text(source.get("request_kind"))
-            or "pedido"
         )
         origin = _norm(order.get("channel"), "unknown")
         state = _norm(order.get("status"), "unknown")
         source_model = str(order.get("source_model") or "Unknown")
+        currency = _commerce_currency(order.get("currency"))
+        amount = _float_or_none(order.get("total")) or 0.0
         detected = int(summary.get("detected") or 0)
         matched = int(summary.get("matched") or 0)
         unmatched = int(summary.get("unmatched") or 0)
@@ -1050,6 +1098,8 @@ def _commerce_metrics(
         by_state[state] += 1
         by_origin[origin] += 1
         by_source_model[source_model] += 1
+        currency_counts[currency] += 1
+        amounts_by_currency[currency] += amount
         by_request_kind[_norm(request_kind, "pedido")] += 1
         detected_items += detected
         matched_items += matched
@@ -1081,14 +1131,24 @@ def _commerce_metrics(
                 "unmatched": unmatched,
                 "channel": origin,
                 "endpoint": f"/api/admin/tenants/{tenant.slug}/orders/{quote(admin_order_id, safe=':')}",
-                "frontend_path": f"/t/{quote(str(tenant.slug), safe='')}/pedidos/{quote(str(record_id), safe='')}",
+                "frontend_path": f"/perfil?tab=pedidos&order_id={quote(admin_order_id, safe='')}&focus=assisted_order_queue",
                 "ui_hint": "open_assisted_order_review",
                 "pii": {"redacted": True},
             }
         )
 
     review_items.sort(key=lambda item: {"high": 0, "medium": 1, "low": 2}.get(_norm(item.get("priority"), "low"), 9))
-    unified_summary = summarize_unified_orders(orders)
+    totals_by_currency = [
+        {
+            "key": currency,
+            "label": currency,
+            "currency": currency,
+            "amount": round(amount, 2),
+            "count": int(currency_counts.get(currency) or 0),
+        }
+        for currency, amount in sorted(amounts_by_currency.items())
+    ]
+    single_currency = totals_by_currency[0] if len(totals_by_currency) == 1 else None
     return {
         "contract_version": "operations.commerce.v1",
         "summary": {
@@ -1101,12 +1161,15 @@ def _commerce_metrics(
             "matched_items": matched_items,
             "unmatched_items": unmatched_items,
             "review_rate": round((orders_needing_review / len(orders)) * 100, 2) if orders else 0.0,
-            "total_monetary": (unified_summary.get("totals") or {}).get("monetary", 0.0),
+            "total_monetary": single_currency.get("amount") if single_currency else None,
+            "currency": single_currency.get("currency") if single_currency else None,
+            "currencies": len(totals_by_currency),
         },
         "by_state": _counter(by_state),
         "by_origin": _counter(by_origin),
         "by_source_model": _counter(by_source_model),
         "by_request_kind": _counter(by_request_kind),
+        "totals_by_currency": totals_by_currency,
         "review_items": review_items[:8],
         "frontend_contract": {
             "render_as": "commerce_assisted_ops",

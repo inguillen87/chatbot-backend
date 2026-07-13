@@ -7,9 +7,9 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import MunicipioTicket, PedidoConversacional, PymePedido, TenantProfile, TicketComentario, User
+from models import MunicipioTicket, PedidoConversacional, PymePedido, PymeTicket, TenantProfile, TicketComentario, User
 from services.live_chat_access import verify_ticket_room_token
-from services.tracking_experience import TRACKING_EXPERIENCE_CONTRACT_VERSION
+from services.tracking_experience import TRACKING_EXPERIENCE_CONTRACT_VERSION, issue_order_tracking_token
 
 
 class TrackingExperienceTestConfig(Config):
@@ -86,7 +86,9 @@ class TrackingExperienceContractTest(unittest.TestCase):
             asunto="Pedido ferreteria",
             detalles=json.dumps([{"nombre": "Taladro", "cantidad": 1, "precio": 50000}]),
             monto_total=50000,
-            nombre_cliente="Juan",
+            moneda="USD",
+            nombre_cliente="Juan Perez",
+            email_cliente="juan.perez@example.com",
             telefono_cliente="+5491111111111",
             direccion="San Martin 100",
             latitud=-34.61,
@@ -340,7 +342,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         ).first()
         self.assertIsNotNone(persisted)
 
-    def test_public_order_tracking_experience_returns_items_and_progress(self):
+    def test_public_order_tracking_experience_redacts_pii_without_token(self):
         response = self.client.get(
             "/api/public/tracking/experience?kind=order&code=PED-100",
             headers={"X-Request-Id": "track-order-1"},
@@ -353,10 +355,129 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["kind"], "order")
         self.assertEqual(payload["resource"]["code"], "PED-100")
         self.assertEqual(payload["status"]["current_stage"], "preparando")
-        self.assertEqual(payload["items"][0]["title"], "Taladro")
-        self.assertTrue(payload["map"]["has_coordinates"])
+        self.assertTrue(payload["privacy"]["pii_redacted"])
+        self.assertFalse(payload["privacy"]["authorized"])
+        self.assertEqual(payload["customer"], {"name": None, "email": None, "phone": None})
+        self.assertEqual(payload["items"], [])
+        self.assertIsNone(payload["location"]["address"])
+        self.assertIsNone(payload["location"]["lat"])
+        self.assertIsNone(payload["location"]["lng"])
+        self.assertFalse(payload["map"]["has_coordinates"])
+        self.assertEqual(payload["conversation"]["messages"], [])
+        self.assertFalse(payload["actions"][0]["enabled"])
+        serialized = json.dumps(payload, ensure_ascii=False)
+        for private_value in (
+            "Juan Perez",
+            "juan.perez@example.com",
+            "+5491111111111",
+            "San Martin 100",
+            "-34.61",
+            "-58.41",
+            "Taladro",
+        ):
+            self.assertNotIn(private_value, serialized)
         self.assertEqual(payload["map"]["fallback_when_no_coordinates"], "timeline_only")
         self.assertEqual(payload["frontend_contract"]["render_as"], "tracking_map_timeline")
+        self.assertEqual(payload["frontend_contract"]["access"], "redacted_public_status")
+
+    def test_public_order_tracking_experience_requires_order_bound_token_for_private_data(self):
+        token = issue_order_tracking_token(self.order)
+        self.assertIsNotNone(token)
+        self.assertTrue(token.startswith("v1."))
+        self.assertNotIn("PED-100", token)
+        self.assertNotIn(f"legacy:{self.order.id}", token)
+
+        other_order = PymePedido(
+            pyme_id=self.owner.id,
+            tenant_id=self.tenant.id,
+            asunto="Otro pedido",
+            detalles="[]",
+            nombre_cliente="Otra Persona",
+        )
+        other_order.nro_pedido = "PED-101"
+        db.session.add(other_order)
+        db.session.commit()
+        other_token = issue_order_tracking_token(other_order)
+        self.assertNotEqual(token, other_token)
+
+        wrong_order_token = self.client.get(
+            "/api/public/tracking/experience?kind=order&code=PED-100",
+            headers={"X-Tracking-Token": other_token},
+        )
+        self.assertEqual(wrong_order_token.status_code, 404)
+
+        invalid = self.client.get(
+            "/api/public/tracking/experience?kind=order&code=PED-100",
+            headers={"X-Tracking-Token": "v1.invalid"},
+        )
+        self.assertEqual(invalid.status_code, 404)
+        invalid_payload = json.dumps(invalid.get_json(), ensure_ascii=False)
+        self.assertNotIn("Juan Perez", invalid_payload)
+        self.assertNotIn("San Martin 100", invalid_payload)
+
+        response = self.client.get(
+            "/api/public/tracking/experience?kind=order&code=PED-100",
+            headers={"X-Tracking-Token": token},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["privacy"]["authorized"])
+        self.assertFalse(payload["privacy"]["pii_redacted"])
+        self.assertEqual(payload["customer"]["name"], "Juan Perez")
+        self.assertEqual(payload["customer"]["email"], "juan.perez@example.com")
+        self.assertEqual(payload["customer"]["phone"], "+5491111111111")
+        self.assertEqual(payload["location"]["address"], "San Martin 100")
+        self.assertEqual(payload["location"]["lat"], -34.61)
+        self.assertEqual(payload["location"]["lng"], -58.41)
+        self.assertEqual(payload["items"][0]["title"], "Taladro")
+        self.assertEqual(payload["totals"]["currency"], "USD")
+        self.assertTrue(payload["actions"][0]["enabled"])
+        self.assertEqual(payload["frontend_contract"]["access"], "signed_token")
+
+    def test_order_tracking_page_never_embeds_order_pii_in_initial_html(self):
+        response = self.client.get("/tracking/order/PED-100")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("Cache-Control"), "private, no-store, max-age=0")
+        self.assertEqual(response.headers.get("Referrer-Policy"), "no-referrer")
+        self.assertIn(b"X-Tracking-Token", response.data)
+        for private_value in (
+            b"Juan Perez",
+            b"juan.perez@example.com",
+            b"+5491111111111",
+            b"San Martin 100",
+        ):
+            self.assertNotIn(private_value, response.data)
+
+    def test_order_tracking_message_write_requires_valid_token(self):
+        endpoint = "/tracking/api/send-message"
+        body = {"nro_pedido": "PED-100", "mensaje": "Necesito confirmar la entrega"}
+
+        missing = self.client.post(endpoint, json=body)
+        invalid = self.client.post(
+            endpoint,
+            json=body,
+            headers={"X-Tracking-Token": "v1.invalid"},
+        )
+
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(invalid.status_code, 404)
+        self.assertEqual(PymeTicket.query.count(), 0)
+
+        token = issue_order_tracking_token(self.order)
+        accepted = self.client.post(
+            endpoint,
+            json=body,
+            headers={"X-Tracking-Token": token},
+        )
+
+        self.assertEqual(accepted.status_code, 200)
+        payload = accepted.get_json()
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["chat_entry"]["autor_nombre"], "Yo")
+        ticket = PymeTicket.query.one()
+        self.assertEqual(ticket.pregunta, "Necesito confirmar la entrega")
+        self.assertNotIn("Juan Perez", json.dumps(payload, ensure_ascii=False))
 
     def test_public_assisted_order_tracking_sanitizes_raw_payload(self):
         assisted = PedidoConversacional(

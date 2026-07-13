@@ -826,7 +826,7 @@ class PymePedido(db.Model):
     pyme = db.relationship('User', foreign_keys=[pyme_id], backref='pyme_pedidos_recibidos')
 
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
-    idempotency_key = db.Column(db.String(128), unique=True, nullable=True, index=True)
+    idempotency_key = db.Column(db.String(128), nullable=True, index=True)
     tenant = db.relationship("TenantProfile")
 
     nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
@@ -834,6 +834,7 @@ class PymePedido(db.Model):
     estado = db.Column(db.String(30), default="pendiente")
     detalles = db.Column(db.Text, nullable=True) # JSON string
     monto_total = db.Column(db.Float, nullable=True)
+    moneda = db.Column(db.String(10), nullable=True)
     fecha = db.Column(db.DateTime(timezone=True), default=get_local_now)
     nombre_cliente = db.Column(db.String(100), nullable=True)
     email_cliente = db.Column(db.String(100), nullable=True)
@@ -842,12 +843,38 @@ class PymePedido(db.Model):
     latitud = db.Column(db.Float, nullable=True)
     longitud = db.Column(db.Float, nullable=True)
 
-    def __init__(self, pyme_id, asunto, detalles, monto_total=None, nombre_cliente=None, email_cliente=None, telefono_cliente=None, user_id=None, direccion=None, latitud=None, longitud=None, tenant_id=None, idempotency_key=None, channel=None):
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_pyme_pedido_tenant_idempotency",
+        ),
+    )
+
+    def __init__(
+        self,
+        pyme_id,
+        asunto,
+        detalles,
+        monto_total=None,
+        nombre_cliente=None,
+        email_cliente=None,
+        telefono_cliente=None,
+        user_id=None,
+        direccion=None,
+        latitud=None,
+        longitud=None,
+        tenant_id=None,
+        idempotency_key=None,
+        channel=None,
+        moneda=None,
+    ):
         self.pyme_id = pyme_id
         self.tenant_id = tenant_id
         self.asunto = asunto
         self.detalles = detalles
         self.monto_total = monto_total
+        self.moneda = moneda
         self.nombre_cliente = nombre_cliente
         self.email_cliente = email_cliente
         self.telefono_cliente = telefono_cliente
@@ -856,9 +883,6 @@ class PymePedido(db.Model):
         self.latitud = latitud
         self.longitud = longitud
         self.idempotency_key = idempotency_key
-        # channel might not be a column yet in PymePedido, but useful to accept if future-proofing.
-        # But wait, PymePedido doesn't have 'channel' column in the definition I saw earlier?
-        # Let's check columns again. It has 'idempotency_key' and 'tenant_id'.
         self.nro_pedido = self._generate_nro_pedido()
 
     def _generate_nro_pedido(self):
@@ -907,11 +931,13 @@ class PymePedido(db.Model):
         return {
             "id": self.id,
             "pyme_id": self.pyme_id,
+            "tenant_id": self.tenant_id,
             "nro_pedido": self.nro_pedido,
             "asunto": self.asunto,
             "estado": self.estado,
             "detalles": detalles_json,
             "monto_total": self.monto_total,
+            "moneda": self.moneda,
             "fecha_creacion": self.fecha.isoformat() if self.fecha else None,
             "nombre_cliente": self.nombre_cliente,
             "email_cliente": self.email_cliente,

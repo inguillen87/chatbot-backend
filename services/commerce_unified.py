@@ -106,19 +106,40 @@ def _is_assisted_request_metadata(metadata: dict[str, Any]) -> bool:
     )
 
 
+def _merge_duplicate_order_fields(preferred: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
+    """Fill an incomplete mirror from its source without changing record authority."""
+
+    merged = dict(preferred)
+    preferred_total = _as_float(preferred.get("total"))
+    fallback_total = _as_float(fallback.get("total"))
+    preferred_currency = str(preferred.get("currency") or "").strip().upper()
+    fallback_currency = str(fallback.get("currency") or "").strip().upper()
+
+    if (preferred_total is None or preferred_total == 0) and fallback_total not in (None, 0):
+        merged["total"] = fallback_total
+        if fallback_currency:
+            merged["currency"] = fallback_currency
+    elif not preferred_currency and fallback_currency:
+        merged["currency"] = fallback_currency
+
+    return merged
+
+
 def dedupe_unified_orders(orders: list[dict[str, Any]]) -> list[dict[str, Any]]:
     deduped: dict[str, dict[str, Any]] = {}
     for order in orders:
         key = _dedupe_key(order)
         current = deduped.get(key)
         if current is None:
-            deduped[key] = order
+            deduped[key] = dict(order)
             continue
 
         candidate_rank = (_dedupe_priority(order), _record_timestamp(order))
         current_rank = (_dedupe_priority(current), _record_timestamp(current))
         if candidate_rank > current_rank:
-            deduped[key] = order
+            deduped[key] = _merge_duplicate_order_fields(order, current)
+        else:
+            deduped[key] = _merge_duplicate_order_fields(current, order)
 
     return list(deduped.values())
 

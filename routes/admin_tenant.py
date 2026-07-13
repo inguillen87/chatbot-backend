@@ -6,6 +6,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
 from utils.auth_helpers import obtener_token, token_requerido, user_from_token
+from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
 from middleware.tenant_context import require_tenant
 from models import (
@@ -2996,6 +2997,7 @@ def preview_integration_sync(current_user, slug, integration_type):
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/orders', methods=['GET'])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 @require_tenant
 def list_tenant_orders(current_user, slug):
     """
@@ -3598,6 +3600,7 @@ def _apply_assisted_catalog_resolutions(record, tenant: TenantProfile, resolutio
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/orders/<path:order_id>', methods=['GET', 'PATCH'])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 @require_tenant
 def tenant_order_detail(current_user, slug, order_id):
     tenant = _resolve_admin_tenant(current_user, slug)

@@ -17,10 +17,10 @@ from models import (
     EncRespuesta,
     LlmInteractionLog,
 )
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import bump_auth_session_version, token_requerido
 from services.operational_scoring import build_lead_portfolio_score
 from utils.admin_decorators import super_admin_required
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from datetime import datetime, timezone, timedelta
 from services.tenant_management.folder_manager import ensure_tenant_folder_structure
 from services.plan_config import apply_plan_to_user, get_plan_metadata
@@ -879,6 +879,48 @@ def _slug_conflicts(desired_slug: str, tenant_id: int | None = None) -> bool:
     return query.first() is not None
 
 
+def _tenant_related_users(tenant: TenantProfile) -> list[User]:
+    owner_ids = [
+        owner_id
+        for owner_id in (tenant.municipio_id, tenant.pyme_id)
+        if owner_id is not None
+    ]
+    filters = [
+        User.tenant_id == tenant.id,
+        User.tenant_slug == tenant.slug,
+    ]
+    if owner_ids:
+        filters.extend(
+            [
+                User.id.in_(owner_ids),
+                User.empresa_id.in_(owner_ids),
+            ]
+        )
+    if tenant.tipo == "pyme":
+        filters.append(User.pyme_id == tenant.id)
+    elif tenant.tipo == "municipio":
+        filters.append(User.municipio_id == tenant.id)
+
+    return User.query.filter(or_(*filters)).all()
+
+
+def _deactivate_tenant_and_revoke_sessions(tenant: TenantProfile) -> int:
+    if getattr(tenant, "is_active", True) is False:
+        return 0
+
+    tenant.is_active = False
+    related_users = _tenant_related_users(tenant)
+    for user in related_users:
+        bump_auth_session_version(user)
+
+    current_app.logger.info(
+        "Revoked sessions for %s users while deactivating tenant_id=%s",
+        len(related_users),
+        tenant.id,
+    )
+    return len(related_users)
+
+
 def _maybe_create_tenant_for_admin(user: User) -> TenantProfile | None:
     seed = LEGACY_TENANT_SEEDS.get((user.email or "").strip().lower())
     existing = None
@@ -1483,7 +1525,11 @@ def update_tenant_full(current_user, slug):
 
     if 'is_active' in data:
         old_active = tenant.is_active
-        tenant.is_active = bool(data['is_active'])
+        requested_active = bool(data['is_active'])
+        if old_active and not requested_active:
+            _deactivate_tenant_and_revoke_sessions(tenant)
+        else:
+            tenant.is_active = requested_active
         _log_admin_action(current_user.id, "toggle_active", slug, {"old": old_active, "new": tenant.is_active})
 
     if 'whatsapp_sender_id' in data: tenant.whatsapp_sender_id = data['whatsapp_sender_id']
@@ -1509,7 +1555,7 @@ def update_tenant_full(current_user, slug):
 def delete_tenant_soft(current_user, slug):
     """Soft delete (deactivate) tenant."""
     tenant = TenantProfile.query.filter_by(slug=slug).first_or_404()
-    tenant.is_active = False
+    _deactivate_tenant_and_revoke_sessions(tenant)
     _log_admin_action(current_user.id, "deactivate_tenant", slug)
     db.session.commit()
     return jsonify({"message": "Tenant deactivated successfully"})

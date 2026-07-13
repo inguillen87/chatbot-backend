@@ -181,6 +181,58 @@ def bump_auth_session_version(user: User) -> int:
     return next_version
 
 
+def auth_tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
+    """Resolve the tenant that controls whether a user may authenticate."""
+
+    if user is None:
+        return None
+
+    def _direct_tenant(candidate: User) -> Optional[TenantProfile]:
+        tenant_id = getattr(candidate, "tenant_id", None)
+        if tenant_id:
+            tenant = db.session.get(TenantProfile, tenant_id)
+            if tenant is not None:
+                return tenant
+
+        tenant_slug = str(getattr(candidate, "tenant_slug", None) or "").strip()
+        if tenant_slug:
+            tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
+            if tenant is not None:
+                return tenant
+
+        return TenantProfile.query.filter(
+            (TenantProfile.municipio_id == candidate.id)
+            | (TenantProfile.pyme_id == candidate.id)
+        ).first()
+
+    tenant = _direct_tenant(user)
+    if tenant is not None:
+        return tenant
+
+    owner_id = getattr(user, "empresa_id", None)
+    if owner_id:
+        owner = db.session.get(User, owner_id)
+        if owner is not None:
+            return _direct_tenant(owner)
+
+    return None
+
+
+def user_tenant_auth_allowed(user: Optional[User]) -> bool:
+    """Fail closed when a user's tenant is inactive or cannot be read."""
+
+    try:
+        tenant = auth_tenant_for_user(user)
+    except Exception:
+        current_app.logger.exception(
+            "[auth] Failed to resolve tenant status for user %s",
+            getattr(user, "id", None),
+        )
+        return False
+
+    return tenant is None or getattr(tenant, "is_active", True) is not False
+
+
 def is_demo_user_account(user: Optional[User]) -> bool:
     if user is None:
         return False
@@ -351,7 +403,7 @@ def _demo_token_fallback_owner(token: Optional[str]) -> Optional[User]:
 def _lookup_owner_for_static_token(token: Optional[str]) -> Optional[User]:
     """Return the owner user associated with a static/demo token."""
 
-    if not token:
+    if not token or _is_jwt_token(token):
         return None
 
     user_query = _safe_user_query()
@@ -753,6 +805,12 @@ def user_from_token(token: str) -> Optional[User]:
                 "[user_from_token] Inactive tenant rejected: user_id=%s tenant_id=%s",
                 user_id,
                 tenant.id,
+            )
+            return None
+        if not user_tenant_auth_allowed(user):
+            current_app.logger.warning(
+                "[user_from_token] User tenant gate rejected authentication: user_id=%s",
+                user_id,
             )
             return None
 
@@ -1246,6 +1304,12 @@ def token_requerido(f):
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
         if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+            if not user_tenant_auth_allowed(current_user):
+                return _auth_error(
+                    "Token inválido o sesión expirada",
+                    401,
+                    "token_expired",
+                )
             if is_demo_user_account(current_user):
                 return _auth_error(
                     "La sesion demo solo puede usarse en la experiencia publica",
@@ -1298,6 +1362,13 @@ def token_requerido(f):
                 )
             else:
                 return _auth_error("Token inválido o sesión expirada", 401)
+
+        if not user_tenant_auth_allowed(user):
+            return _auth_error(
+                "Token inválido o sesión expirada",
+                401,
+                "token_expired",
+            )
 
         if token_payload.get("session_kind") == "widget" and not _widget_session_allowed(request.path, request.method):
             return _auth_error("Token inválido o sesión expirada", 403)

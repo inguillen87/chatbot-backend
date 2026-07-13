@@ -115,6 +115,7 @@ from utils.auth_helpers import (
     is_user_auth_disabled,
     is_clerk_managed_user,
     is_demo_user_account,
+    user_tenant_auth_allowed,
     user_from_token,
     get_or_create_entity_token,
     _safe_user_query,
@@ -604,6 +605,12 @@ def _resolve_tenant_for_user(
             return _tenant_for_owner(owner_user) or _tenant_for_user(owner_user)
 
     return None
+
+
+def _tenant_allows_auth(user: User, tenant: Optional[TenantProfile] = None) -> bool:
+    if not user_tenant_auth_allowed(user):
+        return False
+    return tenant is None or getattr(tenant, "is_active", True) is not False
 
 
 def _apply_welcome_points_if_configured(user: User):
@@ -2014,10 +2021,14 @@ def login():
 
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
 
-    # Integrar Flask-Login
-    from flask_login import login_user
-    login_user(user) # Establecer la sesión para el usuario
-    current_app.logger.info(f"Usuario {user.email} logueado y sesión Flask-Login establecida.")
+    if not _tenant_allows_auth(user):
+        current_app.logger.warning(
+            "[auth.login] Tenant gate rejected authentication for user_id=%s",
+            user.id,
+        )
+        resp = jsonify({"error": "Email o contraseña incorrectos."})
+        resp, _ = _finalize_auth_response(resp)
+        return resp, 401
 
     # Ensure user is linked to their tenant if missing, to prevent permission errors
     tenant_resolve_started = time.perf_counter()
@@ -2037,6 +2048,15 @@ def login():
                     pass
 
     tenant_obj = _resolve_tenant_for_user(user, tenant_obj)
+    if not _tenant_allows_auth(user, tenant_obj):
+        current_app.logger.warning(
+            "[auth.login] Resolved tenant rejected authentication for user_id=%s",
+            user.id,
+        )
+        resp = jsonify({"error": "Email o contraseña incorrectos."})
+        resp, _ = _finalize_auth_response(resp)
+        return resp, 401
+
     if tenant_obj:
         tenant_changed = _attach_user_to_tenant(user, tenant_obj)
         if tenant_changed:
@@ -2048,6 +2068,14 @@ def login():
     tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
     stage_timings["tenant_resolve_ms"] = round(
         (time.perf_counter() - tenant_resolve_started) * 1000.0, 2
+    )
+
+    from flask_login import login_user
+
+    login_user(user)
+    current_app.logger.info(
+        "Usuario %s logueado y sesion Flask-Login establecida.",
+        user.email,
     )
 
     # Migrate anonymous data if anon_id is present.
@@ -2274,6 +2302,14 @@ def google_login():
                 "reason_code": "clerk_required",
             }), 403
 
+        tenant_obj = _resolve_tenant_for_user(user)
+        if not _tenant_allows_auth(user, tenant_obj):
+            current_app.logger.warning(
+                "[auth.google_login] Tenant gate rejected authentication for user_id=%s",
+                user.id,
+            )
+            return jsonify({"error": "No se pudo iniciar sesion."}), 401
+
         if not bool(getattr(user, "acepto_terminos", False)):
             return jsonify({
                 "error": "Debes aceptar los Terminos y la Politica de Privacidad antes de continuar.",
@@ -2314,7 +2350,6 @@ def google_login():
             return resp
 
         rubro_nombre = user.rubro.nombre if user.rubro else "General"
-        tenant_obj = _resolve_tenant_for_user(user)
         tipo_chat = _resolve_tipo_chat(user, tenant_obj=tenant_obj, rubro_nombre=rubro_nombre)
 
         # Integrar Flask-Login
@@ -2825,11 +2860,15 @@ def login_from_widget(owner_user):
     owner_tenant = _resolve_tenant_for_user(owner_user, _tenant_for_owner(owner_user))
     if not owner_tenant:
         return jsonify({"error": "Tenant no especificado o no encontrado para el widget"}), 404
+    if not _tenant_allows_auth(owner_user, owner_tenant):
+        return jsonify({"error": "Credenciales inválidas."}), 401
 
     user = _user_query().filter_by(
         email=email.strip().lower(), empresa_id=owner_user.id
     ).first()
     if not user or is_user_auth_disabled(user) or not user.check_password(password):
+        return jsonify({"error": "Credenciales inválidas."}), 401
+    if not _tenant_allows_auth(user, owner_tenant):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
     if anon_id:
@@ -3125,6 +3164,8 @@ def chatuser_login_panel():
         return jsonify({"error": "Token de empresa inválido"}), 404
 
     owner_tenant = _tenant_for_owner(owner_user)
+    if not _tenant_allows_auth(owner_user, owner_tenant):
+        return jsonify({"error": "Credenciales inválidas."}), 401
 
     email = data.get('email')
     password = data.get('password')
@@ -3139,6 +3180,8 @@ def chatuser_login_panel():
 
     user = _user_query().filter_by(email=email.strip().lower(), empresa_id=owner_user.id).first()
     if not user or is_user_auth_disabled(user) or not user.check_password(password):
+        return jsonify({"error": "Credenciales inválidas."}), 401
+    if not _tenant_allows_auth(user, owner_tenant):
         return jsonify({"error": "Credenciales inválidas."}), 401
 
     if anon_id:
@@ -3755,6 +3798,12 @@ def admin_login():
     # Generate Token
     # Prioritize the tenant owned by the user to ensure correct context.
     owned_tenant = _resolve_tenant_for_user(user)
+    if not _tenant_allows_auth(user, owned_tenant):
+        current_app.logger.warning(
+            "[admin_login] Tenant gate rejected authentication for user_id=%s",
+            user.id,
+        )
+        return jsonify({"error": "Credenciales inválidas"}), 401
     if owned_tenant:
         tenant_slug = owned_tenant.slug
     else:

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import secrets
 from datetime import datetime, timezone
@@ -7,12 +10,15 @@ from decimal import Decimal
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from flask import current_app, has_app_context
+
 from models import MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from services.live_chat_schedule import build_tenant_live_chat_status
 
 
 TRACKING_EXPERIENCE_CONTRACT_VERSION = "tracking.experience.v1"
+ORDER_TRACKING_TOKEN_VERSION = "v1"
 
 
 def _tracking_path_without_query_secret(path: Any) -> str:
@@ -629,20 +635,75 @@ def _is_marketplace_assisted_order(order: Any) -> bool:
     return metadata.get("contract_version") == "marketplace.assisted_request.v1"
 
 
-def validate_order_tracking_access(order: Any, token: str | None) -> tuple[bool, str | None]:
-    """Validate public access for order tracking without exposing enumerable assisted IDs."""
-
+def _stored_assisted_tracking_token(order: Any) -> str | None:
     if not _is_marketplace_assisted_order(order):
-        return True, None
-
+        return None
     metadata = order.metadata_payload if isinstance(order.metadata_payload, dict) else {}
     tracking = _assisted_tracking_info(metadata)
-    expected_token = str(
+    token = str(
         tracking.get("token")
         or tracking.get("access_token")
         or metadata.get("tracking_token")
         or ""
     ).strip()
+    return token or None
+
+
+def _legacy_tracking_secret() -> bytes | None:
+    if not has_app_context():
+        return None
+    configured = current_app.config.get("ORDER_TRACKING_TOKEN_SECRET")
+    secret = str(configured or current_app.config.get("SECRET_KEY") or "").strip()
+    return secret.encode("utf-8") if secret else None
+
+
+def _legacy_tracking_subject(order: Any) -> str | None:
+    order_id = getattr(order, "id", None)
+    if order_id is None:
+        return None
+    public_code = (
+        getattr(order, "nro_pedido", None)
+        or getattr(order, "public_code", None)
+        or f"{order.__class__.__name__}:{order_id}"
+    )
+    tenant_id = getattr(order, "tenant_id", None) or getattr(order, "pyme_id", None) or ""
+    return "|".join(
+        (
+            "order-tracking",
+            ORDER_TRACKING_TOKEN_VERSION,
+            order.__class__.__name__,
+            str(order_id),
+            str(tenant_id),
+            str(public_code),
+        )
+    )
+
+
+def issue_order_tracking_token(order: Any) -> str | None:
+    """Return the opaque capability token expected for an order tracking link."""
+
+    if _is_marketplace_assisted_order(order):
+        return _stored_assisted_tracking_token(order)
+
+    secret = _legacy_tracking_secret()
+    subject = _legacy_tracking_subject(order)
+    if not secret or not subject:
+        return None
+    digest = hmac.new(secret, subject.encode("utf-8"), hashlib.sha256).digest()
+    encoded = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"{ORDER_TRACKING_TOKEN_VERSION}.{encoded}"
+
+
+def order_supports_redacted_tracking(order: Any) -> bool:
+    """Only non-enumerable legacy order codes retain a tokenless status view."""
+
+    return isinstance(order, PymePedido)
+
+
+def validate_order_tracking_access(order: Any, token: str | None) -> tuple[bool, str | None]:
+    """Validate public access without treating an order identifier as a credential."""
+
+    expected_token = str(issue_order_tracking_token(order) or "").strip()
     provided_token = str(token or "").strip()
 
     if not expected_token:
@@ -672,7 +733,7 @@ def _order_snapshot(order: Any) -> dict[str, Any]:
             "totals": {
                 "monetary": _as_float(order.monto_total) or 0.0,
                 "points": 0,
-                "currency": "ARS",
+                "currency": getattr(order, "moneda", None) or "ARS",
             },
             "items": _legacy_order_items(order.detalles),
             "metadata": {"direccion": order.direccion, "pyme_id": order.pyme_id},
@@ -847,7 +908,12 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
     }
 
 
-def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = None) -> dict[str, Any]:
+def build_order_tracking_experience(
+    order: Any,
+    tenant: TenantProfile | None = None,
+    *,
+    include_private: bool = False,
+) -> dict[str, Any]:
     serialized = _order_snapshot(order)
     source = serialized.get("source_model")
     status = serialized.get("status")
@@ -864,16 +930,30 @@ def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = N
     }
     if source == "PymePedido" and not items:
         items = _legacy_order_items(getattr(order, "detalles", None))
+    if not include_private:
+        items = []
+        location = {"address": None, "lat": None, "lng": None}
+
+    customer = serialized.get("contact") or {}
+    totals = serialized.get("totals") or {}
+    if not include_private:
+        customer = {"name": None, "email": None, "phone": None}
+        totals = {"monetary": None, "points": None, "currency": None}
+
+    public_resource_id = str(serialized.get("id") or code) if include_private else str(code)
+    access_mode = "redacted_public_status"
+    if include_private:
+        access_mode = tracking.get("access") or "signed_token"
 
     timeline = [
         {
-            "id": f"order-created-{serialized.get('id')}",
+            "id": f"order-created-{public_resource_id}",
             "type": "order.created",
             "label": "Pedido recibido",
             "created_at": serialized.get("created_at"),
         },
         {
-            "id": f"order-status-{serialized.get('id')}",
+            "id": f"order-status-{public_resource_id}",
             "type": "order.status",
             "label": "Estado actual",
             "status": status,
@@ -899,7 +979,7 @@ def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = N
         "kind": "order",
         "tenant": _tenant_ref(tenant),
         "resource": {
-            "id": serialized.get("id"),
+            "id": public_resource_id,
             "code": code,
             "source_model": source,
             "channel": serialized.get("channel"),
@@ -907,26 +987,43 @@ def build_order_tracking_experience(order: Any, tenant: TenantProfile | None = N
             "updated_at": serialized.get("updated_at"),
         },
         "status": _stage_payload(status, kind="order"),
-        "customer": serialized.get("contact") or {},
-        "totals": serialized.get("totals") or {},
+        "customer": customer,
+        "totals": totals,
         "items": items,
         "location": location,
         "map": _tracking_map(location),
         "timeline": [item for item in timeline if item.get("created_at") or item.get("status") or item.get("label")],
         "actions": [
-            {"id": "send_message", "label": "Enviar mensaje", "endpoint": "/tracking/api/send-message"},
+            {
+                "id": "send_message",
+                "label": "Enviar mensaje",
+                "endpoint": "/tracking/api/send-message",
+                "requires_token": True,
+                "enabled": bool(include_private),
+            },
             {
                 "id": "open_tracking_page",
                 "label": "Abrir seguimiento",
                 "url": tracking_url,
-                "requires_token": bool(tracking.get("token_required")),
+                "requires_token": True,
             },
         ],
+        "privacy": {
+            "authorized": bool(include_private),
+            "pii_redacted": not include_private,
+            "access_level": "full" if include_private else "redacted",
+            "proof_required": True,
+            "redacted_fields": (
+                []
+                if include_private
+                else ["customer", "location", "coordinates", "items", "totals", "conversation"]
+            ),
+        },
         "frontend_contract": {
             "render_as": "tracking_map_timeline",
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "timeline_only_when_no_coordinates",
-            "access": tracking.get("access") or ("signed_link" if tracking.get("token_required") else "public_code"),
+            "access": access_mode,
         },
     }
 

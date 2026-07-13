@@ -119,6 +119,37 @@ class OrdersTenantAuthTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 403)
         self.assertEqual((resp.get_json() or {}).get("reason_code"), "insufficient_permissions")
 
+    def test_tenant_admin_order_reads_reject_citizen_from_same_tenant(self):
+        headers = {**self._auth_header(self.customer), "X-Tenant-Slug": "tenant-1"}
+        urls = (
+            "/api/admin/tenants/tenant-1/orders",
+            f"/api/admin/tenants/tenant-1/orders/order:{self.order_1.id}",
+        )
+
+        for url in urls:
+            with self.subTest(url=url):
+                response = self.client.get(url, headers=headers)
+                self.assertEqual(response.status_code, 403)
+                self.assertEqual(
+                    (response.get_json() or {}).get("reason_code"),
+                    "insufficient_permissions",
+                )
+
+    def test_tenant_admin_order_patch_rejects_citizen_from_same_tenant(self):
+        response = self.client.patch(
+            f"/api/admin/tenants/tenant-1/orders/order:{self.order_1.id}",
+            json={"status": "confirmed"},
+            headers={**self._auth_header(self.customer), "X-Tenant-Slug": "tenant-1"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            (response.get_json() or {}).get("reason_code"),
+            "insufficient_permissions",
+        )
+        db.session.refresh(self.order_1)
+        self.assertEqual(self.order_1.status, "created")
+
     def test_admin_orders_rejects_cross_tenant_admin(self):
         resp = self.client.get(
             "/api/admin/orders",

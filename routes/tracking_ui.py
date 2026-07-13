@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, request, jsonify, abort, current_app
+from flask import Blueprint, render_template, request, jsonify, abort, current_app, make_response
 from models import PymePedido, TenantProfile, db, Order, User, PymeTicket, TicketComentario, MunicipioTicket
 from services.pedido_service import servicio_pedidos
 from extensions import limiter
@@ -16,6 +16,7 @@ from services.tracking_experience import (
     TRACKING_EXPERIENCE_CONTRACT_VERSION,
     build_claim_tracking_experience,
     build_order_tracking_experience,
+    order_supports_redacted_tracking,
     resolve_order_by_code,
     resolve_tenant_for_order,
     validate_order_tracking_access,
@@ -100,6 +101,7 @@ def _tracking_failure_subject_key() -> str:
         request.args.get("kind")
         or request.args.get("type")
         or payload.get("kind")
+        or ("order" if payload.get("nro_pedido") else None)
         or "claim"
     ).strip().lower()
     kind = {"reclamo": "claim", "pedido": "order"}.get(kind, kind)
@@ -508,16 +510,26 @@ def tracking_experience():
     if not order:
         return _tracking_error("Pedido no encontrado.", 404, "order_not_found", "check_order_code")
     token = _tracking_access_token()
-    access_granted, access_reason = validate_order_tracking_access(order, token)
+    access_granted, _access_reason = validate_order_tracking_access(order, token)
     if not access_granted:
-        return _tracking_error(
-            "Pedido no encontrado.",
-            404,
-            "order_not_found",
-            "check_order_code",
-        )
+        if token or not order_supports_redacted_tracking(order):
+            return _tracking_error(
+                "Pedido no encontrado.",
+                404,
+                "order_not_found",
+                "check_order_code",
+            )
     tenant = resolve_tenant_for_order(order)
-    return _tracking_json(build_order_tracking_experience(order, tenant))
+    payload = build_order_tracking_experience(
+        order,
+        tenant,
+        include_private=access_granted,
+    )
+    payload["conversation"] = {
+        "messages": _order_chat_history(order, tenant) if access_granted else [],
+        "pii_redacted": not access_granted,
+    }
+    return _tracking_json(payload)
 
 
 @tracking_ui_bp.route('/api/public/tracking/claims/<int:ticket_id>/messages', methods=['POST'])
@@ -589,69 +601,46 @@ def send_public_claim_tracking_message(ticket_id):
 
 @tracking_ui_bp.route('/tracking/order/<nro_pedido>')
 def tracking_page(nro_pedido):
-    # 1. Fetch Order
-    pedido = PymePedido.query.filter_by(nro_pedido=nro_pedido).first()
-    if not pedido:
-        abort(404, "Pedido no encontrado")
+    response = make_response(
+        render_template(
+            'tracking/order_status.html',
+            tracking_code=str(nro_pedido),
+            current_year=datetime.now().year,
+        )
+    )
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
 
-    # 2. Fetch Tenant
-    tenant = None
-    if pedido.tenant_id:
-        tenant = TenantProfile.query.get(pedido.tenant_id)
 
-    if not tenant and pedido.pyme_id:
-        # Fallback resolve via pyme_id
-        tenant = TenantProfile.query.filter_by(pyme_id=pedido.pyme_id).first()
-        if tenant and not pedido.tenant_id:
-            # Self-healing: Link tenant_id if found
-            pedido.tenant_id = tenant.id
-            db.session.commit()
-
+def _find_order_ticket(order: PymePedido, tenant: TenantProfile | None):
     if not tenant:
-        abort(404, "Tienda no encontrada")
-
-    # 3. Parse details
-    try:
-        detalles = json.loads(pedido.detalles or "[]")
-    except:
-        detalles = []
-
-    # 4. Widget Token for Chat
-    widget_token = None
-    if tenant.configuracion and 'widget_tokens' in tenant.configuracion:
-        tokens = tenant.configuracion['widget_tokens']
-        if tokens:
-            widget_token = tokens[0]
-
-    # Fallback to legacy token resolution
-    if not widget_token and tenant.pyme_id:
-        owner = User.query.get(tenant.pyme_id)
-        if owner and owner.entity_token:
-            widget_token = owner.entity_token
-
-    # 5. Fetch Chat History (if linked ticket exists)
-    chat_history = []
-    # Try to find a ticket linked to this order explicitly or via subject pattern
-    linked_ticket = PymeTicket.query.filter(
+        return None
+    return PymeTicket.query.filter(
         PymeTicket.tenant_id == tenant.id,
-        PymeTicket.asunto.ilike(f"%{nro_pedido}%")
+        PymeTicket.asunto.ilike(f"%{order.nro_pedido}%"),
     ).order_by(PymeTicket.id.desc()).first()
 
-    if linked_ticket:
-        comments = linked_ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
-        for c in comments:
-            chat_history.append(c.to_dict())
 
-    return render_template(
-        'tracking/order_status.html',
-        pedido=pedido,
-        tenant=tenant,
-        detalles=detalles,
-        current_year=datetime.now().year,
-        widget_token=widget_token,
-        google_maps_key=current_app.config.get('GOOGLE_MAPS_API_KEY', ''),
-        chat_history=chat_history,
-    )
+def _order_chat_history(order, tenant: TenantProfile | None) -> list[dict]:
+    if not isinstance(order, PymePedido):
+        return []
+    ticket = _find_order_ticket(order, tenant)
+    if not ticket:
+        return []
+    comments = ticket.comentarios.order_by(TicketComentario.fecha.asc()).limit(100).all()
+    return [
+        {
+            "id": comment.id,
+            "message": comment.comentario,
+            "author": "team" if comment.es_admin else "customer",
+            "author_label": "Equipo" if comment.es_admin else "Tu",
+            "created_at": comment.fecha.isoformat() if comment.fecha else None,
+        }
+        for comment in comments
+    ]
+
 
 @tracking_ui_bp.route('/tracking/claim/<nro_ticket>')
 @limiter.limit(
@@ -714,17 +703,47 @@ def tracking_claim(nro_ticket):
     )
 
 @tracking_ui_bp.route('/tracking/api/send-message', methods=['POST'])
+@limiter.limit(
+    _tracking_subject_failure_rate_limit,
+    key_func=_tracking_failure_subject_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+@limiter.limit(
+    _tracking_failure_rate_limit,
+    key_func=_tracking_failure_rate_key,
+    deduct_when=_deduct_tracking_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
 def send_message():
-    data = request.json or {}
-    nro_pedido = data.get('nro_pedido')
-    mensaje = data.get('mensaje')
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        data = {}
+    nro_pedido = str(data.get('nro_pedido') or '').strip()
+    mensaje = str(data.get('mensaje') or '').strip()
 
     if not nro_pedido or not mensaje:
         return jsonify({'error': 'Faltan datos'}), 400
+    if len(mensaje) > 2000:
+        return jsonify({'error': 'Mensaje demasiado largo'}), 400
 
-    pedido = PymePedido.query.filter_by(nro_pedido=nro_pedido).first()
-    if not pedido:
-        return jsonify({'error': 'Pedido no encontrado'}), 404
+    pedido = resolve_order_by_code(nro_pedido)
+    token = _tracking_access_token(data)
+    access_granted, _access_reason = validate_order_tracking_access(pedido, token) if pedido else (False, None)
+    if not pedido or not access_granted:
+        return _tracking_error(
+            "Pedido no encontrado.",
+            404,
+            "order_not_found",
+            "check_order_code_and_token",
+        )
+    if not isinstance(pedido, PymePedido):
+        return _tracking_error(
+            "La mensajeria no esta disponible para este pedido.",
+            409,
+            "order_messaging_unavailable",
+            "use_available_support_channel",
+        )
 
     tenant = None
     if pedido.tenant_id:
@@ -754,10 +773,7 @@ def send_message():
 
     # 2. Create/Update Ticket for Real-time Chat
     # Check if a ticket already exists for this order context
-    ticket = PymeTicket.query.filter(
-        PymeTicket.tenant_id == tenant.id,
-        PymeTicket.asunto.ilike(f"%{nro_pedido}%")
-    ).order_by(PymeTicket.id.desc()).first()
+    ticket = _find_order_ticket(pedido, tenant)
 
     comment = None
     user_id = pedido.user_id
@@ -809,7 +825,7 @@ def send_message():
                 "user_id": user_id if ticket else pedido.user_id,
                 "es_admin": False,
                 "fecha": datetime.now().isoformat(),
-                "nombre_autor": pedido.nombre_cliente or "Cliente"
+                "nombre_autor": "Cliente"
             }
         }
 
@@ -818,7 +834,7 @@ def send_message():
     except Exception as e:
         current_app.logger.error(f"Error emitting socket event: {e}")
 
-    return jsonify({
+    return _tracking_json({
         'status': 'ok',
         'message': 'Mensaje enviado',
         'ticket_id': ticket.id,
@@ -827,7 +843,7 @@ def send_message():
             "fecha": datetime.now().isoformat(),
             "es_admin": False,
             "autor": "vecino", # UI uses this class
-            "autor_nombre": pedido.nombre_cliente or "Yo"
+            "autor_nombre": "Yo"
         }
     })
 

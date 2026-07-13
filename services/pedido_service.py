@@ -3,6 +3,8 @@ import logging
 import re
 from typing import Any, Optional
 
+from sqlalchemy.exc import IntegrityError
+
 from models import (
     db,
     CatalogoItem,
@@ -31,14 +33,63 @@ logger = logging.getLogger(__name__)
 
 
 class PedidoService:
+    @staticmethod
+    def _normalize_currency(value: Any) -> Optional[str]:
+        normalized = str(value or "").strip().upper()
+        if not normalized or not re.fullmatch(r"[A-Z0-9]{2,10}", normalized):
+            return None
+        return normalized
+
+    def _currency_from_mapping(self, value: Any) -> Optional[str]:
+        if not isinstance(value, dict):
+            return None
+        for key in ("currency", "currency_id", "moneda"):
+            normalized = self._normalize_currency(value.get(key))
+            if normalized:
+                return normalized
+        return None
+
+    def _currency_from_items(self, items: Any) -> Optional[str]:
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            currency = self._currency_from_mapping(item)
+            if currency:
+                return currency
+            currency = self._currency_from_mapping(item.get("catalog_match"))
+            if currency:
+                return currency
+        return None
+
+    def _pedido_currency(self, pedido: PymePedido, items: Any = None) -> Optional[str]:
+        return self._normalize_currency(getattr(pedido, "moneda", None)) or self._currency_from_items(items)
+
+    @staticmethod
+    def _resolve_pedido_tenant(pedido: PymePedido) -> Optional[TenantProfile]:
+        if pedido.tenant_id is not None:
+            return db.session.get(TenantProfile, pedido.tenant_id)
+        return TenantProfile.query.filter_by(pyme_id=pedido.pyme_id).first()
+
     def _crear_market_order_desde_pyme(
         self,
         pedido: PymePedido,
         channel: Optional[str] = None,
     ) -> Optional[MarketOrder]:
-        tenant = TenantProfile.query.filter_by(pyme_id=pedido.pyme_id).first()
+        tenant = self._resolve_pedido_tenant(pedido)
         if not tenant:
             return None
+
+        try:
+            detalles_items = json.loads(pedido.detalles or "[]")
+        except (TypeError, ValueError):
+            detalles_items = []
+        if not isinstance(detalles_items, list):
+            detalles_items = []
+
+        source_currency = self._pedido_currency(pedido, detalles_items)
+        order_currency = source_currency or "ARS"
+        if source_currency and pedido.moneda != source_currency:
+            pedido.moneda = source_currency
 
         status_map = {
             "pendiente": "pending",
@@ -61,12 +112,17 @@ class PedidoService:
             external_order_id=pedido.nro_pedido,
         ).first()
         if existing:
+            existing_currency = source_currency or existing.currency or "ARS"
             existing.status = status
             existing.contact_name = pedido.nombre_cliente
             existing.contact_phone = pedido.telefono_cliente
             existing.contact_email = pedido.email_cliente
             existing.channel = channel or existing.channel or "chat"
             existing.total_monetary = pedido.monto_total
+            existing.currency = existing_currency
+            for index, item in enumerate(existing.items):
+                source_item = detalles_items[index] if index < len(detalles_items) else {}
+                item.currency = self._currency_from_mapping(source_item) or item.currency or existing_currency
             metadata_payload = dict(existing.metadata_payload or {})
             metadata_payload.update(
                 {
@@ -91,7 +147,7 @@ class PedidoService:
             contact_email=pedido.email_cliente,
             channel=channel or "chat",
             total_monetary=pedido.monto_total,
-            currency="ARS",
+            currency=order_currency,
             external_provider="pyme_pedido",
             external_order_id=pedido.nro_pedido,
             metadata_payload={
@@ -105,12 +161,7 @@ class PedidoService:
             },
         )
 
-        try:
-            detalles_items = json.loads(pedido.detalles or "[]")
-        except (TypeError, ValueError):
-            detalles_items = []
-
-        for item in detalles_items if isinstance(detalles_items, list) else []:
+        for item in detalles_items:
             if not isinstance(item, dict):
                 continue
             sku = item.get("sku")
@@ -134,7 +185,11 @@ class PedidoService:
                     product_id=producto.id if producto else None,
                     quantity=max(cantidad_normalizada, 1),
                     price_monetary=precio,
-                    currency="ARS",
+                    currency=(
+                        self._currency_from_mapping(item)
+                        or self._normalize_currency(getattr(producto, "moneda", None))
+                        or order_currency
+                    ),
                     name_snapshot=nombre or (producto.nombre if producto else None),
                 )
             )
@@ -162,6 +217,14 @@ class PedidoService:
         if not pedido.tenant_id:
             return None
 
+        try:
+            detalles_list = json.loads(pedido.detalles or "[]")
+        except (TypeError, ValueError):
+            detalles_list = []
+        if not isinstance(detalles_list, list):
+            detalles_list = []
+        source_currency = self._pedido_currency(pedido, detalles_list)
+
         # Check if Order already exists
         existing_order = Order.query.filter_by(
             tenant_id=pedido.tenant_id,
@@ -169,6 +232,9 @@ class PedidoService:
         ).first()
 
         if existing_order:
+            if source_currency and existing_order.currency != source_currency:
+                existing_order.currency = source_currency
+                db.session.commit()
             return existing_order
 
         # Create new Order
@@ -181,17 +247,12 @@ class PedidoService:
             buyer_phone=pedido.telefono_cliente,
             status=pedido.estado or 'created',
             channel=channel or 'whatsapp', # Default to whatsapp/chat as PymePedido usually comes from there
+            currency=source_currency or "ARS",
             total=pedido.monto_total or 0,
             subtotal=pedido.monto_total or 0, # Assuming no separate tax/shipping yet in legacy
             created_at=pedido.fecha,
             delivery_address={"address": pedido.direccion, "lat": pedido.latitud, "lng": pedido.longitud}
         )
-
-        # Parse items
-        try:
-            detalles_list = json.loads(pedido.detalles or "[]")
-        except:
-            detalles_list = []
 
         for item in detalles_list:
             if not isinstance(item, dict): continue
@@ -225,11 +286,37 @@ class PedidoService:
         return new_order
 
     def crear_nuevo_pedido(self, pedido_data: dict) -> PymePedido | None:
+        tenant_id = None
+        idempotency_key = None
         try:
-            # Check idempotency first if provided
-            idempotency_key = pedido_data.get("idempotency_key")
+            pyme_id = pedido_data.get("pyme_id")
+            if not pyme_id:
+                logger.error("pyme_id es requerido para registrar un pedido")
+                return None
+
+            tenant_id = pedido_data.get("tenant_id")
+            if not tenant_id:
+                pyme_user = db.session.get(User, pyme_id)
+                if pyme_user and pyme_user.tenant_id:
+                    tenant_id = pyme_user.tenant_id
+                if not tenant_id:
+                    tenant_linked = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+                    if tenant_linked:
+                        tenant_id = tenant_linked.id
+
+            raw_idempotency_key = pedido_data.get("idempotency_key")
+            idempotency_key = str(raw_idempotency_key or "").strip() or None
             if idempotency_key:
-                existing = PymePedido.query.filter_by(idempotency_key=idempotency_key).first()
+                if len(idempotency_key) > 128:
+                    logger.error("idempotency_key excede 128 caracteres")
+                    return None
+                if not tenant_id:
+                    logger.error("tenant_id es requerido para aplicar idempotencia a pedidos")
+                    return None
+                existing = PymePedido.query.filter_by(
+                    tenant_id=tenant_id,
+                    idempotency_key=idempotency_key,
+                ).first()
                 if existing:
                     logger.info(f"Pedido idempotente encontrado: {existing.nro_pedido}")
                     return existing
@@ -268,23 +355,15 @@ class PedidoService:
                 logger.error("Dirección inválida")
                 return None
 
-            pyme_id = pedido_data.get("pyme_id")
-            if not pyme_id:
-                logger.error("pyme_id es requerido para registrar un pedido")
-                return None
-
-            tenant_id = pedido_data.get("tenant_id")
-            if not tenant_id:
-                # Try to resolve from pyme_id
-                pyme_user = db.session.get(User, pyme_id)
-                if pyme_user and pyme_user.tenant_id:
-                    tenant_id = pyme_user.tenant_id
-
-                # Fallback: Find TenantProfile linked to this pyme_id
-                if not tenant_id:
-                    tenant_linked = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
-                    if tenant_linked:
-                        tenant_id = tenant_linked.id
+            currency = self._normalize_currency(
+                pedido_data.get("moneda") or pedido_data.get("currency")
+            )
+            if not currency:
+                try:
+                    currency_items = json.loads(pedido_data.get("detalles") or "[]")
+                except (TypeError, ValueError):
+                    currency_items = []
+                currency = self._currency_from_items(currency_items)
 
             nuevo_pedido = PymePedido(
                 pyme_id=pyme_id,
@@ -292,6 +371,7 @@ class PedidoService:
                 asunto=pedido_data["asunto"],
                 detalles=pedido_data["detalles"],
                 monto_total=pedido_data.get("monto_total"),
+                moneda=currency,
                 nombre_cliente=pedido_data.get("nombre_cliente"),
                 email_cliente=pedido_data.get("email_cliente"),
                 telefono_cliente=pedido_data.get("telefono_cliente"),
@@ -372,6 +452,18 @@ class PedidoService:
                     exc_info=True,
                 )
             return nuevo_pedido
+        except IntegrityError as e:
+            db.session.rollback()
+            if tenant_id and idempotency_key:
+                existing = PymePedido.query.filter_by(
+                    tenant_id=tenant_id,
+                    idempotency_key=idempotency_key,
+                ).first()
+                if existing:
+                    logger.info("Pedido idempotente recuperado tras carrera: %s", existing.nro_pedido)
+                    return existing
+            logger.error("Conflicto de integridad creando pedido: %s", e, exc_info=True)
+            return None
         except Exception as e:
             db.session.rollback()
             logger.error(
@@ -491,6 +583,7 @@ class PedidoService:
                 or catalog_match.get("product_id")
             )
             has_match = bool(catalog_item_id)
+            line_currency = self._currency_from_mapping(line) or self._currency_from_mapping(catalog_match)
             detalles.append(
                 {
                     "nombre": (
@@ -506,6 +599,7 @@ class PedidoService:
                     "subtotal": subtotal,
                     "sku": line.get("sku") or catalog_match.get("sku"),
                     "catalogo_item_id": catalog_item_id,
+                    "currency_id": line_currency,
                     "source": "catalog_match" if has_match else "operator_review",
                     "requires_operator_review": bool(line.get("needs_operator_review"))
                     or status not in {"catalog_matched", "resolved", "confirmed"},
@@ -524,6 +618,7 @@ class PedidoService:
             )
             subtotal = quantity * price
             total += subtotal
+            item_currency = self._currency_from_mapping(item)
             detalles.append(
                 {
                     "nombre": item.get("nombre") or item.get("producto") or item.get("title") or item.get("sku") or "Articulo detectado",
@@ -532,6 +627,7 @@ class PedidoService:
                     "subtotal": subtotal,
                     "sku": item.get("sku"),
                     "catalogo_item_id": item.get("catalogo_item_id"),
+                    "currency_id": item_currency,
                     "source": "catalog_match",
                 }
             )
@@ -540,6 +636,7 @@ class PedidoService:
             if not isinstance(item, dict):
                 continue
             quantity = self._parse_quantity(item.get("cantidad") or item.get("quantity"))
+            item_currency = self._currency_from_mapping(item)
             detalles.append(
                 {
                     "nombre": item.get("nombre") or item.get("producto") or item.get("descripcion") or item.get("detalle") or "Articulo para revisar",
@@ -547,6 +644,7 @@ class PedidoService:
                     "precio_unitario": 0,
                     "subtotal": 0,
                     "sku": item.get("sku"),
+                    "currency_id": item_currency,
                     "source": "operator_review",
                     "requires_operator_review": True,
                     "catalog_candidates": item.get("catalog_candidates") if isinstance(item.get("catalog_candidates"), list) else [],
@@ -566,12 +664,19 @@ class PedidoService:
             )
 
         request_label = metadata.get("request_kind_label") or raw_payload.get("request_kind_label") or "pedido asistido"
+        source_currency = (
+            self._currency_from_mapping(metadata)
+            or self._currency_from_mapping(crm_order_draft)
+            or self._currency_from_mapping(raw_payload)
+            or self._currency_from_items(detalles)
+        )
         return {
             "pyme_id": tenant.pyme_id,
             "tenant_id": tenant.id,
             "asunto": f"{request_label.title()} #{conversacional.id}",
             "detalles": json.dumps(detalles, ensure_ascii=False),
             "monto_total": total or float(conversacional.monto_monetario or 0),
+            "moneda": source_currency,
             "nombre_cliente": contact.get("name") or contact.get("nombre"),
             "email_cliente": contact.get("email"),
             "telefono_cliente": contact.get("phone") or contact.get("telefono"),
@@ -616,7 +721,10 @@ class PedidoService:
             # Check if already linked via idempotency or similar logic?
             # We use idempotency_key constructed from conversacional.id
             idempotency_key = f"conv_order_{conversacional.id}"
-            existing = PymePedido.query.filter_by(idempotency_key=idempotency_key).first()
+            existing = PymePedido.query.filter_by(
+                tenant_id=tenant.id,
+                idempotency_key=idempotency_key,
+            ).first()
             if existing:
                 if str(conversacional.estado or "").strip().lower() in {"confirmed", "confirmado"}:
                     existing.estado = "confirmado"
@@ -650,13 +758,14 @@ class PedidoService:
                 qty = item.get("quantity", 1)
                 price = item.get("unit_price", 0)
                 subtotal = qty * price
+                item_currency = self._currency_from_mapping(item)
                 detalles.append({
                     "nombre": item.get("title"),
                     "cantidad": qty,
                     "precio_unitario": price,
                     "subtotal": subtotal,
                     "sku": item.get("sku"), # if available
-                    "currency_id": item.get("currency_id")
+                    "currency_id": item_currency,
                 })
 
             import json
@@ -664,6 +773,7 @@ class PedidoService:
             # Prepare user contact info
             # User might be updated during checkout, so fetch fresh
             user = db.session.get(User, conversacional.user_id)
+            source_currency = self._currency_from_mapping(metadata) or self._currency_from_items(conversacional.items)
 
             pedido_data = {
                 "pyme_id": tenant.pyme_id,
@@ -671,6 +781,7 @@ class PedidoService:
                 "asunto": f"Pedido Web #{conversacional.id}",
                 "detalles": json.dumps(detalles, ensure_ascii=False),
                 "monto_total": float(conversacional.monto_monetario or 0),
+                "moneda": source_currency,
                 "nombre_cliente": user.name if user else None,
                 "email_cliente": user.email if user else None,
                 "telefono_cliente": user.telefono if user else None,
@@ -705,6 +816,7 @@ class PedidoService:
 
         detalles_pedido_items = []
         monto_total_calculado = 0.0
+        monedas_detectadas: list[str] = []
         cliente_user_id = cliente_data.get("cliente_user_id")
 
         from models import CatalogoItem  # Importación local para evitar circularidad
@@ -726,13 +838,19 @@ class PedidoService:
                 return None
 
             precio_str = producto_catalogo.precio
-            _, precio_unitario_float, _ = parse_precio_flexible(precio_str)
+            _, precio_unitario_float, moneda_detectada = parse_precio_flexible(precio_str)
 
             if precio_unitario_float is None:
                 logger.error(f"No se pudo determinar el precio para el producto '{nombre_producto}'.")
                 return None # O manejar error
 
             item_total = precio_unitario_float * cantidad_carrito
+            item_currency = (
+                self._normalize_currency(getattr(producto_catalogo, "moneda", None))
+                or self._normalize_currency(moneda_detectada)
+            )
+            if item_currency:
+                monedas_detectadas.append(item_currency)
 
             detalles_pedido_items.append({
                 "nombre": nombre_producto,
@@ -740,7 +858,8 @@ class PedidoService:
                 "precio_unitario": precio_unitario_float,
                 "subtotal": item_total,
                 "sku": producto_catalogo.sku,
-                "categoria": producto_catalogo.categoria
+                "categoria": producto_catalogo.categoria,
+                "currency_id": item_currency,
             })
             monto_total_calculado += item_total
 
@@ -757,6 +876,10 @@ class PedidoService:
             "asunto": asunto_base,
             "detalles": json.dumps(detalles_pedido_items, ensure_ascii=False), # Guardar como JSON string
             "rubro": cliente_data.get("rubro", "general_pyme"), # Podría venir del perfil del usuario/pyme
+            "moneda": (
+                self._normalize_currency(cliente_data.get("moneda") or cliente_data.get("currency"))
+                or (monedas_detectadas[0] if monedas_detectadas else None)
+            ),
             "nombre_cliente": cliente_data.get("nombre_cliente"),
             "email_cliente": cliente_data.get("email_cliente"),
             "telefono_cliente": cliente_data.get("telefono_cliente"),
@@ -818,6 +941,7 @@ class PedidoService:
                 asunto=pedido_data["asunto"],
                 detalles=pedido_data["detalles"],
                 monto_total=monto_total_calculado,
+                moneda=pedido_data.get("moneda"),
                 nombre_cliente=pedido_data.get("nombre_cliente"),
                 email_cliente=pedido_data.get("email_cliente"),
                 telefono_cliente=pedido_data.get("telefono_cliente"),

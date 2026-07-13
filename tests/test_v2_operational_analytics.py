@@ -280,6 +280,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             review_item.get("endpoint"),
             f"/api/admin/tenants/{self.tenant.slug}/orders/conversational:{self.assisted_order.id}",
         )
+        self.assertIn("/perfil?tab=pedidos", review_item.get("frontend_path") or "")
+        self.assertIn("focus=assisted_order_queue", review_item.get("frontend_path") or "")
         self.assertTrue((review_item.get("pii") or {}).get("redacted"))
         self.assertEqual((payload.get("employees") or {}).get("summary", {}).get("employees"), 1)
         self.assertTrue((payload.get("maps") or {}).get("heatmap", {}).get("hotspots"))
@@ -372,6 +374,10 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(summary.get("assisted_orders"), 1)
         self.assertEqual(summary.get("orders_needing_review"), 1)
         self.assertEqual(summary.get("total_monetary"), 4000.0)
+        self.assertEqual(summary.get("currency"), "ARS")
+        self.assertEqual(commerce.get("totals_by_currency"), [
+            {"key": "ARS", "label": "ARS", "currency": "ARS", "amount": 4000.0, "count": 3},
+        ])
         source_counts = {item.get("key"): item.get("count") for item in commerce.get("by_source_model") or []}
         self.assertEqual(source_counts.get("MarketOrder"), 1)
         self.assertEqual(source_counts.get("PymePedido"), 1)
@@ -415,6 +421,99 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         self.assertEqual(detail_response.status_code, 200)
         self.assertEqual(detail_response.get_json().get("source_model"), "Order")
+
+    def test_operations_excludes_explicit_foreign_municipio_ticket_with_shared_owner(self):
+        foreign_tenant = TenantProfile(
+            slug="foreign-municipio",
+            nombre="Municipio ajeno",
+            tipo="municipio",
+            municipio_id=self.admin.id,
+            plan="full",
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        db.session.add(
+            MunicipioTicket(
+                municipio_id=self.admin.id,
+                tenant_id=foreign_tenant.id,
+                pregunta="Dato territorial de otro tenant",
+                asunto="No debe aparecer",
+                categoria="privado",
+                estado="nuevo",
+                canal_ingreso="whatsapp",
+                latitud=-34.7,
+                longitud=-58.5,
+                fecha=datetime.now(timezone.utc),
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get("/api/v2/analytics/operations/dashboard", headers=self._auth())
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 2)
+        self.assertNotIn("dato territorial de otro tenant", json.dumps(payload).lower())
+
+    def test_commerce_dedupe_inherits_amount_and_currency_from_complete_source(self):
+        from services.operational_intelligence import _collect_commerce_records
+
+        source_order = PedidoConversacional(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            estado="pendiente_revision",
+            tipo="order_note",
+            origen="marketplace_upload",
+            monto_monetario=125,
+            items=[],
+            metadata_payload={"currency": "USD", "request_kind": "order_note"},
+        )
+        db.session.add(source_order)
+        db.session.flush()
+        mirror = MarketOrder(
+            tenant_id=self.tenant.id,
+            status="pending",
+            channel="marketplace",
+            external_provider="pedido_conversacional",
+            external_order_id=str(source_order.id),
+            total_monetary=0,
+            currency="ARS",
+        )
+        db.session.add(mirror)
+        db.session.commit()
+
+        now = datetime.now(timezone.utc)
+        records, raw_count = _collect_commerce_records(
+            self.tenant,
+            now - timedelta(days=1),
+            now + timedelta(days=1),
+        )
+        merged = next(
+            item
+            for item in records
+            if item.get("source_id") == mirror.id and item.get("source_model") == "MarketOrder"
+        )
+
+        self.assertGreaterEqual(raw_count, 3)
+        self.assertEqual(merged.get("total"), 125.0)
+        self.assertEqual(merged.get("currency"), "USD")
+        self.assertEqual(merged.get("request_kind"), "order_note")
+
+    def test_commerce_request_kinds_preserve_supported_document_classes(self):
+        from services.operational_intelligence import _commerce_request_kind
+
+        supported = {
+            "order_note",
+            "handwritten_order",
+            "quote_request",
+            "receipt",
+            "tax_bill",
+            "certificate",
+            "service_request",
+            "other",
+        }
+
+        self.assertEqual({_commerce_request_kind(value) for value in supported}, supported)
 
     def test_operations_heatmap_returns_points_cells_and_layers(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())

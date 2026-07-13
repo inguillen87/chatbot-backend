@@ -9,6 +9,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from models import ChatSessionContext, MunicipioTicket, TenantProfile, TicketComentario, User, db
 from services.demo_surveys import build_demo_survey_chat_menu
+from services.ticket_utils import build_claim_tracking_url
 
 
 DEMO_MUNICIPIO_SOURCE = "demo_municipio_runtime"
@@ -310,7 +311,25 @@ def _upsert_ticket(
     return ticket, created, details, media
 
 
+def _public_tracking_url(ticket: MunicipioTicket) -> str | None:
+    return build_claim_tracking_url(None, ticket.nro_ticket, ticket.consulta_pin, absolute=False)
+
+
+def _public_tracking_action(ticket: MunicipioTicket) -> dict[str, Any] | None:
+    tracking_url = _public_tracking_url(ticket)
+    if not tracking_url:
+        return None
+    return {
+        "id": "track_claim",
+        "label": "Ver seguimiento",
+        "endpoint": tracking_url,
+        "method": "GET",
+        "ui_hint": "link",
+    }
+
+
 def _ticket_payload(ticket: MunicipioTicket, details: dict[str, Any]) -> dict[str, Any]:
+    tracking_url = _public_tracking_url(ticket)
     return {
         "id": ticket.id,
         "nro_ticket": ticket.nro_ticket,
@@ -320,7 +339,7 @@ def _ticket_payload(ticket: MunicipioTicket, details: dict[str, Any]) -> dict[st
         "address": ticket.direccion,
         "lat": ticket.latitud,
         "lng": ticket.longitud,
-        "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}",
+        "detail_endpoint": tracking_url,
         "public_status_hint": {
             "ticket": ticket.nro_ticket,
             "pin": ticket.consulta_pin,
@@ -368,12 +387,15 @@ def _response_for_status(chat_db_context: ChatSessionContext | None) -> dict[str
         return {"message_body": message, "respuesta": message, "fuente": DEMO_MUNICIPIO_SOURCE, "actions": []}
     message = f"El reclamo demo #{ticket.nro_ticket} esta en estado {ticket.estado}. PIN de consulta: {ticket.consulta_pin}."
     details = _details(ticket)
+    tracking_action = _public_tracking_action(ticket)
+    next_actions = [tracking_action] if tracking_action else []
     return {
         "message_body": message,
         "respuesta": message,
         "fuente": DEMO_MUNICIPIO_SOURCE,
         "accion_backend": "demo_consultar_estado",
         "ticket": _ticket_payload(ticket, details),
+        "next_actions": next_actions,
         "actions": [
             {
                 "label": "Estado consultado",
@@ -633,6 +655,10 @@ def _response_for_ticket(ticket: MunicipioTicket, created: bool, details: dict[s
     if priority:
         fields.append({"label": "Prioridad sugerida", "value": priority})
 
+    tracking_url = _public_tracking_url(ticket)
+    tracking_action = _public_tracking_action(ticket)
+    next_actions = [tracking_action] if tracking_action else []
+
     return {
         "message_body": message,
         "respuesta": message,
@@ -640,8 +666,9 @@ def _response_for_ticket(ticket: MunicipioTicket, created: bool, details: dict[s
         "accion_backend": "demo_crear_reclamo",
         "ticket_id": ticket.id,
         "ticket": _ticket_payload(ticket, details),
-        "lead": {"created": True, "ticket_id": ticket.id, "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}"},
-        "result": {"kind": "ticket", "traceable": True, "target": "inbox", "id": ticket.id},
+        "lead": {"created": True, "ticket_id": ticket.id, "detail_endpoint": tracking_url, "next_actions": next_actions},
+        "result": {"kind": "ticket", "traceable": True, "target": "public_tracking", "id": ticket.id},
+        "next_actions": next_actions,
         "actions": [
             {
                 "label": "Reclamo creado" if created else "Reclamo actualizado",

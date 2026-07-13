@@ -7,7 +7,7 @@ import jwt
 
 from app import create_app, db
 from config import TestConfig
-from models import ChatSessionContext, MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
+from models import ChatSessionContext, EncEncuesta, EncLink, MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
 from services.live_chat_access import (
     LIVE_CHAT_TOKEN_AUDIENCE,
     LIVE_CHAT_TOKEN_ISSUER,
@@ -306,6 +306,26 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         )
 
     def test_tenant_scoped_public_survey_room_remains_joinable(self):
+        tenant = TenantProfile(
+            slug="junin",
+            nombre="Junin",
+            tipo="municipio",
+            plan="full",
+            municipio_id=self.admin.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        survey = EncEncuesta(
+            tenant_id=tenant.id,
+            slug="consulta-barrial",
+            titulo="Consulta barrial",
+            estado="publicada",
+        )
+        db.session.add(survey)
+        db.session.flush()
+        db.session.add(EncLink(encuesta_id=survey.id, slug_publico="consulta-barrial", canal="web"))
+        db.session.commit()
+
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:
             on_join({"room": "encuesta:junin:consulta-barrial"})
 
