@@ -74,6 +74,17 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("data-singleton", data["embed_code"])
         self.assertIn(self.tenant.slug, data["embed_code"])
 
+    def test_widget_settings_accepts_first_party_panel_cookie(self):
+        self.client.set_cookie("auth_token", self.owner.token)
+
+        resp = self.client.get(
+            "/widget-settings",
+            headers={"Origin": "https://www.chatboc.ar"},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("embed_code", resp.get_json())
+
     def test_widget_settings_blocks_embed_and_update_without_full_plan(self):
         self.tenant.plan = "free"
         self.tenant.configuracion = {}

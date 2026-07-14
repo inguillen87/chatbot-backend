@@ -3,6 +3,10 @@ services:
   - type: web
     name: chatboc-backend
     env: python
+    # SECURITY OPERATIONS: api.chatboc.ar is already attached to this existing
+    # service outside the Blueprint. Keep its onrender.com subdomain disabled
+    # in Render Dashboard; redeclaring the domain here fails Blueprint validation.
+    healthCheckPath: /health
     buildCommand: "./build.sh"
     preDeployCommand: "flask db upgrade"
     startCommand: "gunicorn --worker-class eventlet --workers 1 --bind 0.0.0.0:$PORT app:app"
@@ -12,10 +16,24 @@ services:
         value: 3.12.0
       - key: FLASK_APP
         value: app.py
+      - key: ENV
+        value: production
+      - key: FLASK_ENV
+        value: production
       - key: BACKEND_URL
         value: https://api.chatboc.ar
       - key: PUBLIC_API_BASE_URL
         value: https://api.chatboc.ar
+      - key: PANEL_URL
+        value: https://www.chatboc.ar
+      - key: WIDGET_URL
+        value: https://www.chatboc.ar
+      - key: PUBLIC_ROOT_DOMAIN
+        value: chatboc.ar
+      - key: CORS_ALLOWED_ORIGINS
+        value: "https://chatboc.ar,https://www.chatboc.ar"
+      - key: CORS_ALLOW_LOCAL_DEV
+        value: "false"
       - key: LLM_PROVIDER_ORDER
         value: openai,gemini
       - key: GEMINI_API_KEY

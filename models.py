@@ -2591,6 +2591,68 @@ class IntegrationEvent(db.Model, TimestampMixin):
     )
 
 
+class WebhookDelivery(db.Model):
+    __tablename__ = "webhook_delivery"
+
+    STATUS_PROCESSING = "processing"
+    STATUS_PROCESSED = "processed"
+    STATUS_FAILED = "failed"
+
+    id = db.Column(db.Integer, primary_key=True)
+    provider = db.Column(db.String(64), nullable=False)
+    event_id = db.Column(db.String(255), nullable=False)
+    event_type = db.Column(db.String(128), nullable=False)
+    payload_digest = db.Column(db.String(64), nullable=False)
+    status = db.Column(
+        db.String(20),
+        nullable=False,
+        default=STATUS_PROCESSING,
+        server_default=STATUS_PROCESSING,
+    )
+    attempts = db.Column(
+        db.Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    processed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "provider",
+            "event_id",
+            name="uq_webhook_delivery_provider_event",
+        ),
+        db.CheckConstraint(
+            "status IN ('processing', 'processed', 'failed')",
+            name="ck_webhook_delivery_status",
+        ),
+        db.CheckConstraint(
+            "attempts >= 1",
+            name="ck_webhook_delivery_attempts_positive",
+        ),
+        db.Index(
+            "ix_webhook_delivery_status_updated_at",
+            "status",
+            "updated_at",
+        ),
+    )
+
+
 class NotificationLog(db.Model, TimestampMixin):
     __tablename__ = "notification_log"
 

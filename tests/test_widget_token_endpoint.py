@@ -115,14 +115,13 @@ class WidgetTokenEndpointTests(unittest.TestCase):
             resp.headers.get("Access-Control-Allow-Origin"), "https://example.com"
         )
 
-    def test_widget_token_cors_wildcard(self):
-        os.environ["CORS_ALLOWED_ORIGINS"] = "*"
+    def test_widget_token_cors_is_public_without_credentials(self):
         resp = self.client.options(
             "/auth/widget-token", headers={"Origin": "https://foo.com"}
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "*")
-        os.environ["CORS_ALLOWED_ORIGINS"] = "https://example.com"
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://foo.com")
+        self.assertIsNone(resp.headers.get("Access-Control-Allow-Credentials"))
 
     def test_widget_refresh_returns_new_jwt(self):
         mint_resp = self.client.post(

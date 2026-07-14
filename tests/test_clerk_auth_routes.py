@@ -4,9 +4,12 @@ import hmac
 import json
 import time
 
+import jwt
+
 from database import db
-from models import TenantProfile, User
+from models import Rubro, TenantFollower, TenantProfile, User, WebhookDelivery
 from services.clerk_auth_service import ClerkAuthError, ClerkNotConfigured, upsert_user_from_clerk
+from utils.auth_helpers import auth_session_version
 
 
 def _profile():
@@ -24,6 +27,78 @@ def _profile():
         ],
         "external_accounts": [{"provider": "oauth_linkedin_oidc"}],
     }
+
+
+def _create_route_tenant(
+    slug: str,
+    *,
+    active: bool = True,
+    tenant_type: str = "pyme",
+) -> TenantProfile:
+    owner = User(
+        name=f"Owner {slug}",
+        email=f"owner-{slug}@chatboc.test",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner.set_password("owner-password")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug=slug,
+        nombre=f"Tenant {slug}",
+        tipo=tenant_type,
+        municipio_id=owner.id if tenant_type == "municipio" else None,
+        pyme_id=owner.id if tenant_type != "municipio" else None,
+        is_active=active,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+    return tenant
+
+
+def test_registration_logs_never_include_submitted_secrets(client, monkeypatch):
+    with client.application.app_context():
+        rubro = Rubro(nombre="Pyme segura", clave="pyme-segura", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+        rubro_id = rubro.id
+
+    submitted_secrets = {
+        "password": "NeverLog-Password-789!",
+        "empresa_token": "entity-secret-never-log",
+        "clerk_token": "clerk-secret-never-log",
+        "session_token": "session-secret-never-log",
+        "anon_id": "anon-secret-never-log",
+    }
+    emitted_logs: list[str] = []
+
+    def _capture_log(message, *args, **kwargs):
+        del kwargs
+        emitted_logs.append(str(message) % args if args else str(message))
+
+    for level in ("info", "warning", "error"):
+        monkeypatch.setattr(client.application.logger, level, _capture_log)
+
+    response = client.post(
+        "/auth/register",
+        json={
+            "name": "Secure Logging Owner",
+            "email": "secure-logging@chatboc.test",
+            "nombre_empresa": "Secure Logging Company",
+            "rubro": rubro_id,
+            "tipo_chat": "pyme",
+            "acepto_terminos": True,
+            **submitted_secrets,
+        },
+    )
+
+    assert response.status_code == 201
+    log_text = "\n".join(emitted_logs)
+    assert "[register] Registration attempt metadata=" in log_text
+    for secret in submitted_secrets.values():
+        assert secret not in log_text
+    assert "secure-logging@chatboc.test" not in log_text
 
 
 def test_clerk_config_contract(client, monkeypatch):
@@ -44,6 +119,26 @@ def test_clerk_config_contract(client, monkeypatch):
     assert payload["contract_version"] == "auth.clerk.v1"
     assert payload["enabled"] is True
     assert payload["session_sync_endpoint"] == "/auth/clerk/session"
+    assert payload["auth_intents"] == {
+        "default": "tenant_owner",
+        "supported": ["tenant_owner", "tenant_portal"],
+        "tenant_owner": {
+            "requires_tenant_slug": False,
+            "may_require_onboarding": True,
+        },
+        "tenant_portal": {
+            "requires_tenant_slug": True,
+            "may_require_onboarding": False,
+            "effective_role": "usuario",
+        },
+    }
+    assert payload["session_transport"] == {
+        "preferred": "http_only_cookie",
+        "cookie_same_site": "Lax",
+        "cookie_path": "/",
+        "secure_in_production": True,
+        "production_body_token": "omitted_by_default",
+    }
     assert {
         "user.created",
         "user.updated",
@@ -223,7 +318,10 @@ def test_clerk_session_sync_returns_chatboc_token_and_onboarding(client, monkeyp
     assert resp.status_code == 202
     payload = resp.get_json()
     assert payload["auth_provider"] == "clerk"
+    assert payload["auth_intent"] == "tenant_owner"
+    assert payload["audience"] == "tenant_owner"
     assert payload["token"] is None
+    assert payload["session_transport"] == "pending_onboarding"
     assert payload["user"]["email"] == "laura@chatboc.test"
     assert payload["onboarding"]["required"] is True
     assert payload["onboarding"]["modal"]["vertical_presets"]["pyme"]["primary_goal"] == "ventas"
@@ -233,6 +331,331 @@ def test_clerk_session_sync_returns_chatboc_token_and_onboarding(client, monkeyp
         user = User.query.filter_by(email="laura@chatboc.test").first()
         assert user is not None
         assert user.accesibilidad["auth"]["clerk"]["social_providers"] == ["linkedin"]
+
+
+def test_clerk_portal_session_links_follower_without_role_escalation(client, monkeypatch):
+    with client.application.app_context():
+        tenant = _create_route_tenant("public-portal")
+        tenant_id = tenant.id
+
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_portal_route",
+            "sid": "sess_portal_route",
+            "email": "laura@chatboc.test",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        "routes.auth.fetch_trusted_clerk_profile",
+        lambda claims: {**_profile(), "id": "user_portal_route"},
+    )
+
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={
+            "auth_intent": "tenant_portal",
+            "tenant_slug": "public-portal",
+            "role": "super_admin",
+            "user": {"role": "super_admin", "tenant_id": 999999},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["auth_intent"] == "tenant_portal"
+    assert payload["audience"] == "tenant_portal"
+    assert payload["tenant"]["slug"] == "public-portal"
+    assert payload["user"]["role"] == "usuario"
+    assert payload["user"]["tipo_chat"] == "pyme"
+    assert payload["onboarding"]["required"] is False
+    assert payload["onboarding"]["status"] == "portal_ready"
+    assert payload["channel_activation"] == {
+        "available": False,
+        "status": "not_applicable",
+        "reason_code": "tenant_portal",
+        "channels": [],
+    }
+    assert payload["token"]
+
+    with client.application.app_context():
+        user = User.query.filter_by(email="laura@chatboc.test").first()
+        assert user is not None
+        assert user.rol == "usuario"
+        assert user.tenant_id is None
+        assert TenantFollower.query.filter_by(
+            user_id=user.id,
+            tenant_id=tenant_id,
+        ).count() == 1
+
+
+def test_clerk_portal_session_rejects_persisted_admin_without_token_or_follower(
+    client,
+    monkeypatch,
+):
+    with client.application.app_context():
+        tenant = _create_route_tenant("portal-admin-conflict")
+        admin = User(
+            name="Laura Admin",
+            email="laura@chatboc.test",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        admin.set_password("admin-password")
+        db.session.add(admin)
+        db.session.commit()
+        admin_id = admin.id
+        tenant_id = tenant.id
+
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_admin_portal_conflict",
+            "sid": "sess_admin_portal_conflict",
+            "email": "laura@chatboc.test",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        "routes.auth.fetch_trusted_clerk_profile",
+        lambda claims: {**_profile(), "id": "user_admin_portal_conflict"},
+    )
+
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={"auth_intent": "tenant_portal", "tenant_slug": "portal-admin-conflict"},
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert payload["reason_code"] == "portal_identity_conflict"
+    assert "token" not in payload
+    assert response.headers.get("Set-Cookie") is None
+    with client.application.app_context():
+        assert User.query.get(admin_id).rol == "admin"
+        assert TenantFollower.query.filter_by(
+            user_id=admin_id,
+            tenant_id=tenant_id,
+        ).count() == 0
+
+
+def test_clerk_portal_session_uses_municipal_tenant_chat_type(client, monkeypatch):
+    with client.application.app_context():
+        _create_route_tenant("municipio-publico", tenant_type="municipio")
+
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_municipal_portal",
+            "sid": "sess_municipal_portal",
+            "email": "laura@chatboc.test",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        "routes.auth.fetch_trusted_clerk_profile",
+        lambda claims: {**_profile(), "id": "user_municipal_portal"},
+    )
+
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={"auth_intent": "tenant_portal", "tenant_slug": "municipio-publico"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["user"]["role"] == "usuario"
+    assert payload["user"]["tipo_chat"] == "municipio"
+    decoded = jwt.decode(
+        payload["token"],
+        client.application.config["SECRET_KEY"],
+        algorithms=["HS256"],
+    )
+    assert decoded["rol"] == "usuario"
+    assert decoded["tipo_chat"] == "municipio"
+    assert decoded["municipio_id"] is None
+    assert decoded["pyme_id"] is None
+    assert decoded["empresa_id"] is None
+
+
+def test_clerk_portal_session_requires_existing_tenant(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_missing_portal",
+            "sid": "sess_missing_portal",
+            "email": "laura@chatboc.test",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr("routes.auth.fetch_trusted_clerk_profile", lambda claims: _profile())
+
+    missing_slug = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={"intent": "tenant_portal"},
+    )
+    unknown_tenant = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={"intent": "tenant_portal", "tenant_slug": "does-not-exist"},
+    )
+
+    assert missing_slug.status_code == 400
+    assert missing_slug.get_json()["reason_code"] == "tenant_slug_required"
+    assert unknown_tenant.status_code == 404
+    assert unknown_tenant.get_json()["reason_code"] == "tenant_not_found"
+
+
+def test_clerk_session_rejects_unknown_auth_intent(client):
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer clerk.jwt.token"},
+        json={"auth_intent": "admin_from_browser"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_auth_intent"
+
+
+def test_clerk_portal_session_rejects_invalid_tenant_slug(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_invalid_portal_slug",
+            "sid": "sess_invalid_portal_slug",
+            "email": "laura@chatboc.test",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr("routes.auth.fetch_trusted_clerk_profile", lambda claims: _profile())
+
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={"intent": "tenant_portal", "tenant_slug": "../admin"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "tenant_slug_invalid"
+
+
+def test_clerk_portal_session_rejects_inactive_tenant(client, monkeypatch):
+    with client.application.app_context():
+        _create_route_tenant("inactive-public-portal", active=False)
+
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_inactive_portal",
+            "sid": "sess_inactive_portal",
+            "email": "laura@chatboc.test",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr("routes.auth.fetch_trusted_clerk_profile", lambda claims: _profile())
+
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={"intent": "tenant_portal", "tenant_slug": "inactive-public-portal"},
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "tenant_inactive"
+
+
+def test_clerk_owner_session_uses_secure_cookie_transport_in_production(client, monkeypatch):
+    monkeypatch.setenv("CLERK_SUPERADMIN_EMAILS", "guillen.marce@gmail.com")
+    monkeypatch.setitem(client.application.config, "ENV", "prod")
+    monkeypatch.setitem(client.application.config, "SESSION_COOKIE_SECURE", False)
+    monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", ".chatboc.test")
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_cookie_owner",
+            "sid": "sess_cookie_owner",
+            "email": "guillen.marce@gmail.com",
+            "email_verified": True,
+        },
+    )
+    monkeypatch.setattr(
+        "routes.auth.fetch_trusted_clerk_profile",
+        lambda claims: {
+            **_profile(),
+            "id": "user_cookie_owner",
+            "email_addresses": [
+                {
+                    "id": "email_1",
+                    "email_address": "guillen.marce@gmail.com",
+                    "verification": {"status": "verified"},
+                }
+            ],
+        },
+    )
+
+    response = client.post(
+        "/auth/clerk/session",
+        headers={"Authorization": "Bearer owner.clerk.token"},
+        json={"auth_intent": "tenant_owner"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["auth_intent"] == "tenant_owner"
+    assert payload["audience"] == "tenant_owner"
+    assert payload["user"]["role"] == "super_admin"
+    assert payload["onboarding"]["required"] is False
+    assert payload["session_transport"] == "cookie"
+    assert "token" not in payload
+    cookie = response.headers.get("Set-Cookie") or ""
+    assert cookie.startswith("auth_token=")
+    assert "Domain=chatboc.test" in cookie
+    assert "Secure" in cookie
+    assert "HttpOnly" in cookie
+    assert "Path=/" in cookie
+    assert "SameSite=Lax" in cookie
+    assert response.headers["Cache-Control"] == "no-store"
+    cookie_token = cookie.split(";", 1)[0].partition("=")[2]
+    decoded = jwt.decode(
+        cookie_token,
+        client.application.config["SECRET_KEY"],
+        algorithms=["HS256"],
+    )
+    assert decoded["auth_intent"] == "tenant_owner"
+    assert decoded["audience"] == "tenant_owner"
+
+
+def test_clerk_onboarding_rejects_portal_intent(client, monkeypatch):
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_session_token",
+        lambda token: {
+            "sub": "user_portal_onboarding",
+            "sid": "sess_portal_onboarding",
+            "email": "laura@chatboc.test",
+            "email_verified": True,
+        },
+    )
+
+    response = client.post(
+        "/auth/clerk/onboarding",
+        headers={"Authorization": "Bearer portal.clerk.token"},
+        json={
+            "auth_intent": "tenant_portal",
+            "tenant_name": "Must Not Exist",
+            "terms_accepted": True,
+            "terms_version": "2026-07-11",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "owner_intent_required"
+    with client.application.app_context():
+        assert TenantProfile.query.filter_by(slug="must-not-exist").first() is None
 
 
 def test_clerk_session_sync_rejects_inactive_tenant(client, monkeypatch):
@@ -482,6 +905,14 @@ def test_clerk_onboarding_route_creates_tenant(client, monkeypatch):
     payload = resp.get_json()
     assert payload["tenant"]["slug"] == "colegio-modelo"
     assert payload["onboarding"]["required"] is False
+    assert payload["auth_intent"] == "tenant_owner"
+    assert payload["session_transport"] == "cookie_and_body"
+    assert payload["token"]
+    onboarding_cookie = resp.headers.get("Set-Cookie") or ""
+    assert onboarding_cookie.startswith("auth_token=")
+    assert "HttpOnly" in onboarding_cookie
+    assert "Path=/" in onboarding_cookie
+    assert "SameSite=Lax" in onboarding_cookie
 
     with client.application.app_context():
         tenant = TenantProfile.query.filter_by(slug="colegio-modelo").first()
@@ -579,6 +1010,7 @@ def test_terminal_clerk_webhook_disconnects_session_and_user_rooms(client, monke
             }
         ).encode("utf-8"),
         content_type="application/json",
+        headers={"svix-id": "msg_disconnect_123"},
     )
 
     assert response.status_code == 200
@@ -589,3 +1021,209 @@ def test_terminal_clerk_webhook_disconnects_session_and_user_rooms(client, monke
             "clerk_user_id": "user_webhook_disconnect",
         }
     ]
+
+
+def test_clerk_webhook_duplicate_does_not_revoke_or_disconnect_twice(client, monkeypatch):
+    monkeypatch.setattr("routes.auth.verify_clerk_webhook_signature", lambda *args, **kwargs: None)
+    sync_calls = []
+    disconnect_calls = []
+
+    def _sync(event, *, commit=True):
+        assert commit is False
+        sync_calls.append(event)
+        return {"status": "sessions_revoked", "event_type": event["type"]}
+
+    def _disconnect(**kwargs):
+        disconnect_calls.append(kwargs)
+        return 1
+
+    monkeypatch.setattr("routes.auth.sync_clerk_webhook_event", _sync)
+    monkeypatch.setattr("socket_service.disconnect_clerk_session_sockets", _disconnect)
+    raw = json.dumps(
+        {
+            "type": "session.revoked",
+            "data": {"id": "sess_duplicate", "user_id": "user_duplicate"},
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = {"svix-id": "msg_duplicate_123"}
+
+    first = client.post(
+        "/auth/clerk/webhook",
+        data=raw,
+        content_type="application/json",
+        headers=headers,
+    )
+    duplicate = client.post(
+        "/auth/clerk/webhook",
+        data=raw,
+        content_type="application/json",
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert duplicate.status_code == 200
+    assert duplicate.get_json() == {
+        "status": "duplicate_ignored",
+        "event_type": "session.revoked",
+    }
+    assert len(sync_calls) == 1
+    assert disconnect_calls == [
+        {
+            "clerk_session_id": "sess_duplicate",
+            "clerk_user_id": "user_duplicate",
+        }
+    ]
+
+
+def test_clerk_webhook_active_delivery_returns_retryable_503(client, monkeypatch):
+    from services.webhook_delivery_service import claim_delivery
+
+    monkeypatch.setattr("routes.auth.verify_clerk_webhook_signature", lambda *args, **kwargs: None)
+    sync_calls = []
+    monkeypatch.setattr(
+        "routes.auth.sync_clerk_webhook_event",
+        lambda event, **_kwargs: sync_calls.append(event) or {"status": "synced"},
+    )
+    raw = json.dumps(
+        {"type": "user.updated", "data": {"id": "user_processing"}},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    claim_delivery("clerk", "msg_processing_123", "user.updated", raw)
+
+    response = client.post(
+        "/auth/clerk/webhook",
+        data=raw,
+        content_type="application/json",
+        headers={"svix-id": "msg_processing_123"},
+    )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "5"
+    assert response.get_json()["reason_code"] == "clerk_webhook_in_progress"
+    assert sync_calls == []
+
+
+def test_clerk_webhook_failed_delivery_is_retryable(client, monkeypatch):
+    from models import WebhookDelivery
+
+    monkeypatch.setattr("routes.auth.verify_clerk_webhook_signature", lambda *args, **kwargs: None)
+    attempts = 0
+
+    def _sync(_event, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("temporary upstream failure token=must-not-persist")
+        return {"status": "synced", "event_type": "user.updated"}
+
+    monkeypatch.setattr("routes.auth.sync_clerk_webhook_event", _sync)
+    raw = json.dumps(
+        {"type": "user.updated", "data": {"id": "user_retry"}},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = {"svix-id": "msg_retry_123"}
+
+    failed = client.post(
+        "/auth/clerk/webhook",
+        data=raw,
+        content_type="application/json",
+        headers=headers,
+    )
+    retried = client.post(
+        "/auth/clerk/webhook",
+        data=raw,
+        content_type="application/json",
+        headers=headers,
+    )
+
+    assert failed.status_code == 500
+    assert retried.status_code == 200
+    assert retried.get_json()["status"] == "synced"
+    receipt = WebhookDelivery.query.filter_by(
+        provider="clerk",
+        event_id="msg_retry_123",
+    ).one()
+    assert receipt.status == WebhookDelivery.STATUS_PROCESSED
+    assert receipt.attempts == 2
+    assert receipt.last_error is None
+
+
+def test_clerk_webhook_effect_and_receipt_retry_atomically(client, monkeypatch):
+    profile = {
+        **_profile(),
+        "id": "user_atomic_webhook",
+        "email_addresses": [
+            {
+                "id": "email_1",
+                "email_address": "atomic-webhook@chatboc.test",
+                "verification": {"status": "verified"},
+            }
+        ],
+    }
+    user = upsert_user_from_clerk(
+        {
+            "sub": "user_atomic_webhook",
+            "sid": "sess_atomic_webhook",
+            "email": "atomic-webhook@chatboc.test",
+            "email_verified": True,
+        },
+        profile,
+        profile_is_trusted=True,
+    )
+    db.session.commit()
+    user_id = user.id
+
+    real_commit = db.session.commit
+    commit_attempts = 0
+
+    def fail_first_atomic_commit():
+        nonlocal commit_attempts
+        commit_attempts += 1
+        if commit_attempts == 1:
+            raise RuntimeError("simulated commit interruption")
+        return real_commit()
+
+    monkeypatch.setattr(db.session, "commit", fail_first_atomic_commit)
+    monkeypatch.setattr(
+        "routes.auth.verify_clerk_webhook_signature",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "socket_service.disconnect_clerk_session_sockets",
+        lambda **_kwargs: 1,
+    )
+    raw = json.dumps(
+        {
+            "type": "session.revoked",
+            "data": {
+                "id": "sess_atomic_webhook",
+                "user_id": "user_atomic_webhook",
+            },
+        },
+        separators=(",", ":"),
+    ).encode("utf-8")
+    headers = {"svix-id": "msg_atomic_webhook"}
+
+    failed = client.post(
+        "/auth/clerk/webhook",
+        data=raw,
+        content_type="application/json",
+        headers=headers,
+    )
+    retried = client.post(
+        "/auth/clerk/webhook",
+        data=raw,
+        content_type="application/json",
+        headers=headers,
+    )
+
+    assert failed.status_code == 500
+    assert retried.status_code == 200
+    assert auth_session_version(db.session.get(User, user_id)) == 2
+    receipt = WebhookDelivery.query.filter_by(
+        provider="clerk",
+        event_id="msg_atomic_webhook",
+    ).one()
+    assert receipt.status == WebhookDelivery.STATUS_PROCESSED
+    assert receipt.attempts == 2

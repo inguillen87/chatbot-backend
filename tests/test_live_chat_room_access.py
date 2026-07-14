@@ -184,6 +184,65 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         self.assertIn("clerk_session:sess_socket_identity", joined_rooms)
         self.assertIn("clerk_user:user_socket_identity", joined_rooms)
 
+    def test_http_only_cookie_authenticates_socket_connect_and_subscription(self):
+        token = jwt.encode(
+            {"user_id": self.admin.id},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        own_tenant = TenantProfile(
+            slug="cookie-municipality",
+            nombre="Cookie municipality",
+            tipo="municipio",
+            municipio_id=910,
+        )
+        db.session.add(own_tenant)
+        db.session.commit()
+        cookie_request = SimpleNamespace(
+            sid="cookie-authenticated-socket",
+            cookies={self.app.config["AUTH_TOKEN_COOKIE_NAME"]: token},
+        )
+
+        with patch("socket_service.request", cookie_request), patch(
+            "socket_service.join_room"
+        ) as join_room, patch("socket_service.emit") as emit:
+            connect_result = on_connect({"tenant_slug": own_tenant.slug})
+            on_subscribe_ticket_updates({"tenant_slug": own_tenant.slug})
+
+        self.assertIsNone(connect_result)
+        joined_rooms = {item.args[0] for item in join_room.call_args_list}
+        self.assertIn("municipio_910", joined_rooms)
+        self.assertIn(f"tenant_{own_tenant.id}", joined_rooms)
+        subscription = next(
+            item for item in emit.call_args_list if item.args[0] == "subscribed_ticket_updates"
+        )
+        self.assertIn(f"tenant_{own_tenant.id}", subscription.args[1]["rooms"])
+
+    def test_http_only_cookie_authenticates_operator_socket_message(self):
+        token = jwt.encode(
+            {"user_id": self.admin.id},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        cookie_request = SimpleNamespace(
+            sid="cookie-operator-message",
+            cookies={self.app.config["AUTH_TOKEN_COOKIE_NAME"]: token},
+        )
+
+        with patch("socket_service.request", cookie_request), patch(
+            "socket_service.servicio_tickets.crear_comentario", return_value=None
+        ) as create_comment:
+            handle_send_chat_message(
+                {
+                    "room": build_ticket_room("municipio", self.ticket.id),
+                    "ticket_id": self.ticket.id,
+                    "ticket_type": "municipio",
+                    "message": "Respuesta autenticada por cookie",
+                }
+            )
+
+        create_comment.assert_called_once()
+
     def test_terminal_clerk_event_disconnects_each_bound_socket_once(self):
         participants = {
             "clerk_session:sess_disconnect": [("socket-one", "engine-one"), ("socket-two", "engine-two")],

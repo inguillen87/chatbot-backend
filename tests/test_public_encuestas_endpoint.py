@@ -32,7 +32,7 @@ def test_public_encuestas_get_includes_cors_headers(client):
     )
     assert response.status_code == 200
     assert response.headers.get("Access-Control-Allow-Origin") == origin
-    assert response.headers.get("Access-Control-Allow-Credentials") == "true"
+    assert response.headers.get("Access-Control-Allow-Credentials") is None
     vary_header = response.headers.get("Vary", "")
     assert "Origin" in [item.strip() for item in vary_header.split(",") if item.strip()]
 

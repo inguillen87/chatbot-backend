@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
 
 import jwt
+from sqlalchemy.exc import IntegrityError
 
 from database import db
-from models import TenantProfile, User
+from models import TenantFollower, TenantProfile, User
 import services.clerk_auth_service as clerk_service
 from services.clerk_auth_service import (
     ClerkAuthError,
@@ -15,6 +16,7 @@ from services.clerk_auth_service import (
     extract_clerk_identity,
     fetch_trusted_clerk_profile,
     is_clerk_session_revoked,
+    resolve_clerk_session_tenant,
     sync_clerk_webhook_event,
     upsert_user_from_clerk,
     verify_active_clerk_session,
@@ -53,6 +55,34 @@ def _profile(email="owner@chatboc.test"):
         ],
         "image_url": "https://img.clerk.test/users/user_clerk_123.jpg",
     }
+
+
+def _create_tenant(
+    slug: str,
+    *,
+    active: bool = True,
+    tenant_type: str = "pyme",
+) -> TenantProfile:
+    owner = User(
+        name=f"Owner {slug}",
+        email=f"owner-{slug}@chatboc.test",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner.set_password("owner-password")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug=slug,
+        nombre=f"Tenant {slug}",
+        tipo=tenant_type,
+        municipio_id=owner.id if tenant_type == "municipio" else None,
+        pyme_id=owner.id if tenant_type != "municipio" else None,
+        is_active=active,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    return tenant
 
 
 def test_upsert_user_from_clerk_creates_user_with_social_metadata(client):
@@ -126,6 +156,207 @@ def test_clerk_session_is_not_issued_before_onboarding(client):
 
         assert payload["onboarding"]["required"] is True
         assert payload["token"] is None
+
+
+def test_portal_session_rejects_backoffice_identity_before_membership_or_token(client):
+    with client.application.app_context():
+        user = upsert_user_from_clerk(_claims(), _profile(), profile_is_trusted=True)
+        user.rol = "admin"
+        user.tipo_chat = "pyme"
+        db.session.flush()
+        portal = _create_tenant("portal-conflict")
+
+        try:
+            resolve_clerk_session_tenant(
+                user,
+                auth_intent="tenant_portal",
+                tenant_slug=portal.slug,
+            )
+        except ClerkAuthError as exc:
+            assert exc.reason_code == "portal_identity_conflict"
+            assert exc.status_code == 403
+        else:
+            raise AssertionError("A backoffice identity must not resolve a portal tenant")
+
+        assert TenantFollower.query.filter_by(user_id=user.id).count() == 0
+
+        try:
+            build_chatboc_session_payload(
+                user,
+                portal,
+                clerk_claims=_claims(),
+                auth_intent="tenant_portal",
+            )
+        except ClerkAuthError as exc:
+            assert exc.reason_code == "portal_identity_conflict"
+            assert exc.status_code == 403
+        else:
+            raise AssertionError("A backoffice identity must not receive a portal token")
+
+
+def test_portal_session_links_multiple_tenants_without_reassigning_client_home(client):
+    with client.application.app_context():
+        user = upsert_user_from_clerk(_claims(), _profile(), profile_is_trusted=True)
+        home_tenant = _create_tenant("client-home")
+        user.tenant_id = home_tenant.id
+        user.tenant_slug = home_tenant.slug
+        first_portal = _create_tenant("portal-one")
+        second_portal = _create_tenant("portal-two", tenant_type="municipio")
+
+        resolved_first = resolve_clerk_session_tenant(
+            user,
+            auth_intent="tenant_portal",
+            tenant_slug=first_portal.slug,
+        )
+        resolved_second = resolve_clerk_session_tenant(
+            user,
+            auth_intent="tenant_portal",
+            tenant_slug=second_portal.slug,
+        )
+        pyme_payload = build_chatboc_session_payload(
+            user,
+            resolved_first,
+            clerk_claims=_claims(),
+            auth_intent="tenant_portal",
+        )
+        municipal_payload = build_chatboc_session_payload(
+            user,
+            resolved_second,
+            clerk_claims=_claims(),
+            auth_intent="tenant_portal",
+        )
+        db.session.commit()
+
+        assert resolved_first.id == first_portal.id
+        assert resolved_second.id == second_portal.id
+        assert user.tenant_id == home_tenant.id
+        assert user.tenant_slug == home_tenant.slug
+        assert user.rol == "usuario"
+        assert TenantFollower.query.filter_by(user_id=user.id).count() == 2
+        assert pyme_payload["user"]["role"] == "usuario"
+        assert pyme_payload["user"]["tipo_chat"] == "pyme"
+        assert municipal_payload["auth_intent"] == "tenant_portal"
+        assert municipal_payload["audience"] == "tenant_portal"
+        assert municipal_payload["user"]["role"] == "usuario"
+        assert municipal_payload["user"]["tipo_chat"] == "municipio"
+        assert municipal_payload["tenant"]["slug"] == "portal-two"
+        assert municipal_payload["onboarding"]["required"] is False
+        assert municipal_payload["onboarding"]["status"] == "portal_ready"
+
+        pyme_decoded = jwt.decode(
+            pyme_payload["token"],
+            client.application.config["SECRET_KEY"],
+            algorithms=["HS256"],
+        )
+        assert pyme_decoded["rol"] == "usuario"
+        assert pyme_decoded["tipo_chat"] == "pyme"
+
+        municipal_decoded = jwt.decode(
+            municipal_payload["token"],
+            client.application.config["SECRET_KEY"],
+            algorithms=["HS256"],
+        )
+        assert municipal_decoded["rol"] == "usuario"
+        assert municipal_decoded["tipo_chat"] == "municipio"
+        assert municipal_decoded["tenant_id"] == second_portal.id
+        assert municipal_decoded["tenant_slug"] == "portal-two"
+        assert municipal_decoded["auth_intent"] == "tenant_portal"
+        assert municipal_decoded["audience"] == "tenant_portal"
+        assert municipal_decoded["municipio_id"] is None
+        assert municipal_decoded["pyme_id"] is None
+        assert municipal_decoded["empresa_id"] is None
+
+
+def test_portal_membership_recovers_from_concurrent_insert(client, monkeypatch):
+    with client.application.app_context():
+        user = upsert_user_from_clerk(_claims(), _profile(), profile_is_trusted=True)
+        portal = _create_tenant("portal-race")
+        db.session.flush()
+        competing = TenantFollower(
+            user_id=user.id,
+            tenant_id=portal.id,
+            notifications_enabled=True,
+        )
+        lookups = iter((None, competing))
+        monkeypatch.setattr(
+            clerk_service,
+            "_find_tenant_follower",
+            lambda *_args: next(lookups),
+        )
+
+        real_flush = db.session.flush
+        collision_raised = False
+
+        def flush_with_concurrent_collision(*args, **kwargs):
+            nonlocal collision_raised
+            has_pending_follower = any(
+                isinstance(item, TenantFollower) for item in db.session.new
+            )
+            if has_pending_follower and not collision_raised:
+                collision_raised = True
+                raise IntegrityError("concurrent follower", {}, Exception("unique"))
+            return real_flush(*args, **kwargs)
+
+        monkeypatch.setattr(db.session, "flush", flush_with_concurrent_collision)
+
+        resolved = resolve_clerk_session_tenant(
+            user,
+            auth_intent="tenant_portal",
+            tenant_slug=portal.slug,
+        )
+
+        assert collision_raised is True
+        assert resolved.id == portal.id
+
+
+def test_portal_session_accepts_only_supported_end_user_roles(client):
+    with client.application.app_context():
+        portal = _create_tenant("portal-role-compat")
+        for index, role in enumerate(("cliente", "chat_user", "usuario"), start=1):
+            user = User(
+                name=f"Portal User {index}",
+                email=f"portal-role-{index}@chatboc.test",
+                rol=role,
+            )
+            user.set_password("portal-password")
+            db.session.add(user)
+            db.session.flush()
+
+            resolved = resolve_clerk_session_tenant(
+                user,
+                auth_intent="tenant_portal",
+                tenant_slug=portal.slug,
+            )
+
+            assert resolved.id == portal.id
+            assert TenantFollower.query.filter_by(
+                user_id=user.id,
+                tenant_id=portal.id,
+            ).count() == 1
+
+
+def test_portal_intent_cannot_complete_tenant_onboarding(client):
+    with client.application.app_context():
+        user = upsert_user_from_clerk(_claims(), _profile(), profile_is_trusted=True)
+        db.session.commit()
+
+        try:
+            complete_clerk_onboarding(
+                user,
+                {
+                    "tenant_name": "Forbidden Portal Tenant",
+                    "terms_accepted": True,
+                    "terms_version": "2026-07-11",
+                },
+                auth_intent="tenant_portal",
+            )
+        except ClerkAuthError as exc:
+            assert exc.reason_code == "owner_intent_required"
+            assert exc.status_code == 403
+        else:
+            raise AssertionError("A portal session must never execute tenant onboarding")
+
+        assert TenantProfile.query.filter_by(slug="forbidden-portal-tenant").first() is None
 
 
 def test_inactive_tenant_cannot_receive_or_reuse_clerk_session(client):

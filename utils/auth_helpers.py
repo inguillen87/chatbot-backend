@@ -73,6 +73,33 @@ _WIDGET_ALLOWED_ANY_METHOD_PATHS: Set[str] = {
     "/api/ask/municipio",
 }
 
+# Public surfaces must never inherit the panel's ambient auth cookie. They can
+# still authenticate explicitly (Authorization/entity headers, request token)
+# or through the separately scoped widget cookie.
+_PANEL_COOKIELESS_PREFIXES: Tuple[str, ...] = (
+    "/ask",
+    "/api/ask",
+    "/public",
+    "/api/public",
+    "/widget",
+    "/api/widget",
+    "/auth/widget",
+    "/api/auth/widget",
+    "/api/pwa/public",
+    "/api/pwa/kits",
+)
+
+_PANEL_COOKIELESS_PATHS: Set[str] = {
+    "/auth/widget-token",
+    "/api/auth/widget-token",
+    "/auth/widget-refresh",
+    "/api/auth/widget-refresh",
+    "/pwa/anon-id",
+    "/api/pwa/anon-id",
+    "/pwa/tenant-info",
+    "/api/pwa/tenant-info",
+}
+
 _DEMO_TOKEN_WARNED: Set[str] = set()
 
 _DEMO_ALLOWED_PREFIXES: Tuple[str, ...] = (
@@ -130,6 +157,19 @@ def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
         return True
 
     return False
+
+
+def _panel_cookie_allowed(path: Optional[str]) -> bool:
+    """Return False for public/widget routes that require explicit identity."""
+
+    normalized_path = _normalize_path(path).lower()
+    if normalized_path in _PANEL_COOKIELESS_PATHS:
+        return False
+    return not any(
+        normalized_path == prefix
+        or normalized_path.startswith(f"{prefix}/")
+        for prefix in _PANEL_COOKIELESS_PREFIXES
+    )
 
 
 def _demo_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
@@ -890,12 +930,6 @@ def obtener_token():
     """Extrae el token desde header, query string o payload."""
     current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
 
-    # Security Fix: Prevent public widget from reading auth_token cookie
-    # If Origin is public landing (chatboc.ar) OR request has entityToken (widget mode),
-    # strictly ignore auth_token cookie.
-    origin = request.headers.get("Origin", "").lower()
-    is_public_landing = "chatboc.ar" in origin and "app.chatboc.ar" not in origin
-
     # Check if request has explicit entityToken (widget context)
     has_entity_token = (
         request.args.get("entityToken")
@@ -903,19 +937,12 @@ def obtener_token():
         or (request.is_json and (request.get_json(silent=True) or {}).get("entityToken"))
     )
 
-    allow_cookie_auth = True
-    if is_public_landing or has_entity_token:
-        # Check if we are in a protected app/admin route where cookies might still be needed
-        # But if it's the public widget endpoints, force disable cookie auth
-        path_lower = request.path.lower()
-        if (
-            path_lower.startswith("/api/ask")
-            or path_lower.startswith("/api/public")
-            or path_lower.startswith("/api/widget")
-            or path_lower.startswith("/api/pwa")
-        ):
-            allow_cookie_auth = False
-            current_app.logger.info(f"[obtener_token] Cookie auth DISABLED for public/widget request. Origin: {origin}, Path: {request.path}")
+    allow_cookie_auth = _panel_cookie_allowed(request.path)
+    if not allow_cookie_auth:
+        current_app.logger.debug(
+            "[obtener_token] Panel cookie ignored for public/widget path: %s",
+            request.path,
+        )
 
 
     checked_static_tokens: Dict[str, Optional[User]] = {}
@@ -976,9 +1003,15 @@ def obtener_token():
         or (
             bool(has_entity_token)
             and (
-                path_lower.startswith("/api/public")
+                path_lower.startswith("/public")
+                or path_lower.startswith("/api/public")
+                or path_lower.startswith("/widget")
                 or path_lower.startswith("/api/widget")
+                or path_lower.startswith("/auth/widget")
+                or path_lower.startswith("/api/auth/widget")
+                or path_lower.startswith("/pwa")
                 or path_lower.startswith("/api/pwa")
+                or path_lower.startswith("/ask")
                 or path_lower.startswith("/api/ask")
             )
         )

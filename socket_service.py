@@ -55,6 +55,23 @@ def _decode_chatboc_socket_token(token: str) -> dict:
         return {}
 
 
+def _socket_request_token(payload: Any = None) -> Optional[str]:
+    """Resolve the Chatboc session from Socket.IO auth or its HttpOnly cookie."""
+
+    if isinstance(payload, dict):
+        explicit_token = str(payload.get("token") or "").strip()
+        if explicit_token:
+            return explicit_token
+
+    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    cookies = getattr(request, "cookies", None)
+    if cookies is None:
+        return None
+
+    cookie_token = str(cookies.get(cookie_name) or "").strip()
+    return cookie_token or None
+
+
 def _clerk_identity_rooms(user: Optional[User], token: str) -> list[str]:
     claims = _decode_chatboc_socket_token(token)
     if str(claims.get("auth_provider") or "").strip().lower() != "clerk":
@@ -844,7 +861,7 @@ def on_connect(auth):
     """
     current_app.logger.info(f"Socket.IO client connected: {request.sid}")
     auth_payload = auth if isinstance(auth, dict) else {}
-    token = auth_payload.get('token')
+    token = _socket_request_token(auth_payload)
     channel = auth_payload.get('channel')
 
     if token:
@@ -880,8 +897,9 @@ def on_connect(auth):
 
 @socketio.on('subscribe_ticket_updates')
 def on_subscribe_ticket_updates(data):
-    token = (data or {}).get('token')
-    tenant_slug = (data or {}).get('tenant_slug')
+    payload = data if isinstance(data, dict) else {}
+    token = _socket_request_token(payload)
+    tenant_slug = payload.get('tenant_slug')
     if not token:
         emit('subscription_error', {'error': 'missing_token'})
         return
@@ -974,14 +992,15 @@ def handle_send_chat_message(data):
     Manejador para cuando un agente envía un mensaje en el chat de un ticket.
     Guarda el mensaje, lo emite por socket y envía notificaciones a otros canales (Email, SMS, WhatsApp).
     """
-    token = data.get('token')
-    room = data.get('room')
-    ticket_id = data.get('ticket_id')
-    ticket_type = data.get('ticket_type')
-    message_text = data.get('message')
+    payload = data if isinstance(data, dict) else {}
+    token = _socket_request_token(payload)
+    room = payload.get('room')
+    ticket_id = payload.get('ticket_id')
+    ticket_type = payload.get('ticket_type')
+    message_text = payload.get('message')
 
     if not all([token, room, ticket_id, ticket_type, message_text]):
-        current_app.logger.error(f"Socket 'send_chat_message' recibió datos incompletos: {data}")
+        current_app.logger.error("Socket 'send_chat_message' recibio datos incompletos")
         return
 
     current_user = user_from_token(str(token))

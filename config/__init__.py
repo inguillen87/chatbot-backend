@@ -156,6 +156,9 @@ ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
 def _is_render_runtime() -> bool:
     return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
 
+
+IS_PRODUCTION_RUNTIME = ENV.strip().lower() in {"prod", "production"} or _is_render_runtime()
+
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
@@ -194,32 +197,95 @@ WIDGET_URL = os.getenv("WIDGET_URL", "http://localhost:8080")
 parsed_backend = urlparse(BACKEND_URL)
 IS_HTTPS = parsed_backend.scheme == "https"
 
-# CORS_ALLOWED_ORIGINS can override the default allowed origins.  When unset we
-# allow the panel and widget URLs.  Values are cleaned of trailing slashes and
-# duplicates are removed.
-cors_env = os.getenv("CORS_ALLOWED_ORIGINS")
-if cors_env:
-    allowed_urls = [u.strip().rstrip('/') for u in cors_env.split(',') if u.strip()]
-else:
-    allowed_urls = [PANEL_URL.rstrip('/'), WIDGET_URL.rstrip('/')]
+def _normalize_cors_origin(value: object) -> Optional[str]:
+    """Return an exact HTTP(S) origin suitable for credentialed CORS."""
 
-# Keep local admin/widget validation usable against deployed APIs. These origins
-# are browser-only development origins and still require normal auth/capability
-# checks on protected endpoints.
-if os.getenv("CORS_ALLOW_LOCAL_DEV", "1").strip().lower() not in {"0", "false", "no"}:
-    allowed_urls.extend(
-        [
-            "http://localhost:4173",
-            "http://127.0.0.1:4173",
-            "http://localhost:4174",
-            "http://127.0.0.1:4174",
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:8080",
-            "http://127.0.0.1:8080",
-        ]
-    )
-    allowed_urls.append(re.compile(r"^http://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"))
+    raw = str(value or "").strip().rstrip("/")
+    if not raw or raw == "*":
+        return None
+
+    parsed = urlparse(raw)
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/"}
+    ):
+        return None
+
+    try:
+        parsed.port
+    except ValueError:
+        return None
+
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _credential_site_root(backend_host: str) -> str:
+    configured_root = _normalize_domain(os.getenv("PUBLIC_ROOT_DOMAIN"))
+    if configured_root and (
+        backend_host == configured_root
+        or backend_host.endswith(f".{configured_root}")
+    ):
+        return configured_root
+
+    labels = backend_host.split(".")
+    if len(labels) >= 3 and labels[0] in {"api", "app", "admin", "backend"}:
+        return ".".join(labels[1:])
+    return backend_host
+
+
+def is_same_site_credential_origin(
+    value: object,
+    *,
+    backend_url: object = None,
+) -> bool:
+    """Return whether an exact origin can receive first-party auth cookies."""
+
+    normalized = _normalize_cors_origin(value)
+    parsed_origin = urlparse(normalized) if normalized else None
+    parsed_api = urlparse(str(backend_url or BACKEND_URL))
+    if not parsed_origin or not parsed_origin.hostname or not parsed_api.hostname:
+        return False
+    if parsed_api.scheme.lower() == "https" and parsed_origin.scheme.lower() != "https":
+        return False
+
+    site_root = _credential_site_root(parsed_api.hostname.lower())
+    origin_host = parsed_origin.hostname.lower()
+    return origin_host == site_root or origin_host.endswith(f".{site_root}")
+
+
+def _append_exact_origin(target: List[object], value: object) -> None:
+    normalized = _normalize_cors_origin(value)
+    if normalized and normalized not in target:
+        target.append(normalized)
+
+
+# This list is exclusively for browser requests that may include cookies or
+# Authorization. Public widget endpoints are handled separately in app.py and
+# never receive Access-Control-Allow-Credentials.
+cors_env = os.getenv("CORS_ALLOWED_ORIGINS")
+configured_origins = (
+    [entry.strip() for entry in cors_env.split(",") if entry.strip()]
+    if cors_env
+    else [PANEL_URL, WIDGET_URL]
+)
+allowed_urls: List[object] = []
+for configured_origin in configured_origins:
+    _append_exact_origin(allowed_urls, configured_origin)
+
+LOCAL_DEV_ORIGIN_PATTERN = re.compile(
+    r"^http://(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$"
+)
+CORS_ALLOW_LOCAL_DEV = (
+    _env_flag(False, "CORS_ALLOW_LOCAL_DEV") and not IS_PRODUCTION_RUNTIME
+)
+if CORS_ALLOW_LOCAL_DEV:
+    allowed_urls.append(LOCAL_DEV_ORIGIN_PATTERN)
 
 # Always add the root domain(s) so that the public widget can reach the API
 host = parsed_backend.hostname
@@ -227,21 +293,25 @@ if host and host != "localhost":
     parts = host.split('.')
     if len(parts) >= 2:
         root_domain = ".".join(parts[-2:])
-        allowed_urls.extend([
-            f"https://{root_domain}",
-            f"https://www.{root_domain}",
-        ])
+        _append_exact_origin(allowed_urls, f"https://{root_domain}")
+        _append_exact_origin(allowed_urls, f"https://www.{root_domain}")
 
 public_root = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
 if public_root and public_root not in ("localhost", "127.0.0.1"):
-    allowed_urls.extend([
-        f"https://{public_root}",
-        f"https://www.{public_root}",
-    ])
+    _append_exact_origin(allowed_urls, f"https://{public_root}")
+    _append_exact_origin(allowed_urls, f"https://www.{public_root}")
 
-ALLOWED_ORIGINS = list(dict.fromkeys(allowed_urls))
-# Allow Vercel preview deployments (e.g. https://<project>.vercel.app)
-ALLOWED_ORIGINS.append(re.compile(r"https://.*\.vercel\.app"))
+if IS_PRODUCTION_RUNTIME:
+    allowed_urls = [
+        origin
+        for origin in allowed_urls
+        if isinstance(origin, str)
+        and is_same_site_credential_origin(origin, backend_url=BACKEND_URL)
+    ]
+
+CREDENTIALS_ALLOWED_ORIGINS = list(allowed_urls)
+# Backwards-compatible export. It no longer contains wildcard Vercel previews.
+ALLOWED_ORIGINS = CREDENTIALS_ALLOWED_ORIGINS
 
 # --- Demo Rubros Loader ----------------------------------------------------
 
@@ -403,7 +473,10 @@ class Config:
     Contiene todas las variables de configuración.
     """
 
+    ENV = ENV
     DEBUG = ENV == "dev"
+    CORS_ALLOW_LOCAL_DEV = CORS_ALLOW_LOCAL_DEV
+    CORS_CREDENTIALS_ALLOWED_ORIGINS = tuple(CREDENTIALS_ALLOWED_ORIGINS)
 
     # Public URLs exposed to the frontend. Keeping them in the Flask config
     # ensures endpoints like /api/config can always read them without having
@@ -890,6 +963,7 @@ class TestConfig(Config):
     SERVER_NAME = 'localhost'
     SESSION_COOKIE_DOMAIN = None
     SESSION_TYPE = 'null'
+    CORS_ALLOW_LOCAL_DEV = True
 
 class TestingConfig(TestConfig):
     pass

@@ -41,7 +41,13 @@ from flask_cors import CORS
 from flask_session import Session
 from sqlalchemy import event as sa_event
 
-from config import Config, ALLOWED_ORIGINS, validate_runtime_security
+from config import (
+    ALLOWED_ORIGINS,
+    LOCAL_DEV_ORIGIN_PATTERN,
+    Config,
+    is_same_site_credential_origin,
+    validate_runtime_security,
+)
 from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
 from middleware import tenant_middleware
@@ -56,6 +62,43 @@ def _truthy_env(name: str) -> bool:
 
 def _running_on_render() -> bool:
     return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+
+
+_PUBLIC_CORS_TREE_PREFIXES = (
+    "/public",
+    "/api/public",
+    "/api/v2/public",
+    "/api/pwa/public",
+    "/api/pwa/kits",
+    "/widget",
+    "/api/tickets/public",
+)
+_PUBLIC_CORS_EXACT_PATHS = {
+    "/pwa/anon-id",
+    "/api/pwa/anon-id",
+    "/pwa/tenant-info",
+    "/api/pwa/tenant-info",
+}
+_PUBLIC_WIDGET_AUTH_PREFIXES = ("/auth/widget", "/api/auth/widget")
+
+
+def _is_public_cross_origin_path(path: str) -> bool:
+    normalized = str(path or "").rstrip("/") or "/"
+    if normalized in _PUBLIC_CORS_EXACT_PATHS:
+        return True
+    if normalized == "/api/rubros" or normalized.startswith("/api/rubros/"):
+        return True
+    if any(
+        normalized == prefix or normalized.startswith(f"{prefix}/")
+        for prefix in _PUBLIC_CORS_TREE_PREFIXES
+    ):
+        return True
+    return any(
+        normalized == prefix
+        or normalized.startswith(f"{prefix}/")
+        or normalized.startswith(f"{prefix}-")
+        for prefix in _PUBLIC_WIDGET_AUTH_PREFIXES
+    )
 
 # En migraciones NO importamos socket_service ni blueprints
 if not MIGRATIONS_ONLY:
@@ -369,34 +412,50 @@ def create_app(config_class=Config):
 
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
-        credentialed_origins = [
-            origin
-            for origin in ALLOWED_ORIGINS
-            if not (isinstance(origin, str) and origin.strip() == "*")
-        ]
+        env_name = str(app.config.get("ENV") or "").strip().lower()
+        production_runtime = env_name in {"prod", "production"} or _running_on_render()
+        credentialed_origins = list(
+            app.config.get("CORS_CREDENTIALS_ALLOWED_ORIGINS") or ALLOWED_ORIGINS
+        )
+        if app.config.get("CORS_ALLOW_LOCAL_DEV") and not production_runtime:
+            if LOCAL_DEV_ORIGIN_PATTERN not in credentialed_origins:
+                credentialed_origins.append(LOCAL_DEV_ORIGIN_PATTERN)
+        if production_runtime:
+            credentialed_origins = [
+                origin
+                for origin in credentialed_origins
+                if not isinstance(origin, Pattern)
+                and isinstance(origin, str)
+                and origin.strip() != "*"
+                and is_same_site_credential_origin(
+                    origin,
+                    backend_url=app.config.get("BACKEND_URL"),
+                )
+            ]
+
+        public_cors = {"origins": "*", "supports_credentials": False}
+        credentialed_cors = {
+            "origins": credentialed_origins,
+            "supports_credentials": True,
+        }
         cors_resources = {
-            r"/public/*": {"origins": "*"},
-            r"/pwa/*": {"origins": "*"},
-            r"/api/pwa/*": {"origins": "*"},
-            r"/api/public/*": {"origins": "*"},
-            r"/api/analytics/*": {
-                "origins": credentialed_origins,
-                "supports_credentials": True,
-            },
-            r"/api/rubros": {"origins": "*"},
-            r"/api/rubros/*": {"origins": "*"},
-            r"/admin/*": {
-                "origins": ["https://www.chatboc.ar", "https://chatboc.ar"],
-            },
-            r"/integracion/*": {
-                "origins": [
-                    "https://www.chatboc.ar",
-                    "https://chatboc-demo-widget-oigs.vercel.app",
-                ],
-                "supports_credentials": True,
-            },
-            r"/api/*": {"origins": ALLOWED_ORIGINS},
-            r"/*": {"origins": ALLOWED_ORIGINS},
+            r"/api/auth/widget(?:/.*|-.*)?$": public_cors,
+            r"/auth/widget(?:/.*|-.*)?$": public_cors,
+            r"/api/tickets/public(?:/.*)?$": public_cors,
+            r"/api/v2/public(?:/.*)?$": public_cors,
+            r"/api/public(?:/.*)?$": public_cors,
+            r"/api/pwa/public(?:/.*)?$": public_cors,
+            r"/api/pwa/kits(?:/.*)?$": public_cors,
+            r"/api/pwa/(?:anon-id|tenant-info)$": public_cors,
+            r"/public(?:/.*)?$": public_cors,
+            r"/pwa/(?:anon-id|tenant-info)$": public_cors,
+            r"/widget(?:/.*)?$": public_cors,
+            r"/api/rubros(?:/.*)?$": public_cors,
+            r"/api/analytics(?:/.*)?$": credentialed_cors,
+            r"/admin(?:/.*)?$": credentialed_cors,
+            r"/integracion(?:/.*)?$": credentialed_cors,
+            r"/api(?:/.*)?$": credentialed_cors,
+            r"/.*": credentialed_cors,
         }
 
         allow_headers = [
@@ -455,21 +514,6 @@ def create_app(config_class=Config):
 
             return resp
 
-        def _origin_is_allowed(origin: str | None) -> bool:
-            if not origin:
-                return False
-
-            for allowed in ALLOWED_ORIGINS:
-                if isinstance(allowed, Pattern):
-                    if allowed.match(origin):
-                        return True
-                elif str(allowed).strip() == "*":
-                    return True
-                elif origin.rstrip("/") == str(allowed).rstrip("/"):
-                    return True
-
-            return False
-
         def _credentialed_origin_is_allowed(origin: str | None) -> bool:
             if not origin:
                 return False
@@ -486,22 +530,51 @@ def create_app(config_class=Config):
                 del resp.headers[header_name]
             resp.headers[header_name] = value
 
+        cors_header_names = (
+            "Access-Control-Allow-Origin",
+            "Access-Control-Allow-Credentials",
+            "Access-Control-Allow-Headers",
+            "Access-Control-Allow-Methods",
+            "Access-Control-Expose-Headers",
+        )
+
+        def _clear_cors_headers(resp) -> None:
+            for header_name in cors_header_names:
+                while header_name in resp.headers:
+                    del resp.headers[header_name]
+
+        def _set_cors_vary(resp) -> None:
+            vary_values = {
+                item.strip()
+                for item in str(resp.headers.get("Vary") or "").split(",")
+                if item.strip()
+            }
+            vary_values.add("Origin")
+            resp.headers["Vary"] = ", ".join(sorted(vary_values))
+
+        exposed_headers = (
+            "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
+            "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id"
+        )
+
         @app.after_request
         def ensure_cors_headers(resp):
             origin = request.headers.get("Origin")
-            is_analytics_api = request.path == "/api/analytics" or request.path.startswith("/api/analytics/")
-            if is_analytics_api and not _credentialed_origin_is_allowed(origin):
-                for header_name in (
-                    "Access-Control-Allow-Origin",
-                    "Access-Control-Allow-Credentials",
-                    "Access-Control-Allow-Headers",
-                    "Access-Control-Allow-Methods",
-                    "Access-Control-Expose-Headers",
-                ):
-                    while header_name in resp.headers:
-                        del resp.headers[header_name]
+            if not origin:
                 return resp
-            if not _origin_is_allowed(origin):
+
+            if _is_public_cross_origin_path(request.path):
+                _clear_cors_headers(resp)
+                resp.headers.setdefault("X-Request-Id", _request_id())
+                _set_single_header(resp, "Access-Control-Allow-Origin", origin)
+                _set_single_header(resp, "Access-Control-Allow-Headers", ", ".join(allow_headers))
+                _set_single_header(resp, "Access-Control-Allow-Methods", ", ".join(allow_methods))
+                _set_single_header(resp, "Access-Control-Expose-Headers", exposed_headers)
+                _set_cors_vary(resp)
+                return resp
+
+            if not _credentialed_origin_is_allowed(origin):
+                _clear_cors_headers(resp)
                 return resp
 
             resp.headers.setdefault("X-Request-Id", _request_id())
@@ -515,26 +588,15 @@ def create_app(config_class=Config):
             # "x-anon-id" are accepted by browsers.
             _set_single_header(resp, "Access-Control-Allow-Headers", ", ".join(allow_headers))
             _set_single_header(resp, "Access-Control-Allow-Methods", ", ".join(allow_methods))
-            _set_single_header(
-                resp,
-                "Access-Control-Expose-Headers",
-                "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
-                "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id"
-            )
-
-            vary_header = resp.headers.get("Vary")
-            if vary_header:
-                if "Origin" not in vary_header:
-                    resp.headers["Vary"] = f"{vary_header}, Origin"
-            else:
-                resp.headers["Vary"] = "Origin"
+            _set_single_header(resp, "Access-Control-Expose-Headers", exposed_headers)
+            _set_cors_vary(resp)
 
             return resp
 
         CORS(
             app,
             resources=cors_resources,
-            supports_credentials=True,
+            supports_credentials=False,
             methods=allow_methods,
             allow_headers=allow_headers,
             expose_headers=[

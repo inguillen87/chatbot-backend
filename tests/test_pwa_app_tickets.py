@@ -12,8 +12,9 @@ if project_root not in sys.path:
 
 from app import create_app, db  # noqa: E402
 from config import Config  # noqa: E402
-from models import TenantProfile, TenantTicket, User  # noqa: E402
+from models import TenantFollower, TenantProfile, TenantTicket, User  # noqa: E402
 from routes.pwa_app import list_tickets  # noqa: E402
+from utils.auth_helpers import generar_token  # noqa: E402
 
 
 class TestConfig(Config):
@@ -41,6 +42,15 @@ class PwaAppTicketsTest(unittest.TestCase):
             municipio_id=self.owner.id,
         )
         db.session.add(self.tenant)
+        db.session.commit()
+
+        db.session.add(
+            TenantFollower(
+                user_id=self.viewer.id,
+                tenant_id=self.tenant.id,
+                notifications_enabled=True,
+            )
+        )
         db.session.commit()
 
     def tearDown(self):
@@ -114,6 +124,25 @@ class PwaAppTicketsTest(unittest.TestCase):
         self.assertEqual(data["summary"]["total"], 1)
         self.assertEqual(len(data["tickets"]), 1)
         self.assertEqual(data["tickets"][0]["descripcion"], "Recolección")
+
+    def test_followed_tenants_accepts_first_party_panel_cookie(self):
+        token = generar_token(
+            self.viewer.id,
+            self.viewer.rol,
+            None,
+            None,
+            None,
+        )
+        client = self.app.test_client()
+        client.set_cookie("auth_token", token)
+
+        response = client.get(
+            "/api/pwa/app/me/tenants",
+            headers={"Origin": "https://www.chatboc.ar"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()[0]["slug"], self.tenant.slug)
 
 
 if __name__ == "__main__":

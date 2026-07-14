@@ -14,10 +14,11 @@ import jwt
 import requests
 from flask import current_app
 from jwt import PyJWKClient
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 
 from database import db
-from models import TenantProfile, User, generate_token
+from models import TenantFollower, TenantProfile, User, generate_token
 from services.auth_notification_service import (
     send_onboarding_whatsapp,
     send_verification_email,
@@ -34,6 +35,7 @@ from utils.auth_helpers import (
 from utils.roles import (
     ROLE_CLIENTE,
     ROLE_SUPERADMIN,
+    canonical_role,
     is_authorized_superadmin_email,
     is_authorized_superadmin_user,
     is_super_admin_role,
@@ -44,6 +46,11 @@ from utils.roles import (
 
 CLERK_AUTH_CONTRACT_VERSION = "auth.clerk.v1"
 CLERK_TERMS_VERSION = "2026-07-11"
+CLERK_INTENT_TENANT_OWNER = "tenant_owner"
+CLERK_INTENT_TENANT_PORTAL = "tenant_portal"
+CLERK_AUTH_INTENTS = frozenset(
+    {CLERK_INTENT_TENANT_OWNER, CLERK_INTENT_TENANT_PORTAL}
+)
 DEFAULT_SOCIAL_PROVIDERS = ("google", "facebook", "linkedin")
 DEFAULT_CLERK_AUTHORIZED_PARTIES = (
     "https://chatboc.ar",
@@ -163,7 +170,16 @@ ONBOARDING_VERTICAL_PRESETS = {
 
 
 class ClerkAuthError(ValueError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason_code: Optional[str] = None,
+        status_code: Optional[int] = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.status_code = status_code
 
 
 class ClerkNotConfigured(ClerkAuthError):
@@ -176,6 +192,36 @@ class ClerkTenantInactive(ClerkAuthError):
 
 def _truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def normalize_clerk_auth_intent(
+    value: object,
+    *,
+    default: str = CLERK_INTENT_TENANT_OWNER,
+) -> str:
+    """Return a supported Clerk session intent without accepting role aliases."""
+
+    raw = str(value or default).strip().lower()
+    if raw not in CLERK_AUTH_INTENTS:
+        raise ClerkAuthError(
+            "auth_intent debe ser tenant_owner o tenant_portal",
+            reason_code="invalid_auth_intent",
+            status_code=400,
+        )
+    return raw
+
+
+def _require_portal_end_user_identity(user: User) -> None:
+    """Fail closed because legacy authorization reloads the persisted ORM role."""
+
+    raw_role = str(getattr(user, "rol", None) or "").strip().lower()
+    if canonical_role(raw_role) == ROLE_CLIENTE or raw_role == "chat_user":
+        return
+    raise ClerkAuthError(
+        "La identidad local tiene permisos operativos incompatibles con el portal",
+        reason_code="portal_identity_conflict",
+        status_code=403,
+    )
 
 
 def _slugify(value: str | None) -> str:
@@ -448,6 +494,26 @@ def build_clerk_frontend_contract() -> dict:
         "production_ready": production_ready,
         "session_sync_endpoint": "/auth/clerk/session",
         "onboarding_endpoint": "/auth/clerk/onboarding",
+        "auth_intents": {
+            "default": CLERK_INTENT_TENANT_OWNER,
+            "supported": [CLERK_INTENT_TENANT_OWNER, CLERK_INTENT_TENANT_PORTAL],
+            "tenant_owner": {
+                "requires_tenant_slug": False,
+                "may_require_onboarding": True,
+            },
+            "tenant_portal": {
+                "requires_tenant_slug": True,
+                "may_require_onboarding": False,
+                "effective_role": ROLE_CLIENTE,
+            },
+        },
+        "session_transport": {
+            "preferred": "http_only_cookie",
+            "cookie_same_site": "Lax",
+            "cookie_path": "/",
+            "secure_in_production": True,
+            "production_body_token": "omitted_by_default",
+        },
         "webhook_endpoint": "/auth/clerk/webhook",
         "webhook_required_events": [
             "user.created",
@@ -958,6 +1024,74 @@ def require_active_tenant(tenant: Optional[TenantProfile]) -> Optional[TenantPro
     return tenant
 
 
+def _find_tenant_follower(user_id: int, tenant_id: int) -> Optional[TenantFollower]:
+    return TenantFollower.query.filter_by(
+        user_id=user_id,
+        tenant_id=tenant_id,
+    ).first()
+
+
+def _ensure_tenant_follower(user_id: int, tenant_id: int) -> TenantFollower:
+    follower = _find_tenant_follower(user_id, tenant_id)
+    if follower is not None:
+        return follower
+
+    try:
+        with db.session.begin_nested():
+            follower = TenantFollower(
+                user_id=user_id,
+                tenant_id=tenant_id,
+                notifications_enabled=True,
+            )
+            db.session.add(follower)
+            db.session.flush()
+    except IntegrityError:
+        follower = _find_tenant_follower(user_id, tenant_id)
+        if follower is None:
+            raise
+    return follower
+
+
+def resolve_clerk_session_tenant(
+    user: User,
+    *,
+    auth_intent: object = CLERK_INTENT_TENANT_OWNER,
+    tenant_slug: object = None,
+) -> Optional[TenantProfile]:
+    """Resolve the effective tenant and persist portal membership when required."""
+
+    intent = normalize_clerk_auth_intent(auth_intent)
+    if intent == CLERK_INTENT_TENANT_OWNER:
+        return require_active_tenant(tenant_for_user(user))
+
+    _require_portal_end_user_identity(user)
+    slug = str(tenant_slug or "").strip().lower()
+    if not slug:
+        raise ClerkAuthError(
+            "tenant_slug es obligatorio para ingresar al portal",
+            reason_code="tenant_slug_required",
+            status_code=400,
+        )
+    if len(slug) > 80 or re.fullmatch(r"[a-z0-9_-]+", slug) is None:
+        raise ClerkAuthError(
+            "tenant_slug no es valido",
+            reason_code="tenant_slug_invalid",
+            status_code=400,
+        )
+
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None:
+        raise ClerkAuthError(
+            "El tenant solicitado no existe",
+            reason_code="tenant_not_found",
+            status_code=404,
+        )
+    require_active_tenant(tenant)
+
+    _ensure_tenant_follower(user.id, tenant.id)
+    return tenant
+
+
 def _session_identity_payload(user: User) -> dict:
     identity = get_user_profile_identity(user)
     avatar_url = identity.get("avatar_url")
@@ -969,23 +1103,39 @@ def _session_identity_payload(user: User) -> dict:
     }
 
 
+def _portal_chat_type(tenant: Optional[TenantProfile]) -> str:
+    """Keep portal routing on the legacy municipio/pyme contract."""
+
+    normalized = normalize_tenant_type(getattr(tenant, "tipo", None), default="pyme")
+    return "municipio" if normalized == "municipio" else "pyme"
+
+
 def _issue_clerk_chatboc_token(
     user: User,
     tenant: Optional[TenantProfile],
     clerk_claims: Optional[dict],
+    *,
+    auth_intent: object = CLERK_INTENT_TENANT_OWNER,
 ) -> str:
+    intent = normalize_clerk_auth_intent(auth_intent)
     claims = clerk_claims if isinstance(clerk_claims, dict) else {}
     clerk_sid = str(claims.get("sid") or "").strip()
     clerk_user_id = str(claims.get("sub") or "").strip()
     if not clerk_sid:
         raise ClerkAuthError("Clerk session id is required to issue a Chatboc session")
 
+    portal_session = intent == CLERK_INTENT_TENANT_PORTAL
+    if portal_session:
+        _require_portal_end_user_identity(user)
+    effective_role = ROLE_CLIENTE if portal_session else user.rol
+    effective_chat_type = _portal_chat_type(tenant) if portal_session else user.tipo_chat
+
     return generar_token(
         user.id,
-        user.rol,
-        user.tipo_chat,
-        user.municipio_id,
-        user.pyme_id,
+        effective_role,
+        effective_chat_type,
+        None if portal_session else user.municipio_id,
+        None if portal_session else user.pyme_id,
         expires_in=timedelta(hours=1),
         extra_claims={
             "auth_provider": "clerk",
@@ -997,7 +1147,9 @@ def _issue_clerk_chatboc_token(
             "sv": auth_session_version(user),
             "tenant_id": getattr(tenant, "id", None),
             "tenant_slug": getattr(tenant, "slug", None),
-            "empresa_id": user.empresa_id,
+            "empresa_id": None if portal_session else user.empresa_id,
+            "auth_intent": intent,
+            "audience": intent,
         },
     )
 
@@ -1006,25 +1158,67 @@ def build_chatboc_session_payload(
     user: User,
     tenant: Optional[TenantProfile] = None,
     clerk_claims: Optional[dict] = None,
+    *,
+    auth_intent: object = CLERK_INTENT_TENANT_OWNER,
 ) -> dict:
-    tenant = require_active_tenant(tenant or tenant_for_user(user))
-    onboarding = build_onboarding_contract(user, tenant)
+    intent = normalize_clerk_auth_intent(auth_intent)
+    portal_session = intent == CLERK_INTENT_TENANT_PORTAL
+    if portal_session:
+        _require_portal_end_user_identity(user)
+    if portal_session and tenant is None:
+        raise ClerkAuthError(
+            "El tenant efectivo es obligatorio para una sesion de portal",
+            reason_code="tenant_slug_required",
+            status_code=400,
+        )
+
+    tenant = require_active_tenant(tenant if portal_session else (tenant or tenant_for_user(user)))
+    onboarding = (
+        {
+            "required": False,
+            "status": "portal_ready",
+            "title": "Acceso al portal activo",
+            "description": "Tu identidad quedo vinculada a este portal sin permisos administrativos.",
+            "submit_endpoint": None,
+            "modal": {"steps": [], "vertical_options": [], "goal_options": []},
+        }
+        if portal_session
+        else build_onboarding_contract(user, tenant)
+    )
     token = None
     if not onboarding.get("required"):
-        token = _issue_clerk_chatboc_token(user, tenant, clerk_claims)
-    channel_activation = build_channel_activation_payload(tenant)
+        token = _issue_clerk_chatboc_token(
+            user,
+            tenant,
+            clerk_claims,
+            auth_intent=intent,
+        )
+    channel_activation = (
+        {
+            "available": False,
+            "status": "not_applicable",
+            "reason_code": "tenant_portal",
+            "channels": [],
+        }
+        if portal_session
+        else build_channel_activation_payload(tenant)
+    )
     identity = _session_identity_payload(user)
+    effective_role = ROLE_CLIENTE if portal_session else user.rol
+    effective_chat_type = _portal_chat_type(tenant) if portal_session else user.tipo_chat
     return {
         "contract_version": CLERK_AUTH_CONTRACT_VERSION,
         "token": token,
         "auth_provider": "clerk",
+        "auth_intent": intent,
+        "audience": intent,
         "user": {
             "id": user.id,
             "name": user.name,
             "email": user.email,
-            "rol": user.rol,
-            "role": user.rol,
-            "tipo_chat": user.tipo_chat,
+            "rol": effective_role,
+            "role": effective_role,
+            "tipo_chat": effective_chat_type,
             "tenant_id": getattr(tenant, "id", None),
             "tenant_slug": getattr(tenant, "slug", None),
             "tenantSlug": getattr(tenant, "slug", None),
@@ -1290,7 +1484,18 @@ def _unique_tenant_slug(base: str) -> str:
     return candidate
 
 
-def complete_clerk_onboarding(user: User, payload: dict) -> TenantProfile:
+def complete_clerk_onboarding(
+    user: User,
+    payload: dict,
+    *,
+    auth_intent: object = CLERK_INTENT_TENANT_OWNER,
+) -> TenantProfile:
+    if normalize_clerk_auth_intent(auth_intent) != CLERK_INTENT_TENANT_OWNER:
+        raise ClerkAuthError(
+            "El onboarding de tenant solo admite autenticacion de propietario",
+            reason_code="owner_intent_required",
+            status_code=403,
+        )
     if not _truthy(payload.get("terms_accepted")):
         raise ClerkAuthError("Debes aceptar los Terminos y la Politica de Privacidad para crear el tenant")
     terms_version = _current_terms_version()
@@ -1459,7 +1664,14 @@ def _revoke_chatboc_sessions_for_clerk_user(user: User, *, reason: str) -> int:
     return next_version
 
 
-def sync_clerk_webhook_event(event: dict) -> dict:
+def _finish_webhook_db_work(*, commit: bool) -> None:
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
+
+
+def sync_clerk_webhook_event(event: dict, *, commit: bool = True) -> dict:
     event_type = event.get("type") or ""
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     if event_type in {"user.created", "user.updated"}:
@@ -1477,7 +1689,7 @@ def sync_clerk_webhook_event(event: dict) -> dict:
                 }
         claims = {"sub": data.get("id")}
         user = upsert_user_from_clerk(claims, data, profile_is_trusted=True)
-        db.session.commit()
+        _finish_webhook_db_work(commit=commit)
         return {"status": "synced", "user_id": user.id, "event_type": event_type}
 
     if event_type in {"session.ended", "session.removed", "session.revoked"}:
@@ -1488,7 +1700,7 @@ def sync_clerk_webhook_event(event: dict) -> dict:
         if user:
             session_version = _revoke_chatboc_sessions_for_clerk_user(user, reason=event_type)
             db.session.add(user)
-            db.session.commit()
+            _finish_webhook_db_work(commit=commit)
             return {
                 "status": "sessions_revoked",
                 "user_id": user.id,
@@ -1525,6 +1737,6 @@ def sync_clerk_webhook_event(event: dict) -> dict:
             user.password_reset_sent_at = None
             _revoke_chatboc_sessions_for_clerk_user(user, reason=event_type)
             db.session.add(user)
-            db.session.commit()
+            _finish_webhook_db_work(commit=commit)
             return {"status": "marked_deleted", "user_id": user.id, "event_type": event_type}
     return {"status": "ignored", "event_type": event_type}

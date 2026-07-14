@@ -26,29 +26,29 @@ class PlaceholderEndpointTests(unittest.TestCase):
         cls.ctx.pop()
 
     def test_municipal_whatsapp_placeholder(self):
-        resp = self.client.get("/municipal/whatsapp", headers={"Origin": "https://example.com"})
+        resp = self.client.get("/municipal/whatsapp", headers={"Origin": "https://www.chatboc.ar"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json().get("integraciones"), [])
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
 
     def test_municipal_whatsapp_preflight(self):
-        resp = self.client.options("/municipal/whatsapp", headers={"Origin": "https://example.com"})
+        resp = self.client.options("/municipal/whatsapp", headers={"Origin": "https://www.chatboc.ar"})
         self.assertEqual(resp.status_code, 204)
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
         self.assertIn("PATCH", resp.headers.get("Access-Control-Allow-Methods", ""))
 
     def test_municipal_integrations_placeholder(self):
-        resp = self.client.get("/municipal/integrations", headers={"Origin": "https://example.com"})
+        resp = self.client.get("/municipal/integrations", headers={"Origin": "https://www.chatboc.ar"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.get_json().get("integraciones"), [])
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
 
     def test_municipal_integrations_preflight(self):
         resp = self.client.options(
-            "/municipal/integrations", headers={"Origin": "https://example.com"}
+            "/municipal/integrations", headers={"Origin": "https://www.chatboc.ar"}
         )
         self.assertEqual(resp.status_code, 204)
-        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://example.com")
+        self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), "https://www.chatboc.ar")
         self.assertIn("PATCH", resp.headers.get("Access-Control-Allow-Methods", ""))
 
     def test_public_tenant_profile_preflight(self):

@@ -37,6 +37,8 @@ from services.demo_experience_contract import build_demo_experience_contract
 from services.auth_notification_service import send_verification_email
 from services.channel_activation import build_channel_activation_payload
 from services.clerk_auth_service import (
+    CLERK_INTENT_TENANT_OWNER,
+    CLERK_INTENT_TENANT_PORTAL,
     ClerkAuthError,
     ClerkNotConfigured,
     ClerkTenantInactive,
@@ -45,10 +47,20 @@ from services.clerk_auth_service import (
     clerk_enabled,
     complete_clerk_onboarding,
     fetch_trusted_clerk_profile,
+    normalize_clerk_auth_intent,
+    resolve_clerk_session_tenant,
     sync_clerk_webhook_event,
     upsert_user_from_clerk,
     verify_clerk_session_token,
     verify_clerk_webhook_signature,
+)
+from services.webhook_delivery_service import (
+    DUPLICATE as WEBHOOK_DUPLICATE,
+    IN_PROGRESS as WEBHOOK_IN_PROGRESS,
+    WebhookDeliveryClaim,
+    claim_delivery,
+    fail_delivery,
+    stage_delivery_completion,
 )
 from typing import Any, Callable, Dict, Optional
 import secrets
@@ -412,6 +424,103 @@ def _extract_bearer_token() -> Optional[str]:
     return None
 
 
+def _registration_log_metadata(data: object) -> dict[str, bool]:
+    """Return operational registration signals without logging submitted values."""
+
+    payload = data if isinstance(data, dict) else {}
+    return {
+        "has_name": bool(payload.get("name") or payload.get("nombre")),
+        "has_email": bool(payload.get("email")),
+        "has_password": bool(payload.get("password")),
+        "has_phone": bool(payload.get("telefono") or payload.get("phone")),
+        "has_tenant_slug": bool(payload.get("tenant_slug") or payload.get("tenantSlug")),
+        "has_entity_token": bool(payload.get("empresa_token")),
+        "has_anon_session": bool(payload.get("anon_id")),
+    }
+
+
+def _clerk_runtime_is_production() -> bool:
+    environment = str(
+        current_app.config.get("ENV")
+        or os.getenv("ENV")
+        or os.getenv("FLASK_ENV")
+        or ""
+    ).strip().lower()
+    return environment in {"prod", "production"}
+
+
+def _clerk_config_flag(name: str, *, default: bool) -> bool:
+    value = current_app.config.get(name)
+    if value is None:
+        value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "t", "yes", "y", "on"}
+
+
+def _clerk_return_token_in_body() -> bool:
+    return _clerk_config_flag(
+        "CLERK_SESSION_RETURN_TOKEN",
+        default=not _clerk_runtime_is_production(),
+    )
+
+
+def _clerk_auth_response(payload: dict, status_code: int):
+    """Return a Clerk exchange response and persist its Chatboc JWT in a safe cookie."""
+
+    response_payload = dict(payload)
+    token = response_payload.get("token")
+    cookie_enabled = _clerk_config_flag("CLERK_SESSION_COOKIE_ENABLED", default=True)
+    return_token = _clerk_return_token_in_body()
+
+    if token and cookie_enabled:
+        response_payload["session_transport"] = "cookie_and_body" if return_token else "cookie"
+        if not return_token:
+            response_payload.pop("token", None)
+    elif token:
+        response_payload["session_transport"] = "bearer"
+    else:
+        response_payload["session_transport"] = "pending_onboarding"
+
+    response = jsonify(response_payload)
+    response.headers["Cache-Control"] = "no-store"
+
+    if not cookie_enabled:
+        return response, status_code
+
+    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+    secure = True if _clerk_runtime_is_production() else bool(
+        current_app.config.get("SESSION_COOKIE_SECURE", False)
+    )
+    cookie_args = {
+        "key": cookie_name,
+        "secure": secure,
+        "httponly": True,
+        "samesite": "Lax",
+        "path": "/",
+    }
+    if cookie_domain:
+        cookie_args["domain"] = cookie_domain
+
+    if token:
+        response.set_cookie(value=token, **cookie_args)
+    else:
+        response.set_cookie(value="", max_age=0, expires=0, **cookie_args)
+    return response, status_code
+
+
+def _clerk_error_response(
+    exc: ClerkAuthError,
+    *,
+    default_reason_code: str,
+    default_status_code: int,
+):
+    reason_code = getattr(exc, "reason_code", None) or default_reason_code
+    status_code = getattr(exc, "status_code", None) or default_status_code
+    return jsonify({"error": str(exc), "reason_code": reason_code}), int(status_code)
+
+
 @auth_api_bp.route("/clerk/config", methods=["GET"])
 @auth_bp.route("/clerk/config", methods=["GET"])
 def clerk_config():
@@ -428,6 +537,9 @@ def clerk_session_sync():
     data = request.get_json(silent=True) or {}
     clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
     try:
+        auth_intent = normalize_clerk_auth_intent(
+            data.get("auth_intent") or data.get("intent") or CLERK_INTENT_TENANT_OWNER
+        )
         claims = verify_clerk_session_token(clerk_token)
         trusted_profile = fetch_trusted_clerk_profile(claims)
         user = upsert_user_from_clerk(
@@ -438,15 +550,25 @@ def clerk_session_sync():
         if not user.email_verified and not user.email_verification_token:
             user.email_verification_token = _generate_email_verification_token()
             user.email_verification_sent_at = datetime.now(timezone.utc)
+        tenant = resolve_clerk_session_tenant(
+            user,
+            auth_intent=auth_intent,
+            tenant_slug=data.get("tenant_slug") or data.get("tenantSlug"),
+        )
         db.session.add(user)
+        payload = build_chatboc_session_payload(
+            user,
+            tenant,
+            clerk_claims=claims,
+            auth_intent=auth_intent,
+        )
         db.session.commit()
 
         if not user.email_verified and user.email_verification_token:
             _send_verification_email(user)
 
-        payload = build_chatboc_session_payload(user, clerk_claims=claims)
         status_code = 200 if not payload.get("onboarding", {}).get("required") else 202
-        return jsonify(payload), status_code
+        return _clerk_auth_response(payload, status_code)
     except ClerkTenantInactive as exc:
         db.session.rollback()
         return jsonify({"error": str(exc), "reason_code": "tenant_inactive"}), 403
@@ -455,10 +577,17 @@ def clerk_session_sync():
         return jsonify({"error": "Clerk auth is not configured", "reason_code": "clerk_not_configured"}), 503
     except ClerkAuthError as exc:
         db.session.rollback()
-        return jsonify({"error": str(exc), "reason_code": "invalid_clerk_session"}), 401
+        return _clerk_error_response(
+            exc,
+            default_reason_code="invalid_clerk_session",
+            default_status_code=401,
+        )
     except Exception as exc:  # pragma: no cover - defensive guard
         db.session.rollback()
-        current_app.logger.error("[clerk_auth] Session sync failed: %s", exc, exc_info=True)
+        current_app.logger.error(
+            "[clerk_auth] Session sync failed error_type=%s",
+            type(exc).__name__,
+        )
         return jsonify({"error": "Error interno", "reason_code": "clerk_session_failed"}), 500
 
 
@@ -470,7 +599,16 @@ def clerk_onboarding():
     data = request.get_json(silent=True) or {}
     clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
     try:
+        auth_intent = normalize_clerk_auth_intent(
+            data.get("auth_intent") or data.get("intent") or CLERK_INTENT_TENANT_OWNER
+        )
         claims = verify_clerk_session_token(clerk_token)
+        if auth_intent == CLERK_INTENT_TENANT_PORTAL:
+            raise ClerkAuthError(
+                "El onboarding de tenant solo admite autenticacion de propietario",
+                reason_code="owner_intent_required",
+                status_code=403,
+            )
         trusted_profile = fetch_trusted_clerk_profile(claims)
         user = upsert_user_from_clerk(
             claims,
@@ -478,10 +616,15 @@ def clerk_onboarding():
             profile_is_trusted=bool(trusted_profile),
         )
         db.session.commit()
-        tenant = complete_clerk_onboarding(user, data)
-        payload = build_chatboc_session_payload(user, tenant, clerk_claims=claims)
+        tenant = complete_clerk_onboarding(user, data, auth_intent=auth_intent)
+        payload = build_chatboc_session_payload(
+            user,
+            tenant,
+            clerk_claims=claims,
+            auth_intent=auth_intent,
+        )
         payload["message"] = "Tenant creado y onboarding completado"
-        return jsonify(payload), 201
+        return _clerk_auth_response(payload, 201)
     except ClerkTenantInactive as exc:
         db.session.rollback()
         return jsonify({"error": str(exc), "reason_code": "tenant_inactive"}), 403
@@ -490,13 +633,20 @@ def clerk_onboarding():
         return jsonify({"error": "Clerk auth is not configured", "reason_code": "clerk_not_configured"}), 503
     except ClerkAuthError as exc:
         db.session.rollback()
-        return jsonify({"error": str(exc), "reason_code": "invalid_clerk_onboarding"}), 400
+        return _clerk_error_response(
+            exc,
+            default_reason_code="invalid_clerk_onboarding",
+            default_status_code=400,
+        )
     except ValueError as exc:
         db.session.rollback()
         return jsonify({"error": str(exc), "reason_code": "tenant_onboarding_invalid"}), 400
     except Exception as exc:  # pragma: no cover - defensive guard
         db.session.rollback()
-        current_app.logger.error("[clerk_auth] Onboarding failed: %s", exc, exc_info=True)
+        current_app.logger.error(
+            "[clerk_auth] Onboarding failed error_type=%s",
+            type(exc).__name__,
+        )
         return jsonify({"error": "Error interno", "reason_code": "clerk_onboarding_failed"}), 500
 
 
@@ -506,37 +656,109 @@ def clerk_webhook():
     """Receive Clerk user lifecycle events and keep local users synced."""
 
     raw_body = request.get_data() or b""
+    delivery_claim: Optional[WebhookDeliveryClaim] = None
+
+    def record_delivery_failure(exc: Exception) -> None:
+        if delivery_claim is None or not delivery_claim.should_process:
+            return
+        try:
+            fail_delivery(
+                delivery_claim.delivery_id,
+                delivery_claim.attempts,
+                exc,
+            )
+        except Exception as persistence_exc:  # pragma: no cover - defensive guard
+            current_app.logger.error(
+                "[clerk_auth] Could not persist webhook failure error_type=%s",
+                type(persistence_exc).__name__,
+            )
+
     try:
         verify_clerk_webhook_signature(raw_body, request.headers)
         event = json.loads(raw_body.decode("utf-8") or "{}")
-        result = sync_clerk_webhook_event(event)
+        if not isinstance(event, dict):
+            raise ClerkAuthError("Invalid Clerk webhook payload")
         event_type = str(event.get("type") or "").strip()
+        if not event_type:
+            raise ClerkAuthError("Missing Clerk webhook event type")
+        event_id = str(request.headers.get("svix-id") or "").strip()
+        if not event_id:
+            raise ClerkAuthError("Missing Clerk webhook delivery id")
+
+        delivery_claim = claim_delivery(
+            "clerk",
+            event_id,
+            event_type,
+            raw_body,
+        )
+        if delivery_claim.outcome == WEBHOOK_DUPLICATE:
+            return jsonify({"status": "duplicate_ignored", "event_type": event_type}), 200
+        if delivery_claim.outcome == WEBHOOK_IN_PROGRESS:
+            response = jsonify(
+                {
+                    "error": "Clerk webhook delivery is already processing",
+                    "reason_code": "clerk_webhook_in_progress",
+                }
+            )
+            response.headers["Retry-After"] = "5"
+            return response, 503
+
+        result = sync_clerk_webhook_event(event, commit=False)
+        if not stage_delivery_completion(
+            db.session,
+            delivery_claim.delivery_id,
+            delivery_claim.attempts,
+        ):
+            db.session.rollback()
+            response = jsonify(
+                {
+                    "error": "Clerk webhook completion lost its active claim",
+                    "reason_code": "clerk_webhook_claim_conflict",
+                }
+            )
+            response.headers["Retry-After"] = "5"
+            return response, 503
+        db.session.commit()
+
         if event_type in {"session.ended", "session.removed", "session.revoked", "user.deleted"}:
             from socket_service import disconnect_clerk_session_sockets
 
             event_data = event.get("data") if isinstance(event.get("data"), dict) else {}
-            result["disconnected_sockets"] = disconnect_clerk_session_sockets(
-                clerk_session_id=(
-                    event_data.get("id") or event_data.get("session_id")
-                    if event_type.startswith("session.")
-                    else None
-                ),
-                clerk_user_id=(
-                    event_data.get("user_id")
-                    if event_type.startswith("session.")
-                    else event_data.get("id")
-                ),
-            )
+            try:
+                result["disconnected_sockets"] = disconnect_clerk_session_sockets(
+                    clerk_session_id=(
+                        event_data.get("id") or event_data.get("session_id")
+                        if event_type.startswith("session.")
+                        else None
+                    ),
+                    clerk_user_id=(
+                        event_data.get("user_id")
+                        if event_type.startswith("session.")
+                        else event_data.get("id")
+                    ),
+                )
+            except Exception as disconnect_exc:  # pragma: no cover - defensive guard
+                current_app.logger.error(
+                    "[clerk_auth] Socket disconnect failed error_type=%s",
+                    type(disconnect_exc).__name__,
+                )
+                result["disconnected_sockets"] = 0
+                result["socket_disconnect_deferred"] = True
         return jsonify(result), 200
     except ClerkNotConfigured as exc:
         current_app.logger.warning("[clerk_auth] Webhook not configured: %s", exc)
         return jsonify({"error": "Clerk webhook is not configured", "reason_code": "clerk_webhook_not_configured"}), 503
     except (ClerkAuthError, json.JSONDecodeError) as exc:
         db.session.rollback()
+        record_delivery_failure(exc)
         return jsonify({"error": str(exc), "reason_code": "invalid_clerk_webhook"}), 400
     except Exception as exc:  # pragma: no cover - defensive guard
         db.session.rollback()
-        current_app.logger.error("[clerk_auth] Webhook failed: %s", exc, exc_info=True)
+        record_delivery_failure(exc)
+        current_app.logger.error(
+            "[clerk_auth] Webhook failed error_type=%s",
+            type(exc).__name__,
+        )
         return jsonify({"error": "Error interno", "reason_code": "clerk_webhook_failed"}), 500
 
 
@@ -1434,7 +1656,10 @@ def _run_post_login_migrations(*, app, user_id: int, tenant_id: Optional[int], a
 
             servicio_tickets.migrar_tickets_de_anonimo(anon_id, user_id)
         except Exception as exc:  # pragma: no cover - defensive logging
-            app.logger.warning("Failed to migrate anon tickets during deferred login flow: %s", exc)
+            app.logger.warning(
+                "Failed to migrate anon tickets during deferred login flow; error_type=%s",
+                type(exc).__name__,
+            )
 
         try:
             from routes.market import _get_or_create_cart_for_user
@@ -1450,7 +1675,10 @@ def _run_post_login_migrations(*, app, user_id: int, tenant_id: Optional[int], a
             if target_tenant:
                 _get_or_create_cart_for_user(target_tenant, user_obj, create_if_missing=False)
         except Exception as exc:  # pragma: no cover - defensive logging
-            app.logger.warning("Failed to migrate anon cart during deferred login flow: %s", exc)
+            app.logger.warning(
+                "Failed to migrate anon cart during deferred login flow; error_type=%s",
+                type(exc).__name__,
+            )
 
 def _get_or_create_demo_user_for_tenant(tenant: TenantProfile) -> User:
     """Return an isolated, non-privileged demo account for the tenant.
@@ -2012,12 +2240,12 @@ def login():
     )
 
     if not password_ok:
-        current_app.logger.warning(f"Intento de login fallido para el email: {data.get('email')}")
+        current_app.logger.warning("[auth.login] Invalid credentials")
         resp = jsonify({"error": "Email o contraseña incorrectos."})
         resp, _ = _finalize_auth_response(resp)
         return resp, 401
 
-    current_app.logger.info(f"Login exitoso para: {user.email}")
+    current_app.logger.info("[auth.login] Credentials accepted user_id=%s", user.id)
 
     rubro_nombre = user.rubro.nombre if user.rubro else "General"
 
@@ -2109,8 +2337,11 @@ def login():
                     tenant_id=getattr(tenant_obj, "id", None),
                     anon_id=req_anon_id,
                 )
-        except Exception as e:
-            current_app.logger.warning(f"Failed to migrate anon data during login: {e}")
+        except Exception as exc:
+            current_app.logger.warning(
+                "Failed to migrate anon data during login; error_type=%s",
+                type(exc).__name__,
+            )
 
     owner_token = _resolve_owner_token(user)
 
@@ -2288,7 +2519,7 @@ def google_login():
         return jsonify({"error": "id_token requerido"}), 400
     try:
         user = login_o_crear_usuario(token_id, rol=rol, tipo_chat=tipo_chat)
-        current_app.logger.info(f"Login Google para: {user.email}")
+        current_app.logger.info("[auth.google_login] Identity accepted user_id=%s", user.id)
 
         if is_clerk_managed_user(user):
             return jsonify({
@@ -2355,7 +2586,10 @@ def google_login():
         # Integrar Flask-Login
         from flask_login import login_user
         login_user(user) # Establecer la sesión para el usuario
-        current_app.logger.info(f"Usuario {user.email} logueado vía Google y sesión Flask-Login establecida.")
+        current_app.logger.info(
+            "[auth.google_login] Flask session established user_id=%s",
+            user.id,
+        )
         # Generar el token JWT
         jwt_payload = {
             'user_id': user.id,
@@ -2501,7 +2735,10 @@ def register():
                     if tenant:
                         _get_or_create_cart_for_user(tenant, nuevo, create_if_missing=False)
                 except Exception as e:
-                    current_app.logger.warning(f"Failed to migrate anon data: {e}")
+                    current_app.logger.warning(
+                        "[register.portal] Anonymous data migration failed error_type=%s",
+                        type(e).__name__,
+                    )
 
             # Auto-login token
             jwt_payload = {
@@ -2524,10 +2761,12 @@ def register():
                 }
             }), 201
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            current_app.logger.error(f"Error in end-user register: {e}")
-            return jsonify({"error": str(e)}), 500
+            db.session.rollback()
+            current_app.logger.error(
+                "[register.portal] Registration failed error_type=%s",
+                type(e).__name__,
+            )
+            return jsonify({"error": "Error interno al registrar usuario."}), 500
 
     empresa_token = data.get("empresa_token") or obtener_token()
 
@@ -2629,7 +2868,10 @@ def register():
 
     rol_asignado = 'admin'
     empresa_id = None
-    current_app.logger.info(f"[register] Attempting to register user with data: {data}")
+    current_app.logger.info(
+        "[register] Registration attempt metadata=%s",
+        _registration_log_metadata(data),
+    )
     user = User(
         name=data['name'].strip(),
         email=data['email'].strip().lower(),
@@ -2654,7 +2896,7 @@ def register():
     try:
         db.session.add(user)
         db.session.commit()
-        current_app.logger.info(f"Usuario registrado: {user.email} con ID {user.id}")
+        current_app.logger.info("[register] Registration completed user_id=%s", user.id)
 
         _send_verification_email(user)
         _apply_welcome_points_if_configured(user)
@@ -2691,7 +2933,10 @@ def register():
         return resp, 201
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Error al registrar usuario: {e}", exc_info=True)
+        current_app.logger.error(
+            "[register] Registration failed error_type=%s",
+            type(e).__name__,
+        )
         return jsonify({
             "error": "Error interno al guardar el usuario.",
             "botones": [{"texto": "Volver al chat"}],
@@ -2763,7 +3008,10 @@ def register_from_widget(user):
         tags_value = tags
     else:
         tags_value = ''
-    current_app.logger.info(f"[register_from_widget] Attempting to register user with data: {data}")
+    current_app.logger.info(
+        "[register_from_widget] Registration attempt metadata=%s",
+        _registration_log_metadata(data),
+    )
     nuevo = User(
         name=name.strip(),
         email=email.strip().lower(),
@@ -2834,7 +3082,10 @@ def register_from_widget(user):
         return resp, 201
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Error en register_from_widget: {e}", exc_info=True)
+        current_app.logger.error(
+            "[register_from_widget] Registration failed error_type=%s",
+            type(e).__name__,
+        )
         return jsonify({
             "error": "Error interno al registrar usuario.",
             "botones": [{"texto": "Volver al chat"}],
@@ -2935,11 +3186,10 @@ def chatuser_register_panel():
         data = request.form.to_dict() if request.form else {}
 
     empresa_token = data.get('empresa_token') or obtener_token()
-    # Log received data for debugging, excluding password
-    logged_data = {k: v for k, v in data.items() if k != 'password'}
-    current_app.logger.info(f"[chatuser_register_panel] Received data (password excluded): {logged_data}")
     current_app.logger.info(
-        f"[chatuser_register_panel] X-Anon-Id header: {request.headers.get('X-Anon-Id') or request.headers.get('Anon-Id')}"
+        "[chatuser_register_panel] Registration attempt metadata=%s header_has_anon_session=%s",
+        _registration_log_metadata(data),
+        bool(request.headers.get("X-Anon-Id") or request.headers.get("Anon-Id")),
     )
 
 
@@ -2950,7 +3200,7 @@ def chatuser_register_panel():
     owner_user = get_or_create_pyme_user_by_token(empresa_token.strip())
     if not owner_user:
         current_app.logger.warning(
-            f"[chatuser_register_panel] Registration attempt failed: Token de empresa inválido o no encontrado: {empresa_token}"
+            "[chatuser_register_panel] Registration attempt failed: invalid entity token"
         )
         return (
             jsonify({"error": "Token de empresa inválido o no encontrado"}),
@@ -2989,11 +3239,18 @@ def chatuser_register_panel():
     existing_user = _user_query().filter(func.lower(User.email) == func.lower(email.strip())).first()
 
     if existing_user:
-        current_app.logger.info(f"[chatuser_register_panel] Email '{email}' ya existe. User ID: {existing_user.id}, Empresa ID: {existing_user.empresa_id}. Owner User ID: {owner_user.id}")
+        current_app.logger.info(
+            "[chatuser_register_panel] Existing account found user_id=%s owner_id=%s",
+            existing_user.id,
+            owner_user.id,
+        )
         # User exists. Check if they belong to the same 'empresa'
         if existing_user.empresa_id == owner_user.id:
             # Email exists and is associated with the same empresa_id. Simulate login.
-            current_app.logger.info(f"[chatuser_register_panel] Usuario existente '{email}' pertenece a la misma entidad (Owner ID: {owner_user.id}). Devolviendo datos del usuario existente.")
+            current_app.logger.info(
+                "[chatuser_register_panel] Existing account already belongs to owner_id=%s",
+                owner_user.id,
+            )
             if owner_municipio_id and existing_user.municipio_id != owner_municipio_id:
                 existing_user.municipio_id = owner_municipio_id
             if not existing_user.tipo_chat:
@@ -3040,7 +3297,9 @@ def chatuser_register_panel():
             return resp, 200
         else:
             # Email exists but is associated with a different empresa_id.
-            current_app.logger.warning(f"[chatuser_register_panel] Usuario existente '{email}' (Empresa ID: {existing_user.empresa_id}) intentó registrarse bajo una entidad diferente (Owner ID: {owner_user.id}).")
+            current_app.logger.warning(
+                "[chatuser_register_panel] Existing account belongs to a different tenant"
+            )
             return jsonify({
                 "error": "El email ya está registrado en otra entidad.",
                 "already_registered": True, # From the perspective of the email, it is registered.
@@ -3048,7 +3307,11 @@ def chatuser_register_panel():
             }), 409
 
     # If user does not exist, proceed with creation
-    current_app.logger.info(f"[chatuser_register_panel] Email '{email}' no existe. Creando nuevo usuario para Owner ID: {owner_user.id} with data: {data}")
+    current_app.logger.info(
+        "[chatuser_register_panel] Creating account for owner_id=%s metadata=%s",
+        owner_user.id,
+        _registration_log_metadata(data),
+    )
     acepta_marketing = bool(data.get('acepta_marketing'))
     tags = data.get('tags')
     if isinstance(tags, list):
@@ -3085,8 +3348,11 @@ def chatuser_register_panel():
             _attach_user_to_tenant(nuevo, owner_tenant)
             db.session.commit()
 
-        # Log successful registration and association
-        current_app.logger.info(f"[chatuser_register_panel] Nuevo usuario '{nuevo.email}' (ID: {nuevo.id}) registrado y asociado con la empresa/owner ID: {owner_user.id} ({owner_user.nombre_empresa if owner_user.nombre_empresa else owner_user.email}).")
+        current_app.logger.info(
+            "[chatuser_register_panel] Registration completed user_id=%s owner_id=%s",
+            nuevo.id,
+            owner_user.id,
+        )
 
         if anon_id:
             from services.ticket_service import servicio_tickets
@@ -3105,7 +3371,10 @@ def chatuser_register_panel():
                 flag_modified(chat_context, "context_data")
                 db.session.add(chat_context)
                 db.session.commit()
-                current_app.logger.info(f"Updated ChatSessionContext {chat_session_id} for new user {nuevo.id}")
+                current_app.logger.info(
+                    "[chatuser_register_panel] Chat session associated user_id=%s",
+                    nuevo.id,
+                )
 
         # Generar el token JWT
         jwt_payload = {
@@ -3141,7 +3410,10 @@ def chatuser_register_panel():
         return resp, 201
     except Exception as e:  # pragma: no cover - por si falla la DB
         db.session.rollback()
-        current_app.logger.error(f"Error en chatuser_register_panel: {e}", exc_info=True)
+        current_app.logger.error(
+            "[chatuser_register_panel] Registration failed error_type=%s",
+            type(e).__name__,
+        )
         return (
             jsonify({"error": "Error interno al registrar usuario.", "botones": [{"texto": "Volver al chat"}]}),
             500,
@@ -3758,7 +4030,7 @@ def admin_login():
     user = _user_query().filter_by(email=email.strip().lower()).first()
 
     if not user:
-        current_app.logger.warning(f"[admin_login] User not found for email: {email.strip().lower()}")
+        current_app.logger.warning("[admin_login] Invalid credentials")
         return jsonify({"error": "Credenciales inválidas"}), 401
 
     if is_demo_user_account(user):
@@ -3780,14 +4052,16 @@ def admin_login():
         }), 403
 
     current_app.logger.info(
-        "[admin_login] Found user: %s, email: %s, role: %s",
+        "[admin_login] Identity resolved user_id=%s role=%s",
         user.id,
-        user.email,
         user.rol,
     )
 
     if is_user_auth_disabled(user) or not user.check_password(password):
-        current_app.logger.warning(f"[admin_login] Invalid password for user: {user.email}")
+        current_app.logger.warning(
+            "[admin_login] Invalid credentials user_id=%s",
+            user.id,
+        )
         return jsonify({"error": "Credenciales inválidas"}), 401
 
     # Check Role

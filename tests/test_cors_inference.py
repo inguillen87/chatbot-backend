@@ -38,3 +38,51 @@ class TestCorsInference(TestCase):
                 "local Vite preview ports should be accepted by CORS in dev",
             )
         importlib.reload(app_config)
+
+    def test_production_ignores_local_dev_flag_and_wildcard_previews(self):
+        env = {
+            "ENV": "production",
+            "BACKEND_URL": "https://api.chatboc.ar",
+            "PUBLIC_ROOT_DOMAIN": "chatboc.ar",
+            "CORS_ALLOW_LOCAL_DEV": "1",
+            "CORS_ALLOWED_ORIGINS": (
+                "https://www.chatboc.ar,"
+                "https://chatboc-production.vercel.app"
+            ),
+        }
+        with patch.dict(os.environ, env, clear=True):
+            cfg = importlib.reload(app_config)
+            self.assertNotIn(
+                "https://chatboc-production.vercel.app",
+                cfg.CREDENTIALS_ALLOWED_ORIGINS,
+            )
+            self.assertIn("https://chatboc.ar", cfg.CREDENTIALS_ALLOWED_ORIGINS)
+            self.assertIn("https://www.chatboc.ar", cfg.CREDENTIALS_ALLOWED_ORIGINS)
+            self.assertFalse(
+                any(
+                    getattr(allowed, "match", None)
+                    and allowed.match("http://localhost:5173")
+                    for allowed in cfg.CREDENTIALS_ALLOWED_ORIGINS
+                )
+            )
+            self.assertFalse(
+                any(
+                    getattr(allowed, "match", None)
+                    and allowed.match("https://attacker.vercel.app")
+                    for allowed in cfg.CREDENTIALS_ALLOWED_ORIGINS
+                )
+            )
+        importlib.reload(app_config)
+
+    def test_wildcard_is_never_a_credentialed_origin(self):
+        env = {
+            "ENV": "production",
+            "BACKEND_URL": "https://api.chatboc.ar",
+            "PUBLIC_ROOT_DOMAIN": "chatboc.ar",
+            "CORS_ALLOWED_ORIGINS": "*",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            cfg = importlib.reload(app_config)
+            self.assertNotIn("*", cfg.CREDENTIALS_ALLOWED_ORIGINS)
+            self.assertIn("https://chatboc.ar", cfg.CREDENTIALS_ALLOWED_ORIGINS)
+        importlib.reload(app_config)

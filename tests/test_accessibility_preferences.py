@@ -46,7 +46,7 @@ def test_accessibility_preflight_preserves_credentials(
     client, app, init_database, viewer_user
 ):
     resp = client.options(
-        f"/api/accessibility/{viewer_user.id}", headers={"Origin": "http://example.com"}
+        f"/api/accessibility/{viewer_user.id}", headers={"Origin": "https://www.chatboc.ar"}
     )
     assert resp.status_code == 204
     assert resp.headers.get("Access-Control-Allow-Credentials") == "true"
