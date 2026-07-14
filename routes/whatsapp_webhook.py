@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_context, has_request_context  # Basic Flask components
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
+from copy import deepcopy
 import logging
 import os  # For accessing environment variables
 import requests
@@ -58,6 +59,13 @@ from services.ticket_service import servicio_tickets
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_surveys import build_demo_survey_chat_menu
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
+from services.whatsapp_flow_submissions import (
+    FlowSubmissionValidationError,
+    has_whatsapp_flow_submission,
+    parse_whatsapp_flow_submission,
+    persistence_safe_flow_submission,
+    safe_twilio_form_metadata,
+)
 from services.twilio_tech_provider import (
     TwilioRuntimeCredentials,
     resolve_twilio_runtime_credentials,
@@ -106,6 +114,21 @@ SENSITIVE_MENU_ACTIONS = {
     "iniciar_sugerencia",
     "crear_sugerencia",
 }
+ACTIVE_NATIVE_FLOW_STATUSES = {"approved", "active"}
+ACTIVE_META_FLOW_STATUSES = {"approved", "active", "published"}
+
+
+def _safe_session_context_metadata(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {"valid": False, "key_count": 0, "keys": []}
+    history = value.get("historial_chat")
+    return {
+        "valid": True,
+        "key_count": len(value),
+        "keys": sorted(str(key) for key in value.keys())[:24],
+        "history_items": len(history) if isinstance(history, list) else 0,
+        "has_flow_submission": isinstance(value.get("last_whatsapp_flow_submission"), dict),
+    }
 SENSITIVE_ACTION_CONFIRM_ACCEPT = {"1", "si", "sí", "confirmar", "ok", "dale"}
 SENSITIVE_ACTION_CONFIRM_REJECT = {"2", "no", "cancelar", "menu", "menú"}
 GENERIC_CONTACT_NAMES = {"vecino", "vecina", "vecino/a", "usuario", "anonimo", "anonimo/a"}
@@ -3840,6 +3863,38 @@ def _tenant_profile_for_user(user: Optional[User]) -> Optional[TenantProfile]:
     return None
 
 
+def _allowed_native_flow_ids_for_tenant(tenant: Optional[TenantProfile]) -> set[str]:
+    if not tenant or not getattr(tenant, "id", None):
+        return set()
+    rows = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+    ).all()
+    allowed: set[str] = set()
+    for row in rows:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        if metadata.get("content_family") != "meta_native_flow":
+            continue
+        registry_status = str(row.status or "").strip().lower()
+        flow_status = str(
+            metadata.get("meta_flow_status") or metadata.get("approval_status") or ""
+        ).strip().lower()
+        if registry_status not in ACTIVE_NATIVE_FLOW_STATUSES:
+            continue
+        if flow_status not in ACTIVE_META_FLOW_STATUSES:
+            continue
+        for value in (
+            metadata.get("flow_id"),
+            metadata.get("meta_flow_id"),
+            row.external_template_id,
+        ):
+            normalized = str(value or "").strip().lower()
+            if normalized:
+                allowed.add(normalized)
+    return allowed
+
+
 def _register_whatsapp_inbound_activity(tenant_id: Optional[int], from_number: Optional[str]) -> None:
     if not tenant_id or not from_number:
         return
@@ -4374,10 +4429,14 @@ else:
 @webhook_bp.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     _log("info", "Whatsapp webhook called.")
-    _log("debug", "Request form: %s", request.form)
     signature = request.headers.get("X-Twilio-Signature", "")
     url = request.url
     post_vars = request.form.to_dict()
+    request_metadata = safe_twilio_form_metadata(post_vars)
+    _log("debug", "Request form metadata: %s", request_metadata)
+    flow_submission_present = has_whatsapp_flow_submission(post_vars)
+    flow_submission = None
+    safe_flow_submission = None
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
     to_number_normalized = _normalize_whatsapp_address(to_number_raw)
@@ -4435,6 +4494,31 @@ def whatsapp_webhook():
 
     if not request_validator.validate(url, request.form, signature):
         abort(403, "Invalid Twilio signature")
+
+    if flow_submission_present:
+        try:
+            flow_submission = parse_whatsapp_flow_submission(
+                post_vars,
+                allowed_flow_ids=_allowed_native_flow_ids_for_tenant(credential_tenant),
+                message_sid=post_vars.get("MessageSid") or post_vars.get("SmsMessageSid"),
+                correlation_secret=current_app.config.get("SECRET_KEY"),
+                require_correlation_token=True,
+            )
+        except FlowSubmissionValidationError as exc:
+            current_app.logger.warning(
+                "[WHATSAPP_FLOW] Rejected unsafe Flow submission code=%s source=%s",
+                exc.code,
+                exc.source_field or "combined",
+            )
+        else:
+            safe_flow_submission = persistence_safe_flow_submission(flow_submission or {})
+            integrity = (flow_submission or {}).get("integrity") or {}
+            current_app.logger.info(
+                "[WHATSAPP_FLOW] Accepted Flow submission fields=%s redacted=%s sources=%s",
+                integrity.get("field_count", 0),
+                integrity.get("redacted_field_count", 0),
+                len(integrity.get("source_fields") or []),
+            )
 
     # Keep all dispatch paths in this request on the same validated account.
     twilio_client = _twilio_client_for_credentials(credentials)
@@ -4608,6 +4692,10 @@ def whatsapp_webhook():
     media_message_sid = post_vars.get("MediaMessageSid") or post_vars.get("MediaSid0")
     processed_message_sids = session_context_db_entry.context_data.setdefault("processed_message_sids", [])
     processed_media_sids = session_context_db_entry.context_data.setdefault("processed_media_sids", [])
+    processed_flow_tokens = session_context_db_entry.context_data.setdefault(
+        "processed_whatsapp_flow_token_digests",
+        [],
+    )
 
     if message_sid and message_sid in processed_message_sids:
         current_app.logger.info(f"[WHATSAPP_WEBHOOK] Duplicate MessageSid ignored: {message_sid}")
@@ -4616,16 +4704,53 @@ def whatsapp_webhook():
         current_app.logger.info(f"[WHATSAPP_WEBHOOK] Duplicate MediaMessageSid ignored: {media_message_sid}")
         return "OK", 200
 
+    flow_token_digest = str(
+        ((safe_flow_submission or {}).get("correlation") or {}).get("token_digest") or ""
+    ).strip()
+    if flow_token_digest and flow_token_digest in processed_flow_tokens:
+        current_app.logger.info("[WHATSAPP_FLOW] Replayed Flow token ignored before orchestration")
+        if message_sid:
+            processed_message_sids.append(message_sid)
+            session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
+        return "OK", 200
+
     if message_sid:
         processed_message_sids.append(message_sid)
         session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
     if media_message_sid:
         processed_media_sids.append(media_message_sid)
         session_context_db_entry.context_data["processed_media_sids"] = processed_media_sids[-50:]
+    if safe_flow_submission:
+        processed_flow_tokens.append(flow_token_digest)
+        session_context_db_entry.context_data["processed_whatsapp_flow_token_digests"] = (
+            processed_flow_tokens[-50:]
+        )
+        session_context_db_entry.context_data["last_whatsapp_flow_submission"] = deepcopy(
+            safe_flow_submission
+        )
     _register_whatsapp_inbound_activity(tenant_id, from_number_cleaned)
     safe_flag_modified(session_context_db_entry, "context_data")
     db.session.add(session_context_db_entry)
     db.session.commit()
+
+    if flow_submission_present and not flow_submission:
+        current_app.logger.info(
+            "[WHATSAPP_FLOW] Invalid Flow submission stopped before orchestration"
+        )
+        if twilio_client:
+            _send_twilio_message(
+                twilio_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=(
+                    "No pudimos validar el formulario de WhatsApp. "
+                    "Volvelo a abrir y envialo nuevamente."
+                ),
+            )
+        return "OK", 200
 
     # --- Boti-style Welcome Message Branch ---
     from services.municipio_responder import normalizar_texto
@@ -4635,7 +4760,13 @@ def whatsapp_webhook():
 
     button_payload = post_vars.get("ButtonPayload")
     list_id = post_vars.get("ListId")
-    incoming_text = button_payload or list_id or post_vars.get("Body", "")
+    if flow_submission:
+        flow_incoming_text = flow_submission.get("synthetic_text") or (
+            "El usuario completo un formulario nativo de WhatsApp."
+        )
+    else:
+        flow_incoming_text = None
+    incoming_text = flow_incoming_text or button_payload or list_id or post_vars.get("Body", "")
     normalized_input = normalizar_texto(incoming_text.strip())
 
     GREETING_KEYWORDS = {"hola", "buenas", "buenos dias", "buenas tardes", "buenas noches"}
@@ -4660,7 +4791,12 @@ def whatsapp_webhook():
 
     # Universal greeting logic: both Pymes and Municipios now use the Boti-style welcome block.
     # _get_main_menu_payload handles generating the correct menu structure for each type.
-    should_trigger_welcome = is_greeting and not is_waiting_for_info and not force_chatboc_demo_hub
+    should_trigger_welcome = (
+        not flow_submission_present
+        and is_greeting
+        and not is_waiting_for_info
+        and not force_chatboc_demo_hub
+    )
 
     request_root = request.url_root or ""
     request_root_stripped = request_root.rstrip("/")
@@ -5091,9 +5227,9 @@ def whatsapp_webhook():
 
     # Determine incoming text before any special handling (re-declaration to ensure it's available for the rest of the code)
     list_id = post_vars.get("ListId")
-    incoming_text = button_payload or list_id or post_vars.get("Body", "")
+    incoming_text = flow_incoming_text or button_payload or list_id or post_vars.get("Body", "")
 
-    if session_context_db_entry.context_data.get("awaiting_user_name"):
+    if not flow_submission_present and session_context_db_entry.context_data.get("awaiting_user_name"):
         name_candidate = incoming_text.strip()
         if name_candidate:
             try:
@@ -5707,7 +5843,11 @@ def whatsapp_webhook():
         session_context_db_entry.context_data.get("human_chat_in_progress")
         or session_context_db_entry.context_data.get("room")
     )
-    if human_chat_active and (message_body or uploaded_file_info or location_info):
+    if (
+        not flow_submission_present
+        and human_chat_active
+        and (message_body or uploaded_file_info or location_info)
+    ):
         should_route_live_chat = not bool(selected_option)
         if should_route_live_chat:
             tipo_ticket, live_ticket = _find_live_chat_ticket(
@@ -5817,7 +5957,7 @@ def whatsapp_webhook():
     chatboc_demo_direct_payload = None
     education_direct_payload = None
 
-    if force_chatboc_demo_hub:
+    if force_chatboc_demo_hub and not flow_submission_present:
         profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
         chatboc_demo_input_context = _build_chatboc_demo_input_context(
             message_body=message_body,
@@ -5920,7 +6060,7 @@ def whatsapp_webhook():
                 input_context=chatboc_demo_input_context,
             )
         bot_response_dict = chatboc_demo_direct_payload
-    else:
+    elif not flow_submission_present:
         education_direct_payload = _handle_education_whatsapp_turn(
             session_context=session_context_db_entry,
             tenant_profile=tenant_profile,
@@ -5978,6 +6118,8 @@ def whatsapp_webhook():
             # It should be passed directly as location data.
 
             kwargs_for_bot = {"source_channel": "whatsapp"}
+            if safe_flow_submission:
+                kwargs_for_bot["whatsapp_flow_submission"] = deepcopy(safe_flow_submission)
             education_context = (
                 session_context_db_entry.context_data.get("education_context")
                 if isinstance(session_context_db_entry.context_data, dict)
@@ -6096,8 +6238,7 @@ def whatsapp_webhook():
             if not isinstance(session_context_db_entry.context_data, dict):
                 _log(
                     "warning",
-                    "context_data in session_context_db_entry is not a dict. Resetting. Data: %s",
-                    session_context_db_entry.context_data,
+                    "context_data in session_context_db_entry is not a dict. Resetting.",
                 )
                 session_context_db_entry.context_data = {
                     "historial_chat": [{"role": "system", "content": "Context was reset due to invalid format."}],
@@ -6112,9 +6253,9 @@ def whatsapp_webhook():
     respuesta_del_bot_text = bot_response_dict.get("message_body", "")
     _log(
         "debug",
-        "Bot response text for logging: %s. Session context to save: %s",
-        respuesta_del_bot_text,
-        session_context_db_entry.context_data,
+        "Bot response prepared. body_length=%s context_metadata=%s",
+        len(respuesta_del_bot_text) if isinstance(respuesta_del_bot_text, str) else 0,
+        _safe_session_context_metadata(session_context_db_entry.context_data),
     )
 
     # --- Format Response and Save Session ---
@@ -6215,9 +6356,10 @@ def whatsapp_webhook():
         db.session.commit()
         _log(
             "info",
-            "Session saved for %s. Context: %s",
-            chat_session_id_internal,
-            session_context_db_entry.context_data,
+            "Session saved. tenant_id=%s user_id=%s context_metadata=%s",
+            getattr(session_context_db_entry, "tenant_id", None),
+            getattr(session_context_db_entry, "user_id", None),
+            _safe_session_context_metadata(session_context_db_entry.context_data),
         )
 
     except Exception as e:

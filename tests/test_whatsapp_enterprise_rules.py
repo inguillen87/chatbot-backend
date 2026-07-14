@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -167,7 +168,9 @@ def test_twilio_content_sync_dry_run_returns_creation_payload(client, app):
     assert payload["ready_to_create"] is True
     assert payload["blocked"] is False
     assert payload["integration_access"]["enabled"] is True
-    assert payload["execute_confirmation"] == "sync_twilio_content:order_checkout"
+    assert isinstance(payload["execute_confirmation"], str)
+    assert len(payload["execute_confirmation"]) > 40
+    assert "order_checkout" not in payload["execute_confirmation"]
     assert payload["frontend_contract"]["render_as"] == "whatsapp_template_creation_lock"
     assert payload["frontend_contract"]["hide_execute_controls"] is False
     assert payload["operator_guardrails"]["execute_confirmation_issued"] is True
@@ -198,7 +201,8 @@ def test_twilio_content_sync_dry_run_returns_creation_payload(client, app):
     )
     assert finance_response.status_code == 200
     finance_payload = finance_response.get_json()
-    assert finance_payload["execute_confirmation"] == "sync_twilio_content:finance_secure_payment"
+    assert isinstance(finance_payload["execute_confirmation"], str)
+    assert len(finance_payload["execute_confirmation"]) > 40
     finance_cta = finance_payload["create_request"]["types"]["twilio/call-to-action"]["actions"][0]
     assert finance_cta["url"] == "https://www.chatboc.ar/{{3}}"
     assert (
@@ -268,22 +272,22 @@ def test_twilio_content_sync_creates_content_and_registry_row(client, app):
     app.config["TWILIO_ACCOUNT_SID"] = "ACtest"
     app.config["TWILIO_AUTH_TOKEN"] = "secret"
 
-    class _FakeApprovalRequests:
-        def create(self, **kwargs):
-            assert kwargs["category"] == "UTILITY"
-            return SimpleNamespace(status="PENDING")
+    class _FakeClient:
+        def request(self, method, url, *, data, headers, timeout):
+            if url == "https://content.twilio.com/v1/Content":
+                assert method == "POST"
+                assert data["friendly_name"]
+                assert "twilio/text" in data["types"]
+                return SimpleNamespace(status_code=201, text=json.dumps({"sid": "HXcreatedtemplate"}))
+            assert url == (
+                "https://content.twilio.com/v1/Content/"
+                "HXcreatedtemplate/ApprovalRequests/whatsapp"
+            )
+            assert method == "POST"
+            assert data["category"] == "UTILITY"
+            return SimpleNamespace(status_code=201, text=json.dumps({"status": "PENDING"}))
 
-    class _FakeContents:
-        def __call__(self, content_sid):
-            assert content_sid == "HXcreatedtemplate"
-            return SimpleNamespace(approval_requests=_FakeApprovalRequests())
-
-        def create(self, **kwargs):
-            assert kwargs["friendly_name"]
-            assert "twilio/text" in kwargs["types"]
-            return SimpleNamespace(sid="HXcreatedtemplate")
-
-    fake_client = SimpleNamespace(content=SimpleNamespace(v1=SimpleNamespace(contents=_FakeContents())))
+    fake_client = _FakeClient()
 
     missing_confirmation = client.post(
         "/api/admin/templates/twilio-content/sync",
@@ -292,6 +296,12 @@ def test_twilio_content_sync_creates_content_and_registry_row(client, app):
     )
     assert missing_confirmation.status_code == 409
 
+    preview = client.post(
+        "/api/admin/templates/twilio-content/sync",
+        headers=headers,
+        json={"template_id": "order_checkout", "dry_run": True},
+    ).get_json()
+
     with patch("routes.whatsapp_rules.Client", return_value=fake_client) as client_factory:
         response = client.post(
             "/api/admin/templates/twilio-content/sync",
@@ -299,7 +309,7 @@ def test_twilio_content_sync_creates_content_and_registry_row(client, app):
             json={
                 "template_id": "order_checkout",
                 "dry_run": False,
-                "execute_confirmation": "sync_twilio_content:order_checkout",
+                "execute_confirmation": preview["execute_confirmation"],
             },
         )
 
@@ -358,6 +368,57 @@ def test_twilio_content_sync_does_not_duplicate_existing_content_sid(client, app
     client_factory.assert_not_called()
 
 
+def test_twilio_content_sync_blocks_automatic_retry_after_uncertain_provider_result(client, app):
+    admin, tenant = _seed(plan="full")
+    headers = _auth_headers(app, admin, tenant.slug)
+    app.config["TWILIO_ACCOUNT_SID"] = "ACtest"
+    app.config["TWILIO_AUTH_TOKEN"] = "secret"
+    preview = client.post(
+        "/api/admin/templates/twilio-content/sync",
+        headers=headers,
+        json={"template_id": "order_checkout", "dry_run": True},
+    ).get_json()
+
+    class _TimeoutClient:
+        calls = 0
+
+        def request(self, method, url, *, data, headers, timeout):
+            self.calls += 1
+            raise TimeoutError("provider timeout")
+
+    fake_client = _TimeoutClient()
+    with patch("routes.whatsapp_rules.Client", return_value=fake_client):
+        first = client.post(
+            "/api/admin/templates/twilio-content/sync",
+            headers=headers,
+            json={
+                "template_id": "order_checkout",
+                "dry_run": False,
+                "execute_confirmation": preview["execute_confirmation"],
+            },
+        )
+        second = client.post(
+            "/api/admin/templates/twilio-content/sync",
+            headers=headers,
+            json={
+                "template_id": "order_checkout",
+                "dry_run": False,
+                "execute_confirmation": preview["execute_confirmation"],
+            },
+        )
+
+    assert first.status_code == 502
+    assert second.status_code == 409
+    assert fake_client.calls == 1
+    row = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+    ).one()
+    assert row.status == "sync_uncertain"
+    assert row.metadata_json["sync_state"] == "uncertain"
+
+
 def test_twilio_content_refresh_updates_approval_status(client, app):
     admin, tenant = _seed(plan="full")
     headers = _auth_headers(app, admin, tenant.slug)
@@ -383,16 +444,20 @@ def test_twilio_content_refresh_updates_approval_status(client, app):
     db.session.add(row)
     db.session.commit()
 
-    class _FakeContentHandle:
-        def fetch(self):
-            return SimpleNamespace(approval_requests=SimpleNamespace(status="APPROVED"))
+    class _FakeClient:
+        def request(self, method, url, *, data, headers, timeout):
+            assert method == "GET"
+            assert url == (
+                "https://content.twilio.com/v1/Content/"
+                "HXpendingtemplate/ApprovalRequests"
+            )
+            assert data is None
+            return SimpleNamespace(
+                status_code=200,
+                text=json.dumps({"whatsapp": {"status": "APPROVED"}}),
+            )
 
-    class _FakeContents:
-        def __call__(self, content_sid):
-            assert content_sid == "HXpendingtemplate"
-            return _FakeContentHandle()
-
-    fake_client = SimpleNamespace(content=SimpleNamespace(v1=SimpleNamespace(contents=_FakeContents())))
+    fake_client = _FakeClient()
 
     with patch("routes.whatsapp_rules.Client", return_value=fake_client) as client_factory:
         response = client.post(
@@ -410,7 +475,7 @@ def test_twilio_content_refresh_updates_approval_status(client, app):
 
     refreshed = MessageTemplateRegistry.query.filter_by(content_sid="HXpendingtemplate").one()
     assert refreshed.status == "approved"
-    assert refreshed.metadata_json["last_refresh_source"] == "twilio_content_fetch"
+    assert refreshed.metadata_json["last_refresh_source"] == "twilio_approval_fetch"
 
 
 def test_twilio_content_refresh_blocks_free_plan_before_twilio_call(client, app):

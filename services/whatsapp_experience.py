@@ -18,6 +18,7 @@ from models import (
     NotificationTemplate,
     PedidoConversacional,
     Promocion,
+    ProviderSender,
     PublicSurvey,
     PublicSurveyResponse,
     PymePedido,
@@ -32,6 +33,7 @@ from services.commerce_contracts import build_checkout_experience_payload, payme
 from services.education_contracts import build_education_whatsapp_playbook, is_education_tenant
 from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
 from services.plan_access import integration_access_payload
+from services.provider_platform import is_sender_ready_status
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
 from services.tts_orchestrator import get_tts_audio_cache_public_config, get_tts_cache_metrics
@@ -40,6 +42,7 @@ from services.tts_orchestrator import get_tts_audio_cache_public_config, get_tts
 WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
 
 APPROVED_TEMPLATE_STATUSES = {"approved", "active", "ready", "published", "online"}
+ACTIVE_META_FLOW_STATUSES = {"approved", "active", "published"}
 PENDING_TEMPLATE_STATUSES = {"draft", "pending", "submitted", "in_review", "review", "twilio_review"}
 REJECTED_TEMPLATE_STATUSES = {"rejected", "failed", "disabled", "paused"}
 LOCAL_TWILIO_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "scripts" / "twilio_content_templates.local.json"
@@ -4055,6 +4058,308 @@ def _finance_transactional_payload(
     }
 
 
+def _explicit_flag(mapping: Mapping[str, Any], *keys: str) -> bool:
+    for key in keys:
+        if key not in mapping:
+            continue
+        value = mapping.get(key)
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled", "active"}
+    return False
+
+
+def _meta_platform_payload(
+    tenant: TenantProfile,
+    *,
+    app_config: Mapping[str, Any] | None,
+    cfg: Mapping[str, Any],
+    channel_ready: bool,
+    integration_access: Mapping[str, Any],
+    content: Mapping[str, Any],
+    webview_blueprint: Mapping[str, Any],
+) -> dict[str, Any]:
+    app_cfg = app_config or {}
+    tech_state = cfg.get("twilio_tech_provider") if isinstance(cfg.get("twilio_tech_provider"), Mapping) else {}
+    meta_cfg = cfg.get("meta_platform") if isinstance(cfg.get("meta_platform"), Mapping) else {}
+    sender = (
+        ProviderSender.query.filter_by(tenant_id=tenant.id, channel="whatsapp")
+        .order_by(ProviderSender.updated_at.desc())
+        .first()
+    )
+    sender_metadata = sender.metadata_json if sender and isinstance(sender.metadata_json, Mapping) else {}
+    sender_status = str(
+        (sender.status if sender else None)
+        or tech_state.get("sender_status")
+        or ""
+    ).strip().lower()
+    sender_ready = is_sender_ready_status(sender_status)
+    waba_id = str((sender.waba_id if sender else None) or tech_state.get("waba_id") or "").strip()
+    phone_number_id = str(
+        (sender.phone_number_id if sender else None)
+        or tech_state.get("phone_number_id")
+        or ""
+    ).strip()
+    sender_sid = str(
+        (sender.sender_sid if sender else None)
+        or tech_state.get("sender_sid")
+        or ""
+    ).strip()
+
+    registry_rows = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+    ).all()
+    native_registry: dict[str, MessageTemplateRegistry] = {}
+    for row in registry_rows:
+        metadata = row.metadata_json if isinstance(row.metadata_json, Mapping) else {}
+        if metadata.get("content_family") != "meta_native_flow":
+            continue
+        registered_flow_id = str(metadata.get("flow_id") or "").strip()
+        if registered_flow_id:
+            native_registry[registered_flow_id] = row
+
+    flow_candidates: list[dict[str, Any]] = []
+    webview_flows = webview_blueprint.get("flows") if isinstance(webview_blueprint.get("flows"), list) else []
+    for flow in webview_flows:
+        if not isinstance(flow, Mapping):
+            continue
+        flow_id = str(flow.get("id") or "").strip()
+        blueprint = flow.get("meta_flow_blueprint") if isinstance(flow.get("meta_flow_blueprint"), Mapping) else {}
+        if not flow_id or not blueprint.get("safe_for_whatsapp_flow"):
+            continue
+        screens = blueprint.get("screens") if isinstance(blueprint.get("screens"), list) else []
+        first_screen = screens[0] if screens and isinstance(screens[0], Mapping) else {}
+        row = native_registry.get(flow_id)
+        metadata = row.metadata_json if row and isinstance(row.metadata_json, Mapping) else {}
+        meta_flow_id = str(
+            metadata.get("meta_flow_id")
+            or (row.external_template_id if row else None)
+            or ""
+        ).strip()
+        content_sid = str(row.content_sid or "").strip() if row else ""
+        registry_status = str(row.status or "draft").strip().lower() if row else "not_configured"
+        meta_flow_status = str(
+            metadata.get("meta_flow_status") or metadata.get("approval_status") or ""
+        ).strip().lower()
+        configured = bool(meta_flow_id and content_sid.startswith("HX"))
+        active = bool(
+            configured
+            and channel_ready
+            and sender_ready
+            and registry_status in APPROVED_TEMPLATE_STATUSES
+            and meta_flow_status in ACTIVE_META_FLOW_STATUSES
+        )
+        flow_candidates.append(
+            {
+                "id": flow_id,
+                "flow_name": blueprint.get("flow_name"),
+                "category": blueprint.get("category"),
+                "endpoint_mode": blueprint.get("endpoint_mode"),
+                "first_screen_id": first_screen.get("id"),
+                "screens_count": len(screens),
+                "data_contract": blueprint.get("data_contract") or [],
+                "meta_flow_id": meta_flow_id or None,
+                "content_sid": content_sid or None,
+                "registry_status": registry_status,
+                "meta_flow_status": meta_flow_status or None,
+                "configured": configured,
+                "active": active,
+                "activation_state": (
+                    "active"
+                    if active
+                    else "awaiting_meta_approval"
+                    if configured
+                    else "meta_flow_id_required"
+                ),
+            }
+        )
+
+    configured_flows = len([item for item in flow_candidates if item["configured"]])
+    active_flows = len([item for item in flow_candidates if item["active"]])
+    calling_status = str(
+        sender_metadata.get("whatsapp_business_calling_status")
+        or meta_cfg.get("business_calling_status")
+        or tech_state.get("whatsapp_business_calling_status")
+        or ""
+    ).strip().lower()
+    calling_keys = {
+        "whatsapp_business_calling_enabled",
+        "business_calling_enabled",
+        "whatsapp_business_calling_status",
+        "business_calling_status",
+        "user_initiated_calling_enabled",
+        "business_initiated_calling_enabled",
+    }
+    calling_configured = bool(
+        calling_status
+        or calling_keys.intersection(sender_metadata.keys())
+        or calling_keys.intersection(meta_cfg.keys())
+        or calling_keys.intersection(tech_state.keys())
+    )
+    user_initiated_calling = _explicit_flag(
+        sender_metadata,
+        "user_initiated_calling_enabled",
+        "whatsapp_business_calling_enabled",
+        "business_calling_enabled",
+    ) or _explicit_flag(meta_cfg, "user_initiated_calling_enabled")
+    business_initiated_calling = _explicit_flag(
+        sender_metadata,
+        "business_initiated_calling_enabled",
+    ) or _explicit_flag(meta_cfg, "business_initiated_calling_enabled")
+    calling_active = bool(
+        channel_ready
+        and sender_ready
+        and calling_status in {"active", "approved", "enabled", "ready"}
+        and (user_initiated_calling or business_initiated_calling)
+    )
+
+    catalog_id = str(
+        sender_metadata.get("catalog_id")
+        or meta_cfg.get("catalog_id")
+        or tech_state.get("catalog_id")
+        or ""
+    ).strip()
+    catalog_status = str(
+        sender_metadata.get("catalog_status")
+        or meta_cfg.get("catalog_status")
+        or ""
+    ).strip().lower()
+    catalog_configured = bool(catalog_id)
+    catalog_active = bool(
+        channel_ready
+        and sender_ready
+        and catalog_configured
+        and catalog_status in {"active", "approved", "connected", "published", "ready"}
+    )
+    catalog_content = content.get("catalog") if isinstance(content.get("catalog"), Mapping) else {}
+    catalog_items = int(catalog_content.get("items") or catalog_content.get("total") or 0)
+
+    meta_app_configured = bool(
+        str(app_cfg.get("TWILIO_META_APP_ID") or "").strip()
+        and str(app_cfg.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID") or "").strip()
+    )
+    embedded_signup_completed = bool(waba_id and phone_number_id)
+    embedded_signup_active = bool(embedded_signup_completed and sender_ready)
+    meta_identity_configured = embedded_signup_completed
+    meta_platform_active = bool(channel_ready and embedded_signup_active)
+
+    return {
+        "contract_version": "whatsapp.meta_platform.v1",
+        "provider": "meta_whatsapp_via_twilio",
+        "configured": meta_identity_configured,
+        "active": meta_platform_active,
+        "status": (
+            "active"
+            if meta_platform_active
+            else "sender_pending"
+            if meta_identity_configured
+            else "not_configured"
+        ),
+        "sender": {
+            "configured": bool(sender_sid or waba_id or phone_number_id),
+            "ready": sender_ready,
+            "status": sender_status or "not_configured",
+            "sender_sid_present": bool(sender_sid),
+            "waba_id_present": bool(waba_id),
+            "phone_number_id_present": bool(phone_number_id),
+        },
+        "native_flows": {
+            "contract_version": "whatsapp.meta_native_flows.v1",
+            "supported_by_provider": True,
+            "content_type": "whatsapp/flows",
+            "configured": configured_flows > 0,
+            "active": active_flows > 0,
+            "configured_count": configured_flows,
+            "active_count": active_flows,
+            "candidate_count": len(flow_candidates),
+            "sync_endpoint": "/api/admin/whatsapp/flows/twilio-content/sync",
+            "sync_method": "POST",
+            "dry_run_default": True,
+            "execution_confirmation_required": True,
+            "approval_category": "UTILITY",
+            "requires_published_meta_flow_id": True,
+            "requires_per_send_flow_token": True,
+            "runtime_endpoint": f"/api/public/flows/runtime?tenant={tenant.slug}&channel=whatsapp",
+            "submission_ingestion": {
+                "contract_version": "whatsapp.flow_submission.v1",
+                "provider_webhook_fields": ["InteractiveData", "FlowData"],
+                "status": (
+                    "active"
+                    if active_flows > 0 and sender_ready
+                    else "configured"
+                    if configured_flows > 0
+                    else "not_configured"
+                ),
+                "claimed_active": bool(active_flows > 0 and sender_ready),
+                "webhook_endpoint": "/webhook/whatsapp",
+                "persistence_key": "last_whatsapp_flow_submission",
+                "orchestrator_argument": "whatsapp_flow_submission",
+                "rejects_invalid_payload_before_orchestration": True,
+            },
+            "security": {
+                "pci_data_allowed": False,
+                "hipaa_data_allowed": False,
+                "server_validation_required": True,
+            },
+            "flows": flow_candidates,
+        },
+        "business_calling": {
+            "contract_version": "whatsapp.business_calling.v1",
+            "supported_by_provider": True,
+            "configured": calling_configured,
+            "active": calling_active,
+            "status": "active" if calling_active else "configured" if calling_configured else "not_configured",
+            "user_initiated_enabled": bool(user_initiated_calling and calling_active),
+            "business_initiated_enabled": bool(business_initiated_calling and calling_active),
+            "requires_explicit_user_consent": True,
+            "consent_ledger_required": True,
+            "whatsapp_pstn_bridge_allowed": False,
+            "endpoint_addressing": "whatsapp:{e164}",
+            "activation_note": "No se habilita hasta persistir estado aprobado del sender y modos de llamada.",
+        },
+        "catalog": {
+            "contract_version": "whatsapp.meta_catalog.v1",
+            "configured": catalog_configured,
+            "active": catalog_active,
+            "status": "active" if catalog_active else "configured" if catalog_configured else "not_configured",
+            "catalog_id_present": catalog_configured,
+            "chatboc_catalog_items": catalog_items,
+            "chatboc_catalog_ready": catalog_items > 0,
+            "product_messages_ready": catalog_active,
+            "public_catalog_endpoint": f"/api/public/tenants/{tenant.slug}/catalog",
+        },
+        "embedded_signup": {
+            "contract_version": "whatsapp.meta_embedded_signup.v1",
+            "platform_configured": meta_app_configured,
+            "tenant_completed": embedded_signup_completed,
+            "active": embedded_signup_active,
+            "status": (
+                "active"
+                if embedded_signup_active
+                else "sender_pending"
+                if embedded_signup_completed
+                else "ready_to_start"
+                if meta_app_configured
+                else "platform_configuration_required"
+            ),
+            "completion_endpoint": f"/api/v2/tenants/{tenant.slug}/whatsapp/tech-provider/embedded-signup",
+        },
+        "integration_access": {
+            "enabled": bool(integration_access.get("enabled")),
+            "required_plan": integration_access.get("required_plan"),
+            "reason_code": integration_access.get("reason_code"),
+        },
+        "frontend_contract": {
+            "render_as": "meta_platform_operations",
+            "show_capability_states": True,
+            "show_native_flow_activation": True,
+            "never_label_unconfigured_capability_active": True,
+        },
+    }
+
+
 def build_whatsapp_experience(
     tenant: TenantProfile,
     *,
@@ -4111,6 +4416,15 @@ def build_whatsapp_experience(
         integration_access=integration_access,
         webview_blueprint=webview_blueprint,
         template_blueprint=template_blueprint,
+    )
+    meta_platform = _meta_platform_payload(
+        tenant,
+        app_config=app_config,
+        cfg=cfg,
+        channel_ready=channel_ready,
+        integration_access=integration_access,
+        content=content,
+        webview_blueprint=webview_blueprint,
     )
     channel_reason = None
     if not channel_ready:
@@ -4205,6 +4519,7 @@ def build_whatsapp_experience(
         "template_blueprint": template_blueprint,
         "webview_blueprint": webview_blueprint,
         "flow_runtime": flow_runtime,
+        "meta_platform": meta_platform,
         "finance_transactional": finance_transactional,
         "qa_playbook": qa_playbook,
         "message_ux_policy": message_ux_policy,
@@ -4227,6 +4542,7 @@ def build_whatsapp_experience(
                 "template_blueprint",
                 "webview_checkout",
                 "flow_runtime",
+                "meta_platform",
                 "transactional_finance",
                 "qa_playbook",
                 "message_ux_policy",
