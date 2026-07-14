@@ -34,6 +34,7 @@ from services.education_contracts import build_education_whatsapp_playbook, is_e
 from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
 from services.plan_access import integration_access_payload
 from services.provider_platform import is_sender_ready_status
+from services.whatsapp_flow_security import whatsapp_flow_token_key_ready
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
 from services.tts_orchestrator import get_tts_audio_cache_public_config, get_tts_cache_metrics
@@ -4105,6 +4106,9 @@ def _meta_platform_payload(
         or tech_state.get("sender_sid")
         or ""
     ).strip()
+    flow_token_security_ready = whatsapp_flow_token_key_ready(
+        app_cfg.get("WHATSAPP_FLOW_TOKEN_KEY_V1")
+    )
 
     registry_rows = MessageTemplateRegistry.query.filter_by(
         tenant_id=tenant.id,
@@ -4148,6 +4152,7 @@ def _meta_platform_payload(
             configured
             and channel_ready
             and sender_ready
+            and flow_token_security_ready
             and registry_status in APPROVED_TEMPLATE_STATUSES
             and meta_flow_status in ACTIVE_META_FLOW_STATUSES
         )
@@ -4276,6 +4281,8 @@ def _meta_platform_payload(
             "candidate_count": len(flow_candidates),
             "sync_endpoint": "/api/admin/whatsapp/flows/twilio-content/sync",
             "sync_method": "POST",
+            "send_endpoint": "/api/admin/whatsapp/flows/send",
+            "send_method": "POST",
             "dry_run_default": True,
             "execution_confirmation_required": True,
             "approval_category": "UTILITY",
@@ -4287,12 +4294,14 @@ def _meta_platform_payload(
                 "provider_webhook_fields": ["InteractiveData", "FlowData"],
                 "status": (
                     "active"
-                    if active_flows > 0 and sender_ready
+                    if active_flows > 0 and sender_ready and flow_token_security_ready
                     else "configured"
                     if configured_flows > 0
                     else "not_configured"
                 ),
-                "claimed_active": bool(active_flows > 0 and sender_ready),
+                "claimed_active": bool(
+                    active_flows > 0 and sender_ready and flow_token_security_ready
+                ),
                 "webhook_endpoint": "/webhook/whatsapp",
                 "persistence_key": "last_whatsapp_flow_submission",
                 "orchestrator_argument": "whatsapp_flow_submission",
@@ -4302,6 +4311,11 @@ def _meta_platform_payload(
                 "pci_data_allowed": False,
                 "hipaa_data_allowed": False,
                 "server_validation_required": True,
+                "dedicated_token_key_ready": flow_token_security_ready,
+                "tenant_recipient_sender_bound": True,
+                "durable_single_use_invocation": True,
+                "atomic_replay_protection": True,
+                "token_exposed_to_operator": False,
             },
             "flows": flow_candidates,
         },

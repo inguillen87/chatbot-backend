@@ -2527,6 +2527,84 @@ class MessageTemplateRegistry(db.Model):
     )
 
 
+class WhatsAppFlowInteraction(db.Model):
+    """Durable one-time invocation for a native WhatsApp Flow."""
+
+    __tablename__ = "whatsapp_flow_interaction"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    template_registry_id = db.Column(
+        db.Integer,
+        db.ForeignKey("message_template_registry.id"),
+        nullable=False,
+        index=True,
+    )
+    provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id"),
+        nullable=False,
+        index=True,
+    )
+    flow_id = db.Column(db.String(120), nullable=False, index=True)
+    meta_flow_id = db.Column(db.String(120), nullable=False, index=True)
+    content_sid = db.Column(db.String(120), nullable=False, index=True)
+    recipient_hash = db.Column(db.String(64), nullable=False, index=True)
+    recipient_hint = db.Column(db.String(32), nullable=True)
+    token_digest = db.Column(db.String(64), nullable=False, unique=True)
+    idempotency_key = db.Column(db.String(120), nullable=False)
+    status = db.Column(db.String(32), nullable=False, default="claimed", index=True)
+    external_message_sid = db.Column(db.String(180), nullable=True, index=True)
+    inbound_message_sid = db.Column(db.String(180), nullable=True, index=True)
+    data_contract = db.Column(JSONType, nullable=True)
+    metadata_json = db.Column(JSONType, nullable=True)
+    error_code = db.Column(db.String(80), nullable=True)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+    consumed_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        default=get_local_now,
+        onupdate=get_local_now,
+        nullable=False,
+    )
+
+    tenant = db.relationship(
+        "TenantProfile",
+        backref=db.backref("whatsapp_flow_interactions", lazy="dynamic"),
+    )
+    template_registry = db.relationship(
+        "MessageTemplateRegistry",
+        backref=db.backref("flow_interactions", lazy="dynamic"),
+    )
+    provider_sender = db.relationship(
+        "ProviderSender",
+        backref=db.backref("flow_interactions", lazy="dynamic"),
+    )
+
+    __table_args__ = (
+        db.CheckConstraint(
+            "status IN ('claimed', 'sent', 'send_uncertain', 'consumed', 'failed')",
+            name="ck_whatsapp_flow_interaction_status",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_whatsapp_flow_interaction_tenant_idempotency",
+        ),
+        db.Index(
+            "ix_whatsapp_flow_interaction_tenant_status",
+            "tenant_id",
+            "status",
+        ),
+        db.Index(
+            "ix_whatsapp_flow_interaction_tenant_recipient",
+            "tenant_id",
+            "recipient_hash",
+        ),
+    )
+
+
 class TenantConfig(db.Model):
     __tablename__ = "tenant_config"
 

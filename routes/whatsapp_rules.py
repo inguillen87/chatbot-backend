@@ -11,9 +11,27 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy.exc import IntegrityError
 from twilio.rest import Client
 
-from models import AuditEvent, MessageTemplateRegistry, NotificationTemplate, ProviderConnection, User, db
+from models import (
+    AuditEvent,
+    MessageTemplateRegistry,
+    MessagingEventLedger,
+    NotificationTemplate,
+    ProviderConnection,
+    ProviderSender,
+    User,
+    WhatsAppFlowInteraction,
+    db,
+)
+from services.provider_platform import is_sender_ready_status
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 from services.whatsapp_experience import build_whatsapp_experience
+from services.whatsapp_flow_security import (
+    WhatsAppFlowTokenError,
+    issue_whatsapp_flow_token,
+    normalize_flow_recipient,
+    whatsapp_flow_recipient_scope,
+    whatsapp_flow_token_key_ready,
+)
 from services.plan_access import integration_access_payload, integration_frontend_contract
 from services.twilio_tech_provider import TwilioRuntimeCredentials, resolve_twilio_runtime_credentials
 from utils.auth_decorators import _is_authorized_for_tenant
@@ -167,6 +185,91 @@ def _twilio_client(tenant) -> tuple[Client, TwilioRuntimeCredentials]:
             abort(409, description="La cuenta Twilio del tenant no coincide con su conexion registrada")
         abort(503, description="Las credenciales Twilio del tenant no estan configuradas para esta cuenta")
     return Client(credentials.account_sid, credentials.auth_token), credentials
+
+
+def _twilio_client_for_sender(tenant, sender: ProviderSender) -> tuple[Client, TwilioRuntimeCredentials]:
+    credentials = resolve_twilio_runtime_credentials(
+        tenant=tenant,
+        provider_connection=sender.provider_connection,
+        app_config=current_app.config,
+    )
+    if not credentials.ready:
+        if credentials.scope == "conflict":
+            abort(409, description="La cuenta Twilio del sender no coincide con el tenant")
+        abort(503, description="Las credenciales Twilio del sender no estan configuradas")
+    return Client(credentials.account_sid, credentials.auth_token), credentials
+
+
+def _flow_interaction_payload(row: WhatsAppFlowInteraction) -> dict:
+    return {
+        "id": row.id,
+        "flow_id": row.flow_id,
+        "meta_flow_id": row.meta_flow_id,
+        "content_sid": row.content_sid,
+        "recipient_hint": row.recipient_hint,
+        "status": row.status,
+        "external_message_sid": row.external_message_sid,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "consumed_at": row.consumed_at.isoformat() if row.consumed_at else None,
+        "retry_safe": row.status not in {"claimed", "send_uncertain"},
+    }
+
+
+def _native_flow_registry_for_send(tenant_id: int, flow_id: str) -> MessageTemplateRegistry | None:
+    rows = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant_id,
+        provider="twilio",
+        channel="whatsapp",
+    ).all()
+    for row in rows:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        if metadata.get("content_family") != "meta_native_flow":
+            continue
+        if str(metadata.get("flow_id") or "").strip().lower() == flow_id.lower():
+            return row
+    return None
+
+
+def _ready_flow_sender(tenant_id: int, sender_id) -> ProviderSender | None:
+    query = ProviderSender.query.filter_by(tenant_id=tenant_id, channel="whatsapp")
+    if sender_id not in (None, ""):
+        try:
+            query = query.filter_by(id=int(sender_id))
+        except (TypeError, ValueError):
+            abort(400, description="provider_sender_id invalido")
+    for sender in query.order_by(ProviderSender.updated_at.desc()).all():
+        if is_sender_ready_status(sender.status):
+            return sender
+    return None
+
+
+def _flow_registry_is_active(row: MessageTemplateRegistry | None) -> bool:
+    if not row or not str(row.content_sid or "").startswith("HX"):
+        return False
+    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    approval_status = str(
+        metadata.get("meta_flow_status") or metadata.get("approval_status") or ""
+    ).strip().lower()
+    return bool(
+        str(row.status or "").strip().lower() in {"approved", "active"}
+        and approval_status in {"approved", "active", "published"}
+        and str(metadata.get("meta_flow_id") or row.external_template_id or "").strip()
+    )
+
+
+def _flow_status_callback(sender: ProviderSender) -> str | None:
+    configured = str(sender.status_callback_url or "").strip()
+    if configured.startswith("https://"):
+        return configured
+    base_url = str(
+        current_app.config.get("PUBLIC_API_BASE_URL")
+        or current_app.config.get("BACKEND_URL")
+        or current_app.config.get("APP_BASE_URL")
+        or ""
+    ).strip().rstrip("/")
+    if base_url.startswith("https://"):
+        return f"{base_url}/twilio/whatsapp/status"
+    return None
 
 
 def _confirmation_serializer() -> URLSafeTimedSerializer:
@@ -1055,6 +1158,346 @@ def sync_twilio_native_flow(user: User):
             "content_sid": content_sid,
             "approval_status": approval_status,
             "registry": _template_registry_payload(row),
+        }
+    ), 201
+
+
+@whatsapp_rules_bp.route("/api/admin/whatsapp/flows/send", methods=["POST"])
+@token_requerido
+@require_tenant
+def send_twilio_native_flow(user: User):
+    """Preview or send one approved native Flow with a one-time signed token."""
+
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    payload = request.get_json(silent=True) or {}
+    flow_id = str(payload.get("flow_id") or "").strip()
+    if not flow_id:
+        abort(400, description="flow_id es requerido")
+    try:
+        recipient = normalize_flow_recipient(payload.get("recipient"))
+    except WhatsAppFlowTokenError:
+        abort(400, description="recipient debe ser un telefono E.164 valido")
+    idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:\-]{8,120}", idempotency_key):
+        abort(400, description="idempotency_key debe tener entre 8 y 120 caracteres seguros")
+
+    dry_run = payload.get("dry_run", True) is not False
+    integration_access = integration_access_payload(tenant)
+    access_enabled = bool(integration_access.get("enabled"))
+    token_secret = current_app.config.get("WHATSAPP_FLOW_TOKEN_KEY_V1")
+    token_key_ready = whatsapp_flow_token_key_ready(token_secret)
+    token_ttl = current_app.config.get("WHATSAPP_FLOW_TOKEN_TTL_SECONDS")
+    registry = _native_flow_registry_for_send(tenant.id, flow_id)
+    registry_active = _flow_registry_is_active(registry)
+    sender = _ready_flow_sender(tenant.id, payload.get("provider_sender_id"))
+    sender_ready = bool(sender)
+    registry_metadata = (
+        registry.metadata_json
+        if registry and isinstance(registry.metadata_json, dict)
+        else {}
+    )
+    meta_flow_id = str(
+        registry_metadata.get("meta_flow_id")
+        or (registry.external_template_id if registry else None)
+        or ""
+    ).strip()
+
+    credentials = None
+    if sender:
+        credentials = resolve_twilio_runtime_credentials(
+            tenant=tenant,
+            provider_connection=sender.provider_connection,
+            app_config=current_app.config,
+        )
+    credentials_ready = bool(credentials and credentials.ready)
+
+    recipient_scope = None
+    if token_key_ready:
+        recipient_scope = whatsapp_flow_recipient_scope(
+            secret=token_secret,
+            tenant_id=tenant.id,
+            recipient=recipient,
+        )
+    recipient_hint = (
+        recipient_scope["recipient_hint"] if recipient_scope else f"***{recipient[-4:]}"
+    )
+
+    existing = WhatsAppFlowInteraction.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key=idempotency_key,
+    ).first()
+    if existing and recipient_scope:
+        same_scope = bool(
+            existing.flow_id == flow_id
+            and existing.recipient_hash == recipient_scope["recipient_hash"]
+            and (not sender or existing.provider_sender_id == sender.id)
+        )
+        if not same_scope:
+            abort(409, description="idempotency_key ya pertenece a otra operacion")
+
+    policy_allowed = False
+    policy_reason = None
+    if registry:
+        policy_allowed, policy_reason = WhatsAppEnterpriseRulesService(
+            tenant.id
+        ).evaluate_outbound(
+            body=str(registry.body_preview or ""),
+            metadata={"recipient": recipient, "is_template": True},
+        )
+
+    blockers: list[str] = []
+    if not access_enabled:
+        blockers.append(str(integration_access.get("lock_reason_code") or "plan_full_required"))
+    if not token_key_ready:
+        blockers.append("flow_token_key_not_configured")
+    if not registry:
+        blockers.append("flow_not_registered")
+    elif not registry_active:
+        blockers.append("flow_not_approved_or_published")
+    if not sender_ready:
+        blockers.append("sender_not_ready")
+    elif not credentials_ready:
+        blockers.append("sender_credentials_not_ready")
+    if registry and not policy_allowed:
+        blockers.append(policy_reason or "enterprise_policy_blocked")
+    if existing:
+        blockers.append(f"idempotency_{existing.status}")
+
+    confirmation_fields = None
+    execute_confirmation = None
+    if not blockers and registry and sender and recipient_scope:
+        confirmation_fields = {
+            "flow_id": flow_id,
+            "registry_id": registry.id,
+            "provider_sender_id": sender.id,
+            "recipient_hash": recipient_scope["recipient_hash"],
+            "idempotency_key": idempotency_key,
+            "manifest_digest": _confirmation_manifest_digest(
+                {
+                    "flow_id": flow_id,
+                    "meta_flow_id": meta_flow_id,
+                    "content_sid": registry.content_sid,
+                    "data_contract": registry_metadata.get("data_contract") or [],
+                }
+            ),
+        }
+        execute_confirmation = _issue_execution_confirmation(
+            purpose="twilio_native_flow_send",
+            tenant=tenant,
+            user=user,
+            fields=confirmation_fields,
+        )
+
+    if dry_run:
+        response = {
+            "dry_run": True,
+            "ready_to_send": not blockers,
+            "blocked": bool(blockers),
+            "blockers": blockers,
+            "flow_id": flow_id,
+            "meta_flow_id": meta_flow_id or None,
+            "content_sid": registry.content_sid if registry else None,
+            "recipient_hint": recipient_hint,
+            "provider_sender_id": sender.id if sender else None,
+            "idempotency_key": idempotency_key,
+            "token_ttl_seconds": int(token_ttl or 48 * 60 * 60),
+            "security": {
+                "dedicated_key_ready": token_key_ready,
+                "one_time_token": True,
+                "tenant_bound": True,
+                "recipient_bound": True,
+                "token_exposed": False,
+            },
+            "integration_access": integration_access,
+            "existing_interaction": _flow_interaction_payload(existing) if existing else None,
+        }
+        if execute_confirmation:
+            response["execute_confirmation"] = execute_confirmation
+        return jsonify(response)
+
+    if existing:
+        status_code = 200 if existing.status in {"sent", "consumed"} else 409
+        return jsonify(
+            {
+                "sent": existing.status in {"sent", "consumed"},
+                "idempotent_replay": True,
+                "interaction": _flow_interaction_payload(existing),
+            }
+        ), status_code
+    if not access_enabled:
+        return _twilio_access_lock_response(tenant, action="send_twilio_native_flow")
+    if not token_key_ready:
+        abort(503, description="WHATSAPP_FLOW_TOKEN_KEY_V1 no esta configurada de forma segura")
+    if not registry or not registry_active:
+        abort(409, description="El Flow debe estar registrado, aprobado y publicado")
+    if not sender or not credentials_ready:
+        abort(409, description="No hay un sender WhatsApp operativo con credenciales validas")
+    if not policy_allowed:
+        abort(429 if policy_reason == "rate_limited" else 403, description=policy_reason or "Envio bloqueado")
+    if not confirmation_fields:
+        abort(409, description="La operacion debe validarse nuevamente")
+    _verify_execution_confirmation(
+        payload.get("execute_confirmation"),
+        purpose="twilio_native_flow_send",
+        tenant=tenant,
+        user=user,
+        fields=confirmation_fields,
+    )
+
+    issued = issue_whatsapp_flow_token(
+        secret=token_secret,
+        tenant_id=tenant.id,
+        recipient=recipient,
+        flow_id=flow_id,
+        meta_flow_id=meta_flow_id,
+        provider_sender_id=sender.id,
+        ttl_seconds=token_ttl,
+    )
+    interaction = WhatsAppFlowInteraction(
+        tenant_id=tenant.id,
+        template_registry_id=registry.id,
+        provider_sender_id=sender.id,
+        flow_id=flow_id,
+        meta_flow_id=meta_flow_id,
+        content_sid=registry.content_sid,
+        recipient_hash=issued.recipient_hash,
+        recipient_hint=issued.recipient_hint,
+        token_digest=issued.token_digest,
+        idempotency_key=idempotency_key,
+        status="claimed",
+        data_contract=registry_metadata.get("data_contract") or [],
+        metadata_json={
+            "source": "admin_whatsapp_operations",
+            "actor_user_id": user.id,
+            "credential_scope": credentials.scope,
+        },
+        expires_at=issued.expires_at,
+    )
+    db.session.add(interaction)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        raced = WhatsAppFlowInteraction.query.filter_by(
+            tenant_id=tenant.id,
+            idempotency_key=idempotency_key,
+        ).first()
+        if raced:
+            return jsonify(
+                {
+                    "sent": raced.status in {"sent", "consumed"},
+                    "idempotent_replay": True,
+                    "interaction": _flow_interaction_payload(raced),
+                }
+            ), 200 if raced.status in {"sent", "consumed"} else 409
+        abort(409, description="No se pudo reservar una invocacion unica")
+
+    message_params = {
+        "to": f"whatsapp:{recipient}",
+        "content_sid": registry.content_sid,
+        "content_variables": json.dumps({"1": issued.token}, separators=(",", ":")),
+    }
+    if sender.messaging_service_sid:
+        message_params["messaging_service_sid"] = sender.messaging_service_sid
+    else:
+        sender_address = str(sender.sender_id or sender.phone_number or "").strip()
+        if not sender_address:
+            interaction.status = "failed"
+            interaction.error_code = "sender_address_missing"
+            db.session.add(interaction)
+            db.session.commit()
+            abort(409, description="El sender no tiene direccion WhatsApp utilizable")
+        message_params["from_"] = (
+            sender_address
+            if sender_address.startswith("whatsapp:")
+            else f"whatsapp:{sender_address}"
+        )
+    status_callback = _flow_status_callback(sender)
+    if status_callback:
+        message_params["status_callback"] = status_callback
+
+    client = Client(credentials.account_sid, credentials.auth_token)
+    try:
+        message = client.messages.create(**message_params)
+        message_sid = str(getattr(message, "sid", "") or "").strip()
+        if not message_sid:
+            raise RuntimeError("twilio_message_sid_missing")
+    except Exception as exc:
+        interaction.status = "send_uncertain"
+        interaction.error_code = type(exc).__name__[:80]
+        interaction.updated_at = datetime.now(timezone.utc)
+        db.session.add(interaction)
+        db.session.add(
+            AuditEvent(
+                tenant_id=tenant.id,
+                actor_user_id=user.id,
+                event_type="whatsapp_flow.send_uncertain",
+                resource_type="whatsapp_flow_interaction",
+                resource_id=str(interaction.id),
+                details={
+                    "flow_id": flow_id,
+                    "content_sid": registry.content_sid,
+                    "provider_sender_id": sender.id,
+                    "recipient_hint": issued.recipient_hint,
+                    "error_type": type(exc).__name__,
+                },
+                ip_address=request.remote_addr,
+            )
+        )
+        db.session.commit()
+        abort(502, description="Twilio no confirmo el envio; no reintentes con otra clave hasta revisar el estado")
+
+    interaction.status = "sent"
+    interaction.external_message_sid = message_sid[:180]
+    interaction.error_code = None
+    interaction.updated_at = datetime.now(timezone.utc)
+    db.session.add(interaction)
+    db.session.add(
+        MessagingEventLedger(
+            tenant_id=tenant.id,
+            provider_connection_id=sender.provider_connection_id,
+            provider_sender_id=sender.id,
+            channel="whatsapp",
+            direction="outbound",
+            event_type="native_flow_sent",
+            provider="twilio",
+            provider_event_id=message_sid[:180],
+            external_message_sid=message_sid[:180],
+            external_status="queued",
+            sender=str(sender.sender_id or sender.phone_number or "")[:255] or None,
+            recipient=issued.recipient_hint,
+            payload={"flow_id": flow_id, "content_sid": registry.content_sid},
+            metadata_json={"interaction_id": interaction.id, "idempotency_key": idempotency_key},
+            request_id=idempotency_key,
+        )
+    )
+    db.session.add(
+        AuditEvent(
+            tenant_id=tenant.id,
+            actor_user_id=user.id,
+            event_type="whatsapp_flow.sent",
+            resource_type="whatsapp_flow_interaction",
+            resource_id=str(interaction.id),
+            details={
+                "flow_id": flow_id,
+                "meta_flow_id": meta_flow_id,
+                "content_sid": registry.content_sid,
+                "provider_sender_id": sender.id,
+                "recipient_hint": issued.recipient_hint,
+                "external_message_sid": message_sid[:180],
+                "token_exposed": False,
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "sent": True,
+            "idempotent_replay": False,
+            "interaction": _flow_interaction_payload(interaction),
         }
     ), 201
 

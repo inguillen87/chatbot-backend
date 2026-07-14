@@ -66,6 +66,11 @@ from services.whatsapp_flow_submissions import (
     persistence_safe_flow_submission,
     safe_twilio_form_metadata,
 )
+from services.whatsapp_flow_security import (
+    WhatsAppFlowTokenError,
+    consume_whatsapp_flow_interaction,
+    verify_whatsapp_flow_token,
+)
 from services.twilio_tech_provider import (
     TwilioRuntimeCredentials,
     resolve_twilio_runtime_credentials,
@@ -4497,18 +4502,29 @@ def whatsapp_webhook():
 
     if flow_submission_present:
         try:
+            if not credential_tenant or not provider_sender:
+                raise WhatsAppFlowTokenError("flow_sender_not_registered")
+            allowed_flow_ids = _allowed_native_flow_ids_for_tenant(credential_tenant)
             flow_submission = parse_whatsapp_flow_submission(
                 post_vars,
-                allowed_flow_ids=_allowed_native_flow_ids_for_tenant(credential_tenant),
+                allowed_flow_ids=allowed_flow_ids,
                 message_sid=post_vars.get("MessageSid") or post_vars.get("SmsMessageSid"),
-                correlation_secret=current_app.config.get("SECRET_KEY"),
                 require_correlation_token=True,
+                flow_token_validator=lambda raw_token: verify_whatsapp_flow_token(
+                    raw_token,
+                    secret=current_app.config.get("WHATSAPP_FLOW_TOKEN_KEY_V1"),
+                    tenant_id=credential_tenant.id,
+                    recipient=from_number_raw,
+                    provider_sender_id=provider_sender.id,
+                    allowed_flow_ids=allowed_flow_ids,
+                    ttl_seconds=current_app.config.get("WHATSAPP_FLOW_TOKEN_TTL_SECONDS"),
+                ),
             )
-        except FlowSubmissionValidationError as exc:
+        except (FlowSubmissionValidationError, WhatsAppFlowTokenError) as exc:
             current_app.logger.warning(
                 "[WHATSAPP_FLOW] Rejected unsafe Flow submission code=%s source=%s",
                 exc.code,
-                exc.source_field or "combined",
+                getattr(exc, "source_field", None) or "combined",
             )
         else:
             safe_flow_submission = persistence_safe_flow_submission(flow_submission or {})
@@ -4597,6 +4613,15 @@ def whatsapp_webhook():
     tenant_id = None
     if tenant_profile:
         tenant_id = getattr(tenant_profile, "id", None) or getattr(tenant_profile, "tenant_id", None)
+    if flow_submission_present:
+        credential_tenant_id = getattr(credential_tenant, "id", None)
+        if not tenant_id or not credential_tenant_id or int(tenant_id) != int(credential_tenant_id):
+            current_app.logger.error(
+                "[WHATSAPP_FLOW] Tenant routing mismatch rejected credential_tenant_id=%s routed_tenant_id=%s",
+                credential_tenant_id,
+                tenant_id,
+            )
+            return "OK", 200
     from services.pymes import get_or_create_user_by_phone
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
@@ -4704,9 +4729,29 @@ def whatsapp_webhook():
         current_app.logger.info(f"[WHATSAPP_WEBHOOK] Duplicate MediaMessageSid ignored: {media_message_sid}")
         return "OK", 200
 
-    flow_token_digest = str(
-        ((safe_flow_submission or {}).get("correlation") or {}).get("token_digest") or ""
-    ).strip()
+    flow_correlation = (safe_flow_submission or {}).get("correlation") or {}
+    flow_token_digest = str(flow_correlation.get("token_digest") or "").strip()
+    flow_interaction_id = flow_correlation.get("interaction_id")
+    if safe_flow_submission:
+        consumed = bool(
+            flow_interaction_id
+            and consume_whatsapp_flow_interaction(
+                interaction_id=int(flow_interaction_id),
+                tenant_id=int(tenant_id),
+                inbound_message_sid=message_sid,
+            )
+        )
+        if not consumed:
+            current_app.logger.info(
+                "[WHATSAPP_FLOW] Duplicate, expired or inactive Flow invocation ignored before orchestration"
+            )
+            if message_sid:
+                processed_message_sids.append(message_sid)
+                session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
+                safe_flag_modified(session_context_db_entry, "context_data")
+                db.session.add(session_context_db_entry)
+                db.session.commit()
+            return "OK", 200
     if flow_token_digest and flow_token_digest in processed_flow_tokens:
         current_app.logger.info("[WHATSAPP_FLOW] Replayed Flow token ignored before orchestration")
         if message_sid:
@@ -6219,14 +6264,24 @@ def whatsapp_webhook():
                         "pedir_info": faltan_contactos,
                     }
 
-            _log("debug", "Raw response from responder_chatboc: %s", bot_response_dict)
+            _log(
+                "debug",
+                "responder_chatboc response metadata type=%s keys=%s body_length=%s",
+                type(bot_response_dict).__name__,
+                sorted(str(key) for key in bot_response_dict.keys())[:24]
+                if isinstance(bot_response_dict, dict)
+                else [],
+                len(str(bot_response_dict.get("message_body") or ""))
+                if isinstance(bot_response_dict, dict)
+                else 0,
+            )
 
             # Validate the response from the bot logic
             if not isinstance(bot_response_dict, dict):
                 _log(
                     "warning",
-                    "responder_chatboc did not return a dictionary. Response: %s",
-                    bot_response_dict,
+                    "responder_chatboc returned an invalid response type=%s",
+                    type(bot_response_dict).__name__,
                 )
                 # Keep the default error response initialized earlier
                 bot_response_dict = {

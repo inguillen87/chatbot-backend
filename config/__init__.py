@@ -527,6 +527,12 @@ class Config:
 
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
+    # Dedicated rotation boundary for one-time WhatsApp Flow correlation tokens.
+    # Native Flows stay disabled when this value is missing or too short.
+    WHATSAPP_FLOW_TOKEN_KEY_V1 = os.getenv("WHATSAPP_FLOW_TOKEN_KEY_V1", "")
+    WHATSAPP_FLOW_TOKEN_TTL_SECONDS = int(
+        os.getenv("WHATSAPP_FLOW_TOKEN_TTL_SECONDS", str(48 * 60 * 60))
+    )
 
     # 2. CONFIGURACIÓN DE LA BASE DE DATOS
     db_url = os.getenv("DATABASE_URL")

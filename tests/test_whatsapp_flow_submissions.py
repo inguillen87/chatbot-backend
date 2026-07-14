@@ -2,6 +2,7 @@ import json
 import os
 import unittest
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -12,7 +13,16 @@ os.environ.setdefault("SKIP_INIT_TENANTS", "1")
 
 from app import create_app, db
 from config import Config
-from models import ChatSessionContext, MessageTemplateRegistry, TenantProfile, User, WhatsappNumero
+from models import (
+    ChatSessionContext,
+    MessageTemplateRegistry,
+    ProviderSender,
+    TenantProfile,
+    User,
+    WhatsappNumero,
+    WhatsAppFlowInteraction,
+)
+from services.whatsapp_flow_security import issue_whatsapp_flow_token
 from services.whatsapp_flow_submissions import (
     CONTRACT_VERSION,
     MAX_FIELD_COUNT,
@@ -230,6 +240,47 @@ def test_safe_request_metadata_contains_lengths_and_flags_only():
     assert "never-log-me" not in serialized
 
 
+def test_signed_official_flow_response_uses_invocation_identity_and_data_allowlist():
+    contract = parse_whatsapp_flow_submission(
+        {
+            "InteractiveData": json.dumps(
+                {
+                    "type": "nfm_reply",
+                    "flowResponse": {
+                        "flow_token": "signed-provider-token",
+                        "catalog_items": [{"sku": "CLAVO-10", "quantity": 3}],
+                        "unknown_admin_override": True,
+                    },
+                }
+            )
+        },
+        allowed_flow_ids={"catalog_order_builder", "1232445823264765"},
+        require_correlation_token=True,
+        flow_token_validator=lambda _: {
+            "interaction_id": 41,
+            "token_digest": "a" * 64,
+            "tenant_id": 7,
+            "flow_id": "catalog_order_builder",
+            "meta_flow_id": "1232445823264765",
+            "provider_sender_id": 3,
+            "data_contract": ["catalog_items"],
+            "already_consumed": False,
+            "expires_at": "2026-07-15T00:00:00+00:00",
+        },
+    )
+
+    assert contract["flow"]["id"] == "catalog_order_builder"
+    assert contract["flow"]["meta_id"] == "1232445823264765"
+    assert contract["flow"]["recognized"] is True
+    assert contract["payload"] == {
+        "answers": {"catalog_items": [{"sku": "CLAVO-10", "quantity": 3}]}
+    }
+    assert contract["correlation"]["interaction_id"] == 41
+    assert contract["integrity"]["signed_invocation_verified"] is True
+    assert "unknown_admin_override" not in json.dumps(contract)
+    assert "signed-provider-token" not in json.dumps(contract)
+
+
 class _WebhookConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
@@ -241,6 +292,8 @@ class _WebhookConfig(Config):
     TWILIO_ACCOUNT_SID = "AC_flow_submission_test"
     TWILIO_AUTH_TOKEN = "twilio_flow_test_token"
     BACKEND_URL = "https://api.chatboc.test"
+    WHATSAPP_FLOW_TOKEN_KEY_V1 = "test-whatsapp-flow-key-v1-00000000000000000000000000000000"
+    WHATSAPP_FLOW_TOKEN_TTL_SECONDS = 3600
 
 
 class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
@@ -272,26 +325,36 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
         )
         db.session.add(self.tenant)
         db.session.flush()
-        db.session.add(
-            MessageTemplateRegistry(
-                tenant_id=self.tenant.id,
-                provider="twilio",
-                channel="whatsapp",
-                name="catalog_order_builder_native_v1",
-                language="es",
-                category="UTILITY",
-                status="approved",
-                content_sid="HXflowtest",
-                external_template_id="1232445823264765",
-                metadata_json={
-                    "flow_id": "catalog_order_builder",
-                    "meta_flow_id": "1232445823264765",
-                    "content_family": "meta_native_flow",
-                    "approval_status": "approved",
-                    "meta_flow_status": "published",
-                },
-            )
+        self.sender = ProviderSender(
+            tenant_id=self.tenant.id,
+            channel="whatsapp",
+            phone_number="+15551234567",
+            sender_id="whatsapp:+15551234567",
+            status="active",
         )
+        db.session.add(self.sender)
+        db.session.flush()
+        self.registry = MessageTemplateRegistry(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="catalog_order_builder_native_v1",
+            language="es",
+            category="UTILITY",
+            status="approved",
+            content_sid="HXflowtest",
+            external_template_id="1232445823264765",
+            metadata_json={
+                "flow_id": "catalog_order_builder",
+                "meta_flow_id": "1232445823264765",
+                "content_family": "meta_native_flow",
+                "approval_status": "approved",
+                "meta_flow_status": "published",
+                "data_contract": ["product", "quantity"],
+            },
+        )
+        db.session.add(self.registry)
+        db.session.flush()
         self.to_number = "+15551234567"
         self.from_number = "+15557654321"
         db.session.add(
@@ -324,6 +387,36 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
         self.twilio_client = self.twilio_patch.start()
         self.twilio_client.messages.create.return_value = MagicMock(sid="SM_REPLY")
 
+    def _issue_flow_token(self) -> str:
+        issued = issue_whatsapp_flow_token(
+            secret=self.app.config["WHATSAPP_FLOW_TOKEN_KEY_V1"],
+            tenant_id=self.tenant.id,
+            recipient=self.from_number,
+            flow_id="catalog_order_builder",
+            meta_flow_id="1232445823264765",
+            provider_sender_id=self.sender.id,
+            ttl_seconds=self.app.config["WHATSAPP_FLOW_TOKEN_TTL_SECONDS"],
+        )
+        db.session.add(
+            WhatsAppFlowInteraction(
+                tenant_id=self.tenant.id,
+                template_registry_id=self.registry.id,
+                provider_sender_id=self.sender.id,
+                flow_id="catalog_order_builder",
+                meta_flow_id="1232445823264765",
+                content_sid="HXflowtest",
+                recipient_hash=issued.recipient_hash,
+                recipient_hint=issued.recipient_hint,
+                token_digest=issued.token_digest,
+                idempotency_key=f"test-{uuid4().hex}",
+                status="sent",
+                data_contract=["product", "quantity"],
+                expires_at=issued.expires_at,
+            )
+        )
+        db.session.commit()
+        return issued.token
+
     def tearDown(self):
         self.validator_patch.stop()
         self.twilio_patch.stop()
@@ -343,20 +436,22 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
             "fuente": "flow_test",
             "skip_audio_generation": True,
         }
-        raw_token = "flow-token-must-never-survive"
+        raw_token = self._issue_flow_token()
         raw_card = "4111111111111111"
         payload = {
             "To": f"whatsapp:{self.to_number}",
             "From": f"whatsapp:{self.from_number}",
             "Body": "hola",
             "MessageSid": "SM_FLOW_INBOUND_1",
-            "InteractiveData": _wrapped_interactive_data(
+            "InteractiveData": json.dumps(
                 {
-                    "flow_id": "catalog_order_builder",
+                    "type": "nfm_reply",
+                    "flowResponse": {
                     "flow_token": raw_token,
                     "product": "Clavos",
                     "quantity": 100,
                     "payment_reference": raw_card,
+                    },
                 }
             ),
             "FlowData": json.dumps({"screen_id": "review"}),
@@ -406,6 +501,7 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
             "fuente": "flow_test",
             "skip_audio_generation": True,
         }
+        raw_token = self._issue_flow_token()
         base_payload = {
             "To": f"whatsapp:{self.to_number}",
             "From": f"whatsapp:{self.from_number}",
@@ -413,7 +509,7 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
             "InteractiveData": _wrapped_interactive_data(
                 {
                     "flow_id": "catalog_order_builder",
-                    "flow_token": "single-use-flow-token",
+                    "flow_token": raw_token,
                     "product": "Clavos",
                 }
             ),

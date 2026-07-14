@@ -1,12 +1,21 @@
 from datetime import datetime, timedelta
 import json
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import jwt
 
 from app import db
-from models import AuditEvent, MessageTemplateRegistry, ProviderConnection, ProviderSender, TenantProfile, User
+from models import (
+    AuditEvent,
+    MessageTemplateRegistry,
+    MessagingEventLedger,
+    ProviderConnection,
+    ProviderSender,
+    TenantProfile,
+    User,
+    WhatsAppFlowInteraction,
+)
 from routes.whatsapp_rules import _sync_status_from_approval
 from services.whatsapp_experience import build_whatsapp_experience
 
@@ -51,6 +60,59 @@ def _seed(*, plan: str = "full") -> tuple[User, TenantProfile]:
     db.session.add(tenant)
     db.session.commit()
     return admin, tenant
+
+
+def _prepare_ready_flow_send(app, tenant: TenantProfile):
+    app.config["TWILIO_ACCOUNT_SID"] = "ACparent"
+    app.config["TWILIO_AUTH_TOKEN"] = "parent-secret"
+    app.config["TWILIO_SUBACCOUNT_AUTH_TOKEN_ACFLOWSEND"] = "flow-send-secret"
+    app.config["WHATSAPP_FLOW_TOKEN_KEY_V1"] = (
+        "test-native-flow-send-key-v1-0000000000000000000000000000"
+    )
+    app.config["WHATSAPP_FLOW_TOKEN_TTL_SECONDS"] = 3600
+    connection = ProviderConnection(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        environment="production",
+        status="connected",
+        external_account_id="ACflowsend",
+        credentials_ref="env:TWILIO_SUBACCOUNT_AUTH_TOKEN_ACFLOWSEND",
+    )
+    db.session.add(connection)
+    db.session.flush()
+    sender = ProviderSender(
+        tenant_id=tenant.id,
+        provider_connection_id=connection.id,
+        channel="whatsapp",
+        phone_number="+5491100000000",
+        sender_id="whatsapp:+5491100000000",
+        status="active",
+        status_callback_url="https://api.chatboc.test/twilio/whatsapp/status",
+    )
+    registry = MessageTemplateRegistry(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name="chatboc_catalog_order_builder_native_v1",
+        language="es",
+        category="UTILITY",
+        status="approved",
+        content_sid="HXflowtosend",
+        external_template_id=META_FLOW_ID,
+        body_preview="Completa tu pedido en WhatsApp.",
+        metadata_json={
+            "flow_id": FLOW_ID,
+            "meta_flow_id": META_FLOW_ID,
+            "content_family": "meta_native_flow",
+            "approval_status": "approved",
+            "meta_flow_status": "published",
+            "data_contract": ["catalog_items", "cart_id", "contact_key"],
+        },
+    )
+    db.session.add_all([sender, registry])
+    db.session.commit()
+    return sender, registry
 
 
 def test_native_flow_sync_dry_run_builds_exact_twilio_content_contract(client, app):
@@ -260,6 +322,7 @@ def test_meta_platform_contract_only_activates_persisted_capabilities(client, ap
     app_config = {
         "TWILIO_META_APP_ID": "meta-app",
         "TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID": "meta-config",
+        "WHATSAPP_FLOW_TOKEN_KEY_V1": "test-flow-key-v1-000000000000000000000000000000000000",
     }
 
     initial = build_whatsapp_experience(tenant, app_config=app_config)["meta_platform"]
@@ -313,6 +376,8 @@ def test_meta_platform_contract_only_activates_persisted_capabilities(client, ap
     assert contract["sender"]["waba_id_present"] is True
     assert contract["native_flows"]["configured_count"] == 1
     assert contract["native_flows"]["active_count"] == 1
+    assert contract["native_flows"]["send_endpoint"] == "/api/admin/whatsapp/flows/send"
+    assert contract["native_flows"]["security"]["dedicated_token_key_ready"] is True
     submission_ingestion = contract["native_flows"]["submission_ingestion"]
     assert submission_ingestion["contract_version"] == "whatsapp.flow_submission.v1"
     assert submission_ingestion["status"] == "active"
@@ -336,3 +401,162 @@ def test_meta_platform_contract_only_activates_persisted_capabilities(client, ap
     assert pending_sender["sender"]["ready"] is False
     assert pending_sender["native_flows"]["active_count"] == 0
     assert pending_sender["native_flows"]["submission_ingestion"]["claimed_active"] is False
+
+
+def test_native_flow_send_preview_execute_and_idempotent_replay(client, app):
+    admin, tenant = _seed()
+    sender, registry = _prepare_ready_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+    request_payload = {
+        "flow_id": FLOW_ID,
+        "recipient": "+54 9 11 2345-6789",
+        "idempotency_key": "flow-send-idem-001",
+    }
+
+    preview = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json=request_payload,
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.get_json()
+    assert preview_payload["ready_to_send"] is True
+    assert preview_payload["blockers"] == []
+    assert preview_payload["recipient_hint"] == "***6789"
+    assert preview_payload["provider_sender_id"] == sender.id
+    assert preview_payload["content_sid"] == registry.content_sid
+    assert preview_payload["security"]["one_time_token"] is True
+    assert preview_payload["security"]["token_exposed"] is False
+    assert isinstance(preview_payload["execute_confirmation"], str)
+    serialized_preview = json.dumps(preview_payload)
+    assert "+5491123456789" not in serialized_preview
+    assert "flow_token" not in serialized_preview
+
+    class _Messages:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return SimpleNamespace(sid="SMNATIVEFLOW001")
+
+    messages = _Messages()
+    fake_client = SimpleNamespace(messages=messages)
+    with patch("routes.whatsapp_rules.Client", return_value=fake_client) as client_factory:
+        execute = client.post(
+            "/api/admin/whatsapp/flows/send",
+            headers=headers,
+            json={
+                **request_payload,
+                "dry_run": False,
+                "execute_confirmation": preview_payload["execute_confirmation"],
+            },
+        )
+    assert execute.status_code == 201
+    execute_payload = execute.get_json()
+    assert execute_payload["sent"] is True
+    assert execute_payload["interaction"]["status"] == "sent"
+    assert execute_payload["interaction"]["recipient_hint"] == "***6789"
+    assert "token" not in json.dumps(execute_payload).lower()
+    client_factory.assert_called_once_with("ACflowsend", "flow-send-secret")
+    assert len(messages.calls) == 1
+    sent = messages.calls[0]
+    assert sent["to"] == "whatsapp:+5491123456789"
+    assert sent["from_"] == "whatsapp:+5491100000000"
+    assert sent["content_sid"] == "HXflowtosend"
+    assert sent["status_callback"] == "https://api.chatboc.test/twilio/whatsapp/status"
+    provider_token = json.loads(sent["content_variables"])["1"]
+    assert len(provider_token) > 80
+    assert "+5491123456789" not in provider_token
+
+    interaction = WhatsAppFlowInteraction.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key="flow-send-idem-001",
+    ).one()
+    assert interaction.token_digest != provider_token
+    assert interaction.recipient_hint == "***6789"
+    assert "+5491123456789" not in json.dumps(interaction.metadata_json)
+    event = MessagingEventLedger.query.filter_by(
+        tenant_id=tenant.id,
+        event_type="native_flow_sent",
+    ).one()
+    assert event.external_message_sid == "SMNATIVEFLOW001"
+    assert event.recipient == "***6789"
+
+    with patch("routes.whatsapp_rules.Client") as replay_client:
+        replay = client.post(
+            "/api/admin/whatsapp/flows/send",
+            headers=headers,
+            json={**request_payload, "dry_run": False},
+        )
+    assert replay.status_code == 200
+    assert replay.get_json()["idempotent_replay"] is True
+    replay_client.assert_not_called()
+
+
+def test_native_flow_send_timeout_is_uncertain_and_never_auto_retries(client, app):
+    admin, tenant = _seed()
+    _prepare_ready_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+    request_payload = {
+        "flow_id": FLOW_ID,
+        "recipient": "+5491123456790",
+        "idempotency_key": "flow-send-timeout-001",
+    }
+    preview = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json=request_payload,
+    ).get_json()
+    messages = SimpleNamespace(create=MagicMock(side_effect=TimeoutError("provider timeout")))
+    with patch(
+        "routes.whatsapp_rules.Client",
+        return_value=SimpleNamespace(messages=messages),
+    ):
+        execute = client.post(
+            "/api/admin/whatsapp/flows/send",
+            headers=headers,
+            json={
+                **request_payload,
+                "dry_run": False,
+                "execute_confirmation": preview["execute_confirmation"],
+            },
+        )
+    assert execute.status_code == 502
+    interaction = WhatsAppFlowInteraction.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key="flow-send-timeout-001",
+    ).one()
+    assert interaction.status == "send_uncertain"
+    assert interaction.error_code == "TimeoutError"
+
+    with patch("routes.whatsapp_rules.Client") as retry_client:
+        retry = client.post(
+            "/api/admin/whatsapp/flows/send",
+            headers=headers,
+            json={**request_payload, "dry_run": False},
+        )
+    assert retry.status_code == 409
+    assert retry.get_json()["interaction"]["retry_safe"] is False
+    retry_client.assert_not_called()
+
+
+def test_native_flow_send_fails_closed_without_dedicated_key(client, app):
+    admin, tenant = _seed()
+    _prepare_ready_flow_send(app, tenant)
+    app.config["WHATSAPP_FLOW_TOKEN_KEY_V1"] = ""
+    headers = _auth_headers(app, admin, tenant.slug)
+    preview = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+5491123456791",
+            "idempotency_key": "flow-send-key-missing",
+        },
+    )
+    assert preview.status_code == 200
+    payload = preview.get_json()
+    assert payload["ready_to_send"] is False
+    assert "flow_token_key_not_configured" in payload["blockers"]
+    assert "execute_confirmation" not in payload

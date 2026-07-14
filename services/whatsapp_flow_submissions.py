@@ -17,7 +17,7 @@ import hmac
 import json
 import re
 import unicodedata
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 CONTRACT_VERSION = "whatsapp.flow_submission.v1"
@@ -154,6 +154,7 @@ def parse_whatsapp_flow_submission(
     message_sid: str | None = None,
     correlation_secret: str | bytes | None = None,
     require_correlation_token: bool = False,
+    flow_token_validator: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> Optional[dict[str, Any]]:
     """Parse a Twilio Flow response using the persistence-safe contract."""
 
@@ -163,6 +164,7 @@ def parse_whatsapp_flow_submission(
         message_sid=message_sid,
         correlation_secret=correlation_secret,
         require_correlation_token=require_correlation_token,
+        flow_token_validator=flow_token_validator,
     )
 
 
@@ -173,6 +175,7 @@ def normalize_whatsapp_flow_submission(
     message_sid: str | None = None,
     correlation_secret: str | bytes | None = None,
     require_correlation_token: bool = False,
+    flow_token_validator: Callable[[str], Mapping[str, Any]] | None = None,
 ) -> Optional[dict[str, Any]]:
     """Normalize a Flow response, or return ``None`` when no Flow data exists."""
 
@@ -220,12 +223,34 @@ def normalize_whatsapp_flow_submission(
         raise FlowSubmissionValidationError("missing_flow_token")
 
     flow_metadata = _extract_flow_metadata(safe_payload)
+    verified_correlation: dict[str, Any] | None = None
+    if flow_token and flow_token_validator:
+        try:
+            verified_correlation = dict(flow_token_validator(flow_token))
+        except Exception as exc:
+            code = str(getattr(exc, "code", "invalid_flow_token") or "invalid_flow_token")
+            raise FlowSubmissionValidationError(code) from exc
+        verified_flow_id = str(verified_correlation.get("flow_id") or "").strip()
+        verified_meta_flow_id = str(verified_correlation.get("meta_flow_id") or "").strip()
+        submitted_flow_id = str(flow_metadata.get("id") or "").strip()
+        if submitted_flow_id and submitted_flow_id.lower() not in {
+            verified_flow_id.lower(),
+            verified_meta_flow_id.lower(),
+        }:
+            raise FlowSubmissionValidationError("flow_identity_mismatch")
+        if not verified_flow_id or not verified_meta_flow_id:
+            raise FlowSubmissionValidationError("missing_verified_flow_identity")
+        flow_metadata["id"] = verified_flow_id
+        flow_metadata["meta_id"] = verified_meta_flow_id
+
     allowed = {
         str(item).strip().lower()
         for item in (allowed_flow_ids or [])
         if str(item).strip()
     }
-    if allowed_flow_ids is None:
+    if verified_correlation:
+        flow_metadata["recognized"] = True
+    elif allowed_flow_ids is None:
         flow_metadata["recognized"] = None
     else:
         flow_metadata["recognized"] = bool(
@@ -234,6 +259,16 @@ def normalize_whatsapp_flow_submission(
         )
         if not flow_metadata["recognized"]:
             raise FlowSubmissionValidationError("unrecognized_flow")
+
+    data_contract = (
+        _normalize_data_contract(verified_correlation.get("data_contract"))
+        if verified_correlation
+        else []
+    )
+    if verified_correlation:
+        safe_payload = {
+            "answers": _extract_allowed_answers(safe_payload, data_contract),
+        }
 
     contract: dict[str, Any] = {
         "contract_version": CONTRACT_VERSION,
@@ -251,11 +286,25 @@ def normalize_whatsapp_flow_submission(
             "redacted_paths": sorted(set(budget.redacted_paths)),
             "truncated_field_count": len(budget.truncated_paths),
             "truncated_paths": sorted(set(budget.truncated_paths)),
+            "signed_invocation_verified": bool(verified_correlation),
+            "data_contract_applied": bool(verified_correlation),
+            "allowed_answer_fields": data_contract,
         },
         "received_at": datetime.now(timezone.utc).isoformat(),
         "synthetic_text": _build_synthetic_text(safe_payload, flow_metadata),
     }
-    if flow_token:
+    if flow_token and verified_correlation:
+        contract["correlation"] = {
+            "token_present": True,
+            "token_digest": verified_correlation.get("token_digest"),
+            "digest_algorithm": "hmac-sha256",
+            "interaction_id": verified_correlation.get("interaction_id"),
+            "tenant_id": verified_correlation.get("tenant_id"),
+            "provider_sender_id": verified_correlation.get("provider_sender_id"),
+            "already_consumed": bool(verified_correlation.get("already_consumed")),
+            "expires_at": verified_correlation.get("expires_at"),
+        }
+    elif flow_token:
         contract["correlation"] = {
             "token_present": True,
             "token_digest": _flow_token_digest(flow_token, correlation_secret),
@@ -493,6 +542,49 @@ def _flow_token_digest(value: str, secret: str | bytes | None) -> str:
         secret_bytes = secret if isinstance(secret, bytes) else secret.encode("utf-8")
         return hmac.new(secret_bytes, token_bytes, hashlib.sha256).hexdigest()
     return hashlib.sha256(b"chatboc-whatsapp-flow:" + token_bytes).hexdigest()
+
+
+def _normalize_data_contract(value: Any) -> list[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return []
+    fields: list[str] = []
+    for item in value:
+        field_name = str(item or "").strip()
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_.\-]{0,79}", field_name):
+            fields.append(field_name)
+    return list(dict.fromkeys(fields))[:32]
+
+
+def _extract_allowed_answers(
+    payload: Mapping[str, Any],
+    data_contract: Iterable[str],
+) -> dict[str, Any]:
+    allowed = {
+        _normalize_key(field_name): field_name
+        for field_name in data_contract
+        if str(field_name or "").strip()
+    }
+    if not allowed:
+        return {}
+
+    answers: dict[str, Any] = {}
+
+    def visit(value: Any, *, depth: int = 0) -> None:
+        if depth > MAX_NESTING_DEPTH or len(answers) >= len(allowed):
+            return
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                normalized_key = _normalize_key(str(key))
+                canonical_key = allowed.get(normalized_key)
+                if canonical_key and canonical_key not in answers:
+                    answers[canonical_key] = child
+                visit(child, depth=depth + 1)
+        elif isinstance(value, list):
+            for child in value[:MAX_LIST_ITEMS]:
+                visit(child, depth=depth + 1)
+
+    visit(payload)
+    return answers
 
 
 def _is_sensitive_key(normalized_key: str) -> bool:
