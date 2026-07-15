@@ -2247,6 +2247,12 @@ def _remove_redundant_urls_from_message(message_body, options_list):
     message_body = re.sub(r'por favor\s+ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
     message_body = re.sub(r'ingresá\s+al\s+siguiente\s+enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
     message_body = re.sub(r'enlace\s*:?', '', message_body, flags=re.IGNORECASE).strip()
+    message_body = re.sub(
+        r'(?:por\s+favor\s+)?ingres(?:a|\u00e1)\s+al\s+siguiente\s+enlace\s*:?',
+        '',
+        message_body,
+        flags=re.IGNORECASE,
+    ).strip()
 
     # Replace multiple spaces with a single space and clean up punctuation
     message_body = re.sub(r'\s{2,}', ' ', message_body).strip()
@@ -2256,6 +2262,8 @@ def _remove_redundant_urls_from_message(message_body, options_list):
     # If the message is just a colon now, clear it.
     if message_body == ':':
         message_body = ''
+    else:
+        message_body = re.sub(r'[\s,:;-]+$', '', message_body).strip()
 
     return message_body
 
@@ -5852,10 +5860,32 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
     )
     return None
 
+def _looks_like_availability_query(user_input: str) -> bool:
+    normalized = normalizar_texto(user_input or "")
+    return bool(
+        re.search(
+            r"\b(?:de turno|de guardia|abiert[oa]s? ahora|24\s*(?:h|hs|horas))\b",
+            normalized,
+        )
+    )
+
+
 def find_global_menu_action(user_input: str) -> str | None:
     """Attempts to resolve a menu action purely by keywords, ignoring menu context."""
+    if _looks_like_availability_query(user_input):
+        logger.info("Availability query bypasses global menu shortcuts: %r", user_input)
+        return None
+
+    normalized = normalizar_texto(user_input or "")
+    if re.match(
+        r"^(?:turnos?|(?:(?:quiero|necesito)\s+)?(?:solicitar|pedir|reservar|sacar)\s+(?:un\s+)?turnos?)\b",
+        normalized,
+    ):
+        return "solicitar_turnos"
+
     global_buttons = [{"texto": aid, "action_id": aid} for aid in MENU_KEYWORDS.keys()]
-    return find_menu_action_by_input(user_input, global_buttons)
+    action = find_menu_action_by_input(user_input, global_buttons)
+    return action
 
 
 def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actual: dict, context: dict, chat_db_context) -> dict | None:

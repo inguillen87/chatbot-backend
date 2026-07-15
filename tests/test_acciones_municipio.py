@@ -359,7 +359,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
         # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **descripcion, dni, email, telefono**", respuesta["message_to_user"])
+        self.assertIn("necesito algunos datos más: **descripcion, email, telefono**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
@@ -370,16 +370,21 @@ class TestAccionesMunicipio(unittest.TestCase):
         respuesta = handler.execute(datos_llm)
         self.assertFalse(respuesta["success"])
         # The new logic correctly identifies the user's name from the "usuario" field
-        self.assertIn("necesito algunos datos más: **dni, email, telefono, ubicacion**", respuesta["message_to_user"])
+        self.assertIn("necesito algunos datos más: **email, telefono, ubicacion**", respuesta["message_to_user"])
         mock_crear_ticket.assert_not_called()
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono', return_value=True)
     @patch('services.actions.municipio_actions.validar_email', return_value=True)
     @patch('services.actions.municipio_actions.formatear_telefono_e164', return_value="+541234567890")
-    def test_accion_crear_reclamo_sin_pin_pide_pin(
+    def test_accion_crear_reclamo_sin_pin_genera_pin_seguro(
         self, mock_formatear_tel, mock_validar_email, mock_validar_tel, mock_crear_ticket
     ):
+        mock_crear_ticket.return_value = {
+            "id": 3,
+            "nro_ticket": "24680",
+            "consulta_pin": "123456",
+        }
         datos_llm = {
             "categoria": "Alumbrado",
             "descripcion": "Luz apagada",
@@ -392,10 +397,12 @@ class TestAccionesMunicipio(unittest.TestCase):
         context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon"}
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
-        self.assertFalse(respuesta["success"])
-        self.assertEqual(respuesta["pedir_info"], "pin_ticket")
-        self.assertIn("PIN", respuesta["message_to_user"])
-        mock_crear_ticket.assert_not_called()
+        self.assertTrue(respuesta["success"])
+        mock_crear_ticket.assert_called_once()
+        _, kwargs = mock_crear_ticket.call_args
+        generated_pin = kwargs["ticket_data"]["consulta_pin"]
+        self.assertRegex(generated_pin, r"^\d{6}$")
+        self.assertEqual(respuesta["data"]["consulta_pin"], generated_pin)
 
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
@@ -491,7 +498,9 @@ class TestAccionesMunicipio(unittest.TestCase):
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
 
-        self.assertTrue(respuesta["success"])
+        self.assertFalse(respuesta["success"])
+        self.assertEqual(respuesta["pedir_info"], ["email", "telefono"])
+        self.assertIn("**email, telefono**", respuesta["message_to_user"])
 
     @patch('services.actions.municipio_actions.promo_service.build_ticket_promo_section', return_value=None)
     @patch('services.actions.municipio_actions.cargar_configuracion_municipio')

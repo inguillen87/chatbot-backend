@@ -38,6 +38,31 @@ def test_llamar_llm_con_fallback_uses_gemini(monkeypatch):
     mock_gemini.assert_called_once()
 
 
+def test_gemini_fallback_does_not_receive_openai_model(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+    monkeypatch.delenv("GEMINI_CHAT_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+
+    mock_openai = Mock(side_effect=ConnectionError("openai unavailable"))
+    mock_gemini = Mock(return_value=({"message_body": "hola gemini"}, {"provider": "gemini"}))
+    with patch("services.llm_orchestrator.llamar_openai", mock_openai), patch(
+        "services.gemini_bridge.llamar_gemini",
+        mock_gemini,
+    ):
+        response, context = llm_orchestrator.llamar_llm_con_fallback(
+            None,
+            "hola",
+            {},
+            [],
+            "session-fallback",
+        )
+
+    assert response["message_body"] == "hola gemini"
+    assert context["provider"] == "gemini"
+    assert mock_gemini.call_args.kwargs["model"] is None
+
+
 def test_provider_order_includes_enabled_ollama(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "ollama,gemini,openai")
     monkeypatch.setenv("OLLAMA_ENABLED", "true")

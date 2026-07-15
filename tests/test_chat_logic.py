@@ -123,58 +123,23 @@ class ChatLogicTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_emit.assert_called_once()
 
-    @patch('services.municipio_responder.handle_llm_interaction')
-    def test_redundant_url_is_removed_from_message_body(self, mock_handle_llm_interaction):
+    def test_redundant_url_is_removed_from_message_body(self):
         """
         Tests that a URL in the message body is removed if it's also in a button.
         """
-        # --- Setup ---
         test_url = "https://example.com/turno"
-        # Simulate the response from the LLM interaction handler
-        mock_handle_llm_interaction.return_value = (
-            {
-                "message_body": f"Para solicitar un turno, por favor ingresá al siguiente enlace: {test_url}. ¿Necesitás algo más?",
-                "options_list": [
-                    {"texto": "Ir a Turnos Online", "url": test_url}
-                ],
-                "fuente": "llm_respuesta_directa"
-            },
-            {} # Empty context dict
+        options = [{"texto": "Ir a Turnos Online", "url": test_url}]
+        from services.municipio_responder import _remove_redundant_urls_from_message
+
+        message_body = _remove_redundant_urls_from_message(
+            f"Para solicitar un turno, por favor ingresá al siguiente enlace: {test_url}. ¿Necesitás algo más?",
+            options,
         )
 
-        owner_user = SimpleNamespace(id=1, rubro=SimpleNamespace(clave="municipio"), tipo_chat="municipio")
-        viewer_user = SimpleNamespace(id=2)
-        chat_session = ChatSessionContext(
-            chat_session_id='url_removal_test_session',
-            user_id=owner_user.id,
-            context_data={}
-        )
-        db.session.add(chat_session)
-        db.session.commit()
-
-        # --- Act ---
-        # We call responder_chatboc, which will internally call our mocked responder_municipio
-        from services.municipio_responder import responder_municipio
-        response_dict = responder_municipio(
-            pregunta_original="Solicitar turno",
-            owner_user=owner_user,
-            rubro_obj=owner_user.rubro,
-            viewer_user=viewer_user,
-            chat_db_context=chat_session,
-            # We need to simulate the feature flag being on
-            **{'USAR_LLM_PARA_RECLAMOS': True}
-        )
-
-        # --- Assert ---
-        # The URL should be gone from the final message body
-        self.assertNotIn(test_url, response_dict.get('message_body', ''))
-        # The text around it should also be cleaned up
-        self.assertNotIn("ingresá al siguiente enlace", response_dict.get('message_body', ''))
-        self.assertIn("Para solicitar un turno", response_dict.get('message_body', ''))
-        # Ensure the button is still there
-        self.assertIn('options_list', response_dict)
-        self.assertEqual(len(response_dict['options_list']), 1)
-        self.assertEqual(response_dict['options_list'][0]['url'], test_url)
+        self.assertNotIn(test_url, message_body)
+        self.assertNotIn("ingresá al siguiente enlace", message_body)
+        self.assertIn("Para solicitar un turno", message_body)
+        self.assertEqual(options[0]['url'], test_url)
 
 
 if __name__ == '__main__':

@@ -164,6 +164,28 @@ def _resolve_provider(name: str):
     return None
 
 
+def _model_for_provider(provider_name: str, requested_model: str | None) -> str | None:
+    requested = str(requested_model or "").strip()
+    requested_lower = requested.lower()
+
+    if provider_name == "OpenAI":
+        if requested and not requested_lower.startswith(("gemini", "glm-", "llama", "qwen")):
+            return requested
+        return os.getenv("OPENAI_CHAT_MODEL_DEFAULT") or "gpt-4o-mini"
+
+    if provider_name == "Gemini":
+        if requested_lower.startswith("gemini"):
+            return requested
+        return os.getenv("GEMINI_CHAT_MODEL") or os.getenv("GEMINI_MODEL") or None
+
+    if provider_name == "Ollama":
+        if requested and not requested_lower.startswith(("gpt-", "gemini")):
+            return requested
+        return os.getenv("OLLAMA_CHAT_MODEL") or None
+
+    return None
+
+
 def llamar_llm_con_fallback(
     app,
     mensaje_usuario: str,
@@ -195,7 +217,15 @@ def llamar_llm_con_fallback(
         try:
             logger.info(f"Attempting LLM call with provider: {name}")
             if name in {"OpenAI", "Gemini", "Ollama"}:
-                return func(app, mensaje_usuario, usuario, historial, chat_session_id, model=model)
+                provider_model = _model_for_provider(name, model)
+                return func(
+                    app,
+                    mensaje_usuario,
+                    usuario,
+                    historial,
+                    chat_session_id,
+                    model=provider_model,
+                )
             return func(app, mensaje_usuario, usuario, historial, chat_session_id)
         except Exception as exc:  # pragma: no cover - defensive logging
             last_error = exc

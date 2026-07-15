@@ -144,7 +144,7 @@ def _demo_session_token_from_request() -> str | None:
     return None
 
 
-def _demo_session_token_candidates_from_request() -> list[str]:
+def _demo_session_token_candidates_from_request(*, include_bearer: bool = True) -> list[str]:
     auth_header = request.headers.get("Authorization") or ""
     bearer = ""
     if auth_header.lower().startswith("bearer "):
@@ -160,8 +160,9 @@ def _demo_session_token_candidates_from_request() -> list[str]:
         payload.get("demo_session_id"),
         payload.get("session_id"),
         payload.get("session"),
-        bearer,
     ]
+    if include_bearer:
+        candidates.append(bearer)
     normalized = []
     for candidate in candidates:
         candidate = str(candidate or "").strip()
@@ -176,8 +177,8 @@ def _resolve_demo_session_payload() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
-def _invalid_demo_session_token_from_request() -> str | None:
-    for candidate in _demo_session_token_candidates_from_request():
+def _invalid_demo_session_token_from_request(*, include_bearer: bool = True) -> str | None:
+    for candidate in _demo_session_token_candidates_from_request(include_bearer=include_bearer):
         if _is_jwt_token(candidate) and not decode_demo_session_token(candidate):
             return candidate
     return None
@@ -2524,6 +2525,10 @@ def _parse_request(tipo_chat_fijo: str | None = None):
                 )
                 # raise ValueError("El campo 'attachmentInfo' es inválido o le faltan campos requeridos.")
 
+        if isinstance(attachment_info, dict):
+            attachment_info = dict(attachment_info)
+            attachment_info.setdefault("source", "web_upload")
+
         normalized_location = None
         if location:
             if not isinstance(location, dict):
@@ -2646,7 +2651,9 @@ def _procesar_chat(
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
     # --- Session and Context Initialization ---
-    invalid_demo_session_token = _invalid_demo_session_token_from_request()
+    invalid_demo_session_token = _invalid_demo_session_token_from_request(
+        include_bearer=getattr(g, "owner_resolution_source", None) != "jwt_widget_owner"
+    )
     if invalid_demo_session_token:
         return _demo_session_error_response(
             "demo_session_expired",

@@ -221,12 +221,15 @@ class CloudinaryUploadTests(unittest.TestCase):
 
             expected_static = os.path.join(tmpdir, "static", "uploads")
             self.assertEqual(resolved, expected_static)
-            self.assertTrue(os.path.islink(expected_static))
-            target_path = os.readlink(expected_static)
-            self.assertEqual(
-                os.path.abspath(target_path),
-                os.path.abspath(os.path.join(data_dir, "uploads")),
-            )
+            if os.path.islink(expected_static):
+                target_path = os.readlink(expected_static)
+                self.assertEqual(
+                    os.path.abspath(target_path),
+                    os.path.abspath(os.path.join(data_dir, "uploads")),
+                )
+            else:
+                # Windows may deny symlink creation without Developer Mode.
+                self.assertTrue(os.path.isdir(expected_static))
             migrated_file = os.path.join(data_dir, "uploads", "legacy.txt")
             self.assertTrue(os.path.exists(migrated_file))
 

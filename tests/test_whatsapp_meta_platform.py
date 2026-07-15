@@ -14,6 +14,7 @@ from models import (
     ProviderSender,
     TenantProfile,
     User,
+    WhatsAppEnterpriseRule,
     WhatsAppFlowInteraction,
 )
 from routes.whatsapp_rules import _sync_status_from_approval
@@ -560,3 +561,82 @@ def test_native_flow_send_fails_closed_without_dedicated_key(client, app):
     assert payload["ready_to_send"] is False
     assert "flow_token_key_not_configured" in payload["blockers"]
     assert "execute_confirmation" not in payload
+
+
+def test_native_flow_send_requires_explicit_e164_and_boolean_dry_run(client, app):
+    admin, tenant = _seed()
+    _prepare_ready_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    invalid_phone = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "5491123456792",
+            "idempotency_key": "flow-invalid-e164-001",
+        },
+    )
+    invalid_boolean = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+5491123456792",
+            "idempotency_key": "flow-invalid-dry-run-001",
+            "dry_run": "false",
+        },
+    )
+
+    assert invalid_phone.status_code == 400
+    assert invalid_boolean.status_code == 400
+
+
+def test_native_flow_send_counts_durable_invocations_against_hourly_limit(client, app):
+    admin, tenant = _seed()
+    _prepare_ready_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+    db.session.add(
+        WhatsAppEnterpriseRule(
+            tenant_id=tenant.id,
+            max_outbound_per_hour=1,
+        )
+    )
+    db.session.commit()
+    first_payload = {
+        "flow_id": FLOW_ID,
+        "recipient": "+5491123456793",
+        "idempotency_key": "flow-hourly-limit-001",
+    }
+    preview = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json=first_payload,
+    ).get_json()
+    messages = SimpleNamespace(create=MagicMock(return_value=SimpleNamespace(sid="SMFLOWLIMIT001")))
+    with patch("routes.whatsapp_rules.Client", return_value=SimpleNamespace(messages=messages)):
+        sent = client.post(
+            "/api/admin/whatsapp/flows/send",
+            headers=headers,
+            json={
+                **first_payload,
+                "dry_run": False,
+                "execute_confirmation": preview["execute_confirmation"],
+            },
+        )
+
+    blocked = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+5491123456794",
+            "idempotency_key": "flow-hourly-limit-002",
+        },
+    )
+
+    assert sent.status_code == 201
+    assert blocked.status_code == 200
+    assert blocked.get_json()["ready_to_send"] is False
+    assert "rate_limited" in blocked.get_json()["blockers"]
+    messages.create.assert_called_once()

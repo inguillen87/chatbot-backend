@@ -650,7 +650,9 @@ class PointsOfInterestHandler:
 
         # --- Generic POI flow delegated to LLM + tools ---
         try:
-            from .municipio_responder import llamar_llm_con_fallback  # delayed import to avoid circular dependency
+            # The compatibility alias still routes through the provider
+            # orchestrator and keeps older integrations patchable.
+            from .municipio_responder import llamar_gemini as llamar_llm_con_fallback
             mensaje_usuario = json.dumps({"pregunta": pregunta, "ubicacion": location})
             llm_result = llamar_llm_con_fallback(
                 None, mensaje_usuario, {"tipo_entidad": "municipio"}, [], None

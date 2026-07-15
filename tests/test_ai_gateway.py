@@ -2,6 +2,7 @@ import unittest
 from schemas.ai_contracts import GatewayRequest, GatewayResponse, GatewayInputItem, UsageMetrics
 from services.ai_gateway import AIGateway
 from services.tool_registry import tool_registry
+from config import TestingConfig
 
 class MockProvider:
     def __init__(self):
@@ -48,7 +49,7 @@ class MockProvider:
 class TestAIGateway(unittest.TestCase):
     def setUp(self):
         import app
-        self.app = app.create_app()
+        self.app = app.create_app(TestingConfig)
         @tool_registry.register("mock_tool", "A mock tool", {"type": "object", "properties": {}})
         def mock_tool_func(param: str, context: dict = None):
             return f"Processed: {param}"

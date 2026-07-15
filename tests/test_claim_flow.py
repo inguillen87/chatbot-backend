@@ -1,13 +1,14 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
+from config import TestingConfig
 from models import User, Rubro, ChatSessionContext
 from services.municipio_responder import responder_municipio
 
 @pytest.fixture(scope='module')
 def test_client():
     """Configura la aplicación Flask para las pruebas."""
-    app = create_app()
+    app = create_app(TestingConfig)
     app.config.update({
         "TESTING": True,
         "SQLALCHEMY_DATABASE_URI": "sqlite:///:memory:",
@@ -137,7 +138,10 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
         chat_db_context=chat_db_context,
         anon_id="987654321"
     )
-    assert "Perfecto. ¿Tu nombre?" in respuesta["message_body"]
+    assert "datos más" in respuesta["message_body"]
+    assert "email" in respuesta["message_body"]
+    assert "nombre" in respuesta["message_body"]
+    assert "telefono" in respuesta["message_body"]
 
     mock_llm.return_value = (
         {
@@ -145,7 +149,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
             "datos_estructura": {
                 "target": "municipio",
                 "usuario": "Lisa Simpson",
-                "telefono": "555-1234",
+                "telefono": "+5492615551234",
                 "email": "lisa.simpson@example.com",
                 "dni": "30111222"
             },
@@ -158,7 +162,7 @@ def test_claim_in_multiple_steps(test_client, mock_llm):
         mock_crear_ticket.return_value = {"id": 2, "nro_ticket": "54321"}
 
         respuesta = responder_municipio(
-            pregunta_original="Lisa Simpson, 555-1234, lisa.simpson@example.com",
+            pregunta_original="Lisa Simpson, +54 9 261 555-1234, lisa.simpson@example.com",
             owner_user=owner_user,
             rubro_obj=owner_user.rubro,
             chat_db_context=chat_db_context,

@@ -685,6 +685,13 @@ def _get_main_menu_payload(
     """
     viewer_user = context.get("viewer_user_obj")
     profile_name = context.get("profile_name")
+    chat_context_data = context.get("chat_db_context_data")
+    if (not isinstance(profile_name, str) or not profile_name.strip()) and isinstance(
+        chat_context_data, dict
+    ):
+        persisted_profile_name = chat_context_data.get("profile_name")
+        if isinstance(persisted_profile_name, str) and persisted_profile_name.strip():
+            profile_name = persisted_profile_name.strip()
     owner_user = context.get("user_obj")
 
     def _normalize_str(value: Optional[object]) -> str:

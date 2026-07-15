@@ -8,7 +8,7 @@ from flask import has_app_context
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 import services.google_maps_service as google_maps_service
 from services.config_loader import cargar_configuracion_municipio
-from services.location_service import geocode_address
+from services import location_service
 from utils.municipio_utils import get_numeric_municipio_id
 from services.tts_orchestrator import generar_audio
 from models import MunicipioTicket, MunicipioPost
@@ -102,6 +102,12 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
     return sugeridas # Devuelve hasta 3, o menos si no hay suficientes matches.
    
 logger = logging.getLogger(__name__)
+
+
+def geocode_address(*args, **kwargs):
+    """Patch-friendly proxy used by legacy callers and isolated tests."""
+
+    return location_service.geocode_address(*args, **kwargs)
 Maps_API_KEY = os.environ.get("Maps_API_KEY")
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 CONFIG_MUNICIPIO = cargar_configuracion_municipio(MUNICIPIO_ID, "config.json")

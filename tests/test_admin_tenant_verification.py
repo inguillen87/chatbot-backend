@@ -1,10 +1,11 @@
 import unittest
 import json
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app import create_app, db
 from models import User, TenantProfile, Role, UserRole, TenantConfig
 from config import TestConfig
+from utils.auth_helpers import auth_session_version
 
 class TestAdminTenantVerification(unittest.TestCase):
     def setUp(self):
@@ -20,8 +21,23 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.app_context.pop()
 
     def generate_token(self, user):
+        now = datetime.now(timezone.utc)
+        payload = {'user_id': user.id, 'exp': now + timedelta(days=1)}
+        if user.rol == "super_admin":
+            payload.update(
+                {
+                    "rol": user.rol,
+                    "auth_provider": "clerk",
+                    "session_kind": "clerk",
+                    "sid": "sess_admin_tenant_verification",
+                    "clerk_sid": "sess_admin_tenant_verification",
+                    "jti": "jti_admin_tenant_verification",
+                    "sv": auth_session_version(user),
+                    "iat": now,
+                }
+            )
         return jwt.encode(
-            {'user_id': user.id, 'exp': datetime.utcnow() + timedelta(days=1)},
+            payload,
             self.app.config['SECRET_KEY'],
             algorithm="HS256"
         )
@@ -69,7 +85,7 @@ class TestAdminTenantVerification(unittest.TestCase):
             TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED=True,
             TWILIO_TENANT_AUTO_PROVISION_ENABLED=False,
         )
-        super_admin = User(email="platform@chatboc.test", name="Platform", rol="super_admin")
+        super_admin = User(email="guillen.marce@gmail.com", name="Platform", rol="super_admin")
         super_admin.set_password("pass")
         db.session.add(super_admin)
         db.session.commit()

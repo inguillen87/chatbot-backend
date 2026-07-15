@@ -260,7 +260,21 @@ def auth_login_alias():
 @api_aliases_bp.route("/auth/demo/catalog", methods=["GET", "OPTIONS"], strict_slashes=False)
 def auth_demo_catalog_alias():
     request_id = _normalized_request_id()
-    response = demo_catalog()
+    try:
+        response = demo_catalog()
+    except Exception as exc:  # pragma: no cover - defensive public fallback
+        current_app.logger.exception(
+            "[api_aliases] /auth/demo/catalog alias degraded request_id=%s: %s",
+            request_id,
+            exc,
+        )
+        response = jsonify(
+            {
+                "reason_code": "demo_catalog_unavailable",
+                "tenant_demos": [],
+                "request_id": request_id,
+            }
+        )
 
     flask_response = make_response(response)
     flask_response.headers.setdefault("X-Request-Id", request_id)

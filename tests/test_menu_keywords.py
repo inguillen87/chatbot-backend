@@ -27,6 +27,27 @@ class TestMenuKeywords(unittest.TestCase):
     def test_agenda_keyword(self):
         self.assertEqual(find_global_menu_action("agenda"), "agenda_y_noticias")
 
+    def test_availability_queries_do_not_become_administrative_appointments(self):
+        for phrase in (
+            "farmacias de turno",
+            "farmacia de guardia",
+            "veterinaria de turno",
+            "comercios abiertos ahora",
+            "farmacia 24 hs",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIsNone(find_global_menu_action(phrase))
+
+    def test_administrative_appointment_phrases_keep_shortcut(self):
+        for phrase in (
+            "turno",
+            "solicitar turno",
+            "pedir turno",
+            "reservar turno",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(find_global_menu_action(phrase), "solicitar_turnos")
+
     def test_bromatologia_keyword(self):
         self.assertEqual(find_global_menu_action("bromatologia"), "veterinaria_bromatologia")
 
@@ -100,7 +121,10 @@ class TestMenuKeywords(unittest.TestCase):
                  ):
                 response = responder_municipio("3", owner, rubro, chat_db_context=chat_ctx, profile_name="Test")
         self.assertIn("Veterinaria y Bromatología", response["message_body"])
-        self.assertIsNone(chat_ctx.context_data[CONTEXTO_MUNICIPIO].get("estado_conversacion"))
+        self.assertEqual(
+            chat_ctx.context_data[CONTEXTO_MUNICIPIO].get("estado_conversacion"),
+            ConversationState.ESPERANDO_ACCION_NAVEGACION.name,
+        )
 
     def test_sanidad_animal_keyword(self):
         self.assertEqual(find_global_menu_action("sanidad animal"), "veterinaria_bromatologia")
@@ -139,7 +163,7 @@ class TestMenuKeywords(unittest.TestCase):
             "licencia_de_conducir",
         )
 
-    def test_menu_helper_escalates_to_llm(self):
+    def test_menu_helper_starts_guided_claim_without_llm(self):
         owner = SimpleNamespace(municipio_id="default", id=1)
         contexto_menu = {
             "estado_conversacion": ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
@@ -171,13 +195,10 @@ class TestMenuKeywords(unittest.TestCase):
                     chat_db_context=chat_ctx,
                 )
 
-        mock_llm.assert_called_once()
-        mock_flag.assert_called_once()
-        self.assertEqual(response, llm_response)
-        self.assertEqual(
-            contexto_menu["estado_conversacion"],
-            ConversationState.CONVERSACION_GENERAL_LLM.name,
-        )
+        mock_llm.assert_not_called()
+        mock_flag.assert_called()
+        self.assertIn("direcci", response["message_body"].lower())
+        self.assertEqual(contexto_menu["estado_conversacion"], "EN_FLUJO_RECLAMO")
 
 
 if __name__ == "__main__":

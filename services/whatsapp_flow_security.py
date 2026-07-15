@@ -52,10 +52,10 @@ def normalize_flow_recipient(value: Any) -> str:
     raw = str(value or "").strip()
     if raw.lower().startswith("whatsapp:"):
         raw = raw.split(":", 1)[1].strip()
-    if not raw or not _RECIPIENT_CHARACTERS.fullmatch(raw):
+    if not raw.startswith("+") or not _RECIPIENT_CHARACTERS.fullmatch(raw):
         raise WhatsAppFlowTokenError("invalid_recipient")
     digits = "".join(character for character in raw if character.isdigit())
-    if not 8 <= len(digits) <= 15:
+    if not 8 <= len(digits) <= 15 or digits.startswith("0"):
         raise WhatsAppFlowTokenError("invalid_recipient")
     return f"+{digits}"
 

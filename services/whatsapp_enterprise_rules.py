@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from models import Notification, WhatsAppContactState, WhatsAppEnterpriseRule, db
+from models import (
+    Notification,
+    WhatsAppContactState,
+    WhatsAppEnterpriseRule,
+    WhatsAppFlowInteraction,
+    db,
+)
 from utils.time_utils import get_local_now
 
 
@@ -28,8 +34,19 @@ class WhatsAppEnterpriseRulesService:
             db.session.flush()
         return rule
 
-    def evaluate_outbound(self, *, body: str, metadata: dict | None = None) -> tuple[bool, str | None]:
-        rule = WhatsAppEnterpriseRule.query.filter_by(tenant_id=self.tenant_id).first()
+    def evaluate_outbound(
+        self,
+        *,
+        body: str,
+        metadata: dict | None = None,
+        lock_rate_limit: bool = False,
+    ) -> tuple[bool, str | None]:
+        rule_query = WhatsAppEnterpriseRule.query.filter_by(tenant_id=self.tenant_id)
+        if lock_rate_limit:
+            # Serialize real sends for tenants with an hourly cap. PostgreSQL holds
+            # this row lock until the caller commits its durable send reservation.
+            rule_query = rule_query.with_for_update()
+        rule = rule_query.first()
         if not rule:
             return True, None
         metadata = metadata if isinstance(metadata, dict) else {}
@@ -41,11 +58,17 @@ class WhatsAppEnterpriseRulesService:
 
         if rule.max_outbound_per_hour:
             since = get_local_now() - timedelta(hours=1)
-            sent_last_hour = (
+            notification_count = (
                 Notification.query.filter_by(tenant_id=self.tenant_id, channel="whatsapp")
                 .filter(Notification.created_at >= since)
                 .count()
             )
+            flow_count = (
+                WhatsAppFlowInteraction.query.filter_by(tenant_id=self.tenant_id)
+                .filter(WhatsAppFlowInteraction.created_at >= since)
+                .count()
+            )
+            sent_last_hour = notification_count + flow_count
             if sent_last_hour >= int(rule.max_outbound_per_hour):
                 return False, "rate_limited"
 

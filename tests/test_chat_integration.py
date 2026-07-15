@@ -80,8 +80,9 @@ class TestChatIntegration(unittest.TestCase):
         self.assertNotIn("error", data)
 
         mock_responder.assert_called_once()
+        called_args = mock_responder.call_args.args
         called_kwargs = mock_responder.call_args.kwargs
-        self.assertEqual(called_kwargs.get("pregunta"), "")
+        self.assertEqual(called_args[0], "")
 
         uploaded_info = called_kwargs.get("uploaded_file_info") or {}
         self.assertEqual(uploaded_info.get("id"), payload["attachmentInfo"]["id"])
@@ -219,10 +220,10 @@ class TestChatIntegration(unittest.TestCase):
         data = response.get_json()
         self.assertIn("Carlos", data.get("message_body", ""))
 
-        # The response from the endpoint is a dictionary, and the welcome message is in 'message_body'.
-        self.assertIn("Soy JUNI, tu Asistente Virtual", data.get("message_body", ""))
-        self.assertIn("Soy JUNI", data.get("message_body", ""))  # Check for new welcome message
-        self.assertIsNotNone(data.get("options_list"))  # The new format uses 'options_list' for buttons/menu items.
+        # Known users receive the compact personalized menu instead of repeating
+        # the assistant introduction on every greeting.
+        self.assertNotIn("Municipio Inteligente", data.get("message_body", ""))
+        self.assertIsNotNone(data.get("options_list"))
 
     @patch('services.tts_orchestrator.generar_audio', return_value=None)
     @patch('services.municipio_responder.llamar_gemini')
@@ -261,8 +262,9 @@ class TestChatIntegration(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
-        self.assertIn("Carla", data.get("message_body", ""))
-        self.assertNotIn(self.default_municipio_user.name, data.get("message_body", ""))
+        message_body = data.get("message_body", "")
+        self.assertIn("Carla", message_body)
+        self.assertNotIn(f"Hola, {self.default_municipio_user.name}", message_body)
 
 if __name__ == '__main__':
     unittest.main()

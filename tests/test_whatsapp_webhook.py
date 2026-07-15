@@ -6,6 +6,7 @@ import json
 import time
 import copy
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 os.environ.setdefault("TESTING", "1")
@@ -31,6 +32,7 @@ from models import (
     ProviderSender,
     MessageTemplateRegistry,
     MessagingEventLedger,
+    WhatsAppFlowInteraction,
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
 )
@@ -1547,8 +1549,77 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(event.external_message_sid, "SM_STATUS_DELIVERED_1")
         self.assertEqual(event.external_status, "delivered")
         self.assertEqual(event.provider_sender_id, sender.id)
-        self.assertEqual(event.recipient, f"whatsapp:{self.test_user_number_str}")
+        self.assertEqual(event.recipient, f"whatsapp:***{self.test_user_number_str[-4:]}")
         self.assertEqual(event.payload.get("MessagingServiceSid"), "MG_STATUS_TEST")
+        self.assertNotIn("To", event.payload)
+        self.assertNotIn("From", event.payload)
+
+    def test_twilio_whatsapp_failed_status_reconciles_native_flow_without_pii(self):
+        tenant = self._attach_tenant_to_owner(slug="junin-flow-status", tipo="municipio")
+        sender = ProviderSender(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+            phone_number=self.test_whatsapp_number_str,
+            sender_id=f"whatsapp:{self.test_whatsapp_number_str}",
+            messaging_service_sid="MG_FLOW_STATUS",
+            status="active",
+        )
+        registry = MessageTemplateRegistry(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="native_claim_flow",
+            language="es",
+            category="UTILITY",
+            status="approved",
+            content_sid="HX_FLOW_STATUS",
+            external_template_id="1234567890123456",
+        )
+        db.session.add_all([sender, registry])
+        db.session.flush()
+        interaction = WhatsAppFlowInteraction(
+            tenant_id=tenant.id,
+            template_registry_id=registry.id,
+            provider_sender_id=sender.id,
+            flow_id="claim_intake",
+            meta_flow_id="1234567890123456",
+            content_sid=registry.content_sid,
+            recipient_hash="a" * 64,
+            recipient_hint=f"***{self.test_user_number_str[-4:]}",
+            token_digest="b" * 64,
+            idempotency_key="status-flow-failure-001",
+            status="sent",
+            external_message_sid="SM_FLOW_FAILED_1",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        db.session.add(interaction)
+        db.session.commit()
+
+        payload = {
+            "AccountSid": TestConfig.TWILIO_ACCOUNT_SID,
+            "MessagingServiceSid": "MG_FLOW_STATUS",
+            "MessageSid": "SM_FLOW_FAILED_1",
+            "MessageStatus": "undelivered",
+            "ErrorCode": "63016",
+            "ErrorMessage": f"Could not deliver to {self.test_user_number_str}",
+            "To": f"whatsapp:{self.test_user_number_str}",
+            "From": f"whatsapp:{self.test_whatsapp_number_str}",
+        }
+
+        with patch("routes.whatsapp_webhook.TWILIO_AUTH_TOKEN", None):
+            response = self.client.post("/twilio/whatsapp/status", data=payload)
+
+        self.assertEqual(response.status_code, 200)
+        db.session.refresh(interaction)
+        self.assertEqual(interaction.status, "failed")
+        self.assertEqual(interaction.error_code, "63016")
+        self.assertEqual(interaction.metadata_json["delivery"]["status"], "undelivered")
+        event = MessagingEventLedger.query.filter_by(
+            tenant_id=tenant.id,
+            provider_event_id="SM_FLOW_FAILED_1:undelivered",
+        ).one()
+        self.assertNotIn(self.test_user_number_str, json.dumps(event.payload))
+        self.assertNotIn(self.test_user_number_str, str(event.error_message))
 
     def test_junin_welcome_template_uses_public_municipality_identity(self):
         self._set_owner_tipo_chat("municipio")

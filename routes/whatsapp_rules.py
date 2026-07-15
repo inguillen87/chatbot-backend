@@ -211,7 +211,7 @@ def _flow_interaction_payload(row: WhatsAppFlowInteraction) -> dict:
         "external_message_sid": row.external_message_sid,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
         "consumed_at": row.consumed_at.isoformat() if row.consumed_at else None,
-        "retry_safe": row.status not in {"claimed", "send_uncertain"},
+        "retry_safe": row.status == "failed",
     }
 
 
@@ -935,7 +935,10 @@ def sync_twilio_native_flow(user: User):
         abort(400, description="language debe usar formato es o es_AR")
     body, button_text = _flow_content_copy(payload, blueprint)
 
-    dry_run = payload.get("dry_run", True) is not False
+    dry_run_value = payload.get("dry_run", True)
+    if not isinstance(dry_run_value, bool):
+        abort(400, description="dry_run debe ser booleano")
+    dry_run = dry_run_value
     submit_for_approval = payload.get("submit_for_approval", True) is not False
     force = bool(payload.get("force", False))
     integration_access = integration_access_payload(tenant)
@@ -1182,7 +1185,10 @@ def send_twilio_native_flow(user: User):
     if not re.fullmatch(r"[A-Za-z0-9_.:\-]{8,120}", idempotency_key):
         abort(400, description="idempotency_key debe tener entre 8 y 120 caracteres seguros")
 
-    dry_run = payload.get("dry_run", True) is not False
+    dry_run_value = payload.get("dry_run", True)
+    if not isinstance(dry_run_value, bool):
+        abort(400, description="dry_run debe ser booleano")
+    dry_run = dry_run_value
     integration_access = integration_access_payload(tenant)
     access_enabled = bool(integration_access.get("enabled"))
     token_secret = current_app.config.get("WHATSAPP_FLOW_TOKEN_KEY_V1")
@@ -1244,6 +1250,7 @@ def send_twilio_native_flow(user: User):
         ).evaluate_outbound(
             body=str(registry.body_preview or ""),
             metadata={"recipient": recipient, "is_template": True},
+            lock_rate_limit=not dry_run,
         )
 
     blockers: list[str] = []

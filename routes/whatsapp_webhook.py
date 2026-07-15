@@ -11,7 +11,7 @@ import threading
 import re
 import time
 import unicodedata
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -29,6 +29,7 @@ from models import (
     Notification,
     MessageTemplateRegistry,
     MessagingEventLedger,
+    WhatsAppFlowInteraction,
 )  # Import necessary models
 from models_memory import Contact
 from extensions import db  # Import db instance for database operations
@@ -3938,6 +3939,79 @@ def _resolve_status_callback_tenant_and_sender(
     return None, provider_sender
 
 
+def _masked_whatsapp_status_address(value: Any) -> Optional[str]:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if not digits:
+        return None
+    return f"whatsapp:***{digits[-4:]}"
+
+
+def _safe_twilio_status_error(value: Any) -> Optional[str]:
+    text = str(value or "").strip()[:500]
+    if not text:
+        return None
+    text = re.sub(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[redacted-email]", text)
+    return re.sub(r"\+?\d[\d\s().-]{6,}\d", "[redacted-number]", text)
+
+
+def _safe_twilio_status_payload(post_vars: Dict[str, Any]) -> Dict[str, Any]:
+    allowed = (
+        "MessageSid",
+        "SmsMessageSid",
+        "MessageStatus",
+        "SmsStatus",
+        "ErrorCode",
+        "MessagingServiceSid",
+        "ServiceSid",
+        "ApiVersion",
+        "ChannelPrefix",
+    )
+    return {key: post_vars.get(key) for key in allowed if post_vars.get(key) not in (None, "")}
+
+
+def _reconcile_whatsapp_flow_delivery(
+    *,
+    tenant_id: int,
+    provider_sender: Optional[ProviderSender],
+    message_sid: Any,
+    status: Any,
+    error_code: Any,
+) -> Optional[WhatsAppFlowInteraction]:
+    message_sid_text = str(message_sid or "").strip()
+    if not message_sid_text:
+        return None
+    query = WhatsAppFlowInteraction.query.filter_by(
+        tenant_id=int(tenant_id),
+        external_message_sid=message_sid_text,
+    )
+    if provider_sender and getattr(provider_sender, "id", None):
+        query = query.filter_by(provider_sender_id=provider_sender.id)
+    interaction = query.first()
+    if not interaction:
+        return None
+
+    normalized_status = str(status or "unknown").strip().lower()[:32]
+    normalized_error = str(error_code or "").strip()[:80] or None
+    metadata = dict(interaction.metadata_json or {})
+    metadata["delivery"] = {
+        "status": normalized_status,
+        "error_code": normalized_error,
+        "callback_at": datetime.now(timezone.utc).isoformat(),
+    }
+    interaction.metadata_json = metadata
+    interaction.updated_at = datetime.now(timezone.utc)
+    if normalized_status in {"failed", "undelivered", "canceled"}:
+        if interaction.status != "consumed":
+            interaction.status = "failed"
+            interaction.error_code = normalized_error or normalized_status
+    elif normalized_status in {"accepted", "queued", "sending", "sent", "delivered", "read"}:
+        if interaction.status in {"claimed", "send_uncertain"}:
+            interaction.status = "sent"
+            interaction.error_code = None
+    db.session.add(interaction)
+    return interaction
+
+
 def _persist_twilio_whatsapp_status_event(
     post_vars: Dict[str, Any],
     *,
@@ -3950,7 +4024,7 @@ def _persist_twilio_whatsapp_status_event(
     if not tenant or not getattr(tenant, "id", None):
         current_app.logger.warning(
             "[TWILIO_WHATSAPP_STATUS] Could not resolve tenant for From=%s ServiceSid=%s MessageSid=%s",
-            post_vars.get("From"),
+            _masked_whatsapp_status_address(post_vars.get("From")),
             post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid"),
             post_vars.get("MessageSid"),
         )
@@ -3976,21 +4050,28 @@ def _persist_twilio_whatsapp_status_event(
             external_message_sid=message_sid,
             provider_connection_id=getattr(provider_sender, "provider_connection_id", None),
             provider_sender_id=getattr(provider_sender, "id", None),
-            sender=post_vars.get("From"),
-            recipient=post_vars.get("To"),
+            sender=_masked_whatsapp_status_address(post_vars.get("From")),
+            recipient=_masked_whatsapp_status_address(post_vars.get("To")),
             request_id=request.headers.get("I-Twilio-Idempotency-Token"),
         )
         db.session.add(event)
 
     event.external_status = status
     event.error_code = post_vars.get("ErrorCode")
-    event.error_message = post_vars.get("ErrorMessage")
-    event.payload = dict(post_vars)
+    event.error_message = _safe_twilio_status_error(post_vars.get("ErrorMessage"))
+    event.payload = _safe_twilio_status_payload(post_vars)
     event.metadata_json = {
-        "account_sid": post_vars.get("AccountSid"),
+        "account_scope": _masked_whatsapp_status_address(post_vars.get("AccountSid")),
         "messaging_service_sid": post_vars.get("MessagingServiceSid") or post_vars.get("ServiceSid"),
         "api_version": post_vars.get("ApiVersion"),
     }
+    _reconcile_whatsapp_flow_delivery(
+        tenant_id=tenant.id,
+        provider_sender=provider_sender,
+        message_sid=message_sid,
+        status=status,
+        error_code=post_vars.get("ErrorCode"),
+    )
     return event
 
 
@@ -6728,18 +6809,16 @@ def twilio_whatsapp_status():
     message_sid = request.form.get("MessageSid")
     message_status = request.form.get("MessageStatus")
     error_code = request.form.get("ErrorCode")
-    error_message = request.form.get("ErrorMessage")
     to_number = request.form.get("To")
     from_number = request.form.get("From")
 
     current_app.logger.info(
-        "[TWILIO_WHATSAPP_STATUS] MessageSid=%s Status=%s ErrorCode=%s ErrorMessage=%s To=%s From=%s",
+        "[TWILIO_WHATSAPP_STATUS] MessageSid=%s Status=%s ErrorCode=%s To=%s From=%s",
         message_sid,
         message_status,
         error_code,
-        error_message,
-        to_number,
-        from_number,
+        _masked_whatsapp_status_address(to_number),
+        _masked_whatsapp_status_address(from_number),
     )
     try:
         _persist_twilio_whatsapp_status_event(

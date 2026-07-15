@@ -100,7 +100,9 @@ class TestAgendaParser(unittest.TestCase):
         self.assertEqual(events[0]["location"], "HCD")
 
     def test_parse_text_file(self):
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as tmp:
             tmp.write(SAMPLE)
             path = tmp.name
 

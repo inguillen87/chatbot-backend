@@ -13,8 +13,8 @@ from typing import Dict, Any, Optional
 import random
 from services.ticket_service import servicio_tickets
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
+from services import herramientas_municipio
 from services.herramientas_municipio import (
-    parse_direccion_completa as parse_direccion,
     direccion_es_valida,
     normalizar_texto,
     obtener_direccion_de_coordenadas,
@@ -44,6 +44,12 @@ from services.conversation_summaries import build_claim_confirmation_payload
 logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
+
+
+def parse_direccion(*args, **kwargs):
+    """Patch-friendly compatibility proxy for the municipal address parser."""
+
+    return herramientas_municipio.parse_direccion_completa(*args, **kwargs)
 
 
 def _parse_int_env(var_name: str, default: int) -> int:
@@ -567,7 +573,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
         if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
             try:
                 logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
-                parsed_addr = parse_direccion(ubicacion_llm, municipio_config)
+                parsed_addr = parse_direccion(
+                    ubicacion_llm,
+                    municipio_config,
+                )
                 if parsed_addr and parsed_addr.get("localidad"):
                     distrito_llm = parsed_addr.get("localidad")
                 else:
@@ -590,6 +599,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             cleaned_lower = cleaned.lower()
             if cleaned_lower in {"vecino", "vecina", "vecine", "vecino/a"}:
                 return None
+            if re.match(
+                r"^(quiero|necesito|solicito|pido|por favor|me gustaria|me gustaría)\b",
+                cleaned_lower,
+            ):
+                return None
             forbidden_tokens = {
                 "quiero",
                 "necesito",
@@ -611,21 +625,18 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "llamo",
             }
 
-            # Tokenize and filter out forbidden words to extract the actual name
-            words = cleaned_lower.split()
-            filtered_words = [w for w in words if w not in forbidden_tokens]
+            # Filter filler words while retaining intentional casing in names
+            # and short acronyms returned by the user or identity provider.
+            words = cleaned.split()
+            filtered_words = [w for w in words if w.lower() not in forbidden_tokens]
 
             if not filtered_words:
                 return None
 
-            # Reconstruct the name from the original casing based on the filtered indices?
-            # Simpler approach: Remove forbidden tokens from the cleaned string but preserve casing of the rest if possible.
-            # Or just use the filtered words and capitalize them.
-
-            # Let's use a regex replace to preserve original casing of remaining words
-            # But simple filtering is robust enough for names usually.
-
-            cleaned_filtered = " ".join([word.title() for word in filtered_words])
+            cleaned_filtered = " ".join(
+                word if word.isupper() and len(word) <= 4 else word.title()
+                for word in filtered_words
+            )
 
             if len(cleaned_filtered) < 3: # "Al" ? maybe too short
                 return None
@@ -646,9 +657,12 @@ class CrearReclamoActionHandler(BaseActionHandler):
             contacto_ctx.get("nombre"),
         ]
 
-        llm_candidates = [
+        explicit_candidates = [
             action_data.get("usuario"),
             action_data.get("nombre"),
+        ]
+
+        inferred_candidates = [
             datos_parciales_llm.get("usuario"),
             datos_parciales_llm.get("nombre"),
             action_data.get("nombre_usuario_detectado"),
@@ -656,7 +670,9 @@ class CrearReclamoActionHandler(BaseActionHandler):
             datos_parciales_llm.get("nombre_detectado"),
         ]
 
-        candidate_names = trusted_candidates + llm_candidates
+        # An explicit valid name from the current turn wins. The authenticated
+        # profile remains the fallback before older or inferred LLM values.
+        candidate_names = explicit_candidates + trusted_candidates + inferred_candidates
 
         nombre_vecino_final = next(
             (clean for clean in map(_sanitize_nombre, candidate_names) if clean),
@@ -778,6 +794,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             return {
                 "success": False,
                 "message_body": mensaje,
+                "message_to_user": mensaje,
                 "pedir_info": campos_faltantes,
                 "options_list": botones,
                 "message_type": "interactive_list" if len(botones) > 3 else "interactive_buttons"
@@ -848,7 +865,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "direccion_contacto": direccion_contacto,
             "estado": "nuevo",
             "user_id": linked_user_id,
-            "anon_id": None if linked_user_id else self.context.get("anon_id"),
+            "anon_id": (
+                self.context.get("anon_id")
+                if viewer_user or not linked_user_id
+                else None
+            ),
             "municipio_id": municipio_id,
             "tenant_id": tenant_id,
             "latitud": coordenadas_llm.get("lat") if isinstance(coordenadas_llm, dict) else None,
@@ -1075,7 +1096,11 @@ class CrearReclamoActionHandler(BaseActionHandler):
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = _resolve_promo_image_url(municipio_config)
             channel_value = (self.context.get("channel") or "").strip().lower()
-            is_web_like_channel = channel_value.startswith("web") or "widget" in channel_value
+            is_web_like_channel = (
+                not channel_value
+                or channel_value.startswith("web")
+                or "widget" in channel_value
+            )
             categoria_display = categoria
             mensaje_respuesta, botones_finales = formatear_ticket_respuesta(
                 "reclamo",
@@ -1285,11 +1310,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "descripcion": descripcion,
                 "consulta_pin": pin_final,
             }
-            return _apply_whatsapp_closing_promo(
+            final_response = _apply_whatsapp_closing_promo(
                 response_payload,
                 context=self.context,
                 caption_values=caption_values,
             )
+            # Preserve the legacy action-handler contract while channel
+            # orchestrators migrate to the unified message_body field.
+            final_response.setdefault("message_to_user", final_response.get("message_body"))
+            return final_response
         except Exception as e:
             logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
             response = {
@@ -1500,7 +1529,13 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             "direccion_contacto": direccion_contacto,
             "latitud": coordenadas_sugerencia.get("lat") if isinstance(coordenadas_sugerencia, dict) else None,
             "longitud": (
-                coordenadas_sugerencia.get("lng") if isinstance(coordenadas_sugerencia, dict) else None
+                (
+                    coordenadas_sugerencia.get("lng")
+                    if coordenadas_sugerencia.get("lng") is not None
+                    else coordenadas_sugerencia.get("lon")
+                )
+                if isinstance(coordenadas_sugerencia, dict)
+                else None
             ),
             "municipio_id": municipio_id,
             "tenant_id": tenant_id,

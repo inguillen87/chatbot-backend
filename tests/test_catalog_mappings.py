@@ -1,7 +1,7 @@
 import pytest
 import json
 from app import db
-from models import User, CatalogMapping
+from models import User, CatalogMapping, TenantProfile
 import jwt
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -21,6 +21,16 @@ class TestCatalogMappingsAPI:
         )
         self.pyme_user.set_password("password")
         db.session.add(self.pyme_user)
+        db.session.flush()
+        self.tenant = TenantProfile(
+            slug=f"catalog-mappings-{uuid4().hex}",
+            nombre="Test PYME",
+            tipo="pyme",
+            pyme_id=self.pyme_user.id,
+            plan="full",
+            is_active=True,
+        )
+        db.session.add(self.tenant)
         db.session.commit()
 
         jwt_payload = {'user_id': self.pyme_user.id, 'exp': datetime.utcnow() + timedelta(days=1)}
@@ -150,13 +160,43 @@ class TestCatalogMappingsAPI:
         )
         mapping_id = create_response.json['id']
 
-        # 2. Try to access it as another pyme (id=2)
-        other_pyme_id = 2
+        # 2. Try to access it through another tenant URL.
+        other_pyme = User(
+            name="Other PYME",
+            email=f"other-pyme-{uuid4().hex}@test.com",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        other_pyme.set_password("password")
+        db.session.add(other_pyme)
+        db.session.flush()
+        db.session.add(
+            TenantProfile(
+                slug=f"catalog-mappings-other-{uuid4().hex}",
+                nombre="Other PYME",
+                tipo="pyme",
+                pyme_id=other_pyme.id,
+                plan="full",
+                is_active=True,
+            )
+        )
+        db.session.commit()
+        other_pyme_id = other_pyme.id
         get_response = self.client.get(
             f'/api/pymes/{other_pyme_id}/catalog-mappings/{mapping_id}',
             headers=self.auth_headers
         )
-        # This test is not perfect because the decorator might fail first if the user is not pyme 2.
-        # But the route logic itself should also prevent this.
-        # The get_single_mapping checks if mapping['pymeId'] matches the URL pyme_id
-        assert get_response.status_code == 404
+        assert get_response.status_code == 403
+
+        list_response = self.client.get(
+            f'/api/pymes/{other_pyme_id}/catalog-mappings',
+            headers=self.auth_headers,
+        )
+        assert list_response.status_code == 403
+
+        create_response = self.client.post(
+            f'/api/pymes/{other_pyme_id}/catalog-mappings',
+            json={"name": "Cross tenant", "mapping": {}},
+            headers=self.auth_headers,
+        )
+        assert create_response.status_code == 403
