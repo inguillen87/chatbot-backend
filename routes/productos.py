@@ -12,7 +12,6 @@ from flask_login import current_user
 from sqlalchemy import func
 
 from models import TenantProfile, User
-from middleware import require_tenant
 from routes.catalogo import listar_catalogo
 from services.catalog_seed import ensure_seed_catalog
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
@@ -302,11 +301,6 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
                     g.tenant_profile = tenant
                     g.tenant_profile_slug = tenant.slug
                     return tenant, owner
-                fallback_tenant, fallback_owner = _first_tenant_with_owner()
-                if fallback_tenant and fallback_owner:
-                    g.tenant_profile = fallback_tenant
-                    g.tenant_profile_slug = getattr(fallback_tenant, "slug", None)
-                    return fallback_tenant, fallback_owner
         except TenantResolutionError:
             pass
 
@@ -367,7 +361,6 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
 
 @productos_bp.route("", methods=["GET", "OPTIONS"], strict_slashes=False)
 @cross_origin(**_cors_kwargs())
-@require_tenant
 def obtener_productos():
     """Devuelve el catálogo de productos, autenticado o público."""
 
@@ -394,6 +387,19 @@ def obtener_productos():
         owner_for_user = tenant_for_user.municipio or tenant_for_user.pyme or user
 
     owner = owner_for_user or getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
+
+    if not tenant or not owner:
+        if view_mode and not is_api_call:
+            resolved_tenant, resolved_owner = _resolve_public_owner()
+        else:
+            resolved_tenant, resolved_owner = _resolve_public_owner(
+                require_explicit=True
+            )
+        tenant = tenant or resolved_tenant
+        owner = owner or resolved_owner
+        if tenant:
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = getattr(tenant, "slug", None)
 
     if not owner and user:
         owner = user

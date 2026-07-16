@@ -1,16 +1,18 @@
-from flask import Blueprint, jsonify
-from models import db, Order, User, TenantProfile, OrderItem
-import pytest
 from app import create_app, db
-import json
+from config import Config
+from models import Order, OrderItem, TenantProfile, User
+
+
+class OrderPersistenceTestConfig(Config):
+    TESTING = True
+    SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
+    SESSION_TYPE = "filesystem"
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+
 
 def test_order_creation_persistence():
-    # Setup - In-memory DB or temporary file would be better, but we rely on app config
-    from config import Config
-    Config.SESSION_TYPE = 'filesystem'
-    app = create_app(Config)
-    app.config['TESTING'] = True
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
+    app = create_app(OrderPersistenceTestConfig)
 
     with app.app_context():
         db.create_all()

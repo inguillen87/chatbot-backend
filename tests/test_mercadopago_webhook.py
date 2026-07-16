@@ -144,3 +144,38 @@ def test_webhook_works_with_payload_tenant_token_without_global(client, tenant_w
     payload = resp.get_json()
     assert payload["estado"] == "pagado"
     assert captured["auth_calls"][0] == "Bearer tenant-token"
+
+
+@pytest.mark.usefixtures("client")
+def test_webhook_rejects_amount_mismatch_without_updating_order(client, tenant_with_pedido, monkeypatch):
+    tenant, pedido = tenant_with_pedido
+
+    def fake_get(_url, headers=None, **_kwargs):
+        class DummyResp:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return {
+                    "external_reference": str(pedido.id),
+                    "status": "approved",
+                    "transaction_amount": 999,
+                    "currency_id": "ARS",
+                    "metadata": {"tenant_id": tenant.id},
+                }
+
+        return DummyResp()
+
+    monkeypatch.setenv("MERCADOPAGO_ACCESS_TOKEN", "fallback-token")
+    monkeypatch.setattr("routes.mercadopago_webhook.requests.get", fake_get)
+
+    resp = client.post(
+        "/mercadopago_webhook",
+        json={"type": "payment", "data": {"id": "pay-wrong-amount"}},
+    )
+
+    assert resp.status_code == 409
+    assert resp.get_json()["reason_code"] == "payment_amount_mismatch"
+    db.session.refresh(pedido)
+    assert pedido.estado == "pendiente_pago"
+    assert pedido.mp_payment_id is None

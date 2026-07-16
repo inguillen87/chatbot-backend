@@ -1,0 +1,352 @@
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app import db
+from models import (
+    AuditEvent,
+    MessageTemplateRegistry,
+    MunicipioTicket,
+    Order,
+    ProviderSender,
+    TenantProfile,
+    TicketComentario,
+    User,
+    WhatsAppFlowInteraction,
+)
+from services.meta_flow_data_exchange import MetaFlowActionError
+from services.meta_flow_runtime import (
+    CLAIM_FLOW_ID,
+    ORDER_FLOW_ID,
+    apply_whatsapp_flow_completion,
+)
+from services.whatsapp_flow_security import consume_whatsapp_flow_interaction
+
+
+def _tenant_scope(slug: str) -> tuple[TenantProfile, ProviderSender]:
+    owner = User(
+        email=f"{slug}@example.test",
+        name=slug,
+        rol="tenant_admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("test-pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug=slug,
+        nombre=slug.title(),
+        tipo="municipio",
+        municipio_id=owner.id,
+        plan="full",
+        is_active=True,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    sender = ProviderSender(
+        tenant_id=tenant.id,
+        channel="whatsapp",
+        sender_id=f"whatsapp:+1555{tenant.id:07d}",
+        phone_number=f"+1555{tenant.id:07d}",
+        waba_id=f"waba-{tenant.id}",
+        status="active",
+    )
+    db.session.add(sender)
+    db.session.commit()
+    return tenant, sender
+
+
+def _interaction(
+    *,
+    tenant: TenantProfile,
+    sender: ProviderSender,
+    flow_id: str,
+    metadata: dict,
+    data_contract: list[str],
+) -> WhatsAppFlowInteraction:
+    registry = MessageTemplateRegistry(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name=f"completion-{flow_id}-{tenant.id}",
+        language="es",
+        status="approved",
+        content_sid=f"HXCOMPLETION{tenant.id}",
+        external_template_id=f"meta-{tenant.id}",
+    )
+    db.session.add(registry)
+    db.session.flush()
+    row = WhatsAppFlowInteraction(
+        tenant_id=tenant.id,
+        template_registry_id=registry.id,
+        provider_sender_id=sender.id,
+        flow_id=flow_id,
+        meta_flow_id=registry.external_template_id,
+        content_sid=registry.content_sid,
+        recipient_hash=f"{tenant.id:064x}"[-64:],
+        recipient_hint="***1234",
+        token_digest=f"{tenant.id + 500:064x}"[-64:],
+        idempotency_key=f"completion-{flow_id}-{tenant.id}",
+        status="sent",
+        data_contract=data_contract,
+        metadata_json=metadata,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.session.add(row)
+    db.session.commit()
+    return row
+
+
+def _submission(interaction: WhatsAppFlowInteraction, answers: dict) -> dict:
+    return {
+        "contract_version": "whatsapp.flow_submission.v1",
+        "flow": {"id": interaction.flow_id, "meta_id": interaction.meta_flow_id},
+        "payload": {"answers": answers},
+        "correlation": {
+            "interaction_id": interaction.id,
+            "tenant_id": interaction.tenant_id,
+            "provider_sender_id": interaction.provider_sender_id,
+        },
+    }
+
+
+def test_claim_completion_consumes_once_and_writes_crm_comment(client):
+    tenant, sender = _tenant_scope("completion-claim")
+    ticket = MunicipioTicket(
+        tenant_id=tenant.id,
+        municipio_id=tenant.municipio_id,
+        nro_ticket="378430",
+        consulta_pin="900144",
+        pregunta="Arreglo de calle",
+        categoria="Arreglo de calle",
+        estado="en_proceso",
+    )
+    db.session.add(ticket)
+    db.session.commit()
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=CLAIM_FLOW_ID,
+        metadata={
+            "claim_context": {
+                "kind": "municipio",
+                "id": str(ticket.id),
+                "ticket_number": "M-378430",
+            }
+        },
+        data_contract=["ticket_number", "follow_up_note"],
+    )
+    submission = _submission(
+        interaction,
+        {
+            "ticket_number": "M-378430",
+            "follow_up_note": "La calle sigue cortada; por favor revisar.",
+        },
+    )
+
+    assert consume_whatsapp_flow_interaction(
+        interaction_id=interaction.id,
+        tenant_id=tenant.id,
+        inbound_message_sid="SM-FLOW-CLAIM-1",
+        commit=False,
+    ) is True
+    response = apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=submission,
+        anon_id="+5491112345678",
+    )
+    db.session.commit()
+
+    comment = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).one()
+    db.session.refresh(interaction)
+    assert comment.comentario == "La calle sigue cortada; por favor revisar."
+    assert comment.origen == "whatsapp_flow"
+    assert response["fuente"] == "whatsapp_flow_claim_completed"
+    assert response["realtime_event"]["comment_id"] == comment.id
+    assert interaction.status == "consumed"
+    assert interaction.metadata_json["completion"]["status"] == "applied"
+    assert AuditEvent.query.filter_by(
+        tenant_id=tenant.id,
+        event_type=f"whatsapp_flow.{CLAIM_FLOW_ID}.completed",
+    ).count() == 1
+    assert consume_whatsapp_flow_interaction(
+        interaction_id=interaction.id,
+        tenant_id=tenant.id,
+        inbound_message_sid="SM-FLOW-CLAIM-2",
+    ) is False
+
+
+def test_claim_completion_rejects_ticket_not_authorized_by_data_exchange(client):
+    tenant, sender = _tenant_scope("completion-claim-scope")
+    ticket = MunicipioTicket(
+        tenant_id=tenant.id,
+        municipio_id=tenant.municipio_id,
+        nro_ticket="100001",
+        consulta_pin="445566",
+        pregunta="Luminaria",
+        estado="nuevo",
+    )
+    db.session.add(ticket)
+    db.session.commit()
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=CLAIM_FLOW_ID,
+        metadata={
+            "claim_context": {
+                "kind": "municipio",
+                "id": str(ticket.id),
+                "ticket_number": "M-100001",
+            }
+        },
+        data_contract=["ticket_number", "follow_up_note"],
+    )
+
+    with pytest.raises(MetaFlowActionError) as error:
+        apply_whatsapp_flow_completion(
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            submission=_submission(
+                interaction,
+                {
+                    "ticket_number": "M-999999",
+                    "follow_up_note": "Intento fuera de alcance",
+                },
+            ),
+        )
+
+    assert error.value.code == "claim_context_scope_mismatch"
+    assert TicketComentario.query.count() == 0
+
+
+def test_order_completion_uses_server_order_and_preserves_financial_authority(client):
+    tenant, sender = _tenant_scope("completion-order")
+    order = Order(
+        id="order-flow-001",
+        tenant_id=tenant.id,
+        buyer_name="Nombre anterior",
+        status="created",
+        channel="web_widget",
+        currency="ARS",
+        subtotal=25000,
+        total=25000,
+    )
+    db.session.add(order)
+    db.session.commit()
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=ORDER_FLOW_ID,
+        metadata={"order_context": {"kind": "order", "id": order.id}},
+        data_contract=[
+            "full_name",
+            "phone",
+            "delivery_address",
+            "delivery_notes",
+            "confirm_order",
+        ],
+    )
+    submission = _submission(
+        interaction,
+        {
+            "full_name": "Cliente Final",
+            "phone": "+5491112345678",
+            "delivery_address": "Calle 123, Junin",
+            "delivery_notes": "Entregar de 9 a 13",
+            "confirm_order": True,
+            "order_id": "attacker-order",
+            "total": 1,
+            "payment_state": "paid",
+        },
+    )
+
+    response = apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=submission,
+    )
+    db.session.commit()
+
+    db.session.refresh(order)
+    assert response["fuente"] == "whatsapp_flow_order_completed"
+    assert order.id == "order-flow-001"
+    assert order.buyer_name == "Cliente Final"
+    assert order.buyer_phone == "+5491112345678"
+    assert order.delivery_address == {
+        "address": "Calle 123, Junin",
+        "source": "whatsapp_flow",
+    }
+    assert order.total == 25000
+    assert order.status == "confirmed"
+    assert order.channel == "whatsapp"
+
+
+def test_order_completion_is_idempotent_and_cannot_rewrite_applied_data(client):
+    tenant, sender = _tenant_scope("completion-order-replay")
+    order = Order(
+        id="order-flow-replay",
+        tenant_id=tenant.id,
+        status="pending_payment",
+        total=9000,
+    )
+    db.session.add(order)
+    db.session.commit()
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=ORDER_FLOW_ID,
+        metadata={"order_context": {"kind": "order", "id": order.id}},
+        data_contract=[
+            "full_name",
+            "phone",
+            "delivery_address",
+            "delivery_notes",
+            "confirm_order",
+        ],
+    )
+    first = _submission(
+        interaction,
+        {
+            "full_name": "Primer Cliente",
+            "phone": "+5491112345678",
+            "delivery_address": "Direccion valida 10",
+            "delivery_notes": "Sin timbre",
+            "confirm_order": True,
+        },
+    )
+    apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=first,
+    )
+    db.session.commit()
+
+    replay = _submission(
+        interaction,
+        {
+            "full_name": "Nombre alterado",
+            "phone": "+5491199999999",
+            "delivery_address": "Otra direccion",
+            "confirm_order": True,
+        },
+    )
+    replay_response = apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=replay,
+    )
+    db.session.commit()
+
+    db.session.refresh(order)
+    assert replay_response["fuente"] == "whatsapp_flow_order_completed"
+    assert order.buyer_name == "Primer Cliente"
+    assert order.buyer_phone == "+5491112345678"
+    assert order.delivery_address["address"] == "Direccion valida 10"
+    assert order.status == "pending_payment"
+    assert AuditEvent.query.filter_by(
+        tenant_id=tenant.id,
+        event_type=f"whatsapp_flow.{ORDER_FLOW_ID}.completed",
+    ).count() == 1

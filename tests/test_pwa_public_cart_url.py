@@ -82,6 +82,26 @@ class PublicCartUrlTest(unittest.TestCase):
         self.assertEqual(payload["tenant_slug"], self.tenant.slug)
         self.assertIn(self.tenant.slug, payload["cart_url"])
 
+    def test_explicit_tenant_id_wins_over_conflicting_referrer(self):
+        response = self.client.get(
+            f"/api/pwa/public/cart/url?tenant_id={self.tenant.id}",
+            headers={"Referer": "https://www.chatboc.ar/t/otro-tenant/market"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tenant_slug"], self.tenant.slug)
+
+    def test_widget_token_requires_an_exact_match_and_does_not_mutate_tenant(self):
+        self.tenant.configuracion = {"widget_tokens": ["demo-anon-production"]}
+        db.session.commit()
+
+        response = self.client.get("/api/pwa/public/cart/url?widget_token=demo-anon")
+
+        self.assertEqual(response.status_code, 404)
+        db.session.refresh(self.tenant)
+        self.assertEqual(self.tenant.configuracion["widget_tokens"], ["demo-anon-production"])
+
     def test_invalid_explicit_slug_returns_actionable_json(self):
         response = self.client.get("/api/pwa/public/cart/url?tenant=slug-inexistente")
         self.assertEqual(response.status_code, 404)

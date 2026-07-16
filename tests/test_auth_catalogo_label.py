@@ -20,6 +20,9 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
+    SKIP_INIT_TENANTS = True
 
 class CatalogoLabelTests(unittest.TestCase):
     def setUp(self):

@@ -147,11 +147,42 @@ def _tenant_by_number(number: Optional[str]) -> Optional[TenantProfile]:
     ).limit(1).first()
 
 def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
-    if not token:
+    normalized = str(token or "").strip()
+    if not normalized:
         return None
-    return TenantProfile.query.filter(
-        TenantProfile.configuracion["widget_tokens"].astext.contains(token)
-    ).limit(1).first()
+
+    def _has_exact_token(tenant: TenantProfile) -> bool:
+        cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        configured = cfg.get("widget_tokens")
+        if isinstance(configured, str):
+            values = [configured]
+        elif isinstance(configured, (list, tuple, set)):
+            values = configured
+        else:
+            values = []
+        return any(str(value or "").strip() == normalized for value in values)
+
+    # The JSON expression is only a shortlist. Exact comparison below prevents
+    # a token such as ``demo`` from matching ``demo-production``.
+    try:
+        candidates = TenantProfile.query.filter(
+            TenantProfile.configuracion["widget_tokens"].astext.contains(normalized)
+        ).all()
+    except Exception:
+        candidates = []
+
+    matches = [tenant for tenant in candidates if _has_exact_token(tenant)]
+    if not matches:
+        # SQLite and some JSON drivers do not implement ``astext`` consistently.
+        matches = [tenant for tenant in TenantProfile.query.all() if _has_exact_token(tenant)]
+
+    if len(matches) > 1:
+        logger.error(
+            "[tenant_resolver] Refusing ambiguous widget_token assigned to tenants %s",
+            [tenant.slug for tenant in matches],
+        )
+        return None
+    return matches[0] if matches else None
 
 
 def _should_register_widget_token(tenant: Optional[TenantProfile], token: Optional[str], preferred_slug: Optional[str]) -> bool:
@@ -468,11 +499,14 @@ def resolve_tenant_only(
     host: Optional[str] = None,
     require_explicit_slug: bool = False,
     allow_fallback: bool = True,
+    allow_lazy_demo_creation: bool = True,
+    allow_context_fallback: bool = True,
+    register_widget_token: bool = True,
 ) -> TenantProfile:
     preferred_slug = apply_tenant_alias(tenant_slug)
     tenant = _tenant_by_slug(preferred_slug)
 
-    if not tenant and preferred_slug:
+    if not tenant and preferred_slug and allow_lazy_demo_creation:
         # Attempt lazy creation for explicit demo slugs
         tenant = _get_or_create_demo_tenant(preferred_slug)
 
@@ -491,10 +525,10 @@ def resolve_tenant_only(
     if not tenant:
         tenant = _tenant_by_widget_token(widget_token)
 
-    if not tenant:
+    if not tenant and allow_context_fallback:
         tenant = _tenant_by_domain(host or request.host)
 
-    if not tenant:
+    if not tenant and allow_context_fallback:
         tenant = getattr(g, "tenant_profile", None)
     if tenant and preferred_slug and tenant.slug.lower() != preferred_slug.lower():
         slug_match = _tenant_by_slug(preferred_slug)
@@ -510,11 +544,12 @@ def resolve_tenant_only(
     if not tenant:
         raise TenantResolutionError("Tenant no encontrado para el contexto dado")
 
-    token_matches_resolution = _should_register_widget_token(tenant, widget_token, preferred_slug)
-    if token_matches_resolution:
-        _register_widget_token(tenant, widget_token)
-    if token_matches_resolution and widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
-        _prune_widget_token_from_other_tenants(widget_token, tenant.slug)
+    if register_widget_token:
+        token_matches_resolution = _should_register_widget_token(tenant, widget_token, preferred_slug)
+        if token_matches_resolution:
+            _register_widget_token(tenant, widget_token)
+        if token_matches_resolution and widget_token and preferred_slug and tenant.slug.lower() == preferred_slug.lower():
+            _prune_widget_token_from_other_tenants(widget_token, tenant.slug)
 
     return tenant
 

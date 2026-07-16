@@ -15,6 +15,7 @@ from services.whatsapp_flow_security import (
     WhatsAppFlowTokenError,
     consume_whatsapp_flow_interaction,
     issue_whatsapp_flow_token,
+    verify_whatsapp_flow_endpoint_token,
     verify_whatsapp_flow_token,
     whatsapp_flow_token_key_ready,
 )
@@ -29,7 +30,9 @@ RECIPIENT = "+5491112345678"
 @pytest.fixture(autouse=True)
 def _application_context(app):
     with app.app_context():
+        db.create_all()
         yield
+        db.session.remove()
 
 
 def _seed_invocation():
@@ -158,6 +161,25 @@ def test_verification_binds_tenant_recipient_sender_and_consumes_atomically(app)
     assert verified["interaction_id"] == interaction.id
     assert verified["data_contract"] == ["catalog_items", "cart_id"]
     assert verified["already_consumed"] is False
+
+    endpoint_verified = verify_whatsapp_flow_endpoint_token(
+        issued.token,
+        secret=SECRET,
+        tenant_id=tenant.id,
+        allowed_flow_ids={FLOW_ID, META_FLOW_ID},
+        ttl_seconds=3600,
+    )
+    assert endpoint_verified["interaction_id"] == interaction.id
+    assert endpoint_verified["recipient_hash"] == interaction.recipient_hash
+
+    with pytest.raises(WhatsAppFlowTokenError, match="unrecognized_flow"):
+        verify_whatsapp_flow_endpoint_token(
+            issued.token,
+            secret=SECRET,
+            tenant_id=tenant.id,
+            allowed_flow_ids={"another_flow"},
+            ttl_seconds=3600,
+        )
 
     with pytest.raises(WhatsAppFlowTokenError):
         verify_whatsapp_flow_token(

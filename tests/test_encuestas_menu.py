@@ -7686,7 +7686,7 @@ def responder_municipio(
     body = menu["message_body"]
     assert "Participación Ciudadana" in body
     assert "Seleccioná una encuesta" in body
-    short_token = slug.rsplit("-", 1)[-1]
+    short_token = municipio_responder._extract_short_public_slug(slug)
     assert "• *Abrir*:" in body
     assert "• *Compartir*:" in body
     assert "https://wa.me/" in body
@@ -7774,7 +7774,7 @@ def test_encuestas_menu_prefers_domain_map_base_url(client):
         menu = municipio_responder._get_encuestas_menu(context)
 
     expected_prefix = "https://www.chatboc.ar/e/"
-    short_token = slug.rsplit("-", 1)[-1]
+    short_token = municipio_responder._extract_short_public_slug(slug)
     body = menu["message_body"]
     assert "https://wa.me/" in body
     button_urls = [
@@ -7820,18 +7820,22 @@ def test_encuestas_menu_whatsapp_embeds_banner_and_disables_audio(client):
 
     assert menu.get("message_type") == "interactive_buttons"
     assert menu.get("generar_audio") is False
-    assert menu.get("_twilio_pre_messages") is None
+    pre_messages = menu.get("_twilio_pre_messages") or []
+    assert len(pre_messages) == 1
+    assert pre_messages[0].get("content_sid") == "HXtestBanner"
+    assert pre_messages[0].get("channels") == ["whatsapp"]
     assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
     media_urls = menu.get("media_urls")
     assert isinstance(media_urls, list) and menu["image_url"] in media_urls
     assert any(
-        option.get("type") == "url" and option.get("url", "").startswith("https://wa.me/")
+        str(option.get("action_id") or "").startswith("encuesta_compartir::")
         for option in menu["options_list"]
     )
     assert all(
         option.get("type") == "url"
         or option.get("action_id") in {"menu_principal", "cancelar"}
+        or str(option.get("action_id") or "").startswith("encuesta_compartir::")
         for option in menu["options_list"]
     )
 
@@ -7849,7 +7853,10 @@ def test_encuestas_menu_whatsapp_embeds_banner_when_no_template(client):
 
     assert menu.get("message_type") == "interactive_buttons"
     assert menu.get("generar_audio") is False
-    assert menu.get("_twilio_pre_messages") is None
+    pre_messages = menu.get("_twilio_pre_messages") or []
+    assert len(pre_messages) == 1
+    assert pre_messages[0].get("body") == "Participación Ciudadana"
+    assert menu.get("image_url") in (pre_messages[0].get("media_urls") or [])
     assert menu.get("_force_whatsapp_interactive") is True
     assert menu.get("image_url")
     whatsapp_button_urls = [

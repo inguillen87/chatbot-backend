@@ -8,6 +8,7 @@ from flask import Blueprint, jsonify, request
 from models import TenantProfile, User
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.commerce_contracts import (
+    CheckoutContractError,
     PaymentGatewayError,
     as_int,
     build_mercadopago_preference_payload,
@@ -15,10 +16,15 @@ from services.commerce_contracts import (
     contact_ready_for_checkout,
     create_mercadopago_preference,
     find_payment_resources,
+    mark_checkout_preference_failed,
+    mark_checkout_preference_ready,
     normalize_checkout_preview_totals,
+    normalize_checkout_idempotency_key,
     payment_capabilities,
+    reserve_checkout_order,
     tenant_config,
     tenant_ref,
+    validate_checkout_totals,
 )
 from services.plan_access import integration_plan_required_payload
 from services.rewards import recompensas_service
@@ -43,7 +49,15 @@ def _json_response(payload: dict[str, Any], status: int = 200):
     return response
 
 
-def _error_response(message: str, status_code: int, reason_code: str, action_hint: str, *, retryable: bool = False, extra: dict[str, Any] | None = None):
+def _error_response(
+    message: str,
+    status_code: int,
+    reason_code: str,
+    action_hint: str,
+    *,
+    retryable: bool = False,
+    extra: dict[str, Any] | None = None,
+):
     payload = {
         "contract_version": "shared.error.v1",
         "status_code": status_code,
@@ -56,6 +70,17 @@ def _error_response(message: str, status_code: int, reason_code: str, action_hin
     if extra:
         payload.update(extra)
     return _json_response(payload, status_code)
+
+
+def _checkout_contract_error_response(exc: CheckoutContractError):
+    return _error_response(
+        exc.message,
+        exc.status_code,
+        exc.reason_code,
+        exc.action_hint,
+        retryable=exc.retryable,
+        extra=exc.extra,
+    )
 
 
 def _tenant_slug_from_request(path_slug: str | None = None) -> str:
@@ -94,9 +119,60 @@ def _resolve_tenant_or_error(current_user: User, path_slug: str | None = None):
 
 
 def _idempotency_key(payload: dict[str, Any]) -> str | None:
-    value = request.headers.get("Idempotency-Key") or payload.get("idempotency_key")
+    value = (
+        request.headers.get("Idempotency-Key")
+        or payload.get("idempotency_key")
+        or payload.get("external_reference")
+    )
     value = str(value or "").strip()
     return value or None
+
+
+def _checkout_session_response(
+    *,
+    tenant: TenantProfile,
+    payment: dict[str, Any],
+    totals: dict[str, Any],
+    integration_access: dict[str, Any],
+    checkout_experience: dict[str, Any],
+    idempotency_key: str,
+    request_id: str,
+    snapshot: dict[str, Any],
+    duplicate: bool,
+):
+    preference_id = snapshot.get("preference_id")
+    init_point = snapshot.get("init_point") or snapshot.get("sandbox_init_point")
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "payments.checkout_session.v1",
+            "request_id": request_id,
+            "tenant": tenant_ref(tenant),
+            "gateway": payment["gateway"],
+            "status": "pending_payment",
+            "duplicate": duplicate,
+            "integration_access": integration_access,
+            "checkout_experience": checkout_experience,
+            "pedido_id": snapshot.get("pedido_id"),
+            "market_order_id": snapshot.get("market_order_id"),
+            "external_reference": snapshot.get("external_reference"),
+            "client_external_reference": snapshot.get("client_external_reference"),
+            "preference_id": preference_id,
+            "init_point": init_point,
+            "sandbox_init_point": snapshot.get("sandbox_init_point"),
+            "summary": totals,
+            "checkout_options": {
+                "payment_required": True,
+                "payment_ready": bool(preference_id and init_point),
+                "gateway": payment["gateway"],
+                "gateway_hint": payment["gateway_hint"],
+                "mercadopago_ready": True,
+                "preference_id": preference_id,
+                "init_point": init_point,
+            },
+            "idempotency_key": idempotency_key,
+        }
+    )
 
 
 @v2_commerce_bp.route("/payments/checkout-status", methods=["GET"])
@@ -185,15 +261,19 @@ def payment_checkout_preview_v2(current_user, tenant_slug: str | None = None):
 @v2_commerce_bp.route("/payments/preference", methods=["POST"])
 @v2_commerce_bp.route("/tenants/<string:tenant_slug>/payments/checkout-session", methods=["POST"])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
 
-    payload = request.get_json(silent=True) or {}
-    totals = normalize_checkout_preview_totals(payload)
-    if float(totals.get("total_monetary") or 0) <= 0:
-        return _error_response("El checkout no requiere pago monetario", 400, "payment_not_required", "confirm_without_gateway")
+    payload = request.get_json(silent=True)
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        totals = validate_checkout_totals(tenant, payload)
+        key = normalize_checkout_idempotency_key(_idempotency_key(payload))
+    except CheckoutContractError as exc:
+        return _checkout_contract_error_response(exc)
 
     payment = payment_capabilities(tenant)
     integration_access = payment.get("integration_access") or {}
@@ -241,48 +321,81 @@ def payment_checkout_session_v2(current_user, tenant_slug: str | None = None):
             },
         )
 
-    key = _idempotency_key(payload)
     request_id = _request_id()
-    preference_payload, external_reference = build_mercadopago_preference_payload(
+    try:
+        reservation = reserve_checkout_order(
+            tenant=tenant,
+            user=current_user,
+            payload=payload,
+            totals=totals,
+            idempotency_key=key,
+            request_id=request_id,
+        )
+    except CheckoutContractError as exc:
+        return _checkout_contract_error_response(exc)
+
+    snapshot = reservation["snapshot"]
+    if not reservation["should_create_preference"]:
+        return _checkout_session_response(
+            tenant=tenant,
+            payment=payment,
+            totals=totals,
+            integration_access=integration_access,
+            checkout_experience=checkout_experience,
+            idempotency_key=key,
+            request_id=request_id,
+            snapshot=snapshot,
+            duplicate=True,
+        )
+
+    pedido = reservation["pedido"]
+    market_order = reservation["market_order"]
+    try:
+        preference_payload, _ = build_mercadopago_preference_payload(
+            tenant=tenant,
+            totals=totals,
+            payload=payload,
+            idempotency_key=key,
+            request_id=request_id,
+            external_reference=snapshot["external_reference"],
+            pedido_id=pedido.id,
+            market_order_id=market_order.id,
+        )
+        mp_data = create_mercadopago_preference(access_token, preference_payload)
+        snapshot = mark_checkout_preference_ready(
+            pedido,
+            market_order,
+            mp_data,
+            request_id=request_id,
+        )
+    except PaymentGatewayError as exc:
+        snapshot = mark_checkout_preference_failed(
+            pedido,
+            market_order,
+            exc,
+            request_id=request_id,
+        )
+        return _error_response(
+            exc.message,
+            exc.status_code,
+            exc.reason_code,
+            exc.action_hint,
+            retryable=exc.retryable,
+            extra=snapshot,
+        )
+    except CheckoutContractError as exc:
+        return _checkout_contract_error_response(exc)
+
+    return _checkout_session_response(
         tenant=tenant,
+        payment=payment,
         totals=totals,
-        payload=payload,
+        integration_access=integration_access,
+        checkout_experience=checkout_experience,
         idempotency_key=key,
         request_id=request_id,
-    )
-    try:
-        mp_data = create_mercadopago_preference(access_token, preference_payload)
-    except PaymentGatewayError as exc:
-        return _error_response(exc.message, exc.status_code, exc.reason_code, exc.action_hint, retryable=exc.retryable)
-
-    preference_id = mp_data.get("id")
-    init_point = mp_data.get("init_point") or mp_data.get("sandbox_init_point")
-    return _json_response(
-        {
-            "ok": True,
-            "contract_version": "payments.checkout_session.v1",
-            "request_id": request_id,
-            "tenant": tenant_ref(tenant),
-            "gateway": payment["gateway"],
-            "status": "pending_payment",
-            "integration_access": integration_access,
-            "checkout_experience": checkout_experience,
-            "external_reference": external_reference,
-            "preference_id": preference_id,
-            "init_point": init_point,
-            "sandbox_init_point": mp_data.get("sandbox_init_point"),
-            "summary": totals,
-            "checkout_options": {
-                "payment_required": True,
-                "payment_ready": bool(preference_id and init_point),
-                "gateway": payment["gateway"],
-                "gateway_hint": payment["gateway_hint"],
-                "mercadopago_ready": True,
-                "preference_id": preference_id,
-                "init_point": init_point,
-            },
-            "idempotency_key": key,
-        }
+        snapshot=snapshot,
+        duplicate=bool(reservation["duplicate"]),
     )
 
 
@@ -302,6 +415,7 @@ def payment_status_v2(current_user, tenant_slug: str | None = None):
         "preference_id": request.args.get("preference_id") or body.get("preference_id"),
         "mp_preference_id": request.args.get("mp_preference_id") or body.get("mp_preference_id"),
         "external_reference": request.args.get("external_reference") or body.get("external_reference"),
+        "idempotency_key": request.args.get("idempotency_key") or body.get("idempotency_key"),
     }
     if not any(filters.values()):
         return _error_response("Se requiere un identificador de pago u orden", 400, "payment_reference_required", "send_payment_reference")

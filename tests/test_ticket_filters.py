@@ -413,10 +413,20 @@ class TicketFiltersTests(unittest.TestCase):
         pyme_user = User(email='pyme@test.com', name='Pyme Test', rol='admin', rubro_id=7, tipo_chat='pyme')
         pyme_user.set_password('password')
         db.session.add(pyme_user)
-        db.session.commit()
+        db.session.flush()
 
-        t1 = PymeTicket(id=1, nro_ticket=1, estado='abierto', fecha=datetime.now(), categoria='X', telefono=None, email=None, dni=None, estado_cliente=None, direccion=None, latitud=None, longitud=None, rubro_id=7, pregunta="pregunta de prueba 1")
-        t2 = PymeTicket(id=2, nro_ticket=2, estado='abierto', fecha=datetime.now(), categoria='Y', telefono=None, email=None, dni=None, estado_cliente=None, direccion=None, latitud=None, longitud=None, rubro_id=7, pregunta="pregunta de prueba 2")
+        tenant = TenantProfile(
+            slug='pyme-filter-test',
+            nombre='Pyme Filter Test',
+            tipo='pyme',
+            pyme_id=pyme_user.id,
+            configuracion={},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+
+        t1 = PymeTicket(id=1, nro_ticket=1, estado='abierto', fecha=datetime.now(), categoria='X', telefono=None, email=None, dni=None, estado_cliente=None, direccion=None, latitud=None, longitud=None, rubro_id=7, tenant_id=tenant.id, pregunta="pregunta de prueba 1")
+        t2 = PymeTicket(id=2, nro_ticket=2, estado='abierto', fecha=datetime.now(), categoria='Y', telefono=None, email=None, dni=None, estado_cliente=None, direccion=None, latitud=None, longitud=None, rubro_id=7, tenant_id=tenant.id, pregunta="pregunta de prueba 2")
         db.session.add_all([t1, t2])
         db.session.commit()
 

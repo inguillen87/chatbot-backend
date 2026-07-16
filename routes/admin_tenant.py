@@ -682,25 +682,18 @@ def _integration_plan_feature_id(integration_type: str | None, *, operation: str
 
 
 def _resolve_admin_tenant(current_user: User, slug: str) -> TenantProfile | None:
-    slug = apply_tenant_alias(slug) or slug
-    tenant = TenantProfile.query.filter_by(slug=slug).first()
-    if tenant and _is_authorized_for_tenant(current_user, tenant):
-        return tenant
+    """Resolve only the tenant explicitly addressed by the admin URL.
 
-    tenant_hint = getattr(g, "tenant_profile", None)
-    if tenant_hint and _is_authorized_for_tenant(current_user, tenant_hint):
-        return tenant_hint
+    Membership is checked by each route after resolution so an existing tenant
+    can produce a 403 without leaking its data. Never substitute the caller's
+    own tenant when a different or unknown slug was requested: doing so turns a
+    cross-tenant request into a successful response for the wrong resource.
+    """
 
-    tenant_from_user = (
-        getattr(current_user, "tenant", None)
-        or getattr(current_user, "tenant_profile", None)
-        or getattr(current_user, "tenant_profile_municipio", None)
-        or getattr(current_user, "tenant_profile_pyme", None)
-    )
-    if tenant_from_user and _is_authorized_for_tenant(current_user, tenant_from_user):
-        return tenant_from_user
-
-    return tenant
+    resolved_slug = apply_tenant_alias(slug) or slug
+    return TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == str(resolved_slug).strip().lower()
+    ).first()
 
 
 

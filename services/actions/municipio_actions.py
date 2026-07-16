@@ -61,6 +61,16 @@ def _parse_int_env(var_name: str, default: int) -> int:
         return default
 
 
+def _format_ticket_code(prefix: str, raw_ticket_number: Any) -> str:
+    """Return one canonical ticket prefix even when an integration adds it."""
+
+    normalized_prefix = f"{str(prefix or '').strip().upper().rstrip('-')}-"
+    raw_value = str(raw_ticket_number or "").strip()
+    if raw_value.upper().startswith(normalized_prefix):
+        return f"{normalized_prefix}{raw_value[len(normalized_prefix):]}"
+    return f"{normalized_prefix}{raw_value}"
+
+
 def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
     """Return normalized (domain, path) for URL comparison."""
 
@@ -588,7 +598,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             distrito_llm = geocoded_from_coords.get("localidad")
 
         # Contact Info - Name
-        def _sanitize_nombre(valor: Any) -> str | None:
+        def _sanitize_nombre(valor: Any, *, preserve_case: bool = False) -> str | None:
             if not isinstance(valor, str):
                 return None
             cleaned = valor.strip().strip("\"'")
@@ -633,10 +643,17 @@ class CrearReclamoActionHandler(BaseActionHandler):
             if not filtered_words:
                 return None
 
-            cleaned_filtered = " ".join(
-                word if word.isupper() and len(word) <= 4 else word.title()
-                for word in filtered_words
+            filtered_value = " ".join(filtered_words)
+            has_mixed_case = any(char.isupper() for char in filtered_value) and any(
+                char.islower() for char in filtered_value
             )
+            if preserve_case and has_mixed_case:
+                cleaned_filtered = filtered_value
+            else:
+                cleaned_filtered = " ".join(
+                    word if word.isupper() and len(word) <= 4 else word.title()
+                    for word in filtered_words
+                )
 
             if len(cleaned_filtered) < 3: # "Al" ? maybe too short
                 return None
@@ -670,12 +687,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
             datos_parciales_llm.get("nombre_detectado"),
         ]
 
-        # An explicit valid name from the current turn wins. The authenticated
-        # profile remains the fallback before older or inferred LLM values.
-        candidate_names = explicit_candidates + trusted_candidates + inferred_candidates
+        # An explicit valid name from the current turn wins. Trusted identity
+        # providers retain intentional casing; inferred LLM values are normalized.
+        candidate_names = (
+            [(candidate, False) for candidate in explicit_candidates]
+            + [(candidate, True) for candidate in trusted_candidates]
+            + [(candidate, False) for candidate in inferred_candidates]
+        )
 
         nombre_vecino_final = next(
-            (clean for clean in map(_sanitize_nombre, candidate_names) if clean),
+            (
+                clean
+                for candidate, preserve_case in candidate_names
+                if (clean := _sanitize_nombre(candidate, preserve_case=preserve_case))
+            ),
             "Vecino/a",
         )
 
@@ -942,7 +967,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ticket_nro = ticket_creado.get('nro_ticket')
             if not ticket_nro:
                 raise ValueError("El ticket creado no tiene un 'nro_ticket'.")
-            nro_ticket_str = f"M-{ticket_nro}"
+            nro_ticket_str = _format_ticket_code("M", ticket_nro)
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
             try:
@@ -1551,7 +1576,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
             if not ticket_creado:
                 raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
 
-            nro_ticket_str = f"S-{ticket_creado.get('nro_ticket')}"
+            nro_ticket_str = _format_ticket_code("S", ticket_creado.get('nro_ticket'))
             logger.info(f"Ticket de sugerencia {nro_ticket_str} creado exitosamente.")
 
             pin_value = ticket_creado.get("consulta_pin") or pin_final

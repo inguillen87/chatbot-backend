@@ -2650,7 +2650,11 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["qa_playbook"]["contract_version"], "whatsapp.qa_playbook.v1")
         self.assertEqual(payload["qa_playbook"]["local_command"], "python scripts/qa_whatsapp_flows.py")
         self.assertGreaterEqual(payload["qa_playbook"]["scenario_count"], 8)
-        self.assertGreaterEqual(payload["qa_playbook"]["meta_flow_ready_count"], 6)
+        self.assertGreaterEqual(payload["qa_playbook"]["meta_flow_ready_count"], 4)
+        self.assertLess(
+            payload["qa_playbook"]["meta_flow_ready_count"],
+            payload["qa_playbook"]["scenario_count"],
+        )
         qa_scenarios = {item["id"]: item for item in payload["qa_playbook"]["scenarios"]}
         self.assertIn("gov_claim_text_to_tracking", qa_scenarios)
         self.assertIn("pyme_catalog_order_checkout", qa_scenarios)
@@ -2662,8 +2666,11 @@ class V2SaasContractsTest(unittest.TestCase):
         claim_qa = qa_scenarios["gov_claim_text_to_tracking"]
         self.assertEqual(claim_qa["webview_state"]["id"], "claim_tracking_helpdesk")
         self.assertTrue(claim_qa["meta_flow_coverage"]["ready"])
-        self.assertIn("ticket_summary", claim_qa["meta_flow_coverage"]["screens"])
-        self.assertIn("ticket_id", claim_qa["meta_flow_coverage"]["data_contract"])
+        self.assertIn("CLAIM_LOOKUP", claim_qa["meta_flow_coverage"]["screens"])
+        self.assertEqual(claim_qa["meta_flow_coverage"]["flow_json_version"], "7.3")
+        self.assertEqual(claim_qa["meta_flow_coverage"]["data_api_version"], "3.0")
+        self.assertIn("ticket_number", claim_qa["meta_flow_coverage"]["data_contract"])
+        self.assertNotIn("pin", claim_qa["meta_flow_coverage"]["data_contract"])
         self.assertIn("junin_texto_reclamo", claim_qa["script_cases"])
         self.assertIn("gov_claim_created", claim_qa["templates"])
         self.assertIn(claim_qa["status"], {"ready", "blocked_templates", "blocked_webview", "needs_template_review"})

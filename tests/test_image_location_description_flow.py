@@ -43,9 +43,34 @@ class ImageLocationDescriptionFlowTest(unittest.TestCase):
         self.app_context.pop()
 
     @patch("services.municipio_responder.analizar_imagen_con_fallback", return_value=None)
-    @patch("services.municipio_responder.reverse_geocode")
-    def test_image_location_description_single_ticket(self, mock_reverse, _mock_analyze):
-        mock_reverse.return_value = {"display": "Calle 123", "localidad": "Ciudad"}
+    @patch("services.herramientas_municipio.obtener_direccion_de_coordenadas")
+    @patch(
+        "services.municipio_responder.extract_reclamo_details_from_text",
+        return_value={
+            "categoria_sugerida": "Arreglo de calle",
+            "descripcion_sugerida": "bache grande",
+        },
+    )
+    @patch(
+        "services.municipio_responder.llamar_gemini",
+        return_value=(
+            {
+                "message_body": "Contame qué necesitás hacer con la foto.",
+                "accion_backend": "no_accion",
+                "datos_estructura": {},
+                "pedir_info": None,
+                "botones": [],
+            },
+            {},
+        ),
+    )
+    def test_image_location_description_single_ticket(
+        self, _mock_llm, _mock_extract, mock_reverse, _mock_analyze
+    ):
+        mock_reverse.return_value = {
+            "formatted_address": "Calle 123",
+            "localidad": "Ciudad",
+        }
 
         # 1. User sends an image
         responder_municipio(
@@ -56,11 +81,7 @@ class ImageLocationDescriptionFlowTest(unittest.TestCase):
             anon_id="anon",
             channel="whatsapp",
         )
-        # Simulate webhook persisting the photo in the session
-        self.chat_ctx.context_data["foto_url"] = "http://img.test/foto.jpg"
-        self.chat_ctx.context_data["es_foto"] = True
-        db.session.add(self.chat_ctx)
-        db.session.commit()
+        # The responder must persist the pending photo itself.
         MUNICIPIO_RESPONSE_CACHE.clear()
 
         # 2. User shares a location
@@ -79,10 +100,6 @@ class ImageLocationDescriptionFlowTest(unittest.TestCase):
             anon_id="anon",
             channel="whatsapp",
         )
-        # Ensure photo reference persists through location turn
-        self.chat_ctx.context_data.setdefault("foto_url", "http://img.test/foto.jpg")
-        db.session.add(self.chat_ctx)
-        db.session.commit()
         MUNICIPIO_RESPONSE_CACHE.clear()
 
         # 3. User confirms starting a claim for that location
@@ -114,9 +131,8 @@ class ImageLocationDescriptionFlowTest(unittest.TestCase):
 
         self.assertEqual(datos.get("foto_url"), "http://img.test/foto.jpg")
         self.assertEqual(datos.get("direccion"), "Calle 123")
-        self.assertEqual(datos.get("descripcion"), "hay un bache grande")
+        self.assertEqual(datos.get("descripcion"), "bache grande")
 
 
 if __name__ == "__main__":
     unittest.main()
-

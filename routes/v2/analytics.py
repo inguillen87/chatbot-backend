@@ -6,7 +6,7 @@ from time import monotonic
 from typing import Any
 import uuid
 
-from flask import Blueprint, Response, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, has_request_context, jsonify, request
 
 import config.feature_flags as feature_flags
 from models import TenantTicket
@@ -69,6 +69,19 @@ def _operation_cache_datetime(value: datetime) -> str:
 
 
 def _operations_dashboard_cache_key(tenant, start_date: datetime, end_date: datetime) -> tuple[Any, ...]:
+    if has_request_context():
+        range_signature = tuple(
+            (name, tuple(request.args.getlist(name)))
+            for name in ("from", "to", "days", "range", "scope")
+            if request.args.getlist(name)
+        )
+        return (
+            getattr(tenant, "id", None),
+            getattr(tenant, "slug", None),
+            "request_range",
+            range_signature or (("default_days", "7"),),
+        )
+
     return (
         getattr(tenant, "id", None),
         getattr(tenant, "slug", None),

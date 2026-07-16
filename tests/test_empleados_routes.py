@@ -180,7 +180,13 @@ class EmpleadosRouteTests(unittest.TestCase):
     def test_crear_empleado_sincroniza_scope_tenant(self):
         admin = db.session.get(User, self.admin_id)
         admin.tipo_chat = 'municipio'
-        tenant = TenantProfile(slug="municipio-create", nombre="Municipio Create", tipo="municipio", municipio_id=admin.id)
+        tenant = TenantProfile(
+            slug="municipio-create",
+            nombre="Municipio Create",
+            tipo="municipio",
+            municipio_id=admin.id,
+            configuracion={"employee_categories": ["Alumbrado"]},
+        )
         db.session.add(tenant)
         db.session.flush()
         admin.tenant_id = tenant.id

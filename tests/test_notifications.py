@@ -1,30 +1,25 @@
-import unittest
-from unittest.mock import patch, MagicMock
-import os
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from flask import Flask
 
 import services.notifications as notifications
 
-class TestSendWhatsappTemplate(unittest.TestCase):
-    @patch('services.notifications.Client')
-    def test_enviar_bienvenida_whatsapp(self, mock_client_cls):
-        notifications.TWILIO_ACCOUNT_SID = 'sid'
-        notifications.TWILIO_AUTH_TOKEN = 'token'
-        notifications.TWILIO_WHATSAPP_NUMBER = 'whatsapp:+123456789'
-        mock_client = MagicMock()
-        mock_client_cls.return_value = mock_client
-        mock_message = MagicMock()
-        mock_client.messages.create.return_value = mock_message
 
-        notifications.enviar_bienvenida_whatsapp('+5491111111111', 'Marce')
+def test_send_ticket_whatsapp_dispatches_only_when_provider_is_configured():
+    app = Flask(__name__)
+    ticket = SimpleNamespace(id=42, tenant_id=7)
 
-        mock_client.messages.create.assert_called_once()
-        args, kwargs = mock_client.messages.create.call_args
-        assert kwargs['to'] == 'whatsapp:+5491111111111'
-        assert kwargs['from_'] == notifications.TWILIO_WHATSAPP_NUMBER
-        assert 'content_sid' in kwargs
-        assert 'content_variables' in kwargs
-        assert kwargs['content_sid'] == 'bienvenida'
-        assert kwargs['content_variables'] == '{"1": "Marce"}'
+    with app.app_context(), patch.object(notifications, "_log_dispatch") as dispatch:
+        notifications.send_ticket_whatsapp(ticket, "ticket_updated")
+        dispatch.assert_called_once_with(
+            "whatsapp",
+            ticket,
+            "ticket_updated",
+            ok=False,
+        )
 
-if __name__ == '__main__':
-    unittest.main()
+        dispatch.reset_mock()
+        app.config["WHATSAPP_PROVIDER"] = "twilio"
+        notifications.send_ticket_whatsapp(ticket, "ticket_updated")
+        dispatch.assert_called_once_with("whatsapp", ticket, "ticket_updated")

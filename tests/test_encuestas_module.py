@@ -552,19 +552,19 @@ def test_save_respuesta_accepts_option_labels(client):
         assert opcion.id in opcion_ids
 
 
-def test_respuesta_por_ip_sin_datos_no_bloquea(client):
+def test_respuesta_por_ip_sin_datos_rechaza_sin_huella_estable(client):
     with client.application.app_context():
         encuesta, slug, _ = _create_active_encuesta(politica_unicidad="por_ip")
         payload = _respuesta_payload(encuesta)
 
         ctx_sin_ip = {"ip": None, "user_agent": "pytest", "anon_id": "anon-a", "canal": "web"}
-        primera = save_respuesta(slug, payload, ctx_sin_ip)
-        assert primera.id is not None
+        with pytest.raises(EncuestaError) as exc_info:
+            save_respuesta(slug, payload, ctx_sin_ip)
 
-        # Si no tenemos IP disponible, no debemos generar la misma huella y bloquear respuestas posteriores.
-        ctx_sin_ip_otro = {"ip": None, "user_agent": "pytest", "anon_id": "anon-b", "canal": "web"}
-        segunda = save_respuesta(slug, payload, ctx_sin_ip_otro)
-        assert segunda.id is not None
+        error = exc_info.value
+        assert error.status_code == 400
+        assert error.payload.get("reason_code") == "stable_fingerprint_required"
+        assert error.payload.get("required_identifiers") == ["ip"]
 
 
 def test_respuesta_con_metadata_completa_geolocaliza(client):

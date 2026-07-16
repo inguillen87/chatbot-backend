@@ -6,12 +6,11 @@ from services.interpretacion_service import interpretacion_service
 
 class AudioStructuredExtractionTests(unittest.TestCase):
     def test_audio_reclamo_extraction(self):
-        with patch("services.interpretacion_service.SpeechToTextService") as mock_stt, \
+        with patch("services.audio_transcription_service.transcribe_audio_from_url") as mock_stt, \
              patch("services.interpretacion_service.robust_chat") as mock_chat, \
              patch("services.interpretacion_service._clean_llm_json_output", side_effect=lambda x: x):
 
-            stt_instance = mock_stt.return_value
-            stt_instance.transcribe_audio_url.return_value = (
+            mock_stt.return_value = (
                 "Hola, soy Juan Perez, mi correo es juan@example.com,"
                 " vivo en Calle Falsa 123. Hay un semáforo roto."
             )
@@ -28,7 +27,7 @@ class AudioStructuredExtractionTests(unittest.TestCase):
                 "http://example.com/audio.ogg", "audio/ogg", user_id=42
             )
 
-            stt_instance.transcribe_audio_url.assert_called_once_with(
+            mock_stt.assert_called_once_with(
                 "http://example.com/audio.ogg", "audio/ogg"
             )
             mock_chat.assert_called_once()

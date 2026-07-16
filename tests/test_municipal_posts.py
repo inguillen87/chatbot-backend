@@ -3,13 +3,16 @@ import io
 
 import pytest
 
-from app import app, db
-from models import User, MunicipioPost
+from app import db
+from models import User, MunicipioPost, TenantProfile
 from services.municipio_responder import cargar_agenda_cultural
 from utils.auth_helpers import generar_token
 
 @pytest.fixture
-def client():
+def client(app):
+    # The production module intentionally skips its global app during tests.
+    # Bind this legacy test module to pytest's isolated application instance.
+    globals()['app'] = app
     app.config['TESTING'] = True
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///:memory:'
     with app.test_client() as client:
@@ -25,13 +28,25 @@ def client():
             )
             admin_user.set_password("adminpassword")
             db.session.add(admin_user)
+            db.session.flush()
+            tenant = TenantProfile(
+                slug="municipio-posts-test",
+                nombre="Municipio Posts Test",
+                tipo="municipio",
+                municipio_id=admin_user.id,
+            )
+            db.session.add(tenant)
+            db.session.flush()
+            admin_user.tenant_id = tenant.id
+            admin_user.tenant_slug = tenant.slug
             db.session.commit()
+            client.environ_base['HTTP_X_TENANT'] = tenant.slug
         yield client
         with app.app_context():
             db.drop_all()
 
-def _get_posts_for_testing():
-    with app.app_context():
+def _get_posts_for_testing(client):
+    with client.application.app_context():
         return MunicipioPost.query.order_by(MunicipioPost.id).all()
 
 def test_create_municipal_post_success(client):
@@ -59,7 +74,7 @@ def test_create_municipal_post_success(client):
     assert json_data['titulo'] == 'Gran Evento de Primavera'
     assert json_data['tags'] == ['evento']
 
-    posts = _get_posts_for_testing()
+    posts = _get_posts_for_testing(client)
     assert len(posts) == 1
     stored = posts[0]
     assert stored.titulo == 'Gran Evento de Primavera'
@@ -232,7 +247,7 @@ def test_bulk_create_municipal_posts(client):
     assert data_resp['created'][0]['enlace'] == "https://certificados.example.com"
     assert data_resp['created'][0]['imagen_url'] == "http://img.test/certificados.jpg"
 
-    posts = _get_posts_for_testing()
+    posts = _get_posts_for_testing(client)
     titles = [p.titulo for p in posts]
     assert "Entrega de Certificados" in titles and "Torneo de Fútbol" in titles
 
@@ -276,7 +291,7 @@ def test_bulk_create_normalizes_internal_media_paths(client):
     assert created[0]['imagen_url'] == '/media/archivos/expo.png'
     assert created[1]['imagen_url'] == '/media/archivos/foro.jpg'
 
-    stored = _get_posts_for_testing()
+    stored = _get_posts_for_testing(client)
     assert stored[0].imagen_url == '/media/archivos/expo.png'
     assert stored[1].imagen_url == '/media/archivos/foro.jpg'
 
@@ -322,7 +337,7 @@ def test_bulk_create_municipal_posts_spanish_keys(client):
     assert len(data_resp['created']) == 2
     titles = [p['titulo'] for p in data_resp['created']]
     assert "Feria del Libro" in titles and "Festival de Música" in titles
-    stored_titles = [p.titulo for p in _get_posts_for_testing()]
+    stored_titles = [p.titulo for p in _get_posts_for_testing(client)]
     assert "Feria del Libro" in stored_titles
 
 
@@ -398,7 +413,7 @@ def test_bulk_create_from_text(client):
     assert len(data_resp['created']) == 6
     titles = [p['titulo'] for p in data_resp['created']]
     assert 'Expo Educativa 2026' in titles
-    assert len(_get_posts_for_testing()) == 6
+    assert len(_get_posts_for_testing(client)) == 6
 
 
 def test_bulk_create_from_text_without_asterisks(client):
@@ -463,7 +478,7 @@ def test_bulk_create_from_raw_string_with_json_header(client):
     assert response.status_code == 201
     data_resp = response.get_json()
     assert len(data_resp['created']) == 6
-    assert len(_get_posts_for_testing()) == 6
+    assert len(_get_posts_for_testing(client)) == 6
 
 
 def test_list_municipal_posts_limits_to_20(client):
@@ -513,7 +528,7 @@ def test_bulk_create_from_file(client):
     assert len(data_resp['created']) == 6
     titles = [p['titulo'] for p in data_resp['created']]
     assert 'Expo Educativa 2026' in titles
-    assert len(_get_posts_for_testing()) == 6
+    assert len(_get_posts_for_testing(client)) == 6
 
 
 def test_municipal_posts_limit(client):
@@ -531,7 +546,7 @@ def test_municipal_posts_limit(client):
     response = client.post('/municipal/posts/bulk', data=json.dumps({"events": events}), headers=headers)
     assert response.status_code == 201
 
-    posts = _get_posts_for_testing()
+    posts = _get_posts_for_testing(client)
     assert len(posts) == 200
     assert posts[0].titulo == 'Evento 10'
 
@@ -565,6 +580,5 @@ def test_bulk_create_municipal_posts_informacion(client):
     data_resp = response.get_json()
     assert data_resp['created'][0]['tipo_post'] == 'informacion'
     assert data_resp['created'][0]['tags'][0] == 'informacion'
-    stored = _get_posts_for_testing()
+    stored = _get_posts_for_testing(client)
     assert stored[0].tipo_post == 'informacion'
-

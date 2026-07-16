@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 import uuid
 
-from flask import Blueprint, abort, g, jsonify, make_response, request, session
+from flask import Blueprint, abort, g, jsonify, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func
 
@@ -101,7 +101,7 @@ def _tenant_resolution_error_payload(request_id: str) -> Dict[str, object]:
         "status_code": 404,
         "reason_code": "tenant_resolution_failed",
         "retryable": False,
-        "action_hint": "send tenant, tenant_slug, endpoint or X-Tenant-Slug",
+        "action_hint": "send tenant_id, tenant, tenant_slug, endpoint or X-Tenant-Slug",
         "request_id": request_id,
         "error": {
             "code": 404,
@@ -109,10 +109,10 @@ def _tenant_resolution_error_payload(request_id: str) -> Dict[str, object]:
         },
         "detail": "Revisa el slug o la URL del widget; no se pudo resolver el tenant publico.",
         "hints": {
-            "query_params": ["tenant", "tenant_slug", "endpoint", "widget_token"],
-            "headers": ["X-Tenant-Slug", "X-Tenant", "X-Entity-Token"],
-            "accepted_query_params": ["tenant", "tenant_slug", "slug", "endpoint", "widget_token", "entityToken"],
-            "accepted_headers": ["X-Tenant-Slug", "X-Tenant", "X-Widget-Token", "X-Entity-Token"],
+            "query_params": ["tenant_id", "tenant", "tenant_slug", "endpoint", "widget_token"],
+            "headers": ["X-Tenant-Id", "X-Tenant-Slug", "X-Tenant", "X-Entity-Token"],
+            "accepted_query_params": ["tenant_id", "tenant", "tenant_slug", "slug", "endpoint", "widget_token", "entityToken"],
+            "accepted_headers": ["X-Tenant-Id", "X-Tenant-Slug", "X-Tenant", "X-Widget-Token", "X-Entity-Token"],
             "example": "/api/pwa/public/tenant-info?tenant=<tenant_slug>",
         },
     }
@@ -236,66 +236,73 @@ def public_pwa_tenant_info():
 
 
 def _require_tenant() -> TenantProfile:
-    tenant = getattr(g, "tenant_profile", None)
+    raw_tenant_id = request.args.get("tenant_id") or request.headers.get("X-Tenant-Id")
+    widget_token = (
+        request.args.get("widget_token")
+        or request.headers.get("X-Widget-Token")
+        or request.args.get("entityToken")
+        or request.headers.get("X-Entity-Token")
+    )
+    tenant_slug = (
+        request.args.get("tenant")
+        or request.args.get("slug")
+        or request.args.get("tenant_slug")
+        or request.args.get("endpoint")
+        or request.headers.get("X-Tenant-Slug")
+        or request.headers.get("X-Tenant")
+    )
 
-    if tenant is None:
-        widget_token = (
-            request.args.get("widget_token")
-            or request.headers.get("X-Widget-Token")
-            or request.args.get("entityToken")
-            or request.headers.get("X-Entity-Token")
-        )
-        tenant_slug = (
-            request.args.get("tenant")
-            or request.args.get("slug")
-            or request.args.get("tenant_slug")
-            or request.args.get("endpoint")
-            or request.headers.get("X-Tenant-Slug")
-            or request.headers.get("X-Tenant")
-        )
-        referrer_slug = tenant_slug_from_public_referrer()
-        if referrer_slug and (
-            not tenant_slug or _canonical_public_slug(referrer_slug) != _canonical_public_slug(tenant_slug)
-        ):
-            tenant_slug = referrer_slug
-        host_hint = request.headers.get("X-Forwarded-Host") or request.host
+    # Referrer discovery helps embedded public apps, but it must never
+    # override an explicit id, slug, or widget token.
+    if not raw_tenant_id and not tenant_slug and not widget_token:
+        tenant_slug = tenant_slug_from_public_referrer()
 
-        try:
+    has_explicit_selector = bool(raw_tenant_id or tenant_slug or widget_token)
+    tenant = None if has_explicit_selector else getattr(g, "tenant_profile", None)
+    host_hint = request.headers.get("X-Forwarded-Host") or request.host
+
+    try:
+        if raw_tenant_id:
+            tenant_id = int(str(raw_tenant_id).strip())
+            tenant = db.session.get(TenantProfile, tenant_id) if tenant_id > 0 else None
+            if tenant is None:
+                raise TenantResolutionError(f"Tenant id '{raw_tenant_id}' no encontrado")
+        elif tenant_slug:
+            # Explicit slug is authoritative; do not bind a caller-supplied
+            # token as a side effect of a public GET.
             tenant = resolve_tenant_only(
-                widget_token=widget_token,
                 tenant_slug=tenant_slug,
                 host=host_hint,
-                require_explicit_slug=bool(tenant_slug),
+                require_explicit_slug=True,
+                allow_fallback=False,
+                allow_lazy_demo_creation=False,
+                allow_context_fallback=False,
+                register_widget_token=False,
             )
-        except TenantResolutionError:
-            tenant = None
-        else:
-            g.tenant_profile = tenant
-            g.tenant_profile_slug = tenant.slug
+        elif widget_token:
+            tenant = resolve_tenant_only(
+                widget_token=widget_token,
+                host=host_hint,
+                allow_fallback=False,
+                allow_lazy_demo_creation=False,
+                allow_context_fallback=False,
+                register_widget_token=False,
+            )
+        elif tenant is None:
+            tenant = resolve_tenant_only(
+                host=host_hint,
+                allow_lazy_demo_creation=False,
+                register_widget_token=False,
+            )
+    except (TenantResolutionError, TypeError, ValueError):
+        tenant = None
+
+    if tenant is not None:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = tenant.slug
 
     if tenant is None:
-        abort(make_response(_tenant_resolution_error_response()))
-        abort(
-            make_response(
-                jsonify(
-                    {
-                        "contract_version": "pwa.public_tenant_resolution.v1",
-                        "error": {
-                            "code": 404,
-                            "message": "Tenant no encontrado",
-                        },
-                        "reason_code": "tenant_resolution_failed",
-                        "detail": "Revisá el slug o la URL del widget; no se pudo resolver el tenant para el carrito público.",
-                        "hints": {
-                            "accepted_query_params": ["tenant", "tenant_slug", "slug", "widget_token", "entityToken"],
-                            "accepted_headers": ["X-Tenant", "X-Widget-Token", "X-Entity-Token"],
-                            "example": "/api/pwa/public/cart?tenant=<tenant_slug>",
-                        },
-                    }
-                ),
-                404,
-            )
-        )
+        abort(_tenant_resolution_error_response())
     return tenant
 
 

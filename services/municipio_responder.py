@@ -282,6 +282,30 @@ def _location_action_options() -> list[dict[str, str]]:
     ]
 
 
+def _is_location_poi_query(value: Any) -> bool:
+    normalized = normalizar_texto(str(value or ""))
+    if not normalized:
+        return False
+    poi_terms = {
+        "estacionamiento",
+        "estacionar",
+        "farmacia",
+        "hospital",
+        "clinica",
+        "restaurante",
+        "comisaria",
+        "bomberos",
+        "cajero",
+        "atm",
+        "parque",
+        "plaza",
+        "supermercado",
+        "lugares cercanos",
+        "lugar cercano",
+    }
+    return any(term in normalized for term in poi_terms)
+
+
 def _build_proactive_location_response(
     location_payload: dict[str, Any],
     contexto_municipio_actual: dict[str, Any],
@@ -398,6 +422,74 @@ def _phone_from_anon_id(value: Any) -> Optional[str]:
         if normalized:
             return normalized
     return None
+
+
+def procesar_datos_contacto_compacto(
+    texto: str,
+    datos_actuales: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Extract contact data from a single free-form line as a deterministic fallback."""
+
+    result: Dict[str, Any] = dict(datos_actuales or {})
+    if not isinstance(texto, str) or not texto.strip():
+        return result
+
+    parsed = extract_multiple_contact_details_regex(
+        texto,
+        ["nombre", "email", "telefono", "dni", "direccion", "ciudad"],
+    )
+    for field in ("email", "dni", "telefono", "ciudad"):
+        value = parsed.get(field)
+        if value and not result.get(field):
+            result[field] = value
+
+    cleaned = re.sub(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", " ", texto)
+    cleaned = re.sub(r"(?<!\d)\+?\d[\d\s().-]{6,}\d(?!\d)", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;.-")
+
+    address_start: Optional[int] = None
+    street_marker = re.compile(
+        r"\b(?:calle|avenida|av\.?|ruta|camino|pasaje|pje\.?|boulevard|blvd\.?|don|doña|san|santa)\b",
+        re.IGNORECASE,
+    )
+    for marker_match in street_marker.finditer(cleaned):
+        suffix = cleaned[marker_match.start() :]
+        if re.search(r"\b\d{1,5}\b", suffix):
+            address_start = marker_match.start()
+            break
+
+    if address_start is None:
+        street_number = re.search(r"\b\d{1,5}\b", cleaned)
+        if street_number:
+            words_before = list(re.finditer(r"[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'.-]*", cleaned[: street_number.start()]))
+            if words_before:
+                address_word = words_before[max(0, len(words_before) - 2)]
+                address_start = address_word.start()
+
+    if address_start is not None:
+        name_candidate = cleaned[:address_start].strip(" ,;.-")
+        address_candidate = cleaned[address_start:].strip(" ,;.-")
+        if (
+            name_candidate
+            and len(name_candidate.split()) >= 2
+            and not re.search(r"\d", name_candidate)
+            and not result.get("nombre")
+        ):
+            result["nombre"] = name_candidate
+        if address_candidate:
+            result["direccion"] = address_candidate
+            result["direccion_contacto"] = address_candidate
+    else:
+        parsed_address = parsed.get("direccion")
+        if parsed_address:
+            result.setdefault("direccion", parsed_address)
+            result.setdefault("direccion_contacto", parsed_address)
+
+    parsed_name = parsed.get("nombre")
+    if parsed_name and not result.get("nombre") and not re.search(r"\d", str(parsed_name)):
+        result["nombre"] = parsed_name
+
+    return result
 
 
 def _ensure_sugerencia_address(datos: Dict[str, Any]) -> None:
@@ -1107,6 +1199,15 @@ class ReclamoFlowHandler:
                 datos['descripcion'] = descripcion_interpretada
                 datos['descripcion_resumida'] = construir_descripcion_breve(descripcion_interpretada)
                 datos['origen_descripcion'] = 'imagen'
+            if not datos.get('direccion'):
+                interpreted_address = (
+                    interpreted.get('direccion_sugerida')
+                    or interpreted.get('ubicacion_sugerida')
+                    or interpreted.get('direccion')
+                    or interpreted.get('ubicacion')
+                )
+                if interpreted_address:
+                    datos['direccion'] = interpreted_address
 
         if datos.get('descripcion') and not datos.get('descripcion_resumida'):
             resumen = construir_descripcion_breve(datos.get('descripcion'))
@@ -1444,15 +1545,16 @@ class ReclamoFlowHandler:
                     else None
                 )
 
-                original_has_number = bool(re.search(r"\d", original_address or ""))
-                formatted_has_number = bool(re.search(r"\d", formatted_address or ""))
-
-                if formatted_address and (
-                    not original_address
-                    or not original_has_number
-                    or formatted_has_number
-                ):
+                # The label supplied by the citizen is the visible/declared
+                # address. Reverse geocoding enriches it but must not silently
+                # replace it with a nearby POI or a provider-specific label.
+                if formatted_address and not original_address:
                     address = formatted_address
+
+                if formatted_address:
+                    self.flow_context['datos_reclamo']['direccion_geocodificada'] = (
+                        formatted_address
+                    )
 
                 self.flow_context['datos_reclamo']['coordenadas'] = {
                     "lat": lat_value,
@@ -1709,7 +1811,14 @@ class ReclamoFlowHandler:
         if missing_labels:
             message_lines.append("\n*Para finalizar, por favor, completá tus datos:*")
             message_lines.extend(missing_labels)
-        message_lines.append("\nPodés escribir todos los datos juntos en un solo mensaje para actualizar o corregir.")
+        if force_prompt and not missing_labels:
+            message_lines.append(
+                "\nEscribí los datos que querés corregir. Podés actualizar varios en un solo mensaje."
+            )
+        else:
+            message_lines.append(
+                "\nPodés escribir todos los datos juntos en un solo mensaje para actualizar o corregir."
+            )
 
         return {"message_body": "\n".join(message_lines)}
 
@@ -1719,6 +1828,13 @@ class ReclamoFlowHandler:
             return {"message_body": "No pude identificar tus datos. Por favor, intentá de nuevo incluyendo nombre, DNI, email y teléfono."}
 
         datos_reclamo = self.flow_context['datos_reclamo']
+        explicit_name_correction = bool(
+            re.search(
+                r"\b(?:mi\s+nombre\s+(?:correcto\s+)?es|corregir\s+(?:mi\s+)?nombre|cambiar\s+(?:mi\s+)?nombre)\b",
+                str(user_input or ""),
+                re.IGNORECASE,
+            )
+        )
         for k, v in contact_details.items():
             if not v:
                 continue
@@ -1732,8 +1848,16 @@ class ReclamoFlowHandler:
                 continue
             if k == "nombre" and re.search(r"\b(dni|documento|telefono|tel[eé]fono|email|correo)\b", str(v), re.IGNORECASE):
                 continue
+            if (
+                k == "nombre"
+                and datos_reclamo.get("nombre")
+                and not _is_placeholder_name(datos_reclamo.get("nombre"))
+                and not explicit_name_correction
+            ):
+                continue
             if k in {"nombre", "dni", "email", "telefono"}:
                 datos_reclamo[k] = v
+        _merge_contacto_usuario(self.municipal_ctx, datos_reclamo)
         self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
         return self.get_confirmation_message()
 
@@ -1895,6 +2019,10 @@ class ReclamoFlowHandler:
         # Remove flow data from municipio context so subsequent turns don't
         # enter this handler unintentionally.
         self.municipal_ctx.pop("reclamo_flow_v2", None)
+        chat_data = self.context.get("chat_db_context_data")
+        if isinstance(chat_data, dict):
+            chat_data.pop("foto_url", None)
+            chat_data.pop("es_foto", None)
 
         if show_menu:
             if self.municipal_ctx.get('estado_conversacion') != ConversationState.ESPERANDO_NOMBRE_INICIAL.name:
@@ -2366,7 +2494,7 @@ EJEMPLO_DIRECCION = CONFIG_MUNICIPIO.get("ejemplo_direccion", "Avenida Siemprevi
 
 # Palabras clave sencillas para detectar consultas generales de servicios
 GENERAL_QUERY_KEYWORDS = [
-    "farmacia", "supermercado", "negocio", "servicio", "buscar",
+    "farmacia", "veterinaria", "supermercado", "negocio", "servicio", "buscar",
     "comercio", "local"
 ]
 
@@ -2704,7 +2832,7 @@ def _prefill_contacto_from_context(
     return remaining_fields
 
 
-def _merge_contacto_usuario(datos_actuales: dict, contacto_usuario: dict) -> None:
+def _prefill_reclamo_from_contacto(datos_actuales: dict, contacto_usuario: dict) -> None:
     if not isinstance(contacto_usuario, dict):
         return
     for field, contacto_key in (
@@ -2778,6 +2906,13 @@ def _extract_expected_fields_from_text(
         default_localidad = municipio_config.get("ciudad") if municipio_config else None
         default_provincia = municipio_config.get("provincia") if municipio_config else None
         location_hints = _detect_location_mentions(text, default_localidad, default_provincia)
+        if not location_hints.get("distrito") and not location_hints.get("distrito_dudoso"):
+            _, intersection_hints = _parse_intersection_and_district(
+                text,
+                default_localidad,
+                default_provincia,
+            )
+            location_hints.update(intersection_hints)
         if location_hints.get("distrito"):
             extracted["distrito"] = location_hints["distrito"]
         elif location_hints.get("distrito_dudoso"):
@@ -2964,6 +3099,11 @@ class GreetingHandler(BaseMunicipioHandler):
 def _message_with_menu(message, context, include_greeting: bool = True):
     if include_greeting:
         menu_payload = GreetingHandler(context).handle({})
+        if not menu_payload.get("options_list") and isinstance(
+            menu_payload.get("botones"), list
+        ):
+            menu_payload["options_list"] = list(menu_payload["botones"])
+            menu_payload["message_type"] = "interactive_buttons"
         if message:
             menu_payload["message_body"] = f"{message}\n\n{menu_payload['message_body']}"
         return menu_payload
@@ -4282,8 +4422,13 @@ llamar_gemini = llamar_llm_con_fallback
 
 def accion_crear_reclamo_municipio(datos_reclamo, context):
     """Wrapper que delega la creación de reclamos al ActionHandler dedicado."""
+    payload = dict(datos_reclamo or {})
+    if not payload.get("descripcion"):
+        raw_user_input = str(context.get("user_input_raw") or "").strip()
+        if len(raw_user_input.split()) >= 3:
+            payload["descripcion"] = raw_user_input
     handler = CrearReclamoActionHandler(context=context)
-    return handler.execute(datos_reclamo)
+    return handler.execute(payload)
 def _handle_ticket_creation(contexto_municipio_actual, context, datos_estructura_llm):
     """
     Prepares the confirmation message for the user before creating a ticket.
@@ -4523,6 +4668,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             "foto_url",
         ]:
             contexto_municipio_actual.pop(campo, None)
+        contexto_municipio_actual["estado_conversacion"] = (
+            ConversationState.CONVERSACION_GENERAL_LLM.name
+        )
+        estado_conversacion_para_llm = ConversationState.CONVERSACION_GENERAL_LLM.name
 
     if (
         estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_SUGERENCIA_LLM.name
@@ -5098,7 +5247,7 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     # potentially premature confirmation message.
                     return handler_response, contexto_municipio_actual
             else:
-                _merge_contacto_usuario(
+                _prefill_reclamo_from_contacto(
                     datos_actuales,
                     contexto_municipio_actual.get("contacto_usuario", {}),
                 )
@@ -6244,6 +6393,30 @@ def _strip_address_from_reclamo_description(description: str | None, address: st
     return cleaned or description.strip()
 
 
+def _strip_category_from_reclamo_description(
+    description: str | None,
+    category: str | None,
+) -> str | None:
+    """Remove a duplicated category heading while preserving the issue text."""
+
+    if not description or not category:
+        return description
+
+    match = re.match(
+        rf"^\s*{re.escape(str(category).strip())}\b(?P<remainder>.*)$",
+        str(description).strip(),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return description
+
+    remainder = match.group("remainder").lstrip(" ,.;:-")
+    if not remainder or len(normalizar_texto(remainder).split()) < 2:
+        return description
+
+    return remainder
+
+
 def _looks_like_address(value: str | None) -> bool:
     if not value:
         return False
@@ -6646,6 +6819,10 @@ def extract_reclamo_details_from_text(
     descripcion_limpia = _strip_address_from_reclamo_description(
         descripcion_final, direccion_para_descripcion
     )
+    descripcion_limpia = _strip_category_from_reclamo_description(
+        descripcion_limpia,
+        details.get("categoria_sugerida") or details.get("categoria"),
+    )
     if descripcion_limpia and not _is_placeholder_description(descripcion_limpia):
         details["descripcion_sugerida"] = descripcion_limpia
         details["descripcion"] = descripcion_limpia
@@ -6682,6 +6859,13 @@ def _detect_location_mentions(
     hints: dict[str, str] = {}
     if not text:
         return hints
+
+    # External profile adapters may expose missing fields as proxy objects.
+    # Location parsing must only consume real text values.
+    if not isinstance(default_localidad, str):
+        default_localidad = None
+    if not isinstance(default_provincia, str):
+        default_provincia = None
 
     barrio_match = re.search(r"\b(?:barrio|bº|b°)\s+([A-Za-zÀ-ÿ'\s]+)", text, re.IGNORECASE)
     if barrio_match:
@@ -6886,7 +7070,7 @@ def _parse_intersection_and_district(
             direccion,
         )
 
-    location_context = location_context.strip()
+    location_context = _clean_location_fragment(location_context) or ""
     if location_context:
         barrio_match = re.search(r"\b(?:barrio|bº|b°)\s+([A-Za-zÀ-ÿ'\s]+)", location_context, re.IGNORECASE)
         if barrio_match:
@@ -8773,12 +8957,12 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
             if len(descripcion) > 180:
                 descripcion = descripcion[:177].rstrip() + "…"
 
-        share_url = encuesta_entry.get("share_url") or urljoin(
+        canonical_share_url = encuesta_entry.get("share_url") or urljoin(
             f"{base_url}/", f"e/{slug_publico}"
         )
         short_slug = _extract_short_public_slug(slug_publico)
         short_base_url = _resolve_encuestas_short_base_url(context, base_url)
-        share_short_url = encuesta_entry.get("share_short_url") or urljoin(
+        canonical_share_short_url = encuesta_entry.get("share_short_url") or urljoin(
             f"{short_base_url}/", f"e/{short_slug}"
         )
         qr_url: Optional[str] = None
@@ -8787,13 +8971,13 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
                 f"{api_base_url}/", f"api/public/encuestas/{slug_publico}/qr"
             )
         share_url = _append_tracking_params(
-            share_url,
+            canonical_share_url,
             channel=channel_value,
             campaign=f"encuesta_{slug_publico}",
             session_id=session_id,
         )
         share_short_url = _append_tracking_params(
-            share_short_url,
+            canonical_share_short_url,
             channel=channel_value,
             campaign=f"encuesta_short_{slug_publico}",
             session_id=session_id,
@@ -8909,9 +9093,11 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
             {
                 "slug": slug_publico,
                 "titulo": titulo,
-                "public_url": share_url,
-                "share_url": share_url,
-                "share_short_url": share_short_url,
+                "public_url": canonical_share_url,
+                "share_url": canonical_share_url,
+                "share_short_url": canonical_share_short_url,
+                "share_tracked_url": share_url,
+                "share_tracked_short_url": share_short_url,
                 "share_message": share_message,
                 "share_action_id": share_action_id,
                 "qr_url": qr_url,
@@ -9530,10 +9716,10 @@ def responder_municipio(
         tenant_profile = None
 
     if tenant_profile:
-        owner_email = getattr(owner_user, "email", "") if owner_user else ""
+        owner_email = str(getattr(owner_user, "email", None) or "").strip().lower()
         is_junin_tenant = (
             tenant_profile.slug in {"junin", "municipalidad-de-junin"}
-            or owner_email.lower() == "mauricio@junin.com"
+            or owner_email == "mauricio@junin.com"
         )
         if is_junin_tenant:
             updated_config = False
@@ -9770,6 +9956,23 @@ def responder_municipio(
             or bool(contexto_municipio_actual.get("reclamo_flow_v2"))
         )
 
+    current_photo_url = received_payload.get("foto_url")
+    if received_payload.get("es_foto") and current_photo_url:
+        # Preserve an inconclusive image across turns so a later location or
+        # description can still attach it to the same claim.
+        chat_db_context_live_data["foto_url"] = current_photo_url
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+
+    stored_photo_url = current_photo_url or chat_db_context_live_data.get("foto_url")
+    if not stored_photo_url and isinstance(contexto_municipio_actual, dict):
+        stored_photo_url = (
+            contexto_municipio_actual.get("foto_url")
+            or contexto_municipio_actual.get("reclamo_flow_v2", {})
+            .get("datos_reclamo", {})
+            .get("foto_url")
+        )
+
     if cached_response and not flow_activo:
         logger_actual.info("responder_municipio: returning cached response")
         return cached_response
@@ -9795,7 +9998,7 @@ def responder_municipio(
         "intencion": "hablar_con_agente" if live_chat_cta_action else kwargs.get("intencion"),
         "ubicacion_usuario": normalized_location or received_payload.get("ubicacion_usuario"),
         "es_foto": received_payload.get("es_foto", False),
-        "foto_url": received_payload.get("foto_url"),
+        "foto_url": stored_photo_url,
         "es_ubicacion": received_payload.get("es_ubicacion", False),
         "es_archivo": received_payload.get("es_archivo", False),
         "action": live_chat_cta_action or received_payload.get("action"),
@@ -9985,6 +10188,13 @@ def responder_municipio(
             flag_modified(chat_db_context, "context_data")
         return _finalize_response(response)
 
+    interrupt_action = received_payload.get("action") or received_payload.get("action_id")
+    if not interrupt_action and pregunta_str:
+        interrupt_action = find_global_menu_action(pregunta_str)
+    if interrupt_action == "limpiar_contexto":
+        response = handle_main_menu_action("limpiar_contexto", context, chat_db_context)
+        return _finalize_response(response)
+
     # --- START OF RESTRUCTURED LOGIC ---
     # The primary change is to handle active conversation states FIRST, before
     # any other processing like intent classification or menu keyword matching.
@@ -10168,7 +10378,15 @@ def responder_municipio(
 
             if selected_category_name:
                 handler = ReclamoFlowHandler(context, chat_db_context)
-                datos_iniciales = {}
+                existing_flow_data = (
+                    contexto_municipio_actual.get("reclamo_flow_v2", {})
+                    .get("datos_reclamo", {})
+                )
+                datos_iniciales = (
+                    dict(existing_flow_data)
+                    if isinstance(existing_flow_data, dict)
+                    else {}
+                )
                 if details.get("descripcion_sugerida"):
                     datos_iniciales["descripcion"] = details["descripcion_sugerida"]
                 if details.get("direccion_sugerida"):
@@ -10207,7 +10425,7 @@ def responder_municipio(
                 elif isinstance(pregunta_original, dict):
                     pregunta_menu = pregunta_original.get("pregunta", "")
                 action = find_menu_action_by_input(pregunta_menu, _location_action_options())
-                if not action and pregunta_menu.strip():
+                if not action and _is_location_poi_query(pregunta_menu):
                     contexto_municipio_actual['ultima_consulta_poi'] = pregunta_menu.strip()
                     if chat_db_context:
                         flag_modified(chat_db_context, "context_data")
@@ -10801,11 +11019,28 @@ def responder_municipio(
                 db.session.commit()
                 logger_actual.info(f"User {viewer_user.id} prefers audio after {audio_message_count} audio messages.")
 
-        transcription_result = transcribe_audio_from_url(pregunta_original["media_url"])
+        audio_mime_type = str(
+            pregunta_original.get("mime_type")
+            or pregunta_original.get("content_type")
+            or pregunta_original.get("mime")
+            or "audio/ogg"
+        ).strip()
+        transcription_result = transcribe_audio_from_url(
+            pregunta_original["media_url"],
+            audio_mime_type,
+        )
         if transcription_result:
-            transcript = transcription_result.get("transcript")
-            confidence = transcription_result.get("confidence", 1.0)
+            if isinstance(transcription_result, dict):
+                transcript = str(transcription_result.get("transcript") or "").strip()
+                confidence = float(transcription_result.get("confidence", 1.0) or 0.0)
+            else:
+                transcript = str(transcription_result).strip()
+                confidence = 1.0
 
+            if not transcript:
+                transcription_result = None
+
+        if transcription_result:
             if confidence < 0.8: # Low confidence threshold
                 contexto_municipio_actual['estado_conversacion'] = 'ESPERANDO_CONFIRMACION_STT'
                 contexto_municipio_actual['stt_transcript_pendiente'] = transcript
@@ -10889,6 +11124,22 @@ def responder_municipio(
             "message_body": "Ingresá el PIN de 6 dígitos asociado al ticket.",
             "fuente": "handler_consultar_reclamo",
         })
+
+    direct_reclamo_categories = {
+        "reclamo_luminaria": "Luminaria",
+        "reclamo_arbolado": "Arbolado",
+        "reclamo_limpieza_riego": "Limpieza y riego",
+        "reclamo_arreglo_calle": "Arreglo de calle",
+        "reclamo_otros": "Otros",
+    }
+    if action_id in direct_reclamo_categories:
+        handler = ReclamoFlowHandler(context, chat_db_context)
+        response = handler.start_flow(
+            categoria_inicial=direct_reclamo_categories[action_id],
+        )
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return _finalize_response(response)
 
     # --- START GLOBAL MENU SHORTCUTS ---
     if not contexto_municipio_actual.get("estado_conversacion") and pregunta_str:
@@ -12239,7 +12490,7 @@ def responder_municipio(
             elif isinstance(pregunta_original, dict):
                 pregunta_menu = pregunta_original.get("pregunta", "")
             action = find_menu_action_by_input(pregunta_menu, _location_action_options())
-            if not action and pregunta_menu.strip():
+            if not action and _is_location_poi_query(pregunta_menu):
                 contexto_municipio_actual['ultima_consulta_poi'] = pregunta_menu.strip()
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
@@ -12468,10 +12719,30 @@ def responder_municipio(
     # --- End Handle post-login resumption ---
 
     if contexto_municipio_actual.get("estado_conversacion") == ConversationState.ESPERANDO_CONFIRMACION_UBICACION.name:
-        if "si" in pregunta_str.lower():
+        normalized_answer = re.sub(r"\s+", " ", pregunta_str.strip().lower())
+        location_action = str(received_payload.get("action") or "").strip().lower()
+        affirmative_answers = {
+            "si",
+            "sí",
+            "correcto",
+            "correcta",
+            "confirmar",
+            "confirmo",
+            "esa es",
+        }
+        edit_answers = {
+            "no",
+            "editar",
+            "cambiar",
+            "otra",
+            "otra ubicacion",
+            "otra ubicación",
+        }
+
+        if location_action == "confirmar_ubicacion" or normalized_answer in affirmative_answers:
             contexto_municipio_actual["ubicacion_confirmada"] = True
             contexto_municipio_actual["estado_conversacion"] = None
-        else:
+        elif location_action == "editar_ubicacion" or normalized_answer in edit_answers:
             contexto_municipio_actual["ubicacion_confirmada"] = False
             contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
             return _finalize_response({
@@ -12479,6 +12750,35 @@ def responder_municipio(
                 "options_list": [],
                 "message_type": "text",
                 "fuente": "pedir_nueva_ubicacion"
+            })
+        else:
+            partial_claim = contexto_municipio_actual.get("datos_parciales_llm_reclamo") or {}
+            pending_location = (
+                partial_claim.get("ubicacion")
+                or partial_claim.get("direccion")
+                or contexto_municipio_actual.get("ubicacion")
+                or contexto_municipio_actual.get("direccion")
+            )
+            if not pending_location:
+                contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_DIRECCION_RECLAMO.name
+                return _finalize_response({
+                    "message_body": "Decime la dirección del problema o compartí tu ubicación para continuar.",
+                    "options_list": [
+                        {"texto": "Volver al inicio", "action_id": "menu_principal"},
+                        {"texto": "Cancelar", "action_id": "cancelar"},
+                    ],
+                    "message_type": "interactive_buttons",
+                    "fuente": "pedir_ubicacion_reclamo",
+                })
+
+            return _finalize_response({
+                "message_body": f"¿Es esta tu dirección?\n📍 *{pending_location}*",
+                "options_list": [
+                    {"texto": "Sí, confirmar", "action_id": "confirmar_ubicacion"},
+                    {"texto": "Editar ubicación", "action_id": "editar_ubicacion"},
+                ],
+                "message_type": "interactive_buttons",
+                "fuente": "confirmar_ubicacion_reclamo",
             })
 
     elif estado_conversacion == ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name:

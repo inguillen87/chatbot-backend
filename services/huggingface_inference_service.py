@@ -137,6 +137,23 @@ def _provider() -> str:
     return os.getenv("HUGGINGFACE_PROVIDER", "auto").strip() or "auto"
 
 
+def _network_calls_allowed() -> bool:
+    """Keep unit and request tests deterministic unless they explicitly opt in."""
+
+    try:
+        from flask import current_app, has_app_context
+    except Exception:  # pragma: no cover - Flask is always available in the API
+        return True
+
+    if not has_app_context() or not current_app.config.get("TESTING"):
+        return True
+
+    return bool(current_app.config.get("HUGGINGFACE_ALLOW_NETWORK_IN_TESTS")) or _truthy_env(
+        "HUGGINGFACE_ALLOW_NETWORK_IN_TESTS",
+        "HF_ALLOW_NETWORK_IN_TESTS",
+    )
+
+
 def _get_client(model: str | None = None):
     token = _api_token()
     if not token:
@@ -198,7 +215,7 @@ def embed_texts(
     normalize: bool = True,
     expected_dimension: int | None = None,
 ) -> Optional[list[list[float]]]:
-    if not embeddings_enabled():
+    if not embeddings_enabled() or not _network_calls_allowed():
         return None
 
     cleaned = [str(text).replace("\n", " ").strip() for text in textos if isinstance(text, str) and text.strip()]
@@ -236,7 +253,7 @@ def classify_zero_shot(
     model: str | None = None,
     multi_label: bool = False,
 ) -> Optional[list[dict]]:
-    if not zero_shot_enabled() or not text or not labels:
+    if not zero_shot_enabled() or not _network_calls_allowed() or not text or not labels:
         return None
 
     resolved_model = model or os.getenv("HUGGINGFACE_ZERO_SHOT_MODEL", "joeddav/xlm-roberta-large-xnli")
@@ -260,7 +277,7 @@ def classify_zero_shot(
 
 
 def classify_image(image_bytes: bytes, *, model: str | None = None, top_k: int = 5) -> Optional[list[dict]]:
-    if not vision_enabled() or not image_bytes:
+    if not vision_enabled() or not _network_calls_allowed() or not image_bytes:
         return None
 
     resolved_model = model or os.getenv("HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL", "google/vit-base-patch16-224")
@@ -275,7 +292,7 @@ def classify_image(image_bytes: bytes, *, model: str | None = None, top_k: int =
 
 
 def detect_objects(image_bytes: bytes, *, model: str | None = None, threshold: float | None = None) -> Optional[list[dict]]:
-    if not vision_enabled() or not image_bytes:
+    if not vision_enabled() or not _network_calls_allowed() or not image_bytes:
         return None
 
     resolved_model = model or os.getenv("HUGGINGFACE_OBJECT_DETECTION_MODEL", "facebook/detr-resnet-50")
@@ -296,7 +313,7 @@ def detect_objects(image_bytes: bytes, *, model: str | None = None, threshold: f
 
 
 def image_to_text(image_bytes: bytes, *, model: str | None = None) -> Optional[str]:
-    if not vision_enabled() or not image_bytes:
+    if not vision_enabled() or not _network_calls_allowed() or not image_bytes:
         return None
 
     resolved_model = model or os.getenv("HUGGINGFACE_IMAGE_TO_TEXT_MODEL", "Salesforce/blip-image-captioning-base")

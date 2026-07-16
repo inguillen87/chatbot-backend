@@ -1,16 +1,10 @@
-import jwt
-
 from app import db
 from models import MunicipioTicket, User
+from tests.auth_test_utils import clerk_superadmin_headers
 
 
 def _sa_headers(app, user):
-    token = jwt.encode(
-        {"user_id": user.id, "rol": user.rol, "tipo_chat": user.tipo_chat},
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
-    )
-    return {"Authorization": f"Bearer {token}"}
+    return clerk_superadmin_headers(user)
 
 
 def test_super_admin_can_update_lead_stage(client, app):
@@ -35,15 +29,15 @@ def test_super_admin_can_update_lead_stage(client, app):
     db.session.commit()
 
     resp = client.patch(
-        f"/api/admin/leads/{lead.id}/stage",
+        f"/api/admin/leads/municipio/{lead.id}/stage",
         headers=_sa_headers(app, sa),
         json={"stage": "ganado", "note": "Cierre confirmado"},
     )
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["ok"] is True
-    assert payload["stage"] == "ganado"
-    assert payload["estado"] == "cerrado"
+    assert payload["lead_stage"] == "ganado"
+    assert payload["ticket_status"] == "cerrado"
 
     db.session.refresh(lead)
     assert lead.estado == "cerrado"
@@ -69,7 +63,7 @@ def test_super_admin_rejects_invalid_stage(client, app):
     db.session.commit()
 
     resp = client.patch(
-        f"/api/admin/leads/{lead.id}/stage",
+        f"/api/admin/leads/municipio/{lead.id}/stage",
         headers=_sa_headers(app, sa),
         json={"stage": "etapa_inventada"},
     )

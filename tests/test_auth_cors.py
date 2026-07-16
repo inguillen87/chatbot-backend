@@ -17,13 +17,16 @@ class AuthCorsTestCase(unittest.TestCase):
         def protected(user):
             return jsonify({"msg": "ok"})
 
-    def test_options_request_handled_without_manual_cors(self):
+    def test_options_request_exposes_preflight_without_opening_origin(self):
         with self.app.test_client() as client:
             resp = client.options('/protected')
             self.assertEqual(resp.status_code, 204)
-            # Verify headers are NOT set by decorator
+            # Without an Origin header the decorator must not grant an origin,
+            # while still returning a complete browser preflight contract.
             self.assertNotIn('Access-Control-Allow-Origin', resp.headers)
-            self.assertNotIn('Access-Control-Allow-Methods', resp.headers)
+            self.assertIn('GET', resp.headers.get('Access-Control-Allow-Methods', ''))
+            self.assertIn('OPTIONS', resp.headers.get('Access-Control-Allow-Methods', ''))
+            self.assertIn('Authorization', resp.headers.get('Access-Control-Allow-Headers', ''))
             # But Anon-Id should be set
             self.assertIn('X-Anon-Id', resp.headers)
 

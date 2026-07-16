@@ -1,15 +1,20 @@
 from datetime import datetime, timedelta
+import hashlib
 import json
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import MagicMock, patch
 
 import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app import db
 from models import (
     AuditEvent,
     MessageTemplateRegistry,
     MessagingEventLedger,
+    Order,
     ProviderConnection,
     ProviderSender,
     TenantProfile,
@@ -17,18 +22,51 @@ from models import (
     WhatsAppEnterpriseRule,
     WhatsAppFlowInteraction,
 )
-from routes.whatsapp_rules import _sync_status_from_approval
+from routes.whatsapp_rules import _flow_interaction_payload, _sync_status_from_approval
+from services.meta_flow_json import build_order_checkout_flow
 from services.whatsapp_experience import build_whatsapp_experience
 
 
 META_FLOW_ID = "1232445823264765"
-FLOW_ID = "catalog_order_builder"
+FLOW_ID = "order_checkout"
+CONCEPTUAL_FLOW_ID = "catalog_order_builder"
+ORDER_CONTEXT = {"kind": "order", "id": "order-flow-send"}
 
 
 def test_rejected_or_disabled_approval_is_never_reported_pending():
     assert _sync_status_from_approval("rejected", submitted=True) == "rejected"
     assert _sync_status_from_approval("disabled", submitted=True) == "disabled"
     assert _sync_status_from_approval("unsubmitted", submitted=True) == "created"
+
+
+def test_application_registers_meta_data_exchange_endpoint_fail_closed(client):
+    response = client.post(
+        "/api/whatsapp/flows/data-exchange/not-configured",
+        json={},
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["error"]["code"] == "endpoint_not_found"
+
+
+def test_flow_retry_contract_never_claims_same_key_retry_is_safe():
+    payload = _flow_interaction_payload(
+        SimpleNamespace(
+            id=1,
+            flow_id=FLOW_ID,
+            meta_flow_id=META_FLOW_ID,
+            content_sid="HXfailed",
+            recipient_hint="***6799",
+            status="failed",
+            external_message_sid="SMFAILED",
+            expires_at=None,
+            consumed_at=None,
+        )
+    )
+
+    assert payload["retry_safe"] is False
+    assert payload["retry_mode"] == "new_invocation_after_review"
+    assert payload["reconciliation_required"] is False
 
 
 def _auth_headers(app, user: User, tenant_slug: str) -> dict:
@@ -71,6 +109,30 @@ def _prepare_ready_flow_send(app, tenant: TenantProfile):
         "test-native-flow-send-key-v1-0000000000000000000000000000"
     )
     app.config["WHATSAPP_FLOW_TOKEN_TTL_SECONDS"] = 3600
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    app.config["PUBLIC_API_BASE_URL"] = "https://api.chatboc.test"
+    app.config["META_FLOW_DATA_EXCHANGE_ENDPOINTS"] = {
+        "flow-send-endpoint": {
+            "endpoint_id": "flow-send-endpoint",
+            "tenant_id": str(tenant.id),
+            "waba_id": "waba-flow-send",
+            "private_key_pem": private_key_pem,
+            "app_secret": "meta-flow-send-test-secret",
+            "handlers": {
+                "init": lambda payload, context: {"screen": "ORDER_DETAILS", "data": {}},
+                "back": lambda payload, context: {"screen": "ORDER_DETAILS", "data": {}},
+                "data_exchange": lambda payload, context: {
+                    "screen": "ORDER_CONFIRM",
+                    "data": {"order_summary": "Pedido", "total_display": "$ 1"},
+                },
+            },
+        }
+    }
     connection = ProviderConnection(
         tenant_id=tenant.id,
         provider="twilio",
@@ -88,14 +150,16 @@ def _prepare_ready_flow_send(app, tenant: TenantProfile):
         channel="whatsapp",
         phone_number="+5491100000000",
         sender_id="whatsapp:+5491100000000",
+        waba_id="waba-flow-send",
         status="active",
         status_callback_url="https://api.chatboc.test/twilio/whatsapp/status",
+        metadata_json={"meta_flow_data_exchange_endpoint_id": "flow-send-endpoint"},
     )
     registry = MessageTemplateRegistry(
         tenant_id=tenant.id,
         provider="twilio",
         channel="whatsapp",
-        name="chatboc_catalog_order_builder_native_v1",
+        name="chatboc_order_checkout_native_v1",
         language="es",
         category="UTILITY",
         status="approved",
@@ -108,10 +172,21 @@ def _prepare_ready_flow_send(app, tenant: TenantProfile):
             "content_family": "meta_native_flow",
             "approval_status": "approved",
             "meta_flow_status": "published",
+            "flow_json_sha256": build_order_checkout_flow().content_sha256,
+            "meta_flow_publication_verified": True,
             "data_contract": ["catalog_items", "cart_id", "contact_key"],
         },
     )
-    db.session.add_all([sender, registry])
+    order = Order(
+        id=ORDER_CONTEXT["id"],
+        tenant_id=tenant.id,
+        buyer_name="Cliente Flow",
+        status="created",
+        channel="whatsapp",
+        currency="ARS",
+        total=12500,
+    )
+    db.session.add_all([sender, registry, order])
     db.session.commit()
     return sender, registry
 
@@ -134,7 +209,11 @@ def test_native_flow_sync_dry_run_builds_exact_twilio_content_contract(client, a
     assert len(payload["execute_confirmation"]) > 40
     assert FLOW_ID not in payload["execute_confirmation"]
     assert payload["approval_request"]["category"] == "UTILITY"
-    assert payload["flow"]["first_screen_id"] == "catalog"
+    assert payload["flow"]["first_screen_id"] == "ORDER_DETAILS"
+    assert payload["flow"]["flow_json_version"] == "7.3"
+    assert payload["flow"]["data_api_version"] == "3.0"
+    assert len(payload["flow"]["content_sha256"]) == 64
+    assert payload["flow"]["meta_flow_json_upload_performed"] is False
     assert payload["flow"]["meta_flow_id"] == META_FLOW_ID
 
     create_request = payload["create_request"]
@@ -142,7 +221,7 @@ def test_native_flow_sync_dry_run_builds_exact_twilio_content_contract(client, a
     flow_type = create_request["types"]["whatsapp/flows"]
     assert flow_type["flow_id"] == META_FLOW_ID
     assert flow_type["flow_token"] == "{{1}}"
-    assert flow_type["flow_first_page_id"] == "catalog"
+    assert flow_type["flow_first_page_id"] == "ORDER_DETAILS"
     assert flow_type["is_flow_first_page_endpoint"] is False
 
     invalid = client.post(
@@ -151,6 +230,54 @@ def test_native_flow_sync_dry_run_builds_exact_twilio_content_contract(client, a
         json={"flow_id": FLOW_ID, "meta_flow_id": "demo-flow"},
     )
     assert invalid.status_code == 400
+
+
+def test_native_flow_sync_rejects_conceptual_design_without_compiled_flow_json(client, app):
+    admin, tenant = _seed()
+
+    response = client.post(
+        "/api/admin/whatsapp/flows/twilio-content/sync",
+        headers=_auth_headers(app, admin, tenant.slug),
+        json={"flow_id": CONCEPTUAL_FLOW_ID, "meta_flow_id": META_FLOW_ID},
+    )
+
+    assert response.status_code == 422
+    assert "Flow JSON" in response.get_json()["message"]
+
+
+def test_admin_can_download_exact_validated_meta_flow_json_artifact(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    response = client.get(
+        f"/api/admin/whatsapp/flows/{FLOW_ID}/flow-json",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.mimetype == "application/json"
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert response.headers["Content-Disposition"] == (
+        f'attachment; filename="{FLOW_ID}.flow.json"'
+    )
+    assert response.headers["X-Flow-JSON-Version"] == "7.3"
+    assert response.headers["X-Flow-Data-API-Version"] == "3.0"
+    content_sha256 = hashlib.sha256(response.data).hexdigest()
+    assert response.headers["X-Flow-Content-SHA256"] == content_sha256
+    assert response.headers["ETag"] == f'"sha256-{content_sha256}"'
+    document = json.loads(response.data)
+    assert document["version"] == "7.3"
+    assert document["data_api_version"] == "3.0"
+    assert [screen["id"] for screen in document["screens"]] == [
+        "ORDER_DETAILS",
+        "ORDER_CONFIRM",
+    ]
+
+    conceptual = client.get(
+        f"/api/admin/whatsapp/flows/{CONCEPTUAL_FLOW_ID}/flow-json",
+        headers=headers,
+    )
+    assert conceptual.status_code == 404
 
 
 def test_native_flow_sync_requires_full_plan_and_never_issues_execute_token_when_locked(client, app):
@@ -219,7 +346,7 @@ def test_native_flow_sync_creates_registry_audit_and_is_idempotent(client, app):
             self.calls.append((method, url, data, headers, timeout))
             if url == "https://content.twilio.com/v1/Content":
                 assert method == "POST"
-                assert data["friendly_name"] == "chatboc_catalog_order_builder_native_v1"
+                assert data["friendly_name"] == "chatboc_order_checkout_native_v1"
                 assert data["types"]["whatsapp/flows"]["flow_id"] == META_FLOW_ID
                 assert data["types"]["whatsapp/flows"]["flow_token"] == "{{1}}"
                 return SimpleNamespace(status_code=201, text=json.dumps({"sid": "HXnativeflow"}))
@@ -229,7 +356,7 @@ def test_native_flow_sync_creates_registry_audit_and_is_idempotent(client, app):
             )
             assert method == "POST"
             assert data == {
-                "name": "chatboc_catalog_order_builder_native_v1",
+                "name": "chatboc_order_checkout_native_v1",
                 "category": "UTILITY",
             }
             return SimpleNamespace(status_code=201, text=json.dumps({"status": "PENDING"}))
@@ -271,11 +398,16 @@ def test_native_flow_sync_creates_registry_audit_and_is_idempotent(client, app):
         tenant_id=tenant.id,
         provider="twilio",
         channel="whatsapp",
-        name="chatboc_catalog_order_builder_native_v1",
+        name="chatboc_order_checkout_native_v1",
     ).one()
     assert row.external_template_id == META_FLOW_ID
     assert row.metadata_json["content_family"] == "meta_native_flow"
-    assert row.metadata_json["first_screen_id"] == "catalog"
+    assert row.metadata_json["first_screen_id"] == "ORDER_DETAILS"
+    assert row.metadata_json["flow_json_version"] == "7.3"
+    assert row.metadata_json["data_api_version"] == "3.0"
+    assert len(row.metadata_json["flow_json_sha256"]) == 64
+    assert row.metadata_json["meta_flow_json_upload_performed"] is False
+    assert row.metadata_json["meta_flow_publication_verified"] is False
     audit = AuditEvent.query.filter_by(
         tenant_id=tenant.id,
         event_type="whatsapp_flow.twilio_content_synced",
@@ -320,10 +452,45 @@ def test_native_flow_sync_creates_registry_audit_and_is_idempotent(client, app):
 
 def test_meta_platform_contract_only_activates_persisted_capabilities(client, app):
     _, tenant = _seed()
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    artifact = build_order_checkout_flow()
+
+    def init_handler(payload, context):
+        return {"screen": "ORDER_DETAILS", "data": {}}
+
+    def back_handler(payload, context):
+        return {"screen": "ORDER_DETAILS", "data": {}}
+
+    def exchange_handler(payload, context):
+        return {
+            "screen": "ORDER_CONFIRM",
+            "data": {"order_summary": "2 productos", "total_display": "$ 25.000"},
+        }
+
     app_config = {
         "TWILIO_META_APP_ID": "meta-app",
         "TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID": "meta-config",
         "WHATSAPP_FLOW_TOKEN_KEY_V1": "test-flow-key-v1-000000000000000000000000000000000000",
+        "PUBLIC_API_BASE_URL": "https://api.chatboc.test",
+        "META_FLOW_DATA_EXCHANGE_ENDPOINTS": {
+            "123456789": {
+                "endpoint_id": "123456789",
+                "tenant_id": str(tenant.id),
+                "waba_id": "123456789",
+                "private_key_pem": private_key_pem,
+                "app_secret": "meta-test-app-secret",
+                "handlers": {
+                    "init": init_handler,
+                    "back": back_handler,
+                    "data_exchange": exchange_handler,
+                },
+            }
+        },
     }
 
     initial = build_whatsapp_experience(tenant, app_config=app_config)["meta_platform"]
@@ -355,7 +522,7 @@ def test_meta_platform_contract_only_activates_persisted_capabilities(client, ap
         tenant_id=tenant.id,
         provider="twilio",
         channel="whatsapp",
-        name="chatboc_catalog_order_builder_native_v1",
+        name="chatboc_order_checkout_native_v1",
         language="es",
         category="UTILITY",
         status="approved",
@@ -367,6 +534,8 @@ def test_meta_platform_contract_only_activates_persisted_capabilities(client, ap
             "content_family": "meta_native_flow",
             "approval_status": "approved",
             "meta_flow_status": "published",
+            "flow_json_sha256": artifact.content_sha256,
+            "meta_flow_publication_verified": True,
         },
     )
     db.session.add_all([sender, registry])
@@ -377,16 +546,20 @@ def test_meta_platform_contract_only_activates_persisted_capabilities(client, ap
     assert contract["sender"]["waba_id_present"] is True
     assert contract["native_flows"]["configured_count"] == 1
     assert contract["native_flows"]["active_count"] == 1
+    assert contract["native_flows"]["data_exchange"]["ready"] is True
     assert contract["native_flows"]["send_endpoint"] == "/api/admin/whatsapp/flows/send"
     assert contract["native_flows"]["security"]["dedicated_token_key_ready"] is True
     submission_ingestion = contract["native_flows"]["submission_ingestion"]
-    assert submission_ingestion["contract_version"] == "whatsapp.flow_submission.v1"
+    assert submission_ingestion["contract_version"] == "whatsapp.twilio_flow_completion.v1"
+    assert submission_ingestion["is_meta_data_exchange_endpoint"] is False
     assert submission_ingestion["status"] == "active"
     assert submission_ingestion["claimed_active"] is True
     assert submission_ingestion["rejects_invalid_payload_before_orchestration"] is True
     catalog_flow = next(item for item in contract["native_flows"]["flows"] if item["id"] == FLOW_ID)
     assert catalog_flow["active"] is True
     assert catalog_flow["meta_flow_id"] == META_FLOW_ID
+    assert catalog_flow["artifact_identity_verified"] is True
+    assert catalog_flow["meta_flow_publication_verified"] is True
     assert contract["business_calling"]["active"] is True
     assert contract["business_calling"]["requires_explicit_user_consent"] is True
     assert contract["business_calling"]["whatsapp_pstn_bridge_allowed"] is False
@@ -412,6 +585,7 @@ def test_native_flow_send_preview_execute_and_idempotent_replay(client, app):
         "flow_id": FLOW_ID,
         "recipient": "+54 9 11 2345-6789",
         "idempotency_key": "flow-send-idem-001",
+        "order_context": ORDER_CONTEXT,
     }
 
     preview = client.post(
@@ -465,7 +639,13 @@ def test_native_flow_send_preview_execute_and_idempotent_replay(client, app):
     assert sent["to"] == "whatsapp:+5491123456789"
     assert sent["from_"] == "whatsapp:+5491100000000"
     assert sent["content_sid"] == "HXflowtosend"
-    assert sent["status_callback"] == "https://api.chatboc.test/twilio/whatsapp/status"
+    callback = urlsplit(sent["status_callback"])
+    assert callback.scheme == "https"
+    assert callback.netloc == "api.chatboc.test"
+    assert callback.path == "/twilio/whatsapp/status"
+    assert parse_qs(callback.query)["flow_interaction_id"] == [
+        str(execute_payload["interaction"]["id"])
+    ]
     provider_token = json.loads(sent["content_variables"])["1"]
     assert len(provider_token) > 80
     assert "+5491123456789" not in provider_token
@@ -476,6 +656,7 @@ def test_native_flow_send_preview_execute_and_idempotent_replay(client, app):
     ).one()
     assert interaction.token_digest != provider_token
     assert interaction.recipient_hint == "***6789"
+    assert interaction.metadata_json["order_context"] == ORDER_CONTEXT
     assert "+5491123456789" not in json.dumps(interaction.metadata_json)
     event = MessagingEventLedger.query.filter_by(
         tenant_id=tenant.id,
@@ -503,6 +684,7 @@ def test_native_flow_send_timeout_is_uncertain_and_never_auto_retries(client, ap
         "flow_id": FLOW_ID,
         "recipient": "+5491123456790",
         "idempotency_key": "flow-send-timeout-001",
+        "order_context": ORDER_CONTEXT,
     }
     preview = client.post(
         "/api/admin/whatsapp/flows/send",
@@ -563,6 +745,79 @@ def test_native_flow_send_fails_closed_without_dedicated_key(client, app):
     assert "execute_confirmation" not in payload
 
 
+def test_order_flow_send_requires_tenant_owned_order_context(client, app):
+    admin, tenant = _seed()
+    _prepare_ready_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    missing = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+5491123456797",
+            "idempotency_key": "flow-order-context-missing",
+        },
+    ).get_json()
+    unavailable = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+5491123456797",
+            "idempotency_key": "flow-order-context-other",
+            "order_context": {"kind": "order", "id": "another-tenant-order"},
+        },
+    ).get_json()
+
+    assert missing["ready_to_send"] is False
+    assert "order_context_missing" in missing["blockers"]
+    assert unavailable["ready_to_send"] is False
+    assert "order_context_unavailable" in unavailable["blockers"]
+    assert "execute_confirmation" not in missing
+    assert "execute_confirmation" not in unavailable
+
+
+def test_native_flow_send_requires_verified_publication_and_data_exchange(client, app):
+    admin, tenant = _seed()
+    _, registry = _prepare_ready_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+    metadata = dict(registry.metadata_json)
+    metadata["meta_flow_publication_verified"] = False
+    registry.metadata_json = metadata
+    db.session.add(registry)
+    db.session.commit()
+
+    publication_blocked = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+5491123456798",
+            "idempotency_key": "flow-publication-missing-001",
+        },
+    ).get_json()
+    assert publication_blocked["ready_to_send"] is False
+    assert "meta_flow_publication_not_verified" in publication_blocked["blockers"]
+
+    metadata["meta_flow_publication_verified"] = True
+    registry.metadata_json = metadata
+    app.config["META_FLOW_DATA_EXCHANGE_ENDPOINTS"] = {}
+    db.session.add(registry)
+    db.session.commit()
+    endpoint_blocked = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+5491123456798",
+            "idempotency_key": "flow-endpoint-missing-001",
+        },
+    ).get_json()
+    assert endpoint_blocked["ready_to_send"] is False
+    assert "data_exchange_not_ready" in endpoint_blocked["blockers"]
+
+
 def test_native_flow_send_requires_explicit_e164_and_boolean_dry_run(client, app):
     admin, tenant = _seed()
     _prepare_ready_flow_send(app, tenant)
@@ -587,14 +842,61 @@ def test_native_flow_send_requires_explicit_e164_and_boolean_dry_run(client, app
             "dry_run": "false",
         },
     )
+    repeated_plus = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "recipient": "+54+91123456792",
+            "idempotency_key": "flow-invalid-e164-plus-001",
+        },
+    )
 
     assert invalid_phone.status_code == 400
     assert invalid_boolean.status_code == 400
+    assert repeated_plus.status_code == 400
+
+
+def test_twilio_sync_rejects_string_boolean_controls(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+    requests = (
+        (
+            "/api/admin/templates/twilio-content/sync",
+            {"template_id": "order_checkout"},
+        ),
+        (
+            "/api/admin/whatsapp/flows/twilio-content/sync",
+            {"flow_id": FLOW_ID, "meta_flow_id": META_FLOW_ID},
+        ),
+    )
+
+    for endpoint, base_payload in requests:
+        for field in ("submit_for_approval", "force"):
+            response = client.post(
+                endpoint,
+                headers=headers,
+                json={**base_payload, field: "false"},
+            )
+            assert response.status_code == 400
+            assert field in response.get_json()["message"]
 
 
 def test_native_flow_send_counts_durable_invocations_against_hourly_limit(client, app):
     admin, tenant = _seed()
-    _prepare_ready_flow_send(app, tenant)
+    first_sender, _ = _prepare_ready_flow_send(app, tenant)
+    second_sender = ProviderSender(
+        tenant_id=tenant.id,
+        provider_connection_id=first_sender.provider_connection_id,
+        channel="whatsapp",
+        phone_number="+5491100000001",
+        sender_id="whatsapp:+5491100000001",
+        waba_id="waba-flow-send",
+        status="active",
+        status_callback_url="https://api.chatboc.test/twilio/whatsapp/status",
+        metadata_json={"meta_flow_data_exchange_endpoint_id": "flow-send-endpoint"},
+    )
+    db.session.add(second_sender)
     headers = _auth_headers(app, admin, tenant.slug)
     db.session.add(
         WhatsAppEnterpriseRule(
@@ -607,6 +909,7 @@ def test_native_flow_send_counts_durable_invocations_against_hourly_limit(client
         "flow_id": FLOW_ID,
         "recipient": "+5491123456793",
         "idempotency_key": "flow-hourly-limit-001",
+        "order_context": ORDER_CONTEXT,
     }
     preview = client.post(
         "/api/admin/whatsapp/flows/send",
@@ -632,6 +935,8 @@ def test_native_flow_send_counts_durable_invocations_against_hourly_limit(client
             "flow_id": FLOW_ID,
             "recipient": "+5491123456794",
             "idempotency_key": "flow-hourly-limit-002",
+            "provider_sender_id": second_sender.id,
+            "order_context": ORDER_CONTEXT,
         },
     )
 

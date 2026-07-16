@@ -1,7 +1,6 @@
-import pytest
 from models import User, TenantProfile
 from app import db
-from datetime import datetime, timezone
+from tests.auth_test_utils import clerk_superadmin_headers
 
 def test_super_admin_flow(client):
     # 1. Create Super Admin
@@ -10,11 +9,8 @@ def test_super_admin_flow(client):
     db.session.add(sa)
     db.session.commit()
 
-    # Login
-    resp = client.post("/auth/admin/login", json={"email": "sa@chatboc.ar", "password": "admin123"})
-    assert resp.status_code == 200
-    token = resp.json['token']
-    headers = {'Authorization': f'Bearer {token}'}
+    # Superadmin access is issued exclusively by the verified Clerk exchange.
+    headers = clerk_superadmin_headers(sa)
 
     # 2. Create Tenant
     payload = {

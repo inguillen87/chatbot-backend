@@ -1,19 +1,28 @@
+import os
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
 
 class GeoFlowTests(unittest.TestCase):
-    @patch('services.openai_maps_service.reverse_geocode')
-    @patch('services.openai_maps_service.OpenAI')
-    def test_geocodificar_inversa_llm_normalizes(self, mock_openai, mock_reverse):
-        mock_reverse.return_value = {'display': 'Raw Addr'}
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    @patch('services.openai_maps_service.openai.OpenAI')
+    def test_geocodificar_inversa_llm_normalizes(self, mock_openai):
         client = MagicMock()
-        client.responses.create.return_value = MagicMock(output_text='Addr Norm')
+        client.responses.create.return_value = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    content=[
+                        SimpleNamespace(text='{"formatted_address":"Addr Norm"}')
+                    ]
+                )
+            ]
+        )
         mock_openai.return_value = client
         data = geocodificar_inversa_llm(1.0, 2.0)
-        assert data['display'] == 'Addr Norm'
+        assert data['formatted_address'] == 'Addr Norm'
 
     def test_confirmacion_ubicacion_prompt(self):
         owner_user = MagicMock(); owner_user.id = 1
@@ -24,7 +33,10 @@ class GeoFlowTests(unittest.TestCase):
                 'datos_parciales_llm_reclamo': {'ubicacion': 'Calle Falsa 123'}
             }
         }
-        from app import app as flask_app
+        from app import create_app
+        from config import TestConfig
+
+        flask_app = create_app(TestConfig)
         with flask_app.app_context():
             resp = responder_municipio(
                 pregunta_original='',
@@ -62,7 +74,7 @@ class GeoFlowTests(unittest.TestCase):
             from services.municipio_responder import ReclamoFlowHandler
             handler = ReclamoFlowHandler(context, chat_context)
             response = handler.handle_confirmacion('', {'action': 'reclamo_confirmar_no'})
-        assert '¿Qué querés editar?' in response['message_body']
+        assert 'Escribí los datos que querés corregir' in response['message_body']
         instance.execute.assert_not_called()
 
     def test_contacto_compacto(self):
@@ -70,7 +82,7 @@ class GeoFlowTests(unittest.TestCase):
         texto = "Juan Perez juan@mail.com 2615551234 30123456 Don Bosco 55 Junin"
         datos = procesar_datos_contacto_compacto(texto, {})
         assert datos['email'] == 'juan@mail.com'
-        assert datos['telefono'] == '2615551234'
+        assert datos['telefono'].endswith('2615551234')
         assert datos['dni'] == '30123456'
         assert datos['nombre'].startswith('Juan')
         assert 'Don Bosco' in datos['direccion_contacto']

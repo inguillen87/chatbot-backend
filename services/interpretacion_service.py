@@ -30,7 +30,7 @@ class InterpretacionService:
         if mime.startswith("audio/"):
             from services.audio_transcription_service import transcribe_audio_from_url
             try:
-                texto = transcribe_audio_from_url(archivo_adjunto.url)
+                texto = transcribe_audio_from_url(archivo_adjunto.url, mime)
                 if texto:
                     resultado["texto_extraido"] = texto
             except Exception as e:
@@ -77,7 +77,7 @@ class InterpretacionService:
         try:
             # Note: This path seems to be for a specific flow and might need auth keys.
             # The unified function handles optional auth.
-            texto = transcribe_audio_from_url(audio_url)
+            texto = transcribe_audio_from_url(audio_url, mime_type)
         except Exception as e:
             logger.error(f"Error transcribiendo audio {audio_url}: {e}", exc_info=True)
             texto = ""

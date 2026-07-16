@@ -144,7 +144,10 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
 
     assert response1 is not None
     assert "dirección" in response1.get("message_body", "")
-    assert chat_context.context_data['contexto_municipio_v2']['estado_conversacion'] == 'ESPERANDO_INFO_RECLAMO_LLM'
+    municipal_context = chat_context.context_data['contexto_municipio_v2']
+    assert municipal_context['estado_conversacion'] == 'EN_FLUJO_RECLAMO'
+    assert municipal_context['reclamo_flow_v2']['state'] == 'ESPERANDO_DIRECCION'
+    assert municipal_context['reclamo_flow_v2']['datos_reclamo']['categoria'] == 'Arreglo de calle'
 
     # 2. User provides the location
     mock_llamar_gemini.return_value = (
@@ -167,5 +170,11 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
     )
 
     assert response2 is not None
-    assert "nombre completo" in response2.get("message_body", "")
-    assert chat_context.context_data['contexto_municipio_v2']['esperando_info_llm_reclamo'] == 'nombre_completo'
+    assert response2.get("message_type") == "interactive_buttons"
+    assert {option["action_id"] for option in response2["options_list"]} == {
+        "reclamo_adjuntar_foto_si",
+        "reclamo_adjuntar_foto_no",
+    }
+    assert municipal_context['reclamo_flow_v2']['state'] == 'ESPERANDO_FOTO'
+    assert municipal_context['reclamo_flow_v2']['datos_reclamo']['direccion'] == 'Calle Falsa 123'
+    mock_llamar_gemini.assert_not_called()

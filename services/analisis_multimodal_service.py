@@ -174,5 +174,3 @@ if __name__ == '__main__':
     }
     print("\n--- Ejemplo de Estructura JSON Esperada (para referencia) ---")
     print(json.dumps(expected_json_structure_example, indent=2, ensure_ascii=False))
-
-```

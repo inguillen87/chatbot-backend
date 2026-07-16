@@ -8,6 +8,7 @@ from flask import Flask
 from extensions import db
 from config import TestConfig
 from models import User
+from tests.auth_test_utils import clerk_superadmin_headers
 
 
 class WhatsappPromocionarTest(unittest.TestCase):
@@ -96,6 +97,7 @@ class WhatsappPromocionarTest(unittest.TestCase):
             # Elevate admin to super_admin to allow global broadcast
             self.admin_user.rol = 'super_admin'
             db.session.commit()
+            superadmin_headers = clerk_superadmin_headers(self.admin_user)
             payload = {
                 'titulo': 'Promo',
                 'descripcion': 'Desc',
@@ -103,7 +105,12 @@ class WhatsappPromocionarTest(unittest.TestCase):
                 'url_imagen': 'http://img',
                 'todos': True
             }
-            self.client.post('/api/whatsapp/promocionar', json=payload, headers=self.auth_headers)
+            response = self.client.post(
+                '/api/whatsapp/promocionar',
+                json=payload,
+                headers=superadmin_headers,
+            )
+            self.assertEqual(response.status_code, 200)
 
             from routes.whatsapp_promocionar import _ultimo_envio, _puede_enviar
             last_global = _ultimo_envio(None)

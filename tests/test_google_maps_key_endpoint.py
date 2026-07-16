@@ -26,18 +26,21 @@ class GoogleMapsKeyEndpointTest(unittest.TestCase):
             resp = self.client.get('/config/google-maps-key')
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
-            self.assertEqual(data.get('provider'), 'maptiler')
+            self.assertEqual(data.get('provider'), 'maplibre')
+            self.assertEqual(data.get('provider_aliases', {}).get('maptiler'), 'maplibre')
             self.assertEqual(data.get('maptiler_key'), 'mt-key')
             self.assertEqual(data.get('google_maps_key'), '')
 
-    def test_returns_none_provider_when_no_keys_present(self):
+    def test_returns_public_maplibre_fallback_when_no_keys_present(self):
         with self.app.app_context():
             self.app.config['GOOGLE_MAPS_API_KEY'] = ''
             self.app.config['MAPTILER_API_KEY'] = ''
             resp = self.client.get('/config/google-maps-key')
             self.assertEqual(resp.status_code, 200)
             data = resp.get_json()
-            self.assertEqual(data.get('provider'), 'none')
+            self.assertEqual(data.get('provider'), 'maplibre')
+            self.assertIn('maplibre', data.get('available_providers', []))
+            self.assertTrue(data.get('style_url'))
             self.assertEqual(data.get('google_maps_key'), '')
             self.assertEqual(data.get('maptiler_key'), '')
 

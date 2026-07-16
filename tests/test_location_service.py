@@ -14,14 +14,17 @@ class TestLocationService(unittest.TestCase):
         ]
         result = ls.geocode_address("San Martin")
         mock_instance.geocode.assert_called_once_with(
-            "San Martin",
+            "San Martin, Junín, Mendoza",
             region="ar",
             components={
                 "locality": "Junín",
                 "administrative_area": "Mendoza",
                 "country": "AR",
             },
-            bounds=((-33.2, -68.6), (-32.9, -68.3)),
+            bounds={
+                "southwest": {"lat": -33.2, "lng": -68.6},
+                "northeast": {"lat": -32.9, "lng": -68.3},
+            },
         )
         self.assertEqual(result["geometry"]["location"]["lat"], -32.89)
 

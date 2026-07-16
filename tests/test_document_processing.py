@@ -1,10 +1,8 @@
 import unittest
+from unittest.mock import patch
 from services.document_processing_service import DocumentProcessingService, document_processing_service
 from app import create_app
-from config import Config
-
-class TestConfig(Config):
-    TESTING = True
+from config import TestConfig
 
 class TestDocumentProcessingService(unittest.TestCase):
     def setUp(self):
@@ -17,19 +15,27 @@ class TestDocumentProcessingService(unittest.TestCase):
     def tearDown(self):
         self.app_context.pop()
 
-    def test_process_document_placeholder_returns_correctly(self):
-        """
-        Tests that the placeholder 'process_document' method returns the simulated response.
-        """
-        # Instantiate the service or use the singleton
+    def test_process_document_rejects_malformed_pdf_gracefully(self):
         service = DocumentProcessingService()
-
-        # Call the method with dummy content
         result = service.process_document(b'some file content', 'application/pdf')
+        self.assertFalse(result["success"])
+        self.assertIn("no se pudo procesar", result["error"].lower())
 
-        # Assert the expected placeholder response
-        expected_response = {"success": True, "text": "Contenido del documento procesado (simulado)."}
-        self.assertEqual(result, expected_response)
+    @patch.object(
+        DocumentProcessingService,
+        "_build_structured_response",
+        return_value={"resumen": "Pedido detectado", "items": []},
+    )
+    def test_process_text_document_returns_structured_payload(self, _mock_build):
+        service = DocumentProcessingService()
+        result = service.process_document(
+            b"10 cajas de tornillos",
+            "text/plain",
+            "pedido.txt",
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["texto_extraido"], "10 cajas de tornillos")
+        self.assertEqual(result["datos_estructurados"]["resumen"], "Pedido detectado")
 
     def test_process_document_with_no_content(self):
         """
@@ -37,7 +43,7 @@ class TestDocumentProcessingService(unittest.TestCase):
         """
         service = DocumentProcessingService()
         result = service.process_document(None, 'application/pdf')
-        expected_response = {"success": False, "error": "Contenido o tipo de archivo no proporcionado."}
+        expected_response = {"success": False, "error": "Contenido vacío."}
         self.assertEqual(result, expected_response)
 
 if __name__ == '__main__':

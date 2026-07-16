@@ -48,6 +48,8 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
         else:
             sys.modules.pop('utils.auth_helpers', None)
+        import routes.estadisticas as estats
+        importlib.reload(estats)
         self.app_context.pop()
 
     @patch('routes.estadisticas.build_stats_for_municipio')

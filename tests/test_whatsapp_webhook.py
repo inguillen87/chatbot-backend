@@ -49,9 +49,15 @@ from routes.whatsapp_webhook import (
     _normalize_whatsapp_flow_contract,
     _build_chatboc_demo_root_payload,
     _dispatch_twilio_pre_messages,
+    _reconcile_whatsapp_flow_delivery,
+    WhatsAppOutboundPolicyError,
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
+)
+from services.whatsapp_enterprise_rules import (
+    RATE_LIMIT_RESERVATION_EVENT,
+    WhatsAppEnterpriseRulesService,
 )
 from services.whatsapp_receipts import build_claim_created_template_pre_message
 # Moved model imports after app and config to ensure they are found via sys.path
@@ -175,6 +181,11 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         )
         self.mock_welcome = self.welcome_patch.start()
 
+        # Unit tests must never consume an external TTS provider. Individual
+        # tests can still override this patch when asserting audio behavior.
+        self.tts_patch = patch('routes.whatsapp_webhook.generar_audio', return_value=None)
+        self.mock_generar_audio = self.tts_patch.start()
+
     def test_prepare_cached_welcome_audio_overrides_generic_menu_namespace(self):
         payload = {
             "tts_cache_namespace": "menu_principal",
@@ -243,6 +254,66 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         client.messages.create.reset_mock()
         _send_twilio_message(client, from_="+15551234567", to="+15557654321", body="SMS")
         self.assertNotIn("status_callback", client.messages.create.call_args.kwargs)
+
+    def test_twilio_helper_shares_atomic_hourly_reservation_with_flow_sender(self):
+        tenant = self._attach_tenant_to_owner(slug="shared-rate-limit", tipo="municipio")
+        sender = ProviderSender(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+            phone_number=self.test_whatsapp_number_str,
+            sender_id=f"whatsapp:{self.test_whatsapp_number_str}",
+            status="active",
+        )
+        db.session.add_all(
+            [
+                sender,
+                WhatsAppEnterpriseRule(
+                    tenant_id=tenant.id,
+                    max_outbound_per_hour=1,
+                ),
+            ]
+        )
+        db.session.commit()
+
+        allowed, reason = WhatsAppEnterpriseRulesService(tenant.id).reserve_outbound(
+            body="Flow aprobado",
+            reservation_key="flow:shared-reservation-001",
+            metadata={"recipient": self.test_user_number_str, "is_template": True},
+            provider="twilio",
+            provider_sender_id=sender.id,
+            source="native_flow",
+        )
+        self.assertTrue(allowed)
+        self.assertIsNone(reason)
+        repeated_allowed, repeated_reason = WhatsAppEnterpriseRulesService(
+            tenant.id
+        ).reserve_outbound(
+            body="Flow aprobado",
+            reservation_key="flow:shared-reservation-001",
+            metadata={"recipient": self.test_user_number_str, "is_template": True},
+            provider="twilio",
+            provider_sender_id=sender.id,
+            source="native_flow",
+        )
+        self.assertTrue(repeated_allowed)
+        self.assertIsNone(repeated_reason)
+        self.assertEqual(
+            MessagingEventLedger.query.filter_by(
+                tenant_id=tenant.id,
+                event_type=RATE_LIMIT_RESERVATION_EVENT,
+            ).count(),
+            1,
+        )
+
+        client = MagicMock()
+        with self.assertRaisesRegex(WhatsAppOutboundPolicyError, "rate_limited"):
+            _send_twilio_message(
+                client,
+                from_=f"whatsapp:{self.test_whatsapp_number_str}",
+                to=f"whatsapp:{self.test_user_number_str}",
+                body="Respuesta conversacional",
+            )
+        client.messages.create.assert_not_called()
 
     def test_fixed_menu_audio_prefers_tenant_cache_over_generic_audio_url(self):
         payload = {
@@ -440,6 +511,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.validator_patch.stop()
         self.twilio_client_patch.stop()
         self.welcome_patch.stop()
+        self.tts_patch.stop()
 
     def test_reset_municipio_context_for_menu_clears_sensitive_draft_data(self):
         session = ChatSessionContext(
@@ -1620,6 +1692,162 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ).one()
         self.assertNotIn(self.test_user_number_str, json.dumps(event.payload))
         self.assertNotIn(self.test_user_number_str, str(event.error_message))
+
+    def test_native_flow_uncertain_callback_binds_sid_and_never_regresses(self):
+        tenant = self._attach_tenant_to_owner(slug="junin-flow-uncertain", tipo="municipio")
+        sender = ProviderSender(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+            phone_number=self.test_whatsapp_number_str,
+            sender_id=f"whatsapp:{self.test_whatsapp_number_str}",
+            messaging_service_sid="MG_FLOW_UNCERTAIN",
+            status="active",
+        )
+        registry = MessageTemplateRegistry(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="native_uncertain_flow",
+            language="es",
+            category="UTILITY",
+            status="approved",
+            content_sid="HX_FLOW_UNCERTAIN",
+            external_template_id="1234567890123457",
+        )
+        db.session.add_all([sender, registry])
+        db.session.flush()
+        interaction = WhatsAppFlowInteraction(
+            tenant_id=tenant.id,
+            template_registry_id=registry.id,
+            provider_sender_id=sender.id,
+            flow_id="claim_intake",
+            meta_flow_id="1234567890123457",
+            content_sid=registry.content_sid,
+            recipient_hash="c" * 64,
+            recipient_hint=f"***{self.test_user_number_str[-4:]}",
+            token_digest="d" * 64,
+            idempotency_key="status-flow-uncertain-001",
+            status="send_uncertain",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        db.session.add(interaction)
+        db.session.commit()
+
+        reconciled_without_sid = _reconcile_whatsapp_flow_delivery(
+            tenant_id=tenant.id,
+            provider_sender=sender,
+            message_sid=None,
+            status="scheduled",
+            error_code=None,
+            flow_interaction_id=interaction.id,
+        )
+        self.assertEqual(reconciled_without_sid.id, interaction.id)
+        db.session.commit()
+        db.session.refresh(interaction)
+        self.assertIsNone(interaction.external_message_sid)
+        self.assertEqual(interaction.status, "sent")
+        self.assertEqual(interaction.metadata_json["delivery"]["status"], "scheduled")
+
+        reconciled = _reconcile_whatsapp_flow_delivery(
+            tenant_id=tenant.id,
+            provider_sender=sender,
+            message_sid="SM_FLOW_UNCERTAIN_1",
+            status="read",
+            error_code=None,
+            flow_interaction_id=interaction.id,
+        )
+        self.assertEqual(reconciled.id, interaction.id)
+        db.session.commit()
+        db.session.refresh(interaction)
+        self.assertEqual(interaction.external_message_sid, "SM_FLOW_UNCERTAIN_1")
+        self.assertEqual(interaction.status, "sent")
+        self.assertEqual(interaction.metadata_json["delivery"]["status"], "read")
+
+        _reconcile_whatsapp_flow_delivery(
+            tenant_id=tenant.id,
+            provider_sender=sender,
+            message_sid="SM_FLOW_UNCERTAIN_1",
+            status="delivered",
+            error_code=None,
+        )
+        _reconcile_whatsapp_flow_delivery(
+            tenant_id=tenant.id,
+            provider_sender=sender,
+            message_sid="SM_FLOW_UNCERTAIN_1",
+            status="undelivered",
+            error_code="63016",
+        )
+        db.session.commit()
+        db.session.refresh(interaction)
+
+        self.assertEqual(interaction.status, "sent")
+        self.assertEqual(interaction.error_code, None)
+        self.assertEqual(interaction.metadata_json["delivery"]["status"], "read")
+        self.assertEqual(
+            interaction.metadata_json["last_ignored_delivery_callback"]["status"],
+            "undelivered",
+        )
+
+        legacy = WhatsAppFlowInteraction(
+            tenant_id=tenant.id,
+            template_registry_id=registry.id,
+            provider_sender_id=sender.id,
+            flow_id="claim_intake",
+            meta_flow_id="1234567890123457",
+            content_sid=registry.content_sid,
+            recipient_hash="e" * 64,
+            recipient_hint="***0000",
+            token_digest="f" * 64,
+            idempotency_key="status-flow-legacy-001",
+            status="send_uncertain",
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        legacy_reconciled = _reconcile_whatsapp_flow_delivery(
+            tenant_id=tenant.id,
+            provider_sender=sender,
+            message_sid="SM_FLOW_LEGACY_1",
+            status="delivered",
+            error_code=None,
+            recipient="whatsapp:+15550000000",
+        )
+        self.assertEqual(legacy_reconciled.id, legacy.id)
+        self.assertEqual(legacy.external_message_sid, "SM_FLOW_LEGACY_1")
+        self.assertEqual(legacy.status, "sent")
+
+        ambiguous = []
+        for index, digest_character in enumerate(("g", "h"), start=1):
+            ambiguous.append(
+                WhatsAppFlowInteraction(
+                    tenant_id=tenant.id,
+                    template_registry_id=registry.id,
+                    provider_sender_id=sender.id,
+                    flow_id="claim_intake",
+                    meta_flow_id="1234567890123457",
+                    content_sid=registry.content_sid,
+                    recipient_hash=digest_character * 64,
+                    recipient_hint="***1111",
+                    token_digest=("i" if index == 1 else "j") * 64,
+                    idempotency_key=f"status-flow-ambiguous-00{index}",
+                    status="send_uncertain",
+                    expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+                )
+            )
+        db.session.add_all(ambiguous)
+        db.session.commit()
+
+        ambiguous_result = _reconcile_whatsapp_flow_delivery(
+            tenant_id=tenant.id,
+            provider_sender=sender,
+            message_sid="SM_FLOW_AMBIGUOUS_1",
+            status="delivered",
+            error_code=None,
+            recipient="whatsapp:+15550001111",
+        )
+        self.assertIsNone(ambiguous_result)
+        self.assertTrue(all(row.external_message_sid is None for row in ambiguous))
 
     def test_junin_welcome_template_uses_public_municipality_identity(self):
         self._set_owner_tipo_chat("municipio")

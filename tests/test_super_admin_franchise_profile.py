@@ -1,20 +1,10 @@
-import jwt
-
 from app import db
 from models import TenantProfile, User
+from tests.auth_test_utils import clerk_superadmin_headers
 
 
 def _sa_headers(app, super_admin_user):
-    token = jwt.encode(
-        {
-            "user_id": super_admin_user.id,
-            "rol": super_admin_user.rol,
-            "tipo_chat": super_admin_user.tipo_chat,
-        },
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
-    )
-    return {"Authorization": f"Bearer {token}"}
+    return clerk_superadmin_headers(super_admin_user)
 
 
 def test_super_admin_franchise_profile_get_put(client, app):

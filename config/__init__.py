@@ -482,6 +482,7 @@ class Config:
     # ensures endpoints like /api/config can always read them without having
     # to import the module-level constants.
     BACKEND_URL = str(BACKEND_URL)
+    PUBLIC_API_BASE_URL = str(os.getenv("PUBLIC_API_BASE_URL") or BACKEND_URL)
     PANEL_URL = str(PANEL_URL)
     WIDGET_URL = str(WIDGET_URL)
 
@@ -532,6 +533,9 @@ class Config:
     WHATSAPP_FLOW_TOKEN_KEY_V1 = os.getenv("WHATSAPP_FLOW_TOKEN_KEY_V1", "")
     WHATSAPP_FLOW_TOKEN_TTL_SECONDS = int(
         os.getenv("WHATSAPP_FLOW_TOKEN_TTL_SECONDS", str(48 * 60 * 60))
+    )
+    META_FLOW_DATA_EXCHANGE_MAX_PAYLOAD_BYTES = int(
+        os.getenv("META_FLOW_DATA_EXCHANGE_MAX_PAYLOAD_BYTES", str(64 * 1024))
     )
 
     # 2. CONFIGURACIÓN DE LA BASE DE DATOS

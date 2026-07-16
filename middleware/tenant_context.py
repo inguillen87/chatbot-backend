@@ -118,15 +118,6 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     segments = [segment for segment in path.split("/") if segment]
     lower_segments = [segment.lower() for segment in segments]
 
-    # Direct API prefix where the slug comes right after `/api/<slug>/...`.
-    if lower_segments[:1] == ["api"] and len(segments) >= 2:
-        # Skip reserved prefixes that map to top-level blueprints rather than
-        # tenant slugs (e.g. /api/municipal/usuarios).
-        if lower_segments[1] in {"public", "pwa", "municipal", "municipio"}:
-            return None
-
-        return _normalize_slug(segments[1])
-
     # Admin endpoints with explicit tenant path segment, e.g.
     # /api/admin/tenants/<slug>/employees. Allow extracting the slug so
     # the tenant context can be resolved even if no query/header hint was
@@ -149,10 +140,6 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
     }:
         return _normalize_slug(segments[1])
 
-    # Nested API prefixes where the slug is later in the path
-    if lower_segments[:3] == ["api", "admin", "tenants"] and len(segments) >= 4:
-        return _normalize_slug(segments[3])
-
     if lower_segments[:3] == ["api", "public", "tenants"] and len(segments) >= 4:
         return _normalize_slug(segments[3])
 
@@ -172,6 +159,22 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 
         return _normalize_slug(segments[2])
 
+    # Direct API prefix where the slug comes right after `/api/<slug>/...`.
+    if lower_segments[:1] == ["api"] and len(segments) >= 2:
+        # Skip prefixes owned by top-level blueprints rather than tenants.
+        if lower_segments[1] in {
+            "admin",
+            "public",
+            "pwa",
+            "municipal",
+            "municipio",
+            "auth",
+            "v2",
+        }:
+            return None
+
+        return _normalize_slug(segments[1])
+
     return None
 
 
@@ -179,14 +182,16 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
     view_args = getattr(request, "view_args", None) or {}
 
     slug = _normalize_slug(
-        get_current_tenant_slug()
-        or view_args.get("tenant_slug")
+        view_args.get("tenant_slug")
         or view_args.get("tenant")
+        or view_args.get("slug")
         or request.args.get("tenant_slug")
         or request.args.get("tenant")
         or _tenant_slug_from_body()
-        or _tenant_slug_from_url(request.headers.get("Referer") or getattr(request, "referrer", None))
         or request.headers.get("X-Tenant")
+        or request.headers.get("X-Tenant-Slug")
+        or _tenant_slug_from_path(request.path)
+        or _tenant_slug_from_url(request.headers.get("Referer") or getattr(request, "referrer", None))
     )
     if slug:
         try:
@@ -364,5 +369,13 @@ def require_tenant(func=None) -> TenantProfile:
 
     if func is not None and callable(func):
         return _decorator_require_tenant(func)
+
+    tenant = _resolve_tenant_profile()
+    if tenant:
+        g.tenant_profile = tenant
+        g.tenant_profile_slug = tenant.slug
+        g.current_tenant = tenant.slug
+        g.current_tenant_slug = tenant.slug
+        return tenant
 
     return _decorator_require_tenant()

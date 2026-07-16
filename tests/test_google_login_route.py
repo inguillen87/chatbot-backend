@@ -7,7 +7,6 @@ from app import create_app, db
 from models import User, Rubro
 from config import TestConfig
 from routes.auth import google_login
-from config import TestConfig
 
 class GoogleLoginRouteTests(unittest.TestCase):
     def setUp(self):
@@ -23,7 +22,13 @@ class GoogleLoginRouteTests(unittest.TestCase):
         self.app_context.pop()
 
     def test_status_falta_rubro(self):
-        user = User(id=1, email='a@b.com', name='A', password_hash='test')
+        user = User(
+            id=1,
+            email='a@b.com',
+            name='A',
+            password_hash='test',
+            acepto_terminos=True,
+        )
         with self.app.test_request_context(json={'id_token': 'tok'}):
             with patch('routes.auth.login_o_crear_usuario', return_value=user):
                 resp = google_login()
@@ -37,7 +42,19 @@ class GoogleLoginRouteTests(unittest.TestCase):
 
     def test_login_normal(self):
         rubro = Rubro(nombre='IT', clave='it')
-        user = User(id=2, email='b@c.com', name='B', token='t2', rubro=rubro, rubro_id=5, rol='usuario', empresa_id=None, ticket_categorias='', password_hash='test')
+        user = User(
+            id=2,
+            email='b@c.com',
+            name='B',
+            token='t2',
+            rubro=rubro,
+            rubro_id=5,
+            rol='usuario',
+            empresa_id=None,
+            ticket_categorias='',
+            password_hash='test',
+            acepto_terminos=True,
+        )
         with self.app.test_request_context(json={'id_token': 'tok'}):
             with patch('routes.auth.login_o_crear_usuario', return_value=user), \
                  patch('routes.auth.es_rubro_publico', lambda r: False):

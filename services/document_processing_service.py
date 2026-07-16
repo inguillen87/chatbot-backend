@@ -69,7 +69,18 @@ class DocumentProcessingService:
             logger.warning("Unsupported MIME type for document processing: %s", mime_type)
             return {"success": False, "error": f"Tipo de archivo no soportado: {mime_type}"}
 
-        text_content, table_records, metadata = extractor(file_content, filename)
+        try:
+            text_content, table_records, metadata = extractor(file_content, filename)
+        except Exception as exc:
+            logger.warning(
+                "Unable to extract document content for mime type %s: %s",
+                mime_type or "desconocido",
+                exc,
+            )
+            return {
+                "success": False,
+                "error": "No se pudo procesar el archivo. Verificá que no esté dañado y volvé a intentarlo.",
+            }
 
         if not text_content and not table_records:
             return {"success": False, "error": "No se pudo extraer información del documento."}

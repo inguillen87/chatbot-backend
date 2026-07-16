@@ -16,12 +16,14 @@ from config import Config
 from models import (
     ChatSessionContext,
     MessageTemplateRegistry,
+    Order,
     ProviderSender,
     TenantProfile,
     User,
     WhatsappNumero,
     WhatsAppFlowInteraction,
 )
+from services.meta_flow_runtime import ORDER_FLOW_ID
 from services.whatsapp_flow_security import issue_whatsapp_flow_token
 from services.whatsapp_flow_submissions import (
     CONTRACT_VERSION,
@@ -417,6 +419,64 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
         db.session.commit()
         return issued.token
 
+    def _issue_supported_flow_token(
+        self,
+        *,
+        flow_id: str,
+        meta_flow_id: str,
+        data_contract: list[str],
+        metadata: dict,
+    ) -> tuple[str, WhatsAppFlowInteraction]:
+        registry = MessageTemplateRegistry(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name=f"{flow_id}_native_{uuid4().hex[:8]}",
+            language="es",
+            category="UTILITY",
+            status="approved",
+            content_sid=f"HX{uuid4().hex[:30]}",
+            external_template_id=meta_flow_id,
+            metadata_json={
+                "flow_id": flow_id,
+                "meta_flow_id": meta_flow_id,
+                "content_family": "meta_native_flow",
+                "approval_status": "approved",
+                "meta_flow_status": "published",
+                "data_contract": data_contract,
+            },
+        )
+        db.session.add(registry)
+        db.session.flush()
+        issued = issue_whatsapp_flow_token(
+            secret=self.app.config["WHATSAPP_FLOW_TOKEN_KEY_V1"],
+            tenant_id=self.tenant.id,
+            recipient=self.from_number,
+            flow_id=flow_id,
+            meta_flow_id=meta_flow_id,
+            provider_sender_id=self.sender.id,
+            ttl_seconds=self.app.config["WHATSAPP_FLOW_TOKEN_TTL_SECONDS"],
+        )
+        interaction = WhatsAppFlowInteraction(
+            tenant_id=self.tenant.id,
+            template_registry_id=registry.id,
+            provider_sender_id=self.sender.id,
+            flow_id=flow_id,
+            meta_flow_id=meta_flow_id,
+            content_sid=registry.content_sid,
+            recipient_hash=issued.recipient_hash,
+            recipient_hint=issued.recipient_hint,
+            token_digest=issued.token_digest,
+            idempotency_key=f"supported-{uuid4().hex}",
+            status="sent",
+            data_contract=data_contract,
+            metadata_json=metadata,
+            expires_at=issued.expires_at,
+        )
+        db.session.add(interaction)
+        db.session.commit()
+        return issued.token, interaction
+
     def tearDown(self):
         self.validator_patch.stop()
         self.twilio_patch.stop()
@@ -533,6 +593,94 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
             chat_session_id=f"whatsapp_{self.owner.id}_{self.from_number}"
         ).one()
         assert len(session.context_data["processed_whatsapp_flow_token_digests"]) == 1
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_order_flow_completion_updates_authorized_order_without_llm_or_financial_override(
+        self,
+        responder_chatboc,
+    ):
+        order = Order(
+            id="order-webhook-flow-001",
+            tenant_id=self.tenant.id,
+            buyer_name="Nombre anterior",
+            status="created",
+            channel="web_widget",
+            currency="ARS",
+            subtotal=78000,
+            total=78000,
+        )
+        db.session.add(order)
+        db.session.commit()
+        data_contract = [
+            "full_name",
+            "phone",
+            "delivery_address",
+            "delivery_notes",
+            "confirm_order",
+        ]
+        raw_token, interaction = self._issue_supported_flow_token(
+            flow_id=ORDER_FLOW_ID,
+            meta_flow_id="1232445823264777",
+            data_contract=data_contract,
+            metadata={"order_context": {"kind": "order", "id": order.id}},
+        )
+        payload = {
+            "To": f"whatsapp:{self.to_number}",
+            "From": f"whatsapp:{self.from_number}",
+            "Body": "",
+            "MessageSid": "SM_FLOW_ORDER_COMPLETE_1",
+            "InteractiveData": _wrapped_interactive_data(
+                {
+                    "flow_id": ORDER_FLOW_ID,
+                    "flow_token": raw_token,
+                    "full_name": "Cliente Webhook",
+                    "phone": "+5491112345678",
+                    "delivery_address": "Ruta 7 km 260, Junin",
+                    "delivery_notes": "Entregar de 9 a 13",
+                    "confirm_order": True,
+                    "order_id": "attacker-order",
+                    "total": 1,
+                    "payment_state": "paid",
+                },
+                name="order_checkout",
+            ),
+        }
+
+        response = self.client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers={"X-Twilio-Signature": "valid-test-signature"},
+        )
+
+        assert response.status_code == 200
+        assert response.data.decode() == "OK"
+        responder_chatboc.assert_not_called()
+        db.session.refresh(order)
+        db.session.refresh(interaction)
+        assert order.id == "order-webhook-flow-001"
+        assert order.buyer_name == "Cliente Webhook"
+        assert order.buyer_phone == "+5491112345678"
+        assert order.delivery_address == {
+            "address": "Ruta 7 km 260, Junin",
+            "source": "whatsapp_flow",
+        }
+        assert float(order.total) == 78000
+        assert order.status == "confirmed"
+        assert order.channel == "whatsapp"
+        assert interaction.status == "consumed"
+        assert interaction.metadata_json["completion"]["status"] == "applied"
+        assert set(interaction.metadata_json["completion"]["field_names"]) == set(
+            data_contract
+        )
+        serialized_metadata = json.dumps(interaction.metadata_json)
+        assert "attacker-order" not in serialized_metadata
+        assert '"payment_state"' not in serialized_metadata
+        sent_bodies = [
+            call.kwargs.get("body", "")
+            for call in self.twilio_client.messages.create.call_args_list
+        ]
+        assert any("Pedido confirmado" in body for body in sent_bodies)
+        assert not any("realtime_event" in body or '"entity"' in body for body in sent_bodies)
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_malformed_flow_is_stopped_before_the_orchestrator(self, responder_chatboc):

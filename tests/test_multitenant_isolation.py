@@ -97,5 +97,20 @@ class IsolationTestCase(unittest.TestCase):
         # Assert: Should be 200 OK (or empty list)
         self.assertEqual(response.status_code, 200)
 
+    @patch('utils.auth_helpers.obtener_token', return_value='mock_token')
+    @patch('utils.auth_helpers.user_from_token')
+    def test_unknown_tenant_slug_does_not_fall_back_to_own_tenant(self, mock_user_from_token, mock_token):
+        mock_user_from_token.return_value = self.user_a
+        missing_slug = f"missing-{uuid.uuid4()}"
+
+        response = self.client.get(
+            f'/api/admin/tenants/{missing_slug}/employees',
+            headers={'Authorization': 'Bearer mock_token', 'X-Tenant': self.tenant_a.slug}
+        )
+
+        self.assertEqual(response.status_code, 404)
+        data = response.get_json()
+        self.assertIn('not found', str(data).lower())
+
 if __name__ == '__main__':
     unittest.main()

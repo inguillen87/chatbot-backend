@@ -24,6 +24,15 @@ services:
         value: https://api.chatboc.ar
       - key: PUBLIC_API_BASE_URL
         value: https://api.chatboc.ar
+      # Shared by Flow issuance, Data Exchange and completion webhooks.
+      - key: WHATSAPP_FLOW_TOKEN_KEY_V1
+        sync: false
+      - key: WHATSAPP_FLOW_TOKEN_TTL_SECONDS
+        value: "172800"
+      - key: META_FLOW_DATA_EXCHANGE_MAX_PAYLOAD_BYTES
+        value: "65536"
+      # Per-WABA private keys and app secrets must be added in Render only
+      # after the real WABA is known. Do not declare placeholder WABA IDs.
       - key: PANEL_URL
         value: https://www.chatboc.ar
       - key: WIDGET_URL
@@ -39,7 +48,7 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_CHAT_MODEL
-        value: gemini-2.5-flash
+        value: gemini-3.5-flash
       - key: OLLAMA_ENABLED
         value: "false"
       - key: OLLAMA_BASE_URL
@@ -211,7 +220,7 @@ services:
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_CHAT_MODEL
-        value: gemini-2.5-flash
+        value: gemini-3.5-flash
       - key: OLLAMA_ENABLED
         value: "false"
       - key: OLLAMA_BASE_URL

@@ -191,10 +191,20 @@ def responder_chatboc(
     #     f"[LOGIC] Usando rubro: '{rubro_nombre}' (fuente: {fuente}, user: {getattr(owner_user, 'id', None)})"
     # )
 
-    # Si el rubro indica un tipo específico de lógica, lo usamos para inferir cuando no viene explícito
-    if rubro_nombre and tipo_chat not in ("municipio", "pyme"):
-        tipo_chat = "municipio" if es_rubro_publico(rubro_obj or rubro_nombre) else "pyme"
-    elif not rubro_nombre and tipo_chat not in ("municipio", "pyme"):
+    # El rubro persistido es autoridad de enrutamiento. ``tipo_chat`` es sólo
+    # un hint del canal y no puede enviar un tenant público al flujo comercial
+    # (o viceversa) cuando ambos datos discrepan.
+    if rubro_nombre:
+        inferred_tipo_chat = "municipio" if es_rubro_publico(rubro_obj or rubro_nombre) else "pyme"
+        if tipo_chat in ("municipio", "pyme") and tipo_chat != inferred_tipo_chat:
+            logger.warning(
+                "[responder_chatboc] tipo_chat '%s' overridden by authoritative rubro '%s' -> '%s'",
+                tipo_chat,
+                rubro_nombre,
+                inferred_tipo_chat,
+            )
+        tipo_chat = inferred_tipo_chat
+    elif tipo_chat not in ("municipio", "pyme"):
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
     # --- INICIO: Manejo de confusión Pyme/Municipio ---

@@ -16,14 +16,15 @@ def test_greeting_handler_whatsapp_menu():
 
     # Assert that the response is correct
     assert response is not None
-    # When no user name is known, the bot should ask for it instead of using a
-    # generic fallback like "vecino".
-    assert "¿podrías decirme tu nombre?" in response.get("message_body", "")
-    # The initial prompt doesn't include menu options until the user provides
-    # their name, so options_list should be empty and fuente marks the request
-    # for the name.
-    assert response.get("options_list") is None or len(response.get("options_list", [])) == 0
-    assert response.get("fuente") == "pedir_nombre_inicial"
+    assert "decirme tu nombre" in response.get("message_body", "")
+    assert response.get("fuente") == "onboarding_categorias_primero"
+    actions = {item.get("action_id") for item in response.get("botones", [])}
+    assert actions == {
+        "mostrar_menu_reclamos",
+        "mostrar_menu_tramites",
+        "mostrar_menu_informacion",
+        "mostrar_menu_catalogo",
+    }
 
 
 def test_greeting_handler_preserves_profile_name():
@@ -64,10 +65,11 @@ def test_greeting_handler_treats_owner_as_anonymous_viewer():
     handler = GreetingHandler(context)
     response = handler.handle({})
 
-    assert response.get("fuente") == "pedir_nombre_inicial"
-    assert "¿podrías decirme tu nombre?" in response.get("message_body", "").lower()
+    assert response.get("fuente") == "onboarding_categorias_primero"
+    assert "Mauricio" not in response.get("message_body", "")
+    assert len(response.get("botones", [])) == 4
     municipal_ctx = context["chat_db_context_data"].get(CONTEXTO_MUNICIPIO, {})
     assert (
         municipal_ctx.get("estado_conversacion")
-        == ConversationState.ESPERANDO_NOMBRE_INICIAL.name
+        == ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name
     )

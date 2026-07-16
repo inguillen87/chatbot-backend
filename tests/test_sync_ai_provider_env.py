@@ -42,6 +42,8 @@ def test_sync_redacts_secret_values_from_render_results(monkeypatch):
             "secret_value_stored": True,
         }
 
+    for key in (*sync_ai.SECRET_KEYS, *sync_ai.RECOMMENDED_DEFAULTS.keys()):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HUGGINGFACE_API_TOKEN", "hf_test_secret")
     monkeypatch.setattr(sync_ai.render_env_sync, "sync_render_env_var", fake_sync_render_env_var)
 

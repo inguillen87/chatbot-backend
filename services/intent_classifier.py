@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import unicodedata
 import logging
 from fuzzywuzzy import process, fuzz
@@ -42,7 +43,7 @@ class IntentClassifier:
         """
         Clasifica el texto del usuario y devuelve el intent con la mejor correspondencia si supera el umbral de confianza.
         """
-        normalized_text = self._normalize_text(text)
+        normalized_text = " ".join(self._normalize_text(text).split())
         if not normalized_text:
             return None, 0
 
@@ -53,6 +54,33 @@ class IntentClassifier:
 
         best_match = None
         highest_score = 0
+
+        # Prefer the longest complete example contained in the message. This
+        # keeps the deterministic fallback useful for explicit commands while
+        # avoiding short greetings overriding a more specific request.
+        phrase_matches = []
+        for intent in rubro_intents:
+            for example in intent.get("ejemplos", []):
+                normalized_example = " ".join(self._normalize_text(example).split())
+                if not normalized_example:
+                    continue
+                if normalized_text == normalized_example:
+                    phrase_matches.append((len(normalized_example.split()), intent, 100))
+                    continue
+                if len(normalized_example.split()) < 2:
+                    continue
+                phrase_pattern = rf"(?<!\w){re.escape(normalized_example)}(?!\w)"
+                if re.search(phrase_pattern, normalized_text):
+                    phrase_matches.append((len(normalized_example.split()), intent, 100))
+
+        if phrase_matches:
+            _, best_match, highest_score = max(phrase_matches, key=lambda item: item[0])
+            logger.info(
+                "Intent clasificado como '%s' por coincidencia explícita para el texto: '%s'",
+                best_match.get("categoria"),
+                text,
+            )
+            return best_match, highest_score
 
         for intent in rubro_intents:
             # Usar process.extractOne para encontrar la mejor coincidencia en los ejemplos

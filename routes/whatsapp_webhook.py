@@ -72,6 +72,13 @@ from services.whatsapp_flow_security import (
     consume_whatsapp_flow_interaction,
     verify_whatsapp_flow_token,
 )
+from services.meta_flow_data_exchange import MetaFlowActionError
+from services.meta_flow_runtime import (
+    CLAIM_FLOW_ID,
+    ORDER_FLOW_ID,
+    apply_whatsapp_flow_completion,
+    record_whatsapp_flow_completion_rejection,
+)
 from services.twilio_tech_provider import (
     TwilioRuntimeCredentials,
     resolve_twilio_runtime_credentials,
@@ -122,6 +129,12 @@ SENSITIVE_MENU_ACTIONS = {
 }
 ACTIVE_NATIVE_FLOW_STATUSES = {"approved", "active"}
 ACTIVE_META_FLOW_STATUSES = {"approved", "active", "published"}
+
+
+class WhatsAppOutboundPolicyError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 def _safe_session_context_metadata(value: Any) -> dict[str, Any]:
@@ -2490,17 +2503,32 @@ def _public_media_base_url(default_base_url: Optional[str] = None) -> str:
     """Return the public backend base URL used by Twilio to download media."""
 
     fallback = (default_base_url or "").strip().rstrip("/")
+    configured_candidates: list[str] = []
     if has_app_context():
-        for key in ("PUBLIC_API_BASE_URL", "BACKEND_URL", "BASE_URL", "PUBLIC_BASE_URL"):
+        for key in (
+            "PUBLIC_API_BASE_URL",
+            "BACKEND_URL",
+            "API_BASE_URL",
+            "BASE_URL",
+            "PUBLIC_BASE_URL",
+        ):
             value = current_app.config.get(key)
             if not value:
                 continue
             candidate = str(value).strip().rstrip("/")
-            if not candidate:
+            if not candidate or candidate in configured_candidates:
                 continue
-            if _is_local_base_url(candidate) and fallback.startswith("https://"):
-                continue
+            configured_candidates.append(candidate)
+
+    # Twilio must be able to fetch media from the public internet. A stale
+    # localhost value must not shadow a later public backend URL.
+    for candidate in configured_candidates:
+        if not _is_local_base_url(candidate):
             return candidate
+    if fallback and not _is_local_base_url(fallback):
+        return fallback
+    if configured_candidates:
+        return configured_candidates[0]
     return fallback
 
 
@@ -3483,10 +3511,42 @@ def _can_send_whatsapp_freeform_pre_message(
 
 def _send_twilio_message(client, **params):
     sanitized = _sanitize_twilio_message_params(params)
+    policy_metadata = sanitized.pop("_chatboc_policy_metadata", None)
+    policy_metadata = dict(policy_metadata) if isinstance(policy_metadata, dict) else {}
+    if has_request_context() and request.path == "/webhook/whatsapp":
+        policy_metadata.setdefault("within_24h_window", True)
     if _is_whatsapp_twilio_message(sanitized) and not sanitized.get("status_callback"):
         callback = _twilio_whatsapp_status_callback_url(sanitized)
         if callback:
             sanitized["status_callback"] = callback
+    if _is_whatsapp_twilio_message(sanitized) and has_app_context():
+        tenant, provider_sender = _resolve_status_callback_tenant_and_sender(
+            {
+                "From": sanitized.get("from_") or sanitized.get("from"),
+                "MessagingServiceSid": sanitized.get("messaging_service_sid"),
+                "ServiceSid": sanitized.get("service_sid"),
+            }
+        )
+        if tenant and getattr(tenant, "id", None):
+            allowed, reason = WhatsAppEnterpriseRulesService(int(tenant.id)).reserve_outbound(
+                body=str(sanitized.get("body") or ""),
+                reservation_key=f"send:{uuid.uuid4().hex}",
+                metadata={
+                    **policy_metadata,
+                    "recipient": sanitized.get("to"),
+                    "is_template": bool(sanitized.get("content_sid")),
+                },
+                provider="twilio",
+                provider_connection_id=getattr(
+                    provider_sender,
+                    "provider_connection_id",
+                    None,
+                ),
+                provider_sender_id=getattr(provider_sender, "id", None),
+                source="whatsapp_webhook",
+            )
+            if not allowed:
+                raise WhatsAppOutboundPolicyError(reason or "enterprise_policy_blocked")
     return client.messages.create(**sanitized)
 
 
@@ -3588,6 +3648,11 @@ def _dispatch_twilio_pre_messages(
                 continue
 
         try:
+            params["_chatboc_policy_metadata"] = (
+                entry.get("metadata")
+                if isinstance(entry.get("metadata"), dict)
+                else {}
+            )
             _send_twilio_message(client, **params)
         except Exception as exc:
             current_app.logger.warning(
@@ -3969,6 +4034,33 @@ def _safe_twilio_status_payload(post_vars: Dict[str, Any]) -> Dict[str, Any]:
     return {key: post_vars.get(key) for key in allowed if post_vars.get(key) not in (None, "")}
 
 
+_WHATSAPP_DELIVERY_PROGRESS = {
+    "unknown": 0,
+    "accepted": 10,
+    "scheduled": 15,
+    "queued": 20,
+    "sending": 30,
+    "sent": 40,
+    "delivered": 50,
+    "read": 60,
+}
+_WHATSAPP_DELIVERY_FAILURES = {"failed", "undelivered", "canceled", "cancelled"}
+
+
+def _whatsapp_delivery_transition_allowed(current: str, incoming: str) -> bool:
+    """Accept progress only; terminal delivery outcomes never regress."""
+
+    if not current:
+        return True
+    if current in _WHATSAPP_DELIVERY_FAILURES:
+        return incoming == current
+    if incoming in _WHATSAPP_DELIVERY_FAILURES:
+        return _WHATSAPP_DELIVERY_PROGRESS.get(current, 0) < _WHATSAPP_DELIVERY_PROGRESS["delivered"]
+    current_rank = _WHATSAPP_DELIVERY_PROGRESS.get(current, 0)
+    incoming_rank = _WHATSAPP_DELIVERY_PROGRESS.get(incoming, 0)
+    return incoming_rank >= current_rank
+
+
 def _reconcile_whatsapp_flow_delivery(
     *,
     tenant_id: int,
@@ -3976,35 +4068,112 @@ def _reconcile_whatsapp_flow_delivery(
     message_sid: Any,
     status: Any,
     error_code: Any,
+    flow_interaction_id: Any = None,
+    recipient: Any = None,
 ) -> Optional[WhatsAppFlowInteraction]:
     message_sid_text = str(message_sid or "").strip()
-    if not message_sid_text:
+    if not message_sid_text and flow_interaction_id in (None, ""):
         return None
-    query = WhatsAppFlowInteraction.query.filter_by(
-        tenant_id=int(tenant_id),
-        external_message_sid=message_sid_text,
-    )
-    if provider_sender and getattr(provider_sender, "id", None):
-        query = query.filter_by(provider_sender_id=provider_sender.id)
-    interaction = query.first()
+    interaction = None
+    if message_sid_text:
+        query = WhatsAppFlowInteraction.query.filter_by(
+            tenant_id=int(tenant_id),
+            external_message_sid=message_sid_text,
+        )
+        if provider_sender and getattr(provider_sender, "id", None):
+            query = query.filter_by(provider_sender_id=provider_sender.id)
+        interaction = query.first()
+    if not interaction and flow_interaction_id not in (None, ""):
+        try:
+            interaction_id = int(flow_interaction_id)
+        except (TypeError, ValueError):
+            interaction_id = 0
+        if interaction_id > 0:
+            fallback_query = WhatsAppFlowInteraction.query.filter_by(
+                id=interaction_id,
+                tenant_id=int(tenant_id),
+            ).filter(
+                WhatsAppFlowInteraction.status.in_(
+                    ("claimed", "send_uncertain", "sent", "consumed")
+                )
+            )
+            if provider_sender and getattr(provider_sender, "id", None):
+                fallback_query = fallback_query.filter_by(
+                    provider_sender_id=provider_sender.id,
+                )
+            interaction = fallback_query.first()
+            if interaction and interaction.external_message_sid not in (
+                None,
+                "",
+                message_sid_text,
+            ):
+                return None
+    if not interaction and provider_sender and getattr(provider_sender, "id", None):
+        recipient_digits = re.sub(r"\D", "", str(recipient or ""))
+        if recipient_digits:
+            recipient_hint = f"***{recipient_digits[-4:]}"
+            candidates = (
+                WhatsAppFlowInteraction.query.filter_by(
+                    tenant_id=int(tenant_id),
+                    provider_sender_id=provider_sender.id,
+                    status="send_uncertain",
+                    recipient_hint=recipient_hint,
+                )
+                .filter(
+                    or_(
+                        WhatsAppFlowInteraction.external_message_sid.is_(None),
+                        WhatsAppFlowInteraction.external_message_sid == "",
+                    )
+                )
+                .limit(2)
+                .all()
+            )
+            if len(candidates) == 1:
+                interaction = candidates[0]
     if not interaction:
         return None
 
     normalized_status = str(status or "unknown").strip().lower()[:32]
     normalized_error = str(error_code or "").strip()[:80] or None
     metadata = dict(interaction.metadata_json or {})
+    current_delivery = metadata.get("delivery") if isinstance(metadata.get("delivery"), dict) else {}
+    current_status = str(current_delivery.get("status") or "").strip().lower()
+    callback_at = datetime.now(timezone.utc).isoformat()
+    if not _whatsapp_delivery_transition_allowed(current_status, normalized_status):
+        metadata["last_ignored_delivery_callback"] = {
+            "status": normalized_status,
+            "error_code": normalized_error,
+            "callback_at": callback_at,
+            "reason": "non_monotonic_transition",
+        }
+        interaction.metadata_json = metadata
+        if message_sid_text and not interaction.external_message_sid:
+            interaction.external_message_sid = message_sid_text[:180]
+        db.session.add(interaction)
+        return interaction
+
     metadata["delivery"] = {
         "status": normalized_status,
         "error_code": normalized_error,
-        "callback_at": datetime.now(timezone.utc).isoformat(),
+        "callback_at": callback_at,
     }
     interaction.metadata_json = metadata
     interaction.updated_at = datetime.now(timezone.utc)
-    if normalized_status in {"failed", "undelivered", "canceled"}:
+    if message_sid_text and not interaction.external_message_sid:
+        interaction.external_message_sid = message_sid_text[:180]
+    if normalized_status in _WHATSAPP_DELIVERY_FAILURES:
         if interaction.status != "consumed":
             interaction.status = "failed"
             interaction.error_code = normalized_error or normalized_status
-    elif normalized_status in {"accepted", "queued", "sending", "sent", "delivered", "read"}:
+    elif normalized_status in {
+        "accepted",
+        "scheduled",
+        "queued",
+        "sending",
+        "sent",
+        "delivered",
+        "read",
+    }:
         if interaction.status in {"claimed", "send_uncertain"}:
             interaction.status = "sent"
             interaction.error_code = None
@@ -4017,6 +4186,7 @@ def _persist_twilio_whatsapp_status_event(
     *,
     tenant: Optional[TenantProfile] = None,
     provider_sender: Optional[ProviderSender] = None,
+    flow_interaction_id: Any = None,
 ) -> Optional[MessagingEventLedger]:
     if tenant is None:
         tenant, resolved_sender = _resolve_status_callback_tenant_and_sender(post_vars)
@@ -4071,6 +4241,8 @@ def _persist_twilio_whatsapp_status_event(
         message_sid=message_sid,
         status=status,
         error_code=post_vars.get("ErrorCode"),
+        flow_interaction_id=flow_interaction_id,
+        recipient=post_vars.get("To"),
     )
     return event
 
@@ -4523,6 +4695,7 @@ def whatsapp_webhook():
     flow_submission_present = has_whatsapp_flow_submission(post_vars)
     flow_submission = None
     safe_flow_submission = None
+    flow_completion_payload = None
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
     to_number_normalized = _normalize_whatsapp_address(to_number_raw)
@@ -4820,6 +4993,7 @@ def whatsapp_webhook():
                 interaction_id=int(flow_interaction_id),
                 tenant_id=int(tenant_id),
                 inbound_message_sid=message_sid,
+                commit=False,
             )
         )
         if not consumed:
@@ -4833,6 +5007,31 @@ def whatsapp_webhook():
                 db.session.add(session_context_db_entry)
                 db.session.commit()
             return "OK", 200
+        completed_flow_id = str(
+            ((safe_flow_submission.get("flow") or {}).get("id")) or ""
+        ).strip()
+        if completed_flow_id in {CLAIM_FLOW_ID, ORDER_FLOW_ID}:
+            try:
+                flow_completion_payload = apply_whatsapp_flow_completion(
+                    tenant_id=int(tenant_id),
+                    interaction_id=int(flow_interaction_id),
+                    submission=safe_flow_submission,
+                    actor_user_id=getattr(end_user, "id", None),
+                    anon_id=from_number_cleaned,
+                )
+            except MetaFlowActionError as exc:
+                current_app.logger.warning(
+                    "[WHATSAPP_FLOW] Completion rejected code=%s flow_id=%s interaction_id=%s",
+                    exc.code,
+                    completed_flow_id,
+                    flow_interaction_id,
+                )
+                flow_completion_payload = record_whatsapp_flow_completion_rejection(
+                    tenant_id=int(tenant_id),
+                    interaction_id=int(flow_interaction_id),
+                    code=exc.code,
+                    actor_user_id=getattr(end_user, "id", None),
+                )
     if flow_token_digest and flow_token_digest in processed_flow_tokens:
         current_app.logger.info("[WHATSAPP_FLOW] Replayed Flow token ignored before orchestration")
         if message_sid:
@@ -4861,6 +5060,38 @@ def whatsapp_webhook():
     safe_flag_modified(session_context_db_entry, "context_data")
     db.session.add(session_context_db_entry)
     db.session.commit()
+
+    realtime_event = (
+        flow_completion_payload.get("realtime_event")
+        if isinstance(flow_completion_payload, dict)
+        else None
+    )
+    if isinstance(realtime_event, dict) and realtime_event.get("comment_id"):
+        try:
+            from socket_service import emit_new_chat_message
+
+            completed_comment = db.session.get(
+                TicketComentario,
+                int(realtime_event["comment_id"]),
+            )
+            if completed_comment is not None:
+                ticket_type = str(realtime_event.get("ticket_type") or "municipio")
+                ticket_id = int(realtime_event["ticket_id"])
+                emit_new_chat_message(
+                    {
+                        "socket_room": f"ticket_{ticket_type}_{ticket_id}",
+                        "tenant_type": ticket_type,
+                        "ticket_id": ticket_id,
+                        "channel": "whatsapp_flow",
+                        "message": completed_comment.to_dict(),
+                    }
+                )
+        except Exception as socket_exc:
+            current_app.logger.warning(
+                "[WHATSAPP_FLOW] CRM realtime emit failed interaction_id=%s error_type=%s",
+                flow_interaction_id,
+                type(socket_exc).__name__,
+            )
 
     if flow_submission_present and not flow_submission:
         current_app.logger.info(
@@ -6083,6 +6314,15 @@ def whatsapp_webhook():
     chatboc_demo_direct_payload = None
     education_direct_payload = None
 
+    if flow_completion_payload:
+        # Entity and realtime metadata are operational-only. Keep them out of
+        # response normalization and every outbound WhatsApp payload.
+        bot_response_dict = {
+            key: value
+            for key, value in flow_completion_payload.items()
+            if key not in {"entity", "realtime_event"}
+        }
+
     if force_chatboc_demo_hub and not flow_submission_present:
         profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
         chatboc_demo_input_context = _build_chatboc_demo_input_context(
@@ -6203,7 +6443,11 @@ def whatsapp_webhook():
         bot_response_dict = education_direct_payload
 
     # Check if we should bypass the bot logic because the user selected a URL option
-    bypass_bot_logic = bool(education_direct_payload or chatboc_demo_direct_payload)
+    bypass_bot_logic = bool(
+        education_direct_payload
+        or chatboc_demo_direct_payload
+        or flow_completion_payload
+    )
     if selected_option and selected_option.get("url"):
         # If the option has a URL, we simply echo it back to the user
         bypass_bot_logic = True
@@ -6825,6 +7069,7 @@ def twilio_whatsapp_status():
             post_vars,
             tenant=tenant,
             provider_sender=provider_sender,
+            flow_interaction_id=request.args.get("flow_interaction_id"),
         )
         db.session.commit()
     except Exception as exc:

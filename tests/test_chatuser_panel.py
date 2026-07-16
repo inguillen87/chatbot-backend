@@ -12,6 +12,7 @@ class ChatUserPanelTests(unittest.TestCase):
         cls.app = create_app(TestConfig)
         cls.app_context = cls.app.app_context()
         cls.app_context.push()
+        db.session.remove()
         db.create_all()
         cls.client = cls.app.test_client()
 
@@ -22,6 +23,7 @@ class ChatUserPanelTests(unittest.TestCase):
         cls.app_context.pop()
 
     def setUp(self):
+        db.session.remove()
         # Create a dummy rubro and owner user
         self.rubro = Rubro(nombre='Test Rubro', clave='test_rubro')
         db.session.add(self.rubro)
@@ -44,6 +46,7 @@ class ChatUserPanelTests(unittest.TestCase):
         db.session.query(User).delete()
         db.session.query(Rubro).delete()
         db.session.commit()
+        db.session.remove()
 
     def test_register_and_associate_chat_session(self):
         # 1. Simulate anonymous chat session creation

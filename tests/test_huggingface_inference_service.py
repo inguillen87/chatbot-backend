@@ -1,3 +1,5 @@
+from flask import Flask
+
 from services import huggingface_inference_service as hf
 
 
@@ -97,6 +99,32 @@ def test_zero_shot_records_quota_failure_without_secret(monkeypatch):
     assert failure["severity"] == "warning"
     assert failure["task"] == "zero_shot"
     assert "hf_test_secret" not in failure["message"]
+
+
+def test_zero_shot_skips_network_inside_testing_app(monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
+
+    def fail_if_called(model=None):
+        raise AssertionError("Hugging Face network client must not run in unit tests")
+
+    monkeypatch.setattr(hf, "_get_client", fail_if_called)
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+
+    with app.app_context():
+        assert hf.classify_zero_shot("hay un bache", ["Bache", "Luminaria"]) is None
+
+
+def test_zero_shot_testing_network_opt_in(monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_ZERO_SHOT_ENABLED", "true")
+    monkeypatch.setattr(hf, "_get_client", lambda model=None: FakeClient())
+    app = Flask(__name__)
+    app.config.update(TESTING=True, HUGGINGFACE_ALLOW_NETWORK_IN_TESTS=True)
+
+    with app.app_context():
+        result = hf.classify_zero_shot("hay una luminaria rota", ["Arbolado", "Luminaria"])
+
+    assert result[0]["label"] == "Luminaria"
 
 
 def test_analyze_image_for_chatboc(monkeypatch):

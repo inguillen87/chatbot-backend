@@ -110,15 +110,15 @@ class TestSugerenciaFlow(unittest.TestCase):
             self.assertEqual(call_kwargs['ticket_data']['municipio_id'], owner_user.municipio_id)
             self.assertTrue(response_4.get("success"))
             body = response_4["message_body"]
-            self.assertIn("¡Sugerencia recibido", body)
+            self.assertIn("¡Sugerencia recibida", body)
             self.assertIn("📄 *Resumen:*", body)
-            self.assertIn("*Ticket:* `M-271497`", body)
+            self.assertIn("*Ticket:* `S-271497`", body)
             self.assertRegex(body, r"\*PIN:\* `\d{6}`")
-            self.assertIn("Punto Limpio Junín", body)
+            self.assertNotIn("Punto Limpio Junín", body)
             opciones = response_4.get("options_list", [])
             textos_botones = {opt.get("texto") for opt in opciones if isinstance(opt, dict)}
             self.assertIn("💬 Ver mi Ticket", textos_botones)
-            self.assertIn("💡 Hacer otra sugerencia", textos_botones)
+            self.assertIn("Hacer otra sugerencia", textos_botones)
             self.assertIn("delayed_payload", response_4)
             self.assertEqual(response_4.get("delay_seconds"), 20)
             self.assertEqual(

@@ -4,11 +4,30 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from PIL import Image
 from flask import Flask, g
 from werkzeug.datastructures import FileStorage
 
+from services import gcs_service
 from services.gcs_service import guardar_adjunto_y_thumbnail
+
+
+@pytest.fixture(autouse=True)
+def _disable_remote_storage(monkeypatch):
+    monkeypatch.setattr(
+        gcs_service.r2_service,
+        "upload_file_with_key",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(gcs_service, "CLOUDINARY_ENABLED", False)
+    monkeypatch.setattr(gcs_service, "VERCEL_BLOB_RW_TOKEN", None)
+    monkeypatch.setattr(gcs_service, "GCS_ENABLED", False)
+    monkeypatch.setattr(
+        gcs_service,
+        "_resolve_local_upload_base",
+        lambda: gcs_service.current_app.config["LOCAL_UPLOAD_FOLDER"],
+    )
 
 
 def _make_image_file(name="test.jpg"):

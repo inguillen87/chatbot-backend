@@ -28,8 +28,8 @@ def _gemini_chat_model() -> str:
     return _env_first(
         "GEMINI_CHAT_MODEL",
         "GEMINI_MODEL",
-        default="gemini-2.5-flash",
-    ) or "gemini-2.5-flash"
+        default="gemini-3.5-flash",
+    ) or "gemini-3.5-flash"
 
 
 def _get_genai_modules():

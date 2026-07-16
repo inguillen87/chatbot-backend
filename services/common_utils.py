@@ -780,8 +780,29 @@ def _get_main_menu_payload(
             if _is_placeholder_name(candidate_name):
                 candidate_name = "tu municipio"
             tenant_name = candidate_name
+        if tenant_name == "tu municipio":
+            tenant_profile = context.get("tenant_profile") or context.get("tenant")
+            if isinstance(tenant_profile, dict):
+                tenant_name = (
+                    tenant_profile.get("nombre")
+                    or tenant_profile.get("display_name")
+                    or tenant_profile.get("name")
+                    or tenant_name
+                )
+            elif tenant_profile is not None:
+                tenant_name = (
+                    getattr(tenant_profile, "nombre", None)
+                    or getattr(tenant_profile, "display_name", None)
+                    or tenant_name
+                )
+        if tenant_name == "tu municipio":
+            tenant_name = (
+                context.get("tenant_name")
+                or context.get("tenant_nombre")
+                or tenant_name
+            )
         if owner_user and tenant_name == "tu municipio":
-            tenant_name = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+            tenant_name = getattr(owner_user, "nombre_empresa", None) or tenant_name
         if _is_placeholder_name(tenant_name):
             tenant_name = "tu municipio"
         return tenant_name
@@ -873,18 +894,8 @@ def _get_main_menu_payload(
             "fuente": "onboarding_categorias_primero"
         }
 
-    # Determine tenant name for text body
-    tenant_name_text = "tu municipio"
-    municipio_config = context.get("municipio_config_actual") or {}
-    if isinstance(municipio_config, dict):
-        tenant_name_text = (
-            municipio_config.get("nombre")
-            or municipio_config.get("nombre_municipio")
-            or municipio_config.get("municipio_nombre")
-            or tenant_name_text
-        )
-    if owner_user and tenant_name_text == "tu municipio":
-        tenant_name_text = getattr(owner_user, "nombre_empresa", None) or getattr(owner_user, "name", "tu municipio")
+    # Reuse the same tenant resolver for personalized and anonymous greetings.
+    tenant_name_text = _resolve_tenant_name()
 
     if welcome_message == f"👋 *¡Hola, {user_name}!*":
         welcome_message = f"{welcome_message} Bienvenido a *{tenant_name_text}*."
@@ -1369,7 +1380,7 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
         return {}
 
     if potential_fields is None:
-        potential_fields = ["nombre", "dni", "email", "telefono", "direccion"]
+        potential_fields = ["nombre", "dni", "email", "telefono", "direccion", "ciudad"]
 
     from utils.validators import (
         extract_address,
@@ -1380,6 +1391,35 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
     )
 
     extracted_data: dict[str, Optional[str]] = {}
+    enumerated_values = [
+        match.group(1).strip(" ,.;:")
+        for match in re.finditer(r"(?m)^\s*\d{1,2}[.)-]\s*(.+?)\s*$", text)
+        if match.group(1).strip(" ,.;:")
+    ]
+    enumerated_name = None
+    enumerated_city = None
+    if len(enumerated_values) >= 2:
+        textual_values = [
+            value
+            for value in enumerated_values
+            if not re.search(r"[@\d]", value)
+        ]
+        if "nombre" in potential_fields:
+            for value in textual_values:
+                possible_name = extract_name(value)
+                if possible_name and len(possible_name.split()) >= 2:
+                    enumerated_name = possible_name
+                    break
+        if "ciudad" in potential_fields:
+            city_candidates = [
+                value
+                for value in textual_values
+                if _normalize_contact_token(value)
+                != _normalize_contact_token(enumerated_name or "")
+                and 1 <= len(value.split()) <= 4
+            ]
+            if city_candidates:
+                enumerated_city = city_candidates[-1]
 
     nombre_prefijo = None
     if "nombre" in potential_fields:
@@ -1398,6 +1438,14 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
         if value:
             safe_value = re.escape(value)
             remaining_text = re.sub(safe_value, " ", remaining_text, flags=re.IGNORECASE)
+
+    if enumerated_name:
+        extracted_data["nombre"] = enumerated_name
+        _remove_from_remaining(enumerated_name)
+    if enumerated_city:
+        extracted_data["ciudad"] = enumerated_city
+        _remove_from_remaining(enumerated_city)
+    remaining_text = re.sub(r"(?m)^\s*\d{1,2}[.)-]\s*", " ", remaining_text)
 
     # --- Step 1: Extract easily identifiable patterns first ---
     # Order: email, DNI, then phone, as DNI is more specific and less ambiguous.
@@ -1449,7 +1497,7 @@ def extract_multiple_contact_details_regex(text: str, potential_fields: list | N
             _remove_from_remaining(address_candidate)
             remaining_text = re.sub(r'\s+', ' ', remaining_text).strip(" ,")
 
-    if "nombre" in potential_fields:
+    if "nombre" in potential_fields and "nombre" not in extracted_data:
         name = extract_name(remaining_text)
         if name:
             extracted_data["nombre"] = name

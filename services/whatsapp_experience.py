@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from models import (
     CatalogoItem,
@@ -32,6 +33,18 @@ from models import (
 from services.commerce_contracts import build_checkout_experience_payload, payment_capabilities
 from services.education_contracts import build_education_whatsapp_playbook, is_education_tenant
 from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
+from services.meta_flow_json import (
+    DATA_API_VERSION as META_FLOW_DATA_API_VERSION,
+    FLOW_JSON_VERSION as META_FLOW_JSON_VERSION,
+    build_claim_tracking_flow,
+    build_order_checkout_flow,
+)
+from services.meta_flow_data_exchange import (
+    MetaFlowEndpointConfig,
+    coerce_endpoint_config,
+    cryptography_available as meta_flow_cryptography_available,
+    endpoint_config_readiness,
+)
 from services.plan_access import integration_access_payload
 from services.provider_platform import is_sender_ready_status
 from services.whatsapp_flow_security import whatsapp_flow_token_key_ready
@@ -56,6 +69,43 @@ FIXED_MENU_AUDIO_SCOPES = [
     {"scope": "catalog_menu", "menu_id": "catalog-menu", "label": "Catalogo y pedidos"},
     {"scope": "status_menu", "menu_id": "status-menu", "label": "Estado y seguimiento"},
 ]
+
+META_FLOW_JSON_BUILDERS = {
+    "claim_tracking_helpdesk": build_claim_tracking_flow,
+    "order_checkout": build_order_checkout_flow,
+}
+
+
+@lru_cache(maxsize=len(META_FLOW_JSON_BUILDERS))
+def _meta_flow_json_artifact_payload(flow_id: str) -> dict[str, Any] | None:
+    """Return a validated upload artifact, never a conceptual screen design."""
+
+    builder = META_FLOW_JSON_BUILDERS.get(str(flow_id or "").strip())
+    if builder is None:
+        return None
+    artifact = builder()
+    document = artifact.document
+    screens = document.get("screens") if isinstance(document.get("screens"), list) else []
+    first_screen = screens[0] if screens and isinstance(screens[0], Mapping) else {}
+    return {
+        "artifact_kind": "meta_flow_json",
+        "source": "services.meta_flow_json",
+        "blueprint_name": artifact.blueprint_name,
+        "flow_json_version": str(document.get("version") or META_FLOW_JSON_VERSION),
+        "data_api_version": str(document.get("data_api_version") or META_FLOW_DATA_API_VERSION),
+        "content_sha256": artifact.content_sha256,
+        "byte_size": artifact.byte_size,
+        "first_screen_id": first_screen.get("id"),
+        "screen_ids": [
+            str(screen.get("id"))
+            for screen in screens
+            if isinstance(screen, Mapping) and screen.get("id")
+        ],
+        "endpoint_driven": bool(document.get("data_api_version")),
+        "publishable_flow_json": True,
+        "validation": {"valid": True, "errors": []},
+        "document": document,
+    }
 
 
 def _fixed_menu_accessibility_gate() -> dict[str, Any]:
@@ -2708,7 +2758,10 @@ def _webview_blueprint_payload(
                 {"id": "confirmation", "title": "Comentario enviado", "components": ["receipt", "next_update_hint"]},
             ],
             "completion_event": "public_comment_created",
-            "data_contract": ["ticket_id", "pin", "tenant_slug", "service_window"],
+            # Only user-controlled fields returned by the terminal screen are
+            # accepted by the inbound webhook. Ticket ownership is persisted
+            # server-side after the encrypted PIN lookup succeeds.
+            "data_contract": ["ticket_number", "follow_up_note"],
         },
         "order_checkout": {
             "flow_name": "chatboc_order_checkout",
@@ -2720,7 +2773,15 @@ def _webview_blueprint_payload(
                 {"id": "payment_or_confirm", "title": "Confirmar", "components": ["payment_status", "submit_order"]},
             ],
             "completion_event": "order_created",
-            "data_contract": ["order_id", "cart_id", "customer_profile", "payment_state"],
+            # The order identity, totals and payment state remain server-owned
+            # in WhatsAppFlowInteraction.metadata_json.
+            "data_contract": [
+                "full_name",
+                "phone",
+                "delivery_address",
+                "delivery_notes",
+                "confirm_order",
+            ],
         },
         "finance_onboarding_kyc": {
             "flow_name": "chatboc_finance_onboarding_kyc",
@@ -2849,10 +2910,21 @@ def _webview_blueprint_payload(
         if design:
             flow["meta_flow_blueprint"] = {
                 **design,
-                "safe_for_whatsapp_flow": True,
+                "artifact_kind": "conceptual_design",
+                "publishable_flow_json": False,
+                "safe_for_whatsapp_flow": False,
+                "blockers": ["flow_json_artifact_not_compiled"],
                 "fallback_surface": flow.get("surface"),
                 "server_confirmation": flow.get("server_confirmation", []),
             }
+        artifact = _meta_flow_json_artifact_payload(str(flow.get("id") or ""))
+        if artifact:
+            flow["meta_flow_artifact"] = artifact
+            if isinstance(flow.get("meta_flow_blueprint"), dict):
+                flow["meta_flow_blueprint"]["blockers"] = [
+                    "data_exchange_endpoint_not_verified",
+                    "meta_publication_not_verified",
+                ]
 
     return {
         "enabled": bool(integration_access.get("enabled")),
@@ -2907,6 +2979,7 @@ def _webview_blueprint_payload(
             "requires_signed_session": True,
             "requires_server_confirmation": True,
             "meta_flow_blueprints": len(meta_flow_designs),
+            "compiled_meta_flow_artifacts": len(META_FLOW_JSON_BUILDERS),
             "executable_contracts": len(flows),
         },
         "security": {
@@ -3296,18 +3369,29 @@ def _flow_state_for_id(webview_blueprint: Mapping[str, Any], flow_id: str) -> di
         }
     status = str(flow.get("status") or "review")
     meta_flow = flow.get("meta_flow_blueprint") if isinstance(flow.get("meta_flow_blueprint"), Mapping) else {}
-    screens = meta_flow.get("screens") if isinstance(meta_flow.get("screens"), list) else []
+    artifact = flow.get("meta_flow_artifact") if isinstance(flow.get("meta_flow_artifact"), Mapping) else {}
+    artifact_document = artifact.get("document") if isinstance(artifact.get("document"), Mapping) else {}
+    screens = artifact_document.get("screens") if isinstance(artifact_document.get("screens"), list) else []
     data_contract = meta_flow.get("data_contract") if isinstance(meta_flow.get("data_contract"), list) else []
+    artifact_ready = bool(
+        artifact.get("publishable_flow_json")
+        and (artifact.get("validation") or {}).get("valid")
+        and artifact.get("content_sha256")
+    )
     return {
         "id": flow_id,
         "status": status,
         "ready": status == "ready",
         "url_template": flow.get("url_template"),
         "surface": flow.get("surface"),
-        "meta_flow_blueprint_ready": bool(meta_flow and screens and data_contract),
+        "meta_flow_blueprint_ready": artifact_ready,
+        "flow_json_artifact_ready": artifact_ready,
         "meta_flow_name": meta_flow.get("flow_name"),
         "meta_flow_category": meta_flow.get("category"),
         "endpoint_mode": meta_flow.get("endpoint_mode"),
+        "flow_json_version": artifact.get("flow_json_version"),
+        "data_api_version": artifact.get("data_api_version"),
+        "content_sha256": artifact.get("content_sha256"),
         "screens_count": len(screens),
         "screen_ids": [str(screen.get("id") or "") for screen in screens if isinstance(screen, Mapping) and screen.get("id")],
         "data_contract_count": len(data_contract),
@@ -3531,6 +3615,10 @@ def _qa_playbook_payload(
                 "webview_state": flow_state,
                 "meta_flow_coverage": {
                     "ready": bool(flow_state.get("meta_flow_blueprint_ready")),
+                    "artifact_ready": bool(flow_state.get("flow_json_artifact_ready")),
+                    "flow_json_version": flow_state.get("flow_json_version"),
+                    "data_api_version": flow_state.get("data_api_version"),
+                    "content_sha256": flow_state.get("content_sha256"),
                     "flow_name": flow_state.get("meta_flow_name"),
                     "category": flow_state.get("meta_flow_category"),
                     "endpoint_mode": flow_state.get("endpoint_mode"),
@@ -4070,6 +4158,151 @@ def _explicit_flag(mapping: Mapping[str, Any], *keys: str) -> bool:
     return False
 
 
+def _meta_flow_data_exchange_contract(
+    tenant: TenantProfile,
+    *,
+    app_config: Mapping[str, Any],
+    sender_metadata: Mapping[str, Any],
+    meta_config: Mapping[str, Any],
+    tech_state: Mapping[str, Any],
+    waba_id: str,
+) -> dict[str, Any]:
+    """Report endpoint readiness from the actual WABA-bound crypto config."""
+
+    endpoint_id = str(
+        sender_metadata.get("meta_flow_data_exchange_endpoint_id")
+        or meta_config.get("data_exchange_endpoint_id")
+        or tech_state.get("meta_flow_data_exchange_endpoint_id")
+        or ""
+    ).strip()
+    registry = app_config.get("META_FLOW_DATA_EXCHANGE_ENDPOINTS")
+    resolver = app_config.get("META_FLOW_DATA_EXCHANGE_CONFIG_RESOLVER")
+    raw_config: Any = None
+    config_source = "not_configured"
+
+    if not endpoint_id and isinstance(registry, Mapping) and waba_id:
+        for candidate_id, candidate in registry.items():
+            candidate_waba = (
+                candidate.waba_id
+                if isinstance(candidate, MetaFlowEndpointConfig)
+                else candidate.get("waba_id")
+                if isinstance(candidate, Mapping)
+                else None
+            )
+            if str(candidate_waba or "").strip() == waba_id:
+                endpoint_id = str(candidate_id or "").strip()
+                break
+
+    resolution_error = None
+    if endpoint_id:
+        try:
+            if isinstance(registry, Mapping):
+                raw_config = registry.get(endpoint_id)
+                if raw_config is not None:
+                    config_source = "registry"
+            if raw_config is None and callable(resolver):
+                raw_config = resolver(endpoint_id)
+                config_source = "resolver"
+        except Exception:
+            resolution_error = "endpoint_config_resolution_failed"
+
+    endpoint_config = None
+    if raw_config is not None and not resolution_error:
+        try:
+            endpoint_config = coerce_endpoint_config(endpoint_id, raw_config)
+        except Exception:
+            resolution_error = "endpoint_config_invalid"
+
+    public_base = str(
+        app_config.get("PUBLIC_API_BASE_URL")
+        or app_config.get("BACKEND_URL")
+        or ""
+    ).strip().rstrip("/")
+    parsed_base = urlsplit(public_base) if public_base else None
+    https_public_url = bool(
+        parsed_base
+        and parsed_base.scheme.lower() == "https"
+        and parsed_base.netloc
+    )
+    endpoint_url = (
+        f"{public_base}/api/whatsapp/flows/data-exchange/{endpoint_id}"
+        if public_base and endpoint_id
+        else None
+    )
+    crypto_material = (
+        endpoint_config_readiness(endpoint_config)
+        if endpoint_config
+        else {
+            "ready": False,
+            "private_key_ready": False,
+            "signature_ready": False,
+            "failure_code": None,
+        }
+    )
+    private_key_ready = bool(crypto_material.get("private_key_ready"))
+    signature_ready = bool(crypto_material.get("signature_ready"))
+    tenant_bound = bool(
+        endpoint_config
+        and str(endpoint_config.tenant_id) in {str(tenant.id), str(tenant.slug)}
+    )
+    waba_bound = bool(
+        endpoint_config
+        and waba_id
+        and str(endpoint_config.waba_id) == waba_id
+    )
+    configured_handlers = sorted(endpoint_config.handlers) if endpoint_config else []
+    required_handlers = {"init", "back", "data_exchange"}
+    handlers_ready = required_handlers.issubset(configured_handlers)
+    crypto_ready = meta_flow_cryptography_available()
+
+    blockers: list[str] = []
+    if not endpoint_id:
+        blockers.append("endpoint_id_not_configured")
+    if endpoint_id and raw_config is None and not resolution_error:
+        blockers.append("endpoint_config_not_found")
+    if resolution_error:
+        blockers.append(resolution_error)
+    if not https_public_url:
+        blockers.append("https_public_api_url_not_configured")
+    if not crypto_ready:
+        blockers.append("cryptography_runtime_unavailable")
+    if not private_key_ready:
+        blockers.append("waba_private_key_not_configured")
+    if not signature_ready:
+        blockers.append("meta_app_secret_not_configured")
+    if endpoint_config and not tenant_bound:
+        blockers.append("tenant_scope_mismatch")
+    if endpoint_config and not waba_bound:
+        blockers.append("waba_scope_mismatch")
+    if endpoint_config and not handlers_ready:
+        blockers.append("business_handlers_not_configured")
+
+    return {
+        "contract_version": "whatsapp.meta_flow_data_exchange.v1",
+        "data_api_version": META_FLOW_DATA_API_VERSION,
+        "configured": bool(endpoint_config),
+        "ready": not blockers,
+        "status": "ready" if not blockers else "configuration_required",
+        "endpoint_id_present": bool(endpoint_id),
+        "endpoint_url": endpoint_url,
+        "https_public_url": https_public_url,
+        "config_source": config_source,
+        "private_key_ready": private_key_ready,
+        "signature_validation_ready": signature_ready,
+        "tenant_bound": tenant_bound,
+        "waba_bound": waba_bound,
+        "crypto_runtime_ready": crypto_ready,
+        "required_handlers": sorted(required_handlers),
+        "configured_handlers": configured_handlers,
+        "handlers_ready": handlers_ready,
+        "supports_actions": ["ping", "init", "back", "data_exchange", "error"],
+        "decryption_failure_status": 421,
+        "raw_body_signature_header": "X-Hub-Signature-256",
+        "dedicated_key_pair_per_waba": True,
+        "blockers": blockers,
+    }
+
+
 def _meta_platform_payload(
     tenant: TenantProfile,
     *,
@@ -4109,6 +4342,14 @@ def _meta_platform_payload(
     flow_token_security_ready = whatsapp_flow_token_key_ready(
         app_cfg.get("WHATSAPP_FLOW_TOKEN_KEY_V1")
     )
+    data_exchange = _meta_flow_data_exchange_contract(
+        tenant,
+        app_config=app_cfg,
+        sender_metadata=sender_metadata,
+        meta_config=meta_cfg,
+        tech_state=tech_state,
+        waba_id=waba_id,
+    )
 
     registry_rows = MessageTemplateRegistry.query.filter_by(
         tenant_id=tenant.id,
@@ -4131,9 +4372,16 @@ def _meta_platform_payload(
             continue
         flow_id = str(flow.get("id") or "").strip()
         blueprint = flow.get("meta_flow_blueprint") if isinstance(flow.get("meta_flow_blueprint"), Mapping) else {}
-        if not flow_id or not blueprint.get("safe_for_whatsapp_flow"):
+        artifact = flow.get("meta_flow_artifact") if isinstance(flow.get("meta_flow_artifact"), Mapping) else {}
+        validation = artifact.get("validation") if isinstance(artifact.get("validation"), Mapping) else {}
+        if (
+            not flow_id
+            or not artifact.get("publishable_flow_json")
+            or not validation.get("valid")
+        ):
             continue
-        screens = blueprint.get("screens") if isinstance(blueprint.get("screens"), list) else []
+        artifact_document = artifact.get("document") if isinstance(artifact.get("document"), Mapping) else {}
+        screens = artifact_document.get("screens") if isinstance(artifact_document.get("screens"), list) else []
         first_screen = screens[0] if screens and isinstance(screens[0], Mapping) else {}
         row = native_registry.get(flow_id)
         metadata = row.metadata_json if row and isinstance(row.metadata_json, Mapping) else {}
@@ -4147,33 +4395,76 @@ def _meta_platform_payload(
         meta_flow_status = str(
             metadata.get("meta_flow_status") or metadata.get("approval_status") or ""
         ).strip().lower()
-        configured = bool(meta_flow_id and content_sid.startswith("HX"))
+        artifact_sha256 = str(artifact.get("content_sha256") or "").strip()
+        registered_sha256 = str(metadata.get("flow_json_sha256") or "").strip()
+        artifact_identity_verified = bool(
+            artifact_sha256
+            and registered_sha256
+            and registered_sha256 == artifact_sha256
+        )
+        publication_verified = bool(metadata.get("meta_flow_publication_verified"))
+        configured = bool(
+            meta_flow_id
+            and content_sid.startswith("HX")
+            and artifact_identity_verified
+        )
         active = bool(
             configured
             and channel_ready
             and sender_ready
             and flow_token_security_ready
+            and data_exchange.get("ready")
+            and publication_verified
             and registry_status in APPROVED_TEMPLATE_STATUSES
             and meta_flow_status in ACTIVE_META_FLOW_STATUSES
         )
+        blockers: list[str] = []
+        if not meta_flow_id:
+            blockers.append("meta_flow_id_required")
+        if not content_sid.startswith("HX"):
+            blockers.append("twilio_content_sid_required")
+        if row and not artifact_identity_verified:
+            blockers.append("flow_json_artifact_not_verified")
+        if configured and not publication_verified:
+            blockers.append("meta_publication_not_verified")
+        if not data_exchange.get("ready"):
+            blockers.append("data_exchange_not_ready")
+        if not flow_token_security_ready:
+            blockers.append("flow_token_key_not_configured")
+        if not sender_ready:
+            blockers.append("sender_not_ready")
         flow_candidates.append(
             {
                 "id": flow_id,
                 "flow_name": blueprint.get("flow_name"),
                 "category": blueprint.get("category"),
                 "endpoint_mode": blueprint.get("endpoint_mode"),
-                "first_screen_id": first_screen.get("id"),
+                "first_screen_id": artifact.get("first_screen_id") or first_screen.get("id"),
                 "screens_count": len(screens),
+                "screen_ids": artifact.get("screen_ids") or [],
+                "flow_json_version": artifact.get("flow_json_version"),
+                "data_api_version": artifact.get("data_api_version"),
+                "flow_json_sha256": artifact_sha256,
+                "flow_json_byte_size": artifact.get("byte_size"),
+                "artifact_identity_verified": artifact_identity_verified,
                 "data_contract": blueprint.get("data_contract") or [],
                 "meta_flow_id": meta_flow_id or None,
                 "content_sid": content_sid or None,
                 "registry_status": registry_status,
                 "meta_flow_status": meta_flow_status or None,
+                "meta_flow_publication_verified": publication_verified,
                 "configured": configured,
                 "active": active,
+                "blockers": blockers,
                 "activation_state": (
                     "active"
                     if active
+                    else "configuration_mismatch"
+                    if row and not configured
+                    else "awaiting_data_exchange"
+                    if configured and not data_exchange.get("ready")
+                    else "awaiting_publication_verification"
+                    if configured and not publication_verified
                     else "awaiting_meta_approval"
                     if configured
                     else "meta_flow_id_required"
@@ -4274,6 +4565,13 @@ def _meta_platform_payload(
             "contract_version": "whatsapp.meta_native_flows.v1",
             "supported_by_provider": True,
             "content_type": "whatsapp/flows",
+            "flow_json_profile": {
+                "version": META_FLOW_JSON_VERSION,
+                "data_api_version": META_FLOW_DATA_API_VERSION,
+                "single_column_layout_only": True,
+                "max_asset_bytes": 10 * 1024 * 1024,
+                "null_values_allowed": False,
+            },
             "configured": configured_flows > 0,
             "active": active_flows > 0,
             "configured_count": configured_flows,
@@ -4288,9 +4586,14 @@ def _meta_platform_payload(
             "approval_category": "UTILITY",
             "requires_published_meta_flow_id": True,
             "requires_per_send_flow_token": True,
+            "requires_matching_compiled_artifact_hash": True,
+            "requires_verified_meta_publication": True,
             "runtime_endpoint": f"/api/public/flows/runtime?tenant={tenant.slug}&channel=whatsapp",
+            "data_exchange": data_exchange,
             "submission_ingestion": {
-                "contract_version": "whatsapp.flow_submission.v1",
+                "contract_version": "whatsapp.twilio_flow_completion.v1",
+                "transport": "twilio_completion_webhook",
+                "is_meta_data_exchange_endpoint": False,
                 "provider_webhook_fields": ["InteractiveData", "FlowData"],
                 "status": (
                     "active"
@@ -4312,6 +4615,9 @@ def _meta_platform_payload(
                 "hipaa_data_allowed": False,
                 "server_validation_required": True,
                 "dedicated_token_key_ready": flow_token_security_ready,
+                "data_exchange_crypto_ready": bool(data_exchange.get("ready")),
+                "meta_signature_validation_ready": bool(data_exchange.get("signature_validation_ready")),
+                "waba_key_binding_ready": bool(data_exchange.get("waba_bound")),
                 "tenant_recipient_sender_bound": True,
                 "durable_single_use_invocation": True,
                 "atomic_replay_protection": True,

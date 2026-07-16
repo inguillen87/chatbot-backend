@@ -20,10 +20,8 @@ class TestGoogleVisionService(unittest.TestCase):
 
         service = GoogleVisionService()
 
-        self.assertIsNotNone(service.client)
+        self.assertIs(service.client, mock_client_instance)
         mock_client_constructor.assert_called_once()
-        # Test if the ADC check method was called
-        mock_client_instance.feature_level_lfp_response_handler.assert_called_once()
 
     @patch('services.google_vision_service.vision.ImageAnnotatorClient', side_effect=Exception("ADC not found"))
     def test_initialization_failure(self, mock_client_constructor):

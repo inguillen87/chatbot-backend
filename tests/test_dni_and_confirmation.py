@@ -20,7 +20,7 @@ class TestDniExtractionAndConfirmation(unittest.TestCase):
         )
         self.assertEqual(data.get("nombre"), "Marcelo Guillen")
         self.assertEqual(data.get("direccion"), "sarmiento esquina san martin junin mendoza")
-        self.assertEqual(data.get("telefono"), "+2613168608")
+        self.assertEqual(data.get("telefono"), "+5492613168608")
 
     def test_enumerated_name_phone_city(self):
         text = "1. Juan Perez\n2. +5491112345678\n3. CABA"

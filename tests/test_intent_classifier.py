@@ -28,6 +28,16 @@ def test_classify_saludo_intent(classifier):
     assert intent is not None
     assert intent.get("categoria") == "saludar"
 
+
+def test_specific_request_wins_over_embedded_greeting(classifier):
+    intent, _ = classifier.classify(
+        "Hola buenos dias, quiero hacer un reclamo por un bache en la calle",
+        rubro="municipios",
+    )
+
+    assert intent is not None
+    assert intent.get("categoria") == "iniciar_reclamo"
+
 def test_no_intent_for_ambiguous_text(classifier):
     """
     Tests that ambiguous text does not trigger an intent with high confidence.

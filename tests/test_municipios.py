@@ -57,8 +57,12 @@ def test_reclamo_handler_inicio(client):
             rubro_obj=MagicMock(nombre='municipio')
         )
 
-        mock_llamar_gemini.assert_called_once()
-        assert response["message_body"] == "Entendido, iniciando reclamo. ¿Sobre qué es?"
+        mock_llamar_gemini.assert_not_called()
+        assert response["message_body"] == "Elegí una opción para tu consulta:"
+        assert any(
+            option.get("action_id") == "iniciar_reclamo"
+            for option in response.get("options_list", [])
+        )
 
 @patch('services.municipio_responder.llamar_gemini')
 def test_responder_municipio_imagen(mock_llamar_gemini, client):
@@ -86,18 +90,23 @@ def test_responder_municipio_imagen(mock_llamar_gemini, client):
         mock_ticket.nro_ticket = "IMG-001"
         mock_crear_ticket.return_value = mock_ticket
 
+        chat_context = MagicMock(context_data={})
         response = responder_municipio(
             pregunta_original="Mira esta foto",
             owner_user=owner_user_mock,
-            viewer_user=MagicMock(),
-            chat_db_context=MagicMock(context_data={}),
+            viewer_user=None,
+            chat_db_context=chat_context,
             rubro_obj=MagicMock(nombre='municipio'),
-            datos_interpretados_archivo=datos_interpretados
+            datos_interpretados_archivo=datos_interpretados,
+            es_foto=True,
+            foto_url="https://example.com/bache.jpg",
         )
 
-        # The flow now asks for contact details since none were provided, which is correct.
-        # In this specific flow, responder_municipio returns the dictionary directly.
-        assert "Para continuar, aún necesito estos datos: ubicación, nombre, teléfono, email." in response["message_body"]
+        assert "Para finalizar" in response["message_body"]
+        flow_data = chat_context.context_data["contexto_municipio_v2"]["reclamo_flow_v2"]["datos_reclamo"]
+        assert flow_data["direccion"] == "Calle Falsa 123"
+        assert flow_data["foto_url"] == "https://example.com/bache.jpg"
+        assert "dirección exacta" not in response["message_body"]
 
 
     datos_interpretados = {
@@ -149,17 +158,17 @@ def test_button_click_sets_category_and_advances_flow(client):
         )
 
         # 1. Assert the bot's response asks for the next piece of info
-        assert "decime la descripción del problema y la dirección" in response["message_body"]
+        assert "describí brevemente qué está pasando" in response["message_body"]
 
         # 2. Assert that the context was updated correctly
         contexto_guardado = chat_db_context.context_data.get("contexto_municipio_v2", {})
-        datos_reclamo = contexto_guardado.get("datos_parciales_llm_reclamo", {})
+        datos_reclamo = contexto_guardado.get("reclamo_flow_v2", {}).get("datos_reclamo", {})
 
         # The new logic with the intent classifier correctly sets the category from the action
         assert datos_reclamo.get("categoria") == "Luminaria"
         # And then it calls the LLM, which is what we are mocking.
         # The state is advanced inside the LLM handler, so we check the result of that.
-        assert contexto_guardado.get("estado_conversacion") == "ESPERANDO_INFO_RECLAMO_LLM"
+        assert contexto_guardado.get("estado_conversacion") == "EN_FLUJO_RECLAMO"
 
 if __name__ == '__main__':
     unittest.main()

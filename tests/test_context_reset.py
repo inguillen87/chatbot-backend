@@ -54,17 +54,20 @@ class TestContextReset(unittest.TestCase):
             db.session.add(chat_session)
             db.session.commit()
 
-            mock_llm.return_value = {
-                'message_body': 'Buscando...',
-                'accion_backend': 'ejecutar_herramienta',
-                'datos_estructura': {
-                    'target': 'municipio',
-                    'nombre_herramienta': 'buscar_negocios_cercanos',
-                    'parametros_herramienta': {'tipo_negocio': 'veterinaria'}
+            mock_llm.return_value = (
+                {
+                    'message_body': 'Buscando...',
+                    'accion_backend': 'ejecutar_herramienta',
+                    'datos_estructura': {
+                        'target': 'municipio',
+                        'nombre_herramienta': 'buscar_negocios_cercanos',
+                        'parametros_herramienta': {'tipo_negocio': 'veterinaria'}
+                    },
+                    'pedir_info': None,
+                    'botones': []
                 },
-                'pedir_info': None,
-                'botones': []
-            }
+                {},
+            )
 
             responder_municipio(
                 pregunta_original='quiero veterinarias',
@@ -86,4 +89,3 @@ class TestContextReset(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

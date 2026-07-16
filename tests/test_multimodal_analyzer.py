@@ -11,6 +11,7 @@ from services.multimodal_analyzer import analizar_imagen_con_fallback, analizar_
 
 class TestMultimodalAnalyzer(unittest.TestCase):
 
+    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-openai-key"}, clear=False)
     @patch('services.multimodal_analyzer.encode_image_to_base64')
     @patch('services.multimodal_analyzer.OpenAI')
     def test_analizar_imagen_openai_success(self, mock_openai_class, mock_encode):
@@ -35,14 +36,15 @@ class TestMultimodalAnalyzer(unittest.TestCase):
 
         # Assert
         self.assertIsNotNone(result)
-        self.assertIn("raw_response", result)
-        self.assertEqual(result["raw_response"], '{"intent": "crear_reclamo", "data": {"categoria": "Arreglo de calle"}}')
+        self.assertEqual(result["intent"], "crear_reclamo")
+        self.assertEqual(result["data"]["categoria"], "Arreglo de calle")
         mock_encode.assert_called_once_with(test_image)
+        mock_openai_class.assert_called_once_with(api_key="test-openai-key")
         mock_openai_instance.chat.completions.create.assert_called_once()
 
     @patch('services.multimodal_analyzer.analizar_imagen_openai')
     @patch('logging.Logger.warning')
-    def test_fallback_to_google_vision(self, mock_log_warning, mock_analizar_openai):
+    def test_fallback_to_legacy_placeholder(self, mock_log_warning, mock_analizar_openai):
         # Arrange
         mock_analizar_openai.return_value = None
         test_image = "path/to/fake/image.jpg"
@@ -52,9 +54,9 @@ class TestMultimodalAnalyzer(unittest.TestCase):
         result = analizar_imagen_con_fallback(test_image, test_prompt)
 
         # Assert
-        self.assertIsNone(result) # Since Google Vision is not implemented, it should return None
+        self.assertIsNone(result)
         mock_analizar_openai.assert_called_once_with(test_image, test_prompt)
-        mock_log_warning.assert_called_with("Falling back to Google Vision...")
+        mock_log_warning.assert_called_with("Falling back to placeholder/legacy logic...")
 
 if __name__ == '__main__':
     unittest.main()

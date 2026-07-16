@@ -1,17 +1,12 @@
-import jwt
 from datetime import datetime, timedelta
 
 from app import db
 from models import MunicipioTicket, TenantProfile, User
+from tests.auth_test_utils import clerk_superadmin_headers
 
 
 def _sa_headers(app, user):
-    token = jwt.encode(
-        {"user_id": user.id, "rol": user.rol, "tipo_chat": user.tipo_chat},
-        app.config["SECRET_KEY"],
-        algorithm="HS256",
-    )
-    return {"Authorization": f"Bearer {token}"}
+    return clerk_superadmin_headers(user)
 
 
 def test_super_admin_leads_pipeline_returns_stage_metrics(client, app):

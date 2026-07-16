@@ -22,7 +22,7 @@ TOKEN_SALT = "chatboc.whatsapp-flow.invocation.v1"
 MINIMUM_KEY_BYTES = 32
 DEFAULT_TTL_SECONDS = 48 * 60 * 60
 MAX_TTL_SECONDS = 7 * 24 * 60 * 60
-_RECIPIENT_CHARACTERS = re.compile(r"^[+() .\-\d]+$")
+_RECIPIENT_CHARACTERS = re.compile(r"^\+[() .\-\d]+$")
 _FLOW_ID = re.compile(r"^[A-Za-z0-9_.:\-]{1,120}$")
 
 
@@ -52,7 +52,10 @@ def normalize_flow_recipient(value: Any) -> str:
     raw = str(value or "").strip()
     if raw.lower().startswith("whatsapp:"):
         raw = raw.split(":", 1)[1].strip()
-    if not raw.startswith("+") or not _RECIPIENT_CHARACTERS.fullmatch(raw):
+    # Keep accepting human-formatted E.164 input, but only one leading plus is
+    # valid. The previous character class also accepted values such as
+    # ``+54+911...`` and silently normalized them to another recipient.
+    if not _RECIPIENT_CHARACTERS.fullmatch(raw):
         raise WhatsAppFlowTokenError("invalid_recipient")
     digits = "".join(character for character in raw if character.isdigit())
     if not 8 <= len(digits) <= 15 or digits.startswith("0"):
@@ -203,13 +206,100 @@ def verify_whatsapp_flow_token(
     }
 
 
+def verify_whatsapp_flow_endpoint_token(
+    token: Any,
+    *,
+    secret: Any,
+    tenant_id: int,
+    allowed_flow_ids: Iterable[str],
+    ttl_seconds: Any = DEFAULT_TTL_SECONDS,
+) -> dict[str, Any]:
+    """Verify a Data Exchange token without trusting recipient data from the request."""
+
+    root_key = _key_bytes(secret)
+    ttl = normalized_flow_ttl(ttl_seconds)
+    raw_token = str(token or "").strip()
+    if not raw_token or len(raw_token) > 4096:
+        raise WhatsAppFlowTokenError("invalid_flow_token")
+    try:
+        claims = _serializer(root_key, tenant_id).loads(raw_token, max_age=ttl)
+    except SignatureExpired as exc:
+        raise WhatsAppFlowTokenError("expired_flow_token") from exc
+    except BadSignature as exc:
+        raise WhatsAppFlowTokenError("invalid_flow_token") from exc
+    if not isinstance(claims, dict):
+        raise WhatsAppFlowTokenError("invalid_flow_token_claims")
+
+    expected = {
+        "v": TOKEN_VERSION,
+        "p": TOKEN_PURPOSE,
+        "k": TOKEN_KEY_ID,
+        "t": int(tenant_id),
+    }
+    for claim, value in expected.items():
+        if claims.get(claim) != value:
+            raise WhatsAppFlowTokenError("flow_token_scope_mismatch")
+
+    flow_id = _validated_flow_id(claims.get("f"))
+    meta_flow_id = _validated_flow_id(claims.get("m"))
+    allowed = {
+        str(item or "").strip().lower()
+        for item in allowed_flow_ids
+        if str(item or "").strip()
+    }
+    if not allowed or (flow_id.lower() not in allowed and meta_flow_id.lower() not in allowed):
+        raise WhatsAppFlowTokenError("unrecognized_flow")
+
+    token_digest = _token_digest(root_key, raw_token)
+    interaction = WhatsAppFlowInteraction.query.filter_by(
+        tenant_id=int(tenant_id),
+        token_digest=token_digest,
+    ).first()
+    if interaction is None:
+        raise WhatsAppFlowTokenError("unknown_flow_invocation")
+    now = datetime.now(timezone.utc)
+    expires_at = _as_utc(interaction.expires_at)
+    if expires_at is None or expires_at <= now:
+        raise WhatsAppFlowTokenError("expired_flow_invocation")
+    if interaction.status not in {"sent", "send_uncertain", "consumed"}:
+        raise WhatsAppFlowTokenError("inactive_flow_invocation")
+
+    signed_recipient_hash = str(claims.get("r") or "")
+    if (
+        interaction.flow_id != flow_id
+        or interaction.meta_flow_id != meta_flow_id
+        or interaction.provider_sender_id != int(claims.get("s") or 0)
+        or not signed_recipient_hash
+        or not hmac.compare_digest(interaction.recipient_hash, signed_recipient_hash)
+    ):
+        raise WhatsAppFlowTokenError("flow_invocation_scope_mismatch")
+
+    return {
+        "interaction_id": interaction.id,
+        "token_digest": token_digest,
+        "tenant_id": interaction.tenant_id,
+        "flow_id": interaction.flow_id,
+        "meta_flow_id": interaction.meta_flow_id,
+        "provider_sender_id": interaction.provider_sender_id,
+        "recipient_hash": interaction.recipient_hash,
+        "data_contract": _normalized_data_contract(interaction.data_contract),
+        "already_consumed": interaction.consumed_at is not None,
+        "expires_at": expires_at.isoformat(),
+    }
+
+
 def consume_whatsapp_flow_interaction(
     *,
     interaction_id: int,
     tenant_id: int,
     inbound_message_sid: Any = None,
+    commit: bool = True,
 ) -> bool:
-    """Atomically consume one invocation before conversational side effects."""
+    """Atomically consume one invocation before conversational side effects.
+
+    ``commit=False`` lets a caller persist the one-time transition and its CRM
+    writeback in the same database transaction.
+    """
 
     now = datetime.now(timezone.utc)
     update_values: dict[str, Any] = {
@@ -233,7 +323,10 @@ def consume_whatsapp_flow_interaction(
     if updated != 1:
         db.session.rollback()
         return False
-    db.session.commit()
+    if commit:
+        db.session.commit()
+    else:
+        db.session.flush()
     return True
 
 

@@ -608,7 +608,7 @@ def formatear_ticket_respuesta(
             chat_url = f"{base_url_clean}{tracking_path}/{ticket_id_numeric}"
 
         botones.append({
-            "texto": "💬 Ver Estado",
+            "texto": "💬 Ver mi Ticket",
             "url": chat_url,
             "type": "url"
         })
@@ -658,7 +658,10 @@ def formatear_ticket_respuesta(
                 "• *Ver mi Ticket:* Usá el botón \"Ver mi Ticket\" que aparece debajo."
             )
 
-    respuesta_lineas: list[str] = [f"✅ *¡{texto_tipo} recibido, {nombre_usuario}!*"]
+    participio_recepcion = "recibida" if tipo == "sugerencia" else "recibido"
+    respuesta_lineas: list[str] = [
+        f"✅ *¡{texto_tipo} {participio_recepcion}, {nombre_usuario}!*"
+    ]
     if tipo == "reclamo" and id_ticket:
         respuesta_lineas.append(f"Listo {nombre_usuario} ✅ Tu reclamo quedó cargado con el número `{id_ticket}`.")
     if resumen_lineas:

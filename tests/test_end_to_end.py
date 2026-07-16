@@ -13,20 +13,12 @@ class TestEndToEnd(unittest.TestCase):
 
     def setUp(self):
         os.environ["GOOGLE_PROJECT_ID"] = "test-project"
-        from app import create_app
-        self.app = create_app()
-        self.app_context = self.app.app_context()
-        self.app_context.push()
-
         self.owner_user = MagicMock()
         self.owner_user.id = 1
         self.rubro_obj = None
         self.viewer_user = None
         self.chat_db_context = MagicMock()
         self.chat_db_context.context_data = {}
-
-    def tearDown(self):
-        self.app_context.pop()
 
     @patch('services.municipio_responder.responder_municipio')
     def test_end_to_end_pothole_complaint(self, mock_responder_municipio):

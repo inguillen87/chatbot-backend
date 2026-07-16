@@ -108,7 +108,10 @@ class TestProactiveFlows(unittest.TestCase):
 
         # Assert
         self.assertIn("Recibí tu ubicación", response["message_body"])
-        self.assertIn("Iniciar un Reclamo", [btn["texto"] for btn in response["options_list"]])
+        self.assertIn(
+            "iniciar_reclamo_con_ubicacion",
+            [btn["action_id"] for btn in response["options_list"]],
+        )
         self.assertEqual(
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_INTENCION_UBICACION.name
@@ -171,7 +174,13 @@ class TestProactiveFlows(unittest.TestCase):
         opciones_guardadas = chat_context.context_data['contexto_municipio_v2']['menu_opciones']
         self.assertEqual(
             [opt['action_id'] for opt in opciones_guardadas],
-            ['iniciar_reclamo_con_ubicacion', 'enviar_sugerencia_con_ubicacion', 'cancelar']
+            [
+                'iniciar_reclamo_con_ubicacion',
+                'enviar_sugerencia_con_ubicacion',
+                'buscar_estacionamiento_con_ubicacion',
+                'buscar_lugares_cerca',
+                'cancelar',
+            ]
         )
 
         with patch('services.municipio_responder.ReclamoFlowHandler.start_flow') as mock_start_flow:
@@ -227,8 +236,8 @@ class TestProactiveFlows(unittest.TestCase):
             chat_context.context_data['contexto_municipio_v2']['estado_conversacion'],
             ConversationState.ESPERANDO_INTENCION_UBICACION.name,
         )
-        option_texts = [opt["texto"] for opt in response["options_list"]]
-        self.assertIn("Iniciar un Reclamo", option_texts)
+        option_actions = [opt["action_id"] for opt in response["options_list"]]
+        self.assertIn("iniciar_reclamo_con_ubicacion", option_actions)
 
     @patch('services.municipio_responder.analizar_imagen_con_fallback')
     def test_image_then_location_advances_claim_flow(self, mock_analizar_imagen):

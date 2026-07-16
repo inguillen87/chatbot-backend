@@ -12,7 +12,8 @@ class TestPOIFlowMenuReset(unittest.TestCase):
         handler = PointsOfInterestHandler(context=context)
         loc = {"lat": -33.0, "lon": -68.0, "address": "Test"}
         resp = handler.handle({"pregunta": "estacionamiento", "location": loc})
-        self.assertIn("¿Cómo te puedo ayudar hoy?", resp.get("message_body", ""))
+        self.assertIn("Datos de estacionamiento", resp.get("message_body", ""))
+        self.assertTrue(resp.get("options_list"))
         municipio_ctx = context["chat_db_context_data"].get("contexto_municipio_v2", {})
         self.assertEqual(
             municipio_ctx.get("estado_conversacion"),

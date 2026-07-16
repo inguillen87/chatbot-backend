@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 from flask import Blueprint, abort, current_app, g, jsonify, request
@@ -23,7 +24,13 @@ from models import (
     db,
 )
 from services.provider_platform import is_sender_ready_status
-from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
+from services.meta_flow_json import canonical_flow_json
+from services.meta_flow_data_exchange import MetaFlowActionError
+from services.meta_flow_runtime import ORDER_FLOW_ID, authorize_order_context
+from services.whatsapp_enterprise_rules import (
+    WhatsAppEnterpriseRulesService,
+    whatsapp_flow_rate_limit_reservation_key,
+)
 from services.whatsapp_experience import build_whatsapp_experience
 from services.whatsapp_flow_security import (
     WhatsAppFlowTokenError,
@@ -58,6 +65,13 @@ def _guard(user: User, tenant):
         abort(403, description="Acceso denegado")
 
 
+def _strict_boolean(payload: dict, field: str, *, default: bool) -> bool:
+    value = payload.get(field, default)
+    if not isinstance(value, bool):
+        abort(400, description=f"{field} debe ser booleano")
+    return value
+
+
 def _template_registry_payload(row: MessageTemplateRegistry | None) -> dict:
     if not row:
         return {"configured": False}
@@ -83,17 +97,61 @@ def _find_twilio_manifest_item(tenant, template_id: str) -> dict | None:
     return None
 
 
-def _find_meta_flow_blueprint(tenant, flow_id: str) -> dict | None:
+def _find_meta_flow_artifact(tenant, flow_id: str) -> dict | None:
     payload = build_whatsapp_experience(tenant, app_config=current_app.config)
     flows = ((payload.get("webview_blueprint") or {}).get("flows") or [])
     for flow in flows:
         if str(flow.get("id") or "").lower() != flow_id.lower():
             continue
         blueprint = flow.get("meta_flow_blueprint")
-        if not isinstance(blueprint, dict) or not blueprint.get("safe_for_whatsapp_flow"):
+        artifact = flow.get("meta_flow_artifact")
+        validation = artifact.get("validation") if isinstance(artifact, dict) else {}
+        if (
+            not isinstance(blueprint, dict)
+            or not isinstance(artifact, dict)
+            or not artifact.get("publishable_flow_json")
+            or not isinstance(validation, dict)
+            or not validation.get("valid")
+            or not artifact.get("content_sha256")
+        ):
             return None
-        return {"flow": flow, "blueprint": blueprint}
+        return {"flow": flow, "blueprint": blueprint, "artifact": artifact}
     return None
+
+
+@whatsapp_rules_bp.route("/api/admin/whatsapp/flows/<flow_id>/flow-json", methods=["GET"])
+@token_requerido
+@require_tenant
+def download_meta_flow_json(user: User, flow_id: str):
+    """Return the exact validated artifact that an operator can upload to Meta."""
+
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    flow_record = _find_meta_flow_artifact(tenant, flow_id)
+    if not flow_record:
+        abort(404, description="flow_id no tiene un artefacto Flow JSON validado y publicable")
+
+    artifact = flow_record["artifact"]
+    document = artifact.get("document")
+    if not isinstance(document, dict):
+        abort(409, description="El artefacto Flow JSON no contiene un documento valido")
+
+    canonical = canonical_flow_json(document)
+    content_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if content_sha256 != str(artifact.get("content_sha256") or "").strip():
+        abort(409, description="La identidad del artefacto Flow JSON no coincide")
+
+    safe_flow_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", flow_id).strip("-.") or "whatsapp-flow"
+    response = current_app.response_class(canonical, mimetype="application/json")
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{safe_flow_id}.flow.json"'
+    )
+    response.headers["ETag"] = f'"sha256-{content_sha256}"'
+    response.headers["X-Flow-JSON-Version"] = str(artifact.get("flow_json_version") or "")
+    response.headers["X-Flow-Data-API-Version"] = str(artifact.get("data_api_version") or "")
+    response.headers["X-Flow-Content-SHA256"] = content_sha256
+    return response
 
 
 def _sync_status_from_approval(status: str | None, *, submitted: bool) -> str:
@@ -201,6 +259,11 @@ def _twilio_client_for_sender(tenant, sender: ProviderSender) -> tuple[Client, T
 
 
 def _flow_interaction_payload(row: WhatsAppFlowInteraction) -> dict:
+    retry_mode = "none"
+    if row.status == "send_uncertain":
+        retry_mode = "reconcile_provider_status"
+    elif row.status == "failed":
+        retry_mode = "new_invocation_after_review"
     return {
         "id": row.id,
         "flow_id": row.flow_id,
@@ -211,7 +274,11 @@ def _flow_interaction_payload(row: WhatsAppFlowInteraction) -> dict:
         "external_message_sid": row.external_message_sid,
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
         "consumed_at": row.consumed_at.isoformat() if row.consumed_at else None,
-        "retry_safe": row.status == "failed",
+        # An idempotency key is immutable and this endpoint never retries an
+        # existing invocation. Keep the flag aligned with executable behavior.
+        "retry_safe": False,
+        "retry_mode": retry_mode,
+        "reconciliation_required": row.status == "send_uncertain",
     }
 
 
@@ -270,6 +337,17 @@ def _flow_status_callback(sender: ProviderSender) -> str | None:
     if base_url.startswith("https://"):
         return f"{base_url}/twilio/whatsapp/status"
     return None
+
+
+def _flow_interaction_status_callback(callback_url: str, interaction_id: int) -> str:
+    """Bind a signed Twilio callback to an invocation without exposing PII."""
+
+    parsed = urlsplit(callback_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["flow_interaction_id"] = str(int(interaction_id))
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode(query), parsed.fragment)
+    )
 
 
 def _confirmation_serializer() -> URLSafeTimedSerializer:
@@ -694,9 +772,13 @@ def sync_twilio_content_template(user: User):
     if not template_id:
         abort(400, description="template_id es requerido")
 
-    dry_run = payload.get("dry_run", True) is not False
-    submit_for_approval = payload.get("submit_for_approval", True) is not False
-    force = bool(payload.get("force", False))
+    dry_run = _strict_boolean(payload, "dry_run", default=True)
+    submit_for_approval = _strict_boolean(
+        payload,
+        "submit_for_approval",
+        default=True,
+    )
+    force = _strict_boolean(payload, "force", default=False)
     integration_access = integration_access_payload(tenant)
     access_enabled = bool(integration_access.get("enabled"))
 
@@ -912,18 +994,20 @@ def sync_twilio_native_flow(user: User):
     flow_id = str(payload.get("flow_id") or "").strip()
     if not flow_id:
         abort(400, description="flow_id es requerido")
-    flow_record = _find_meta_flow_blueprint(tenant, flow_id)
+    flow_record = _find_meta_flow_artifact(tenant, flow_id)
     if not flow_record:
-        abort(404, description="flow_id no existe o no tiene blueprint Meta Flow habilitado")
+        abort(422, description="flow_id no tiene un artefacto Flow JSON validado y publicable")
 
     meta_flow_id = _validated_meta_flow_id(payload.get("meta_flow_id"))
     flow = flow_record["flow"]
     blueprint = flow_record["blueprint"]
-    screens = blueprint.get("screens") if isinstance(blueprint.get("screens"), list) else []
+    artifact = flow_record["artifact"]
+    artifact_document = artifact.get("document") if isinstance(artifact.get("document"), dict) else {}
+    screens = artifact_document.get("screens") if isinstance(artifact_document.get("screens"), list) else []
     first_screen = screens[0] if screens and isinstance(screens[0], dict) else {}
-    first_screen_id = str(first_screen.get("id") or "").strip()
+    first_screen_id = str(artifact.get("first_screen_id") or first_screen.get("id") or "").strip()
     if not first_screen_id:
-        abort(400, description="El blueprint Meta Flow no define una primera pantalla valida")
+        abort(400, description="El artefacto Flow JSON no define una primera pantalla valida")
 
     flow_name = str(blueprint.get("flow_name") or flow_id).strip().lower()
     friendly_base = re.sub(r"[^a-z0-9_]+", "_", flow_name).strip("_")
@@ -935,12 +1019,13 @@ def sync_twilio_native_flow(user: User):
         abort(400, description="language debe usar formato es o es_AR")
     body, button_text = _flow_content_copy(payload, blueprint)
 
-    dry_run_value = payload.get("dry_run", True)
-    if not isinstance(dry_run_value, bool):
-        abort(400, description="dry_run debe ser booleano")
-    dry_run = dry_run_value
-    submit_for_approval = payload.get("submit_for_approval", True) is not False
-    force = bool(payload.get("force", False))
+    dry_run = _strict_boolean(payload, "dry_run", default=True)
+    submit_for_approval = _strict_boolean(
+        payload,
+        "submit_for_approval",
+        default=True,
+    )
+    force = _strict_boolean(payload, "force", default=False)
     integration_access = integration_access_payload(tenant)
     access_enabled = bool(integration_access.get("enabled"))
     create_request = {
@@ -973,11 +1058,23 @@ def sync_twilio_native_flow(user: User):
         or (existing.external_template_id if existing else None)
         or ""
     ).strip()
+    existing_metadata = existing.metadata_json if existing and isinstance(existing.metadata_json, dict) else {}
+    existing_artifact_sha256 = str(existing_metadata.get("flow_json_sha256") or "").strip()
+    expected_artifact_sha256 = str(artifact.get("content_sha256") or "").strip()
     meta_flow_conflict = bool(existing_has_sid and existing_meta_flow_id and existing_meta_flow_id != meta_flow_id)
-    conflict_blocks_execution = bool(meta_flow_conflict and not force)
+    artifact_conflict = bool(
+        existing_has_sid
+        and (
+            not existing_artifact_sha256
+            or existing_artifact_sha256 != expected_artifact_sha256
+        )
+    )
+    registry_conflict = bool(meta_flow_conflict or artifact_conflict)
+    conflict_blocks_execution = bool(registry_conflict and not force)
     confirmation_fields = {
         "flow_id": flow_id,
         "meta_flow_id": meta_flow_id,
+        "flow_json_sha256": expected_artifact_sha256,
         "manifest_digest": _confirmation_manifest_digest(create_request, approval_request),
         "submit_for_approval": submit_for_approval,
         "force": force,
@@ -997,9 +1094,16 @@ def sync_twilio_native_flow(user: User):
         "flow_name": blueprint.get("flow_name"),
         "meta_flow_id": meta_flow_id,
         "first_screen_id": first_screen_id,
-        "screens": screens,
+        "screen_ids": artifact.get("screen_ids") or [],
+        "flow_json_version": artifact.get("flow_json_version"),
+        "data_api_version": artifact.get("data_api_version"),
+        "content_sha256": artifact.get("content_sha256"),
+        "byte_size": artifact.get("byte_size"),
+        "endpoint_driven": bool(artifact.get("endpoint_driven")),
         "completion_event": blueprint.get("completion_event"),
         "data_contract": blueprint.get("data_contract") or [],
+        "meta_flow_json_upload_performed": False,
+        "publication_scope": "twilio_content_wrapper_only",
     }
 
     if dry_run:
@@ -1009,8 +1113,10 @@ def sync_twilio_native_flow(user: User):
             "ready_to_create": bool(access_enabled and not conflict_blocks_execution),
             "blocked": not access_enabled,
             "locked_reason": None if access_enabled else integration_access.get("lock_reason_code"),
-            "conflict": meta_flow_conflict,
-            "forced_replacement": bool(force and meta_flow_conflict),
+            "conflict": registry_conflict,
+            "meta_flow_id_conflict": meta_flow_conflict,
+            "artifact_conflict": artifact_conflict,
+            "forced_replacement": bool(force and registry_conflict),
             "integration_access": integration_access,
             "frontend_contract": _twilio_template_frontend_contract(
                 integration_access,
@@ -1033,8 +1139,8 @@ def sync_twilio_native_flow(user: User):
 
     if not access_enabled:
         return _twilio_access_lock_response(tenant, action="create_twilio_native_flow")
-    if meta_flow_conflict and not force:
-        abort(409, description="El blueprint ya esta asociado a otro meta_flow_id; usa force solo para un reemplazo auditado")
+    if registry_conflict and not force:
+        abort(409, description="El registro no coincide con el meta_flow_id o el hash Flow JSON validado; usa force solo para un reemplazo auditado")
     if existing_has_sid and not force:
         return jsonify(
             {
@@ -1064,8 +1170,11 @@ def sync_twilio_native_flow(user: User):
         metadata={
             "flow_id": flow_id,
             "meta_flow_id": meta_flow_id,
+            "flow_json_sha256": expected_artifact_sha256,
+            "flow_json_version": artifact.get("flow_json_version"),
+            "data_api_version": artifact.get("data_api_version"),
             "content_family": "meta_native_flow",
-            "source": "whatsapp_experience_meta_flow_blueprint",
+            "source": "meta_flow_json_7_3_artifact",
         },
     )
     try:
@@ -1116,7 +1225,14 @@ def sync_twilio_native_flow(user: User):
         "flow_name": blueprint.get("flow_name"),
         "meta_flow_id": meta_flow_id,
         "first_screen_id": first_screen_id,
-        "screens": screens,
+        "screen_ids": artifact.get("screen_ids") or [],
+        "flow_json_sha256": expected_artifact_sha256,
+        "flow_json_version": artifact.get("flow_json_version"),
+        "data_api_version": artifact.get("data_api_version"),
+        "flow_json_byte_size": artifact.get("byte_size"),
+        "meta_flow_json_upload_performed": False,
+        "meta_flow_publication_verified": False,
+        "externally_managed_meta_flow": True,
         "completion_event": blueprint.get("completion_event"),
         "data_contract": blueprint.get("data_contract") or [],
         "content_family": "meta_native_flow",
@@ -1124,7 +1240,7 @@ def sync_twilio_native_flow(user: User):
         "meta_flow_status": meta_flow_status,
         "approval_rejection_reason": approval_rejection_reason,
         "approval_requested": submit_for_approval,
-        "source": "whatsapp_experience_meta_flow_blueprint",
+        "source": "meta_flow_json_7_3_artifact",
         "sync_operation_id": operation_id,
         "sync_state": "complete",
     }
@@ -1146,7 +1262,9 @@ def sync_twilio_native_flow(user: User):
                 "first_screen_id": first_screen_id,
                 "approval_requested": submit_for_approval,
                 "approval_status": approval_status,
-                "forced_replacement": bool(force and existing_has_sid),
+                "forced_replacement": bool(force and registry_conflict),
+                "flow_json_sha256": expected_artifact_sha256,
+                "meta_flow_json_upload_performed": False,
                 "twilio_account_scope": credentials.scope,
             },
             ip_address=request.remote_addr,
@@ -1203,6 +1321,18 @@ def send_twilio_native_flow(user: User):
         if registry and isinstance(registry.metadata_json, dict)
         else {}
     )
+    experience = build_whatsapp_experience(tenant, app_config=current_app.config)
+    native_flows = ((experience.get("meta_platform") or {}).get("native_flows") or {})
+    flow_runtime = next(
+        (
+            item
+            for item in native_flows.get("flows") or []
+            if isinstance(item, dict)
+            and str(item.get("id") or "").strip().lower() == flow_id.lower()
+        ),
+        None,
+    )
+    data_exchange = native_flows.get("data_exchange") if isinstance(native_flows.get("data_exchange"), dict) else {}
     meta_flow_id = str(
         registry_metadata.get("meta_flow_id")
         or (registry.external_template_id if registry else None)
@@ -1217,6 +1347,17 @@ def send_twilio_native_flow(user: User):
             app_config=current_app.config,
         )
     credentials_ready = bool(credentials and credentials.ready)
+
+    order_context = None
+    order_context_error: MetaFlowActionError | None = None
+    if flow_id == ORDER_FLOW_ID:
+        try:
+            order_context = authorize_order_context(
+                tenant.id,
+                payload.get("order_context"),
+            )
+        except MetaFlowActionError as exc:
+            order_context_error = exc
 
     recipient_scope = None
     if token_key_ready:
@@ -1234,10 +1375,17 @@ def send_twilio_native_flow(user: User):
         idempotency_key=idempotency_key,
     ).first()
     if existing and recipient_scope:
+        existing_metadata = (
+            existing.metadata_json if isinstance(existing.metadata_json, dict) else {}
+        )
         same_scope = bool(
             existing.flow_id == flow_id
             and existing.recipient_hash == recipient_scope["recipient_hash"]
             and (not sender or existing.provider_sender_id == sender.id)
+            and (
+                flow_id != ORDER_FLOW_ID
+                or existing_metadata.get("order_context") == order_context
+            )
         )
         if not same_scope:
             abort(409, description="idempotency_key ya pertenece a otra operacion")
@@ -1250,7 +1398,6 @@ def send_twilio_native_flow(user: User):
         ).evaluate_outbound(
             body=str(registry.body_preview or ""),
             metadata={"recipient": recipient, "is_template": True},
-            lock_rate_limit=not dry_run,
         )
 
     blockers: list[str] = []
@@ -1262,6 +1409,17 @@ def send_twilio_native_flow(user: User):
         blockers.append("flow_not_registered")
     elif not registry_active:
         blockers.append("flow_not_approved_or_published")
+    if not flow_runtime:
+        blockers.append("flow_json_artifact_not_compiled")
+    else:
+        if not flow_runtime.get("artifact_identity_verified"):
+            blockers.append("flow_json_artifact_not_verified")
+        if not flow_runtime.get("meta_flow_publication_verified"):
+            blockers.append("meta_flow_publication_not_verified")
+    if not data_exchange.get("ready"):
+        blockers.append("data_exchange_not_ready")
+    if order_context_error:
+        blockers.append(order_context_error.code)
     if not sender_ready:
         blockers.append("sender_not_ready")
     elif not credentials_ready:
@@ -1285,7 +1443,9 @@ def send_twilio_native_flow(user: User):
                     "flow_id": flow_id,
                     "meta_flow_id": meta_flow_id,
                     "content_sid": registry.content_sid,
+                    "flow_json_sha256": registry_metadata.get("flow_json_sha256"),
                     "data_contract": registry_metadata.get("data_contract") or [],
+                    "order_context": order_context,
                 }
             ),
         }
@@ -1308,6 +1468,12 @@ def send_twilio_native_flow(user: User):
             "recipient_hint": recipient_hint,
             "provider_sender_id": sender.id if sender else None,
             "idempotency_key": idempotency_key,
+            "order_context": {
+                "required": flow_id == ORDER_FLOW_ID,
+                "ready": bool(order_context),
+                "kind": order_context.get("kind") if order_context else None,
+                "id": order_context.get("id") if order_context else None,
+            },
             "token_ttl_seconds": int(token_ttl or 48 * 60 * 60),
             "security": {
                 "dedicated_key_ready": token_key_ready,
@@ -1315,6 +1481,13 @@ def send_twilio_native_flow(user: User):
                 "tenant_bound": True,
                 "recipient_bound": True,
                 "token_exposed": False,
+                "flow_json_artifact_verified": bool(
+                    flow_runtime and flow_runtime.get("artifact_identity_verified")
+                ),
+                "meta_publication_verified": bool(
+                    flow_runtime and flow_runtime.get("meta_flow_publication_verified")
+                ),
+                "data_exchange_ready": bool(data_exchange.get("ready")),
             },
             "integration_access": integration_access,
             "existing_interaction": _flow_interaction_payload(existing) if existing else None,
@@ -1338,6 +1511,17 @@ def send_twilio_native_flow(user: User):
         abort(503, description="WHATSAPP_FLOW_TOKEN_KEY_V1 no esta configurada de forma segura")
     if not registry or not registry_active:
         abort(409, description="El Flow debe estar registrado, aprobado y publicado")
+    if not flow_runtime or not flow_runtime.get("artifact_identity_verified"):
+        abort(409, description="El registro no coincide con el artefacto Flow JSON validado")
+    if not flow_runtime.get("meta_flow_publication_verified"):
+        abort(409, description="La publicacion del Flow en Meta no fue verificada")
+    if not data_exchange.get("ready"):
+        abort(503, description="El endpoint Data Exchange del WABA no esta listo")
+    if order_context_error:
+        abort(
+            order_context_error.status_code,
+            description="El pedido asociado no existe o no pertenece a este tenant",
+        )
     if not sender or not credentials_ready:
         abort(409, description="No hay un sender WhatsApp operativo con credenciales validas")
     if not policy_allowed:
@@ -1361,6 +1545,22 @@ def send_twilio_native_flow(user: User):
         provider_sender_id=sender.id,
         ttl_seconds=token_ttl,
     )
+    reservation_allowed, reservation_reason = WhatsAppEnterpriseRulesService(
+        tenant.id
+    ).reserve_outbound(
+        body=str(registry.body_preview or ""),
+        reservation_key=whatsapp_flow_rate_limit_reservation_key(idempotency_key),
+        metadata={"recipient": recipient, "is_template": True},
+        provider="twilio",
+        provider_connection_id=sender.provider_connection_id,
+        provider_sender_id=sender.id,
+        source="native_flow",
+    )
+    if not reservation_allowed:
+        abort(
+            429 if reservation_reason == "rate_limited" else 403,
+            description=reservation_reason or "Envio bloqueado",
+        )
     interaction = WhatsAppFlowInteraction(
         tenant_id=tenant.id,
         template_registry_id=registry.id,
@@ -1378,6 +1578,7 @@ def send_twilio_native_flow(user: User):
             "source": "admin_whatsapp_operations",
             "actor_user_id": user.id,
             "credential_scope": credentials.scope,
+            **({"order_context": order_context} if order_context else {}),
         },
         expires_at=issued.expires_at,
     )
@@ -1422,7 +1623,10 @@ def send_twilio_native_flow(user: User):
         )
     status_callback = _flow_status_callback(sender)
     if status_callback:
-        message_params["status_callback"] = status_callback
+        message_params["status_callback"] = _flow_interaction_status_callback(
+            status_callback,
+            interaction.id,
+        )
 
     client = Client(credentials.account_sid, credentials.auth_token)
     try:
@@ -1431,10 +1635,24 @@ def send_twilio_native_flow(user: User):
         if not message_sid:
             raise RuntimeError("twilio_message_sid_missing")
     except Exception as exc:
-        interaction.status = "send_uncertain"
-        interaction.error_code = type(exc).__name__[:80]
-        interaction.updated_at = datetime.now(timezone.utc)
-        db.session.add(interaction)
+        now = datetime.now(timezone.utc)
+        error_code = type(exc).__name__[:80]
+        # A callback may win the race while the provider request times out.
+        # Only a still-unclaimed invocation can transition to uncertain; a
+        # callback-bound sent/failed/consumed row is never regressed here.
+        WhatsAppFlowInteraction.query.filter(
+            WhatsAppFlowInteraction.id == interaction.id,
+            WhatsAppFlowInteraction.tenant_id == tenant.id,
+            WhatsAppFlowInteraction.status == "claimed",
+            WhatsAppFlowInteraction.external_message_sid.is_(None),
+        ).update(
+            {
+                WhatsAppFlowInteraction.status: "send_uncertain",
+                WhatsAppFlowInteraction.error_code: error_code,
+                WhatsAppFlowInteraction.updated_at: now,
+            },
+            synchronize_session=False,
+        )
         db.session.add(
             AuditEvent(
                 tenant_id=tenant.id,
@@ -1447,7 +1665,7 @@ def send_twilio_native_flow(user: User):
                     "content_sid": registry.content_sid,
                     "provider_sender_id": sender.id,
                     "recipient_hint": issued.recipient_hint,
-                    "error_type": type(exc).__name__,
+                    "error_type": error_code,
                 },
                 ip_address=request.remote_addr,
             )
@@ -1455,9 +1673,14 @@ def send_twilio_native_flow(user: User):
         db.session.commit()
         abort(502, description="Twilio no confirmo el envio; no reintentes con otra clave hasta revisar el estado")
 
-    interaction.status = "sent"
-    interaction.external_message_sid = message_sid[:180]
-    interaction.error_code = None
+    # A signed callback can commit before the synchronous Twilio response
+    # returns. Refresh first and never overwrite a terminal callback outcome.
+    db.session.refresh(interaction)
+    if not interaction.external_message_sid:
+        interaction.external_message_sid = message_sid[:180]
+    if interaction.status not in {"failed", "consumed"}:
+        interaction.status = "sent"
+        interaction.error_code = None
     interaction.updated_at = datetime.now(timezone.utc)
     db.session.add(interaction)
     db.session.add(
@@ -1613,5 +1836,9 @@ def test_whatsapp_notification_policy(user: User):
     metadata["recipient"] = recipient
     svc = WhatsAppEnterpriseRulesService(tenant.id)
     svc.get_or_create()
-    allowed, reason = svc.evaluate_outbound(body=body, metadata=metadata)
+    allowed, reason = svc.evaluate_outbound(
+        body=body,
+        metadata=metadata,
+        lock_rate_limit=False,
+    )
     return jsonify({"allowed": allowed, "reason": reason})

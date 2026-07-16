@@ -145,6 +145,12 @@ def create_app(config_class=Config):
 
     # Cargar configuración
     app.config.from_object(config_class)
+    if not callable(app.config.get("META_FLOW_DATA_EXCHANGE_CONFIG_RESOLVER")):
+        from services.meta_flow_runtime import create_meta_flow_runtime_resolver
+
+        app.config["META_FLOW_DATA_EXCHANGE_CONFIG_RESOLVER"] = (
+            create_meta_flow_runtime_resolver()
+        )
     security_errors = validate_runtime_security(app.config)
     if security_errors:
         raise RuntimeError(" ".join(security_errors))
@@ -707,6 +713,7 @@ def create_app(config_class=Config):
     from routes.conversations import conversations_bp
     from routes.access_control import access_control_bp
     from routes.whatsapp_rules import whatsapp_rules_bp
+    from routes.meta_flow_data_exchange import meta_flow_data_exchange_bp
     from routes.v2 import register_v2_blueprints
     from cli_commands import register_commands
 
@@ -882,6 +889,7 @@ def create_app(config_class=Config):
     app.register_blueprint(conversations_bp)
     app.register_blueprint(access_control_bp)
     app.register_blueprint(whatsapp_rules_bp)
+    app.register_blueprint(meta_flow_data_exchange_bp)
 
     from routes.tracking_ui import tracking_ui_bp
     app.register_blueprint(tracking_ui_bp)

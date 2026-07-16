@@ -10,6 +10,18 @@ class DummyTicket(SimpleNamespace):
 
 class EmailServiceAdminTests(unittest.TestCase):
     def setUp(self):
+        notifications_patcher = patch(
+            "services.email_service._email_notifications_enabled",
+            return_value=True,
+        )
+        smtp_patcher = patch(
+            "services.email_service._ensure_smtp_configuration",
+            return_value=True,
+        )
+        notifications_patcher.start()
+        smtp_patcher.start()
+        self.addCleanup(notifications_patcher.stop)
+        self.addCleanup(smtp_patcher.stop)
         self.pedido = SimpleNamespace(
             nro_pedido=1,
             detalles="items",

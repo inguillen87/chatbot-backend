@@ -32,8 +32,8 @@ def _approved_template(template_id: str) -> dict:
     }
 
 
-def _ready_flow(flow_id: str) -> dict:
-    return {
+def _ready_flow(flow_id: str, *, compiled: bool = False) -> dict:
+    flow = {
         "id": flow_id,
         "status": "ready",
         "meta_flow_blueprint": {
@@ -45,6 +45,21 @@ def _ready_flow(flow_id: str) -> dict:
             "data_contract": ["tenant_slug", "contact_key", "session_token"],
         },
     }
+    if compiled:
+        screen_ids = (
+            ["CLAIM_LOOKUP", "CLAIM_RESULT"]
+            if flow_id == "claim_tracking_helpdesk"
+            else ["ORDER_DETAILS", "ORDER_CONFIRM"]
+        )
+        flow["meta_flow_artifact"] = {
+            "publishable_flow_json": True,
+            "validation": {"valid": True, "errors": []},
+            "content_sha256": "a" * 64,
+            "flow_json_version": "7.3",
+            "data_api_version": "3.0",
+            "document": {"screens": [{"id": screen_id} for screen_id in screen_ids]},
+        }
+    return flow
 
 
 def _build_playbook() -> dict:
@@ -85,10 +100,10 @@ def _build_playbook() -> dict:
         },
         webview_blueprint={
             "flows": [
-                _ready_flow("claim_tracking_helpdesk"),
+                _ready_flow("claim_tracking_helpdesk", compiled=True),
                 _ready_flow("catalog_order_builder"),
                 _ready_flow("survey_vote"),
-                _ready_flow("order_checkout"),
+                _ready_flow("order_checkout", compiled=True),
                 _ready_flow("finance_credit_collection_signature"),
                 _ready_flow("finance_account_servicing"),
                 _ready_flow("finance_remittance_transfer"),
@@ -137,7 +152,16 @@ def test_whatsapp_qa_playbook_matches_executable_script_matrix():
     assert command_parts[-1] == "scripts/qa_whatsapp_flows.py"
     assert (ROOT / command_parts[-1]).exists()
 
-    assert all(
-        scenario["meta_flow_coverage"]["ready"]
+    compiled_flow_scenarios = {
+        "gov_claim_text_to_tracking",
+        "gov_claim_location_to_tracking",
+        "gov_claim_audio_accessible",
+        "school_family_case",
+    }
+    coverage = {
+        scenario["id"]: scenario["meta_flow_coverage"]["ready"]
         for scenario in playbook["scenarios"]
-    )
+    }
+    assert all(coverage[scenario_id] for scenario_id in compiled_flow_scenarios)
+    assert coverage["pyme_catalog_order_checkout"] is False
+    assert coverage["survey_vote_realtime"] is False

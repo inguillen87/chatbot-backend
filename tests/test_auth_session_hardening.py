@@ -326,12 +326,10 @@ def test_v2_logout_clears_flask_and_token_cookies(client):
     assert protected.status_code == 401
 
 
-def test_v2_logout_clears_domain_and_host_only_token_cookies(client):
-    client.application.config.update(
-        SESSION_COOKIE_DOMAIN=".chatboc.ar",
-        SESSION_COOKIE_SECURE=True,
-        SESSION_COOKIE_SAMESITE="None",
-    )
+def test_v2_logout_clears_domain_and_host_only_token_cookies(client, monkeypatch):
+    monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", ".chatboc.ar")
+    monkeypatch.setitem(client.application.config, "SESSION_COOKIE_SECURE", True)
+    monkeypatch.setitem(client.application.config, "SESSION_COOKIE_SAMESITE", "None")
 
     response = client.post("/api/v2/auth/logout")
 

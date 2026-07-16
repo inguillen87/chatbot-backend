@@ -218,7 +218,7 @@ class MunicipioLogicTests(unittest.TestCase):
         kwargs = mock_start_flow.call_args.kwargs
         datos = kwargs.get("datos_iniciales")
         self.assertEqual(kwargs.get("categoria_inicial"), "Luminaria")
-        self.assertEqual(datos.get("descripcion"), "hay un poste caído en calle Sarmiento 125")
+        self.assertEqual(datos.get("descripcion"), "hay un poste caído")
         self.assertEqual(datos.get("direccion"), "calle Sarmiento 125")
         self.assertEqual(resp["message_body"], "flujoiniciado")
 

@@ -128,7 +128,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertNotIn(expected_url, message)
         tracking_button = next((btn for btn in buttons if btn.get("url") == expected_url), None)
         self.assertIsNotNone(tracking_button)
-        self.assertEqual(tracking_button.get("texto"), "💬 Ver Estado")
+        self.assertEqual(tracking_button.get("texto"), "💬 Ver mi Ticket")
         self.assertNotIn("?pin=", tracking_button.get("url", ""))
 
     def test_formatear_ticket_respuesta_recorta_descripcion(self):
@@ -157,7 +157,7 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(
             buttons,
             [{
-                "texto": "💬 Ver Estado",
+                "texto": "💬 Ver mi Ticket",
                 "url": "https://ventas.example/pedidos/tracking/order/PED-20241001",
                 "type": "url",
             }],

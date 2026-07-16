@@ -22,6 +22,10 @@ class TestSystemStability(unittest.TestCase):
             SESSION_COOKIE_SECURE = False
             CELERY_TASK_ALWAYS_EAGER = True
             DEBUG = False
+            ENABLE_RUNTIME_SCHEMA_SYNC = False
+            ENABLE_RUNTIME_TENANT_INIT = False
+            SKIP_INIT_TENANTS = True
+            SESSION_TYPE = "null"
 
         self.app = create_app(TestConfig)
         self.app_context = self.app.app_context()
@@ -85,7 +89,7 @@ class TestSystemStability(unittest.TestCase):
 
             # 5. Assertions
             self.assertTrue(result.get("success"), "The action should succeed.")
-            self.assertIn("M-M-STABILITY-TEST", result.get("message_to_user", ""), "The response should contain the ticket number.")
+            self.assertEqual(result.get("data", {}).get("nro_ticket"), "M-STABILITY-TEST")
 
             # Verify that the fallback name was used in the ticket creation
             mock_crear_ticket.assert_called_once()

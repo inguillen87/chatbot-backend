@@ -55,6 +55,8 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
             sys.modules.pop('utils.auth_helpers', None)
         elif self.original_auth_helpers is not None:
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
+        import routes.estadisticas as estats
+        importlib.reload(estats)
 
     @patch('routes.estadisticas.servicio_tickets')
     def test_mapa_calor_datos(self, mock_servicio):

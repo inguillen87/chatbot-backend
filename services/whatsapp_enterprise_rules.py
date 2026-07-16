@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import hashlib
+import re
+
+from sqlalchemy.orm import Session
 
 from models import (
+    MessagingEventLedger,
     Notification,
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
@@ -10,6 +15,10 @@ from models import (
     db,
 )
 from utils.time_utils import get_local_now
+
+
+RATE_LIMIT_RESERVATION_EVENT = "whatsapp_outbound_rate_limit_reserved"
+_RESERVATION_KEY = re.compile(r"^[A-Za-z0-9_.:\-]{8,120}$")
 
 
 def _to_utc_naive(value):
@@ -43,13 +52,98 @@ class WhatsAppEnterpriseRulesService:
     ) -> tuple[bool, str | None]:
         rule_query = WhatsAppEnterpriseRule.query.filter_by(tenant_id=self.tenant_id)
         if lock_rate_limit:
-            # Serialize real sends for tenants with an hourly cap. PostgreSQL holds
-            # this row lock until the caller commits its durable send reservation.
             rule_query = rule_query.with_for_update()
         rule = rule_query.first()
         if not rule:
             return True, None
         metadata = metadata if isinstance(metadata, dict) else {}
+
+        return self._evaluate_rule(
+            rule,
+            body=body,
+            metadata=metadata,
+            session=db.session,
+        )
+
+    def reserve_outbound(
+        self,
+        *,
+        body: str,
+        reservation_key: str,
+        metadata: dict | None = None,
+        provider: str | None = None,
+        provider_connection_id: int | None = None,
+        provider_sender_id: int | None = None,
+        source: str | None = None,
+    ) -> tuple[bool, str | None]:
+        """Atomically enforce policy and reserve one provider send attempt."""
+
+        safe_key = str(reservation_key or "").strip()
+        if not _RESERVATION_KEY.fullmatch(safe_key):
+            raise ValueError("invalid_rate_limit_reservation_key")
+        safe_metadata = metadata if isinstance(metadata, dict) else {}
+
+        # Keep this commit independent from request state: the reservation must
+        # be durable before an external provider can accept the message.
+        with Session(db.engine) as session:
+            with session.begin():
+                rule = (
+                    session.query(WhatsAppEnterpriseRule)
+                    .filter_by(tenant_id=self.tenant_id)
+                    .with_for_update()
+                    .first()
+                )
+                if not rule:
+                    return True, None
+
+                allowed, reason = self._evaluate_rule(
+                    rule,
+                    body=body,
+                    metadata=safe_metadata,
+                    session=session,
+                    reservation_key=safe_key,
+                )
+                if not allowed:
+                    return False, reason
+                if not rule.max_outbound_per_hour:
+                    return True, None
+                if self._reservation_exists(
+                    session,
+                    safe_key,
+                    since=get_local_now() - timedelta(hours=1),
+                ):
+                    return True, None
+
+                recipient = str(safe_metadata.get("recipient") or "")
+                digits = "".join(character for character in recipient if character.isdigit())
+                recipient_hint = f"***{digits[-4:]}" if digits else None
+                session.add(
+                    MessagingEventLedger(
+                        tenant_id=self.tenant_id,
+                        provider_connection_id=provider_connection_id,
+                        provider_sender_id=provider_sender_id,
+                        channel="whatsapp",
+                        direction="outbound",
+                        event_type=RATE_LIMIT_RESERVATION_EVENT,
+                        provider=str(provider or "").strip()[:50] or None,
+                        external_status="reserved",
+                        recipient=recipient_hint,
+                        request_id=safe_key,
+                        payload={"source": str(source or "unknown").strip()[:80]},
+                        occurred_at=get_local_now(),
+                    )
+                )
+        return True, None
+
+    def _evaluate_rule(
+        self,
+        rule: WhatsAppEnterpriseRule,
+        *,
+        body: str,
+        metadata: dict,
+        session,
+        reservation_key: str | None = None,
+    ) -> tuple[bool, str | None]:
 
         body_l = (body or "").lower()
         for word in (rule.blocked_keywords or []):
@@ -58,23 +152,26 @@ class WhatsAppEnterpriseRulesService:
 
         if rule.max_outbound_per_hour:
             since = get_local_now() - timedelta(hours=1)
-            notification_count = (
-                Notification.query.filter_by(tenant_id=self.tenant_id, channel="whatsapp")
-                .filter(Notification.created_at >= since)
-                .count()
+            reservation_exists = bool(reservation_key) and self._reservation_exists(
+                session,
+                str(reservation_key),
+                since=since,
             )
-            flow_count = (
-                WhatsAppFlowInteraction.query.filter_by(tenant_id=self.tenant_id)
-                .filter(WhatsAppFlowInteraction.created_at >= since)
-                .count()
-            )
-            sent_last_hour = notification_count + flow_count
-            if sent_last_hour >= int(rule.max_outbound_per_hour):
-                return False, "rate_limited"
+            if not reservation_exists:
+                sent_last_hour = self._hourly_outbound_count(session, since=since)
+                if sent_last_hour >= int(rule.max_outbound_per_hour):
+                    return False, "rate_limited"
 
         within_24h_window = bool(metadata.get("within_24h_window", False))
         if not within_24h_window and metadata.get("recipient"):
-            state = self.get_contact_state(recipient=metadata.get("recipient"))
+            normalized = self._normalize_recipient(metadata.get("recipient"))
+            state = None
+            if normalized:
+                state = (
+                    session.query(WhatsAppContactState)
+                    .filter_by(tenant_id=self.tenant_id, recipient=normalized)
+                    .first()
+                )
             if state and state.last_inbound_at:
                 now_naive = _to_utc_naive(get_local_now())
                 inbound_naive = _to_utc_naive(state.last_inbound_at)
@@ -86,6 +183,48 @@ class WhatsAppEnterpriseRulesService:
                 return False, "template_required"
 
         return True, None
+
+    def _reservation_exists(self, session, reservation_key: str, *, since=None) -> bool:
+        query = session.query(MessagingEventLedger.id).filter_by(
+            tenant_id=self.tenant_id,
+            channel="whatsapp",
+            event_type=RATE_LIMIT_RESERVATION_EVENT,
+            request_id=reservation_key,
+        )
+        if since is not None:
+            query = query.filter(MessagingEventLedger.occurred_at >= since)
+        return bool(query.first())
+
+    def _hourly_outbound_count(self, session, *, since) -> int:
+        reservations = (
+            session.query(MessagingEventLedger.request_id)
+            .filter_by(
+                tenant_id=self.tenant_id,
+                channel="whatsapp",
+                event_type=RATE_LIMIT_RESERVATION_EVENT,
+            )
+            .filter(MessagingEventLedger.occurred_at >= since)
+            .all()
+        )
+        reservation_keys = {row[0] for row in reservations if row[0]}
+        notification_count = (
+            session.query(Notification.id)
+            .filter_by(tenant_id=self.tenant_id, channel="whatsapp")
+            .filter(Notification.created_at >= since)
+            .count()
+        )
+        recent_flow_keys = (
+            session.query(WhatsAppFlowInteraction.idempotency_key)
+            .filter_by(tenant_id=self.tenant_id)
+            .filter(WhatsAppFlowInteraction.created_at >= since)
+            .all()
+        )
+        legacy_flow_count = sum(
+            1
+            for row in recent_flow_keys
+            if whatsapp_flow_rate_limit_reservation_key(row[0]) not in reservation_keys
+        )
+        return len(reservation_keys) + notification_count + legacy_flow_count
 
     def get_contact_state(self, *, recipient: str | None) -> WhatsAppContactState | None:
         normalized = self._normalize_recipient(recipient)
@@ -113,3 +252,8 @@ class WhatsAppEnterpriseRulesService:
         if not value:
             return ""
         return str(value).strip().replace("whatsapp:", "")
+
+
+def whatsapp_flow_rate_limit_reservation_key(idempotency_key: str) -> str:
+    digest = hashlib.sha256(str(idempotency_key or "").encode("utf-8")).hexdigest()
+    return f"flow:{digest}"

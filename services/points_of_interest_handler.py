@@ -361,7 +361,11 @@ class PointsOfInterestHandler:
             })
 
         message_text = "\n".join(lines)
-        base_payload = self._build_simple_response(message_text)
+        # Parking is a terminal lookup, so restore the accessible main menu
+        # instead of leaving the user in an implicit POI state with no actions.
+        from .municipio_responder import _message_with_menu
+
+        base_payload = _message_with_menu(message_text, self.context)
         base_payload.update({
             "fuente": "points_of_interest_handler",
             "camera": cam_name,

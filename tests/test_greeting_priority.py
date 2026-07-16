@@ -49,11 +49,11 @@ def test_greeting_cache_updates_when_contact_known():
 
         with patch("services.municipio_responder.cargar_configuracion_municipio", return_value=None), \
              patch("services.municipio_responder.flag_modified"):
-            # Initial greeting should request the user's name and populate the cache.
+            # Anonymous onboarding starts with useful categories; identification is optional.
             response_1 = responder_municipio(
                 "hola", owner, rubro, chat_db_context=chat_ctx, anon_id="anon", channel="web"
             )
-            assert response_1.get("fuente") == "pedir_nombre_inicial"
+            assert response_1.get("fuente") == "onboarding_categorias_primero"
 
             # Simulate that the conversation now knows the contact's name and is ready for the menu.
             municipal_ctx = chat_ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})

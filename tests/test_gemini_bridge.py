@@ -53,7 +53,7 @@ def test_gemini_chat_model_default(monkeypatch):
     monkeypatch.delenv("GEMINI_CHAT_MODEL", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
 
-    assert gemini_bridge._gemini_chat_model() == "gemini-2.5-flash"
+    assert gemini_bridge._gemini_chat_model() == "gemini-3.5-flash"
 
 
 def test_gemini_chat_model_can_be_overridden(monkeypatch):

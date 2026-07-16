@@ -142,7 +142,10 @@ def _allowed_employee_category_names(current_user: User) -> set[str]:
         )
         allowed.update(filter_employee_category_labels([item[0] for item in persisted if item and item[0]]))
         try:
-            dimensions = tenant_operational_dimensions(tenant, [])
+            dimensions = tenant_operational_dimensions(
+                tenant,
+                tenant_open_ticket_snapshots(tenant),
+            )
             allowed.update(filter_employee_category_labels(dimensions.get("categorias") or []))
         except Exception:
             pass
@@ -362,73 +365,6 @@ def obtener_categorias_empleado(current_user: User):
         categorias_set = {category_label_key(c) for c in CATEGORIAS_RECLAMO if category_label_key(c)}
 
     categorias_set = set(filter_employee_category_labels(categorias_set, known_categories=categorias_set))
-    categorias = [
-        {"value": c, "label": c.title()} for c in sorted(categorias_set, key=str.casefold)
-    ]
-    search_term = (request.args.get("q") or "").strip().lower()
-    if search_term:
-        categorias = [
-            item for item in categorias if search_term in item["label"].lower()
-        ]
-    return jsonify({"categorias": categorias})
-
-    categorias_set = {c for c in CATEGORIAS_RECLAMO if c}
-
-    # Agregar categorías dinámicas detectadas en los tickets existentes para el
-    # tenant actual. Esto evita dejar al panel sin opciones cuando se cargaron
-    # reclamos con nuevas etiquetas o cuando las categorías iniciales todavía
-    # no se configuraron.
-    try:
-        if current_user.tipo_chat == "municipio" and current_user.municipio_id:
-            categorias_en_bd = (
-                db.session.query(MunicipioTicket.categoria)
-                .filter(
-                    MunicipioTicket.municipio_id == current_user.municipio_id,
-                    MunicipioTicket.categoria.isnot(None),
-                    MunicipioTicket.categoria != "",
-                )
-                .distinct()
-                .all()
-            )
-            categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
-        elif current_user.tipo_chat == "pyme":
-            categorias_en_bd = (
-                db.session.query(PymeTicket.categoria)
-                .filter(
-                    PymeTicket.rubro_id == current_user.rubro_id,
-                    PymeTicket.categoria.isnot(None),
-                    PymeTicket.categoria != "",
-                )
-                .distinct()
-                .all()
-            )
-            categorias_set.update(item[0] for item in categorias_en_bd if item and item[0])
-
-            tenant_profile = getattr(current_user, "tenant_profile_pyme", None)
-            catalogo_query = CatalogoItem.query.filter(
-                CatalogoItem.user_id == current_user.id,
-                CatalogoItem.categoria.isnot(None),
-                CatalogoItem.categoria != "",
-            )
-            if tenant_profile:
-                catalogo_query = catalogo_query.filter(
-                    func.coalesce(CatalogoItem.tenant_id, tenant_profile.id)
-                    == tenant_profile.id
-                )
-
-            catalogo_categorias = catalogo_query.with_entities(
-                CatalogoItem.categoria
-            ).distinct()
-            categorias_set.update(item[0] for item in catalogo_categorias if item and item[0])
-        tenant = _tenant_for_current_user(current_user)
-        if tenant:
-            dimensiones = tenant_operational_dimensions(tenant, tenant_open_ticket_snapshots(tenant))
-            categorias_set.update(dimensiones.get("categorias") or [])
-    except Exception:
-        # Si hay algún problema consultando la base, devolvemos las categorías
-        # base en lugar de propagar un error al frontend.
-        categorias_set = categorias_set or set()
-
     categorias = [
         {"value": c, "label": c.title()} for c in sorted(categorias_set, key=str.casefold)
     ]
