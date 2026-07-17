@@ -24,10 +24,12 @@ from models import (
 )
 from routes.whatsapp_rules import _flow_interaction_payload, _sync_status_from_approval
 from services.meta_flow_json import build_order_checkout_flow
+from services.meta_flow_management import MetaFlowManagementError
 from services.whatsapp_experience import build_whatsapp_experience
 
 
 META_FLOW_ID = "1232445823264765"
+META_WABA_ID = "109876543210987"
 FLOW_ID = "order_checkout"
 CONCEPTUAL_FLOW_ID = "catalog_order_builder"
 ORDER_CONTEXT = {"kind": "order", "id": "order-flow-send"}
@@ -191,6 +193,75 @@ def _prepare_ready_flow_send(app, tenant: TenantProfile):
     return sender, registry
 
 
+def _prepare_meta_management(app, tenant: TenantProfile, monkeypatch):
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    config = {
+        "META_GRAPH_ACCESS_TOKEN": "meta-system-user-token",
+        "META_GRAPH_API_VERSION": "v23.0",
+        "PUBLIC_API_BASE_URL": "https://api.chatboc.test",
+        "WHATSAPP_FLOW_TOKEN_KEY_V1": (
+            "test-meta-management-flow-key-000000000000000000000000000"
+        ),
+        "META_FLOW_DATA_EXCHANGE_ENDPOINTS": {
+            "meta-management-endpoint": {
+                "endpoint_id": "meta-management-endpoint",
+                "tenant_id": str(tenant.id),
+                "waba_id": META_WABA_ID,
+                "private_key_pem": private_key_pem,
+                "app_secret": "meta-management-app-secret",
+                "handlers": {
+                    "init": lambda payload, context: {
+                        "screen": "ORDER_DETAILS",
+                        "data": {},
+                    },
+                    "back": lambda payload, context: {
+                        "screen": "ORDER_DETAILS",
+                        "data": {},
+                    },
+                    "data_exchange": lambda payload, context: {
+                        "screen": "ORDER_CONFIRM",
+                        "data": {
+                            "order_summary": "Pedido",
+                            "total_display": "$ 1",
+                        },
+                    },
+                },
+            }
+        },
+    }
+    for key, value in config.items():
+        monkeypatch.setitem(app.config, key, value)
+    connection = ProviderConnection(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        environment="production",
+        status="connected",
+    )
+    db.session.add(connection)
+    db.session.flush()
+    sender = ProviderSender(
+        tenant_id=tenant.id,
+        provider_connection_id=connection.id,
+        channel="whatsapp",
+        phone_number="+5491100000100",
+        sender_id="whatsapp:+5491100000100",
+        waba_id=META_WABA_ID,
+        status="active",
+        metadata_json={
+            "meta_flow_data_exchange_endpoint_id": "meta-management-endpoint"
+        },
+    )
+    db.session.add(sender)
+    db.session.commit()
+    return sender
+
+
 def test_native_flow_sync_dry_run_builds_exact_twilio_content_contract(client, app):
     admin, tenant = _seed()
     response = client.post(
@@ -278,6 +349,227 @@ def test_admin_can_download_exact_validated_meta_flow_json_artifact(client, app)
         headers=headers,
     )
     assert conceptual.status_code == 404
+
+
+def test_meta_flow_management_publishes_with_remote_attestation_and_binds_wrapper(
+    client,
+    app,
+    monkeypatch,
+):
+    admin, tenant = _seed()
+    _prepare_meta_management(app, tenant, monkeypatch)
+    headers = _auth_headers(app, admin, tenant.slug)
+    artifact = build_order_checkout_flow()
+
+    preview = client.post(
+        "/api/admin/whatsapp/flows/meta/sync",
+        headers=headers,
+        json={"flow_id": FLOW_ID},
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.get_json()
+    assert preview_payload["ready_to_sync"] is True
+    assert preview_payload["management"]["irreversible_publish"] is True
+    assert preview_payload["management"]["graph"]["ready"] is True
+    assert "meta-system-user-token" not in json.dumps(preview_payload)
+
+    verification = {
+        "verified": True,
+        "publication_verified": True,
+        "artifact_identity_verified": True,
+        "meta_flow_id": META_FLOW_ID,
+        "status": "PUBLISHED",
+        "waba_id": META_WABA_ID,
+        "flow_json_sha256": artifact.content_sha256,
+        "blockers": [],
+    }
+    graph_client = MagicMock()
+    graph_client.provision_and_publish.return_value = {
+        "created": True,
+        "uploaded": True,
+        "published_now": True,
+        "idempotent": False,
+        "verification": verification,
+    }
+    with patch(
+        "routes.whatsapp_rules.MetaFlowGraphClient",
+        return_value=graph_client,
+    ):
+        execute = client.post(
+            "/api/admin/whatsapp/flows/meta/sync",
+            headers=headers,
+            json={
+                "flow_id": FLOW_ID,
+                "dry_run": False,
+                "publish": True,
+                "execute_confirmation": preview_payload["execute_confirmation"],
+            },
+        )
+
+    assert execute.status_code == 200
+    executed = execute.get_json()
+    assert executed["meta_flow_id"] == META_FLOW_ID
+    assert executed["next_action"] == "create_twilio_wrapper"
+    attestation = executed["meta_publication_attestation"]
+    assert isinstance(attestation, str)
+    assert META_FLOW_ID not in attestation
+    graph_client.provision_and_publish.assert_called_once_with(
+        flow_name="chatboc_order_checkout",
+        category="OTHER",
+        document=artifact.document,
+        expected_sha256=artifact.content_sha256,
+        endpoint_uri=(
+            "https://api.chatboc.test/api/whatsapp/flows/data-exchange/"
+            "meta-management-endpoint"
+        ),
+        meta_flow_id=None,
+        publish=True,
+    )
+
+    registry = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name="chatboc_order_checkout_native_v1",
+        language="es",
+    ).one()
+    assert registry.content_sid is None
+    assert registry.external_template_id == META_FLOW_ID
+    assert registry.status == "meta_published"
+    assert registry.metadata_json["meta_sync_state"] == "complete"
+    assert registry.metadata_json["meta_flow_publication_verified"] is True
+    assert registry.metadata_json["flow_json_sha256"] == artifact.content_sha256
+    assert registry.metadata_json["meta_flow_waba_id"] == META_WABA_ID
+
+    persisted_preview = client.post(
+        "/api/admin/whatsapp/flows/twilio-content/sync",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "meta_flow_id": META_FLOW_ID,
+        },
+    )
+    assert persisted_preview.status_code == 200
+    assert (
+        persisted_preview.get_json()["flow"]["meta_flow_publication_verified"]
+        is True
+    )
+
+    wrapper_preview = client.post(
+        "/api/admin/whatsapp/flows/twilio-content/sync",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "meta_flow_id": META_FLOW_ID,
+            "meta_publication_attestation": attestation,
+        },
+    )
+    assert wrapper_preview.status_code == 200
+    assert (
+        wrapper_preview.get_json()["flow"]["meta_flow_publication_verified"]
+        is True
+    )
+
+    replay = client.post(
+        "/api/admin/whatsapp/flows/meta/sync",
+        headers=headers,
+        json={
+            "flow_id": FLOW_ID,
+            "dry_run": False,
+            "publish": True,
+            "execute_confirmation": preview_payload["execute_confirmation"],
+        },
+    )
+    assert replay.status_code == 409
+    graph_client.provision_and_publish.assert_called_once()
+
+    audit = AuditEvent.query.filter_by(
+        tenant_id=tenant.id,
+        event_type="whatsapp_flow.meta_published_verified",
+        resource_id=META_FLOW_ID,
+    ).one()
+    assert audit.details["flow_json_sha256"] == artifact.content_sha256
+
+
+def test_meta_flow_management_is_fail_closed_without_graph_credentials(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    preview = client.post(
+        "/api/admin/whatsapp/flows/meta/sync",
+        headers=headers,
+        json={"flow_id": FLOW_ID},
+    )
+
+    assert preview.status_code == 200
+    payload = preview.get_json()
+    assert payload["ready_to_sync"] is False
+    assert "waba_id_not_configured" in payload["blockers"]
+    assert "meta_graph_access_token_not_configured" in payload["blockers"]
+    assert "execute_confirmation" not in payload
+
+
+def test_meta_flow_management_persists_uncertain_create_and_blocks_blind_retry(
+    client,
+    app,
+    monkeypatch,
+):
+    admin, tenant = _seed()
+    _prepare_meta_management(app, tenant, monkeypatch)
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    preview = client.post(
+        "/api/admin/whatsapp/flows/meta/sync",
+        headers=headers,
+        json={"flow_id": FLOW_ID},
+    )
+    assert preview.status_code == 200
+    confirmation = preview.get_json()["execute_confirmation"]
+
+    graph_client = MagicMock()
+    graph_client.provision_and_publish.side_effect = MetaFlowManagementError(
+        "meta_graph_unreachable",
+        "No se pudo confirmar si Meta creo el Flow",
+        status_code=503,
+    )
+    with patch(
+        "routes.whatsapp_rules.MetaFlowGraphClient",
+        return_value=graph_client,
+    ):
+        execute = client.post(
+            "/api/admin/whatsapp/flows/meta/sync",
+            headers=headers,
+            json={
+                "flow_id": FLOW_ID,
+                "dry_run": False,
+                "publish": True,
+                "execute_confirmation": confirmation,
+            },
+        )
+
+    assert execute.status_code == 503
+    registry = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name="chatboc_order_checkout_native_v1",
+        language="es",
+    ).one()
+    assert registry.status == "meta_sync_uncertain"
+    assert registry.external_template_id is None
+    assert registry.metadata_json["meta_sync_state"] == "uncertain"
+    assert registry.metadata_json["meta_sync_error_code"] == "meta_graph_unreachable"
+
+    retry_preview = client.post(
+        "/api/admin/whatsapp/flows/meta/sync",
+        headers=headers,
+        json={"flow_id": FLOW_ID},
+    )
+    assert retry_preview.status_code == 200
+    retry_payload = retry_preview.get_json()
+    assert retry_payload["ready_to_sync"] is False
+    assert "meta_flow_sync_reconciliation_required" in retry_payload["blockers"]
+    assert "execute_confirmation" not in retry_payload
 
 
 def test_native_flow_sync_requires_full_plan_and_never_issues_execute_token_when_locked(client, app):

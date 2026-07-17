@@ -3,7 +3,7 @@
 Status: implemented local compiler contract, pinned to Flow JSON `7.3` and
 Data API `3.0`.
 
-Last checked against Meta documentation: 2026-07-15.
+Last checked against Meta documentation: 2026-07-16.
 
 Official references:
 
@@ -32,6 +32,12 @@ The tenant-admin endpoint
 bytes for publishable flows. A successful local compile or download does not
 imply that Meta accepted or published the artifact; publication readiness is
 tracked separately against the exact content hash.
+
+The operational Graph lifecycle lives in `services/meta_flow_management.py`
+and `POST /api/admin/whatsapp/flows/meta/sync`. See
+`docs/meta_whatsapp_flow_management.runtime.md`. Keeping that lifecycle outside
+the compiler preserves deterministic compilation while allowing Meta to remain
+the authoritative remote validator.
 
 ## Validation profile
 

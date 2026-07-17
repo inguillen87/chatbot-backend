@@ -537,6 +537,16 @@ class Config:
     META_FLOW_DATA_EXCHANGE_MAX_PAYLOAD_BYTES = int(
         os.getenv("META_FLOW_DATA_EXCHANGE_MAX_PAYLOAD_BYTES", str(64 * 1024))
     )
+    META_GRAPH_ACCESS_TOKEN = os.getenv("META_GRAPH_ACCESS_TOKEN", "")
+    META_GRAPH_API_VERSION = os.getenv("META_GRAPH_API_VERSION", "v23.0")
+    META_GRAPH_API_BASE_URL = os.getenv(
+        "META_GRAPH_API_BASE_URL",
+        "https://graph.facebook.com",
+    )
+    META_GRAPH_API_TIMEOUT_SECONDS = os.getenv(
+        "META_GRAPH_API_TIMEOUT_SECONDS",
+        "20",
+    )
 
     # 2. CONFIGURACIÓN DE LA BASE DE DATOS
     db_url = os.getenv("DATABASE_URL")

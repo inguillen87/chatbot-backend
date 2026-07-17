@@ -25,6 +25,12 @@ from models import (
 )
 from services.provider_platform import is_sender_ready_status
 from services.meta_flow_json import canonical_flow_json
+from services.meta_flow_management import (
+    MetaFlowGraphClient,
+    MetaFlowManagementError,
+    meta_flow_category,
+    resolve_meta_graph_credentials,
+)
 from services.meta_flow_data_exchange import MetaFlowActionError
 from services.meta_flow_runtime import ORDER_FLOW_ID, authorize_order_context
 from services.whatsapp_enterprise_rules import (
@@ -49,6 +55,7 @@ from utils.tenant import require_tenant
 whatsapp_rules_bp = Blueprint("whatsapp_rules_bp", __name__)
 TWILIO_CONTENT_API_URL = "https://content.twilio.com/v1/Content"
 TWILIO_CONFIRMATION_TTL_SECONDS = 15 * 60
+META_FLOW_PUBLICATION_ATTESTATION_TTL_SECONDS = 60 * 60
 
 
 class TwilioContentApiError(RuntimeError):
@@ -117,6 +124,21 @@ def _find_meta_flow_artifact(tenant, flow_id: str) -> dict | None:
             return None
         return {"flow": flow, "blueprint": blueprint, "artifact": artifact}
     return None
+
+
+def _native_flow_registry_identity(
+    blueprint: dict,
+    flow_id: str,
+    language_value,
+) -> tuple[str, str]:
+    flow_name = str(blueprint.get("flow_name") or flow_id).strip().lower()
+    friendly_base = re.sub(r"[^a-z0-9_]+", "_", flow_name).strip("_")
+    if not friendly_base:
+        abort(400, description="El blueprint Meta Flow no define un nombre valido")
+    language = str(language_value or "es").strip()
+    if not re.fullmatch(r"[a-z]{2}(?:_[A-Z]{2})?", language):
+        abort(400, description="language debe usar formato es o es_AR")
+    return f"{friendly_base}_native_v1"[:255], language
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/flows/<flow_id>/flow-json", methods=["GET"])
@@ -310,6 +332,18 @@ def _ready_flow_sender(tenant_id: int, sender_id) -> ProviderSender | None:
     return None
 
 
+def _meta_flow_management_sender(tenant_id: int) -> ProviderSender | None:
+    senders = (
+        ProviderSender.query.filter_by(tenant_id=tenant_id, channel="whatsapp")
+        .order_by(ProviderSender.updated_at.desc())
+        .all()
+    )
+    for sender in senders:
+        if str(sender.waba_id or "").strip():
+            return sender
+    return None
+
+
 def _flow_registry_is_active(row: MessageTemplateRegistry | None) -> bool:
     if not row or not str(row.content_sid or "").startswith("HX"):
         return False
@@ -400,6 +434,42 @@ def _verify_execution_confirmation(
         abort(409, description="La confirmacion no corresponde a esta operacion o tenant")
 
 
+def _verify_meta_publication_attestation(
+    token,
+    *,
+    tenant,
+    user: User,
+    flow_id: str,
+    meta_flow_id: str,
+    waba_id: str,
+    flow_json_sha256: str,
+) -> bool:
+    if not token:
+        return False
+    try:
+        decoded = _confirmation_serializer().loads(
+            str(token),
+            max_age=META_FLOW_PUBLICATION_ATTESTATION_TTL_SECONDS,
+        )
+    except SignatureExpired:
+        abort(409, description="La verificacion de Meta vencio; verifica nuevamente el Flow")
+    except BadSignature:
+        abort(409, description="La verificacion de Meta no es valida")
+    expected = {
+        "purpose": "meta_flow_publication_attestation",
+        "tenant_id": tenant.id,
+        "actor_user_id": user.id,
+        "flow_id": flow_id,
+        "meta_flow_id": meta_flow_id,
+        "waba_id": waba_id,
+        "flow_json_sha256": flow_json_sha256,
+        "status": "PUBLISHED",
+    }
+    if decoded != expected:
+        abort(409, description="La verificacion de Meta no corresponde a este tenant o artefacto")
+    return True
+
+
 def _twilio_json_request(client: Client, method: str, url: str, *, payload: dict | None = None) -> dict:
     response = client.request(
         method,
@@ -480,6 +550,120 @@ def _claim_registry_sync(
         db.session.rollback()
         abort(409, description="Otra sincronizacion creo este registro; actualiza antes de reintentar")
     return row, operation_id
+
+
+def _claim_meta_flow_publication(
+    existing: MessageTemplateRegistry | None,
+    *,
+    tenant,
+    friendly_name: str,
+    language: str,
+    flow_id: str,
+    meta_flow_id: str | None,
+    flow_json_sha256: str,
+    waba_id: str,
+) -> tuple[MessageTemplateRegistry, str, str]:
+    row = (
+        MessageTemplateRegistry.query.filter_by(id=existing.id)
+        .with_for_update()
+        .one()
+        if existing
+        else MessageTemplateRegistry(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name=friendly_name,
+            language=language,
+        )
+    )
+    metadata = (
+        dict(row.metadata_json)
+        if isinstance(row.metadata_json, dict)
+        else {}
+    )
+    current_state = str(metadata.get("meta_sync_state") or "").strip().lower()
+    if current_state in {"publishing", "uncertain"}:
+        abort(
+            409,
+            description=(
+                "La publicacion anterior requiere reconciliacion antes de reintentar"
+            ),
+        )
+
+    previous_status = str(row.status or "draft")
+    operation_id = uuid4().hex
+    metadata.update(
+        {
+            "flow_id": flow_id,
+            "meta_flow_id": meta_flow_id,
+            "flow_json_sha256": flow_json_sha256,
+            "meta_flow_waba_id": waba_id or None,
+            "content_family": "meta_native_flow",
+            "externally_managed_meta_flow": True,
+            "source": "meta_flow_json_7_3_artifact",
+            "meta_sync_operation_id": operation_id,
+            "meta_sync_state": "publishing",
+            "meta_sync_started_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    row.category = row.category or "UTILITY"
+    if not str(row.content_sid or "").startswith("HX"):
+        row.status = "meta_syncing"
+    row.metadata_json = metadata
+    db.session.add(row)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        abort(
+            409,
+            description=(
+                "Otra publicacion creo este registro; actualiza antes de reintentar"
+            ),
+        )
+    return row, operation_id, previous_status
+
+
+def _mark_meta_flow_publication_failure(
+    row: MessageTemplateRegistry,
+    *,
+    operation_id: str,
+    previous_status: str,
+    error: MetaFlowManagementError,
+) -> str:
+    metadata = dict(row.metadata_json) if isinstance(row.metadata_json, dict) else {}
+    if metadata.get("meta_sync_operation_id") != operation_id:
+        return ""
+    candidate_meta_flow_id = str(
+        error.details.get("meta_flow_id")
+        or metadata.get("meta_flow_id")
+        or row.external_template_id
+        or ""
+    ).strip()
+    uncertain = not candidate_meta_flow_id and error.code in {
+        "meta_graph_unreachable",
+        "meta_graph_invalid_json",
+        "meta_graph_invalid_contract",
+    }
+    metadata.update(
+        {
+            "meta_flow_id": candidate_meta_flow_id or None,
+            "meta_sync_state": "uncertain" if uncertain else "failed",
+            "meta_sync_error_code": error.code,
+            "meta_sync_failed_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    if candidate_meta_flow_id:
+        row.external_template_id = candidate_meta_flow_id
+    if not str(row.content_sid or "").startswith("HX"):
+        row.status = "meta_sync_uncertain" if uncertain else "meta_sync_failed"
+    else:
+        row.status = previous_status
+    row.metadata_json = metadata
+    row.last_sync_at = datetime.now(timezone.utc)
+    db.session.add(row)
+    db.session.commit()
+    return candidate_meta_flow_id
 
 
 def _mark_registry_sync_failure(
@@ -983,6 +1167,331 @@ def sync_twilio_content_template(user: User):
     ), 201
 
 
+@whatsapp_rules_bp.route("/api/admin/whatsapp/flows/meta/sync", methods=["POST"])
+@token_requerido
+@require_tenant
+def sync_meta_native_flow(user: User):
+    """Create, upload, publish and verify the exact Flow JSON through Meta Graph API."""
+
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    payload = request.get_json(silent=True) or {}
+
+    flow_id = str(payload.get("flow_id") or "").strip()
+    if not flow_id:
+        abort(400, description="flow_id es requerido")
+    flow_record = _find_meta_flow_artifact(tenant, flow_id)
+    if not flow_record:
+        abort(422, description="flow_id no tiene un artefacto Flow JSON validado y publicable")
+
+    supplied_meta_flow_id = str(payload.get("meta_flow_id") or "").strip()
+    meta_flow_id = (
+        _validated_meta_flow_id(supplied_meta_flow_id)
+        if supplied_meta_flow_id
+        else None
+    )
+    dry_run = _strict_boolean(payload, "dry_run", default=True)
+    publish = _strict_boolean(payload, "publish", default=True)
+    if not publish:
+        abort(400, description="Este endpoint operativo requiere publish=true")
+
+    flow = flow_record["flow"]
+    blueprint = flow_record["blueprint"]
+    artifact = flow_record["artifact"]
+    document = artifact.get("document")
+    if not isinstance(document, dict):
+        abort(409, description="El artefacto Flow JSON no contiene un documento valido")
+    artifact_sha256 = str(artifact.get("content_sha256") or "").strip()
+    if not artifact_sha256:
+        abort(409, description="El artefacto Flow JSON no tiene identidad verificable")
+    friendly_name, language = _native_flow_registry_identity(
+        blueprint,
+        flow_id,
+        payload.get("language"),
+    )
+    flow_name = str(blueprint.get("flow_name") or flow_id).strip()
+
+    experience = build_whatsapp_experience(tenant, app_config=current_app.config)
+    native_flows = ((experience.get("meta_platform") or {}).get("native_flows") or {})
+    data_exchange = (
+        native_flows.get("data_exchange")
+        if isinstance(native_flows.get("data_exchange"), dict)
+        else {}
+    )
+    endpoint_driven = bool(artifact.get("endpoint_driven"))
+    endpoint_uri = (
+        str(data_exchange.get("endpoint_url") or "").strip()
+        if endpoint_driven
+        else ""
+    )
+    sender = _meta_flow_management_sender(tenant.id)
+    waba_id = str(sender.waba_id or "").strip() if sender else ""
+    credentials = resolve_meta_graph_credentials(
+        waba_id=waba_id,
+        app_config=current_app.config,
+    )
+    integration_access = integration_access_payload(tenant)
+    existing_registry = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name=friendly_name,
+        language=language,
+    ).first()
+    if existing_registry is None:
+        existing_registry = _native_flow_registry_for_send(tenant.id, flow_id)
+    existing_metadata = (
+        existing_registry.metadata_json
+        if existing_registry and isinstance(existing_registry.metadata_json, dict)
+        else {}
+    )
+    registered_meta_flow_id = str(
+        existing_metadata.get("meta_flow_id")
+        or (existing_registry.external_template_id if existing_registry else None)
+        or ""
+    ).strip()
+    if not meta_flow_id and registered_meta_flow_id:
+        meta_flow_id = _validated_meta_flow_id(registered_meta_flow_id)
+    registered_artifact_sha256 = str(
+        existing_metadata.get("flow_json_sha256") or ""
+    ).strip()
+    registered_waba_id = str(
+        existing_metadata.get("meta_flow_waba_id") or ""
+    ).strip()
+    meta_sync_state = str(
+        existing_metadata.get("meta_sync_state") or ""
+    ).strip().lower()
+
+    blockers: list[str] = []
+    if not integration_access.get("enabled"):
+        blockers.append(
+            str(integration_access.get("lock_reason_code") or "plan_full_required")
+        )
+    blockers.extend(credentials.blockers)
+    if endpoint_driven and not data_exchange.get("ready"):
+        blockers.append("data_exchange_not_ready")
+    if endpoint_driven and not endpoint_uri:
+        blockers.append("data_exchange_endpoint_url_missing")
+    if (
+        supplied_meta_flow_id
+        and registered_meta_flow_id
+        and registered_meta_flow_id != supplied_meta_flow_id
+    ):
+        blockers.append("meta_flow_registry_conflict")
+    if registered_artifact_sha256 and registered_artifact_sha256 != artifact_sha256:
+        blockers.append("meta_flow_registry_artifact_conflict")
+    if registered_waba_id and waba_id and registered_waba_id != waba_id:
+        blockers.append("meta_flow_registry_waba_conflict")
+    if meta_sync_state in {"publishing", "uncertain"}:
+        blockers.append("meta_flow_sync_reconciliation_required")
+    blockers = list(dict.fromkeys(blockers))
+
+    category = meta_flow_category(flow_id, blueprint.get("category"))
+    confirmation_fields = {
+        "flow_id": flow_id,
+        "meta_flow_id": meta_flow_id,
+        "waba_id": waba_id,
+        "flow_json_sha256": artifact_sha256,
+        "endpoint_uri": endpoint_uri or None,
+        "publish": True,
+    }
+    execute_confirmation = (
+        _issue_execution_confirmation(
+            purpose="meta_native_flow_sync",
+            tenant=tenant,
+            user=user,
+            fields=confirmation_fields,
+        )
+        if not blockers
+        else None
+    )
+    management_contract = {
+        "contract_version": "whatsapp.meta_flow_management.v1",
+        "official_api": "Meta Graph API",
+        "flow_json_version": artifact.get("flow_json_version"),
+        "data_api_version": artifact.get("data_api_version"),
+        "flow_json_sha256": artifact_sha256,
+        "flow_json_byte_size": artifact.get("byte_size"),
+        "endpoint_driven": endpoint_driven,
+        "endpoint_uri": endpoint_uri or None,
+        "waba_id_present": bool(waba_id),
+        "graph": credentials.public_payload(),
+        "irreversible_publish": True,
+        "steps": [
+            "create_or_reuse_draft",
+            "upload_exact_flow_json",
+            "validate_meta_schema",
+            "publish_immutable_flow",
+            "download_and_verify_remote_hash",
+        ],
+    }
+
+    if dry_run:
+        response = {
+            "dry_run": True,
+            "ready_to_sync": not blockers,
+            "blocked": bool(blockers),
+            "blockers": blockers,
+            "flow_id": flow_id,
+            "meta_flow_id": meta_flow_id,
+            "flow_name": flow_name,
+            "category": category,
+            "management": management_contract,
+            "integration_access": integration_access,
+        }
+        if execute_confirmation:
+            response["execute_confirmation"] = execute_confirmation
+        return jsonify(response)
+
+    if blockers:
+        return jsonify(
+            {
+                "ok": False,
+                "blocked": True,
+                "blockers": blockers,
+                "management": management_contract,
+                "integration_access": integration_access,
+            }
+        ), 409
+
+    _verify_execution_confirmation(
+        payload.get("execute_confirmation"),
+        purpose="meta_native_flow_sync",
+        tenant=tenant,
+        user=user,
+        fields=confirmation_fields,
+    )
+
+    publication_row, operation_id, previous_status = _claim_meta_flow_publication(
+        existing_registry,
+        tenant=tenant,
+        friendly_name=friendly_name,
+        language=language,
+        flow_id=flow_id,
+        meta_flow_id=meta_flow_id,
+        flow_json_sha256=artifact_sha256,
+        waba_id=waba_id,
+    )
+    try:
+        result = MetaFlowGraphClient(credentials).provision_and_publish(
+            flow_name=flow_name,
+            category=category,
+            document=document,
+            expected_sha256=artifact_sha256,
+            endpoint_uri=endpoint_uri or None,
+            meta_flow_id=meta_flow_id,
+            publish=True,
+        )
+    except MetaFlowManagementError as exc:
+        failed_meta_flow_id = _mark_meta_flow_publication_failure(
+            publication_row,
+            operation_id=operation_id,
+            previous_status=previous_status,
+            error=exc,
+        )
+        db.session.add(
+            AuditEvent(
+                tenant_id=tenant.id,
+                actor_user_id=user.id,
+                event_type="whatsapp_flow.meta_sync_failed",
+                resource_type="meta_whatsapp_flow",
+                resource_id=failed_meta_flow_id or meta_flow_id or flow_id,
+                details={
+                    "flow_id": flow_id,
+                    "meta_flow_id": failed_meta_flow_id or meta_flow_id,
+                    "waba_id": waba_id,
+                    "flow_json_sha256": artifact_sha256,
+                    "error_code": exc.code,
+                },
+                ip_address=request.remote_addr,
+            )
+        )
+        db.session.commit()
+        return jsonify({"error": exc.public_payload()}), exc.status_code
+
+    verification = result["verification"]
+    verified_meta_flow_id = str(verification.get("meta_flow_id") or "").strip()
+    publication_attestation = _issue_execution_confirmation(
+        purpose="meta_flow_publication_attestation",
+        tenant=tenant,
+        user=user,
+        fields={
+            "flow_id": flow_id,
+            "meta_flow_id": verified_meta_flow_id,
+            "waba_id": waba_id,
+            "flow_json_sha256": artifact_sha256,
+            "status": "PUBLISHED",
+        },
+    )
+
+    updated_metadata = (
+        dict(publication_row.metadata_json)
+        if isinstance(publication_row.metadata_json, dict)
+        else {}
+    )
+    updated_metadata.update(
+        {
+            "meta_flow_id": verified_meta_flow_id,
+            "meta_flow_status": "published",
+            "meta_flow_publication_verified": True,
+            "meta_flow_publication_verified_at": datetime.now(timezone.utc).isoformat(),
+            "meta_flow_publication_source": "meta_graph_api",
+            "meta_flow_remote_sha256": verification.get("flow_json_sha256"),
+            "flow_json_sha256": artifact_sha256,
+            "meta_flow_waba_id": waba_id,
+            "meta_sync_operation_id": operation_id,
+            "meta_sync_state": "complete",
+            "meta_sync_completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    publication_row.external_template_id = verified_meta_flow_id
+    publication_row.metadata_json = updated_metadata
+    publication_row.last_sync_at = datetime.now(timezone.utc)
+    if not str(publication_row.content_sid or "").startswith("HX"):
+        publication_row.status = "meta_published"
+    else:
+        publication_row.status = previous_status
+    db.session.add(publication_row)
+
+    db.session.add(
+        AuditEvent(
+            tenant_id=tenant.id,
+            actor_user_id=user.id,
+            event_type="whatsapp_flow.meta_published_verified",
+            resource_type="meta_whatsapp_flow",
+            resource_id=verified_meta_flow_id,
+            details={
+                "flow_id": flow_id,
+                "meta_flow_id": verified_meta_flow_id,
+                "waba_id": waba_id,
+                "flow_json_sha256": artifact_sha256,
+                "created": result["created"],
+                "uploaded": result["uploaded"],
+                "published_now": result["published_now"],
+                "idempotent": result["idempotent"],
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    return jsonify(
+        {
+            "synced": True,
+            "flow_id": flow_id,
+            "meta_flow_id": verified_meta_flow_id,
+            "management": management_contract,
+            "result": result,
+            "meta_publication_attestation": publication_attestation,
+            "next_action": (
+                "verify_twilio_wrapper"
+                if str(publication_row.content_sid or "").startswith("HX")
+                else "create_twilio_wrapper"
+            ),
+        }
+    )
+
+
 @whatsapp_rules_bp.route("/api/admin/whatsapp/flows/twilio-content/sync", methods=["POST"])
 @token_requerido
 @require_tenant
@@ -1009,14 +1518,11 @@ def sync_twilio_native_flow(user: User):
     if not first_screen_id:
         abort(400, description="El artefacto Flow JSON no define una primera pantalla valida")
 
-    flow_name = str(blueprint.get("flow_name") or flow_id).strip().lower()
-    friendly_base = re.sub(r"[^a-z0-9_]+", "_", flow_name).strip("_")
-    if not friendly_base:
-        abort(400, description="El blueprint Meta Flow no define un nombre valido")
-    friendly_name = f"{friendly_base}_native_v1"[:255]
-    language = str(payload.get("language") or "es").strip()
-    if not re.fullmatch(r"[a-z]{2}(?:_[A-Z]{2})?", language):
-        abort(400, description="language debe usar formato es o es_AR")
+    friendly_name, language = _native_flow_registry_identity(
+        blueprint,
+        flow_id,
+        payload.get("language"),
+    )
     body, button_text = _flow_content_copy(payload, blueprint)
 
     dry_run = _strict_boolean(payload, "dry_run", default=True)
@@ -1061,6 +1567,33 @@ def sync_twilio_native_flow(user: User):
     existing_metadata = existing.metadata_json if existing and isinstance(existing.metadata_json, dict) else {}
     existing_artifact_sha256 = str(existing_metadata.get("flow_json_sha256") or "").strip()
     expected_artifact_sha256 = str(artifact.get("content_sha256") or "").strip()
+    management_sender = _meta_flow_management_sender(tenant.id)
+    management_waba_id = (
+        str(management_sender.waba_id or "").strip() if management_sender else ""
+    )
+    publication_attestation = payload.get("meta_publication_attestation")
+    publication_attested = _verify_meta_publication_attestation(
+        publication_attestation,
+        tenant=tenant,
+        user=user,
+        flow_id=flow_id,
+        meta_flow_id=meta_flow_id,
+        waba_id=management_waba_id,
+        flow_json_sha256=expected_artifact_sha256,
+    )
+    existing_publication_waba_id = str(
+        existing_metadata.get("meta_flow_waba_id") or ""
+    ).strip()
+    existing_publication_verified = bool(
+        existing_metadata.get("meta_flow_publication_verified")
+        and existing_meta_flow_id == meta_flow_id
+        and existing_artifact_sha256 == expected_artifact_sha256
+        and existing_publication_waba_id
+        and existing_publication_waba_id == management_waba_id
+    )
+    publication_verified = bool(
+        publication_attested or existing_publication_verified
+    )
     meta_flow_conflict = bool(existing_has_sid and existing_meta_flow_id and existing_meta_flow_id != meta_flow_id)
     artifact_conflict = bool(
         existing_has_sid
@@ -1078,6 +1611,8 @@ def sync_twilio_native_flow(user: User):
         "manifest_digest": _confirmation_manifest_digest(create_request, approval_request),
         "submit_for_approval": submit_for_approval,
         "force": force,
+        "meta_publication_verified": publication_verified,
+        "waba_id": management_waba_id or None,
     }
     execute_confirmation = (
         _issue_execution_confirmation(
@@ -1104,6 +1639,7 @@ def sync_twilio_native_flow(user: User):
         "data_contract": blueprint.get("data_contract") or [],
         "meta_flow_json_upload_performed": False,
         "publication_scope": "twilio_content_wrapper_only",
+        "meta_flow_publication_verified": publication_verified,
     }
 
     if dry_run:
@@ -1220,6 +1756,20 @@ def sync_twilio_native_flow(user: User):
     row.external_template_id = meta_flow_id
     row.body_preview = body
     row.components = create_request["types"]
+    publication_verified_at = (
+        datetime.now(timezone.utc).isoformat()
+        if publication_attested
+        else existing_metadata.get("meta_flow_publication_verified_at")
+        if publication_verified
+        else None
+    )
+    publication_source = (
+        "meta_graph_api_attestation"
+        if publication_attested
+        else existing_metadata.get("meta_flow_publication_source")
+        if publication_verified
+        else None
+    )
     row.metadata_json = {
         "flow_id": flow_id,
         "flow_name": blueprint.get("flow_name"),
@@ -1231,13 +1781,16 @@ def sync_twilio_native_flow(user: User):
         "data_api_version": artifact.get("data_api_version"),
         "flow_json_byte_size": artifact.get("byte_size"),
         "meta_flow_json_upload_performed": False,
-        "meta_flow_publication_verified": False,
+        "meta_flow_publication_verified": publication_verified,
+        "meta_flow_publication_verified_at": publication_verified_at,
+        "meta_flow_publication_source": publication_source,
+        "meta_flow_waba_id": management_waba_id or None,
         "externally_managed_meta_flow": True,
         "completion_event": blueprint.get("completion_event"),
         "data_contract": blueprint.get("data_contract") or [],
         "content_family": "meta_native_flow",
         "approval_status": approval_status,
-        "meta_flow_status": meta_flow_status,
+        "meta_flow_status": "published" if publication_verified else meta_flow_status,
         "approval_rejection_reason": approval_rejection_reason,
         "approval_requested": submit_for_approval,
         "source": "meta_flow_json_7_3_artifact",
@@ -1265,6 +1818,7 @@ def sync_twilio_native_flow(user: User):
                 "forced_replacement": bool(force and registry_conflict),
                 "flow_json_sha256": expected_artifact_sha256,
                 "meta_flow_json_upload_performed": False,
+                "meta_flow_publication_verified": publication_verified,
                 "twilio_account_scope": credentials.scope,
             },
             ip_address=request.remote_addr,

@@ -45,6 +45,7 @@ from services.meta_flow_data_exchange import (
     cryptography_available as meta_flow_cryptography_available,
     endpoint_config_readiness,
 )
+from services.meta_flow_management import resolve_meta_graph_credentials
 from services.plan_access import integration_access_payload
 from services.provider_platform import is_sender_ready_status
 from services.whatsapp_flow_security import whatsapp_flow_token_key_ready
@@ -4350,6 +4351,33 @@ def _meta_platform_payload(
         tech_state=tech_state,
         waba_id=waba_id,
     )
+    meta_graph_credentials = resolve_meta_graph_credentials(
+        waba_id=waba_id,
+        app_config=app_cfg,
+    )
+    meta_flow_management = {
+        "contract_version": "whatsapp.meta_flow_management.v1",
+        "configured": bool(meta_graph_credentials.access_token),
+        "ready": meta_graph_credentials.ready,
+        "status": (
+            "ready"
+            if meta_graph_credentials.ready
+            else "configuration_required"
+        ),
+        "sync_endpoint": "/api/admin/whatsapp/flows/meta/sync",
+        "sync_method": "POST",
+        "dry_run_default": True,
+        "irreversible_publish": True,
+        "supports": [
+            "create_flow",
+            "upload_flow_json",
+            "validate_flow_json",
+            "publish_flow",
+            "verify_remote_asset_hash",
+        ],
+        "graph": meta_graph_credentials.public_payload(),
+        "blockers": list(meta_graph_credentials.blockers),
+    }
 
     registry_rows = MessageTemplateRegistry.query.filter_by(
         tenant_id=tenant.id,
@@ -4461,12 +4489,19 @@ def _meta_platform_payload(
                     if active
                     else "configuration_mismatch"
                     if row and not configured
+                    and not (
+                        meta_flow_id
+                        and publication_verified
+                        and not content_sid.startswith("HX")
+                    )
                     else "awaiting_data_exchange"
                     if configured and not data_exchange.get("ready")
                     else "awaiting_publication_verification"
                     if configured and not publication_verified
                     else "awaiting_meta_approval"
                     if configured
+                    else "twilio_wrapper_required"
+                    if meta_flow_id and publication_verified
                     else "meta_flow_id_required"
                 ),
             }
@@ -4579,6 +4614,9 @@ def _meta_platform_payload(
             "candidate_count": len(flow_candidates),
             "sync_endpoint": "/api/admin/whatsapp/flows/twilio-content/sync",
             "sync_method": "POST",
+            "flow_json_download_endpoint_template": (
+                "/api/admin/whatsapp/flows/{flow_id}/flow-json"
+            ),
             "send_endpoint": "/api/admin/whatsapp/flows/send",
             "send_method": "POST",
             "dry_run_default": True,
@@ -4590,6 +4628,7 @@ def _meta_platform_payload(
             "requires_verified_meta_publication": True,
             "runtime_endpoint": f"/api/public/flows/runtime?tenant={tenant.slug}&channel=whatsapp",
             "data_exchange": data_exchange,
+            "management": meta_flow_management,
             "submission_ingestion": {
                 "contract_version": "whatsapp.twilio_flow_completion.v1",
                 "transport": "twilio_completion_webhook",
