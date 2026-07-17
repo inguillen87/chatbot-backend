@@ -7,12 +7,13 @@ import json
 import secrets
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import current_app, has_app_context
 
-from models import MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
+from models import ArchivoAdjunto, MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
+from services.attachment_delivery import serialize_attachment_for_delivery
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from services.live_chat_schedule import build_tenant_live_chat_status
 
@@ -185,7 +186,11 @@ def _tracking_map(location: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _comment_timeline(comments_rel: Any) -> list[dict[str, Any]]:
+def _comment_timeline(
+    comments_rel: Any,
+    *,
+    evidence_index: Mapping[int, Mapping[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     if not hasattr(comments_rel, "order_by"):
         return []
     try:
@@ -201,6 +206,16 @@ def _comment_timeline(comments_rel: Any) -> list[dict[str, Any]]:
 
     items = []
     for comment in comments:
+        attachments: list[dict[str, Any]] = []
+        attachment = getattr(comment, "archivo_adjunto", None)
+        if attachment is not None:
+            attachments.append(
+                _claim_attachment_payload(
+                    attachment,
+                    evidence=(evidence_index or {}).get(attachment.id),
+                    fallback_source=getattr(comment, "origen", None) or "public_tracking",
+                )
+            )
         items.append(
             {
                 "id": getattr(comment, "id", None),
@@ -210,9 +225,106 @@ def _comment_timeline(comments_rel: Any) -> list[dict[str, Any]]:
                 "author": "team" if getattr(comment, "es_admin", False) else "customer",
                 "created_at": _iso(getattr(comment, "fecha", None)),
                 "source": getattr(comment, "origen", None),
+                "attachments": attachments,
             }
         )
     return items
+
+
+def _claim_evidence_index(ticket: MunicipioTicket) -> dict[int, dict[str, Any]]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
+    batches = extra.get("whatsapp_flow_evidence")
+    if not isinstance(batches, list):
+        return {}
+    index: dict[int, dict[str, Any]] = {}
+    for batch in batches:
+        if not isinstance(batch, Mapping):
+            continue
+        for item in batch.get("items") if isinstance(batch.get("items"), list) else []:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                attachment_id = int(item.get("attachment_id"))
+            except (TypeError, ValueError):
+                continue
+            index[attachment_id] = {
+                "source": batch.get("source") or "whatsapp_flow",
+                "origin": batch.get("source") or "whatsapp_flow",
+                "status": item.get("status") or "ready",
+                "kind": item.get("kind"),
+                "flow_id": batch.get("flow_id"),
+                "interaction_id": batch.get("interaction_id"),
+            }
+    return index
+
+
+def _claim_attachment_payload(
+    attachment: ArchivoAdjunto,
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    fallback_source: str = "claim_attachment",
+) -> dict[str, Any]:
+    metadata = evidence if isinstance(evidence, Mapping) else {}
+    payload = serialize_attachment_for_delivery(attachment)
+    mime_type = str(payload.get("mimeType") or "")
+    payload.update(
+        {
+            "kind": metadata.get("kind") or ("image" if mime_type.startswith("image/") else "file"),
+            "source": metadata.get("source") or fallback_source,
+            "origin": metadata.get("origin") or fallback_source,
+            "status": metadata.get("status") or "ready",
+        }
+    )
+    for key in ("flow_id", "interaction_id"):
+        if metadata.get(key) is not None:
+            payload[key] = metadata.get(key)
+    _strip_public_storage_fields(payload)
+    return payload
+
+
+def _strip_public_storage_fields(payload: dict[str, Any]) -> None:
+    """Keep storage references internal while exposing signed delivery URLs."""
+
+    payload.pop("storage_url", None)
+    payload.pop("thumb_storage_url", None)
+
+
+def _claim_attachments(
+    ticket: MunicipioTicket,
+    evidence_index: Mapping[int, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    attachments: list[dict[str, Any]] = []
+    if getattr(ticket, "foto_url_directa", None):
+        legacy = serialize_attachment_for_delivery(
+            {
+                "id": f"legacy-photo-{ticket.id}",
+                "name": "Foto adjunta",
+                "url": ticket.foto_url_directa,
+            }
+        )
+        legacy.update(
+            {
+                "kind": "image",
+                "source": "claim_attachment",
+                "origin": "claim_attachment",
+                "status": "ready",
+            }
+        )
+        _strip_public_storage_fields(legacy)
+        attachments.append(legacy)
+    rows = (
+        ArchivoAdjunto.query.filter_by(municipio_ticket_id=ticket.id)
+        .order_by(ArchivoAdjunto.fecha.asc(), ArchivoAdjunto.id.asc())
+        .all()
+    )
+    attachments.extend(
+        _claim_attachment_payload(
+            attachment,
+            evidence=evidence_index.get(attachment.id),
+        )
+        for attachment in rows
+    )
+    return attachments
 
 
 def _tenant_live_chat_status(tenant: TenantProfile | None) -> dict[str, Any]:
@@ -852,8 +964,13 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
             "created_at": _iso(getattr(ticket, "ultima_actividad", None) or getattr(ticket, "fecha", None)),
         },
     ]
-    conversation = _comment_timeline(getattr(ticket, "comentarios", None))
+    evidence_index = _claim_evidence_index(ticket)
+    conversation = _comment_timeline(
+        getattr(ticket, "comentarios", None),
+        evidence_index=evidence_index,
+    )
     timeline.extend(conversation)
+    attachments = _claim_attachments(ticket, evidence_index)
 
     code = str(getattr(ticket, "nro_ticket", "") or "")
     display_code = code if code.upper().startswith(("M-", "S-")) else f"M-{code}"
@@ -879,6 +996,7 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
         "status": _stage_payload(getattr(ticket, "estado", None), kind="claim"),
         "location": location,
         "map": _tracking_map(location),
+        "attachments": attachments,
         "timeline": [item for item in timeline if item.get("created_at") or item.get("message") or item.get("status")],
         "support": support,
         "actions": [

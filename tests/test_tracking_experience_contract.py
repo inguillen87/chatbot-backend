@@ -7,7 +7,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import MunicipioTicket, PedidoConversacional, PymePedido, PymeTicket, TenantProfile, TicketComentario, User
+from models import ArchivoAdjunto, MunicipioTicket, PedidoConversacional, PymePedido, PymeTicket, TenantProfile, TicketComentario, User
 from services.live_chat_access import verify_ticket_room_token
 from services.tracking_experience import TRACKING_EXPERIENCE_CONTRACT_VERSION, issue_order_tracking_token
 
@@ -149,6 +149,7 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["support"]["conversation"]["message_count"], 1)
         self.assertFalse(payload["support"]["conversation"]["unread_for_team"])
         self.assertIn("admin_inbox_unread_incremented", payload["support"]["conversation"]["writebacks"])
+
         self.assertEqual(payload["support"]["service_window"]["tenant_schedule_source"], "tenant_config")
         self.assertTrue(payload["support"]["service_window"]["accepts_messages"])
         self.assertEqual(payload["support"]["service_window"]["outside_hours_mode"], "offline_message")
@@ -200,6 +201,67 @@ class TrackingExperienceContractTest(unittest.TestCase):
             "/tracking/claim/123456#pin=654321",
         )
         self.assertTrue(action_by_id["open_tracking_page"]["requires_pin"])
+
+    def test_public_claim_tracking_delivers_whatsapp_flow_evidence_in_timeline(self):
+        attachment = ArchivoAdjunto(
+            filename="evidencia-bache.jpg",
+            nombre_original="evidencia-bache.jpg",
+            mime="image/jpeg",
+            tamano=2048,
+            tipo="whatsapp_flow_evidence",
+            municipio_ticket_id=self.claim.id,
+            url="https://cdn.example.test/evidencia-bache.jpg",
+        )
+        db.session.add(attachment)
+        db.session.flush()
+        comment = TicketComentario(
+            municipio_ticket_id=self.claim.id,
+            comentario="Evidencia recibida: evidencia-bache.jpg",
+            es_admin=False,
+            origen="whatsapp_flow",
+            archivo_adjunto_id=attachment.id,
+        )
+        db.session.add(comment)
+        self.claim.datos_extra = {
+            "whatsapp_flow_evidence": [
+                {
+                    "interaction_id": 701,
+                    "flow_id": "claim_evidence",
+                    "source": "whatsapp_flow",
+                    "received_at": "2026-07-17T03:00:00+00:00",
+                    "items": [
+                        {
+                            "attachment_id": attachment.id,
+                            "kind": "photo",
+                            "status": "ready",
+                            "provider_media_ref": "provider-id-is-hashed",
+                        }
+                    ],
+                }
+            ]
+        }
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/public/tracking/experience?kind=claim&code=M-123456",
+            headers={"X-Tracking-Pin": "654321"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        evidence = next(item for item in payload["attachments"] if item["id"] == attachment.id)
+        self.assertEqual(evidence["url"], "https://cdn.example.test/evidencia-bache.jpg")
+        self.assertEqual(evidence["source"], "whatsapp_flow")
+        self.assertEqual(evidence["origin"], "whatsapp_flow")
+        self.assertEqual(evidence["status"], "ready")
+        self.assertEqual(evidence["flow_id"], "claim_evidence")
+        self.assertEqual(evidence["interaction_id"], 701)
+        self.assertNotIn("storage_url", evidence)
+        self.assertNotIn("thumb_storage_url", evidence)
+        evidence_event = next(item for item in payload["timeline"] if item["id"] == comment.id)
+        self.assertEqual(evidence_event["attachments"][0]["id"], attachment.id)
+        self.assertNotIn("storage_url", evidence_event["attachments"][0])
+        self.assertNotIn("provider_media_ref", response.get_data(as_text=True))
 
     def test_public_claim_tracking_support_cta_differs_by_live_mode(self):
         base_status = {

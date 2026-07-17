@@ -15,6 +15,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
 from models import (
+    ArchivoAdjunto,
     CatalogoItem,
     EncEncuesta,
     EncRespuesta,
@@ -43,6 +44,7 @@ from services.employee_routing import (
 )
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.channel_activation import build_channel_activation_payload
+from services.attachment_delivery import serialize_attachment_for_delivery
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.live_chat_schedule import build_tenant_live_chat_status
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
@@ -3656,19 +3658,29 @@ def _attachment_items(extra: Mapping[str, Any]) -> list[dict[str, Any]]:
     for index, item in enumerate(raw):
         if not isinstance(item, dict):
             continue
-        url = item.get("url") or item.get("file_url") or item.get("public_url")
         mime_type = item.get("mimeType") or item.get("mime_type") or item.get("content_type")
-        items.append(
+        normalized = serialize_attachment_for_delivery(
             {
+                **item,
                 "id": item.get("id") or item.get("key") or f"attachment-{index + 1}",
                 "name": item.get("name") or item.get("filename") or item.get("file_name") or f"Adjunto {index + 1}",
-                "url": url,
-                "mimeType": mime_type,
+                "mime_type": mime_type,
                 "size": item.get("size") or item.get("bytes"),
-                "kind": item.get("kind") or ("image" if str(mime_type or "").startswith("image/") else "file"),
-                "source": item.get("source") or "chat_attachment",
+                "url": item.get("url") or item.get("file_url") or item.get("public_url"),
             }
         )
+        normalized.update(
+            {
+                "kind": item.get("kind") or ("image" if str(mime_type or "").startswith("image/") else "file"),
+                "source": item.get("source") or item.get("origin") or "chat_attachment",
+                "origin": item.get("origin") or item.get("source") or "chat_attachment",
+                "status": item.get("status") or "ready",
+            }
+        )
+        for key in ("flow_id", "interaction_id"):
+            if item.get(key) is not None:
+                normalized[key] = item.get(key)
+        items.append(normalized)
     return items
 
 
@@ -3837,8 +3849,18 @@ def _legacy_claim_updated_at(ticket: MunicipioTicket, comments: list[TicketComen
 
 def _legacy_claim_timeline(ticket: MunicipioTicket, comments: list[TicketComentario]) -> list[dict[str, Any]]:
     timeline: list[dict[str, Any]] = []
+    evidence_index = _legacy_claim_evidence_index(ticket)
     for comment in comments:
         origin = str(comment.origen or ("admin_panel" if comment.es_admin else "public_tracking")).strip().lower()
+        comment_attachments: list[dict[str, Any]] = []
+        if comment.archivo_adjunto is not None:
+            comment_attachments.append(
+                _serialize_legacy_claim_attachment(
+                    comment.archivo_adjunto,
+                    evidence=evidence_index.get(comment.archivo_adjunto.id),
+                    fallback_source=origin,
+                )
+            )
         timeline.append(
             {
                 "id": comment.id,
@@ -3853,24 +3875,95 @@ def _legacy_claim_timeline(ticket: MunicipioTicket, comments: list[TicketComenta
                     "name": "Equipo" if comment.es_admin else (ticket.nombre_vecino or "Vecino/a"),
                 },
                 "action": comment.estado_ticket,
-                "attachments": [],
+                "attachments": comment_attachments,
             }
         )
     return timeline
 
 
+def _legacy_claim_evidence_index(ticket: MunicipioTicket) -> dict[int, dict[str, Any]]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
+    batches = extra.get("whatsapp_flow_evidence")
+    if not isinstance(batches, list):
+        return {}
+    index: dict[int, dict[str, Any]] = {}
+    for batch in batches:
+        if not isinstance(batch, Mapping):
+            continue
+        items = batch.get("items") if isinstance(batch.get("items"), list) else []
+        for item in items:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                attachment_id = int(item.get("attachment_id"))
+            except (TypeError, ValueError):
+                continue
+            index[attachment_id] = {
+                "source": batch.get("source") or "whatsapp_flow",
+                "origin": batch.get("source") or "whatsapp_flow",
+                "status": item.get("status") or "ready",
+                "kind": item.get("kind"),
+                "flow_id": batch.get("flow_id"),
+                "interaction_id": batch.get("interaction_id"),
+                "uploaded_at": batch.get("received_at"),
+            }
+    return index
+
+
+def _serialize_legacy_claim_attachment(
+    attachment: ArchivoAdjunto,
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    fallback_source: str = "claim_attachment",
+) -> dict[str, Any]:
+    metadata = evidence if isinstance(evidence, Mapping) else {}
+    payload = serialize_attachment_for_delivery(attachment)
+    mime_type = str(payload.get("mimeType") or "")
+    payload.update(
+        {
+            "kind": metadata.get("kind") or ("image" if mime_type.startswith("image/") else "file"),
+            "source": metadata.get("source") or fallback_source,
+            "origin": metadata.get("origin") or fallback_source,
+            "status": metadata.get("status") or "ready",
+        }
+    )
+    for key in ("flow_id", "interaction_id"):
+        if metadata.get(key) is not None:
+            payload[key] = metadata.get(key)
+    return payload
+
+
 def _legacy_claim_attachments(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     attachments: list[dict[str, Any]] = []
+    evidence_index = _legacy_claim_evidence_index(ticket)
     if ticket.foto_url_directa:
-        attachments.append(
+        photo = serialize_attachment_for_delivery(
             {
                 "id": f"legacy-photo-{ticket.id}",
                 "name": "Foto adjunta",
                 "url": ticket.foto_url_directa,
-                "mimeType": None,
+            }
+        )
+        photo.update(
+            {
                 "kind": "image",
                 "source": "claim_attachment",
+                "origin": "claim_attachment",
+                "status": "ready",
             }
+        )
+        attachments.append(photo)
+    rows = (
+        ArchivoAdjunto.query.filter_by(municipio_ticket_id=ticket.id)
+        .order_by(ArchivoAdjunto.fecha.asc(), ArchivoAdjunto.id.asc())
+        .all()
+    )
+    for attachment in rows:
+        attachments.append(
+            _serialize_legacy_claim_attachment(
+                attachment,
+                evidence=evidence_index.get(attachment.id),
+            )
         )
     return attachments
 

@@ -75,6 +75,7 @@ from services.whatsapp_flow_security import (
 )
 from services.meta_flow_data_exchange import MetaFlowActionError
 from services.meta_flow_runtime import (
+    CLAIM_EVIDENCE_FLOW_ID,
     CLAIM_FLOW_ID,
     ORDER_FLOW_ID,
     SURVEY_FLOW_ID,
@@ -5012,7 +5013,12 @@ def whatsapp_webhook():
         completed_flow_id = str(
             ((safe_flow_submission.get("flow") or {}).get("id")) or ""
         ).strip()
-        if completed_flow_id in {CLAIM_FLOW_ID, ORDER_FLOW_ID, SURVEY_FLOW_ID}:
+        if completed_flow_id in {
+            CLAIM_EVIDENCE_FLOW_ID,
+            CLAIM_FLOW_ID,
+            ORDER_FLOW_ID,
+            SURVEY_FLOW_ID,
+        }:
             try:
                 flow_completion_payload = apply_whatsapp_flow_completion(
                     tenant_id=int(tenant_id),

@@ -1459,6 +1459,192 @@ def build_claim_tracking_blueprint() -> FlowBlueprint:
     )
 
 
+def build_claim_evidence_blueprint() -> FlowBlueprint:
+    """Build a claim-bound evidence upload with separate media screens.
+
+    Meta does not allow PhotoPicker and DocumentPicker on the same screen and
+    does not allow their values in a navigate payload. The terminal screen uses
+    global screen references so the response message carries normal media IDs.
+    """
+
+    document_mime_types = [
+        "application/msword",
+        "application/pdf",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+        "application/vnd.oasis.opendocument.presentation",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/plain",
+    ]
+    return FlowBlueprint(
+        name="claim_evidence",
+        endpoint_driven=True,
+        routing_model={
+            "CLAIM_EVIDENCE_LOOKUP": ("CLAIM_EVIDENCE_PHOTOS",),
+            "CLAIM_EVIDENCE_PHOTOS": ("CLAIM_EVIDENCE_DOCUMENTS",),
+            "CLAIM_EVIDENCE_DOCUMENTS": ("CLAIM_EVIDENCE_SUCCESS",),
+            "CLAIM_EVIDENCE_SUCCESS": (),
+        },
+        screens=(
+            {
+                "id": "CLAIM_EVIDENCE_LOOKUP",
+                "title": "Adjuntar evidencia",
+                "sensitive": ["access_pin"],
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [
+                        {
+                            "type": "TextHeading",
+                            "text": "Vincula archivos a tu reclamo",
+                        },
+                        {
+                            "type": "TextBody",
+                            "text": "Ingresa el numero y PIN entregados al crear el reclamo.",
+                        },
+                        {
+                            "type": "TextInput",
+                            "name": "ticket_number",
+                            "label": "Numero de reclamo",
+                            "required": True,
+                        },
+                        {
+                            "type": "TextInput",
+                            "name": "access_pin",
+                            "label": "PIN de acceso",
+                            "required": True,
+                        },
+                        {
+                            "type": "Footer",
+                            "label": "Continuar",
+                            "on-click-action": {
+                                "name": "data_exchange",
+                                "payload": {
+                                    "ticket_number": "${form.ticket_number}",
+                                    "access_pin": "${form.access_pin}",
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "CLAIM_EVIDENCE_PHOTOS",
+                "title": "Fotos del reclamo",
+                "data": {
+                    "status": {"type": "string", "__example__": "En proceso"},
+                    "summary": {
+                        "type": "string",
+                        "__example__": "La evidencia quedara vinculada al reclamo.",
+                    },
+                },
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [
+                        {"type": "TextHeading", "text": "${data.status}"},
+                        {"type": "TextBody", "text": "${data.summary}"},
+                        {
+                            "type": "PhotoPicker",
+                            "name": "photos",
+                            "label": "Agregar fotos",
+                            "description": "Podes adjuntar hasta 3 fotos JPG o PNG. Maximo 5 MB cada una.",
+                            "photo-source": "camera_gallery",
+                            "min-uploaded-photos": 0,
+                            "max-uploaded-photos": 3,
+                            "max-file-size-kb": 5120,
+                        },
+                        {
+                            "type": "Footer",
+                            "label": "Continuar",
+                            "on-click-action": {
+                                "name": "navigate",
+                                "next": {
+                                    "type": "screen",
+                                    "name": "CLAIM_EVIDENCE_DOCUMENTS",
+                                },
+                                "payload": {},
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "CLAIM_EVIDENCE_DOCUMENTS",
+                "title": "Documentos",
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [
+                        {
+                            "type": "TextHeading",
+                            "text": "Agrega documentos si corresponde",
+                        },
+                        {
+                            "type": "TextBody",
+                            "text": "Adjunta PDF, texto u Office. Maximo 10 MB por archivo.",
+                        },
+                        {
+                            "type": "DocumentPicker",
+                            "name": "documents",
+                            "label": "Agregar documentos",
+                            "description": "Podes adjuntar hasta 3 archivos.",
+                            "min-uploaded-documents": 0,
+                            "max-uploaded-documents": 3,
+                            "max-file-size-kb": 10240,
+                            "allowed-mime-types": document_mime_types,
+                        },
+                        {
+                            "type": "Footer",
+                            "label": "Revisar",
+                            "on-click-action": {
+                                "name": "navigate",
+                                "next": {
+                                    "type": "screen",
+                                    "name": "CLAIM_EVIDENCE_SUCCESS",
+                                },
+                                "payload": {},
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "CLAIM_EVIDENCE_SUCCESS",
+                "title": "Confirmar evidencia",
+                "terminal": True,
+                "success": True,
+                "layout": {
+                    "type": "SingleColumnLayout",
+                    "children": [
+                        {
+                            "type": "TextHeading",
+                            "text": "Archivos listos para enviar",
+                        },
+                        {
+                            "type": "TextBody",
+                            "text": "Al finalizar, la evidencia quedara en el historial del reclamo.",
+                        },
+                        {
+                            "type": "Footer",
+                            "label": "Enviar evidencia",
+                            "on-click-action": {
+                                "name": "complete",
+                                "payload": {
+                                    "ticket_number": "${screen.CLAIM_EVIDENCE_LOOKUP.form.ticket_number}",
+                                    "photos": "${screen.CLAIM_EVIDENCE_PHOTOS.form.photos}",
+                                    "documents": "${screen.CLAIM_EVIDENCE_DOCUMENTS.form.documents}",
+                                },
+                            },
+                        },
+                    ],
+                },
+            },
+        ),
+    )
+
+
 def build_order_checkout_blueprint() -> FlowBlueprint:
     """Build an endpoint-driven order review with explicit user confirmation."""
 
@@ -1711,6 +1897,10 @@ def build_claim_tracking_flow() -> FlowJsonArtifact:
     return compile_flow_blueprint(build_claim_tracking_blueprint())
 
 
+def build_claim_evidence_flow() -> FlowJsonArtifact:
+    return compile_flow_blueprint(build_claim_evidence_blueprint())
+
+
 def build_order_checkout_flow() -> FlowJsonArtifact:
     return compile_flow_blueprint(build_order_checkout_blueprint())
 
@@ -1805,6 +1995,8 @@ __all__ = [
     "FlowJsonValidationError",
     "FlowJsonValidationReport",
     "assert_valid_flow_document",
+    "build_claim_evidence_blueprint",
+    "build_claim_evidence_flow",
     "build_claim_tracking_blueprint",
     "build_claim_tracking_flow",
     "build_order_checkout_blueprint",

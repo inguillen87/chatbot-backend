@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hmac
+import hashlib
+import io
 import json
 import os
 import re
@@ -14,6 +16,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 from flask import current_app
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
+from werkzeug.datastructures import FileStorage
 
 from models import (
     AuditEvent,
@@ -40,6 +43,14 @@ from services.meta_flow_data_exchange import (
     MetaFlowEndpointConfig,
     MetaFlowRequestContext,
 )
+from services.attachment_service import create_attachment_with_thumbnail
+from services.gcs_service import guardar_adjunto_y_thumbnail
+from services.meta_flow_media import (
+    DownloadedFlowMedia,
+    MetaFlowMediaError,
+    download_claim_evidence_media,
+    normalize_claim_evidence,
+)
 from services.whatsapp_flow_security import (
     verify_whatsapp_flow_endpoint_token,
     whatsapp_flow_token_key_ready,
@@ -47,9 +58,12 @@ from services.whatsapp_flow_security import (
 
 
 CLAIM_FLOW_ID = "claim_tracking_helpdesk"
+CLAIM_EVIDENCE_FLOW_ID = "claim_evidence"
 ORDER_FLOW_ID = "order_checkout"
 SURVEY_FLOW_ID = "survey_vote"
-SUPPORTED_FLOW_IDS = frozenset({CLAIM_FLOW_ID, ORDER_FLOW_ID, SURVEY_FLOW_ID})
+SUPPORTED_FLOW_IDS = frozenset(
+    {CLAIM_FLOW_ID, CLAIM_EVIDENCE_FLOW_ID, ORDER_FLOW_ID, SURVEY_FLOW_ID}
+)
 
 _ENDPOINT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,126}$")
@@ -61,6 +75,14 @@ _SURVEY_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 
 _READY_INTERACTION_STATES = frozenset({"sent", "send_uncertain", "consumed"})
 _CLAIM_SCREENS = frozenset({"CLAIM_LOOKUP", "CLAIM_RESULT"})
+_CLAIM_EVIDENCE_SCREENS = frozenset(
+    {
+        "CLAIM_EVIDENCE_LOOKUP",
+        "CLAIM_EVIDENCE_PHOTOS",
+        "CLAIM_EVIDENCE_DOCUMENTS",
+        "CLAIM_EVIDENCE_SUCCESS",
+    }
+)
 _ORDER_SCREENS = frozenset({"ORDER_DETAILS", "ORDER_CONFIRM"})
 _SURVEY_QUESTION_SCREENS = (
     "SURVEY_QUESTION_ONE",
@@ -389,6 +411,8 @@ class MetaFlowRuntime:
         if invocation.flow_id == SURVEY_FLOW_ID:
             survey, questions, _ = self._load_survey_context(endpoint, invocation)
             return _survey_question_response(survey, questions, 0)
+        if invocation.flow_id == CLAIM_EVIDENCE_FLOW_ID:
+            return {"screen": "CLAIM_EVIDENCE_LOOKUP", "data": {}}
         return {"screen": "CLAIM_LOOKUP", "data": {}}
 
     def _handle_back(
@@ -420,6 +444,13 @@ class MetaFlowRuntime:
                 target_index,
                 interaction=interaction,
             )
+        if invocation.flow_id == CLAIM_EVIDENCE_FLOW_ID:
+            current_screen = str(payload.get("screen") or "")
+            target_screen = {
+                "CLAIM_EVIDENCE_SUCCESS": "CLAIM_EVIDENCE_DOCUMENTS",
+                "CLAIM_EVIDENCE_DOCUMENTS": "CLAIM_EVIDENCE_PHOTOS",
+            }.get(current_screen, "CLAIM_EVIDENCE_LOOKUP")
+            return {"screen": target_screen, "data": {}}
         return {"screen": "CLAIM_LOOKUP", "data": {}}
 
     def _handle_data_exchange(
@@ -432,10 +463,23 @@ class MetaFlowRuntime:
         data = payload.get("data")
         if not isinstance(data, Mapping):
             raise _action_error("flow_input_invalid", "Flow input is invalid.", 400)
-        if invocation.flow_id == CLAIM_FLOW_ID:
-            if payload.get("screen") != "CLAIM_LOOKUP":
+        if invocation.flow_id in {CLAIM_FLOW_ID, CLAIM_EVIDENCE_FLOW_ID}:
+            expected_lookup_screen = (
+                "CLAIM_LOOKUP"
+                if invocation.flow_id == CLAIM_FLOW_ID
+                else "CLAIM_EVIDENCE_LOOKUP"
+            )
+            if payload.get("screen") != expected_lookup_screen:
                 raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
-            response, ticket, lookup_code = _claim_lookup_response(data, endpoint.tenant)
+            response, ticket, lookup_code = _claim_lookup_response(
+                data,
+                endpoint.tenant,
+                result_screen=(
+                    "CLAIM_RESULT"
+                    if invocation.flow_id == CLAIM_FLOW_ID
+                    else "CLAIM_EVIDENCE_PHOTOS"
+                ),
+            )
             self._store_claim_context(
                 endpoint=endpoint,
                 invocation=invocation,
@@ -538,7 +582,7 @@ class MetaFlowRuntime:
             id=invocation.interaction_id,
             tenant_id=int(endpoint.tenant.id),
             provider_sender_id=invocation.provider_sender_id,
-            flow_id=CLAIM_FLOW_ID,
+            flow_id=invocation.flow_id,
         ).first()
         if interaction is None or interaction.status not in _READY_INTERACTION_STATES:
             raise _action_error(
@@ -744,6 +788,14 @@ def apply_whatsapp_flow_completion(
             actor_user_id=actor_user_id,
             anon_id=anon_id,
         )
+    elif interaction.flow_id == CLAIM_EVIDENCE_FLOW_ID:
+        result = _apply_claim_evidence_completion(
+            tenant_id=normalized_tenant_id,
+            interaction=interaction,
+            answers=answers,
+            actor_user_id=actor_user_id,
+            anon_id=anon_id,
+        )
     elif interaction.flow_id == ORDER_FLOW_ID:
         result = _apply_order_completion(
             tenant_id=normalized_tenant_id,
@@ -770,6 +822,8 @@ def apply_whatsapp_flow_completion(
         "message_body": result["message_body"],
         "source": result["fuente"],
     }
+    if result.get("attachment_count") is not None:
+        completion_metadata["attachment_count"] = int(result["attachment_count"])
     metadata["completion"] = completion_metadata
     interaction.metadata_json = metadata
     db.session.add(interaction)
@@ -785,6 +839,7 @@ def apply_whatsapp_flow_completion(
                 "flow_id": interaction.flow_id,
                 "provider_sender_id": interaction.provider_sender_id,
                 "field_names": completion_metadata["field_names"],
+                "attachment_count": completion_metadata.get("attachment_count"),
             },
         )
     )
@@ -916,6 +971,229 @@ def _apply_claim_completion(
     if realtime_event:
         result["realtime_event"] = realtime_event
     return result
+
+
+def _apply_claim_evidence_completion(
+    *,
+    tenant_id: int,
+    interaction: WhatsAppFlowInteraction,
+    answers: Mapping[str, Any],
+    actor_user_id: int | None,
+    anon_id: str | None,
+) -> dict[str, Any]:
+    metadata = interaction.metadata_json if isinstance(interaction.metadata_json, Mapping) else {}
+    claim_context = metadata.get("claim_context")
+    ticket, claim_kind, expected_code = _load_claim_context(tenant_id, claim_context)
+    submitted_code = _required_string(
+        answers.get("ticket_number"),
+        "ticket_number_invalid",
+        64,
+    ).upper()
+    if not hmac.compare_digest(submitted_code, expected_code.upper()):
+        raise _action_error("claim_context_scope_mismatch", "Flow completion is invalid.", 403)
+
+    try:
+        descriptors = normalize_claim_evidence(
+            answers.get("photos"),
+            answers.get("documents"),
+        )
+    except MetaFlowMediaError as exc:
+        raise _action_error(exc.code, "Claim evidence is invalid.", exc.status_code) from exc
+
+    provider_sender = ProviderSender.query.filter_by(
+        id=interaction.provider_sender_id,
+        tenant_id=int(tenant_id),
+    ).first()
+    if provider_sender is None:
+        raise _action_error(
+            "claim_evidence_sender_unavailable",
+            "Claim evidence is unavailable.",
+            409,
+        )
+    try:
+        downloaded = download_claim_evidence_media(
+            provider_sender=provider_sender,
+            descriptors=descriptors,
+            app_config=current_app.config,
+        )
+        with db.session.begin_nested():
+            evidence_items, comment_ids = _persist_claim_evidence(
+                ticket=ticket,
+                interaction=interaction,
+                expected_code=expected_code,
+                downloaded=downloaded,
+                actor_user_id=actor_user_id,
+                anon_id=anon_id,
+            )
+    except MetaFlowMediaError as exc:
+        raise _action_error(exc.code, "Claim evidence is unavailable.", exc.status_code) from exc
+
+    result = {
+        "message_body": (
+            f"Recibimos {len(evidence_items)} archivo"
+            f"{'s' if len(evidence_items) != 1 else ''} para el reclamo *{expected_code}*. "
+            "La evidencia ya esta disponible para el equipo y en el historial del reclamo."
+        ),
+        "options_list": [
+            {"texto": "Ver reclamo", "action_id": "consultar_estado_reclamo"},
+            {"texto": "Menu", "action_id": "menu_principal"},
+        ],
+        "message_type": "interactive_buttons",
+        "fuente": "whatsapp_flow_claim_evidence_completed",
+        "generar_audio": True,
+        "entity": {"kind": claim_kind, "id": ticket.id},
+        "attachment_count": len(evidence_items),
+    }
+    if comment_ids:
+        result["realtime_event"] = {
+            "ticket_type": (
+                "municipio"
+                if isinstance(ticket, MunicipioTicket)
+                else "pyme" if isinstance(ticket, PymeTicket) else "tenant"
+            ),
+            "ticket_id": ticket.id,
+            "comment_id": comment_ids[-1],
+            "comment_ids": comment_ids,
+            "attachment_count": len(evidence_items),
+            "source": "whatsapp_flow",
+        }
+    return result
+
+
+def _persist_claim_evidence(
+    *,
+    ticket: Any,
+    interaction: WhatsAppFlowInteraction,
+    expected_code: str,
+    downloaded: Sequence[DownloadedFlowMedia],
+    actor_user_id: int | None,
+    anon_id: str | None,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    extra = dict(getattr(ticket, "datos_extra", None) or {})
+    batches = [
+        item
+        for item in (extra.get("whatsapp_flow_evidence") or [])
+        if isinstance(item, Mapping)
+    ][-19:]
+    existing = next(
+        (
+            item
+            for item in batches
+            if str(item.get("interaction_id") or "") == str(interaction.id)
+        ),
+        None,
+    )
+    if isinstance(existing, Mapping):
+        return list(existing.get("items") or []), []
+
+    now = datetime.now(timezone.utc)
+    evidence_items: list[dict[str, Any]] = []
+    comment_ids: list[int] = []
+    tenant_attachments = list(extra.get("attachments") or [])
+    tenant_comments = list(extra.get("comments") or [])
+
+    for index, media in enumerate(downloaded, start=1):
+        storage = FileStorage(
+            stream=io.BytesIO(media.content),
+            filename=media.file_name,
+            content_type=media.mime_type,
+        )
+        attachment_id: int | str | None = None
+        if isinstance(ticket, (MunicipioTicket, PymeTicket)):
+            attachment = create_attachment_with_thumbnail(
+                storage,
+                user_id=actor_user_id,
+            )
+            if attachment is None:
+                raise MetaFlowMediaError("claim_evidence_storage_failed", status_code=503)
+            attachment.tipo = "whatsapp_flow_evidence"
+            if isinstance(ticket, MunicipioTicket):
+                attachment.municipio_ticket_id = ticket.id
+            else:
+                attachment.pyme_ticket_id = ticket.id
+            db.session.add(attachment)
+            db.session.flush()
+            attachment_id = attachment.id
+            comment = TicketComentario(
+                municipio_ticket_id=ticket.id if isinstance(ticket, MunicipioTicket) else None,
+                pyme_ticket_id=ticket.id if isinstance(ticket, PymeTicket) else None,
+                comentario=f"Evidencia recibida: {media.file_name}",
+                user_id=actor_user_id,
+                anon_id=str(anon_id or "")[:80] or None,
+                es_admin=False,
+                origen="whatsapp_flow",
+                estado_ticket=getattr(ticket, "estado", None),
+                archivo_adjunto_id=attachment.id,
+            )
+            db.session.add(comment)
+            db.session.flush()
+            comment_ids.append(comment.id)
+        else:
+            upload_result = guardar_adjunto_y_thumbnail(
+                storage,
+                kind="whatsapp-flow-evidence",
+            )
+            if not upload_result:
+                raise MetaFlowMediaError("claim_evidence_storage_failed", status_code=503)
+            attachment_id = f"flow-{interaction.id}-{index}"
+            attachment_payload = {
+                "id": attachment_id,
+                "url": upload_result.get("original_url"),
+                "name": upload_result.get("original_name") or media.file_name,
+                "filename": upload_result.get("unique_name") or media.file_name,
+                "mime_type": upload_result.get("mimetype") or media.mime_type,
+                "size": upload_result.get("size") or media.size,
+                "source": "whatsapp_flow",
+                "flow_id": CLAIM_EVIDENCE_FLOW_ID,
+                "interaction_id": interaction.id,
+                "status": "ready",
+                "uploaded_at": now.isoformat(),
+            }
+            tenant_attachments.append(attachment_payload)
+            tenant_comments.append(
+                {
+                    "id": f"flow-comment-{interaction.id}-{index}",
+                    "body": f"Evidencia recibida: {media.file_name}",
+                    "origin": "whatsapp_flow",
+                    "visibility": "public",
+                    "created_at": now.isoformat(),
+                    "attachmentInfo": attachment_payload,
+                }
+            )
+
+        evidence_items.append(
+            {
+                "kind": media.kind,
+                "attachment_id": attachment_id,
+                "provider_media_ref": hashlib.sha256(
+                    media.media_id.encode("utf-8")
+                ).hexdigest(),
+                "file_name": media.file_name,
+                "mime_type": media.mime_type,
+                "file_size": media.size,
+                "sha256": media.sha256_hex,
+                "status": "ready",
+            }
+        )
+
+    batch = {
+        "interaction_id": interaction.id,
+        "flow_id": CLAIM_EVIDENCE_FLOW_ID,
+        "source": "whatsapp_flow",
+        "ticket_number": expected_code,
+        "received_at": now.isoformat(),
+        "items": evidence_items,
+    }
+    batches.append(batch)
+    extra["whatsapp_flow_evidence"] = batches[-20:]
+    if isinstance(ticket, TenantTicket):
+        extra["attachments"] = tenant_attachments[-50:]
+        extra["comments"] = tenant_comments[-100:]
+    ticket.datos_extra = extra
+    if hasattr(ticket, "ultima_actividad"):
+        ticket.ultima_actividad = now
+    db.session.add(ticket)
+    return evidence_items, comment_ids
 
 
 def _apply_order_completion(
@@ -1226,7 +1504,7 @@ def _optional_completion_text(value: Any, *, code: str, max_length: int) -> str 
 
 
 def _completion_response_from_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
-    return {
+    response = {
         "message_body": str(value.get("message_body") or "Formulario aplicado correctamente."),
         "options_list": [{"texto": "Menu", "action_id": "menu_principal"}],
         "message_type": "interactive_buttons",
@@ -1237,6 +1515,9 @@ def _completion_response_from_metadata(value: Mapping[str, Any]) -> dict[str, An
             "id": str(value.get("entity_id") or ""),
         },
     }
+    if value.get("attachment_count") is not None:
+        response["attachment_count"] = int(value["attachment_count"])
+    return response
 
 
 def _resolve_survey_context(
@@ -1521,6 +1802,8 @@ def _validate_screen(value: Any, flow_id: str, *, optional: bool) -> str | None:
         return None
     if flow_id == CLAIM_FLOW_ID:
         allowed = _CLAIM_SCREENS
+    elif flow_id == CLAIM_EVIDENCE_FLOW_ID:
+        allowed = _CLAIM_EVIDENCE_SCREENS
     elif flow_id == ORDER_FLOW_ID:
         allowed = _ORDER_SCREENS
     else:
@@ -1540,6 +1823,8 @@ def _handle_error_notification(payload: Mapping[str, Any]) -> Mapping[str, Any]:
 def _claim_lookup_response(
     data: Mapping[str, Any],
     tenant: TenantProfile,
+    *,
+    result_screen: str = "CLAIM_RESULT",
 ) -> tuple[Mapping[str, Any], Any, str]:
     ticket_number = _required_string(
         data.get("ticket_number"),
@@ -1562,7 +1847,7 @@ def _claim_lookup_response(
     )
     return (
         {
-            "screen": "CLAIM_RESULT",
+            "screen": result_screen,
             "data": {
                 "status": label,
                 "last_update": _display_datetime(last_update),
@@ -1864,6 +2149,7 @@ def _action_error(code: str, message: str, status_code: int) -> MetaFlowActionEr
 
 
 __all__ = [
+    "CLAIM_EVIDENCE_FLOW_ID",
     "CLAIM_FLOW_ID",
     "ORDER_FLOW_ID",
     "SURVEY_FLOW_ID",

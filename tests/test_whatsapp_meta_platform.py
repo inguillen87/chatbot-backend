@@ -26,7 +26,11 @@ from models import (
     WhatsAppFlowInteraction,
 )
 from routes.whatsapp_rules import _flow_interaction_payload, _sync_status_from_approval
-from services.meta_flow_json import build_order_checkout_flow, build_survey_vote_flow
+from services.meta_flow_json import (
+    build_claim_evidence_flow,
+    build_order_checkout_flow,
+    build_survey_vote_flow,
+)
 from services.meta_flow_management import MetaFlowManagementError
 from services.whatsapp_experience import build_whatsapp_experience
 
@@ -341,6 +345,47 @@ def test_native_flow_sync_dry_run_builds_exact_twilio_content_contract(client, a
         json={"flow_id": FLOW_ID, "meta_flow_id": "demo-flow"},
     )
     assert invalid.status_code == 400
+
+
+def test_claim_evidence_native_flow_is_available_to_meta_and_twilio_sync(client, app):
+    admin, tenant = _seed()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    response = client.post(
+        "/api/admin/whatsapp/flows/twilio-content/sync",
+        headers=headers,
+        json={"flow_id": "claim_evidence", "meta_flow_id": META_FLOW_ID},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    artifact = build_claim_evidence_flow()
+    assert payload["ready_to_create"] is True
+    assert payload["flow"]["first_screen_id"] == "CLAIM_EVIDENCE_LOOKUP"
+    assert payload["flow"]["screen_ids"] == [
+        "CLAIM_EVIDENCE_LOOKUP",
+        "CLAIM_EVIDENCE_PHOTOS",
+        "CLAIM_EVIDENCE_DOCUMENTS",
+        "CLAIM_EVIDENCE_SUCCESS",
+    ]
+    assert payload["flow"]["data_contract"] == [
+        "ticket_number",
+        "photos",
+        "documents",
+    ]
+    assert payload["flow"]["content_sha256"] == artifact.content_sha256
+    assert payload["approval_request"]["category"] == "UTILITY"
+    flow_type = payload["create_request"]["types"]["whatsapp/flows"]
+    assert flow_type["flow_id"] == META_FLOW_ID
+    assert flow_type["flow_first_page_id"] == "CLAIM_EVIDENCE_LOOKUP"
+    assert flow_type["is_flow_first_page_endpoint"] is True
+
+    download = client.get(
+        "/api/admin/whatsapp/flows/claim_evidence/flow-json",
+        headers=headers,
+    )
+    assert download.status_code == 200
+    assert download.headers["X-Flow-Content-SHA256"] == artifact.content_sha256
 
 
 def test_native_flow_sync_rejects_conceptual_design_without_compiled_flow_json(client, app):

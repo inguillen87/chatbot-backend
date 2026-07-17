@@ -36,6 +36,7 @@ from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
 from services.meta_flow_json import (
     DATA_API_VERSION as META_FLOW_DATA_API_VERSION,
     FLOW_JSON_VERSION as META_FLOW_JSON_VERSION,
+    build_claim_evidence_flow,
     build_claim_tracking_flow,
     build_order_checkout_flow,
     build_survey_vote_flow,
@@ -73,6 +74,7 @@ FIXED_MENU_AUDIO_SCOPES = [
 ]
 
 META_FLOW_JSON_BUILDERS = {
+    "claim_evidence": build_claim_evidence_flow,
     "claim_tracking_helpdesk": build_claim_tracking_flow,
     "order_checkout": build_order_checkout_flow,
     "survey_vote": build_survey_vote_flow,
@@ -2548,6 +2550,20 @@ def _webview_blueprint_payload(
     survey_public_url = "/e/{survey_slug}"
     flows = [
         {
+            "id": "claim_evidence",
+            "label": "Adjuntar evidencia al reclamo",
+            "verticals": ["gobierno", "consorcio", "pyme", "colegio"],
+            "surface": "whatsapp_native_flow",
+            "template_ids": ["gov_claim_evidence", "case_evidence_request"],
+            "url_template": "/api/whatsapp/flows/data-exchange/{endpoint_id}",
+            "requires": ["ticket_number", "pin"],
+            "credential_transport": "encrypted_data_exchange",
+            "signed_params": ["tenant_id", "interaction_id", "provider_sender_id"],
+            "server_confirmation": ["claim_evidence_stored", "ticket_timeline_refreshed"],
+            "fallback": "whatsapp_media_message_bound_to_ticket",
+            "status": "ready" if integration_access.get("enabled") else "blocked_by_access",
+        },
+        {
             "id": "claim_tracking_helpdesk",
             "label": "Seguimiento de reclamo con mesa de ayuda",
             "verticals": ["gobierno", "consorcio"],
@@ -2788,6 +2804,28 @@ def _webview_blueprint_payload(
         },
     ]
     meta_flow_designs = {
+        "claim_evidence": {
+            "flow_name": "chatboc_claim_evidence",
+            "category": "CUSTOMER_SUPPORT",
+            "endpoint_mode": "data_exchange",
+            "screens": [
+                {"id": "claim_evidence_lookup", "title": "Validar reclamo", "components": ["ticket_number", "access_pin"]},
+                {"id": "claim_evidence_photos", "title": "Fotos", "components": ["photo_picker"]},
+                {"id": "claim_evidence_documents", "title": "Documentos", "components": ["document_picker"]},
+                {"id": "claim_evidence_success", "title": "Confirmar", "components": ["submission_receipt"]},
+            ],
+            "completion_event": "claim_evidence_stored",
+            # The lookup PIN and ticket identity are validated and retained on
+            # the server. The terminal response only carries provider media IDs.
+            "data_contract": ["ticket_number", "photos", "documents"],
+            "native_limits": {
+                "photo_picker_and_document_picker_separate": True,
+                "max_photos": 3,
+                "max_documents": 3,
+                "max_total_files": 5,
+                "max_total_bytes": 20 * 1024 * 1024,
+            },
+        },
         "claim_tracking_helpdesk": {
             "flow_name": "chatboc_claim_tracking_helpdesk",
             "category": "CUSTOMER_SUPPORT",
