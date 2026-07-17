@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import jwt
 
@@ -126,9 +126,14 @@ def test_notification_retry_attempts(client, app):
     assert len(attempts) >= 2
 
 
-def test_notification_quiet_hours_delays_dispatch(client, app):
+def test_notification_quiet_hours_delays_dispatch(client, app, monkeypatch):
     admin, tenant = _seed_admin_tenant()
     headers = _auth_headers(app, admin, tenant.slug)
+    fixed_now = datetime(2026, 1, 15, 12, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "services.notification_orchestrator.get_local_now",
+        lambda: fixed_now,
+    )
 
     tpl_resp = client.post(
         "/api/admin/notifications/templates",
@@ -137,8 +142,8 @@ def test_notification_quiet_hours_delays_dispatch(client, app):
             "key": "night_ping",
             "channel": "in_app",
             "body_template": "Hola ${name}",
-            "quiet_hours_start": 0,
-            "quiet_hours_end": 23,
+            "quiet_hours_start": 11,
+            "quiet_hours_end": 13,
         },
     )
     assert tpl_resp.status_code == 201
