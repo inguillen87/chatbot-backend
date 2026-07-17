@@ -53,7 +53,7 @@ from services.whatsapp_flow_security import (
 from services.plan_access import integration_access_payload, integration_frontend_contract
 from services.twilio_tech_provider import TwilioRuntimeCredentials, resolve_twilio_runtime_credentials
 from utils.auth_decorators import _is_authorized_for_tenant
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import auth_tenant_for_user, token_requerido
 from utils.roles import ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role
 from utils.tenant import require_tenant
 
@@ -75,6 +75,32 @@ def _guard(user: User, tenant):
         abort(403, description="Permisos insuficientes")
     if not _is_authorized_for_tenant(user, tenant_id=tenant.id, tenant_slug=tenant.slug):
         abort(403, description="Acceso denegado")
+
+
+def _has_explicit_tenant_context() -> bool:
+    query_keys = ("tenant", "tenant_slug", "municipio_slug", "slug")
+    header_keys = ("X-Chatboc-Tenant", "X-Tenant", "X-Tenant-Slug")
+    return any(request.args.get(key) for key in query_keys) or any(
+        request.headers.get(key) for key in header_keys
+    )
+
+
+def _readiness_tenant_for_user(user: User):
+    """Prefer the authenticated tenant when the API host supplied no tenant."""
+
+    tenant = getattr(g, "tenant_profile", None)
+    if (
+        canonical_role(getattr(user, "rol", None)) != ROLE_SUPERADMIN
+        and not _has_explicit_tenant_context()
+    ):
+        authenticated_tenant = auth_tenant_for_user(user)
+        if authenticated_tenant is not None:
+            tenant = authenticated_tenant
+            g.tenant_profile = tenant
+            g.tenant_profile_slug = tenant.slug
+            g.current_tenant = tenant.slug
+            g.current_tenant_slug = tenant.slug
+    return tenant
 
 
 def _strict_boolean(payload: dict, field: str, *, default: bool) -> bool:
@@ -155,7 +181,7 @@ def _native_flow_registry_identity(
 def get_meta_native_flow_readiness(user: User):
     """Discover tenant-scoped Meta Flow plans without provider calls."""
 
-    tenant = g.tenant_profile
+    tenant = _readiness_tenant_for_user(user)
     _guard(user, tenant)
     requested_flow_id = str(request.args.get("flow_id") or "").strip().lower()
     experience = build_whatsapp_experience(tenant, app_config=current_app.config)

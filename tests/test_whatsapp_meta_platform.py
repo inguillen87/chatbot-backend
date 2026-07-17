@@ -516,6 +516,30 @@ def test_claim_evidence_admin_readiness_is_discoverable_and_side_effect_free(
     assert "base-url-secret" not in json.dumps(invalid_payload)
 
 
+def test_claim_evidence_readiness_uses_authenticated_tenant_without_header(
+    client,
+    app,
+    monkeypatch,
+):
+    admin, tenant = _seed()
+    _, foreign_tenant = _seed(plan="free")
+    _prepare_meta_management(app, tenant, monkeypatch)
+    app.config["TENANT_DOMAIN_MAP"] = {"api.chatboc.test": foreign_tenant.slug}
+    headers = _auth_headers(app, admin, tenant.slug)
+    headers.pop("X-Tenant")
+
+    response = client.get(
+        "/api/admin/whatsapp/flows/meta/readiness?flow_id=claim_evidence",
+        headers=headers,
+        base_url="https://api.chatboc.test",
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["tenant"] == {"id": tenant.id, "slug": tenant.slug}
+    assert payload["security"]["tenant_scoped"] is True
+
+
 def test_claim_evidence_admin_readiness_does_not_discover_foreign_registry(
     client,
     app,
