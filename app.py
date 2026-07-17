@@ -436,6 +436,7 @@ def create_app(config_class=Config):
                 and is_same_site_credential_origin(
                     origin,
                     backend_url=app.config.get("BACKEND_URL"),
+                    public_root_domain=app.config.get("PUBLIC_ROOT_DOMAIN"),
                 )
             ]
 

@@ -243,6 +243,7 @@ def is_same_site_credential_origin(
     value: object,
     *,
     backend_url: object = None,
+    public_root_domain: object = None,
 ) -> bool:
     """Return whether an exact origin can receive first-party auth cookies."""
 
@@ -254,9 +255,20 @@ def is_same_site_credential_origin(
     if parsed_api.scheme.lower() == "https" and parsed_origin.scheme.lower() != "https":
         return False
 
-    site_root = _credential_site_root(parsed_api.hostname.lower())
+    site_roots = {_credential_site_root(parsed_api.hostname.lower())}
+    configured_public_root = _normalize_domain(
+        public_root_domain or os.getenv("PUBLIC_ROOT_DOMAIN")
+    )
+    if configured_public_root:
+        # Render exposes an internal ``*.onrender.com`` URL even when the
+        # service is reached through api.chatboc.ar.  The explicitly configured
+        # public root remains first-party and must survive production filtering.
+        site_roots.add(configured_public_root)
     origin_host = parsed_origin.hostname.lower()
-    return origin_host == site_root or origin_host.endswith(f".{site_root}")
+    return any(
+        origin_host == site_root or origin_host.endswith(f".{site_root}")
+        for site_root in site_roots
+    )
 
 
 def _append_exact_origin(target: List[object], value: object) -> None:
@@ -296,17 +308,21 @@ if host and host != "localhost":
         _append_exact_origin(allowed_urls, f"https://{root_domain}")
         _append_exact_origin(allowed_urls, f"https://www.{root_domain}")
 
-public_root = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
-if public_root and public_root not in ("localhost", "127.0.0.1"):
-    _append_exact_origin(allowed_urls, f"https://{public_root}")
-    _append_exact_origin(allowed_urls, f"https://www.{public_root}")
+PUBLIC_ROOT_DOMAIN = os.getenv("PUBLIC_ROOT_DOMAIN", "chatboc.ar")
+if PUBLIC_ROOT_DOMAIN and PUBLIC_ROOT_DOMAIN not in ("localhost", "127.0.0.1"):
+    _append_exact_origin(allowed_urls, f"https://{PUBLIC_ROOT_DOMAIN}")
+    _append_exact_origin(allowed_urls, f"https://www.{PUBLIC_ROOT_DOMAIN}")
 
 if IS_PRODUCTION_RUNTIME:
     allowed_urls = [
         origin
         for origin in allowed_urls
         if isinstance(origin, str)
-        and is_same_site_credential_origin(origin, backend_url=BACKEND_URL)
+        and is_same_site_credential_origin(
+            origin,
+            backend_url=BACKEND_URL,
+            public_root_domain=PUBLIC_ROOT_DOMAIN,
+        )
     ]
 
 CREDENTIALS_ALLOWED_ORIGINS = list(allowed_urls)
@@ -477,6 +493,7 @@ class Config:
     DEBUG = ENV == "dev"
     CORS_ALLOW_LOCAL_DEV = CORS_ALLOW_LOCAL_DEV
     CORS_CREDENTIALS_ALLOWED_ORIGINS = tuple(CREDENTIALS_ALLOWED_ORIGINS)
+    PUBLIC_ROOT_DOMAIN = PUBLIC_ROOT_DOMAIN
 
     # Public URLs exposed to the frontend. Keeping them in the Flask config
     # ensures endpoints like /api/config can always read them without having
@@ -827,7 +844,7 @@ class Config:
     if _encuestas_base_url:
         PUBLIC_ENCUESTAS_CANONICAL_BASE_URL = _encuestas_base_url.rstrip("/")
     else:
-        fallback_domain = (public_root or "").strip().lower()
+        fallback_domain = (PUBLIC_ROOT_DOMAIN or "").strip().lower()
         fallback_url = None
 
         if fallback_domain and fallback_domain not in {"localhost", "127.0.0.1"}:

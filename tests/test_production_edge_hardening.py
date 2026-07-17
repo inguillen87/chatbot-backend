@@ -8,7 +8,8 @@ class ProductionLikeCorsConfig(TestingConfig):
     ENV = "production"
     DEBUG = False
     SECRET_KEY = "production-test-secret-key-32-chars"
-    BACKEND_URL = "https://api.chatboc.ar"
+    BACKEND_URL = "https://chatbot-backend-2e14.onrender.com"
+    PUBLIC_ROOT_DOMAIN = "chatboc.ar"
     CORS_ALLOW_LOCAL_DEV = True
     CORS_CREDENTIALS_ALLOWED_ORIGINS = (
         "https://www.chatboc.ar",
@@ -141,6 +142,33 @@ def test_production_app_drops_local_pattern_even_if_config_attempts_to_enable_it
     assert rejected.headers.get("Access-Control-Allow-Credentials") is None
     assert accepted.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
     assert accepted.headers.get("Access-Control-Allow-Credentials") == "true"
+
+
+def test_render_hostname_keeps_cors_on_ticket_crm_preflights():
+    origin = "https://www.chatboc.ar"
+    production_app = create_app(ProductionLikeCorsConfig)
+    with production_app.test_client() as production_client:
+        for path, method in (
+            ("/api/admin/tenants/junin/ticket-categories", "GET"),
+            ("/admin/tickets/400/ai-enrichment", "POST"),
+        ):
+            response = production_client.options(
+                path,
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": method,
+                    "Access-Control-Request-Headers": (
+                        "authorization,content-type,x-tenant,x-tenant-slug"
+                    ),
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.headers.get("Access-Control-Allow-Origin") == origin
+            assert response.headers.get("Access-Control-Allow-Credentials") == "true"
+            assert "X-Tenant-Slug" in response.headers.get(
+                "Access-Control-Allow-Headers", ""
+            )
 
 
 def test_render_blueprint_declares_production_edge_guards():

@@ -74,6 +74,27 @@ class TestCorsInference(TestCase):
             )
         importlib.reload(app_config)
 
+    def test_render_service_url_keeps_explicit_public_root_origin(self):
+        env = {
+            "ENV": "production",
+            "BACKEND_URL": "https://chatbot-backend-2e14.onrender.com",
+            "PUBLIC_ROOT_DOMAIN": "chatboc.ar",
+            "CORS_ALLOWED_ORIGINS": (
+                "https://chatboc.ar,"
+                "https://www.chatboc.ar,"
+                "https://untrusted-preview.vercel.app"
+            ),
+        }
+        with patch.dict(os.environ, env, clear=True):
+            cfg = importlib.reload(app_config)
+            self.assertIn("https://chatboc.ar", cfg.CREDENTIALS_ALLOWED_ORIGINS)
+            self.assertIn("https://www.chatboc.ar", cfg.CREDENTIALS_ALLOWED_ORIGINS)
+            self.assertNotIn(
+                "https://untrusted-preview.vercel.app",
+                cfg.CREDENTIALS_ALLOWED_ORIGINS,
+            )
+        importlib.reload(app_config)
+
     def test_wildcard_is_never_a_credentialed_origin(self):
         env = {
             "ENV": "production",
