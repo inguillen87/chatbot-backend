@@ -6,7 +6,11 @@ from database import db
 from models import TenantProfile, User, TenantConfig, TwilioNumber
 from flask import current_app
 from sqlalchemy.orm.attributes import flag_modified
-from services.plan_access import plan_allows_full_integrations
+from services.plan_access import (
+    FULL_INTEGRATION_PLANS,
+    normalize_plan,
+    plan_allows_full_integrations,
+)
 from services.tenant_whatsapp_onboarding import bootstrap_tenant_whatsapp_onboarding
 from utils.roles import normalize_tenant_type, role_for_tenant_type
 
@@ -99,6 +103,8 @@ def create_tenant_from_template(
 
     if TenantProfile.query.filter_by(slug=slug).first():
         raise ValueError(f"Tenant with slug '{slug}' already exists")
+    if auto_assign_whatsapp_number and normalize_plan(plan) not in FULL_INTEGRATION_PLANS:
+        raise ValueError("auto_assign_whatsapp_number requires a productive integration plan")
 
     # 1. Create Owner User
     owner_email_was_generated = not bool(str(owner_email or "").strip())

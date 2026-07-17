@@ -48,6 +48,7 @@ from services.realtime_voice_profiles import (
     resolve_realtime_voice,
 )
 from services.plan_access import integration_access_payload
+from services.public_tenant_config import sanitize_public_tenant_config
 from services.common_utils import build_menu_tts_cache_namespace, clean_text_for_tts
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
@@ -202,16 +203,18 @@ def _log_widget_public_request(response, tenant=None, *, entity_token=None):
     if status_code is None and hasattr(response_obj, "status_code"):
         status_code = response_obj.status_code
 
-    tenant_slug = tenant
-    if tenant_slug is None and tenant is not None:
-        tenant_slug = getattr(tenant, "slug", None)
+    tenant_slug = getattr(tenant, "slug", tenant)
+    normalized_token = str(entity_token or "").strip()
+    token_reference = "missing"
+    if normalized_token:
+        token_reference = f"present:{hashlib.sha256(normalized_token.encode('utf-8')).hexdigest()[:12]}"
 
     current_app.logger.info(
-        "WIDGET_REQ path=%s user_id=%s tenant=%s entity_token=%s status=%s",
+        "WIDGET_REQ path=%s user_id=%s tenant=%s entity_token_ref=%s status=%s",
         getattr(request, "path", None),
         getattr(getattr(g, "user", None), "id", None),
         tenant_slug,
-        entity_token,
+        token_reference,
         status_code,
     )
 
@@ -2087,7 +2090,7 @@ def resolve_tenant_endpoint():
     # objeto con la clave ``children`` para renderizar las secciones sin
     # explotar en una desestructuración.
     config = _normalize_widget_config(tenant_info.get("config"), tenant.widget_settings)
-    tenant_info["config"] = config
+    tenant_info["config"] = sanitize_public_tenant_config(config)
 
     response = jsonify(
         {
@@ -2381,7 +2384,7 @@ def tenant_profile():
         if tenant.widget_settings.default_open is not None:
             config["default_open"] = tenant.widget_settings.default_open
 
-    tenant_info["config"] = config
+    tenant_info["config"] = sanitize_public_tenant_config(config)
 
     integration_access = integration_access_payload(tenant)
     tenant_info["integration_access"] = integration_access

@@ -3,8 +3,9 @@ import json
 import jwt
 from datetime import datetime, timedelta, timezone
 from app import create_app, db
-from models import User, TenantProfile, Role, UserRole, TenantConfig
+from models import User, TenantProfile, Role, UserRole, TenantConfig, TwilioNumber
 from config import TestConfig
+from services.tenant_factory import create_tenant_from_template
 from utils.auth_helpers import auth_session_version
 
 class TestAdminTenantVerification(unittest.TestCase):
@@ -80,6 +81,58 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertEqual(payload["allowed_public_plan"], "free")
         self.assertIsNone(TenantProfile.query.filter_by(slug="junin-full-public-blocked").first())
 
+    def test_public_create_tenant_cannot_consume_whatsapp_number_inventory(self):
+        number = TwilioNumber(
+            phone_number="+15550001001",
+            sender_id="whatsapp:+15550001001",
+            status="available",
+        )
+        db.session.add(number)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/admin/tenants",
+            json={
+                "slug": "public-number-drain-attempt",
+                "nombre": "Public Number Drain Attempt",
+                "tipo": "pyme",
+                "autoAssignWhatsappNumber": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 403, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["error"], "whatsapp_number_assignment_forbidden")
+        self.assertEqual(payload["reason_code"], "super_admin_required")
+        self.assertTrue(payload["frontend_contract"]["allow_continue_without_number"])
+        self.assertIsNone(TenantProfile.query.filter_by(slug="public-number-drain-attempt").first())
+        db.session.refresh(number)
+        self.assertEqual(number.status, "available")
+        self.assertIsNone(number.tenant_id)
+
+    def test_tenant_factory_rejects_number_assignment_for_free_plan(self):
+        number = TwilioNumber(
+            phone_number="+15550001003",
+            sender_id="whatsapp:+15550001003",
+            status="available",
+        )
+        db.session.add(number)
+        db.session.commit()
+
+        with self.assertRaisesRegex(ValueError, "requires a productive integration plan"):
+            create_tenant_from_template(
+                nombre="Factory Guard",
+                slug="factory-number-guard",
+                tipo="pyme",
+                plan="free",
+                auto_assign_whatsapp_number=True,
+            )
+
+        self.assertIsNone(TenantProfile.query.filter_by(slug="factory-number-guard").first())
+        db.session.refresh(number)
+        self.assertEqual(number.status, "available")
+        self.assertIsNone(number.tenant_id)
+
     def test_create_tenant_honors_full_plan_and_prepares_onboarding(self):
         self.app.config.update(
             TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED=True,
@@ -124,6 +177,38 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertIsNotNone(owner)
         self.assertEqual(owner.plan, "full")
         self.assertEqual(owner.tenant_slug, tenant.slug)
+
+    def test_super_admin_full_plan_can_assign_whatsapp_number(self):
+        number = TwilioNumber(
+            phone_number="+15550001002",
+            sender_id="whatsapp:+15550001002",
+            status="available",
+        )
+        super_admin = User(email="guillen.marce@gmail.com", name="Platform", rol="super_admin")
+        super_admin.set_password("pass")
+        db.session.add_all([number, super_admin])
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/admin/tenants",
+            json={
+                "slug": "authorized-number-assignment",
+                "nombre": "Authorized Number Assignment",
+                "tipo": "pyme",
+                "plan": "full",
+                "owner_email": "owner@authorized-number-assignment.test",
+                "auto_assign_whatsapp_number": True,
+            },
+            headers={"Authorization": f"Bearer {self.generate_token(super_admin)}"},
+        )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        tenant = TenantProfile.query.filter_by(slug="authorized-number-assignment").first()
+        self.assertIsNotNone(tenant)
+        self.assertEqual(tenant.whatsapp_sender_id, "whatsapp:+15550001002")
+        db.session.refresh(number)
+        self.assertEqual(number.status, "assigned")
+        self.assertEqual(number.tenant_id, tenant.id)
 
     def test_public_create_tenant_does_not_reassign_existing_owner_email(self):
         existing = User(email="taken-owner@test.local", name="Taken", rol="admin", tipo_chat="pyme", tenant_slug="existing")

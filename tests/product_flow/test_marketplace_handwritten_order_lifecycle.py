@@ -67,6 +67,7 @@ def test_anonymous_handwritten_marketplace_order_lifecycle(
         nombre="Clavos punta paris",
         sku="CL-LIFE-02",
         precio="3000",
+        cantidad="10",
         unidad="caja",
         modalidad="venta",
         disponible=True,
@@ -247,11 +248,24 @@ def test_anonymous_handwritten_marketplace_order_lifecycle(
     resolved = resolve_response.get_json()
     assert resolved["id"] == crm_id
     assert resolved["source_id"] == pedido_id
-    assert resolved["crm_review_card"]["operational_state"] == "ready_for_order_creation"
-    assert resolved["crm_review_card"]["operator_actions"][0]["enabled"] is True
+    assert resolved["crm_review_card"]["operational_state"] == "needs_inventory_validation"
+    assert resolved["crm_review_card"]["operator_actions"][0]["enabled"] is False
+    assert resolved["crm_review_card"]["operator_actions"][0]["disabled_reason"] == "inventory_validation_required"
     assert resolved["assisted_request"]["match_summary"]["matched"] == 2
     assert resolved["assisted_request"]["match_summary"]["unmatched"] == 0
     assert resolved["assisted_request"]["public_follow_up"]["tracking"] == tracking
+    inventory_validation = resolved["inventory_validation"]
+    assert inventory_validation["contract_version"] == "marketplace.assisted_inventory_validation.v1"
+    assert inventory_validation["can_confirm_order"] is False
+    assert resolved["assisted_request"]["inventory_validation"] == inventory_validation
+    stock_unknown = next(
+        reason
+        for reason in inventory_validation["blocking_reasons"]
+        if reason["code"] == "stock_unknown"
+    )
+    assert stock_unknown["catalog_item_id"] == chapa.id
+    assert stock_unknown["requested_quantity"] == 2
+    assert stock_unknown["stock_quantity"] is None
     resolved_line = next(
         line
         for line in resolved["assisted_request"]["crm_order_draft"]["lines"]
@@ -259,6 +273,51 @@ def test_anonymous_handwritten_marketplace_order_lifecycle(
     )
     assert resolved_line["status"] == "catalog_matched"
     assert resolved_line["catalog_item_id"] == clavos.id
+
+    inventory_rejected_response = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        json={"status": "confirmed"},
+        headers=headers,
+    )
+    assert inventory_rejected_response.status_code == 409, inventory_rejected_response.get_json()
+    inventory_rejected = inventory_rejected_response.get_json()
+    assert inventory_rejected["error"] == "assisted_order_needs_review"
+    assert "stock_unknown" in {
+        reason["code"] for reason in inventory_rejected["blocking_reasons"]
+    }
+    assert inventory_rejected["inventory_validation"]["can_confirm_order"] is False
+    db.session.expire_all()
+    assert db.session.get(PedidoConversacional, pedido_id).estado == "nuevo"
+    assert PymePedido.query.filter_by(idempotency_key=f"conv_order_{pedido_id}").first() is None
+
+    db.session.get(CatalogoItem, chapa.id).cantidad = "1"
+    db.session.commit()
+    insufficient_response = client.get(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        headers=headers,
+    )
+    assert insufficient_response.status_code == 200, insufficient_response.get_json()
+    insufficient = insufficient_response.get_json()
+    insufficient_reason = next(
+        reason
+        for reason in insufficient["inventory_validation"]["blocking_reasons"]
+        if reason["code"] == "insufficient_stock"
+    )
+    assert insufficient_reason["requested_quantity"] == 2
+    assert insufficient_reason["stock_quantity"] == 1.0
+
+    db.session.get(CatalogoItem, chapa.id).cantidad = "5"
+    db.session.commit()
+    ready_response = client.get(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        headers=headers,
+    )
+    assert ready_response.status_code == 200, ready_response.get_json()
+    ready = ready_response.get_json()
+    assert ready["inventory_validation"]["status"] == "validated"
+    assert ready["inventory_validation"]["can_confirm_order"] is True
+    assert ready["crm_review_card"]["operational_state"] == "ready_for_order_creation"
+    assert ready["crm_review_card"]["operator_actions"][0]["enabled"] is True
 
     confirm_response = client.patch(
         f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",

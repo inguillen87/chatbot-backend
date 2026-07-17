@@ -11,6 +11,7 @@ from sqlalchemy import func
 
 from models import TenantProfile
 from services.plan_access import integration_access_payload
+from services.public_tenant_config import sanitize_public_tenant_config
 from utils.roles import normalize_tenant_slug, is_generic_tenant_slug
 
 v2_tenants_bp = Blueprint("v2_tenants", __name__, url_prefix="/api/v2/tenants")
@@ -220,7 +221,7 @@ def _widget_config_for_profile(tenant: TenantProfile) -> dict[str, Any]:
         },
     )
     cfg["channels"] = channels
-    return cfg
+    return sanitize_public_tenant_config(cfg)
 
 
 def _tenant_profile_v2_payload(tenant: TenantProfile) -> dict[str, Any]:

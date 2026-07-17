@@ -1521,6 +1521,37 @@ def create_tenant():
         auto_assign_whatsapp_number = _bool_from_payload(
             data.get("auto_assign_whatsapp_number", data.get("autoAssignWhatsappNumber"))
         )
+        if auto_assign_whatsapp_number and not actor_is_super_admin:
+            return jsonify(
+                {
+                    "error": "whatsapp_number_assignment_forbidden",
+                    "reason_code": "super_admin_required",
+                    "requested_plan": requested_plan,
+                    "next_action": "continuar_sin_numero_o_solicitar_activacion_al_equipo_chatboc",
+                    "frontend_contract": {
+                        "render_as": "whatsapp_number_assignment_gate",
+                        "allow_continue_without_number": True,
+                        "requires_super_admin": True,
+                        "requires_productive_plan": True,
+                    },
+                }
+            ), 403
+        if auto_assign_whatsapp_number and requested_plan not in FULL_INTEGRATION_PLANS:
+            return jsonify(
+                {
+                    "error": "whatsapp_number_assignment_forbidden",
+                    "reason_code": "plan_full_required",
+                    "requested_plan": requested_plan,
+                    "allowed_plans": sorted(FULL_INTEGRATION_PLANS),
+                    "next_action": "activar_plan_productivo_antes_de_asignar_numero",
+                    "frontend_contract": {
+                        "render_as": "whatsapp_number_assignment_gate",
+                        "allow_continue_without_number": True,
+                        "requires_super_admin": True,
+                        "requires_productive_plan": True,
+                    },
+                }
+            ), 403
         tenant = create_tenant_from_template(
             nombre=data.get('nombre') or data.get('name'),
             slug=data.get('slug'),
@@ -3035,7 +3066,7 @@ def list_tenant_orders(current_user, slug):
         canonical_query = canonical_query.filter(func.lower(Order.status) == status_filter)
     order_records.extend(canonical_query.order_by(Order.created_at.desc()).limit(limit).all())
 
-    results = dedupe_unified_orders([serialize_unified_order(record) for record in order_records])
+    results = dedupe_unified_orders([_serialize_tenant_order(record, tenant) for record in order_records])
     results.sort(key=lambda item: item.get('created_at') or '', reverse=True)
     page_results = results[:limit]
     summary = summarize_unified_orders(results, page_limit=limit)
@@ -3139,7 +3170,11 @@ def _add_unique_blocker(blockers, code: str, message: str, **extra) -> None:
     blockers.append(payload)
 
 
-def _assisted_order_confirmation_blockers(metadata) -> list[dict]:
+def _assisted_order_confirmation_blockers(
+    metadata,
+    *,
+    inventory_validation: dict | None = None,
+) -> list[dict]:
     if not isinstance(metadata, dict):
         return [
             {
@@ -3276,6 +3311,13 @@ def _assisted_order_confirmation_blockers(metadata) -> list[dict]:
             )
             break
 
+    if isinstance(inventory_validation, dict):
+        blockers.extend(
+            dict(reason)
+            for reason in _admin_list(inventory_validation.get("blocking_reasons"))
+            if isinstance(reason, dict)
+        )
+
     return blockers
 
 
@@ -3315,6 +3357,204 @@ def _resolve_catalog_item_for_tenant(tenant: TenantProfile, catalog_item_id):
     if getattr(tenant, "pyme_id", None):
         tenant_filters.append(CatalogoItem.user_id == tenant.pyme_id)
     return query.filter(or_(*tenant_filters)).first()
+
+
+def _assisted_line_catalog_item_id(line: dict):
+    catalog_match = _admin_dict(line.get("catalog_match"))
+    raw_id = (
+        line.get("catalog_item_id")
+        or line.get("catalogo_item_id")
+        or line.get("product_id")
+        or catalog_match.get("catalog_item_id")
+        or catalog_match.get("catalogo_item_id")
+        or catalog_match.get("product_id")
+    )
+    try:
+        parsed = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _assisted_line_requested_quantity(line: dict) -> tuple[int | None, object]:
+    raw_quantity = None
+    for key in ("quantity", "cantidad", "qty", "unidades"):
+        if line.get(key) not in (None, ""):
+            raw_quantity = line.get(key)
+            break
+    if raw_quantity is None:
+        return 1, 1
+    if isinstance(raw_quantity, bool):
+        return None, raw_quantity
+    try:
+        parsed = float(str(raw_quantity).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return None, raw_quantity
+    if parsed <= 0 or not parsed.is_integer():
+        return None, raw_quantity
+    return int(parsed), raw_quantity
+
+
+def _assisted_order_inventory_validation(metadata: dict, tenant: TenantProfile) -> dict:
+    crm_handoff = _admin_dict(metadata.get("crm_handoff"))
+    draft = _admin_dict(metadata.get("crm_order_draft")) or _admin_dict(crm_handoff.get("draft_order"))
+    lines = _admin_list(draft.get("lines")) or _admin_list(metadata.get("detected_items"))
+    blocking_reasons: list[dict] = []
+    grouped_items: dict[int, dict] = {}
+
+    for index, line in enumerate(lines):
+        if not isinstance(line, dict):
+            continue
+        line_id = line.get("line_id") or line.get("id") or f"line-{index + 1}"
+        source_name = _assisted_line_label(line) or None
+        catalog_item_id = _assisted_line_catalog_item_id(line)
+        if catalog_item_id is None:
+            blocking_reasons.append(
+                {
+                    "code": "catalog_item_unresolved",
+                    "message": "El renglon no esta vinculado a un producto vigente del catalogo.",
+                    "line_id": line_id,
+                    "source_name": source_name,
+                }
+            )
+            continue
+
+        quantity, raw_quantity = _assisted_line_requested_quantity(line)
+        if quantity is None:
+            blocking_reasons.append(
+                {
+                    "code": "invalid_requested_quantity",
+                    "message": "La cantidad solicitada debe ser un entero positivo.",
+                    "line_id": line_id,
+                    "source_name": source_name,
+                    "catalog_item_id": catalog_item_id,
+                    "requested_quantity": raw_quantity,
+                }
+            )
+            continue
+
+        group = grouped_items.setdefault(
+            catalog_item_id,
+            {
+                "catalog_item_id": catalog_item_id,
+                "requested_quantity": 0,
+                "line_ids": [],
+                "source_names": [],
+            },
+        )
+        group["requested_quantity"] += quantity
+        group["line_ids"].append(line_id)
+        if source_name:
+            group["source_names"].append(source_name)
+
+    validated_items: list[dict] = []
+    for catalog_item_id, group in grouped_items.items():
+        item = _resolve_catalog_item_for_tenant(tenant, catalog_item_id)
+        if item is None:
+            blocking_reasons.append(
+                {
+                    "code": "catalog_item_not_found",
+                    "message": "El producto ya no existe o no pertenece al catalogo del tenant.",
+                    **group,
+                }
+            )
+            continue
+
+        inventory = _item_inventory_payload(item, tenant)
+        item_validation = {
+            **group,
+            "sku": item.sku,
+            "name": item.nombre,
+            "inventory": inventory,
+        }
+        validated_items.append(item_validation)
+        stock_status = inventory.get("stock_status")
+        stock_quantity = inventory.get("stock_quantity")
+        blocker = None
+        if stock_status == "not_available":
+            blocker = (
+                "catalog_item_not_available",
+                "El producto no esta disponible para la venta.",
+            )
+        elif stock_status == "stock_unknown":
+            blocker = (
+                "stock_unknown",
+                "El stock del producto no fue validado en el catalogo.",
+            )
+        elif stock_status == "out_of_stock":
+            blocker = (
+                "out_of_stock",
+                "El producto no tiene stock disponible.",
+            )
+        elif stock_quantity is not None and group["requested_quantity"] > stock_quantity:
+            blocker = (
+                "insufficient_stock",
+                "La cantidad solicitada supera el stock disponible.",
+            )
+        if blocker:
+            blocking_reasons.append(
+                {
+                    "code": blocker[0],
+                    "message": blocker[1],
+                    **group,
+                    "sku": item.sku,
+                    "name": item.nombre,
+                    "stock_quantity": stock_quantity,
+                    "stock_status": stock_status,
+                }
+            )
+
+    can_confirm = bool(lines) and not blocking_reasons
+    return {
+        "contract_version": "marketplace.assisted_inventory_validation.v1",
+        "status": "validated" if can_confirm else "blocked",
+        "stock_validated": can_confirm,
+        "can_confirm_order": can_confirm,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "items": validated_items,
+        "blocking_reasons": blocking_reasons,
+    }
+
+
+def _serialize_tenant_order(record, tenant: TenantProfile) -> dict:
+    payload = serialize_unified_order(record)
+    if not isinstance(record, PedidoConversacional):
+        return payload
+
+    metadata = _admin_dict(getattr(record, "metadata_payload", None))
+    record_status = str(getattr(record, "estado", "") or "").strip().lower()
+    if (
+        not _uses_assisted_request_contract(metadata)
+        or metadata.get("materialized_order")
+        or record_status in {"confirmed", "confirmado"}
+    ):
+        return payload
+
+    inventory_validation = _assisted_order_inventory_validation(metadata, tenant)
+    payload["inventory_validation"] = inventory_validation
+
+    assisted_request = dict(_admin_dict(payload.get("assisted_request")))
+    if assisted_request:
+        assisted_request["inventory_validation"] = inventory_validation
+        payload["assisted_request"] = assisted_request
+
+    review_card = dict(_admin_dict(payload.get("crm_review_card")))
+    if review_card:
+        review_card["inventory_validation"] = inventory_validation
+        was_ready = review_card.get("operational_state") == "ready_for_order_creation"
+        if was_ready and not inventory_validation["can_confirm_order"]:
+            review_card["status"] = "needs_review"
+            review_card["needs_operator_review"] = True
+            review_card["operational_state"] = "needs_inventory_validation"
+            actions = [dict(action) for action in _admin_list(review_card.get("operator_actions"))]
+            for action in actions:
+                if action.get("id") == "confirm_order_draft":
+                    action["enabled"] = False
+                    action["requires_review"] = True
+                    action["disabled_reason"] = "inventory_validation_required"
+            review_card["operator_actions"] = actions
+        payload["crm_review_card"] = review_card
+    return payload
 
 
 def _resolution_matches_line(line: dict, resolution: dict) -> bool:
@@ -3618,16 +3858,24 @@ def tenant_order_detail(current_user, slug, order_id):
         status = payload.get("status")
         if status is not None:
             if _should_materialize_assisted_order(record, tenant, status):
-                blockers = _assisted_order_confirmation_blockers(getattr(record, "metadata_payload", None))
+                inventory_validation = _assisted_order_inventory_validation(
+                    _admin_dict(getattr(record, "metadata_payload", None)),
+                    tenant,
+                )
+                blockers = _assisted_order_confirmation_blockers(
+                    getattr(record, "metadata_payload", None),
+                    inventory_validation=inventory_validation,
+                )
                 if blockers:
                     return jsonify(
                         {
                             "error": "assisted_order_needs_review",
                             "message": (
                                 "No se puede crear el pedido operativo hasta resolver catalogo, "
-                                "datos bloqueantes o revision humana pendiente."
+                                "inventario, datos bloqueantes o revision humana pendiente."
                             ),
                             "blocking_reasons": blockers,
+                            "inventory_validation": inventory_validation,
                             "status": getattr(record, "estado", None),
                         }
                     ), 409
@@ -3653,7 +3901,7 @@ def tenant_order_detail(current_user, slug, order_id):
         else:
             db.session.commit()
 
-    return jsonify(serialize_unified_order(record))
+    return jsonify(_serialize_tenant_order(record, tenant))
 
 
 
