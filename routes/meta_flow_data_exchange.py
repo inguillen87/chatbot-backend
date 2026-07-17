@@ -277,8 +277,13 @@ def _encrypted_error(
     action: str,
 ):
     try:
+        error_payload = (
+            {"error_msg": error.safe_message}
+            if error.status_code == 427
+            else build_encrypted_error_payload(error, request_id)
+        )
         encrypted = encrypt_flow_response(
-            build_encrypted_error_payload(error, request_id),
+            error_payload,
             decrypted_request,
             max_response_bytes=config.max_response_bytes,
         )

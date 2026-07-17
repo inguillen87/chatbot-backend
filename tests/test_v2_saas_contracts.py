@@ -2589,7 +2589,19 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("consent_version", finance_flow_blueprint["data_contract"])
         survey_flow_blueprint = webview_flows["survey_vote"]["meta_flow_blueprint"]
         self.assertEqual(survey_flow_blueprint["completion_event"], "survey_response_saved")
-        self.assertIn("geo_permission", survey_flow_blueprint["data_contract"])
+        self.assertEqual(survey_flow_blueprint["data_contract"], ["confirm_vote"])
+        self.assertEqual(
+            survey_flow_blueprint["native_limits"]["question_types"],
+            ["opcion_unica"],
+        )
+        self.assertTrue(
+            survey_flow_blueprint["native_limits"]["reward_surveys_use_webview"]
+        )
+        self.assertTrue(
+            webview_flows["survey_vote"]["meta_flow_artifact"][
+                "publishable_flow_json"
+            ]
+        )
         self.assertIn(
             "claim_live_or_offline_helpdesk",
             payload["webview_blueprint"]["summary"]["transactional_flows"],

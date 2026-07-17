@@ -1571,12 +1571,152 @@ def build_order_checkout_blueprint() -> FlowBlueprint:
     )
 
 
+_SURVEY_QUESTION_SCREEN_IDS = (
+    "SURVEY_QUESTION_ONE",
+    "SURVEY_QUESTION_TWO",
+    "SURVEY_QUESTION_THREE",
+    "SURVEY_QUESTION_FOUR",
+    "SURVEY_QUESTION_FIVE",
+)
+
+
+def _survey_question_screen(screen_id: str) -> dict[str, Any]:
+    return {
+        "id": screen_id,
+        "title": "Votacion",
+        "data": {
+            "survey_title": {
+                "type": "string",
+                "__example__": "Prioridades del barrio",
+            },
+            "progress_label": {
+                "type": "string",
+                "__example__": "Pregunta 1 de 3",
+            },
+            "question_text": {
+                "type": "string",
+                "__example__": "Que mejora deberia priorizarse?",
+            },
+            "options": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "title": {"type": "string"},
+                    },
+                },
+                "__example__": [
+                    {"id": "101", "title": "Iluminacion"},
+                    {"id": "102", "title": "Arreglo de calles"},
+                ],
+            },
+        },
+        "layout": {
+            "type": "SingleColumnLayout",
+            "children": [
+                {"type": "TextCaption", "text": "${data.progress_label}"},
+                {"type": "TextHeading", "text": "${data.survey_title}"},
+                {"type": "TextBody", "text": "${data.question_text}"},
+                {
+                    "type": "RadioButtonsGroup",
+                    "name": "selected_option",
+                    "label": "Elegi una opcion",
+                    "data-source": "${data.options}",
+                    "required": True,
+                },
+                {
+                    "type": "Footer",
+                    "label": "Continuar",
+                    "on-click-action": {
+                        "name": "data_exchange",
+                        "payload": {
+                            "selected_option": "${form.selected_option}",
+                        },
+                    },
+                },
+            ],
+        },
+    }
+
+
+def build_survey_vote_blueprint() -> FlowBlueprint:
+    """Build a tenant-bound quick vote with server-provided questions."""
+
+    routing_model: dict[str, tuple[str, ...]] = {}
+    screens: list[dict[str, Any]] = []
+    for index, screen_id in enumerate(_SURVEY_QUESTION_SCREEN_IDS):
+        next_targets = ["SURVEY_CONFIRM"]
+        if index + 1 < len(_SURVEY_QUESTION_SCREEN_IDS):
+            next_targets.insert(0, _SURVEY_QUESTION_SCREEN_IDS[index + 1])
+        routing_model[screen_id] = tuple(next_targets)
+        screens.append(_survey_question_screen(screen_id))
+
+    routing_model["SURVEY_CONFIRM"] = ()
+    screens.append(
+        {
+            "id": "SURVEY_CONFIRM",
+            "title": "Confirmar participacion",
+            "terminal": True,
+            "success": True,
+            "data": {
+                "survey_title": {
+                    "type": "string",
+                    "__example__": "Prioridades del barrio",
+                },
+                "answer_summary": {
+                    "type": "string",
+                    "__example__": "3 respuestas listas para enviar.",
+                },
+                "results_note": {
+                    "type": "string",
+                    "__example__": "Al finalizar recibiras el acceso a los resultados.",
+                },
+            },
+            "layout": {
+                "type": "SingleColumnLayout",
+                "children": [
+                    {"type": "TextHeading", "text": "${data.survey_title}"},
+                    {"type": "TextBody", "text": "${data.answer_summary}"},
+                    {"type": "TextCaption", "text": "${data.results_note}"},
+                    {
+                        "type": "OptIn",
+                        "name": "confirm_vote",
+                        "label": "Confirmo y envio mi participacion",
+                        "required": True,
+                    },
+                    {
+                        "type": "Footer",
+                        "label": "Enviar participacion",
+                        "on-click-action": {
+                            "name": "complete",
+                            "payload": {
+                                "confirm_vote": "${form.confirm_vote}",
+                            },
+                        },
+                    },
+                ],
+            },
+        }
+    )
+    return FlowBlueprint(
+        name="survey_vote",
+        endpoint_driven=True,
+        routing_model=routing_model,
+        screens=tuple(screens),
+    )
+
+
 def build_claim_tracking_flow() -> FlowJsonArtifact:
     return compile_flow_blueprint(build_claim_tracking_blueprint())
 
 
 def build_order_checkout_flow() -> FlowJsonArtifact:
     return compile_flow_blueprint(build_order_checkout_blueprint())
+
+
+def build_survey_vote_flow() -> FlowJsonArtifact:
+    return compile_flow_blueprint(build_survey_vote_blueprint())
 
 
 def _serialize(value: Any) -> str:
@@ -1669,6 +1809,8 @@ __all__ = [
     "build_claim_tracking_flow",
     "build_order_checkout_blueprint",
     "build_order_checkout_flow",
+    "build_survey_vote_blueprint",
+    "build_survey_vote_flow",
     "canonical_flow_json",
     "compile_flow_blueprint",
     "flow_json_sha256",

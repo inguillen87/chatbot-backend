@@ -46,10 +46,12 @@ class AnalyticsIngestor:
             event.tenant_type = kwargs.get('tenant_type', 'pyme') # Default
 
             db.session.add(event)
-            db.session.commit()
+            if kwargs.get("commit", True):
+                db.session.commit()
 
         except Exception as e:
             logger.error(f"[Analytics] Failed to ingest event {event_name}: {e}")
-            db.session.rollback()
+            if kwargs.get("commit", True):
+                db.session.rollback()
 
 analytics_ingestor = AnalyticsIngestor()

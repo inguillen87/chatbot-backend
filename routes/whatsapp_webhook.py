@@ -21,6 +21,7 @@ from models import (
     User,
     ChatSessionContext,
     ArchivoAdjunto,
+    EncEncuesta,
     MunicipioTicket,
     PymeTicket,
     TicketComentario,
@@ -76,6 +77,7 @@ from services.meta_flow_data_exchange import MetaFlowActionError
 from services.meta_flow_runtime import (
     CLAIM_FLOW_ID,
     ORDER_FLOW_ID,
+    SURVEY_FLOW_ID,
     apply_whatsapp_flow_completion,
     record_whatsapp_flow_completion_rejection,
 )
@@ -5010,7 +5012,7 @@ def whatsapp_webhook():
         completed_flow_id = str(
             ((safe_flow_submission.get("flow") or {}).get("id")) or ""
         ).strip()
-        if completed_flow_id in {CLAIM_FLOW_ID, ORDER_FLOW_ID}:
+        if completed_flow_id in {CLAIM_FLOW_ID, ORDER_FLOW_ID, SURVEY_FLOW_ID}:
             try:
                 flow_completion_payload = apply_whatsapp_flow_completion(
                     tenant_id=int(tenant_id),
@@ -5089,6 +5091,25 @@ def whatsapp_webhook():
         except Exception as socket_exc:
             current_app.logger.warning(
                 "[WHATSAPP_FLOW] CRM realtime emit failed interaction_id=%s error_type=%s",
+                flow_interaction_id,
+                type(socket_exc).__name__,
+            )
+    elif isinstance(realtime_event, dict) and realtime_event.get("kind") == "survey_vote":
+        try:
+            from services.encuestas_service import emit_survey_response_update
+
+            completed_survey = db.session.get(
+                EncEncuesta,
+                int(realtime_event["survey_id"]),
+            )
+            if completed_survey is not None:
+                emit_survey_response_update(
+                    completed_survey,
+                    str(realtime_event.get("survey_slug") or completed_survey.slug),
+                )
+        except Exception as socket_exc:
+            current_app.logger.warning(
+                "[WHATSAPP_FLOW] Survey realtime emit failed interaction_id=%s error_type=%s",
                 flow_interaction_id,
                 type(socket_exc).__name__,
             )

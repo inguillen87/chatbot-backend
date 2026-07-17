@@ -32,7 +32,12 @@ from services.meta_flow_management import (
     resolve_meta_graph_credentials,
 )
 from services.meta_flow_data_exchange import MetaFlowActionError
-from services.meta_flow_runtime import ORDER_FLOW_ID, authorize_order_context
+from services.meta_flow_runtime import (
+    ORDER_FLOW_ID,
+    SURVEY_FLOW_ID,
+    authorize_order_context,
+    authorize_survey_context,
+)
 from services.whatsapp_enterprise_rules import (
     WhatsAppEnterpriseRulesService,
     whatsapp_flow_rate_limit_reservation_key,
@@ -1258,9 +1263,28 @@ def sync_meta_native_flow(user: User):
     registered_waba_id = str(
         existing_metadata.get("meta_flow_waba_id") or ""
     ).strip()
+    registered_publication_verified = bool(
+        existing_metadata.get("meta_flow_publication_verified")
+    )
     meta_sync_state = str(
         existing_metadata.get("meta_sync_state") or ""
     ).strip().lower()
+    registered_artifact_changed = bool(
+        registered_artifact_sha256
+        and registered_artifact_sha256 != artifact_sha256
+    )
+    clone_published_flow_id = (
+        registered_meta_flow_id
+        if (
+            registered_artifact_changed
+            and registered_publication_verified
+            and registered_meta_flow_id
+            and registered_waba_id
+            and registered_waba_id == waba_id
+            and (not supplied_meta_flow_id or supplied_meta_flow_id == registered_meta_flow_id)
+        )
+        else None
+    )
 
     blockers: list[str] = []
     if not integration_access.get("enabled"):
@@ -1278,7 +1302,7 @@ def sync_meta_native_flow(user: User):
         and registered_meta_flow_id != supplied_meta_flow_id
     ):
         blockers.append("meta_flow_registry_conflict")
-    if registered_artifact_sha256 and registered_artifact_sha256 != artifact_sha256:
+    if registered_artifact_changed and not clone_published_flow_id:
         blockers.append("meta_flow_registry_artifact_conflict")
     if registered_waba_id and waba_id and registered_waba_id != waba_id:
         blockers.append("meta_flow_registry_waba_conflict")
@@ -1293,6 +1317,7 @@ def sync_meta_native_flow(user: User):
         "waba_id": waba_id,
         "flow_json_sha256": artifact_sha256,
         "endpoint_uri": endpoint_uri or None,
+        "clone_flow_id": clone_published_flow_id,
         "publish": True,
     }
     execute_confirmation = (
@@ -1317,8 +1342,16 @@ def sync_meta_native_flow(user: User):
         "waba_id_present": bool(waba_id),
         "graph": credentials.public_payload(),
         "irreversible_publish": True,
+        "replacement_mode": (
+            "clone_published" if clone_published_flow_id else "reuse_or_create"
+        ),
+        "clone_flow_id": clone_published_flow_id,
         "steps": [
-            "create_or_reuse_draft",
+            (
+                "clone_published_flow"
+                if clone_published_flow_id
+                else "create_or_reuse_draft"
+            ),
             "upload_exact_flow_json",
             "validate_meta_schema",
             "publish_immutable_flow",
@@ -1336,6 +1369,7 @@ def sync_meta_native_flow(user: User):
             "meta_flow_id": meta_flow_id,
             "flow_name": flow_name,
             "category": category,
+            "clone_flow_id": clone_published_flow_id,
             "management": management_contract,
             "integration_access": integration_access,
         }
@@ -1381,6 +1415,7 @@ def sync_meta_native_flow(user: User):
             endpoint_uri=endpoint_uri or None,
             meta_flow_id=meta_flow_id,
             publish=True,
+            clone_published_on_change=bool(clone_published_flow_id),
         )
     except MetaFlowManagementError as exc:
         failed_meta_flow_id = _mark_meta_flow_publication_failure(
@@ -1442,6 +1477,10 @@ def sync_meta_native_flow(user: User):
             "meta_sync_operation_id": operation_id,
             "meta_sync_state": "complete",
             "meta_sync_completed_at": datetime.now(timezone.utc).isoformat(),
+            "meta_flow_cloned_from_id": (
+                result.get("cloned_from_flow_id")
+                or existing_metadata.get("meta_flow_cloned_from_id")
+            ),
         }
     )
     publication_row.external_template_id = verified_meta_flow_id
@@ -1469,6 +1508,7 @@ def sync_meta_native_flow(user: User):
                 "uploaded": result["uploaded"],
                 "published_now": result["published_now"],
                 "idempotent": result["idempotent"],
+                "cloned_from_flow_id": result.get("cloned_from_flow_id"),
             },
             ip_address=request.remote_addr,
         )
@@ -1484,9 +1524,16 @@ def sync_meta_native_flow(user: User):
             "result": result,
             "meta_publication_attestation": publication_attestation,
             "next_action": (
-                "verify_twilio_wrapper"
-                if str(publication_row.content_sid or "").startswith("HX")
-                else "create_twilio_wrapper"
+                "replace_twilio_wrapper"
+                if (
+                    result.get("cloned_from_flow_id")
+                    and str(publication_row.content_sid or "").startswith("HX")
+                )
+                else (
+                    "verify_twilio_wrapper"
+                    if str(publication_row.content_sid or "").startswith("HX")
+                    else "create_twilio_wrapper"
+                )
             ),
         }
     )
@@ -1545,7 +1592,7 @@ def sync_twilio_native_flow(user: User):
                 "flow_id": meta_flow_id,
                 "flow_token": "{{1}}",
                 "flow_first_page_id": first_screen_id,
-                "is_flow_first_page_endpoint": False,
+                "is_flow_first_page_endpoint": bool(artifact.get("endpoint_driven")),
             }
         },
     }
@@ -1913,6 +1960,17 @@ def send_twilio_native_flow(user: User):
         except MetaFlowActionError as exc:
             order_context_error = exc
 
+    survey_context = None
+    survey_context_error: MetaFlowActionError | None = None
+    if flow_id == SURVEY_FLOW_ID:
+        try:
+            survey_context = authorize_survey_context(
+                tenant.id,
+                payload.get("survey_context"),
+            )
+        except MetaFlowActionError as exc:
+            survey_context_error = exc
+
     recipient_scope = None
     if token_key_ready:
         recipient_scope = whatsapp_flow_recipient_scope(
@@ -1939,6 +1997,10 @@ def send_twilio_native_flow(user: User):
             and (
                 flow_id != ORDER_FLOW_ID
                 or existing_metadata.get("order_context") == order_context
+            )
+            and (
+                flow_id != SURVEY_FLOW_ID
+                or existing_metadata.get("survey_context") == survey_context
             )
         )
         if not same_scope:
@@ -1974,6 +2036,8 @@ def send_twilio_native_flow(user: User):
         blockers.append("data_exchange_not_ready")
     if order_context_error:
         blockers.append(order_context_error.code)
+    if survey_context_error:
+        blockers.append(survey_context_error.code)
     if not sender_ready:
         blockers.append("sender_not_ready")
     elif not credentials_ready:
@@ -2000,6 +2064,7 @@ def send_twilio_native_flow(user: User):
                     "flow_json_sha256": registry_metadata.get("flow_json_sha256"),
                     "data_contract": registry_metadata.get("data_contract") or [],
                     "order_context": order_context,
+                    "survey_context": survey_context,
                 }
             ),
         }
@@ -2027,6 +2092,12 @@ def send_twilio_native_flow(user: User):
                 "ready": bool(order_context),
                 "kind": order_context.get("kind") if order_context else None,
                 "id": order_context.get("id") if order_context else None,
+            },
+            "survey_context": {
+                "required": flow_id == SURVEY_FLOW_ID,
+                "ready": bool(survey_context),
+                "id": survey_context.get("id") if survey_context else None,
+                "slug": survey_context.get("slug") if survey_context else None,
             },
             "token_ttl_seconds": int(token_ttl or 48 * 60 * 60),
             "security": {
@@ -2075,6 +2146,13 @@ def send_twilio_native_flow(user: User):
         abort(
             order_context_error.status_code,
             description="El pedido asociado no existe o no pertenece a este tenant",
+        )
+    if survey_context_error:
+        abort(
+            survey_context_error.status_code,
+            description=(
+                "La encuesta no es compatible, no esta publicada o no pertenece a este tenant"
+            ),
         )
     if not sender or not credentials_ready:
         abort(409, description="No hay un sender WhatsApp operativo con credenciales validas")
@@ -2133,6 +2211,7 @@ def send_twilio_native_flow(user: User):
             "actor_user_id": user.id,
             "credential_scope": credentials.scope,
             **({"order_context": order_context} if order_context else {}),
+            **({"survey_context": survey_context} if survey_context else {}),
         },
         expires_at=issued.expires_at,
     )

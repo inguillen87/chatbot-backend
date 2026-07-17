@@ -576,6 +576,7 @@ class MetaFlowGraphClient:
         endpoint_uri: str | None,
         meta_flow_id: str | None = None,
         publish: bool = True,
+        clone_published_on_change: bool = False,
     ) -> dict[str, Any]:
         canonical = canonical_flow_json(document)
         actual_sha256 = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -587,6 +588,7 @@ class MetaFlowGraphClient:
             )
 
         created = False
+        cloned_from_flow_id: str | None = None
         normalized_meta_flow_id = _clean(meta_flow_id)
         if normalized_meta_flow_id:
             if not _META_ID_PATTERN.fullmatch(normalized_meta_flow_id):
@@ -608,6 +610,39 @@ class MetaFlowGraphClient:
                     "El Flow indicado no pertenece al WABA del tenant",
                     status_code=409,
                 )
+            current_status = _clean(current.get("status")).upper()
+            if current_status == "PUBLISHED" and clone_published_on_change:
+                published_verification = self.verify_flow(
+                    meta_flow_id=normalized_meta_flow_id,
+                    expected_document=document,
+                    expected_sha256=expected_sha256,
+                    expected_endpoint_uri=endpoint_uri,
+                    require_published=True,
+                )
+                cloneable_blockers = {
+                    "meta_flow_json_hash_mismatch",
+                    "meta_flow_json_version_mismatch",
+                    "meta_flow_data_api_version_mismatch",
+                }
+                blockers = set(published_verification.get("blockers") or ())
+                remote_sha256 = _clean(
+                    published_verification.get("flow_json_sha256")
+                )
+                can_clone = bool(
+                    blockers
+                    and blockers.issubset(cloneable_blockers)
+                    and remote_sha256
+                    and remote_sha256 != expected_sha256
+                )
+                if can_clone:
+                    cloned_from_flow_id = normalized_meta_flow_id
+                    normalized_meta_flow_id = self.create_flow(
+                        name=flow_name,
+                        category=category,
+                        endpoint_uri=endpoint_uri,
+                        clone_flow_id=cloned_from_flow_id,
+                    )
+                    created = True
         else:
             normalized_meta_flow_id = self.create_flow(
                 name=flow_name,
@@ -680,6 +715,7 @@ class MetaFlowGraphClient:
             raise
         return {
             "created": created,
+            "cloned_from_flow_id": cloned_from_flow_id,
             "uploaded": uploaded,
             "published_now": published_now,
             "idempotent": bool(current_status == "PUBLISHED"),

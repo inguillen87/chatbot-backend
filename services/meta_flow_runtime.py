@@ -11,11 +11,13 @@ import os
 import re
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
+from flask import current_app
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
 
 from models import (
     AuditEvent,
+    EncEncuesta,
     MarketOrder,
     MunicipioTicket,
     Order,
@@ -27,6 +29,7 @@ from models import (
     TenantProfile,
     TenantTicket,
     TicketComentario,
+    User,
     WhatsAppFlowInteraction,
     db,
 )
@@ -45,7 +48,8 @@ from services.whatsapp_flow_security import (
 
 CLAIM_FLOW_ID = "claim_tracking_helpdesk"
 ORDER_FLOW_ID = "order_checkout"
-SUPPORTED_FLOW_IDS = frozenset({CLAIM_FLOW_ID, ORDER_FLOW_ID})
+SURVEY_FLOW_ID = "survey_vote"
+SUPPORTED_FLOW_IDS = frozenset({CLAIM_FLOW_ID, ORDER_FLOW_ID, SURVEY_FLOW_ID})
 
 _ENDPOINT_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _ENV_NAME = re.compile(r"^[A-Z][A-Z0-9_]{1,126}$")
@@ -53,10 +57,20 @@ _SAFE_WABA = re.compile(r"[^A-Za-z0-9]+")
 _TICKET_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
 _PIN = re.compile(r"^[A-Za-z0-9]{4,12}$")
 _ORDER_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_SURVEY_SLUG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 
 _READY_INTERACTION_STATES = frozenset({"sent", "send_uncertain", "consumed"})
 _CLAIM_SCREENS = frozenset({"CLAIM_LOOKUP", "CLAIM_RESULT"})
 _ORDER_SCREENS = frozenset({"ORDER_DETAILS", "ORDER_CONFIRM"})
+_SURVEY_QUESTION_SCREENS = (
+    "SURVEY_QUESTION_ONE",
+    "SURVEY_QUESTION_TWO",
+    "SURVEY_QUESTION_THREE",
+    "SURVEY_QUESTION_FOUR",
+    "SURVEY_QUESTION_FIVE",
+)
+_SURVEY_SCREENS = frozenset((*_SURVEY_QUESTION_SCREENS, "SURVEY_CONFIRM"))
+_MAX_NATIVE_SURVEY_OPTIONS = 20
 
 _STATUS_LABELS = {
     "nuevo": "Recibido",
@@ -314,8 +328,8 @@ class MetaFlowRuntime:
             }:
                 raise _action_error(
                     "invalid_flow_token",
-                    "Flow session is invalid or expired.",
-                    403,
+                    "This message is no longer available.",
+                    427,
                 ) from exc
             raise _action_error(
                 "flow_token_verification_failed",
@@ -345,8 +359,8 @@ class MetaFlowRuntime:
         except (TypeError, ValueError) as exc:
             raise _action_error(
                 "flow_token_scope_invalid",
-                "Flow session scope is invalid.",
-                403,
+                "This message is no longer available.",
+                427,
             ) from exc
         if (
             invocation.interaction_id <= 0
@@ -357,8 +371,8 @@ class MetaFlowRuntime:
         ):
             raise _action_error(
                 "flow_token_scope_invalid",
-                "Flow session scope is invalid.",
-                403,
+                "This message is no longer available.",
+                427,
             )
         return invocation
 
@@ -372,6 +386,9 @@ class MetaFlowRuntime:
         if invocation.flow_id == ORDER_FLOW_ID:
             self._load_order_context(endpoint, invocation)
             return {"screen": "ORDER_DETAILS", "data": {}}
+        if invocation.flow_id == SURVEY_FLOW_ID:
+            survey, questions, _ = self._load_survey_context(endpoint, invocation)
+            return _survey_question_response(survey, questions, 0)
         return {"screen": "CLAIM_LOOKUP", "data": {}}
 
     def _handle_back(
@@ -384,6 +401,25 @@ class MetaFlowRuntime:
         if invocation.flow_id == ORDER_FLOW_ID:
             self._load_order_context(endpoint, invocation)
             return {"screen": "ORDER_DETAILS", "data": {}}
+        if invocation.flow_id == SURVEY_FLOW_ID:
+            survey, questions, interaction = self._load_survey_context(
+                endpoint,
+                invocation,
+            )
+            current_screen = str(payload.get("screen") or "")
+            if current_screen == "SURVEY_CONFIRM":
+                target_index = len(questions) - 1
+            else:
+                target_index = max(
+                    0,
+                    _SURVEY_QUESTION_SCREENS.index(current_screen) - 1,
+                )
+            return _survey_question_response(
+                survey,
+                questions,
+                target_index,
+                interaction=interaction,
+            )
         return {"screen": "CLAIM_LOOKUP", "data": {}}
 
     def _handle_data_exchange(
@@ -408,6 +444,14 @@ class MetaFlowRuntime:
             )
             return response
 
+        if invocation.flow_id == SURVEY_FLOW_ID:
+            return self._handle_survey_data_exchange(
+                payload,
+                data,
+                endpoint,
+                invocation,
+            )
+
         if payload.get("screen") != "ORDER_DETAILS":
             raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
         _validate_order_input(data)
@@ -417,6 +461,68 @@ class MetaFlowRuntime:
             "data": {
                 "order_summary": _order_summary(order),
                 "total_display": _order_total_display(order),
+            },
+        }
+
+    def _handle_survey_data_exchange(
+        self,
+        payload: Mapping[str, Any],
+        data: Mapping[str, Any],
+        endpoint: _ResolvedEndpoint,
+        invocation: _VerifiedInvocation,
+    ) -> Mapping[str, Any]:
+        current_screen = str(payload.get("screen") or "")
+        if current_screen not in _SURVEY_QUESTION_SCREENS:
+            raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
+        survey, questions, interaction = self._load_survey_context(endpoint, invocation)
+        question_index = _SURVEY_QUESTION_SCREENS.index(current_screen)
+        if question_index >= len(questions):
+            raise _action_error("survey_screen_out_of_range", "Flow screen is invalid.", 400)
+
+        selected_option = _required_string(
+            data.get("selected_option"),
+            "survey_option_required",
+            32,
+        )
+        if not selected_option.isdigit():
+            raise _action_error("survey_option_invalid", "Survey option is invalid.", 400)
+        question = questions[question_index]
+        option_ids = {int(option.id) for option in question.opciones}
+        selected_option_id = int(selected_option)
+        if selected_option_id not in option_ids:
+            raise _action_error("survey_option_invalid", "Survey option is invalid.", 400)
+
+        metadata = dict(interaction.metadata_json or {})
+        staged = {
+            str(key): int(value)
+            for key, value in (metadata.get("survey_staged_answers") or {}).items()
+            if str(key).isdigit() and str(value).isdigit()
+        }
+        staged[str(question.id)] = selected_option_id
+        metadata["survey_staged_answers"] = staged
+        metadata["survey_last_screen"] = current_screen
+        interaction.metadata_json = metadata
+        db.session.add(interaction)
+        db.session.commit()
+
+        next_index = question_index + 1
+        if next_index < len(questions):
+            return _survey_question_response(
+                survey,
+                questions,
+                next_index,
+                interaction=interaction,
+            )
+        return {
+            "screen": "SURVEY_CONFIRM",
+            "data": {
+                "survey_title": str(survey.titulo or "Votacion"),
+                "answer_summary": f"{len(questions)} respuestas listas para enviar.",
+                "results_note": (
+                    "Al finalizar recibiras el acceso a los resultados en vivo."
+                    if survey.mostrar_resultados_envivo
+                    else "Tu participacion quedara registrada al finalizar."
+                ),
             },
         }
 
@@ -487,6 +593,29 @@ class MetaFlowRuntime:
             )
         return order
 
+    def _load_survey_context(
+        self,
+        endpoint: _ResolvedEndpoint,
+        invocation: _VerifiedInvocation,
+    ) -> tuple[EncEncuesta, tuple[Any, ...], WhatsAppFlowInteraction]:
+        interaction = WhatsAppFlowInteraction.query.filter_by(
+            id=invocation.interaction_id,
+            tenant_id=int(endpoint.tenant.id),
+            provider_sender_id=invocation.provider_sender_id,
+            flow_id=SURVEY_FLOW_ID,
+        ).first()
+        if interaction is None or interaction.status not in _READY_INTERACTION_STATES:
+            raise _action_error(
+                "survey_context_unavailable",
+                "The survey linked to this Flow is unavailable.",
+                409,
+            )
+        survey, questions, _ = _resolve_survey_context(
+            int(endpoint.tenant.id),
+            (interaction.metadata_json or {}).get("survey_context"),
+        )
+        return survey, questions, interaction
+
 
 def create_meta_flow_runtime_resolver(
     *,
@@ -527,6 +656,13 @@ def authorize_order_context(tenant_id: int, raw_context: Any) -> dict[str, str]:
             404,
         )
     return {"kind": canonical_kind, "id": identifier}
+
+
+def authorize_survey_context(tenant_id: int, raw_context: Any) -> dict[str, str]:
+    """Validate one published quick vote before issuing a signed Flow token."""
+
+    _, _, context = _resolve_survey_context(int(tenant_id), raw_context)
+    return context
 
 
 def apply_whatsapp_flow_completion(
@@ -608,12 +744,20 @@ def apply_whatsapp_flow_completion(
             actor_user_id=actor_user_id,
             anon_id=anon_id,
         )
-    else:
+    elif interaction.flow_id == ORDER_FLOW_ID:
         result = _apply_order_completion(
             tenant_id=normalized_tenant_id,
             interaction=interaction,
             answers=answers,
             actor_user_id=actor_user_id,
+        )
+    else:
+        result = _apply_survey_completion(
+            tenant_id=normalized_tenant_id,
+            interaction=interaction,
+            answers=answers,
+            actor_user_id=actor_user_id,
+            anon_id=anon_id,
         )
 
     completion_metadata = {
@@ -899,6 +1043,147 @@ def _apply_order_completion(
     }
 
 
+def _apply_survey_completion(
+    *,
+    tenant_id: int,
+    interaction: WhatsAppFlowInteraction,
+    answers: Mapping[str, Any],
+    actor_user_id: int | None,
+    anon_id: str | None,
+) -> dict[str, Any]:
+    confirmation = answers.get("confirm_vote")
+    if confirmation is not True and str(confirmation or "").strip().lower() not in {
+        "true",
+        "1",
+    }:
+        raise _action_error(
+            "survey_confirmation_required",
+            "Survey confirmation is required.",
+            400,
+        )
+
+    metadata = interaction.metadata_json if isinstance(interaction.metadata_json, Mapping) else {}
+    survey, questions, survey_context = _resolve_survey_context(
+        tenant_id,
+        metadata.get("survey_context"),
+    )
+    raw_staged = metadata.get("survey_staged_answers")
+    staged = raw_staged if isinstance(raw_staged, Mapping) else {}
+    response_rows: list[dict[str, int]] = []
+    for question in questions:
+        selected = staged.get(str(question.id))
+        try:
+            selected_id = int(selected)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _action_error(
+                "survey_answers_incomplete",
+                "Survey answers are incomplete.",
+                409,
+            ) from exc
+        if selected_id not in {int(option.id) for option in question.opciones}:
+            raise _action_error(
+                "survey_option_invalid",
+                "Survey option is invalid.",
+                400,
+            )
+        response_rows.append(
+            {"pregunta_id": int(question.id), "opcion_id": selected_id}
+        )
+
+    from services.encuestas_service import EncuestaError, save_respuesta
+
+    authenticated_user = (
+        db.session.get(User, int(actor_user_id)) if actor_user_id else None
+    )
+    phone = str(anon_id or "").strip() or None
+    payload = {
+        "respuestas": response_rows,
+        "source": "whatsapp_flow",
+        "canal": "whatsapp_flow",
+        "anon_id": interaction.recipient_hash,
+        "phone": phone,
+        "metadata": {
+            "source": "whatsapp_native_flow",
+            "flow_id": SURVEY_FLOW_ID,
+            "interaction_id": interaction.id,
+        },
+    }
+    request_context = {
+        "anon_id": interaction.recipient_hash,
+        "ip": None,
+        "user_agent": "WhatsApp Native Flow",
+        "referer": None,
+        "canal": "whatsapp_flow",
+    }
+    try:
+        with db.session.begin_nested():
+            response = save_respuesta(
+                survey_context["slug"],
+                payload,
+                request_context,
+                preferred_tenant_id=tenant_id,
+                authenticated_user=authenticated_user,
+                commit=False,
+                emit_realtime_update=False,
+                grant_reward=False,
+            )
+    except EncuestaError as exc:
+        reason = (
+            str((exc.payload or {}).get("reason_code") or "").strip()
+            if isinstance(getattr(exc, "payload", None), Mapping)
+            else ""
+        )
+        message = str(exc).lower()
+        if exc.status_code == 409 or "particip" in message:
+            code = "survey_already_answered"
+        elif reason in {"authentication_required", "identity_required"}:
+            code = reason
+        else:
+            code = "survey_submission_invalid"
+        raise _action_error(code, "Survey response could not be saved.", exc.status_code) from exc
+
+    results_url = _survey_results_url(survey_context["slug"])
+    message = "Participacion registrada."
+    if survey.mostrar_resultados_envivo:
+        message += f" Podes seguir los resultados en {results_url}."
+    return {
+        "message_body": message,
+        "options_list": [
+            {
+                "texto": "Ver resultados",
+                "type": "url",
+                "url": results_url,
+                "action_id": "open_survey_results",
+            },
+            {"texto": "Menu", "action_id": "menu_principal"},
+        ],
+        "message_type": "interactive_buttons",
+        "fuente": "whatsapp_flow_survey_completed",
+        "generar_audio": True,
+        "entity": {"kind": "survey_response", "id": response.id},
+        "realtime_event": {
+            "kind": "survey_vote",
+            "survey_id": survey.id,
+            "survey_slug": survey_context["slug"],
+        },
+    }
+
+
+def _survey_results_url(slug: str) -> str:
+    configured = (
+        current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        or current_app.config.get("PUBLIC_FRONTEND_URL")
+        or current_app.config.get("FRONTEND_URL")
+        or os.getenv("PUBLIC_FRONTEND_URL")
+        or os.getenv("FRONTEND_URL")
+        or "https://www.chatboc.ar"
+    )
+    base_url = str(configured).strip().rstrip("/")
+    if not base_url.startswith(("https://", "http://")):
+        base_url = "https://www.chatboc.ar"
+    return f"{base_url}/e/{slug}?resultados=1"
+
+
 def _load_claim_context(
     tenant_id: int,
     raw_context: Any,
@@ -950,6 +1235,120 @@ def _completion_response_from_metadata(value: Mapping[str, Any]) -> dict[str, An
         "entity": {
             "kind": str(value.get("entity_kind") or "record"),
             "id": str(value.get("entity_id") or ""),
+        },
+    }
+
+
+def _resolve_survey_context(
+    tenant_id: int,
+    raw_context: Any,
+) -> tuple[EncEncuesta, tuple[Any, ...], dict[str, str]]:
+    if not isinstance(raw_context, Mapping):
+        raise _action_error(
+            "survey_context_missing",
+            "A published survey context is required for this Flow.",
+            400,
+        )
+    slug = str(
+        raw_context.get("slug")
+        or raw_context.get("survey_slug")
+        or raw_context.get("public_token")
+        or ""
+    ).strip()
+    if not _SURVEY_SLUG.fullmatch(slug):
+        raise _action_error(
+            "survey_context_invalid",
+            "The survey linked to this Flow is invalid.",
+            400,
+        )
+
+    from services.encuestas_service import EncuestaError, get_public_encuesta
+
+    try:
+        survey = get_public_encuesta(slug, preferred_tenant_id=int(tenant_id))
+    except EncuestaError as exc:
+        raise _action_error(
+            "survey_context_unavailable",
+            "The survey linked to this Flow is unavailable.",
+            exc.status_code,
+        ) from exc
+    if int(survey.tenant_id or 0) != int(tenant_id):
+        raise _action_error(
+            "survey_context_unavailable",
+            "The survey linked to this Flow is unavailable.",
+            404,
+        )
+    supplied_id = str(raw_context.get("id") or raw_context.get("survey_id") or "").strip()
+    if supplied_id and (not supplied_id.isdigit() or int(supplied_id) != int(survey.id)):
+        raise _action_error(
+            "survey_context_scope_mismatch",
+            "The survey linked to this Flow is unavailable.",
+            403,
+        )
+    if int(survey.puntos_recompensa or 0) > 0:
+        raise _action_error(
+            "survey_rewards_require_webview",
+            "Reward surveys require the authenticated web experience.",
+            409,
+        )
+
+    questions = tuple(survey.preguntas or ())
+    if not 1 <= len(questions) <= len(_SURVEY_QUESTION_SCREENS):
+        raise _action_error(
+            "survey_question_count_unsupported",
+            "This survey is not compatible with the native quick-vote Flow.",
+            409,
+        )
+    for question in questions:
+        options = tuple(question.opciones or ())
+        if (
+            str(question.tipo or "").strip().lower() != "opcion_unica"
+            or not bool(question.obligatoria)
+            or not 2 <= len(options) <= _MAX_NATIVE_SURVEY_OPTIONS
+        ):
+            raise _action_error(
+                "survey_question_type_unsupported",
+                "This survey is not compatible with the native quick-vote Flow.",
+                409,
+            )
+        if any(not str(option.texto or "").strip() for option in options):
+            raise _action_error(
+                "survey_option_invalid",
+                "This survey contains an invalid option.",
+                409,
+            )
+    return survey, questions, {"id": str(survey.id), "slug": slug}
+
+
+def _survey_question_response(
+    survey: EncEncuesta,
+    questions: Sequence[Any],
+    index: int,
+    *,
+    interaction: WhatsAppFlowInteraction | None = None,
+) -> dict[str, Any]:
+    if index < 0 or index >= len(questions):
+        raise _action_error("survey_screen_out_of_range", "Flow screen is invalid.", 400)
+    question = questions[index]
+    staged = (
+        (interaction.metadata_json or {}).get("survey_staged_answers")
+        if interaction is not None and isinstance(interaction.metadata_json, Mapping)
+        else {}
+    )
+    answered = len(staged) if isinstance(staged, Mapping) else 0
+    progress = f"Pregunta {index + 1} de {len(questions)}"
+    if answered:
+        progress += f" - {answered} guardadas"
+    return {
+        "screen": _SURVEY_QUESTION_SCREENS[index],
+        "data": {
+            "survey_title": str(survey.titulo or "Votacion")[:120],
+            "progress_label": progress,
+            "question_text": str(question.texto or "Elegi una opcion")[:500],
+            "options": [
+                {"id": str(option.id), "title": str(option.texto or "")[:120]}
+                for option in question.opciones
+            ],
         },
     }
 
@@ -1120,7 +1519,12 @@ def _validate_screen(value: Any, flow_id: str, *, optional: bool) -> str | None:
     screen = str(value or "").strip()
     if not screen and optional:
         return None
-    allowed = _CLAIM_SCREENS if flow_id == CLAIM_FLOW_ID else _ORDER_SCREENS
+    if flow_id == CLAIM_FLOW_ID:
+        allowed = _CLAIM_SCREENS
+    elif flow_id == ORDER_FLOW_ID:
+        allowed = _ORDER_SCREENS
+    else:
+        allowed = _SURVEY_SCREENS
     if screen not in allowed:
         raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
     return screen
@@ -1462,10 +1866,12 @@ def _action_error(code: str, message: str, status_code: int) -> MetaFlowActionEr
 __all__ = [
     "CLAIM_FLOW_ID",
     "ORDER_FLOW_ID",
+    "SURVEY_FLOW_ID",
     "EndpointTokenVerifier",
     "MetaFlowRuntime",
     "apply_whatsapp_flow_completion",
     "authorize_order_context",
+    "authorize_survey_context",
     "create_meta_flow_runtime_resolver",
     "record_whatsapp_flow_completion_rejection",
 ]

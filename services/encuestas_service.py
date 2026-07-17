@@ -2953,6 +2953,8 @@ def _validate_respuesta_payload(
 def _persist_respuesta_entity(
     respuesta: EncRespuesta,
     detalles: Sequence[EncRespuestaDetalle],
+    *,
+    commit: bool = True,
 ) -> EncRespuesta:
     if not detalles:
         raise EncuestaError("Debe enviar respuestas")
@@ -2961,9 +2963,13 @@ def _persist_respuesta_entity(
     db.session.add(respuesta)
 
     try:
-        db.session.commit()
+        if commit:
+            db.session.commit()
+        else:
+            db.session.flush()
     except IntegrityError as exc:
-        db.session.rollback()
+        if commit:
+            db.session.rollback()
         message = str(getattr(exc, "orig", exc)).lower()
         if "uq_enc_respuesta_huella" in message or "huella_unica" in message:
             raise EncuestaError("Ya registramos tu participación", status_code=409) from exc
@@ -3144,6 +3150,7 @@ def _track_survey_response_analytics(
     *,
     slug_publico: str,
     respuestas_payload: Sequence[Dict[str, Any]],
+    commit: bool = True,
 ) -> None:
     """Feed public survey/vote responses into the canonical analytics stream."""
 
@@ -3210,6 +3217,7 @@ def _track_survey_response_analytics(
             lng=respuesta.lng,
             entity_ref=f"survey:{encuesta.id}:response:{respuesta.id}",
             tenant_type=tenant_type,
+            commit=commit,
         )
     except Exception:
         logger = _current_app_logger()
@@ -3303,6 +3311,9 @@ def save_respuesta(
     *,
     preferred_tenant_id: Optional[int] = None,
     authenticated_user: Optional[User] = None,
+    commit: bool = True,
+    emit_realtime_update: bool = True,
+    grant_reward: bool = True,
 ) -> EncRespuesta:
     encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
     if not isinstance(payload, dict):
@@ -3490,7 +3501,7 @@ def save_respuesta(
         content_hash=None,
     )
 
-    respuesta = _persist_respuesta_entity(respuesta, detalles)
+    respuesta = _persist_respuesta_entity(respuesta, detalles, commit=commit)
 
     current_app.logger.info(
         "[encuestas] Nueva respuesta %s para encuesta %s desde %s",
@@ -3503,6 +3514,7 @@ def save_respuesta(
         respuesta,
         slug_publico=slug_publico,
         respuestas_payload=respuestas_payload,
+        commit=commit,
     )
 
     # Otorgar puntos si corresponde
@@ -3510,6 +3522,7 @@ def save_respuesta(
         encuesta.puntos_recompensa
         and encuesta.puntos_recompensa > 0
         and authenticated_response_user
+        and grant_reward
     ):
         try:
             _grant_survey_reward_once(encuesta, respuesta, authenticated_response_user)
@@ -3517,37 +3530,45 @@ def save_respuesta(
             current_app.logger.exception("[encuestas] Error al otorgar puntos por encuesta")
 
     # Emitir actualizaciones en tiempo real si corresponde
-    if encuesta.mostrar_resultados_envivo and emit_survey_update:
-        try:
-            public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
-            tenant_slug = None
-            if tenant_id:
-                tenant_profile = db.session.get(TenantProfile, tenant_id)
-                tenant_slug = getattr(tenant_profile, "slug", None)
-            try:
-                from services.encuestas_analytics_service import calculate_live_results
-
-                live_stats = calculate_live_results(
-                    public_slug,
-                    preferred_tenant_id=tenant_id,
-                    include_heatmap=True,
-                )
-                live_stats["legacy_results"] = _compute_live_results(encuesta)
-            except Exception:
-                current_app.logger.exception(
-                    "[encuestas] Error calculando live-results v2 para socket; se emite contrato legacy"
-                )
-                live_stats = _compute_live_results(encuesta)
-            emit_slugs = [
-                public_slug,
-                slug_publico,
-            ]
-            for emit_slug in dict.fromkeys(str(item).strip() for item in emit_slugs if item):
-                emit_survey_update(emit_slug, live_stats, tenant_slug=tenant_slug)
-        except Exception:
-            current_app.logger.exception("[encuestas] Error al emitir update socket")
+    if emit_realtime_update:
+        emit_survey_response_update(encuesta, slug_publico)
 
     return respuesta
+
+
+def emit_survey_response_update(encuesta: EncEncuesta, slug_publico: str) -> bool:
+    """Emit the canonical post-commit live result update for one survey."""
+
+    if not encuesta.mostrar_resultados_envivo or not emit_survey_update:
+        return False
+    try:
+        tenant_id = encuesta.tenant_id
+        public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
+        tenant_slug = None
+        if tenant_id:
+            tenant_profile = db.session.get(TenantProfile, tenant_id)
+            tenant_slug = getattr(tenant_profile, "slug", None)
+        try:
+            from services.encuestas_analytics_service import calculate_live_results
+
+            live_stats = calculate_live_results(
+                public_slug,
+                preferred_tenant_id=tenant_id,
+                include_heatmap=True,
+            )
+            live_stats["legacy_results"] = _compute_live_results(encuesta)
+        except Exception:
+            current_app.logger.exception(
+                "[encuestas] Error calculando live-results v2 para socket; se emite contrato legacy"
+            )
+            live_stats = _compute_live_results(encuesta)
+        emit_slugs = [public_slug, slug_publico]
+        for emit_slug in dict.fromkeys(str(item).strip() for item in emit_slugs if item):
+            emit_survey_update(emit_slug, live_stats, tenant_slug=tenant_slug)
+        return True
+    except Exception:
+        current_app.logger.exception("[encuestas] Error al emitir update socket")
+        return False
 
 
 def _ensure_timezone(dt: Optional[datetime]) -> Optional[datetime]:

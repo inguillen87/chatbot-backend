@@ -7,6 +7,10 @@ import pytest
 
 from app import db
 from models import (
+    EncEncuesta,
+    EncOpcion,
+    EncPregunta,
+    EncRespuesta,
     MessageTemplateRegistry,
     MunicipioTicket,
     Order,
@@ -26,8 +30,10 @@ from services.meta_flow_data_exchange import (
 from services.meta_flow_runtime import (
     CLAIM_FLOW_ID,
     ORDER_FLOW_ID,
+    SURVEY_FLOW_ID,
     MetaFlowRuntime,
     authorize_order_context,
+    authorize_survey_context,
 )
 from services.whatsapp_flow_security import (
     WhatsAppFlowTokenError,
@@ -198,12 +204,13 @@ def _flow_interaction(
     tenant: TenantProfile,
     sender: ProviderSender,
     metadata: dict,
+    flow_id: str = ORDER_FLOW_ID,
 ) -> WhatsAppFlowInteraction:
     registry = MessageTemplateRegistry(
         tenant_id=tenant.id,
         provider="twilio",
         channel="whatsapp",
-        name=f"order-flow-{tenant.id}",
+        name=f"{flow_id}-flow-{tenant.id}",
         language="es",
         status="approved",
         content_sid=f"HXORDER{tenant.id}",
@@ -215,13 +222,13 @@ def _flow_interaction(
         tenant_id=tenant.id,
         template_registry_id=registry.id,
         provider_sender_id=sender.id,
-        flow_id=ORDER_FLOW_ID,
+        flow_id=flow_id,
         meta_flow_id="123456789012345",
         content_sid=registry.content_sid,
         recipient_hash=f"{tenant.id:064x}"[-64:],
         recipient_hint="***1234",
         token_digest=f"{tenant.id + 100:064x}"[-64:],
-        idempotency_key=f"runtime-order-{tenant.id}",
+        idempotency_key=f"runtime-{flow_id}-{tenant.id}",
         status="sent",
         data_contract=["order_id"],
         metadata_json=metadata,
@@ -230,6 +237,33 @@ def _flow_interaction(
     db.session.add(interaction)
     db.session.commit()
     return interaction
+
+
+def _published_quick_vote(tenant: TenantProfile, *, slug: str) -> EncEncuesta:
+    survey = EncEncuesta(
+        tenant_id=tenant.id,
+        slug=slug,
+        titulo="Prioridades del barrio",
+        estado="publicada",
+        tipo="votacion",
+        es_votacion_envivo=True,
+        mostrar_resultados_envivo=True,
+        politica_unicidad="por_cookie",
+    )
+    question = EncPregunta(
+        orden=1,
+        tipo="opcion_unica",
+        texto="Que mejora deberia priorizarse?",
+        obligatoria=True,
+    )
+    question.opciones = [
+        EncOpcion(orden=1, texto="Iluminacion"),
+        EncOpcion(orden=2, texto="Arreglo de calles"),
+    ]
+    survey.preguntas = [question]
+    db.session.add(survey)
+    db.session.commit()
+    return survey
 
 
 def test_resolver_binds_alias_to_one_waba_and_tenant(client):
@@ -382,6 +416,136 @@ def test_authorize_order_context_is_tenant_bound(client):
     assert error.value.code == "order_context_unavailable"
 
 
+def test_authorize_survey_context_is_published_tenant_bound_and_native_compatible(client):
+    tenant, _ = _tenant_with_sender(
+        slug="runtime-survey-owner",
+        waba_id="waba-survey-owner",
+        endpoint_alias="survey-owner-endpoint",
+    )
+    other_tenant, _ = _tenant_with_sender(
+        slug="runtime-survey-other",
+        waba_id="waba-survey-other",
+        endpoint_alias="survey-other-endpoint",
+    )
+    survey = _published_quick_vote(tenant, slug="prioridades-barrio")
+
+    assert authorize_survey_context(
+        tenant.id,
+        {"survey_slug": survey.slug},
+    ) == {"id": str(survey.id), "slug": survey.slug}
+    with pytest.raises(MetaFlowActionError) as cross_tenant:
+        authorize_survey_context(
+            other_tenant.id,
+            {"survey_slug": survey.slug},
+        )
+    assert cross_tenant.value.code == "survey_context_unavailable"
+
+    survey.preguntas[0].tipo = "abierta"
+    db.session.commit()
+    with pytest.raises(MetaFlowActionError) as incompatible:
+        authorize_survey_context(
+            tenant.id,
+            {"survey_slug": survey.slug},
+        )
+    assert incompatible.value.code == "survey_question_type_unsupported"
+
+
+def test_survey_runtime_hydrates_question_and_stages_valid_answer_without_voting(client):
+    tenant, sender = _tenant_with_sender(
+        slug="runtime-survey",
+        waba_id="waba-survey",
+        endpoint_alias="survey-flow-endpoint",
+    )
+    survey = _published_quick_vote(tenant, slug="runtime-quick-vote")
+    interaction = _flow_interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={
+            "survey_context": {"id": str(survey.id), "slug": survey.slug}
+        },
+    )
+    runtime = MetaFlowRuntime(
+        environ=_env_for("waba-survey"),
+        token_verifier=_verified(
+            tenant_id=tenant.id,
+            sender_id=sender.id,
+            flow_id=SURVEY_FLOW_ID,
+            interaction_id=interaction.id,
+        ),
+    )
+    config = runtime.resolve("survey-flow-endpoint")
+    assert config is not None
+
+    initial = config.handlers["init"](
+        _payload(action="INIT", screen=None),
+        _context(config, "init"),
+    )
+    assert initial["screen"] == "SURVEY_QUESTION_ONE"
+    assert initial["data"]["survey_title"] == survey.titulo
+    assert initial["data"]["progress_label"] == "Pregunta 1 de 1"
+    assert initial["data"]["options"] == [
+        {"id": str(option.id), "title": option.texto}
+        for option in survey.preguntas[0].opciones
+    ]
+
+    selected = survey.preguntas[0].opciones[0]
+    confirmation = config.handlers["data_exchange"](
+        _payload(
+            action="data_exchange",
+            screen="SURVEY_QUESTION_ONE",
+            data={"selected_option": str(selected.id)},
+        ),
+        _context(config, "data_exchange"),
+    )
+    db.session.refresh(interaction)
+    assert confirmation["screen"] == "SURVEY_CONFIRM"
+    assert confirmation["data"]["answer_summary"] == "1 respuestas listas para enviar."
+    assert interaction.metadata_json["survey_staged_answers"] == {
+        str(survey.preguntas[0].id): selected.id
+    }
+    assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 0
+
+
+def test_survey_runtime_rejects_option_from_another_question(client):
+    tenant, sender = _tenant_with_sender(
+        slug="runtime-survey-option-scope",
+        waba_id="waba-survey-option-scope",
+        endpoint_alias="survey-option-scope-endpoint",
+    )
+    survey = _published_quick_vote(tenant, slug="runtime-option-scope")
+    other = _published_quick_vote(tenant, slug="runtime-other-option")
+    interaction = _flow_interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={"survey_context": {"id": str(survey.id), "slug": survey.slug}},
+    )
+    runtime = MetaFlowRuntime(
+        environ=_env_for("waba-survey-option-scope"),
+        token_verifier=_verified(
+            tenant_id=tenant.id,
+            sender_id=sender.id,
+            flow_id=SURVEY_FLOW_ID,
+            interaction_id=interaction.id,
+        ),
+    )
+    config = runtime.resolve("survey-option-scope-endpoint")
+    assert config is not None
+
+    with pytest.raises(MetaFlowActionError) as error:
+        config.handlers["data_exchange"](
+            _payload(
+                action="data_exchange",
+                screen="SURVEY_QUESTION_ONE",
+                data={"selected_option": str(other.preguntas[0].opciones[0].id)},
+            ),
+            _context(config, "data_exchange"),
+        )
+    assert error.value.code == "survey_option_invalid"
+    assert EncRespuesta.query.count() == 0
+
+
 def test_invalid_secret_reference_fails_closed(client):
     tenant, sender = _tenant_with_sender(
         slug="runtime-bad-secret-ref",
@@ -442,7 +606,8 @@ def test_invalid_flow_token_fails_closed_before_claim_lookup(client):
         )
 
     assert error.value.code == "invalid_flow_token"
-    assert error.value.status_code == 403
+    assert error.value.status_code == 427
+    assert error.value.safe_message == "This message is no longer available."
     assert MunicipioTicket.query.count() == 0
 
 
@@ -478,7 +643,8 @@ def test_verified_token_sender_must_belong_to_resolved_waba(client):
         )
 
     assert error.value.code == "flow_token_scope_invalid"
-    assert error.value.status_code == 403
+    assert error.value.status_code == 427
+    assert error.value.safe_message == "This message is no longer available."
     assert sender.id != other_sender.id
 
 

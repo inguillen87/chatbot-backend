@@ -38,6 +38,7 @@ from services.meta_flow_json import (
     FLOW_JSON_VERSION as META_FLOW_JSON_VERSION,
     build_claim_tracking_flow,
     build_order_checkout_flow,
+    build_survey_vote_flow,
 )
 from services.meta_flow_data_exchange import (
     MetaFlowEndpointConfig,
@@ -74,6 +75,7 @@ FIXED_MENU_AUDIO_SCOPES = [
 META_FLOW_JSON_BUILDERS = {
     "claim_tracking_helpdesk": build_claim_tracking_flow,
     "order_checkout": build_order_checkout_flow,
+    "survey_vote": build_survey_vote_flow,
 }
 
 
@@ -2861,12 +2863,20 @@ def _webview_blueprint_payload(
             "category": "SURVEY",
             "endpoint_mode": "data_exchange",
             "screens": [
-                {"id": "survey_intro", "title": "Participar", "components": ["title", "privacy_note", "start"]},
-                {"id": "questions", "title": "Responder", "components": ["single_choice", "multiple_choice", "free_text", "geo_optional"]},
-                {"id": "live_results", "title": "Resultados", "components": ["bars", "total_votes", "heatmap_link"]},
+                {"id": "questions", "title": "Responder", "components": ["server_bound_single_choice"]},
+                {"id": "confirmation", "title": "Confirmar", "components": ["participation_receipt", "live_results_handoff"]},
             ],
             "completion_event": "survey_response_saved",
-            "data_contract": ["survey_slug", "contact_key", "response_payload", "geo_permission"],
+            # Survey identity, questions and staged answers remain server-owned
+            # in WhatsAppFlowInteraction.metadata_json.
+            "data_contract": ["confirm_vote"],
+            "native_limits": {
+                "question_types": ["opcion_unica"],
+                "required_questions_only": True,
+                "max_questions": 5,
+                "max_options_per_question": 20,
+                "reward_surveys_use_webview": True,
+            },
         },
         "catalog_order_builder": {
             "flow_name": "chatboc_catalog_order_builder",

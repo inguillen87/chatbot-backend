@@ -12,6 +12,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app import db
 from models import (
     AuditEvent,
+    EncEncuesta,
+    EncOpcion,
+    EncPregunta,
     MessageTemplateRegistry,
     MessagingEventLedger,
     Order,
@@ -23,7 +26,7 @@ from models import (
     WhatsAppFlowInteraction,
 )
 from routes.whatsapp_rules import _flow_interaction_payload, _sync_status_from_approval
-from services.meta_flow_json import build_order_checkout_flow
+from services.meta_flow_json import build_order_checkout_flow, build_survey_vote_flow
 from services.meta_flow_management import MetaFlowManagementError
 from services.whatsapp_experience import build_whatsapp_experience
 
@@ -193,6 +196,43 @@ def _prepare_ready_flow_send(app, tenant: TenantProfile):
     return sender, registry
 
 
+def _prepare_ready_survey_flow_send(app, tenant: TenantProfile):
+    sender, registry = _prepare_ready_flow_send(app, tenant)
+    artifact = build_survey_vote_flow()
+    registry.name = "chatboc_survey_vote_native_v1"
+    registry.body_preview = "Participa de la votacion desde WhatsApp."
+    registry.metadata_json = {
+        **dict(registry.metadata_json or {}),
+        "flow_id": "survey_vote",
+        "flow_json_sha256": artifact.content_sha256,
+        "data_contract": ["confirm_vote"],
+    }
+    survey = EncEncuesta(
+        tenant_id=tenant.id,
+        slug=f"{tenant.slug}-quick-vote",
+        titulo="Prioridades del barrio",
+        estado="publicada",
+        tipo="votacion",
+        es_votacion_envivo=True,
+        mostrar_resultados_envivo=True,
+        politica_unicidad="por_cookie",
+    )
+    question = EncPregunta(
+        orden=1,
+        tipo="opcion_unica",
+        texto="Que mejora deberia priorizarse?",
+        obligatoria=True,
+    )
+    question.opciones = [
+        EncOpcion(orden=1, texto="Iluminacion"),
+        EncOpcion(orden=2, texto="Arreglo de calles"),
+    ]
+    survey.preguntas = [question]
+    db.session.add_all([registry, survey])
+    db.session.commit()
+    return sender, registry, survey
+
+
 def _prepare_meta_management(app, tenant: TenantProfile, monkeypatch):
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     private_key_pem = private_key.private_bytes(
@@ -293,7 +333,7 @@ def test_native_flow_sync_dry_run_builds_exact_twilio_content_contract(client, a
     assert flow_type["flow_id"] == META_FLOW_ID
     assert flow_type["flow_token"] == "{{1}}"
     assert flow_type["flow_first_page_id"] == "ORDER_DETAILS"
-    assert flow_type["is_flow_first_page_endpoint"] is False
+    assert flow_type["is_flow_first_page_endpoint"] is True
 
     invalid = client.post(
         "/api/admin/whatsapp/flows/twilio-content/sync",
@@ -424,6 +464,7 @@ def test_meta_flow_management_publishes_with_remote_attestation_and_binds_wrappe
         ),
         meta_flow_id=None,
         publish=True,
+        clone_published_on_change=False,
     )
 
     registry = MessageTemplateRegistry.query.filter_by(
@@ -489,6 +530,110 @@ def test_meta_flow_management_publishes_with_remote_attestation_and_binds_wrappe
         resource_id=META_FLOW_ID,
     ).one()
     assert audit.details["flow_json_sha256"] == artifact.content_sha256
+
+
+def test_meta_flow_management_clones_verified_published_flow_when_artifact_changes(
+    client,
+    app,
+    monkeypatch,
+):
+    admin, tenant = _seed()
+    _prepare_meta_management(app, tenant, monkeypatch)
+    headers = _auth_headers(app, admin, tenant.slug)
+    artifact = build_order_checkout_flow()
+    source_flow_id = "987654321012345"
+    registry = MessageTemplateRegistry(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name="chatboc_order_checkout_native_v1",
+        language="es",
+        category="UTILITY",
+        status="approved",
+        content_sid="HXpublishedwrapper",
+        external_template_id=source_flow_id,
+        metadata_json={
+            "flow_id": FLOW_ID,
+            "meta_flow_id": source_flow_id,
+            "meta_flow_status": "published",
+            "meta_flow_publication_verified": True,
+            "meta_flow_waba_id": META_WABA_ID,
+            "flow_json_sha256": "0" * 64,
+            "meta_sync_state": "complete",
+        },
+    )
+    db.session.add(registry)
+    db.session.commit()
+
+    preview = client.post(
+        "/api/admin/whatsapp/flows/meta/sync",
+        headers=headers,
+        json={"flow_id": FLOW_ID},
+    )
+
+    assert preview.status_code == 200
+    preview_payload = preview.get_json()
+    assert preview_payload["ready_to_sync"] is True
+    assert preview_payload["blockers"] == []
+    assert preview_payload["clone_flow_id"] == source_flow_id
+    assert preview_payload["management"]["replacement_mode"] == "clone_published"
+    assert preview_payload["management"]["steps"][0] == "clone_published_flow"
+
+    verification = {
+        "verified": True,
+        "publication_verified": True,
+        "artifact_identity_verified": True,
+        "meta_flow_id": META_FLOW_ID,
+        "status": "PUBLISHED",
+        "waba_id": META_WABA_ID,
+        "flow_json_sha256": artifact.content_sha256,
+        "blockers": [],
+    }
+    graph_client = MagicMock()
+    graph_client.provision_and_publish.return_value = {
+        "created": True,
+        "cloned_from_flow_id": source_flow_id,
+        "uploaded": True,
+        "published_now": True,
+        "idempotent": False,
+        "verification": verification,
+    }
+    with patch(
+        "routes.whatsapp_rules.MetaFlowGraphClient",
+        return_value=graph_client,
+    ):
+        execute = client.post(
+            "/api/admin/whatsapp/flows/meta/sync",
+            headers=headers,
+            json={
+                "flow_id": FLOW_ID,
+                "dry_run": False,
+                "publish": True,
+                "execute_confirmation": preview_payload["execute_confirmation"],
+            },
+        )
+
+    assert execute.status_code == 200
+    executed = execute.get_json()
+    assert executed["meta_flow_id"] == META_FLOW_ID
+    assert executed["next_action"] == "replace_twilio_wrapper"
+    graph_client.provision_and_publish.assert_called_once_with(
+        flow_name="chatboc_order_checkout",
+        category="OTHER",
+        document=artifact.document,
+        expected_sha256=artifact.content_sha256,
+        endpoint_uri=(
+            "https://api.chatboc.test/api/whatsapp/flows/data-exchange/"
+            "meta-management-endpoint"
+        ),
+        meta_flow_id=source_flow_id,
+        publish=True,
+        clone_published_on_change=True,
+    )
+    db.session.refresh(registry)
+    assert registry.external_template_id == META_FLOW_ID
+    assert registry.metadata_json["meta_flow_cloned_from_id"] == source_flow_id
+    assert registry.metadata_json["flow_json_sha256"] == artifact.content_sha256
 
 
 def test_meta_flow_management_is_fail_closed_without_graph_credentials(client, app):
@@ -1068,6 +1213,102 @@ def test_order_flow_send_requires_tenant_owned_order_context(client, app):
     assert "order_context_unavailable" in unavailable["blockers"]
     assert "execute_confirmation" not in missing
     assert "execute_confirmation" not in unavailable
+
+
+def test_survey_flow_send_authorizes_published_context_and_persists_scope(client, app):
+    admin, tenant = _seed()
+    _, _, survey = _prepare_ready_survey_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+    request_payload = {
+        "flow_id": "survey_vote",
+        "recipient": "+5491123456711",
+        "idempotency_key": "flow-survey-context-001",
+        "survey_context": {"survey_slug": survey.slug},
+    }
+
+    preview = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json=request_payload,
+    )
+    assert preview.status_code == 200
+    preview_payload = preview.get_json()
+    assert preview_payload["ready_to_send"] is True
+    assert preview_payload["blockers"] == []
+    assert preview_payload["survey_context"] == {
+        "required": True,
+        "ready": True,
+        "id": str(survey.id),
+        "slug": survey.slug,
+    }
+
+    messages = SimpleNamespace(
+        create=MagicMock(return_value=SimpleNamespace(sid="SMNATIVESURVEY001"))
+    )
+    with patch(
+        "routes.whatsapp_rules.Client",
+        return_value=SimpleNamespace(messages=messages),
+    ):
+        execute = client.post(
+            "/api/admin/whatsapp/flows/send",
+            headers=headers,
+            json={
+                **request_payload,
+                "dry_run": False,
+                "execute_confirmation": preview_payload["execute_confirmation"],
+            },
+        )
+
+    assert execute.status_code == 201
+    interaction = WhatsAppFlowInteraction.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key="flow-survey-context-001",
+    ).one()
+    assert interaction.flow_id == "survey_vote"
+    assert interaction.data_contract == ["confirm_vote"]
+    assert interaction.metadata_json["survey_context"] == {
+        "id": str(survey.id),
+        "slug": survey.slug,
+    }
+    sent_variables = json.loads(messages.create.call_args.kwargs["content_variables"])
+    assert survey.slug not in json.dumps(sent_variables)
+
+
+def test_survey_flow_send_blocks_missing_and_non_native_survey_context(client, app):
+    admin, tenant = _seed()
+    _, _, survey = _prepare_ready_survey_flow_send(app, tenant)
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    missing = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": "survey_vote",
+            "recipient": "+5491123456712",
+            "idempotency_key": "flow-survey-missing-001",
+        },
+    ).get_json()
+    assert missing["ready_to_send"] is False
+    assert missing["survey_context"]["ready"] is False
+    assert "survey_context_missing" in missing["blockers"]
+    assert "execute_confirmation" not in missing
+
+    survey.preguntas[0].tipo = "abierta"
+    db.session.commit()
+    incompatible = client.post(
+        "/api/admin/whatsapp/flows/send",
+        headers=headers,
+        json={
+            "flow_id": "survey_vote",
+            "recipient": "+5491123456712",
+            "idempotency_key": "flow-survey-incompatible-001",
+            "survey_context": {"slug": survey.slug},
+        },
+    ).get_json()
+    assert incompatible["ready_to_send"] is False
+    assert incompatible["survey_context"]["ready"] is False
+    assert "survey_question_type_unsupported" in incompatible["blockers"]
+    assert "execute_confirmation" not in incompatible
 
 
 def test_native_flow_send_requires_verified_publication_and_data_exchange(client, app):

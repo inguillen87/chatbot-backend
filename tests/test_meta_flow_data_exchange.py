@@ -13,7 +13,11 @@ import pytest
 
 import services.meta_flow_data_exchange as flow_service
 from routes.meta_flow_data_exchange import create_meta_flow_data_exchange_blueprint
-from services.meta_flow_data_exchange import MetaFlowEndpointConfig, endpoint_config_readiness
+from services.meta_flow_data_exchange import (
+    MetaFlowActionError,
+    MetaFlowEndpointConfig,
+    endpoint_config_readiness,
+)
 
 
 ENDPOINT_ID = "waba-test-001"
@@ -279,6 +283,40 @@ def test_data_exchange_uses_screen_handler(private_key, private_key_pem):
     assert _decrypt_response(response) == {
         "screen": "REVIEW",
         "data": {"selected_id": "item-42"},
+    }
+
+
+def test_invalid_flow_token_returns_encrypted_427_contract(
+    private_key,
+    private_key_pem,
+):
+    def reject_expired_flow(payload, context):
+        raise MetaFlowActionError(
+            "invalid_flow_token",
+            "This message is no longer available.",
+            427,
+        )
+
+    client, _ = _make_client(
+        private_key_pem,
+        handlers={"init": reject_expired_flow},
+    )
+    raw_body = _encrypted_request(
+        private_key.public_key(),
+        {
+            "version": "3.0",
+            "action": "INIT",
+            "flow_token": "expired-flow-token",
+            "data": {},
+        },
+    )
+
+    response = _post(client, raw_body, _signature(raw_body))
+
+    assert response.status_code == 427
+    assert response.content_type == "text/plain; charset=utf-8"
+    assert _decrypt_response(response) == {
+        "error_msg": "This message is no longer available."
     }
 
 

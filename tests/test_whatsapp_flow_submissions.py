@@ -15,6 +15,10 @@ from app import create_app, db
 from config import Config
 from models import (
     ChatSessionContext,
+    EncEncuesta,
+    EncOpcion,
+    EncPregunta,
+    EncRespuesta,
     MessageTemplateRegistry,
     Order,
     ProviderSender,
@@ -23,7 +27,7 @@ from models import (
     WhatsappNumero,
     WhatsAppFlowInteraction,
 )
-from services.meta_flow_runtime import ORDER_FLOW_ID
+from services.meta_flow_runtime import ORDER_FLOW_ID, SURVEY_FLOW_ID
 from services.whatsapp_flow_security import issue_whatsapp_flow_token
 from services.whatsapp_flow_submissions import (
     CONTRACT_VERSION,
@@ -681,6 +685,100 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
         ]
         assert any("Pedido confirmado" in body for body in sent_bodies)
         assert not any("realtime_event" in body or '"entity"' in body for body in sent_bodies)
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_survey_flow_completion_votes_once_emits_realtime_and_bypasses_llm(
+        self,
+        responder_chatboc,
+    ):
+        survey = EncEncuesta(
+            tenant_id=self.tenant.id,
+            slug="webhook-native-vote",
+            titulo="Prioridades del barrio",
+            estado="publicada",
+            tipo="votacion",
+            es_votacion_envivo=True,
+            mostrar_resultados_envivo=True,
+            politica_unicidad="por_cookie",
+        )
+        question = EncPregunta(
+            orden=1,
+            tipo="opcion_unica",
+            texto="Que mejora deberia priorizarse?",
+            obligatoria=True,
+        )
+        question.opciones = [
+            EncOpcion(orden=1, texto="Iluminacion"),
+            EncOpcion(orden=2, texto="Arreglo de calles"),
+        ]
+        survey.preguntas = [question]
+        db.session.add(survey)
+        db.session.commit()
+        selected = survey.preguntas[0].opciones[0]
+        raw_token, interaction = self._issue_supported_flow_token(
+            flow_id=SURVEY_FLOW_ID,
+            meta_flow_id="1232445823264788",
+            data_contract=["confirm_vote"],
+            metadata={
+                "survey_context": {"id": str(survey.id), "slug": survey.slug},
+                "survey_staged_answers": {
+                    str(survey.preguntas[0].id): selected.id,
+                },
+            },
+        )
+        payload = {
+            "To": f"whatsapp:{self.to_number}",
+            "From": f"whatsapp:{self.from_number}",
+            "Body": "",
+            "InteractiveData": _wrapped_interactive_data(
+                {
+                    "flow_id": SURVEY_FLOW_ID,
+                    "flow_token": raw_token,
+                    "confirm_vote": True,
+                    "survey_id": "attacker-survey",
+                    "option_id": "attacker-option",
+                },
+                name="survey_vote",
+            ),
+        }
+
+        with patch(
+            "services.encuestas_service.emit_survey_response_update"
+        ) as emit_update:
+            first = self.client.post(
+                "/webhook/whatsapp",
+                data={**payload, "MessageSid": "SM_FLOW_SURVEY_COMPLETE_1"},
+                headers={"X-Twilio-Signature": "valid-test-signature"},
+            )
+            second = self.client.post(
+                "/webhook/whatsapp",
+                data={**payload, "MessageSid": "SM_FLOW_SURVEY_COMPLETE_2"},
+                headers={"X-Twilio-Signature": "valid-test-signature"},
+            )
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        responder_chatboc.assert_not_called()
+        saved = EncRespuesta.query.filter_by(encuesta_id=survey.id).one()
+        db.session.refresh(interaction)
+        assert saved.canal == "whatsapp_flow"
+        assert saved.detalles[0].opcion_id == selected.id
+        assert interaction.status == "consumed"
+        assert interaction.metadata_json["completion"]["status"] == "applied"
+        assert interaction.metadata_json["completion"]["field_names"] == [
+            "confirm_vote"
+        ]
+        assert "attacker-survey" not in json.dumps(interaction.metadata_json)
+        assert "attacker-option" not in json.dumps(interaction.metadata_json)
+        assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 1
+        emit_update.assert_called_once()
+        assert emit_update.call_args.args[0].id == survey.id
+        assert emit_update.call_args.args[1] == survey.slug
+        sent_bodies = [
+            call.kwargs.get("body", "")
+            for call in self.twilio_client.messages.create.call_args_list
+        ]
+        assert sum("Participacion registrada" in body for body in sent_bodies) == 1
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_malformed_flow_is_stopped_before_the_orchestrator(self, responder_chatboc):

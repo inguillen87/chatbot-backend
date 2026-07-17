@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -171,6 +172,75 @@ def test_meta_graph_client_creates_uploads_publishes_and_verifies_exact_asset():
     assert result["verification"]["artifact_identity_verified"] is True
     assert result["verification"]["flow_json_sha256"] == artifact.content_sha256
     assert [call[0] for call in http.calls].count("POST") == 3
+
+
+def test_meta_graph_client_clones_changed_published_flow_before_upload():
+    artifact = build_order_checkout_flow()
+    source_flow_id = "111111111111111"
+    client = MetaFlowGraphClient(_credentials(), http=_FakeMetaHttp(artifact.document))
+    client.get_flow = MagicMock(
+        side_effect=[
+            {
+                "id": source_flow_id,
+                "status": "PUBLISHED",
+                "whatsapp_business_account": {"id": WABA_ID},
+            },
+            {
+                "id": META_FLOW_ID,
+                "status": "DRAFT",
+                "validation_errors": [],
+                "data_channel_uri": "https://api.chatboc.test/api/whatsapp/flows/data-exchange/order",
+            },
+            {
+                "id": META_FLOW_ID,
+                "status": "DRAFT",
+                "validation_errors": [],
+            },
+        ]
+    )
+    client.verify_flow = MagicMock(
+        side_effect=[
+            {
+                "verified": False,
+                "flow_json_sha256": "0" * 64,
+                "blockers": ["meta_flow_json_hash_mismatch"],
+            },
+            {
+                "verified": True,
+                "meta_flow_id": META_FLOW_ID,
+                "status": "PUBLISHED",
+                "flow_json_sha256": artifact.content_sha256,
+                "blockers": [],
+            },
+        ]
+    )
+    client.create_flow = MagicMock(return_value=META_FLOW_ID)
+    client.upload_flow_json = MagicMock(return_value={"success": True})
+    client.publish_flow = MagicMock()
+
+    result = client.provision_and_publish(
+        flow_name="Pedido comercial",
+        category="OTHER",
+        document=artifact.document,
+        expected_sha256=artifact.content_sha256,
+        endpoint_uri="https://api.chatboc.test/api/whatsapp/flows/data-exchange/order",
+        meta_flow_id=source_flow_id,
+        clone_published_on_change=True,
+    )
+
+    assert result["created"] is True
+    assert result["cloned_from_flow_id"] == source_flow_id
+    assert result["uploaded"] is True
+    assert result["published_now"] is True
+    assert result["idempotent"] is False
+    client.create_flow.assert_called_once_with(
+        name="Pedido comercial",
+        category="OTHER",
+        endpoint_uri="https://api.chatboc.test/api/whatsapp/flows/data-exchange/order",
+        clone_flow_id=source_flow_id,
+    )
+    client.upload_flow_json.assert_called_once()
+    client.publish_flow.assert_called_once_with(META_FLOW_ID)
 
 
 def test_meta_graph_client_rejects_published_asset_hash_mismatch():

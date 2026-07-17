@@ -6,7 +6,12 @@ import pytest
 
 from app import db
 from models import (
+    AnalyticsEventV2,
     AuditEvent,
+    EncEncuesta,
+    EncOpcion,
+    EncPregunta,
+    EncRespuesta,
     MessageTemplateRegistry,
     MunicipioTicket,
     Order,
@@ -20,6 +25,7 @@ from services.meta_flow_data_exchange import MetaFlowActionError
 from services.meta_flow_runtime import (
     CLAIM_FLOW_ID,
     ORDER_FLOW_ID,
+    SURVEY_FLOW_ID,
     apply_whatsapp_flow_completion,
 )
 from services.whatsapp_flow_security import consume_whatsapp_flow_interaction
@@ -110,6 +116,33 @@ def _submission(interaction: WhatsAppFlowInteraction, answers: dict) -> dict:
             "provider_sender_id": interaction.provider_sender_id,
         },
     }
+
+
+def _published_quick_vote(tenant: TenantProfile, *, slug: str) -> EncEncuesta:
+    survey = EncEncuesta(
+        tenant_id=tenant.id,
+        slug=slug,
+        titulo="Prioridades del barrio",
+        estado="publicada",
+        tipo="votacion",
+        es_votacion_envivo=True,
+        mostrar_resultados_envivo=True,
+        politica_unicidad="por_cookie",
+    )
+    question = EncPregunta(
+        orden=1,
+        tipo="opcion_unica",
+        texto="Que mejora deberia priorizarse?",
+        obligatoria=True,
+    )
+    question.opciones = [
+        EncOpcion(orden=1, texto="Iluminacion"),
+        EncOpcion(orden=2, texto="Arreglo de calles"),
+    ]
+    survey.preguntas = [question]
+    db.session.add(survey)
+    db.session.commit()
+    return survey
 
 
 def test_claim_completion_consumes_once_and_writes_crm_comment(client):
@@ -350,3 +383,118 @@ def test_order_completion_is_idempotent_and_cannot_rewrite_applied_data(client):
         tenant_id=tenant.id,
         event_type=f"whatsapp_flow.{ORDER_FLOW_ID}.completed",
     ).count() == 1
+
+
+def test_survey_completion_persists_one_canonical_vote_and_is_idempotent(client):
+    tenant, sender = _tenant_scope("completion-survey")
+    survey = _published_quick_vote(tenant, slug="completion-survey-vote")
+    question = survey.preguntas[0]
+    selected = question.opciones[1]
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={
+            "survey_context": {"id": str(survey.id), "slug": survey.slug},
+            "survey_staged_answers": {str(question.id): selected.id},
+        },
+        data_contract=["confirm_vote"],
+    )
+    submission = _submission(interaction, {"confirm_vote": True})
+
+    assert consume_whatsapp_flow_interaction(
+        interaction_id=interaction.id,
+        tenant_id=tenant.id,
+        inbound_message_sid="SM-FLOW-SURVEY-1",
+        commit=False,
+    ) is True
+    response = apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=submission,
+        anon_id="+5491112345678",
+    )
+    db.session.commit()
+
+    saved = EncRespuesta.query.filter_by(encuesta_id=survey.id).one()
+    db.session.refresh(interaction)
+    assert response["fuente"] == "whatsapp_flow_survey_completed"
+    assert response["entity"] == {"kind": "survey_response", "id": saved.id}
+    assert response["realtime_event"] == {
+        "kind": "survey_vote",
+        "survey_id": survey.id,
+        "survey_slug": survey.slug,
+    }
+    assert response["options_list"][0] == {
+        "texto": "Ver resultados",
+        "type": "url",
+        "url": f"https://www.chatboc.ar/e/{survey.slug}?resultados=1",
+        "action_id": "open_survey_results",
+    }
+    assert saved.canal == "whatsapp_flow"
+    assert saved.phone == "+5491112345678"
+    assert saved.metadata_payload["interaction_id"] == interaction.id
+    assert len(saved.detalles) == 1
+    assert saved.detalles[0].pregunta_id == question.id
+    assert saved.detalles[0].opcion_id == selected.id
+    assert interaction.status == "consumed"
+    assert interaction.metadata_json["completion"]["status"] == "applied"
+    assert AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="vote_submitted",
+        entity_ref=f"survey:{survey.id}:response:{saved.id}",
+    ).count() == 1
+    assert AuditEvent.query.filter_by(
+        tenant_id=tenant.id,
+        event_type=f"whatsapp_flow.{SURVEY_FLOW_ID}.completed",
+        resource_id=str(saved.id),
+    ).count() == 1
+
+    replay = apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=submission,
+        anon_id="+5491112345678",
+    )
+    db.session.commit()
+
+    assert replay["entity"] == {"kind": "survey_response", "id": str(saved.id)}
+    assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 1
+    assert AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="vote_submitted",
+    ).count() == 1
+    assert AuditEvent.query.filter_by(
+        tenant_id=tenant.id,
+        event_type=f"whatsapp_flow.{SURVEY_FLOW_ID}.completed",
+    ).count() == 1
+
+
+def test_survey_completion_rejects_missing_staged_answers(client):
+    tenant, sender = _tenant_scope("completion-survey-incomplete")
+    survey = _published_quick_vote(tenant, slug="completion-survey-incomplete-vote")
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={
+            "survey_context": {"id": str(survey.id), "slug": survey.slug},
+            "survey_staged_answers": {},
+        },
+        data_contract=["confirm_vote"],
+    )
+
+    with pytest.raises(MetaFlowActionError) as error:
+        apply_whatsapp_flow_completion(
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            submission=_submission(interaction, {"confirm_vote": True}),
+            anon_id="+5491112345678",
+        )
+
+    assert error.value.code == "survey_answers_incomplete"
+    assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 0
+    assert AnalyticsEventV2.query.filter_by(
+        tenant_id=tenant.id,
+        event_name="vote_submitted",
+    ).count() == 0

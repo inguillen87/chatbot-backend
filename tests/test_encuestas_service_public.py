@@ -75,8 +75,12 @@ def test_list_public_encuestas_respects_model_schedule(monkeypatch):
 
 
 def test_bootstrap_sample_is_disabled_by_default(client, monkeypatch):
-    client.application.config["ENABLE_DEMO_MODE"] = False
-    client.application.config["ALLOW_SURVEY_DEMO_SEEDING"] = False
+    monkeypatch.setitem(client.application.config, "ENABLE_DEMO_MODE", False)
+    monkeypatch.setitem(
+        client.application.config,
+        "ALLOW_SURVEY_DEMO_SEEDING",
+        False,
+    )
 
     monkeypatch.setattr(encuestas_service, "_BOOTSTRAP_SAMPLE_ENABLED", False)
     monkeypatch.setattr(

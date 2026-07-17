@@ -17,6 +17,8 @@ from services.meta_flow_json import (
     build_claim_tracking_flow,
     build_order_checkout_blueprint,
     build_order_checkout_flow,
+    build_survey_vote_blueprint,
+    build_survey_vote_flow,
     canonical_flow_json,
     compile_flow_blueprint,
     flow_json_sha256,
@@ -206,8 +208,8 @@ def _footer_action(screen):
 
 @pytest.mark.parametrize(
     "builder",
-    [build_claim_tracking_flow, build_order_checkout_flow],
-    ids=["claim_tracking", "order_checkout"],
+    [build_claim_tracking_flow, build_order_checkout_flow, build_survey_vote_flow],
+    ids=["claim_tracking", "order_checkout", "survey_vote"],
 )
 def test_example_builders_compile_publishable_endpoint_artifacts(builder):
     artifact = builder()
@@ -226,8 +228,8 @@ def test_example_builders_compile_publishable_endpoint_artifacts(builder):
 
 @pytest.mark.parametrize(
     "builder",
-    [build_claim_tracking_flow, build_order_checkout_flow],
-    ids=["claim_tracking", "order_checkout"],
+    [build_claim_tracking_flow, build_order_checkout_flow, build_survey_vote_flow],
+    ids=["claim_tracking", "order_checkout", "survey_vote"],
 )
 def test_example_complete_payloads_are_minimal_user_data_only(builder):
     artifact = builder()
@@ -252,8 +254,35 @@ def test_example_complete_payloads_are_minimal_user_data_only(builder):
             "delivery_notes",
             "confirm_order",
         }
-    else:
+    elif artifact.blueprint_name == "claim_tracking":
         assert set(payload) == {"ticket_number", "follow_up_note"}
+    else:
+        assert set(payload) == {"confirm_vote"}
+
+
+def test_survey_vote_flow_uses_server_data_and_only_returns_final_consent():
+    blueprint = build_survey_vote_blueprint()
+    artifact = build_survey_vote_flow()
+
+    assert blueprint.endpoint_driven is True
+    assert artifact.blueprint_name == "survey_vote"
+    assert len(artifact.document["screens"]) == 6
+    question = artifact.document["screens"][0]
+    option_picker = next(
+        component
+        for component in question["layout"]["children"]
+        if component.get("type") == "RadioButtonsGroup"
+    )
+    assert option_picker["data-source"] == "${data.options}"
+    assert _footer_action(question)["name"] == "data_exchange"
+    terminal = artifact.document["screens"][-1]
+    assert _footer_action(terminal) == {
+        "name": "complete",
+        "payload": {"confirm_vote": "${form.confirm_vote}"},
+    }
+    serialized = artifact.canonical_json
+    assert "survey_slug" not in serialized
+    assert "question_id" not in serialized
 
 
 def test_blueprint_is_conceptual_and_compilation_does_not_mutate_it():
