@@ -28,7 +28,7 @@ from services.meta_flow_json import canonical_flow_json
 from services.meta_flow_management import (
     MetaFlowGraphClient,
     MetaFlowManagementError,
-    meta_flow_category,
+    build_meta_flow_publication_readiness,
     resolve_meta_graph_credentials,
 )
 from services.meta_flow_data_exchange import MetaFlowActionError
@@ -144,6 +144,101 @@ def _native_flow_registry_identity(
     if not re.fullmatch(r"[a-z]{2}(?:_[A-Z]{2})?", language):
         abort(400, description="language debe usar formato es o es_AR")
     return f"{friendly_base}_native_v1"[:255], language
+
+
+@whatsapp_rules_bp.route(
+    "/api/admin/whatsapp/flows/meta/readiness",
+    methods=["GET"],
+)
+@token_requerido
+@require_tenant
+def get_meta_native_flow_readiness(user: User):
+    """Discover tenant-scoped Meta Flow plans without provider calls."""
+
+    tenant = g.tenant_profile
+    _guard(user, tenant)
+    requested_flow_id = str(request.args.get("flow_id") or "").strip().lower()
+    experience = build_whatsapp_experience(tenant, app_config=current_app.config)
+    native_flows = ((experience.get("meta_platform") or {}).get("native_flows") or {})
+    candidates = native_flows.get("flows") if isinstance(native_flows, dict) else []
+    discovered: list[dict] = []
+    for candidate in candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        flow_id = str(candidate.get("id") or "").strip()
+        if requested_flow_id and flow_id.lower() != requested_flow_id:
+            continue
+        readiness = candidate.get("publication_readiness")
+        if not isinstance(readiness, dict):
+            continue
+        discovered.append(
+            {
+                "id": flow_id,
+                "flow_name": candidate.get("flow_name"),
+                "category": candidate.get("category"),
+                "first_screen_id": candidate.get("first_screen_id"),
+                "screen_ids": candidate.get("screen_ids") or [],
+                "data_contract": candidate.get("data_contract") or [],
+                "flow_json_download_url": (
+                    f"/api/admin/whatsapp/flows/{flow_id}/flow-json"
+                ),
+                "readiness": readiness,
+            }
+        )
+
+    if requested_flow_id and not discovered:
+        abort(
+            404,
+            description=(
+                "flow_id no tiene un artefacto Meta Flow publicable para este tenant"
+            ),
+        )
+
+    response = jsonify(
+        {
+            "contract_version": "whatsapp.meta_flow_readiness_catalog.v1",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "tenant": {"id": tenant.id, "slug": tenant.slug},
+            "dry_run": True,
+            "meta_graph_calls_performed": False,
+            "twilio_calls_performed": False,
+            "provider_writes_performed": False,
+            "messages_sent": False,
+            "claim_evidence_discoverable": any(
+                item.get("id") == "claim_evidence" for item in discovered
+            ),
+            "summary": {
+                "total": len(discovered),
+                "ready": sum(
+                    1 for item in discovered if item["readiness"].get("ready")
+                ),
+                "blocked": sum(
+                    1 for item in discovered if item["readiness"].get("blocked")
+                ),
+                "verification_ready": sum(
+                    1
+                    for item in discovered
+                    if item["readiness"].get("status") == "verification_ready"
+                ),
+            },
+            "flows": discovered,
+            "security": {
+                "tenant_scoped": True,
+                "provider_secrets_exposed": False,
+                "execute_confirmation_issued": False,
+            },
+            "frontend_contract": {
+                "render_as": "meta_flow_publication_readiness",
+                "show_blockers": True,
+                "show_artifact_identity": True,
+                "show_idempotency_state": True,
+                "allow_dry_run_from_payload": True,
+                "allow_publish_from_catalog": False,
+            },
+        }
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/flows/<flow_id>/flow-json", methods=["GET"])
@@ -567,6 +662,7 @@ def _claim_meta_flow_publication(
     meta_flow_id: str | None,
     flow_json_sha256: str,
     waba_id: str,
+    operation_fingerprint: str,
 ) -> tuple[MessageTemplateRegistry, str, str]:
     row = (
         MessageTemplateRegistry.query.filter_by(id=existing.id)
@@ -607,6 +703,7 @@ def _claim_meta_flow_publication(
             "externally_managed_meta_flow": True,
             "source": "meta_flow_json_7_3_artifact",
             "meta_sync_operation_id": operation_id,
+            "meta_sync_operation_fingerprint": operation_fingerprint,
             "meta_sync_state": "publishing",
             "meta_sync_started_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -1269,48 +1366,39 @@ def sync_meta_native_flow(user: User):
     meta_sync_state = str(
         existing_metadata.get("meta_sync_state") or ""
     ).strip().lower()
-    registered_artifact_changed = bool(
-        registered_artifact_sha256
-        and registered_artifact_sha256 != artifact_sha256
+    readiness = build_meta_flow_publication_readiness(
+        tenant_id=tenant.id,
+        flow_id=flow_id,
+        flow_name=flow_name,
+        blueprint_category=blueprint.get("category"),
+        artifact=artifact,
+        credentials=credentials,
+        integration_access=integration_access,
+        data_exchange=data_exchange,
+        registry={
+            "configured": bool(existing_registry),
+            "id": existing_registry.id if existing_registry else None,
+            "tenant_id": existing_registry.tenant_id if existing_registry else None,
+            "status": existing_registry.status if existing_registry else None,
+            "meta_flow_id": registered_meta_flow_id,
+            "flow_json_sha256": registered_artifact_sha256,
+            "waba_id": registered_waba_id,
+            "publication_verified": registered_publication_verified,
+            "sync_state": meta_sync_state,
+            "last_sync_at": (
+                existing_registry.last_sync_at.isoformat()
+                if existing_registry and existing_registry.last_sync_at
+                else None
+            ),
+        },
+        supplied_meta_flow_id=supplied_meta_flow_id,
+        language=language,
     )
-    clone_published_flow_id = (
-        registered_meta_flow_id
-        if (
-            registered_artifact_changed
-            and registered_publication_verified
-            and registered_meta_flow_id
-            and registered_waba_id
-            and registered_waba_id == waba_id
-            and (not supplied_meta_flow_id or supplied_meta_flow_id == registered_meta_flow_id)
-        )
-        else None
-    )
-
-    blockers: list[str] = []
-    if not integration_access.get("enabled"):
-        blockers.append(
-            str(integration_access.get("lock_reason_code") or "plan_full_required")
-        )
-    blockers.extend(credentials.blockers)
-    if endpoint_driven and not data_exchange.get("ready"):
-        blockers.append("data_exchange_not_ready")
-    if endpoint_driven and not endpoint_uri:
-        blockers.append("data_exchange_endpoint_url_missing")
-    if (
-        supplied_meta_flow_id
-        and registered_meta_flow_id
-        and registered_meta_flow_id != supplied_meta_flow_id
-    ):
-        blockers.append("meta_flow_registry_conflict")
-    if registered_artifact_changed and not clone_published_flow_id:
-        blockers.append("meta_flow_registry_artifact_conflict")
-    if registered_waba_id and waba_id and registered_waba_id != waba_id:
-        blockers.append("meta_flow_registry_waba_conflict")
-    if meta_sync_state in {"publishing", "uncertain"}:
-        blockers.append("meta_flow_sync_reconciliation_required")
-    blockers = list(dict.fromkeys(blockers))
-
-    category = meta_flow_category(flow_id, blueprint.get("category"))
+    blockers = list(readiness["blockers"])
+    operation = readiness["operation"]
+    clone_published_flow_id = operation.get("clone_flow_id")
+    operation_fingerprint = readiness["idempotency"]["operation_fingerprint"]
+    category = readiness["category"]
     confirmation_fields = {
         "flow_id": flow_id,
         "meta_flow_id": meta_flow_id,
@@ -1318,6 +1406,7 @@ def sync_meta_native_flow(user: User):
         "flow_json_sha256": artifact_sha256,
         "endpoint_uri": endpoint_uri or None,
         "clone_flow_id": clone_published_flow_id,
+        "operation_fingerprint": operation_fingerprint,
         "publish": True,
     }
     execute_confirmation = (
@@ -1330,6 +1419,12 @@ def sync_meta_native_flow(user: User):
         if not blockers
         else None
     )
+    readiness["dry_run"]["execute_confirmation_issued"] = bool(
+        execute_confirmation
+    )
+    readiness["security"]["execute_confirmation_exposed"] = bool(
+        execute_confirmation
+    )
     management_contract = {
         "contract_version": "whatsapp.meta_flow_management.v1",
         "official_api": "Meta Graph API",
@@ -1341,22 +1436,12 @@ def sync_meta_native_flow(user: User):
         "endpoint_uri": endpoint_uri or None,
         "waba_id_present": bool(waba_id),
         "graph": credentials.public_payload(),
-        "irreversible_publish": True,
-        "replacement_mode": (
-            "clone_published" if clone_published_flow_id else "reuse_or_create"
-        ),
+        "irreversible_publish": operation.get("irreversible_publish"),
+        "replacement_mode": operation.get("replacement_mode"),
+        "operation_mode": operation.get("mode"),
         "clone_flow_id": clone_published_flow_id,
-        "steps": [
-            (
-                "clone_published_flow"
-                if clone_published_flow_id
-                else "create_or_reuse_draft"
-            ),
-            "upload_exact_flow_json",
-            "validate_meta_schema",
-            "publish_immutable_flow",
-            "download_and_verify_remote_hash",
-        ],
+        "steps": operation.get("steps") or [],
+        "idempotency": readiness.get("idempotency"),
     }
 
     if dry_run:
@@ -1371,6 +1456,7 @@ def sync_meta_native_flow(user: User):
             "category": category,
             "clone_flow_id": clone_published_flow_id,
             "management": management_contract,
+            "readiness": readiness,
             "integration_access": integration_access,
         }
         if execute_confirmation:
@@ -1384,6 +1470,7 @@ def sync_meta_native_flow(user: User):
                 "blocked": True,
                 "blockers": blockers,
                 "management": management_contract,
+                "readiness": readiness,
                 "integration_access": integration_access,
             }
         ), 409
@@ -1405,6 +1492,7 @@ def sync_meta_native_flow(user: User):
         meta_flow_id=meta_flow_id,
         flow_json_sha256=artifact_sha256,
         waba_id=waba_id,
+        operation_fingerprint=operation_fingerprint,
     )
     try:
         result = MetaFlowGraphClient(credentials).provision_and_publish(
@@ -1416,6 +1504,7 @@ def sync_meta_native_flow(user: User):
             meta_flow_id=meta_flow_id,
             publish=True,
             clone_published_on_change=bool(clone_published_flow_id),
+            verification_only=operation.get("mode") == "verify_published",
         )
     except MetaFlowManagementError as exc:
         failed_meta_flow_id = _mark_meta_flow_publication_failure(
@@ -1436,6 +1525,8 @@ def sync_meta_native_flow(user: User):
                     "meta_flow_id": failed_meta_flow_id or meta_flow_id,
                     "waba_id": waba_id,
                     "flow_json_sha256": artifact_sha256,
+                    "operation_fingerprint": operation_fingerprint,
+                    "operation_mode": operation.get("mode"),
                     "error_code": exc.code,
                 },
                 ip_address=request.remote_addr,
@@ -1475,6 +1566,7 @@ def sync_meta_native_flow(user: User):
             "flow_json_sha256": artifact_sha256,
             "meta_flow_waba_id": waba_id,
             "meta_sync_operation_id": operation_id,
+            "meta_sync_operation_fingerprint": operation_fingerprint,
             "meta_sync_state": "complete",
             "meta_sync_completed_at": datetime.now(timezone.utc).isoformat(),
             "meta_flow_cloned_from_id": (
@@ -1504,6 +1596,8 @@ def sync_meta_native_flow(user: User):
                 "meta_flow_id": verified_meta_flow_id,
                 "waba_id": waba_id,
                 "flow_json_sha256": artifact_sha256,
+                "operation_fingerprint": operation_fingerprint,
+                "operation_mode": operation.get("mode"),
                 "created": result["created"],
                 "uploaded": result["uploaded"],
                 "published_now": result["published_now"],
@@ -1521,6 +1615,7 @@ def sync_meta_native_flow(user: User):
             "flow_id": flow_id,
             "meta_flow_id": verified_meta_flow_id,
             "management": management_contract,
+            "readiness": readiness,
             "result": result,
             "meta_publication_attestation": publication_attestation,
             "next_action": (

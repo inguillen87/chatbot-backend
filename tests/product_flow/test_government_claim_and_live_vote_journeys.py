@@ -1,3 +1,4 @@
+import hashlib
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -10,9 +11,22 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import EncRespuesta, MunicipioTicket, TenantProfile, TicketComentario, User
+from models import (
+    ArchivoAdjunto,
+    AuditEvent,
+    EncRespuesta,
+    MessageTemplateRegistry,
+    MunicipioTicket,
+    ProviderSender,
+    TenantProfile,
+    TicketComentario,
+    User,
+    WhatsAppFlowInteraction,
+)
 from routes.v2.surveys import _public_response_rate_buckets
 from routes.v2.tenants import create_demo_session_token
+from services import meta_flow_runtime
+from services.meta_flow_media import DownloadedFlowMedia
 from socket_service import socketio
 
 
@@ -271,6 +285,59 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             join_ack = next(event for event in join_events if event["name"] == "join_ack")
             self.assertEqual(join_ack["args"][0]["room"], expected_ticket_room)
 
+            other_ticket = MunicipioTicket(
+                tenant_id=self.tenant.id,
+                municipio_id=self.admin.id,
+                nro_ticket="760099",
+                consulta_pin="731999",
+                pregunta="Semaforo intermitente en otra esquina",
+                categoria="Transito",
+                estado="en_proceso",
+            )
+            db.session.add(other_ticket)
+            db.session.commit()
+            other_tracking = self._tracking(other_ticket, "gov-claim-track-other-room-1")
+            self.assertEqual(other_tracking.status_code, 200, other_tracking.get_json())
+            other_tracking_payload = other_tracking.get_json()
+            other_ticket_room = f"ticket_municipio_{other_ticket.id}"
+            self.assertEqual(
+                other_tracking_payload["support"]["socket"]["room"],
+                other_ticket_room,
+            )
+
+            other_socket_client = socketio.test_client(self.app)
+            self.addCleanup(
+                lambda: other_socket_client.disconnect()
+                if other_socket_client.is_connected()
+                else None
+            )
+            other_socket_client.emit(
+                "join",
+                {
+                    "room": other_ticket_room,
+                    "access_token": other_tracking_payload["support"]["socket"]["access_token"],
+                },
+            )
+            other_join_events = other_socket_client.get_received()
+            other_join_ack = next(
+                event for event in other_join_events if event["name"] == "join_ack"
+            )
+            self.assertEqual(other_join_ack["args"][0]["room"], other_ticket_room)
+
+            claim_socket_client.emit(
+                "join",
+                {
+                    "room": other_ticket_room,
+                    "access_token": live_tracking_payload["support"]["socket"]["access_token"],
+                },
+            )
+            rejected_join_events = claim_socket_client.get_received()
+            rejected_join = next(
+                event for event in rejected_join_events if event["name"] == "join_error"
+            )
+            self.assertEqual(rejected_join["args"][0]["error"], "ticket_room_mismatch")
+            self.assertEqual(rejected_join["args"][0]["room"], other_ticket_room)
+
             live_comment = self._citizen_comment(
                 ticket,
                 "Ahora estoy conectado; la calle sigue cortada.",
@@ -297,6 +364,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
                 "Ahora estoy conectado; la calle sigue cortada.",
             )
             self.assertEqual(citizen_event["args"][0]["socket_room"], expected_ticket_room)
+            self.assertEqual(other_socket_client.get_received(), [])
 
             inbox = self.client.get(
                 "/api/v2/inbox/omnichannel?limit=20",
@@ -365,6 +433,233 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         persisted_comments = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).all()
         self.assertEqual(len(persisted_comments), 4)
         self.assertEqual(sum(1 for comment in persisted_comments if comment.es_admin), 1)
+
+    def test_claim_evidence_completion_reaches_public_tracking_and_admin_inbox(self):
+        ticket = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.admin.id,
+            nro_ticket="760017",
+            consulta_pin="731904",
+            pregunta="Luminaria caida sobre la vereda",
+            categoria="Alumbrado publico",
+            estado="en_proceso",
+            nombre_vecino="Ciudadana estable",
+            canal_ingreso="whatsapp",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+
+        sender = ProviderSender(
+            tenant_id=self.tenant.id,
+            channel="whatsapp",
+            phone_number="+1555760017",
+            sender_id="whatsapp:+1555760017",
+            waba_id="waba-government-evidence",
+            phone_number_id="phone-government-evidence",
+            status="active",
+        )
+        registry = MessageTemplateRegistry(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="government-claim-evidence",
+            language="es",
+            status="approved",
+            content_sid="HXGOVCLAIMEVIDENCE",
+            external_template_id="meta-government-claim-evidence",
+        )
+        db.session.add_all([sender, registry])
+        db.session.flush()
+
+        interaction = WhatsAppFlowInteraction(
+            tenant_id=self.tenant.id,
+            template_registry_id=registry.id,
+            provider_sender_id=sender.id,
+            flow_id=meta_flow_runtime.CLAIM_EVIDENCE_FLOW_ID,
+            meta_flow_id=registry.external_template_id,
+            content_sid=registry.content_sid,
+            recipient_hash=hashlib.sha256(b"government-evidence-recipient").hexdigest(),
+            recipient_hint="***0017",
+            token_digest=hashlib.sha256(b"government-evidence-token").hexdigest(),
+            idempotency_key="government-claim-evidence-760017",
+            status="sent",
+            data_contract=["ticket_number", "photos", "documents"],
+            metadata_json={
+                "claim_context": {
+                    "kind": "municipio",
+                    "id": str(ticket.id),
+                    "ticket_number": "M-760017",
+                }
+            },
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+        )
+        db.session.add(interaction)
+        db.session.commit()
+
+        photo_content = b"\xff\xd8\xffgovernment-evidence-photo"
+        document_content = b"%PDF-1.7\ngovernment-evidence-document"
+        photo_digest = hashlib.sha256(photo_content).hexdigest()
+        document_digest = hashlib.sha256(document_content).hexdigest()
+
+        def fake_download(**kwargs):
+            self.assertEqual(kwargs["provider_sender"].id, sender.id)
+            self.assertEqual(
+                [item.media_id for item in kwargs["descriptors"]],
+                ["provider-photo-760017", "provider-document-760017"],
+            )
+            return (
+                DownloadedFlowMedia(
+                    kind="photo",
+                    media_id="provider-photo-760017",
+                    file_name="luminaria.jpg",
+                    mime_type="image/jpeg",
+                    content=photo_content,
+                    sha256_hex=photo_digest,
+                ),
+                DownloadedFlowMedia(
+                    kind="document",
+                    media_id="provider-document-760017",
+                    file_name="acta-luminaria.pdf",
+                    mime_type="application/pdf",
+                    content=document_content,
+                    sha256_hex=document_digest,
+                ),
+            )
+
+        def fake_store(file_storage, user_id=None):
+            return ArchivoAdjunto(
+                user_id=user_id,
+                filename=file_storage.filename,
+                nombre_original=file_storage.filename,
+                mime=file_storage.content_type,
+                tamano=len(file_storage.stream.getvalue()),
+                tipo="chat_adjunto",
+                url=f"https://cdn.example.test/evidence/{file_storage.filename}",
+            )
+
+        submission = {
+            "contract_version": "whatsapp.flow_submission.v1",
+            "flow": {
+                "id": interaction.flow_id,
+                "meta_id": interaction.meta_flow_id,
+            },
+            "payload": {
+                "answers": {
+                    "ticket_number": "M-760017",
+                    "photos": [
+                        {
+                            "id": "provider-photo-760017",
+                            "file_name": "luminaria.jpg",
+                            "mime_type": "image/jpeg",
+                            "file_size": len(photo_content),
+                            "sha256": photo_digest,
+                            "cdn_url": "https://untrusted.example/photo",
+                        }
+                    ],
+                    "documents": [
+                        {
+                            "id": "provider-document-760017",
+                            "file_name": "acta-luminaria.pdf",
+                            "mime_type": "application/pdf",
+                            "file_size": len(document_content),
+                            "sha256": document_digest,
+                            "cdn_url": "https://untrusted.example/document",
+                        }
+                    ],
+                }
+            },
+            "correlation": {
+                "interaction_id": interaction.id,
+                "tenant_id": self.tenant.id,
+                "provider_sender_id": sender.id,
+            },
+        }
+
+        with patch.object(
+            meta_flow_runtime,
+            "download_claim_evidence_media",
+            side_effect=fake_download,
+        ), patch.object(
+            meta_flow_runtime,
+            "create_attachment_with_thumbnail",
+            side_effect=fake_store,
+        ):
+            completion = meta_flow_runtime.apply_whatsapp_flow_completion(
+                tenant_id=self.tenant.id,
+                interaction_id=interaction.id,
+                submission=submission,
+                actor_user_id=self.citizen.id,
+                anon_id="+5491112347600",
+            )
+            db.session.commit()
+
+        self.assertEqual(completion["fuente"], "whatsapp_flow_claim_evidence_completed")
+        self.assertEqual(completion["attachment_count"], 2)
+        self.assertEqual(
+            completion["entity"],
+            {"kind": "municipio_ticket", "id": ticket.id},
+        )
+        self.assertEqual(
+            AuditEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                event_type="whatsapp_flow.claim_evidence.completed",
+                resource_id=str(ticket.id),
+            ).count(),
+            1,
+        )
+
+        tracking = self._tracking(ticket, "gov-claim-evidence-tracking-1")
+        self.assertEqual(tracking.status_code, 200, tracking.get_json())
+        tracking_payload = tracking.get_json()
+        self.assertEqual(tracking_payload["request_id"], "gov-claim-evidence-tracking-1")
+        public_attachments = tracking_payload["attachments"]
+        self.assertEqual(
+            {item["name"] for item in public_attachments},
+            {"luminaria.jpg", "acta-luminaria.pdf"},
+        )
+        self.assertEqual({item["source"] for item in public_attachments}, {"whatsapp_flow"})
+        self.assertEqual({item["status"] for item in public_attachments}, {"ready"})
+        self.assertEqual(
+            {item["flow_id"] for item in public_attachments},
+            {meta_flow_runtime.CLAIM_EVIDENCE_FLOW_ID},
+        )
+        self.assertTrue(all("storage_url" not in item for item in public_attachments))
+        self.assertNotIn("provider-photo-760017", str(tracking_payload))
+        self.assertNotIn("provider-document-760017", str(tracking_payload))
+        self.assertNotIn("untrusted.example", str(tracking_payload))
+
+        public_evidence_events = [
+            item
+            for item in tracking_payload["timeline"]
+            if item.get("source") == "whatsapp_flow" and item.get("attachments")
+        ]
+        self.assertEqual(len(public_evidence_events), 2)
+
+        inbox = self.client.get(
+            "/api/v2/inbox/omnichannel?limit=20",
+            headers={**self._admin_headers(), "X-Request-Id": "gov-claim-evidence-inbox-1"},
+        )
+        self.assertEqual(inbox.status_code, 200, inbox.get_json())
+        inbox_item = next(
+            item
+            for item in inbox.get_json()["items"]
+            if item.get("source_model") == "MunicipioTicket"
+            and item.get("legacy_id") == ticket.id
+        )
+        self.assertEqual(
+            {item["name"] for item in inbox_item["attachments"]},
+            {"luminaria.jpg", "acta-luminaria.pdf"},
+        )
+        admin_evidence_events = [
+            item
+            for item in inbox_item["timeline"]
+            if item.get("origin") == "whatsapp_flow" and item.get("attachments")
+        ]
+        self.assertEqual(len(admin_evidence_events), 2)
+        self.assertEqual(
+            {event["attachments"][0]["source"] for event in admin_evidence_events},
+            {"whatsapp_flow"},
+        )
 
     @patch.dict(
         os.environ,
@@ -526,6 +821,61 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             results_payload["realtime"]["polling"]["href"],
             first_ack["live_results_url"],
         )
+
+        late_citizen = User(
+            name="Ciudadano fuera de ventana",
+            email="ciudadano-fuera-de-ventana@test.com",
+            rol="usuario",
+            tipo_chat="municipio",
+            tenant_id=self.tenant.id,
+            tenant_slug=self.tenant.slug,
+        )
+        late_citizen.set_password("secret123")
+        db.session.add(late_citizen)
+        db.session.commit()
+        late_token = jwt.encode(
+            {
+                "user_id": late_citizen.id,
+                "rol": late_citizen.rol,
+                "tenant_slug": self.tenant.slug,
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+
+        closed = self.client.post(
+            f"/api/v2/surveys/{survey_id}/close",
+            headers={**self._admin_headers(), "X-Request-Id": "gov-vote-close-1"},
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        self.assertEqual(closed.get_json()["estado"], "cerrada")
+        socket_client.get_received()
+
+        late_vote = self.client.post(
+            published_payload["links"]["respond_endpoint"],
+            json={
+                "user_id": late_citizen.id,
+                "source": "web",
+                "respuestas": [
+                    {"pregunta_id": question["id"], "opcion_id": second_option["id"]}
+                ],
+            },
+            headers={
+                "Authorization": f"Bearer {late_token}",
+                "X-Tenant-Slug": self.tenant.slug,
+                "X-Forwarded-For": "198.51.100.93",
+                "X-Request-Id": "gov-vote-after-close-1",
+            },
+        )
+        self.assertEqual(late_vote.status_code, 403, late_vote.get_json())
+        self.assertEqual(late_vote.get_json()["reason_code"], "survey_not_published")
+        self.assertEqual(EncRespuesta.query.filter_by(encuesta_id=survey_id).count(), 1)
+        self.assertEqual(socket_client.get_received(), [])
+
+        closed_results = self.client.get(first_ack["live_results_url"])
+        self.assertEqual(closed_results.status_code, 403, closed_results.get_json())
+        self.assertEqual(closed_results.get_json()["reason_code"], "survey_not_published")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from types import SimpleNamespace
@@ -436,6 +436,210 @@ def test_admin_can_download_exact_validated_meta_flow_json_artifact(client, app)
     assert conceptual.status_code == 404
 
 
+def test_claim_evidence_admin_readiness_is_discoverable_and_side_effect_free(
+    client,
+    app,
+    monkeypatch,
+):
+    admin, tenant = _seed()
+    _prepare_meta_management(app, tenant, monkeypatch)
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    with patch("routes.whatsapp_rules.MetaFlowGraphClient") as graph_client:
+        response = client.get(
+            "/api/admin/whatsapp/flows/meta/readiness?flow_id=claim_evidence",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["dry_run"] is True
+    assert payload["meta_graph_calls_performed"] is False
+    assert payload["twilio_calls_performed"] is False
+    assert payload["provider_writes_performed"] is False
+    assert payload["messages_sent"] is False
+    assert payload["claim_evidence_discoverable"] is True
+    assert payload["summary"] == {
+        "total": 1,
+        "ready": 1,
+        "blocked": 0,
+        "verification_ready": 0,
+    }
+    flow = payload["flows"][0]
+    assert flow["id"] == "claim_evidence"
+    assert flow["flow_json_download_url"].endswith(
+        "/claim_evidence/flow-json"
+    )
+    readiness = flow["readiness"]
+    assert readiness["status"] == "publish_ready"
+    assert readiness["blockers"] == []
+    assert readiness["operation"]["mode"] == "create_and_publish"
+    assert readiness["dry_run"]["payload"] == {
+        "flow_id": "claim_evidence",
+        "language": "es",
+        "dry_run": True,
+        "publish": True,
+    }
+    assert readiness["dry_run"]["meta_graph_calls_performed"] is False
+    assert readiness["dry_run"]["twilio_calls_performed"] is False
+    assert readiness["dry_run"]["provider_writes_performed"] is False
+    assert readiness["dry_run"]["messages_sent"] is False
+    assert readiness["dry_run"]["execute_confirmation_issued"] is False
+    assert payload["security"]["execute_confirmation_issued"] is False
+    graph_client.assert_not_called()
+    assert MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name="chatboc_claim_evidence_native_v1",
+    ).count() == 0
+    serialized = json.dumps(payload)
+    assert "meta-system-user-token" not in serialized
+    assert "meta-management-app-secret" not in serialized
+    assert "BEGIN PRIVATE KEY" not in serialized
+
+    monkeypatch.setitem(
+        app.config,
+        "PUBLIC_API_BASE_URL",
+        "https://base-url-secret@api.chatboc.test",
+    )
+    invalid_base = client.get(
+        "/api/admin/whatsapp/flows/meta/readiness?flow_id=claim_evidence",
+        headers=headers,
+    )
+    invalid_payload = invalid_base.get_json()
+    invalid_readiness = invalid_payload["flows"][0]["readiness"]
+    assert invalid_base.status_code == 200
+    assert invalid_readiness["blocked"] is True
+    assert "data_exchange_not_ready" in invalid_readiness["blockers"]
+    assert invalid_readiness["dependencies"]["data_exchange"]["endpoint_uri"] is None
+    assert "base-url-secret" not in json.dumps(invalid_payload)
+
+
+def test_claim_evidence_admin_readiness_does_not_discover_foreign_registry(
+    client,
+    app,
+):
+    admin, tenant = _seed()
+    _, foreign_tenant = _seed(plan="free")
+    foreign_meta_flow_id = "777777777777777"
+    artifact = build_claim_evidence_flow()
+    db.session.add(
+        MessageTemplateRegistry(
+            tenant_id=foreign_tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="chatboc_claim_evidence_native_v1",
+            language="es",
+            category="UTILITY",
+            status="meta_published",
+            external_template_id=foreign_meta_flow_id,
+            metadata_json={
+                "flow_id": "claim_evidence",
+                "meta_flow_id": foreign_meta_flow_id,
+                "content_family": "meta_native_flow",
+                "flow_json_sha256": artifact.content_sha256,
+                "meta_flow_publication_verified": True,
+            },
+        )
+    )
+    db.session.commit()
+
+    cross_tenant = client.get(
+        "/api/admin/whatsapp/flows/meta/readiness?flow_id=claim_evidence",
+        headers=_auth_headers(app, admin, foreign_tenant.slug),
+    )
+    assert cross_tenant.status_code == 403
+
+    response = client.get(
+        "/api/admin/whatsapp/flows/meta/readiness?flow_id=claim_evidence",
+        headers=_auth_headers(app, admin, tenant.slug),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["tenant"]["id"] == tenant.id
+    readiness = payload["flows"][0]["readiness"]
+    assert readiness["registry"]["configured"] is False
+    assert readiness["registry"]["meta_flow_id"] is None
+    assert "meta_flow_id" not in readiness["dry_run"]["payload"]
+    assert foreign_meta_flow_id not in json.dumps(payload)
+
+
+def test_claim_evidence_readiness_matches_idempotent_meta_sync_dry_run(
+    client,
+    app,
+    monkeypatch,
+):
+    admin, tenant = _seed()
+    _prepare_meta_management(app, tenant, monkeypatch)
+    headers = _auth_headers(app, admin, tenant.slug)
+    artifact = build_claim_evidence_flow()
+    registry = MessageTemplateRegistry(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        name="chatboc_claim_evidence_native_v1",
+        language="es",
+        category="UTILITY",
+        status="meta_published",
+        external_template_id=META_FLOW_ID,
+        last_sync_at=datetime.now(timezone.utc),
+        metadata_json={
+            "flow_id": "claim_evidence",
+            "meta_flow_id": META_FLOW_ID,
+            "content_family": "meta_native_flow",
+            "flow_json_sha256": artifact.content_sha256,
+            "meta_flow_waba_id": META_WABA_ID,
+            "meta_flow_publication_verified": True,
+            "meta_sync_state": "complete",
+        },
+    )
+    db.session.add(registry)
+    db.session.commit()
+
+    catalog = client.get(
+        "/api/admin/whatsapp/flows/meta/readiness?flow_id=claim_evidence",
+        headers=headers,
+    )
+    assert catalog.status_code == 200
+    catalog_readiness = catalog.get_json()["flows"][0]["readiness"]
+    assert catalog_readiness["status"] == "verification_ready"
+    assert catalog_readiness["operation"]["mode"] == "verify_published"
+    assert catalog_readiness["operation"]["publish_write_expected"] is False
+    assert catalog_readiness["operation"]["irreversible_publish"] is False
+    assert catalog_readiness["registry"]["id"] == registry.id
+    assert (
+        catalog_readiness["idempotency"]["persisted_publication_match"]
+        is True
+    )
+
+    with patch("routes.whatsapp_rules.MetaFlowGraphClient") as graph_client:
+        preview = client.post(
+            "/api/admin/whatsapp/flows/meta/sync",
+            headers=headers,
+            json={"flow_id": "claim_evidence"},
+        )
+
+    assert preview.status_code == 200
+    preview_payload = preview.get_json()
+    assert preview_payload["dry_run"] is True
+    assert preview_payload["ready_to_sync"] is True
+    assert preview_payload["management"]["operation_mode"] == "verify_published"
+    assert preview_payload["management"]["irreversible_publish"] is False
+    assert preview_payload["readiness"]["status"] == "verification_ready"
+    assert (
+        preview_payload["readiness"]["idempotency"]["operation_fingerprint"]
+        == catalog_readiness["idempotency"]["operation_fingerprint"]
+    )
+    assert isinstance(preview_payload["execute_confirmation"], str)
+    graph_client.assert_not_called()
+    assert AuditEvent.query.filter_by(
+        tenant_id=tenant.id,
+        event_type="whatsapp_flow.meta_published_verified",
+    ).count() == 0
+
+
 def test_meta_flow_management_publishes_with_remote_attestation_and_binds_wrapper(
     client,
     app,
@@ -510,6 +714,7 @@ def test_meta_flow_management_publishes_with_remote_attestation_and_binds_wrappe
         meta_flow_id=None,
         publish=True,
         clone_published_on_change=False,
+        verification_only=False,
     )
 
     registry = MessageTemplateRegistry.query.filter_by(
@@ -526,6 +731,10 @@ def test_meta_flow_management_publishes_with_remote_attestation_and_binds_wrappe
     assert registry.metadata_json["meta_flow_publication_verified"] is True
     assert registry.metadata_json["flow_json_sha256"] == artifact.content_sha256
     assert registry.metadata_json["meta_flow_waba_id"] == META_WABA_ID
+    assert (
+        registry.metadata_json["meta_sync_operation_fingerprint"]
+        == preview_payload["readiness"]["idempotency"]["operation_fingerprint"]
+    )
 
     persisted_preview = client.post(
         "/api/admin/whatsapp/flows/twilio-content/sync",
@@ -575,6 +784,10 @@ def test_meta_flow_management_publishes_with_remote_attestation_and_binds_wrappe
         resource_id=META_FLOW_ID,
     ).one()
     assert audit.details["flow_json_sha256"] == artifact.content_sha256
+    assert (
+        audit.details["operation_fingerprint"]
+        == preview_payload["readiness"]["idempotency"]["operation_fingerprint"]
+    )
 
 
 def test_meta_flow_management_clones_verified_published_flow_when_artifact_changes(
@@ -674,6 +887,7 @@ def test_meta_flow_management_clones_verified_published_flow_when_artifact_chang
         meta_flow_id=source_flow_id,
         publish=True,
         clone_published_on_change=True,
+        verification_only=False,
     )
     db.session.refresh(registry)
     assert registry.external_template_id == META_FLOW_ID

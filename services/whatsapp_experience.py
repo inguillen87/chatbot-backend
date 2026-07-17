@@ -47,7 +47,10 @@ from services.meta_flow_data_exchange import (
     cryptography_available as meta_flow_cryptography_available,
     endpoint_config_readiness,
 )
-from services.meta_flow_management import resolve_meta_graph_credentials
+from services.meta_flow_management import (
+    build_meta_flow_publication_readiness,
+    resolve_meta_graph_credentials,
+)
 from services.plan_access import integration_access_payload
 from services.provider_platform import is_sender_ready_status
 from services.whatsapp_flow_security import whatsapp_flow_token_key_ready
@@ -4309,10 +4312,14 @@ def _meta_flow_data_exchange_contract(
         parsed_base
         and parsed_base.scheme.lower() == "https"
         and parsed_base.netloc
+        and parsed_base.username is None
+        and parsed_base.password is None
+        and not parsed_base.query
+        and not parsed_base.fragment
     )
     endpoint_url = (
         f"{public_base}/api/whatsapp/flows/data-exchange/{endpoint_id}"
-        if public_base and endpoint_id
+        if https_public_url and endpoint_id
         else None
     )
     crypto_material = (
@@ -4451,6 +4458,8 @@ def _meta_platform_payload(
         ),
         "sync_endpoint": "/api/admin/whatsapp/flows/meta/sync",
         "sync_method": "POST",
+        "readiness_endpoint": "/api/admin/whatsapp/flows/meta/readiness",
+        "readiness_method": "GET",
         "dry_run_default": True,
         "irreversible_publish": True,
         "supports": [
@@ -4468,14 +4477,14 @@ def _meta_platform_payload(
         tenant_id=tenant.id,
         provider="twilio",
         channel="whatsapp",
-    ).all()
+    ).order_by(MessageTemplateRegistry.updated_at.desc()).all()
     native_registry: dict[str, MessageTemplateRegistry] = {}
     for row in registry_rows:
         metadata = row.metadata_json if isinstance(row.metadata_json, Mapping) else {}
         if metadata.get("content_family") != "meta_native_flow":
             continue
         registered_flow_id = str(metadata.get("flow_id") or "").strip()
-        if registered_flow_id:
+        if registered_flow_id and registered_flow_id not in native_registry:
             native_registry[registered_flow_id] = row
 
     flow_candidates: list[dict[str, Any]] = []
@@ -4546,9 +4555,33 @@ def _meta_platform_payload(
             blockers.append("flow_token_key_not_configured")
         if not sender_ready:
             blockers.append("sender_not_ready")
+        publication_readiness = build_meta_flow_publication_readiness(
+            tenant_id=tenant.id,
+            flow_id=flow_id,
+            flow_name=blueprint.get("flow_name") or flow_id,
+            blueprint_category=blueprint.get("category"),
+            artifact=artifact,
+            credentials=meta_graph_credentials,
+            integration_access=integration_access,
+            data_exchange=data_exchange,
+            registry={
+                "configured": bool(row),
+                "id": row.id if row else None,
+                "tenant_id": row.tenant_id if row else None,
+                "status": registry_status,
+                "meta_flow_id": meta_flow_id,
+                "flow_json_sha256": registered_sha256,
+                "waba_id": metadata.get("meta_flow_waba_id"),
+                "publication_verified": publication_verified,
+                "sync_state": metadata.get("meta_sync_state"),
+                "last_sync_at": _iso(row.last_sync_at) if row else None,
+            },
+            language=row.language if row else "es",
+        )
         flow_candidates.append(
             {
                 "id": flow_id,
+                "discoverable": True,
                 "flow_name": blueprint.get("flow_name"),
                 "category": blueprint.get("category"),
                 "endpoint_mode": blueprint.get("endpoint_mode"),
@@ -4569,6 +4602,7 @@ def _meta_platform_payload(
                 "configured": configured,
                 "active": active,
                 "blockers": blockers,
+                "publication_readiness": publication_readiness,
                 "activation_state": (
                     "active"
                     if active
@@ -4594,6 +4628,24 @@ def _meta_platform_payload(
 
     configured_flows = len([item for item in flow_candidates if item["configured"]])
     active_flows = len([item for item in flow_candidates if item["active"]])
+    publication_ready_flows = len(
+        [
+            item
+            for item in flow_candidates
+            if item["publication_readiness"].get("ready")
+        ]
+    )
+    meta_flow_management.update(
+        {
+            "candidate_count": len(flow_candidates),
+            "publication_ready_count": publication_ready_flows,
+            "publication_blocked_count": len(flow_candidates)
+            - publication_ready_flows,
+            "claim_evidence_discoverable": any(
+                item.get("id") == "claim_evidence" for item in flow_candidates
+            ),
+        }
+    )
     calling_status = str(
         sender_metadata.get("whatsapp_business_calling_status")
         or meta_cfg.get("business_calling_status")
@@ -4697,11 +4749,18 @@ def _meta_platform_payload(
             "configured_count": configured_flows,
             "active_count": active_flows,
             "candidate_count": len(flow_candidates),
+            "publication_ready_count": publication_ready_flows,
+            "publication_blocked_count": len(flow_candidates)
+            - publication_ready_flows,
             "sync_endpoint": "/api/admin/whatsapp/flows/twilio-content/sync",
             "sync_method": "POST",
             "flow_json_download_endpoint_template": (
                 "/api/admin/whatsapp/flows/{flow_id}/flow-json"
             ),
+            "publication_readiness_endpoint": (
+                "/api/admin/whatsapp/flows/meta/readiness"
+            ),
+            "publication_readiness_method": "GET",
             "send_endpoint": "/api/admin/whatsapp/flows/send",
             "send_method": "POST",
             "dry_run_default": True,
@@ -4799,6 +4858,7 @@ def _meta_platform_payload(
             "render_as": "meta_platform_operations",
             "show_capability_states": True,
             "show_native_flow_activation": True,
+            "show_native_flow_publication_readiness": True,
             "never_label_unconfigured_capability_active": True,
         },
     }

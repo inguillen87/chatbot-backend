@@ -2306,6 +2306,11 @@ def login():
         user.email,
     )
 
+    # Resolve the stable owner identity before starting background adoption.
+    # The migration opens a second app context and can otherwise race this
+    # request while both sessions update the same user on SQLite or Postgres.
+    owner_token = _resolve_owner_token(user)
+
     # Migrate anonymous data if anon_id is present.
     # This can be expensive (ticket + cart adoption), so default to async to
     # keep login response times fast.
@@ -2342,8 +2347,6 @@ def login():
                 "Failed to migrate anon data during login; error_type=%s",
                 type(exc).__name__,
             )
-
-    owner_token = _resolve_owner_token(user)
 
     effective_municipio_id = getattr(tenant_obj, "municipio_id", None) or user.municipio_id
 

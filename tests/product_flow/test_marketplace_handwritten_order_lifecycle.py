@@ -358,6 +358,45 @@ def test_anonymous_handwritten_marketplace_order_lifecycle(
     assert market_order.metadata_payload["pyme_pedido_id"] == pyme_pedido.id
     assert market_order.metadata_payload["source_conversational_id"] == str(pedido_id)
 
+    replayed_confirmation = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/orders/{crm_id}",
+        json={"status": "confirmed"},
+        headers=headers,
+    )
+    assert replayed_confirmation.status_code == 200, replayed_confirmation.get_json()
+    replayed = replayed_confirmation.get_json()
+    assert replayed["metadata"]["materialized_order"] == confirmed["metadata"]["materialized_order"]
+    assert PymePedido.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key=f"conv_order_{pedido_id}",
+    ).count() == 1
+    assert MarketOrder.legacy_safe_query().filter_by(
+        tenant_id=tenant.id,
+        external_provider="pyme_pedido",
+        external_order_id=pyme_pedido.nro_pedido,
+    ).count() == 1
+
+    missing_token_response = client.get(
+        tracking_api,
+        headers={
+            "X-Forwarded-For": "203.0.113.170",
+            "X-Request-Id": "marketplace-handwritten-tracking-missing-token",
+        },
+    )
+    assert missing_token_response.status_code == 404, missing_token_response.get_json()
+    assert missing_token_response.get_json()["reason_code"] == "order_not_found"
+
+    wrong_token_response = client.get(
+        tracking_api,
+        headers={
+            "X-Forwarded-For": "203.0.113.171",
+            "X-Request-Id": "marketplace-handwritten-tracking-wrong-token",
+            "X-Tracking-Token": "wrong-order-capability-token",
+        },
+    )
+    assert wrong_token_response.status_code == 404, wrong_token_response.get_json()
+    assert wrong_token_response.get_json()["reason_code"] == "order_not_found"
+
     tracking_response = client.get(
         tracking_api,
         headers={

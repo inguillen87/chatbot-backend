@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
-from services.meta_flow_json import build_order_checkout_flow, canonical_flow_json
+from services.meta_flow_json import (
+    build_claim_evidence_flow,
+    build_order_checkout_flow,
+    canonical_flow_json,
+)
 from services.meta_flow_management import (
     MetaFlowGraphClient,
     MetaFlowManagementError,
+    build_meta_flow_publication_readiness,
     meta_flow_category,
     resolve_meta_graph_credentials,
 )
@@ -141,6 +147,94 @@ def test_meta_graph_readiness_rejects_invalid_transport_configuration():
     )
 
 
+def test_meta_graph_public_readiness_redacts_base_url_userinfo():
+    credentials = resolve_meta_graph_credentials(
+        waba_id=WABA_ID,
+        app_config={
+            "META_GRAPH_ACCESS_TOKEN": "system-user-token",
+            "META_GRAPH_API_BASE_URL": "https://url-secret@graph.facebook.com",
+        },
+        environ={},
+    )
+
+    payload = credentials.public_payload()
+    assert credentials.ready is False
+    assert "meta_graph_api_base_url_invalid" in credentials.blockers
+    assert payload["base_url"] == "https://graph.facebook.com"
+    assert "url-secret" not in json.dumps(payload)
+    assert "url-secret" not in repr(credentials)
+
+
+def test_claim_evidence_publication_readiness_is_idempotent_and_tenant_bound():
+    artifact = build_claim_evidence_flow()
+    artifact_payload = {
+        "publishable_flow_json": True,
+        "validation": {"valid": True, "errors": []},
+        "content_sha256": artifact.content_sha256,
+        "flow_json_version": artifact.document["version"],
+        "data_api_version": artifact.document["data_api_version"],
+        "byte_size": artifact.byte_size,
+        "endpoint_driven": True,
+    }
+    data_exchange = {
+        "ready": True,
+        "endpoint_url": "https://api.chatboc.test/api/whatsapp/flows/data-exchange/claims",
+        "tenant_bound": True,
+        "waba_bound": True,
+        "blockers": [],
+    }
+    registry = {
+        "configured": True,
+        "tenant_id": "tenant-7",
+        "status": "meta_published",
+        "meta_flow_id": META_FLOW_ID,
+        "flow_json_sha256": artifact.content_sha256,
+        "waba_id": WABA_ID,
+        "publication_verified": True,
+        "sync_state": "complete",
+        "last_sync_at": "2026-07-17T12:00:00+00:00",
+    }
+
+    readiness = build_meta_flow_publication_readiness(
+        tenant_id="tenant-7",
+        flow_id="claim_evidence",
+        flow_name="chatboc_claim_evidence",
+        blueprint_category="CUSTOMER_SUPPORT",
+        artifact=artifact_payload,
+        credentials=_credentials(),
+        integration_access={"enabled": True},
+        data_exchange=data_exchange,
+        registry=registry,
+    )
+
+    assert readiness["status"] == "verification_ready"
+    assert readiness["blockers"] == []
+    assert readiness["operation"]["mode"] == "verify_published"
+    assert readiness["operation"]["publish_write_expected"] is False
+    assert readiness["idempotency"]["persisted_publication_match"] is True
+    assert readiness["idempotency"]["same_confirmation_replay_allowed"] is False
+    assert len(readiness["idempotency"]["operation_fingerprint"]) == 64
+    assert readiness["dry_run"]["payload"]["flow_id"] == "claim_evidence"
+    assert "system-user-token" not in json.dumps(readiness)
+
+    wrong_scope = build_meta_flow_publication_readiness(
+        tenant_id="tenant-8",
+        flow_id="claim_evidence",
+        flow_name="chatboc_claim_evidence",
+        blueprint_category="CUSTOMER_SUPPORT",
+        artifact=artifact_payload,
+        credentials=_credentials(),
+        integration_access={"enabled": True},
+        data_exchange=data_exchange,
+        registry=registry,
+    )
+
+    assert wrong_scope["blocked"] is True
+    assert "meta_flow_registry_tenant_scope_mismatch" in wrong_scope["blockers"]
+    assert wrong_scope["registry"]["meta_flow_id"] is None
+    assert "meta_flow_id" not in wrong_scope["dry_run"]["payload"]
+
+
 @pytest.mark.parametrize(
     ("flow_id", "category", "expected"),
     [
@@ -241,6 +335,59 @@ def test_meta_graph_client_clones_changed_published_flow_before_upload():
     )
     client.upload_flow_json.assert_called_once()
     client.publish_flow.assert_called_once_with(META_FLOW_ID)
+
+
+def test_meta_graph_client_dry_run_modes_block_remote_drift_without_writes():
+    artifact = build_claim_evidence_flow()
+    client = MetaFlowGraphClient(
+        _credentials(),
+        http=_FakeMetaHttp(artifact.document),
+    )
+    client.get_flow = MagicMock(
+        return_value={
+            "id": META_FLOW_ID,
+            "status": "DRAFT",
+            "whatsapp_business_account": {"id": WABA_ID},
+        }
+    )
+    client.create_flow = MagicMock()
+    client.upload_flow_json = MagicMock()
+    client.publish_flow = MagicMock()
+
+    with pytest.raises(MetaFlowManagementError) as caught:
+        client.provision_and_publish(
+            flow_name="chatboc_claim_evidence",
+            category="CUSTOMER_SUPPORT",
+            document=artifact.document,
+            expected_sha256=artifact.content_sha256,
+            endpoint_uri=(
+                "https://api.chatboc.test/api/whatsapp/flows/data-exchange/claims"
+            ),
+            meta_flow_id=META_FLOW_ID,
+            publish=True,
+            verification_only=True,
+        )
+
+    assert caught.value.code == "meta_flow_verification_only_state_mismatch"
+
+    with pytest.raises(MetaFlowManagementError) as clone_caught:
+        client.provision_and_publish(
+            flow_name="chatboc_claim_evidence",
+            category="CUSTOMER_SUPPORT",
+            document=artifact.document,
+            expected_sha256=artifact.content_sha256,
+            endpoint_uri=(
+                "https://api.chatboc.test/api/whatsapp/flows/data-exchange/claims"
+            ),
+            meta_flow_id=META_FLOW_ID,
+            publish=True,
+            clone_published_on_change=True,
+        )
+
+    assert clone_caught.value.code == "meta_flow_clone_source_state_mismatch"
+    client.create_flow.assert_not_called()
+    client.upload_flow_json.assert_not_called()
+    client.publish_flow.assert_not_called()
 
 
 def test_meta_graph_client_rejects_published_asset_hash_mismatch():
