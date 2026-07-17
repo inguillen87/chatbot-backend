@@ -951,10 +951,43 @@ def _normalized_datetime(value: Any) -> datetime | None:
 
 
 def _safe_count(query) -> int:
+    session = getattr(query, "session", None)
+    savepoint = None
     try:
-        return int(query.count() or 0)
+        if session is not None:
+            savepoint = session.connection().begin_nested()
+            with session.no_autoflush:
+                value = query.count()
+        else:
+            value = query.count()
     except Exception:
+        if savepoint is not None and savepoint.is_active:
+            savepoint.rollback()
         return 0
+    else:
+        if savepoint is not None and savepoint.is_active:
+            savepoint.commit()
+        return int(value or 0)
+
+
+def _safe_all(query) -> list[Any]:
+    session = getattr(query, "session", None)
+    savepoint = None
+    try:
+        if session is not None:
+            savepoint = session.connection().begin_nested()
+            with session.no_autoflush:
+                rows = query.all()
+        else:
+            rows = query.all()
+    except Exception:
+        if savepoint is not None and savepoint.is_active:
+            savepoint.rollback()
+        return []
+    else:
+        if savepoint is not None and savepoint.is_active:
+            savepoint.commit()
+        return list(rows or [])
 
 
 def _tenant_ref(tenant: TenantProfile) -> dict[str, Any]:
@@ -1253,10 +1286,12 @@ def _registered_template_map(tenant: TenantProfile) -> dict[str, dict[str, Any]]
     for name, template in _local_twilio_manifest_template_map().items():
         templates[name] = template
 
-    registry_rows = MessageTemplateRegistry.query.filter_by(
-        tenant_id=tenant.id,
-        channel="whatsapp",
-    ).all()
+    registry_rows = _safe_all(
+        MessageTemplateRegistry.query.filter_by(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+        )
+    )
     for row in registry_rows:
         metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
         templates[_lower(row.name)] = {
@@ -1274,10 +1309,12 @@ def _registered_template_map(tenant: TenantProfile) -> dict[str, dict[str, Any]]
             "last_sync_at": _iso(row.last_sync_at),
         }
 
-    notification_rows = NotificationTemplate.query.filter_by(
-        tenant_id=tenant.id,
-        channel="whatsapp",
-    ).all()
+    notification_rows = _safe_all(
+        NotificationTemplate.query.filter_by(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+        )
+    )
     for row in notification_rows:
         metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
         key = _lower(row.key)
