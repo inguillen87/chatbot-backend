@@ -2905,6 +2905,18 @@ def _validate_respuesta_payload(
         if not pregunta:
             raise EncuestaError("Pregunta inválida en respuestas")
 
+        if pregunta.id in answered_ids:
+            raise EncuestaError(
+                "Cada pregunta debe aparecer una sola vez en respuestas",
+                status_code=400,
+                payload={
+                    "contract_version": "surveys.public_response.v2",
+                    "reason_code": "duplicate_question_response",
+                    "action_hint": "merge_question_answers",
+                    "question_id": pregunta.id,
+                },
+            )
+
         respuesta_detalle = EncRespuestaDetalle(
             pregunta_id=pregunta.id,
         )

@@ -59,6 +59,7 @@ from services.twilio_tech_provider import (
     provision_twilio_subaccount,
     provision_twilio_voice_application,
     register_whatsapp_sender,
+    verify_meta_embedded_signup_completion,
 )
 from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import _template_creation_manifest_payload, build_whatsapp_experience
@@ -2358,25 +2359,87 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
     if plan_error:
         return plan_error
 
-    payload = request.get_json(silent=True) or {}
-    if not isinstance(payload, dict):
-        payload = {}
-    auth_response = payload.get("authResponse") if isinstance(payload.get("authResponse"), dict) else {}
-    embedded_signup_code = (
-        payload.get("code")
-        or payload.get("auth_code")
-        or payload.get("authorization_code")
-        or auth_response.get("code")
+    raw_payload = request.get_json(silent=True)
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    validate_only = payload.get("validate_only", False)
+    if not isinstance(validate_only, bool):
+        return _error_response(
+            "validate_only debe ser booleano",
+            400,
+            "embedded_signup_validate_only_invalid",
+            "send_boolean_validate_only",
+        )
+
+    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+    existing_state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
+    verification = verify_meta_embedded_signup_completion(
+        payload,
+        existing_state=existing_state,
     )
+    if not verification.get("accepted"):
+        return _json_response(
+            {
+                "contract_version": "twilio.tech_provider.embedded_signup.v1",
+                "ok": False,
+                "status": "rejected",
+                "reason_code": "embedded_signup_completion_invalid",
+                "retryable": False,
+                "retryable_after_correction": True,
+                "tenant": _tenant_ref(tenant),
+                "verification": verification,
+                "persisted": False,
+                "state_unchanged": True,
+                "provider_calls_performed": False,
+                "next_action": verification.get("next_action"),
+                "error": {
+                    "code": 422,
+                    "message": "El resultado de Embedded Signup no cumple el contrato.",
+                },
+            },
+            422,
+        )
+
+    if validate_only:
+        return _json_response(
+            {
+                "contract_version": "twilio.tech_provider.embedded_signup.v1",
+                "ok": True,
+                "status": "validated",
+                "tenant": _tenant_ref(tenant),
+                "verification": verification,
+                "persisted": False,
+                "state_unchanged": True,
+                "provider_calls_performed": False,
+                "next_action": "submit_verified_embedded_signup_completion",
+            }
+        )
+
+    normalized = verification.get("normalized") or {}
+    now = datetime.now(timezone.utc).isoformat()
     state_patch = {
         "status": "pending_sender_registration",
         "last_step": "embedded_signup_completed",
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "waba_id": payload.get("waba_id") or payload.get("wabaId"),
-        "phone_number_id": payload.get("phone_number_id") or payload.get("phoneNumberId"),
-        "embedded_signup_session_id": payload.get("session_id") or payload.get("sessionId"),
-        "embedded_signup_code_present": bool(embedded_signup_code),
-        "embedded_signup_event": payload.get("event"),
+        "updated_at": now,
+        "waba_id": normalized.get("waba_id"),
+        "phone_number_id": normalized.get("phone_number_id"),
+        "embedded_signup_session_id": normalized.get("session_id"),
+        "embedded_signup_code_present": bool(
+            (verification.get("security") or {}).get("authorization_code_received")
+        ),
+        "embedded_signup_type": normalized.get("type"),
+        "embedded_signup_event": normalized.get("event") or "LEGACY_FLAT",
+        "embedded_signup_completion_mode": verification.get("completion_mode"),
+        "embedded_signup_payload_shape": verification.get("payload_shape"),
+        "embedded_signup_completion_validated": True,
+        "embedded_signup_verification_contract": verification.get("contract_version"),
+        "embedded_signup_verification_level": verification.get("verification_level"),
+        "embedded_signup_remote_attestation_performed": False,
+        "embedded_signup_completed_at": now,
+        "embedded_signup_verification_warnings": [
+            item.get("code")
+            for item in verification.get("warnings") or []
+            if isinstance(item, Mapping) and item.get("code")
+        ],
     }
     merged_state = merge_twilio_state(tenant, state_patch)
     public_state = _scrub_twilio_state_secrets(tenant, merged_state)
@@ -2396,12 +2459,18 @@ def whatsapp_tech_provider_embedded_signup_v2(current_user, tenant_slug: str | N
     channel_activation = build_channel_activation_payload(tenant)
     flag_modified(tenant, "configuracion")
     db.session.commit()
+    persisted_verification = {**verification, "writes_performed": True}
     return _json_response(
         {
             "contract_version": "twilio.tech_provider.embedded_signup.v1",
             "ok": True,
+            "status": "accepted",
             "tenant": _tenant_ref(tenant),
             "state": public_state,
+            "verification": persisted_verification,
+            "persisted": True,
+            "state_unchanged": False,
+            "provider_calls_performed": False,
             "onboarding": onboarding,
             "channel_activation": channel_activation,
             "next_action": "register_whatsapp_sender_via_senders_api",

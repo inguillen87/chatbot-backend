@@ -9,6 +9,7 @@ from services.provider_platform import is_sender_ready_status, sync_twilio_provi
 from services.twilio_tech_provider import (
     STATE_KEY,
     build_twilio_tech_provider_contract,
+    is_meta_embedded_signup_complete,
     merge_twilio_state,
     provision_twilio_subaccount,
     provision_twilio_voice_application,
@@ -46,7 +47,7 @@ def _onboarding_status(contract: Mapping[str, Any], state: Mapping[str, Any], au
         return "online"
     if state.get("sender_sid"):
         return "sender_registered"
-    if state.get("waba_id") or state.get("phone_number_id"):
+    if is_meta_embedded_signup_complete(state):
         return "pending_sender_registration"
     if state.get("messaging_service_sid") and state.get("twilio_account_sid"):
         return "ready_for_embedded_signup"
@@ -115,7 +116,13 @@ def _public_payload_for_config(
             {
                 "id": "embedded_signup",
                 "owner": "customer",
-                "state": "done" if state.get("waba_id") else ("enabled" if embedded_signup.get("enabled") else "blocked"),
+                "state": (
+                    "done"
+                    if is_meta_embedded_signup_complete(state)
+                    else "enabled"
+                    if embedded_signup.get("enabled")
+                    else "blocked"
+                ),
             },
             {
                 "id": "register_sender",
@@ -132,6 +139,13 @@ def _public_payload_for_config(
             "enabled": bool(embedded_signup.get("enabled")),
             "meta_app_id_present": bool(embedded_signup.get("meta_app_id")),
             "configuration_id_present": bool(embedded_signup.get("configuration_id")),
+            "completion_validated": is_meta_embedded_signup_complete(state),
+            "completion_mode": state.get("embedded_signup_completion_mode"),
+            "verification_contract": state.get(
+                "embedded_signup_verification_contract"
+            ),
+            "verification_level": state.get("embedded_signup_verification_level"),
+            "remote_attestation_performed": False,
         },
         "state": {
             "twilio_account_sid": state.get("twilio_account_sid"),

@@ -53,6 +53,7 @@ from services.meta_flow_management import (
 )
 from services.plan_access import integration_access_payload
 from services.provider_platform import is_sender_ready_status
+from services.twilio_tech_provider import is_meta_embedded_signup_complete
 from services.whatsapp_flow_security import whatsapp_flow_token_key_ready
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
@@ -4708,7 +4709,13 @@ def _meta_platform_payload(
         str(app_cfg.get("TWILIO_META_APP_ID") or "").strip()
         and str(app_cfg.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID") or "").strip()
     )
-    embedded_signup_completed = bool(waba_id and phone_number_id)
+    embedded_signup_completed = is_meta_embedded_signup_complete(
+        {
+            **tech_state,
+            "waba_id": waba_id,
+            "phone_number_id": phone_number_id,
+        }
+    )
     embedded_signup_active = bool(embedded_signup_completed and sender_ready)
     meta_identity_configured = embedded_signup_completed
     meta_platform_active = bool(channel_ready and embedded_signup_active)

@@ -16,6 +16,12 @@ from services.render_env_sync import sync_render_env_var
 
 CONTRACT_VERSION = "twilio.tech_provider.v1"
 STATE_KEY = "twilio_tech_provider"
+EMBEDDED_SIGNUP_VERIFICATION_CONTRACT_VERSION = (
+    "twilio.tech_provider.embedded_signup_verification.v1"
+)
+_META_EMBEDDED_SIGNUP_TYPE = "WA_EMBEDDED_SIGNUP"
+_META_EMBEDDED_SIGNUP_FINISH_EVENTS = frozenset({"FINISH", "FINISH_ONLY_WABA"})
+_META_EMBEDDED_SIGNUP_ID_PATTERN = re.compile(r"^\d{6,32}$")
 
 
 @dataclass(frozen=True)
@@ -36,6 +42,259 @@ def _clean(value: Any) -> str:
 
 def _digits(value: Any) -> str:
     return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+
+def _first_clean(*values: Any) -> str:
+    for value in values:
+        cleaned = _clean(value)
+        if cleaned:
+            return cleaned
+    return ""
+
+
+def is_meta_embedded_signup_complete(state: Mapping[str, Any] | None) -> bool:
+    state = state if isinstance(state, Mapping) else {}
+    if "embedded_signup_completion_validated" in state:
+        if state.get("embedded_signup_completion_validated") is not True:
+            return False
+        if not _clean(state.get("waba_id")):
+            return False
+        return bool(
+            _clean(state.get("phone_number_id"))
+            or state.get("embedded_signup_completion_mode") == "only_waba"
+        )
+    return bool(_clean(state.get("waba_id")) and _clean(state.get("phone_number_id")))
+
+
+def verify_meta_embedded_signup_completion(
+    payload: Mapping[str, Any] | None,
+    *,
+    existing_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate Meta's client completion event without provider calls or writes."""
+
+    root = dict(payload) if isinstance(payload, Mapping) else {}
+    session_envelope = root.get("sessionInfo") or root.get("session_info")
+    session = dict(session_envelope) if isinstance(session_envelope, Mapping) else root
+    event_data_value = session.get("data")
+    if not isinstance(event_data_value, Mapping):
+        event_data_value = root.get("data")
+    event_data = dict(event_data_value) if isinstance(event_data_value, Mapping) else {}
+    auth_response_value = root.get("authResponse") or root.get("auth_response")
+    auth_response = (
+        dict(auth_response_value) if isinstance(auth_response_value, Mapping) else {}
+    )
+    existing = existing_state if isinstance(existing_state, Mapping) else {}
+
+    event_type = _first_clean(session.get("type"), root.get("type")).upper()
+    event = _first_clean(session.get("event"), root.get("event")).upper()
+    waba_id = _first_clean(
+        event_data.get("waba_id"),
+        event_data.get("wabaId"),
+        session.get("waba_id"),
+        session.get("wabaId"),
+        root.get("waba_id"),
+        root.get("wabaId"),
+    )
+    phone_number_id = _first_clean(
+        event_data.get("phone_number_id"),
+        event_data.get("phoneNumberId"),
+        session.get("phone_number_id"),
+        session.get("phoneNumberId"),
+        root.get("phone_number_id"),
+        root.get("phoneNumberId"),
+    )
+    session_id = _first_clean(
+        event_data.get("session_id"),
+        event_data.get("sessionId"),
+        session.get("session_id"),
+        session.get("sessionId"),
+        root.get("session_id"),
+        root.get("sessionId"),
+    )
+    authorization_code = _first_clean(
+        root.get("code"),
+        root.get("auth_code"),
+        root.get("authorization_code"),
+        auth_response.get("code"),
+    )
+
+    if isinstance(session_envelope, Mapping):
+        payload_shape = "session_info_envelope"
+    elif event_data:
+        payload_shape = "meta_event"
+    else:
+        payload_shape = "legacy_flat"
+
+    blockers: list[str] = []
+    issues: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
+
+    def add_blocker(code: str, field: str, message: str) -> None:
+        if code not in blockers:
+            blockers.append(code)
+            issues.append({"code": code, "field": field, "message": message})
+
+    def add_warning(code: str, message: str) -> None:
+        warnings.append({"code": code, "message": message})
+
+    if event_type and event_type != _META_EMBEDDED_SIGNUP_TYPE:
+        add_blocker(
+            "embedded_signup_type_invalid",
+            "type",
+            "type debe ser WA_EMBEDDED_SIGNUP.",
+        )
+    elif event and not event_type:
+        add_warning(
+            "embedded_signup_type_missing",
+            "El evento se acepto sin type por compatibilidad; envie WA_EMBEDDED_SIGNUP.",
+        )
+
+    if event in {"CANCEL", "ERROR"}:
+        add_blocker(
+            (
+                "embedded_signup_cancelled"
+                if event == "CANCEL"
+                else "embedded_signup_error"
+            ),
+            "event",
+            "Embedded Signup no finalizo correctamente.",
+        )
+    elif event and event not in _META_EMBEDDED_SIGNUP_FINISH_EVENTS:
+        add_blocker(
+            "embedded_signup_event_invalid",
+            "event",
+            "event debe ser FINISH o FINISH_ONLY_WABA.",
+        )
+    elif not event:
+        if waba_id:
+            add_warning(
+                "embedded_signup_legacy_event_missing",
+                "Payload plano aceptado por compatibilidad; el contrato actual incluye event.",
+            )
+        else:
+            add_blocker(
+                "embedded_signup_event_missing",
+                "event",
+                "Falta el evento terminal de Embedded Signup.",
+            )
+
+    waba_valid = bool(_META_EMBEDDED_SIGNUP_ID_PATTERN.fullmatch(waba_id))
+    if not waba_id:
+        add_blocker("waba_id_missing", "waba_id", "Falta waba_id.")
+    elif not waba_valid:
+        add_blocker(
+            "waba_id_invalid",
+            "waba_id",
+            "waba_id debe ser un identificador numerico de Meta.",
+        )
+
+    phone_required = event == "FINISH" or not event
+    phone_valid = bool(
+        phone_number_id
+        and _META_EMBEDDED_SIGNUP_ID_PATTERN.fullmatch(phone_number_id)
+    )
+    if phone_required and not phone_number_id:
+        add_blocker(
+            "phone_number_id_missing",
+            "phone_number_id",
+            (
+                "FINISH requiere phone_number_id; use FINISH_ONLY_WABA cuando corresponda."
+                if event
+                else "El payload plano legado requiere phone_number_id."
+            ),
+        )
+    elif phone_number_id and not phone_valid:
+        add_blocker(
+            "phone_number_id_invalid",
+            "phone_number_id",
+            "phone_number_id debe ser un identificador numerico de Meta.",
+        )
+
+    existing_waba_id = _clean(existing.get("waba_id"))
+    existing_phone_number_id = _clean(existing.get("phone_number_id"))
+    if waba_valid and existing_waba_id and existing_waba_id != waba_id:
+        add_blocker(
+            "embedded_signup_waba_conflict",
+            "waba_id",
+            "El tenant ya esta vinculado a otro WABA; requiere un reset administrativo.",
+        )
+    if phone_valid and existing_phone_number_id and existing_phone_number_id != phone_number_id:
+        add_blocker(
+            "embedded_signup_phone_number_conflict",
+            "phone_number_id",
+            "El tenant ya tiene otro Phone Number ID; requiere un reset administrativo.",
+        )
+
+    accepted = not blockers
+    if event == "CANCEL":
+        status = "cancelled"
+    elif event == "ERROR":
+        status = "error"
+    else:
+        status = "accepted" if accepted else "invalid"
+    completion_mode = (
+        "only_waba"
+        if event == "FINISH_ONLY_WABA" or (accepted and not phone_number_id)
+        else "phone_number"
+    )
+    event_contract_ok = bool(
+        event in _META_EMBEDDED_SIGNUP_FINISH_EVENTS or (not event and waba_id)
+    )
+    tenant_binding_ok = not any(
+        code
+        in {
+            "embedded_signup_waba_conflict",
+            "embedded_signup_phone_number_conflict",
+        }
+        for code in blockers
+    )
+
+    return {
+        "contract_version": EMBEDDED_SIGNUP_VERIFICATION_CONTRACT_VERSION,
+        "accepted": accepted,
+        "status": status,
+        "payload_shape": payload_shape,
+        "completion_mode": completion_mode,
+        "verification_level": "authenticated_client_payload_contract",
+        "remote_attestation_performed": False,
+        "provider_calls_performed": False,
+        "writes_performed": False,
+        "checks": [
+            {
+                "id": "event_contract",
+                "ok": event_contract_ok and event_type in {"", _META_EMBEDDED_SIGNUP_TYPE},
+                "required": True,
+            },
+            {"id": "waba_id", "ok": waba_valid, "required": True},
+            {
+                "id": "phone_number_id",
+                "ok": phone_valid if phone_required else (not phone_number_id or phone_valid),
+                "required": phone_required,
+            },
+            {"id": "tenant_binding", "ok": tenant_binding_ok, "required": True},
+        ],
+        "blockers": blockers,
+        "issues": issues,
+        "warnings": warnings,
+        "normalized": {
+            "type": event_type or None,
+            "event": event or None,
+            "waba_id": waba_id or None,
+            "phone_number_id": phone_number_id or None,
+            "session_id": session_id or None,
+        },
+        "security": {
+            "authorization_code_received": bool(authorization_code),
+            "authorization_code_persisted": False,
+            "credentials_required": False,
+        },
+        "next_action": (
+            "register_whatsapp_sender_via_senders_api"
+            if accepted
+            else "correct_embedded_signup_completion"
+        ),
+    }
 
 
 def _bool_config(config: Mapping[str, Any], key: str, default: bool = False) -> bool:
@@ -120,7 +379,7 @@ def _build_setup_health(
     sender_online = is_sender_ready_status(sender_status) or _step_done(sender_status)
     has_subaccount = bool(state.get("twilio_account_sid"))
     has_messaging_service = bool(state.get("messaging_service_sid"))
-    has_meta_account = bool(state.get("waba_id") and state.get("phone_number_id"))
+    has_meta_account = is_meta_embedded_signup_complete(state)
     has_sender = bool(state.get("sender_sid") or state.get("sender_id"))
     has_voice = bool(state.get("voice_twiml_app_sid")) or _step_done(state.get("voice_status"))
     webhooks_ready = bool(env.get("ready") and base_url)
@@ -658,6 +917,13 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
         }
     )
     embedded_signup_start_url = f"{frontend_url}/integracion/whatsapp/connect?{signup_query}"
+    completion_endpoint = (
+        f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/embedded-signup"
+    )
+    completion_accepted = is_meta_embedded_signup_complete(state)
+    completion_verification_level = state.get("embedded_signup_verification_level")
+    if completion_accepted and not completion_verification_level:
+        completion_verification_level = "legacy_identifier_pair"
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -720,7 +986,37 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "start_url": embedded_signup_start_url if env["ready"] else None,
             "url": embedded_signup_start_url if env["ready"] else None,
             "required_customer_action": "login_with_facebook_embedded_signup",
-            "completion_endpoint": f"/api/v2/tenants/{tenant_slug}/whatsapp/tech-provider/embedded-signup",
+            "completion_endpoint": completion_endpoint,
+            "completion_status": {
+                "accepted": completion_accepted,
+                "event": state.get("embedded_signup_event"),
+                "mode": state.get("embedded_signup_completion_mode"),
+                "payload_shape": state.get("embedded_signup_payload_shape"),
+                "verification_level": completion_verification_level,
+                "remote_attestation_performed": False,
+            },
+            "completion_verification": {
+                "contract_version": EMBEDDED_SIGNUP_VERIFICATION_CONTRACT_VERSION,
+                "endpoint": completion_endpoint,
+                "method": "POST",
+                "validate_only_supported": True,
+                "validate_only_field": "validate_only",
+                "accepted_events": sorted(_META_EMBEDDED_SIGNUP_FINISH_EVENTS),
+                "accepted_payload_shapes": [
+                    "meta_event",
+                    "session_info_envelope",
+                    "legacy_flat",
+                ],
+                "required_identifiers_by_event": {
+                    "FINISH": ["waba_id", "phone_number_id"],
+                    "FINISH_ONLY_WABA": ["waba_id"],
+                    "LEGACY_FLAT": ["waba_id", "phone_number_id"],
+                },
+                "verification_level": "authenticated_client_payload_contract",
+                "remote_attestation_performed": False,
+                "provider_calls_performed": False,
+                "authorization_code_persisted": False,
+            },
         },
         "api_workflow": [
             {
