@@ -499,6 +499,24 @@ def test_action_specific_shapes_and_placements_are_validated():
     assert "UNKNOWN_UPDATE_DATA_FIELD" in _error_codes(update_data)
 
 
+def test_dynamic_open_url_requires_a_static_https_origin():
+    for url in (
+        "javascript:${form.full_name}",
+        "${form.full_name}",
+        "https://trusted.example${form.full_name}/continue",
+        "https://${form.full_name}/continue",
+    ):
+        document = _open_url_document()
+        document["screens"][0]["layout"]["children"][1]["on-click-action"]["url"] = url
+        assert "INVALID_OPEN_URL" in _error_codes(document)
+
+    safe_dynamic_url = _open_url_document()
+    safe_dynamic_url["screens"][0]["layout"]["children"][1]["on-click-action"]["url"] = (
+        "https://example.com/terms?name=${form.full_name}"
+    )
+    assert validate_flow_document(safe_dynamic_url).valid
+
+
 @pytest.mark.parametrize(
     "payload",
     [

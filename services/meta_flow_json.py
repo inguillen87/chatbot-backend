@@ -1017,6 +1017,7 @@ class _Validator:
             self.add("INVALID_OPEN_URL", f"{info.path}.url", "open_url requires a URL string.")
             return
         if "${" in url:
+            self._validate_dynamic_open_url(url, f"{info.path}.url")
             return
         parsed = urlsplit(url)
         if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
@@ -1024,6 +1025,41 @@ class _Validator:
                 "INVALID_OPEN_URL",
                 f"{info.path}.url",
                 "Static open_url targets must be credential-free HTTPS URLs.",
+            )
+
+    def _validate_dynamic_open_url(self, url: str, path: str) -> None:
+        """Require a fixed HTTPS origin before a URL can interpolate Flow data."""
+
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+        ):
+            self.add(
+                "INVALID_OPEN_URL",
+                path,
+                "Dynamic open_url targets must retain a credential-free HTTPS origin.",
+            )
+            return
+
+        authority_start = len("https://")
+        delimiter_indexes = [
+            index
+            for index in (
+                url.find("/", authority_start),
+                url.find("?", authority_start),
+                url.find("#", authority_start),
+            )
+            if index >= 0
+        ]
+        authority_end = min(delimiter_indexes) if delimiter_indexes else len(url)
+        if url.find("${") < authority_end:
+            self.add(
+                "INVALID_OPEN_URL",
+                path,
+                "Dynamic open_url values cannot define the URL scheme or authority.",
             )
 
     def _validate_complete_payload(self, payload: Mapping[str, Any], path: str) -> None:

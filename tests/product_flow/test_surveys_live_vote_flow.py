@@ -202,6 +202,34 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self._assert_admin_operations(data, token, survey_id, tenant_slug=self.tenant.slug)
         self.assertTrue(data["live_telemetry"]["has_responses"])
 
+    def test_realtime_delivery_failure_keeps_vote_persisted_and_pollable(self):
+        survey_id, token, question_id, option_id = self._create_live_vote()
+
+        with patch(
+            "services.encuestas_service.emit_survey_update",
+            side_effect=RuntimeError("socket transport unavailable"),
+        ) as emit_update:
+            response = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json={
+                    "anon_id": "flow-voter-realtime-fallback",
+                    "source": "web",
+                    "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+                },
+                headers={"X-Forwarded-For": "203.0.113.12"},
+            )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        self.assertEqual(EncRespuesta.query.filter_by(encuesta_id=survey_id).count(), 1)
+        emit_update.assert_called_once()
+
+        live = self.client.get(f"/api/v2/public/surveys/{token}/live-results?include_heatmap=0")
+        self.assertEqual(live.status_code, 200, live.get_json())
+        payload = live.get_json()
+        self.assertEqual(payload["total_respuestas"], 1)
+        self.assertEqual(payload["preguntas"][0]["total_votos"], 1)
+        self.assertEqual(payload["preguntas"][0]["opciones"][0]["votos"], 1)
+
     def test_duplicate_question_entries_are_rejected_without_skewing_live_results(self):
         survey_id, token, question_id, first_option_id = self._create_live_vote()
         public = self.client.get(f"/api/v2/public/surveys/{token}")
