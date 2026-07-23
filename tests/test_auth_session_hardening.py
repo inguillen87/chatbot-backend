@@ -5,7 +5,7 @@ import pytest
 
 from database import db
 from models import TenantProfile, User
-from utils.auth_helpers import auth_session_version
+from utils.auth_helpers import auth_session_version, generar_token
 
 
 def _create_user(*, email: str = "session@test.com", role: str = "admin") -> User:
@@ -195,6 +195,53 @@ def test_token_required_rejects_inactive_tenant_flask_session_cookie(client):
     assert payload["reason_code"] == "token_expired"
     assert payload["error"]["message"] == "Token inválido o sesión expirada"
     assert "tenant" not in str(payload).lower()
+
+
+def test_explicit_bearer_identity_overrides_stale_flask_session(client):
+    with client.application.app_context():
+        stale_user = _create_user(email="stale-session@test.com")
+        bearer_user = _create_user(email="fresh-bearer@test.com", role="empleado")
+        token = generar_token(
+            bearer_user.id,
+            bearer_user.rol,
+            bearer_user.tipo_chat,
+            bearer_user.municipio_id,
+            bearer_user.pyme_id,
+        )
+        stale_user_id = stale_user.id
+        bearer_user_id = bearer_user.id
+
+    with client.session_transaction() as flask_session:
+        flask_session["_user_id"] = str(stale_user_id)
+        flask_session["_fresh"] = True
+
+    response = client.get(
+        "/auth/token-info",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["id"] == bearer_user_id
+    assert payload["rol"] == "empleado"
+
+
+def test_invalid_explicit_bearer_does_not_fall_back_to_flask_session(client):
+    with client.application.app_context():
+        session_user = _create_user(email="invalid-bearer-session@test.com")
+        session_user_id = session_user.id
+
+    with client.session_transaction() as flask_session:
+        flask_session["_user_id"] = str(session_user_id)
+        flask_session["_fresh"] = True
+
+    response = client.get(
+        "/auth/token-info",
+        headers={"Authorization": "Bearer invalid.jwt.value"},
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["reason_code"] == "token_expired"
 
 
 @pytest.mark.parametrize("deactivation_method", ("delete", "put"))

@@ -1335,8 +1335,50 @@ def token_requerido(f):
         g.widget_session = False
         g.widget_owner_user = None
 
+        # A caller that sends an explicit bearer JWT is intentionally choosing
+        # that identity. Do not let an older Flask-Login cookie silently win:
+        # browsers can otherwise render one tenant while authorizing requests
+        # with the freshly issued token of another tenant.
+        authorization_header = request.headers.get("Authorization", "").strip()
+        has_explicit_bearer_jwt = bool(
+            authorization_header.lower().startswith("bearer ")
+            and raw_token
+            and _is_jwt_token(raw_token)
+        )
+        explicit_token_user = user_from_token(raw_token) if has_explicit_bearer_jwt else None
+        if has_explicit_bearer_jwt and explicit_token_user is None:
+            return _auth_error("Token inválido o sesión expirada", 401, "token_expired")
+
+        session_is_authenticated = bool(
+            hasattr(current_user, "is_authenticated") and current_user.is_authenticated
+        )
+        explicit_identity_conflict = bool(
+            session_is_authenticated
+            and explicit_token_user is not None
+            and explicit_token_user.id != current_user.id
+        )
+
+        if explicit_identity_conflict and (
+            is_clerk_managed_user(current_user)
+            or is_super_admin_role(getattr(current_user, "rol", None))
+        ):
+            return _auth_error(
+                "El superadmin debe iniciar sesion con Clerk",
+                403,
+                "clerk_required",
+            )
+
+        if explicit_identity_conflict:
+            current_app.logger.warning(
+                "[token_requerido] Explicit bearer identity overrides stale Flask session "
+                "session_user_id=%s token_user_id=%s path=%s",
+                current_user.id,
+                explicit_token_user.id,
+                request.path,
+            )
+
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
-        if hasattr(current_user, 'is_authenticated') and current_user.is_authenticated:
+        if session_is_authenticated and not explicit_identity_conflict:
             if not user_tenant_auth_allowed(current_user):
                 return _auth_error(
                     "Token inválido o sesión expirada",
@@ -1370,7 +1412,7 @@ def token_requerido(f):
 
         token = raw_token
         token_payload: Dict[str, Any] = {}
-        user = user_from_token(token)
+        user = explicit_token_user or user_from_token(token)
 
         if user:
             token_payload = _decode_token_payload(token)
