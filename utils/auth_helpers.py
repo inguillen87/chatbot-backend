@@ -336,9 +336,8 @@ def _demo_token_fallback_owner(token: Optional[str]) -> Optional[User]:
 
     user_query = _safe_user_query()
     normalized_token = _normalize_alias_value(token)
-    if not normalized_token:
-        # Fallback to simple strip/lower if normalization fails (shouldn't happen)
-        normalized_token = token.strip().lower()
+    if not normalized_token or not normalized_token.startswith("demo"):
+        return None
 
     slug = normalized_token
     for prefix in (
@@ -1335,13 +1334,17 @@ def token_requerido(f):
         g.widget_session = False
         g.widget_owner_user = None
 
-        # A caller that sends an explicit bearer JWT is intentionally choosing
-        # that identity. Do not let an older Flask-Login cookie silently win:
-        # browsers can otherwise render one tenant while authorizing requests
-        # with the freshly issued token of another tenant.
+        # A caller that sends an explicit Bearer credential is intentionally
+        # choosing that identity. Do not let an older Flask-Login cookie win:
+        # Bearer credentials can be JWTs or static widget/entity tokens, and
+        # either form must be validated instead of silently falling back to an
+        # ambient panel session from another tenant.
         authorization_header = request.headers.get("Authorization", "").strip()
+        has_explicit_bearer = bool(
+            re.match(r"^bearer(?:\s|$)", authorization_header, flags=re.IGNORECASE)
+        )
         has_explicit_bearer_jwt = bool(
-            authorization_header.lower().startswith("bearer ")
+            has_explicit_bearer
             and raw_token
             and _is_jwt_token(raw_token)
         )
@@ -1378,7 +1381,7 @@ def token_requerido(f):
             )
 
         # Primero, verificar si el usuario ya está autenticado vía Flask-Login (sesión de cookie)
-        if session_is_authenticated and not explicit_identity_conflict:
+        if session_is_authenticated and not has_explicit_bearer:
             if not user_tenant_auth_allowed(current_user):
                 return _auth_error(
                     "Token inválido o sesión expirada",

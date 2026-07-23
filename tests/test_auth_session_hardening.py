@@ -226,7 +226,14 @@ def test_explicit_bearer_identity_overrides_stale_flask_session(client):
     assert payload["rol"] == "empleado"
 
 
-def test_invalid_explicit_bearer_does_not_fall_back_to_flask_session(client):
+@pytest.mark.parametrize(
+    "bearer_value",
+    ("invalid.jwt.value", "opaque-invalid-token", ""),
+)
+def test_invalid_explicit_bearer_does_not_fall_back_to_flask_session(
+    client,
+    bearer_value,
+):
     with client.application.app_context():
         session_user = _create_user(email="invalid-bearer-session@test.com")
         session_user_id = session_user.id
@@ -237,11 +244,33 @@ def test_invalid_explicit_bearer_does_not_fall_back_to_flask_session(client):
 
     response = client.get(
         "/auth/token-info",
-        headers={"Authorization": "Bearer invalid.jwt.value"},
+        headers={"Authorization": f"Bearer {bearer_value}".rstrip()},
     )
 
     assert response.status_code == 401
     assert response.get_json()["reason_code"] == "token_expired"
+
+
+def test_explicit_static_widget_bearer_overrides_stale_flask_session(client):
+    with client.application.app_context():
+        stale_user = _create_user(email="stale-static-session@test.com")
+        widget_owner = _create_user(email="explicit-static-widget@test.com")
+        widget_owner.entity_token = "explicit-static-widget-token"
+        db.session.commit()
+        stale_user_id = stale_user.id
+        widget_owner_id = widget_owner.id
+
+    with client.session_transaction() as flask_session:
+        flask_session["_user_id"] = str(stale_user_id)
+        flask_session["_fresh"] = True
+
+    response = client.get(
+        "/auth/token-info",
+        headers={"Authorization": "Bearer explicit-static-widget-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["id"] == widget_owner_id
 
 
 @pytest.mark.parametrize("deactivation_method", ("delete", "put"))
