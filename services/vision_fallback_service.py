@@ -1,14 +1,32 @@
 import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import threading
 from ast import literal_eval
 from typing import Any, Dict, Optional
+
 import httpx
+from flask import current_app, has_app_context
 from openai import OpenAI
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_OPENAI_VISION_MODEL = "gpt-5.6-sol"
+_CLIENT_LOCK = threading.Lock()
+_OPENAI_CLIENT: Optional[OpenAI] = None
+_OPENAI_CLIENT_KEY_DIGEST: Optional[str] = None
+
+
+class OpenAIAmbiguousVisionFailure(RuntimeError):
+    """The provider call may have been accepted; callers must not resubmit it."""
+
+
+class OpenAIConfigurationError(RuntimeError):
+    """OpenAI cannot be called because required local configuration is missing."""
 
 TABLE_SCHEMA_ONLY = {
     "type": "object",
@@ -57,8 +75,117 @@ def _huggingface_vision_enabled() -> bool:
     return _truthy_env("VISION_HUGGINGFACE_ENABLED", "HUGGINGFACE_VISION_ENABLED")
 
 
-def _openai_model(default_model: str = "gpt-4o") -> str:
-    return os.getenv("OPENAI_MODEL", default_model)
+def _configured_value(config_key: str, env_key: Optional[str] = None) -> Optional[str]:
+    if has_app_context():
+        value = current_app.config.get(config_key)
+        if value not in (None, ""):
+            return str(value).strip()
+    value = os.getenv(env_key or config_key)
+    return str(value).strip() if value not in (None, "") else None
+
+
+def _openai_model(default_model: str = DEFAULT_OPENAI_VISION_MODEL) -> str:
+    return (
+        _configured_value("OPENAI_VISION_MODEL")
+        or _configured_value("OPENAI_MODEL")
+        or default_model
+    )
+
+
+def _get_openai_client() -> OpenAI:
+    """Build the SDK client lazily after Flask/dotenv configuration is loaded."""
+
+    api_key = _configured_value("OPENAI_API_KEY")
+    if not api_key:
+        raise OpenAIConfigurationError("OPENAI_API_KEY is not configured")
+
+    key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
+    global _OPENAI_CLIENT, _OPENAI_CLIENT_KEY_DIGEST
+    with _CLIENT_LOCK:
+        if _OPENAI_CLIENT is None or _OPENAI_CLIENT_KEY_DIGEST != key_digest:
+            http_client = httpx.Client(proxy=None, trust_env=False)
+            timeout_raw = _configured_value("OPENAI_VISION_TIMEOUT_SECONDS") or "30"
+            try:
+                timeout_seconds = max(1.0, min(float(timeout_raw), 120.0))
+            except (TypeError, ValueError):
+                timeout_seconds = 30.0
+            _OPENAI_CLIENT = OpenAI(
+                api_key=api_key,
+                http_client=http_client,
+                max_retries=0,
+                timeout=timeout_seconds,
+            )
+            _OPENAI_CLIENT_KEY_DIGEST = key_digest
+    return _OPENAI_CLIENT
+
+
+def _response_output_text(response: Any) -> str:
+    direct = getattr(response, "output_text", None)
+    if direct:
+        return str(direct).strip()
+
+    parts = []
+    for output_item in getattr(response, "output", None) or []:
+        content = (
+            output_item.get("content")
+            if isinstance(output_item, dict)
+            else getattr(output_item, "content", None)
+        )
+        for content_item in content or []:
+            content_text = (
+                content_item.get("text")
+                if isinstance(content_item, dict)
+                else getattr(content_item, "text", None)
+            )
+            if content_text:
+                parts.append(str(content_text))
+    return "".join(parts).strip()
+
+
+def _image_mime_type(image_bytes: bytes) -> str:
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if image_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
+def _image_data_url(image_bytes: bytes) -> str:
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{_image_mime_type(image_bytes)};base64,{encoded}"
+
+
+def _max_output_tokens() -> int:
+    raw = _configured_value("OPENAI_VISION_MAX_OUTPUT_TOKENS") or "4096"
+    try:
+        return max(1, min(int(raw), 32768))
+    except (TypeError, ValueError):
+        return 4096
+
+
+def _privacy_safe_identifier(subject: object) -> Optional[str]:
+    """Return a stable HMAC identifier without sending source PII upstream."""
+
+    raw_subject = str(subject or "").strip()
+    secret = (
+        _configured_value("OPENAI_SAFETY_IDENTIFIER_SECRET")
+        or _configured_value("AI_SAFETY_IDENTIFIER_SECRET")
+        or ""
+    )
+    if not raw_subject or not secret:
+        return None
+    return hmac.new(
+        secret.encode("utf-8"),
+        raw_subject.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _content_safety_subject(prefix: str, content: bytes | str) -> str:
+    payload = content if isinstance(content, bytes) else content.encode("utf-8")
+    return f"{prefix}:{hashlib.sha256(payload).hexdigest()}"
 
 def _ensure_json_prompt(prompt: str) -> str:
     suffix = "\nResponde solo JSON válido sin texto adicional."
@@ -112,14 +239,10 @@ def _safe_json_loads(text: str) -> Dict[str, Any]:
         except Exception:
             continue
 
-    if text:
-        snippet = text[:800]
-        logger.warning(
-            "No se pudo parsear JSON válido desde la respuesta del modelo. Raw snippet: %s",
-            snippet,
-        )
-    else:
-        logger.warning("No se pudo parsear JSON válido desde la respuesta del modelo.")
+    logger.warning(
+        "OpenAI structured output could not be parsed response_chars=%s",
+        len(text or ""),
+    )
     return {}
 
 
@@ -127,230 +250,199 @@ def _call_openai(
     image_bytes: bytes,
     custom_prompt: Optional[str] = None,
     schema: Optional[Dict[str, Any]] = None,
+    *,
+    schema_name: str = "vision_payload",
+    safety_subject: object = None,
 ) -> Optional[Dict[str, Any]]:
-    """Analyze an image using OpenAI's vision models."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not found in environment variables.")
-        return None
+    """Analyze an image once through Responses with strict structured output."""
     try:
-        b64 = base64.b64encode(image_bytes).decode("utf-8")
-        # Use a client that ignores proxy environment variables to avoid
-        # `Client.__init__()` receiving unsupported arguments.
-        http_client = httpx.Client(proxy=None, trust_env=False)
-        client = OpenAI(api_key=api_key, http_client=http_client)
-        prompt = custom_prompt or (
+        client = _get_openai_client()
+    except OpenAIConfigurationError:
+        logger.warning("OpenAI vision skipped reason=missing_api_key")
+        return None
+
+    prompt = _ensure_json_prompt(
+        custom_prompt
+        or (
             "Describe la imagen en español para un sistema de reclamos municipales. "
             "Devuelve un JSON con las claves: labels (lista de palabras clave en español), "
             "objects (lista de objetos principales en español) y text (cadena con cualquier texto encontrado en español)."
         )
-        prompt = _ensure_json_prompt(prompt)
-
-        model = _openai_model()
-
-        schema = schema or VISION_SCHEMA
-
-        # Use the modern Responses API when available; otherwise fall back
-        # to chat completions for older OpenAI client versions. If the
-        # Responses API call fails for any reason, attempt the chat
-        # completions path.
-        text = ""
-        if hasattr(client, "responses"):
-            try:
-                response = client.responses.create(
-                    model=model,
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
-                        ],
-                    }],
-                    max_output_tokens=4096,
-                    temperature=0,
-                    text={
-                        "format": {
-                            "type": "json_schema",
-                            "name": "vision_payload",
-                            "schema": schema,
-                            "strict": True,
-                        }
+    )
+    model = _openai_model()
+    request: Dict[str, Any] = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {
+                        "type": "input_image",
+                        "image_url": _image_data_url(image_bytes),
+                        "detail": "auto",
                     },
-                )
-                text = getattr(response, "output_text", "") or response.output[0].content[0].text
-            except Exception as exc:
-                logger.warning("Responses API unavailable (%s); falling back to chat completions", exc)
+                ],
+            }
+        ],
+        "max_output_tokens": _max_output_tokens(),
+        "store": False,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "schema": schema or VISION_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+    safety_identifier = _privacy_safe_identifier(
+        safety_subject or _content_safety_subject("image", image_bytes)
+    )
+    if safety_identifier:
+        request["safety_identifier"] = safety_identifier
 
-        if not text:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                max_tokens=4096,
-                temperature=0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "vision_payload",
-                        "schema": schema,
-                        "strict": True,
-                    },
-                },
-            )
-            message = completion.choices[0].message
-            # ``message`` may be a dict (old SDK) or a pydantic object (new SDK)
-            content = (
-                message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            )
-            if isinstance(content, list):
-                parts = []
-                for part in content:
-                    parts.append(
-                        part.get("text") if isinstance(part, dict) else getattr(part, "text", "")
-                    )
-                text = "".join(parts)
-            else:
-                text = content
-
-        if not text:
-            raise ValueError("No content returned from OpenAI")
-        return _safe_json_loads(text)
-    except Exception as e:
-        logger.error(f"OpenAI Vision failed: {e}", exc_info=True)
-        return None
-
-
-def _call_openai_image_text(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[str]:
-    """Extract raw text from an image using OpenAI (no JSON enforcement)."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not found in environment variables.")
-        return None
     try:
-        b64 = base64.b64encode(image_bytes).decode("utf-8")
-        http_client = httpx.Client(proxy=None, trust_env=False)
-        client = OpenAI(api_key=api_key, http_client=http_client)
-        prompt = custom_prompt or (
-            "Extrae TODO el texto visible de la imagen respetando saltos de línea. "
-            "No agregues explicaciones."
-        )
-
-        model = _openai_model()
-        text = ""
-        if hasattr(client, "responses"):
-            try:
-                response = client.responses.create(
-                    model=model,
-                    input=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": prompt},
-                            {"type": "input_image", "image": {"data": b64, "mime_type": "image/jpeg"}},
-                        ],
-                    }],
-                    max_output_tokens=4096,
-                )
-                text = getattr(response, "output_text", "") or response.output[0].content[0].text
-            except Exception as exc:
-                logger.warning("Responses API unavailable for OCR (%s); falling back to chat completions", exc)
-
-        if not text:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                }],
-                max_tokens=4096,
-            )
-            message = completion.choices[0].message
-            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            text = content if isinstance(content, str) else ""
-
-        return text.strip() or None
+        response = client.responses.create(**request)
     except Exception as exc:
-        logger.error("OpenAI OCR failed: %s", exc, exc_info=True)
+        logger.warning(
+            "OpenAI vision request failed model=%s error_type=%s fallback_suppressed=true",
+            model,
+            type(exc).__name__,
+        )
+        raise OpenAIAmbiguousVisionFailure("OpenAI vision request outcome is ambiguous") from exc
+
+    response_text = _response_output_text(response)
+    if not response_text:
+        logger.warning("OpenAI vision returned empty output model=%s", model)
         return None
+    result = _safe_json_loads(response_text)
+    logger.info(
+        "OpenAI vision completed model=%s response_chars=%s parsed=%s",
+        model,
+        len(response_text),
+        bool(result),
+    )
+    return result or None
+
+
+def _call_openai_image_text(
+    image_bytes: bytes,
+    custom_prompt: Optional[str] = None,
+    *,
+    safety_subject: object = None,
+) -> Optional[str]:
+    """Extract raw image text once through Responses."""
+    try:
+        client = _get_openai_client()
+    except OpenAIConfigurationError:
+        logger.warning("OpenAI OCR skipped reason=missing_api_key")
+        return None
+
+    prompt = custom_prompt or (
+        "Extrae TODO el texto visible de la imagen respetando saltos de línea. "
+        "No agregues explicaciones."
+    )
+    model = _openai_model()
+    request: Dict[str, Any] = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": prompt},
+                    {
+                        "type": "input_image",
+                        "image_url": _image_data_url(image_bytes),
+                        "detail": "auto",
+                    },
+                ],
+            }
+        ],
+        "max_output_tokens": _max_output_tokens(),
+        "store": False,
+    }
+    safety_identifier = _privacy_safe_identifier(
+        safety_subject or _content_safety_subject("image", image_bytes)
+    )
+    if safety_identifier:
+        request["safety_identifier"] = safety_identifier
+    try:
+        response = client.responses.create(**request)
+    except Exception as exc:
+        logger.warning(
+            "OpenAI OCR request failed model=%s error_type=%s fallback_suppressed=true",
+            model,
+            type(exc).__name__,
+        )
+        raise OpenAIAmbiguousVisionFailure("OpenAI OCR request outcome is ambiguous") from exc
+    return _response_output_text(response) or None
 
 
 def _call_openai_text(
     text: str,
     custom_prompt: Optional[str] = None,
     schema: Optional[Dict[str, Any]] = None,
+    *,
+    safety_subject: object = None,
 ) -> Optional[Dict[str, Any]]:
-    """Analyze text using OpenAI and return structured JSON."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.error("OPENAI_API_KEY not found in environment variables.")
-        return None
+    """Analyze text once through Responses and return structured JSON."""
     try:
-        http_client = httpx.Client(proxy=None, trust_env=False)
-        client = OpenAI(api_key=api_key, http_client=http_client)
-        prompt = custom_prompt or (
+        client = _get_openai_client()
+    except OpenAIConfigurationError:
+        logger.warning("OpenAI text analysis skipped reason=missing_api_key")
+        return None
+
+    prompt = _ensure_json_prompt(
+        custom_prompt
+        or (
             "Extrae la tabla del catálogo en JSON con claves "
             "'columns' (lista de strings) y 'rows' (lista de listas ordenadas según columns). "
             "No inventes datos, deja vacío si no se ve."
         )
-        prompt = _ensure_json_prompt(prompt)
+    )
+    model = _openai_model()
+    request: Dict[str, Any] = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}
+                ],
+            }
+        ],
+        "max_output_tokens": _max_output_tokens(),
+        "store": False,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "catalog_table",
+                "schema": schema or TABLE_SCHEMA_ONLY,
+                "strict": True,
+            }
+        },
+    }
+    safety_identifier = _privacy_safe_identifier(
+        safety_subject or _content_safety_subject("text", text)
+    )
+    if safety_identifier:
+        request["safety_identifier"] = safety_identifier
+    try:
+        response = client.responses.create(**request)
+    except Exception as exc:
+        logger.warning(
+            "OpenAI text analysis request failed model=%s error_type=%s fallback_suppressed=true",
+            model,
+            type(exc).__name__,
+        )
+        raise OpenAIAmbiguousVisionFailure("OpenAI text request outcome is ambiguous") from exc
 
-        model = _openai_model()
-        schema = schema or TABLE_SCHEMA_ONLY
-        text_response = ""
-        if hasattr(client, "responses"):
-            response = client.responses.create(
-                model=model,
-                input=[{
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": f"{prompt}\n\n{str(text)}"}],
-                }],
-                max_output_tokens=4096,
-                temperature=0,
-                text={
-                    "format": {
-                        "type": "json_schema",
-                        "name": "catalog_table",
-                        "schema": schema,
-                        "strict": True,
-                    }
-                },
-            )
-            text_response = getattr(response, "output_text", "") or response.output[0].content[0].text
-        if not text_response:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=[{
-                    "role": "user",
-                    "content": f"{prompt}\n\n{str(text)}",
-                }],
-                max_tokens=4096,
-                temperature=0,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "catalog_table",
-                        "schema": schema,
-                        "strict": True,
-                    },
-                },
-            )
-            message = completion.choices[0].message
-            content = message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
-            text_response = content if isinstance(content, str) else ""
-
-        if not text_response:
-            raise ValueError("No content returned from OpenAI")
-        return _safe_json_loads(text_response)
-    except Exception as e:
-        logger.error(f"OpenAI text analysis failed: {e}", exc_info=True)
+    response_text = _response_output_text(response)
+    if not response_text:
+        logger.warning("OpenAI text analysis returned empty output model=%s", model)
         return None
+    return _safe_json_loads(response_text) or None
 
 def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Analyze an image using Cohere's multimodal API."""
@@ -386,8 +478,8 @@ def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
             )
             text = resp.generations[0].text
         return json.loads(text)
-    except Exception as e:
-        logger.error(f"Cohere vision failed: {e}", exc_info=True)
+    except Exception as exc:
+        logger.warning("Cohere vision failed error_type=%s", type(exc).__name__)
         return None
 
 
@@ -399,7 +491,7 @@ def _call_huggingface(image_bytes: bytes) -> Optional[Dict[str, Any]]:
 
         return analyze_image_for_chatboc(image_bytes)
     except Exception as exc:
-        logger.error("Hugging Face vision failed: %s", exc, exc_info=True)
+        logger.warning("Hugging Face vision failed error_type=%s", type(exc).__name__)
         return None
 
 
@@ -419,7 +511,11 @@ def _normalize_result(result: Dict[str, Any]) -> Dict[str, Any]:
 
 def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Analyze image bytes using OpenAI, with optional Cohere fallback."""
-    result = _call_openai(image_bytes, custom_prompt=prompt, schema=VISION_SCHEMA)
+    try:
+        result = _call_openai(image_bytes, custom_prompt=prompt, schema=VISION_SCHEMA)
+    except OpenAIAmbiguousVisionFailure:
+        logger.warning("Vision provider fallback suppressed reason=ambiguous_openai_outcome")
+        return {"labels": [], "objects": []}
     if result:
         return _normalize_result(result)
     if _cohere_vision_enabled():
@@ -440,7 +536,11 @@ def analyze_image_smart(image_bytes: bytes, prompt: Optional[str] = None) -> Dic
 
 def analyze_image_structured(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
     """Analyze image bytes and return provider JSON without normalization."""
-    result = _call_openai(image_bytes, custom_prompt=prompt, schema=TABLE_SCHEMA_ONLY)
+    try:
+        result = _call_openai(image_bytes, custom_prompt=prompt, schema=TABLE_SCHEMA_ONLY)
+    except OpenAIAmbiguousVisionFailure:
+        logger.warning("Structured vision fallback suppressed reason=ambiguous_openai_outcome")
+        return None
     if result:
         return result
     logger.warning("Structured vision failed for OpenAI; skipping Cohere structured fallback.")
@@ -450,12 +550,20 @@ def analyze_image_structured(image_bytes: bytes, prompt: str) -> Optional[Dict[s
 
 def analyze_image_text(image_bytes: bytes, prompt: Optional[str] = None) -> Optional[str]:
     """Extract raw text from image bytes."""
-    return _call_openai_image_text(image_bytes, custom_prompt=prompt)
+    try:
+        return _call_openai_image_text(image_bytes, custom_prompt=prompt)
+    except OpenAIAmbiguousVisionFailure:
+        logger.warning("OCR fallback suppressed reason=ambiguous_openai_outcome")
+        return None
 
 
 def analyze_text_structured(text: str, prompt: str) -> Optional[Dict[str, Any]]:
     """Analyze text and return provider JSON without normalization."""
-    result = _call_openai_text(text, custom_prompt=prompt, schema=TABLE_SCHEMA_ONLY)
+    try:
+        result = _call_openai_text(text, custom_prompt=prompt, schema=TABLE_SCHEMA_ONLY)
+    except OpenAIAmbiguousVisionFailure:
+        logger.warning("Structured text fallback suppressed reason=ambiguous_openai_outcome")
+        return None
     if result:
         return result
     logger.error("Structured text analysis failed")

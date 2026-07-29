@@ -5,6 +5,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
+from models import EncRespuesta, MunicipioTicket, PymeTicket
 
 
 class OfflineSyncTestConfig(Config):
@@ -29,35 +30,53 @@ class OfflineSyncContractsTest(unittest.TestCase):
         db.drop_all()
         self.ctx.pop()
 
-    def test_survey_sync_ack_contract(self):
-        response = self.client.post(
-            "/api/surveys/sync",
-            json={"responses": [{"id": "resp-1"}]},
-            headers={"X-Request-Id": "sync-survey-1", "Idempotency-Key": "survey-sync-key"},
+    def test_non_durable_sync_endpoints_are_retired_fail_closed(self):
+        cases = (
+            {
+                "path": "/api/surveys/sync",
+                "payload": {"responses": [{"id": "resp-1"}]},
+                "request_id": "sync-survey-1",
+                "canonical_endpoint": "/api/v2/public/surveys/{public_token}/respond",
+            },
+            {
+                "path": "/api/tickets/draft/sync",
+                "payload": {"title": "Borrador ticket"},
+                "request_id": "sync-ticket-1",
+                "canonical_endpoint": "/api/pwa/app/tickets",
+            },
         )
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertTrue(payload.get("ok"))
-        self.assertEqual(payload.get("contract_version"), "surveys.sync.v1")
-        self.assertEqual(payload.get("request_id"), "sync-survey-1")
-        self.assertEqual(payload.get("synced"), 1)
-        self.assertEqual(payload.get("idempotency_key"), "survey-sync-key")
+        for case in cases:
+            with self.subTest(path=case["path"]):
+                response = self.client.post(
+                    case["path"],
+                    json=case["payload"],
+                    headers={
+                        "X-Request-Id": case["request_id"],
+                        "Idempotency-Key": f"key-{case['request_id']}",
+                    },
+                )
 
-    def test_ticket_draft_sync_ack_contract(self):
-        response = self.client.post(
-            "/api/tickets/draft/sync",
-            json={"title": "Borrador ticket"},
-            headers={"X-Request-Id": "sync-ticket-1", "Idempotency-Key": "ticket-sync-key"},
-        )
+                self.assertEqual(response.status_code, 410)
+                payload = response.get_json()
+                self.assertEqual(
+                    payload,
+                    {
+                        "action_hint": "use_canonical_endpoint",
+                        "canonical_endpoint": case["canonical_endpoint"],
+                        "contract_version": "offline.sync.retired.v1",
+                        "ok": False,
+                        "persisted": False,
+                        "reason_code": "non_durable_sync_endpoint",
+                        "request_id": case["request_id"],
+                        "retryable": False,
+                    },
+                )
+                self.assertEqual(response.headers.get("X-Request-Id"), case["request_id"])
 
-        self.assertEqual(response.status_code, 200)
-        payload = response.get_json()
-        self.assertTrue(payload.get("ok"))
-        self.assertEqual(payload.get("contract_version"), "tickets.draft_sync.v1")
-        self.assertEqual(payload.get("request_id"), "sync-ticket-1")
-        self.assertEqual(payload.get("ticket_id"), "TCK-TICKET-SYNC-KEY")
-        self.assertEqual(payload.get("idempotency_key"), "ticket-sync-key")
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        self.assertEqual(MunicipioTicket.query.count(), 0)
+        self.assertEqual(PymeTicket.query.count(), 0)
 
 
 if __name__ == "__main__":

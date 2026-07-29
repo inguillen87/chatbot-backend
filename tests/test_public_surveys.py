@@ -348,13 +348,19 @@ class PublicSurveyFlowTests(unittest.TestCase):
         seguridad_id = pregunta["opciones"][0]["id"]
 
         for i in range(6):
+            submission_id = f"public-live-results-{i:04d}"
             payload = {
+                "submission_id": submission_id,
                 "anon_id": f"seed-live-{i}",
                 "lat": -32.889 + (i * 0.001),
                 "lng": -68.845 + (i * 0.001),
                 "respuestas": [{"pregunta_id": pregunta_id, "opcion_ids": [seguridad_id]}],
             }
-            submit_resp = self.client.post(f"/api/public/encuestas/{slug}/responder", json=payload)
+            submit_resp = self.client.post(
+                f"/api/public/encuestas/{slug}/responder",
+                json=payload,
+                headers={"Idempotency-Key": submission_id},
+            )
             self.assertEqual(submit_resp.status_code, 201, submit_resp.get_json())
 
         live_resp = self.client.get(f"/api/public/encuestas/{slug}/live-results")

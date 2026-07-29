@@ -4,12 +4,26 @@ from __future__ import annotations
 
 from typing import Any
 from collections import defaultdict
+import uuid
 
 from flask import Blueprint, abort, current_app, g, jsonify, request
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import IntegrityError
 
 from database import db
 from models import TenantFollower, TenantProfile, TenantTicket
+from services.tenant_claim_receipts import (
+    TENANT_CLAIM_INTAKE_RECEIPT_CONTRACT_VERSION,
+    TENANT_CLAIM_RECEIPT_SECRET_VERSION,
+    TenantClaimReceiptSecretUnavailable,
+    TenantClaimValidationError,
+    build_tenant_claim_intake_receipt,
+    normalize_idempotency_key,
+    normalize_tenant_claim_payload,
+    tenant_claim_idempotency_hash,
+    tenant_claim_payload_matches,
+    tenant_claim_receipt_secret,
+)
 from utils.auth_decorators import require_auth, require_auth_optional
 from utils.fingerprint import hash_fingerprint
 from utils.time_utils import datetime_to_iso_utc
@@ -21,13 +35,65 @@ pwa_app_bp = Blueprint("pwa_app", __name__, url_prefix="/api/pwa/app")
 pwa_app_legacy_bp = Blueprint("pwa_app_legacy", __name__, url_prefix="/app")
 
 
-def _coerce_float(value: Any) -> float | None:
-    try:
-        if value is None or value == "":
-            return None
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+def _claim_intake_request_id() -> str:
+    incoming = str(
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or ""
+    ).strip()
+    if incoming and len(incoming) <= 128 and all(32 <= ord(char) < 127 for char in incoming):
+        return incoming
+    return uuid.uuid4().hex
+
+
+def _claim_intake_json(payload: dict[str, Any], status: int):
+    request_id = str(payload.get("request_id") or _claim_intake_request_id())
+    body = dict(payload)
+    body["request_id"] = request_id
+    response = jsonify(body)
+    response.status_code = status
+    response.headers["X-Request-Id"] = request_id
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _tenant_ticket_list_json(payload: dict[str, Any]):
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return response
+
+
+def _claim_intake_error(
+    reason_code: str,
+    message: str,
+    status: int,
+    *,
+    request_id: str,
+    retryable: bool = False,
+):
+    return _claim_intake_json(
+        {
+            "contract_version": TENANT_CLAIM_INTAKE_RECEIPT_CONTRACT_VERSION,
+            "ok": False,
+            "persisted": False,
+            "reason_code": reason_code,
+            "retryable": retryable,
+            "error": {"code": status, "message": message},
+            "request_id": request_id,
+        },
+        status,
+    )
+
+
+def _find_ticket_by_intake_hash(tenant_id: int, idempotency_hash: str) -> TenantTicket | None:
+    return TenantTicket.query.filter_by(
+        tenant_id=tenant_id,
+        intake_idempotency_hash=idempotency_hash,
+    ).first()
 
 
 def _normalize_estado(value: str | None) -> str:
@@ -145,34 +211,129 @@ def unfollow_tenant():
 @require_auth_optional
 def create_ticket():
     tenant = require_tenant()
-    payload = request.get_json(silent=True) or {}
-    descripcion_raw = payload.get("descripcion")
-    descripcion = descripcion_raw.strip() if isinstance(descripcion_raw, str) else None
-    if not descripcion:
-        abort(400, description="Debe indicar la descripción del reclamo")
+    request_id = _claim_intake_request_id()
+    canonical_route = request.blueprint != pwa_app_legacy_bp.name
 
-    categoria_raw = payload.get("categoria")
-    categoria = categoria_raw.strip() if isinstance(categoria_raw, str) else None
+    try:
+        idempotency_key = normalize_idempotency_key(
+            request.headers.get("Idempotency-Key"),
+            required=canonical_route,
+        )
+        secret = tenant_claim_receipt_secret(TENANT_CLAIM_RECEIPT_SECRET_VERSION)
+        normalized = normalize_tenant_claim_payload(request.get_json(silent=True))
+    except TenantClaimValidationError as exc:
+        return _claim_intake_error(
+            exc.reason_code,
+            exc.public_message,
+            400,
+            request_id=request_id,
+        )
+    except TenantClaimReceiptSecretUnavailable:
+        return _claim_intake_error(
+            "claim_receipt_unavailable",
+            "No podemos emitir el comprobante de seguimiento en este momento.",
+            503,
+            request_id=request_id,
+            retryable=True,
+        )
 
-    extras = payload.get("extras")
-    if not isinstance(extras, dict):
-        extras = None
+    idempotency_hash = None
+    if idempotency_key is not None:
+        idempotency_hash = tenant_claim_idempotency_hash(
+            tenant_id=tenant.id,
+            key=idempotency_key,
+            secret=secret,
+        )
+        existing = _find_ticket_by_intake_hash(tenant.id, idempotency_hash)
+        if existing is not None:
+            if not tenant_claim_payload_matches(existing, normalized.payload_hash):
+                return _claim_intake_error(
+                    "idempotency_key_conflict",
+                    "Idempotency-Key ya fue usado con otro reclamo.",
+                    409,
+                    request_id=request_id,
+                )
+            try:
+                receipt = build_tenant_claim_intake_receipt(
+                    existing,
+                    deduplicated=True,
+                    request_id=request_id,
+                    secret=secret,
+                )
+            except TenantClaimReceiptSecretUnavailable:
+                return _claim_intake_error(
+                    "claim_receipt_unavailable",
+                    "No podemos emitir el comprobante de seguimiento en este momento.",
+                    503,
+                    request_id=request_id,
+                    retryable=True,
+                )
+            return _claim_intake_json(receipt, 200)
 
     ticket = TenantTicket(
         tenant_id=tenant.id,
         user_id=getattr(getattr(g, "viewer", None), "id", None),
-        categoria=categoria,
-        descripcion=descripcion,
-        datos_extra=extras,
+        categoria=normalized.categoria,
+        descripcion=normalized.descripcion,
+        datos_extra=normalized.extras,
         origen="pwa",
-        latitud=_coerce_float(payload.get("lat")),
-        longitud=_coerce_float(payload.get("lng")),
+        latitud=normalized.latitud,
+        longitud=normalized.longitud,
         fingerprint=hash_fingerprint(request),
+        intake_idempotency_hash=idempotency_hash,
+        intake_payload_hash=normalized.payload_hash,
+        claim_receipt_secret_version=TENANT_CLAIM_RECEIPT_SECRET_VERSION,
     )
     db.session.add(ticket)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        if idempotency_hash is None:
+            raise
+        raced = _find_ticket_by_intake_hash(tenant.id, idempotency_hash)
+        if raced is None:
+            raise
+        if not tenant_claim_payload_matches(raced, normalized.payload_hash):
+            return _claim_intake_error(
+                "idempotency_key_conflict",
+                "Idempotency-Key ya fue usado con otro reclamo.",
+                409,
+                request_id=request_id,
+            )
+        try:
+            receipt = build_tenant_claim_intake_receipt(
+                raced,
+                deduplicated=True,
+                request_id=request_id,
+                secret=secret,
+            )
+        except TenantClaimReceiptSecretUnavailable:
+            return _claim_intake_error(
+                "claim_receipt_unavailable",
+                "No podemos emitir el comprobante de seguimiento en este momento.",
+                503,
+                request_id=request_id,
+                retryable=True,
+            )
+        return _claim_intake_json(receipt, 200)
 
-    return jsonify({"ticket_id": ticket.id, "estado": ticket.estado}), 201
+    try:
+        receipt = build_tenant_claim_intake_receipt(
+            ticket,
+            deduplicated=False,
+            request_id=request_id,
+            secret=secret,
+        )
+    except TenantClaimReceiptSecretUnavailable:
+        return _claim_intake_error(
+            "claim_receipt_unavailable",
+            "El reclamo fue registrado, pero no podemos emitir el comprobante en este momento.",
+            503,
+            request_id=request_id,
+            retryable=True,
+        )
+    return _claim_intake_json(receipt, 201)
 
 
 @pwa_app_bp.get("/tickets")
@@ -182,14 +343,29 @@ def list_tickets():
     user = getattr(g, "viewer", None)
     fingerprint = hash_fingerprint(request)
 
-    base_filters = [TenantTicket.tenant_id == tenant.id]
-    if user and fingerprint:
-        base_filters.append(or_(TenantTicket.user_id == user.id, TenantTicket.fingerprint == fingerprint))
-    elif user:
-        base_filters.append(TenantTicket.user_id == user.id)
-    elif fingerprint:
-        base_filters.append(TenantTicket.fingerprint == fingerprint)
-    else:
+    visibility_filters = []
+    if user is not None:
+        # An authenticated claimant always keeps access to their own rows,
+        # including receipt-backed T- claims.
+        viewer_id = getattr(user, "id", None)
+        if viewer_id is not None:
+            visibility_filters.append(TenantTicket.user_id == viewer_id)
+
+    if fingerprint:
+        # Compatibility boundary: fingerprint lookup is retained exclusively
+        # for pre-receipt legacy rows. Receipt-backed claims require an actual
+        # authenticated ticket owner; this PWA route grants no backoffice role
+        # override.
+        visibility_filters.append(
+            and_(
+                TenantTicket.claim_receipt_secret_version.is_(None),
+                TenantTicket.intake_idempotency_hash.is_(None),
+                TenantTicket.intake_payload_hash.is_(None),
+                TenantTicket.fingerprint == fingerprint,
+            )
+        )
+
+    if not visibility_filters:
         empty_payload = {
             "tickets": [],
             "summary": {"nuevo": 0, "en_proceso": 0, "resuelto": 0, "otros": 0, "total": 0},
@@ -202,7 +378,12 @@ def list_tickets():
                 "has_prev": False,
             },
         }
-        return jsonify(empty_payload)
+        return _tenant_ticket_list_json(empty_payload)
+
+    base_filters = [
+        TenantTicket.tenant_id == tenant.id,
+        or_(*visibility_filters),
+    ]
 
     requested_estado = request.args.get("estado")
 
@@ -278,7 +459,7 @@ def list_tickets():
         "pagination": pagination,
     }
 
-    return jsonify(payload)
+    return _tenant_ticket_list_json(payload)
 
 
 # --- Rutas espejo para compatibilidad con clientes antiguos ---

@@ -545,6 +545,10 @@ class Config:
 
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
+    # Dedicated/versioned HMAC boundary for TenantTicket intake receipts.  It
+    # intentionally has no SECRET_KEY fallback: creation and tracking fail
+    # closed when it is absent or shorter than 32 UTF-8 bytes.
+    TENANT_CLAIM_RECEIPT_SECRET_V1 = os.getenv("TENANT_CLAIM_RECEIPT_SECRET_V1", "")
     # Dedicated rotation boundary for one-time WhatsApp Flow correlation tokens.
     # Native Flows stay disabled when this value is missing or too short.
     WHATSAPP_FLOW_TOKEN_KEY_V1 = os.getenv("WHATSAPP_FLOW_TOKEN_KEY_V1", "")
@@ -766,6 +770,9 @@ class Config:
     TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
     TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
     TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
+    # Dedicated PSTN number verified for Voice. Never fall back to a WhatsApp
+    # sender when initiating callbacks.
+    TWILIO_VOICE_PHONE_NUMBER = os.getenv("TWILIO_VOICE_PHONE_NUMBER")
     TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
     TWILIO_FALLBACK_VOICE = os.getenv("TWILIO_FALLBACK_VOICE", "Polly.Lupe-Neural")
     TWILIO_FALLBACK_SAY_LANGUAGE = os.getenv("TWILIO_FALLBACK_SAY_LANGUAGE", "es-US")
@@ -940,7 +947,19 @@ class Config:
     PUSHER_CLUSTER = os.getenv("PUSHER_CLUSTER")
 
     # WhatsApp Welcome Message Configuration
-    WELCOME_TEMPLATE_SID = os.getenv("WELCOME_TEMPLATE_SID", "HXaf135ced6edd005551a456bbb2258d4a")
+    # Fail closed when no reviewed welcome template is configured.  The old
+    # hard-coded ContentSid referenced a media template that Twilio accepted
+    # asynchronously and then rejected with 63019, so a deployment with an
+    # empty registry kept attempting a known-bad template.  The webhook first
+    # resolves an approved tenant/manifest template and only uses this value as
+    # an explicit deployment override.
+    WELCOME_TEMPLATE_SID = os.getenv("WELCOME_TEMPLATE_SID")
+    # A checked-in approval snapshot is only a short-lived fallback when the
+    # tenant registry is unavailable.  Old snapshots fail closed instead of
+    # being treated as permanent proof of provider deliverability.
+    TWILIO_TEMPLATE_MANIFEST_MAX_AGE_HOURS = float(
+        os.getenv("TWILIO_TEMPLATE_MANIFEST_MAX_AGE_HOURS", "168")
+    )
     WELCOME_MESSAGE_DELAY_SECONDS = int(os.getenv("WELCOME_MESSAGE_DELAY_SECONDS", "5"))
     WELCOME_MEDIA_URL = os.getenv(
         "WELCOME_MEDIA_URL",

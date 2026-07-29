@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import current_app, has_app_context
 
-from models import ArchivoAdjunto, MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TicketComentario
+from models import ArchivoAdjunto, MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TenantTicket, TicketComentario
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
 from services.live_chat_schedule import build_tenant_live_chat_status
@@ -1022,6 +1022,84 @@ def build_claim_tracking_experience(ticket: MunicipioTicket, tenant: TenantProfi
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "timeline_only_when_no_coordinates",
             "support_component": "ticket_bound_helpdesk",
+        },
+    }
+
+
+def build_tenant_claim_tracking_experience(
+    ticket: TenantTicket,
+    tenant: TenantProfile | None = None,
+) -> dict[str, Any]:
+    """Build the isolated, read-only tracking view for receipt-backed claims.
+
+    ``TenantTicket`` has no public comment surface.  In particular, this
+    builder must never serialize ``datos_extra`` wholesale or echo any intake
+    credential/hash into the response.
+    """
+
+    code = f"T-{ticket.id}"
+    location = {
+        "address": None,
+        "district": None,
+        "lat": ticket.latitud,
+        "lng": ticket.longitud,
+    }
+    created_at = _iso(ticket.created_at)
+    updated_at = _iso(ticket.updated_at) or created_at
+    timeline = [
+        {
+            "id": f"tenant-claim-created-{ticket.id}",
+            "type": "claim.created",
+            "label": "Reclamo recibido",
+            "created_at": created_at,
+        },
+        {
+            "id": f"tenant-claim-status-{ticket.id}",
+            "type": "claim.status",
+            "label": "Estado actual",
+            "status": ticket.estado,
+            "created_at": updated_at,
+        },
+    ]
+    return {
+        "contract_version": TRACKING_EXPERIENCE_CONTRACT_VERSION,
+        "kind": "claim",
+        "tenant": _tenant_ref(tenant),
+        "resource": {
+            "id": ticket.id,
+            "code": code,
+            "source_model": "TenantTicket",
+            "category": ticket.categoria,
+            "subject": ticket.categoria or "Reclamo",
+            "channel": ticket.origen,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        },
+        "status": _stage_payload(ticket.estado, kind="claim"),
+        "location": location,
+        "map": _tracking_map(location),
+        "attachments": [],
+        "timeline": timeline,
+        "support": {
+            "enabled": False,
+            "mode": "disabled",
+            "reason_code": "tenant_claim_messages_not_supported",
+            "conversation": {"enabled": False, "messages": []},
+        },
+        "actions": [
+            {
+                "id": "open_tracking_page",
+                "label": "Abrir seguimiento",
+                "url": f"/tracking/claim/{code}",
+                "requires_pin": True,
+                "credential_transport": "x-tracking-pin-header",
+            }
+        ],
+        "frontend_contract": {
+            "render_as": "tracking_map_timeline",
+            "primary_refresh_seconds": 30,
+            "empty_state_behavior": "timeline_only_when_no_coordinates",
+            "support_component": None,
         },
     }
 

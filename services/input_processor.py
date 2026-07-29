@@ -38,7 +38,11 @@ class InputProcessor:
         media_info = {}
         location_info = {}
 
-        logger.debug(f"[InputProcessor] Processing input from channel '{channel}'. Payload: {payload}")
+        logger.debug(
+            "[InputProcessor] Processing input channel=%s payload_keys=%s",
+            channel,
+            sorted(str(key) for key in payload.keys()),
+        )
 
         # 1. Extract Text
         if 'pregunta' in payload and isinstance(payload['pregunta'], str):
@@ -53,7 +57,7 @@ class InputProcessor:
                 mime_type = payload.get('MediaContentType0')
                 if media_url and mime_type:
                     media_info = {'url': media_url, 'mime_type': mime_type, 'source': 'whatsapp'}
-                    logger.info(f"WhatsApp media detected: URL='{media_url}', MIME='{mime_type}'")
+                    logger.info("WhatsApp media detected (mime=%s)", mime_type)
 
                     # Speech-to-text for audio files from WhatsApp
                     if mime_type.startswith('audio/') and self.stt_service:
@@ -64,11 +68,17 @@ class InputProcessor:
                             transcribed_text = self.stt_service.transcribe_audio_url(media_url, mime_type)
                             if transcribed_text:
                                 text_input = f"{text_input} {transcribed_text}".strip() # Append or replace
-                                logger.info(f"STT from WhatsApp audio: '{transcribed_text}'")
+                                logger.info(
+                                    "STT from WhatsApp audio completed (characters=%s)",
+                                    len(transcribed_text),
+                                )
                                 media_info['transcribed_text'] = transcribed_text
                         except Exception as e_stt:
-                            logger.error(f"Error during STT for WhatsApp audio {media_url}: {e_stt}")
-                            media_info['stt_error'] = str(e_stt)
+                            logger.error(
+                                "Error during STT for WhatsApp audio (error_type=%s)",
+                                type(e_stt).__name__,
+                            )
+                            media_info['stt_error'] = type(e_stt).__name__
 
         # For web uploads that might have been pre-uploaded and info passed in payload
         elif 'uploaded_file_info' in payload and isinstance(payload['uploaded_file_info'], dict):
@@ -77,7 +87,11 @@ class InputProcessor:
             # It might include an 'id' if already saved.
             media_info = payload['uploaded_file_info'] # e.g., {'id': 123, 'url': '...', 'mime_type': '...', 'name': '...'}
             media_info['source'] = media_info.get('source', 'web') # Ensure source is set
-            logger.info(f"Web media (uploaded_file_info) detected: {media_info}")
+            logger.info(
+                "Web media detected (mime=%s has_id=%s)",
+                media_info.get("mime_type"),
+                media_info.get("id") is not None,
+            )
             # STT for web audio uploads can be handled here if `uploaded_file_info` points to audio
             # and `self.stt_service` is available.
 
@@ -90,14 +104,22 @@ class InputProcessor:
                 location_info = {'lat': float(lat), 'lon': float(lon)}
                 if 'accuracy' in payload['ubicacion_usuario']:
                     location_info['accuracy'] = payload['ubicacion_usuario']['accuracy']
-                logger.info(f"Location data extracted: {location_info}")
+                logger.info(
+                    "Location data extracted (has_accuracy=%s)",
+                    "accuracy" in location_info,
+                )
             else:
-                logger.warning(f"Received ubicacion_usuario but lat/lon are invalid: {payload['ubicacion_usuario']}")
+                logger.warning("Received ubicacion_usuario but lat/lon are invalid.")
 
         # TODO: Add further normalization if needed (e.g., common misspellings, etc.)
         # For now, text_input is just stripped.
 
-        logger.info(f"[InputProcessor] Processed: Text='{text_input[:100]}...', MediaInfo={media_info}, LocationInfo={location_info}")
+        logger.info(
+            "[InputProcessor] Processed text_length=%s has_media=%s has_location=%s",
+            len(text_input),
+            bool(media_info),
+            bool(location_info),
+        )
         return text_input, media_info, location_info
 
 # Example of how it might be used (conceptual)

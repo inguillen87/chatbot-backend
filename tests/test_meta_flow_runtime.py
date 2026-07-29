@@ -432,7 +432,11 @@ def test_authorize_survey_context_is_published_tenant_bound_and_native_compatibl
     assert authorize_survey_context(
         tenant.id,
         {"survey_slug": survey.slug},
-    ) == {"id": str(survey.id), "slug": survey.slug}
+    ) == {
+        "id": str(survey.id),
+        "slug": survey.slug,
+        "instrument_revision": 1,
+    }
     with pytest.raises(MetaFlowActionError) as cross_tenant:
         authorize_survey_context(
             other_tenant.id,
@@ -448,6 +452,72 @@ def test_authorize_survey_context_is_published_tenant_bound_and_native_compatibl
             {"survey_slug": survey.slug},
         )
     assert incompatible.value.code == "survey_question_type_unsupported"
+
+
+def test_authorize_survey_context_accepts_valid_adaptive_survey(client):
+    tenant, _ = _tenant_with_sender(
+        slug="runtime-conditional-survey",
+        waba_id="waba-conditional-survey",
+        endpoint_alias="conditional-survey-endpoint",
+    )
+    survey = _published_quick_vote(tenant, slug="conditional-web-only")
+    conditional = EncPregunta(
+        orden=2,
+        tipo="opcion_unica",
+        texto="Pregunta de seguimiento",
+        obligatoria=True,
+        logica_condicional={
+            "version": 1,
+            "show_if": {"question_order": 1, "option_order": 1},
+        },
+    )
+    conditional.opciones = [
+        EncOpcion(orden=1, texto="Si"),
+        EncOpcion(orden=2, texto="No"),
+    ]
+    survey.preguntas.append(conditional)
+    db.session.commit()
+
+    assert authorize_survey_context(
+        tenant.id,
+        {"survey_slug": survey.slug},
+    ) == {
+        "id": str(survey.id),
+        "slug": survey.slug,
+        "instrument_revision": 1,
+    }
+
+
+@pytest.mark.parametrize(
+    ("policy", "anonymous", "expected_code"),
+    [
+        ("por_dni", True, "survey_identity_policy_requires_webview"),
+        ("por_ip", True, "survey_identity_policy_requires_webview"),
+        ("por_usuario", True, "survey_authentication_requires_webview"),
+        ("por_cookie", False, "survey_authentication_requires_webview"),
+    ],
+)
+def test_authorize_survey_context_gates_identity_policies_native_cannot_satisfy(
+    client,
+    policy,
+    anonymous,
+    expected_code,
+):
+    tenant, _ = _tenant_with_sender(
+        slug=f"runtime-survey-policy-{policy}-{anonymous}",
+        waba_id=f"waba-survey-policy-{policy}-{anonymous}",
+        endpoint_alias=f"survey-policy-{policy}-{anonymous}",
+    )
+    survey = _published_quick_vote(tenant, slug=f"policy-{policy}-{anonymous}")
+    survey.politica_unicidad = policy
+    survey.anonimo_permitido = anonymous
+    db.session.commit()
+
+    with pytest.raises(MetaFlowActionError) as incompatible:
+        authorize_survey_context(tenant.id, {"survey_slug": survey.slug})
+
+    assert incompatible.value.code == expected_code
+    assert incompatible.value.status_code == 409
 
 
 def test_survey_runtime_hydrates_question_and_stages_valid_answer_without_voting(client):
@@ -500,11 +570,172 @@ def test_survey_runtime_hydrates_question_and_stages_valid_answer_without_voting
     )
     db.session.refresh(interaction)
     assert confirmation["screen"] == "SURVEY_CONFIRM"
-    assert confirmation["data"]["answer_summary"] == "1 respuestas listas para enviar."
+    assert confirmation["data"]["answer_summary"] == "1 respuesta lista para enviar."
     assert interaction.metadata_json["survey_staged_answers"] == {
         str(survey.preguntas[0].id): selected.id
     }
     assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 0
+
+
+def test_survey_runtime_adapts_forward_and_back_and_prunes_hidden_branch(client):
+    tenant, sender = _tenant_with_sender(
+        slug="runtime-survey-adaptive",
+        waba_id="waba-survey-adaptive",
+        endpoint_alias="survey-adaptive-endpoint",
+    )
+    survey = _published_quick_vote(tenant, slug="runtime-adaptive-vote")
+    follow_up = EncPregunta(
+        orden=2,
+        tipo="opcion_unica",
+        texto="Que zona necesita esa mejora?",
+        obligatoria=True,
+        logica_condicional={
+            "version": 1,
+            "show_if": {"question_order": 1, "option_order": 1},
+        },
+    )
+    follow_up.opciones = [
+        EncOpcion(orden=1, texto="Centro"),
+        EncOpcion(orden=2, texto="Barrios"),
+    ]
+    survey.preguntas.append(follow_up)
+    db.session.commit()
+    survey_context = authorize_survey_context(
+        tenant.id,
+        {"survey_slug": survey.slug},
+    )
+    interaction = _flow_interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={"survey_context": survey_context},
+    )
+    runtime = MetaFlowRuntime(
+        environ=_env_for("waba-survey-adaptive"),
+        token_verifier=_verified(
+            tenant_id=tenant.id,
+            sender_id=sender.id,
+            flow_id=SURVEY_FLOW_ID,
+            interaction_id=interaction.id,
+        ),
+    )
+    config = runtime.resolve("survey-adaptive-endpoint")
+    assert config is not None
+
+    initial = config.handlers["init"](
+        _payload(action="INIT", screen=None),
+        _context(config, "init"),
+    )
+    assert initial["screen"] == "SURVEY_QUESTION_ONE"
+    assert initial["data"]["progress_label"] == "Pregunta 1"
+
+    branch_answer = survey.preguntas[0].opciones[0]
+    second = config.handlers["data_exchange"](
+        _payload(
+            action="data_exchange",
+            screen="SURVEY_QUESTION_ONE",
+            data={"selected_option": str(branch_answer.id)},
+        ),
+        _context(config, "data_exchange"),
+    )
+    assert second["screen"] == "SURVEY_QUESTION_TWO"
+    assert second["data"]["question_text"] == follow_up.texto
+    assert second["data"]["progress_label"] == "Pregunta 2 - 1 respuesta guardada"
+
+    follow_up_answer = follow_up.opciones[0]
+    confirmation = config.handlers["data_exchange"](
+        _payload(
+            action="data_exchange",
+            screen="SURVEY_QUESTION_TWO",
+            data={"selected_option": str(follow_up_answer.id)},
+        ),
+        _context(config, "data_exchange"),
+    )
+    assert confirmation["screen"] == "SURVEY_CONFIRM"
+    assert confirmation["data"]["answer_summary"] == "2 respuestas listas para enviar."
+
+    previous = config.handlers["back"](
+        _payload(action="BACK", screen="SURVEY_CONFIRM"),
+        _context(config, "back"),
+    )
+    assert previous["screen"] == "SURVEY_QUESTION_TWO"
+    first_again = config.handlers["back"](
+        _payload(action="BACK", screen="SURVEY_QUESTION_TWO"),
+        _context(config, "back"),
+    )
+    assert first_again["screen"] == "SURVEY_QUESTION_ONE"
+
+    skip_answer = survey.preguntas[0].opciones[1]
+    skipped = config.handlers["data_exchange"](
+        _payload(
+            action="data_exchange",
+            screen="SURVEY_QUESTION_ONE",
+            data={"selected_option": str(skip_answer.id)},
+        ),
+        _context(config, "data_exchange"),
+    )
+    db.session.refresh(interaction)
+    assert skipped["screen"] == "SURVEY_CONFIRM"
+    assert skipped["data"]["answer_summary"] == "1 respuesta lista para enviar."
+    assert interaction.metadata_json["survey_staged_answers"] == {
+        str(survey.preguntas[0].id): skip_answer.id,
+    }
+    assert interaction.metadata_json["survey_navigation"] == {
+        "instrument_revision": 1,
+        "visible_question_ids": [survey.preguntas[0].id],
+        "answered_question_ids": [survey.preguntas[0].id],
+    }
+
+    unpinned_metadata = dict(interaction.metadata_json)
+    unpinned_context = dict(unpinned_metadata["survey_context"])
+    unpinned_context.pop("instrument_revision")
+    unpinned_metadata["survey_context"] = unpinned_context
+    interaction.metadata_json = unpinned_metadata
+    db.session.commit()
+    with pytest.raises(MetaFlowActionError) as unpinned:
+        config.handlers["init"](
+            _payload(action="INIT", screen=None),
+            _context(config, "init"),
+        )
+    assert unpinned.value.code == "survey_instrument_revision_required"
+
+
+def test_survey_runtime_rejects_instrument_changed_after_send(client):
+    tenant, sender = _tenant_with_sender(
+        slug="runtime-survey-revision",
+        waba_id="waba-survey-revision",
+        endpoint_alias="survey-revision-endpoint",
+    )
+    survey = _published_quick_vote(tenant, slug="runtime-revision-vote")
+    context = authorize_survey_context(tenant.id, {"survey_slug": survey.slug})
+    interaction = _flow_interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={"survey_context": context},
+    )
+    survey.structure_revision = 2
+    db.session.commit()
+    runtime = MetaFlowRuntime(
+        environ=_env_for("waba-survey-revision"),
+        token_verifier=_verified(
+            tenant_id=tenant.id,
+            sender_id=sender.id,
+            flow_id=SURVEY_FLOW_ID,
+            interaction_id=interaction.id,
+        ),
+    )
+    config = runtime.resolve("survey-revision-endpoint")
+    assert config is not None
+
+    with pytest.raises(MetaFlowActionError) as stale:
+        config.handlers["init"](
+            _payload(action="INIT", screen=None),
+            _context(config, "init"),
+        )
+
+    assert stale.value.code == "survey_structure_changed"
+    assert stale.value.status_code == 409
 
 
 def test_survey_runtime_rejects_option_from_another_question(client):

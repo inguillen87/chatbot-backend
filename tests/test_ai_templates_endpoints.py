@@ -75,11 +75,23 @@ def test_suggest_templates_success(client):
     # We need access to the app to get the secret key
     jwt_token = jwt.encode(jwt_payload, client.application.config['SECRET_KEY'], algorithm="HS256")
 
-    _crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
-    _crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
+    saludo_embedding = [1.0] + [0.0] * 1023
+    despedida_embedding = [0.0, 1.0] + [0.0] * 1022
+    _crear_plantilla(
+        "Saludo",
+        "Hola, ¿cómo estás {{nombre_cliente}}?",
+        ["saludo"],
+        embedding_value=saludo_embedding,
+    )
+    _crear_plantilla(
+        "Despedida",
+        "Adiós, {{nombre_cliente}}.",
+        ["despedida"],
+        embedding_value=despedida_embedding,
+    )
 
     with patch('routes.ai.embed_textos_llm') as mock_embed_textos_llm:
-        mock_embed_textos_llm.return_value = [[0.1]*1024]
+        mock_embed_textos_llm.return_value = [saludo_embedding]
         response = client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {jwt_token}'},
                                     json={'asunto': 'Quiero saludar', 'contexto_ticket': 'Hola', 'top_n': 1})
@@ -92,6 +104,52 @@ def test_suggest_templates_success(client):
         assert sugerencias[0]['name'] == 'Saludo'
         assert "Hola, ¿cómo estás {{nombre_cliente}}?" in sugerencias[0]['text']
         mock_embed_textos_llm.assert_called_once()
+
+
+def test_suggest_templates_logs_no_request_or_provider_pii(client):
+    rubro = Rubro(clave="pyme_private_logs", nombre="Private Logs")
+    db.session.add(rubro)
+    db.session.flush()
+
+    user = User(
+        id=987654,
+        name="Private Log Admin",
+        email="private-log-admin@example.test",
+        rol="admin",
+        rubro_id=rubro.id,
+    )
+    user.set_password("adminpass")
+    db.session.add(user)
+    db.session.commit()
+
+    private_subject = "reclamo privado DNI 32877851"
+    private_provider_detail = "provider-secret-32877851"
+    headers = _jwt_headers(client.application, user)
+
+    with patch.object(client.application.logger, "info") as info_log, patch.object(
+        client.application.logger,
+        "error",
+    ) as error_log, patch(
+        "routes.ai.embed_textos_llm",
+        side_effect=RuntimeError(private_provider_detail),
+    ):
+        response = client.post(
+            "/api/ai/suggest-templates",
+            headers=headers,
+            json={"asunto": private_subject, "contexto_ticket": "contexto privado"},
+        )
+
+    assert response.status_code == 500
+    log_calls = info_log.call_args_list + error_log.call_args_list
+    rendered_logs = "\n".join(
+        call.args[0] % call.args[1:] if len(call.args) > 1 else call.args[0]
+        for call in log_calls
+    )
+    assert private_subject not in rendered_logs
+    assert private_provider_detail not in rendered_logs
+    assert str(user.id) not in rendered_logs
+    assert "error_type=RuntimeError" in rendered_logs
+    assert all(not call.kwargs.get("exc_info") for call in error_log.call_args_list)
 
 
 def test_ai_templates_crud_is_scoped_by_tenant(client):

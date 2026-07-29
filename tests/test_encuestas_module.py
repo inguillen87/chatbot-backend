@@ -943,7 +943,7 @@ def test_duplicate_encuesta_creates_editable_draft_copy(client):
 
 
 
-def test_get_encuesta_allows_access_when_tenant_profile_matches(client):
+def test_get_encuesta_requires_authoritative_user_tenant_when_profile_is_resolved(client):
     with client.application.app_context():
         user = DummyUser(tenant_id=4)
         encuesta = create_encuesta(
@@ -963,6 +963,7 @@ def test_get_encuesta_allows_access_when_tenant_profile_matches(client):
         )
 
         alt_user = DummyUser(tenant_id=999)
+        alt_user.tenant_id = encuesta.tenant_id
         from flask import g
         g.tenant_profile = SimpleNamespace(id=encuesta.tenant_id)
 

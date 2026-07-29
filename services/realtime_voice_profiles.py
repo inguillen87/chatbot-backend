@@ -8,8 +8,10 @@ from services.education_contracts import is_education_tenant
 
 REALTIME_VOICE_CONTRACT_VERSION = "realtime.voice_capabilities.v1"
 CHATBOC_BOT_AVATAR_CONTRACT_VERSION = "chatboc.avatar.v1"
-DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime"
-FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime"
+DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime-2.1"
+FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime-2.1"
+DEFAULT_REALTIME_TRANSCRIPTION_MODEL = "gpt-live-transcribe"
+DEFAULT_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 DEFAULT_REALTIME_TRANSLATION_MODEL = "gpt-realtime-translate"
 DEFAULT_REALTIME_VOICE = "marin"
 DEFAULT_PHONE_PRIMARY_TRANSPORT = "openai_realtime_sip"
@@ -63,6 +65,49 @@ def resolve_realtime_fallback_model(
         or _get(app_config, "OPENAI_REALTIME_FALLBACK_MODEL")
         or os.environ.get("OPENAI_REALTIME_FALLBACK_MODEL")
         or FALLBACK_REALTIME_VOICE_MODEL
+    )
+
+
+def resolve_realtime_transcription_model(
+    cfg: Mapping[str, Any] | None = None,
+    app_config: Mapping[str, Any] | None = None,
+) -> str:
+    return str(
+        _get(
+            cfg,
+            "openai_live_transcription_model",
+            "realtime_live_transcription_model",
+        )
+        or _get(app_config, "OPENAI_LIVE_TRANSCRIPTION_MODEL")
+        or os.environ.get("OPENAI_LIVE_TRANSCRIPTION_MODEL")
+        or DEFAULT_REALTIME_TRANSCRIPTION_MODEL
+    )
+
+
+def resolve_realtime_input_transcription_model(
+    cfg: Mapping[str, Any] | None = None,
+    app_config: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve caption guidance for a speech-to-speech Realtime session.
+
+    This is separate from ``gpt-live-transcribe``, whose GA contract is a
+    dedicated ``type=transcription`` session.
+    """
+
+    return str(
+        _get(
+            cfg,
+            "openai_realtime_input_transcription_model",
+            "openai_realtime_transcription_model",
+        )
+        or _get(
+            app_config,
+            "OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL",
+            "OPENAI_REALTIME_TRANSCRIPTION_MODEL",
+        )
+        or os.environ.get("OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL")
+        or os.environ.get("OPENAI_REALTIME_TRANSCRIPTION_MODEL")
+        or DEFAULT_REALTIME_INPUT_TRANSCRIPTION_MODEL
     )
 
 
@@ -582,6 +627,8 @@ def build_realtime_voice_capabilities(
     vertical = infer_realtime_voice_vertical(tenant)
     model = resolve_realtime_model(cfg, app_config)
     fallback_model = resolve_realtime_fallback_model(cfg, app_config)
+    transcription_model = resolve_realtime_transcription_model(cfg, app_config)
+    input_transcription_model = resolve_realtime_input_transcription_model(cfg, app_config)
     voice = resolve_realtime_voice(cfg, app_config)
     translation_policy = build_multilingual_translation_policy(cfg, app_config)
     avatar_contract = build_chatboc_bot_avatar_contract(cfg, app_config)
@@ -596,6 +643,17 @@ def build_realtime_voice_capabilities(
         "active_vertical": vertical,
         "native_speech_to_speech": True,
         "avoid_external_stt_tts_loop": True,
+        "live_transcription": {
+            "model": transcription_model,
+            "session_type": "transcription",
+            "endpoint": "/v1/realtime/transcription_sessions",
+            "streaming_deltas": True,
+        },
+        "input_transcription": {
+            "model": input_transcription_model,
+            "session_type": "realtime",
+            "purpose": "async_caption_guidance",
+        },
         "translation": translation_policy,
         "avatar": avatar_contract,
         "transports": {

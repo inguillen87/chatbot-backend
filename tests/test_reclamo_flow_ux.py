@@ -302,7 +302,10 @@ class TestReclamoFlowUX(unittest.TestCase):
         municipal_ctx = context["chat_db_context_data"][CONTEXTO_MUNICIPIO]
         self.assertNotIn("delayed_payload", resp)
         self.assertNotIn("reclamo_flow_v2", municipal_ctx)
-        self.assertNotIn("estado_conversacion", municipal_ctx)
+        self.assertEqual(
+            municipal_ctx.get("estado_conversacion"),
+            ConversationState.CONVERSACION_GENERAL_LLM.name,
+        )
 
     def test_confirmacion_negative_returns_to_contact_details(self):
         flow_context = {

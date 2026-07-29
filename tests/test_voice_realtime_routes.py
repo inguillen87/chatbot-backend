@@ -9,6 +9,7 @@ from routes.voice_routes import voice_bp
 class VoiceRealtimeRoutesTestCase(unittest.TestCase):
     def setUp(self):
         self.app = Flask(__name__)
+        self.app.config["TESTING"] = True
         self.app.config["BACKEND_URL"] = "https://api.chatboc.test"
         self.app.config["TWILIO_FALLBACK_SAY_LANGUAGE"] = "es-US"
         self.app.register_blueprint(voice_bp)
@@ -187,6 +188,35 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         body = response.get_data(as_text=True)
         self.assertIn("Demo empresas", body)
         self.assertIn("tomar un pedido", body)
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_voice_webhook_fails_closed_without_auth_token_outside_testing(self):
+        app = Flask("voice-production-guard")
+        app.config.update(
+            TESTING=False,
+            ENV="production",
+            BACKEND_URL="https://api.chatboc.test",
+        )
+        app.register_blueprint(voice_bp)
+
+        response = app.test_client().post("/twilio/voice", data=self._twilio_payload())
+
+        self.assertEqual(response.status_code, 403)
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    def test_voice_transfer_fails_closed_without_twilio_signature(self):
+        app = Flask("voice-transfer-production-guard")
+        app.config.update(TESTING=False, ENV="production")
+        app.register_blueprint(voice_bp)
+
+        response = app.test_client().post(
+            "/twilio/voice/transfer?target=%2B5492610000000",
+            data=self._twilio_payload(),
+        )
+
+        self.assertEqual(response.status_code, 403)
 
 
 if __name__ == "__main__":

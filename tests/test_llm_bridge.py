@@ -1,7 +1,12 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from services.llm_bridge import llamar_llm, clear_llm_cache
+from services.llm_bridge import (
+    clear_llm_cache,
+    llamar_llm,
+    llamar_llm_para_generacion_texto,
+)
 
 
 class TestLLMBridge(unittest.TestCase):
@@ -12,6 +17,7 @@ class TestLLMBridge(unittest.TestCase):
         resp, _ = llamar_llm(None, 'hola', {}, [])
         self.assertEqual(resp['message_body'], 'hola')
         mock_orchestrator.assert_called_once()
+        self.assertEqual(mock_orchestrator.call_args.kwargs['model'], 'gpt-5.6-sol')
 
     @patch('services.llm_bridge.llamar_llm_con_fallback')
     def test_llamar_llm_uses_cache(self, mock_orchestrator):
@@ -35,6 +41,10 @@ class TestLLMBridge(unittest.TestCase):
         self.assertEqual(resp['datos_estructura']['error_detalle'], 'llm_unavailable')
         self.assertEqual(resp['message_body'], 'No disponible.')
 
+        # Transient provider failures must not poison the one-hour response cache.
+        llamar_llm(None, 'hola', {}, [])
+        self.assertEqual(mock_orchestrator.call_count, 2)
+
     @patch('services.llm_bridge.llamar_llm_con_fallback')
     def test_llamar_llm_normalizes_respuesta_usuario(self, mock_orchestrator):
         clear_llm_cache()
@@ -44,6 +54,41 @@ class TestLLMBridge(unittest.TestCase):
         self.assertEqual(resp['message_body'], 'hola gemini')
         self.assertEqual(resp['respuesta_usuario'], 'hola gemini')
         self.assertEqual(context['provider'], 'gemini')
+
+    def test_llamar_llm_para_generacion_texto_uses_responses_once(self):
+        class FakeResponses:
+            def __init__(self):
+                self.calls = 0
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.calls += 1
+                self.kwargs = kwargs
+                return SimpleNamespace(
+                    output_text='{"ok":true}',
+                    output=[],
+                    status='completed',
+                    incomplete_details=None,
+                )
+
+        responses = FakeResponses()
+        fake_client = SimpleNamespace(responses=responses)
+        with patch('services.openai_bridge._get_openai_client', return_value=fake_client):
+            result = llamar_llm_para_generacion_texto(
+                'Devolve JSON.',
+                'hola',
+                json_output=True,
+            )
+
+        self.assertEqual(result, '{"ok":true}')
+        self.assertEqual(responses.calls, 1)
+        self.assertEqual(responses.kwargs['model'], 'gpt-5.6-sol')
+        self.assertIs(responses.kwargs['store'], False)
+        self.assertEqual(responses.kwargs['reasoning'], {'effort': 'none'})
+        self.assertEqual(
+            responses.kwargs['text']['format'],
+            {'type': 'json_object'},
+        )
 
 
 if __name__ == '__main__':

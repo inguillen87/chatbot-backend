@@ -717,11 +717,32 @@ class TestNewFeatures(unittest.TestCase):
         mock_validar_tel,
         mock_crear_ticket,
     ):
-        """El reclamo final debe incluir la imagen promocional configurada."""
+        """El recibo web incluye la imagen promocional del tenant validado."""
         mock_crear_ticket.return_value = {"id": 1, "nro_ticket": "12345", "consulta_pin": "555444"}
         from services.actions.municipio_actions import CrearReclamoActionHandler
+        owner = User(
+            name="Municipio Promo",
+            email="municipio-promo@test.com",
+            password_hash="test-hash",
+            rol="admin",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="municipio-promo",
+            nombre="Municipio Promo",
+            tipo="municipio",
+            municipio_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.commit()
         context = {
+            'user_obj': owner,
+            'tenant_profile': tenant,
+            'tenant_id': tenant.id,
+            'channel': 'web',
             'municipio_config_actual': {
+                'tenant_slug': tenant.slug,
                 'promo_image_url': 'http://example.com/promo.jpg',
                 'base_chat_url': 'https://chat.example'
             },

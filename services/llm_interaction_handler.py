@@ -19,6 +19,11 @@ from services.municipio_responder import es_consulta_general
 from services.llm_utils import extract_multiple_contact_details_llm
 from utils.response_utils import normalize_response_payload
 from services.user_context_service import user_context_service
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_SOL_MODEL,
+    DEFAULT_OPENAI_TERRA_MODEL,
+    resolve_openai_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +60,9 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
     datos_actuales = {}
 
     logger_actual.info(
-        f"[HANDLE_LLM_START] pregunta='{pregunta_str}' estado_previo='{contexto_municipio_actual.get('estado_conversacion')}'"
+        "[HANDLE_LLM_START] message_chars=%s previous_state=%s",
+        len(pregunta_str or ""),
+        contexto_municipio_actual.get("estado_conversacion"),
     )
 
     estado_conversacion_para_llm = contexto_municipio_actual.get("estado_conversacion")
@@ -185,19 +192,32 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                         "SI EL USUARIO DICE 'QUIERO LO MISMO', OFRECELE REPETIR ESE PEDIDO."
                     )
         except Exception as e_ctx:
-            logger_actual.warning(f"[HANDLE_LLM] Failed to inject smart context: {e_ctx}")
+            logger_actual.warning(
+                "[HANDLE_LLM] Smart context injection failed error_type=%s",
+                type(e_ctx).__name__,
+            )
 
-        # Select model based on conversation state (Flagship for extraction/intent, Mini for simple flows)
-        model_to_use = "gpt-4o-mini"
+        # Role-aware defaults: Terra keeps conversational latency bounded while
+        # Sol handles quality-critical claim extraction and general reasoning.
+        model_to_use = resolve_openai_model(
+            "OPENAI_WHATSAPP_AGENT_MODEL",
+            DEFAULT_OPENAI_TERRA_MODEL,
+        )
         if estado_conversacion_para_llm in [
             ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name,
             ConversationState.CONVERSACION_GENERAL_LLM.name,
         ]:
-            model_to_use = "gpt-4o"
+            model_to_use = resolve_openai_model(
+                "OPENAI_CLAIM_AGENT_MODEL",
+                DEFAULT_OPENAI_SOL_MODEL,
+            )
 
-        # Force gpt-4o if channel is voice to ensure maximum intelligence/brevity handling
+        # Voice is explicitly latency-sensitive, so it has an independent Terra default.
         if is_voice:
-            model_to_use = "gpt-4o"
+            model_to_use = resolve_openai_model(
+                "OPENAI_VOICE_AGENT_MODEL",
+                DEFAULT_OPENAI_TERRA_MODEL,
+            )
 
         llm_task_type = "voice" if is_voice else "whatsapp_realtime"
         if not is_voice and estado_conversacion_para_llm == ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name:
@@ -270,7 +290,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             address_val = datos_actuales.get("ubicacion", "")
             invalid_address_triggers = ["hola", "buenas", "buen dia", "buenas tardes", "test", "prueba", "si", "no"]
             if address_val and (len(address_val.strip()) < 4 or address_val.strip().lower() in invalid_address_triggers):
-                logger_actual.info(f"[VALIDATION] Rejected invalid address: '{address_val}'. Removing from data.")
+                logger_actual.info(
+                    "[VALIDATION] Rejected invalid address value_chars=%s",
+                    len(str(address_val or "")),
+                )
                 datos_actuales.pop("ubicacion")
                 # Force asking for it again
                 if not pedir_info_llm:
@@ -317,5 +340,8 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text"}, contexto_municipio_actual
 
     except Exception as e_llm:
-        logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
+        logger.error(
+            "[HANDLE_LLM] Request failed error_type=%s",
+            type(e_llm).__name__,
+        )
         return None, contexto_municipio_actual

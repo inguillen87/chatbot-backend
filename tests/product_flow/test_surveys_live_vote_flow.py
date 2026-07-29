@@ -129,18 +129,28 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertIn("include_heatmap=1", operations["analytics_surface"]["heatmap_route"])
         self.assertEqual(payload["admin_operations"], operations)
 
+    def _post_public_response(self, endpoint, payload, submission_id, headers=None):
+        request_headers = dict(headers or {})
+        request_headers["Idempotency-Key"] = submission_id
+        return self.client.post(
+            endpoint,
+            json={**payload, "submission_id": submission_id},
+            headers=request_headers,
+        )
+
     def test_vote_emits_realtime_and_updates_live_results(self):
         survey_id, token, question_id, option_id = self._create_live_vote()
 
         with patch("services.encuestas_service.emit_survey_update") as emit_update:
-            response = self.client.post(
+            response = self._post_public_response(
                 f"/api/v2/public/surveys/{token}/respond",
-                json={
+                {
                     "anon_id": "flow-voter-1",
                     "source": "web",
                     "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
                 },
-                headers={"X-Forwarded-For": "203.0.113.10"},
+                "product-flow-voter-0001",
+                {"X-Forwarded-For": "203.0.113.10"},
             )
 
         self.assertEqual(response.status_code, 201, response.get_json())
@@ -172,6 +182,28 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertIn("result_version", emitted_payload)
         self.assertIn("snapshot_version", emitted_payload)
         self.assertEqual(emitted_payload["legacy_results"]["total_respuestas"], 1)
+        self.assertEqual(
+            set(emitted_payload["event"]),
+            {
+                "contract_version",
+                "event_id",
+                "event_name",
+                "tenant_id",
+                "survey_id",
+                "response_id",
+                "slug",
+            },
+        )
+        self.assertEqual(
+            emitted_payload["event"]["contract_version"],
+            "surveys.realtime_effect.v2",
+        )
+        self.assertEqual(
+            emitted_payload["event"]["event_name"],
+            "survey.response.committed",
+        )
+        self.assertEqual(emitted_payload["event"]["response_id"], ack["response_id"])
+        self.assertEqual(emitted_payload["event"]["tenant_id"], self.tenant.id)
 
         analytics_event = AnalyticsEventV2.query.filter_by(
             tenant_id=self.tenant.id,
@@ -209,14 +241,15 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
             "services.encuestas_service.emit_survey_update",
             side_effect=RuntimeError("socket transport unavailable"),
         ) as emit_update:
-            response = self.client.post(
+            response = self._post_public_response(
                 f"/api/v2/public/surveys/{token}/respond",
-                json={
+                {
                     "anon_id": "flow-voter-realtime-fallback",
                     "source": "web",
                     "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
                 },
-                headers={"X-Forwarded-For": "203.0.113.12"},
+                "product-flow-realtime-fallback-0001",
+                {"X-Forwarded-For": "203.0.113.12"},
             )
 
         self.assertEqual(response.status_code, 201, response.get_json())
@@ -237,16 +270,17 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         second_option_id = public.get_json()["preguntas"][0]["opciones"][1]["id"]
 
         with patch("services.encuestas_service.emit_survey_update") as emit_update:
-            response = self.client.post(
+            response = self._post_public_response(
                 f"/api/v2/public/surveys/{token}/respond",
-                json={
+                {
                     "anon_id": "duplicate-question-voter",
                     "respuestas": [
                         {"pregunta_id": question_id, "opcion_id": first_option_id},
                         {"pregunta_id": question_id, "opcion_id": second_option_id},
                     ],
                 },
-                headers={"X-Forwarded-For": "203.0.113.11"},
+                "product-flow-duplicate-question-0001",
+                {"X-Forwarded-For": "203.0.113.11"},
             )
 
         self.assertEqual(response.status_code, 400, response.get_json())
@@ -268,9 +302,9 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
     def test_live_results_with_heatmap_returns_privacy_safe_vote_coordinates(self):
         survey_id, token, question_id, option_id = self._create_live_vote()
 
-        response = self.client.post(
+        response = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
-            json={
+            {
                 "anon_id": "flow-voter-geo-1",
                 "source": "whatsapp_webview",
                 "lat": -33.08149,
@@ -280,7 +314,8 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
                 "provincia": "Mendoza",
                 "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
             },
-            headers={"X-Forwarded-For": "203.0.113.30"},
+            "product-flow-geo-voter-0001",
+            {"X-Forwarded-For": "203.0.113.30"},
         )
 
         self.assertEqual(response.status_code, 201, response.get_json())
@@ -317,9 +352,9 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         fixed_now = datetime(2026, 7, 12, 15, 0, tzinfo=timezone.utc)
 
         for index, (lat, lng) in enumerate(((-33.08149, -68.46849), (-33.09149, -68.47849)), start=1):
-            response = self.client.post(
+            response = self._post_public_response(
                 f"/api/v2/public/surveys/{token}/respond",
-                json={
+                {
                     "anon_id": f"range-voter-{index}",
                     "source": "web",
                     "lat": lat,
@@ -329,7 +364,8 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
                     "provincia": "Mendoza",
                     "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
                 },
-                headers={"X-Forwarded-For": f"203.0.113.{40 + index}"},
+                f"product-flow-range-voter-{index:04d}",
+                {"X-Forwarded-For": f"203.0.113.{40 + index}"},
             )
             self.assertEqual(response.status_code, 201, response.get_json())
 
@@ -417,14 +453,15 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
     def test_pwa_survey_response_matches_realtime_contract_for_whatsapp_webview(self):
         survey_id, token, question_id, option_id = self._create_live_vote()
 
-        response = self.client.post(
+        response = self._post_public_response(
             f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant.slug}",
-            json={
+            {
                 "anon_id": "flow-voter-pwa-1",
                 "source": "whatsapp_webview",
                 "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
             },
-            headers={"X-Forwarded-For": "203.0.113.20"},
+            "product-flow-pwa-voter-0001",
+            {"X-Forwarded-For": "203.0.113.20"},
         )
 
         self.assertEqual(response.status_code, 201, response.get_json())

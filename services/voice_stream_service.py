@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import hashlib
 import re
 import math
 import unicodedata
@@ -10,6 +11,7 @@ from flask import current_app
 from websockets.sync.client import connect as ws_connect
 from simple_websocket.errors import ConnectionClosed
 from twilio.rest import Client as TwilioClient
+from twilio.twiml.voice_response import VoiceResponse
 
 from models import (
     AnalyticsEventV2,
@@ -38,23 +40,18 @@ from services.realtime_voice_profiles import (
     build_realtime_voice_instructions,
     build_realtime_voice_tools,
     infer_realtime_voice_vertical,
+    resolve_realtime_input_transcription_model,
     resolve_realtime_model,
     resolve_realtime_voice,
 )
 
 logger = logging.getLogger(__name__)
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-# Solo para el canal de voz realtime (Twilio <-> OpenAI Realtime).
-# No impacta los modelos de chat estándar del bot.
-OPENAI_REALTIME_MODEL = resolve_realtime_model(app_config=os.environ)
-OPENAI_REALTIME_URL = os.environ.get(
-    "OPENAI_REALTIME_WS_URL",
-    f"wss://api.openai.com/v1/realtime?model={OPENAI_REALTIME_MODEL}",
-)
-
-TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
-TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
+# Compatibility names remain importable, but credentials and model selection
+# are resolved at call time after dotenv/Flask configuration is initialized.
+OPENAI_API_KEY = None
+TWILIO_ACCOUNT_SID = None
+TWILIO_AUTH_TOKEN = None
 CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER = "+18564858589"
 CHATBOC_DEMO_TENANT_SLUG = os.environ.get("CHATBOC_DEMO_TENANT_SLUG") or "chatboc-demo"
 CHATBOC_DEMO_OWNER_EMAIL = os.environ.get("CHATBOC_DEMO_OWNER_EMAIL") or "marcelo@chatboc.ar"
@@ -74,8 +71,43 @@ GRAN_MENDOZA_POINTS = {
 }
 
 
-def _openai_realtime_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {OPENAI_API_KEY}"}
+def _openai_realtime_headers(api_key: str | None = None) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key or os.environ.get('OPENAI_API_KEY') or ''}"}
+
+
+def _openai_realtime_url() -> str:
+    try:
+        app_config = current_app.config
+    except RuntimeError:
+        app_config = os.environ
+    model = resolve_realtime_model(app_config=app_config)
+    return (
+        app_config.get("OPENAI_REALTIME_WS_URL")
+        or os.environ.get("OPENAI_REALTIME_WS_URL")
+        or f"wss://api.openai.com/v1/realtime?model={model}"
+    )
+
+
+def _runtime_config_value(name: str) -> str | None:
+    try:
+        configured = current_app.config.get(name)
+    except RuntimeError:
+        configured = None
+    value = configured or os.environ.get(name)
+    return str(value).strip() if value not in (None, "") else None
+
+
+def _safe_reference(value: object) -> str:
+    raw = str(value or "").strip()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12] if raw else "missing"
+
+
+def _normalize_voice_e164(value: object) -> str | None:
+    raw = str(value or "").replace("whatsapp:", "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if not 8 <= len(digits) <= 15:
+        return None
+    return f"+{digits}"
 
 
 def _realtime_audio_format(value: str | dict | None, *, default: str = "g711_ulaw") -> dict:
@@ -182,14 +214,16 @@ class VoiceStreamService:
 
     def _safe_end_call_twilio(self):
         """Corta la llamada usando la API de Twilio (más confiable que esperar al LLM)."""
-        if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and self.call_sid):
+        account_sid = _runtime_config_value("TWILIO_ACCOUNT_SID")
+        auth_token = _runtime_config_value("TWILIO_AUTH_TOKEN")
+        if not (account_sid and auth_token and self.call_sid):
             return
         try:
-            client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            client = TwilioClient(account_sid, auth_token)
             client.calls(self.call_sid).update(status="completed")
-            logger.info(f"[VOICE] Ended call {self.call_sid}")
+            logger.info("[VOICE] Ended call call_ref=%s", _safe_reference(self.call_sid))
         except Exception as exc:
-            logger.error(f"[VOICE] Failed to end call: {exc}")
+            logger.error("[VOICE] Failed to end call error_type=%s", type(exc).__name__)
 
     @staticmethod
     def _resolve_promo_image_url(config: dict | None) -> str | None:
@@ -742,7 +776,10 @@ class VoiceStreamService:
                     from_number=self._resolve_whatsapp_sender(),
                 )
             except Exception as ex:
-                logger.warning(f"[VOICE] Could not send school payment WhatsApp link: {ex}")
+                logger.warning(
+                    "[VOICE] Could not send school payment link error_type=%s",
+                    type(ex).__name__,
+                )
 
         if payment_url:
             return (
@@ -861,7 +898,10 @@ class VoiceStreamService:
                     from_number=self._resolve_whatsapp_sender(),
                 )
             except Exception as ex:
-                logger.warning(f"[VOICE] Could not send operational request WhatsApp summary: {ex}")
+                logger.warning(
+                    "[VOICE] Could not send operational summary error_type=%s",
+                    type(ex).__name__,
+                )
 
         return (
             f"Listo. Registre la solicitud con seguimiento numero {ticket.id}. "
@@ -1027,7 +1067,7 @@ class VoiceStreamService:
                     self.whatsapp_sender = bot_phone_clean
 
             if not self.owner_user and not self.tenant_profile:
-                logger.error(f"[VOICE] Tenant not found for bot phone: {bot_phone_clean}")
+                logger.error("[VOICE] Tenant resolution failed reason=sender_not_registered")
                 return False
 
             if not self.owner_user and self.tenant_profile:
@@ -1144,8 +1184,12 @@ class VoiceStreamService:
                     self.user.direccion = identity["direccion"]
 
             return True
-        except Exception as e:
-            logger.error(f"[VOICE] Error resolving context: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "[VOICE] Context resolution failed error_type=%s",
+                type(exc).__name__,
+                exc_info=True,
+            )
             return False
 
     def _get_system_instruction(self):
@@ -1196,14 +1240,15 @@ class VoiceStreamService:
     # Main loop
     # ----------------------------
     def run(self):
-        if not OPENAI_API_KEY:
+        api_key = _runtime_config_value("OPENAI_API_KEY")
+        if not api_key:
             logger.error("[VOICE] Missing OPENAI_API_KEY. Cannot start stream.")
             return
 
         try:
             self.openai_ws = ws_connect(
-                OPENAI_REALTIME_URL,
-                additional_headers=_openai_realtime_headers(),
+                _openai_realtime_url(),
+                additional_headers=_openai_realtime_headers(api_key),
             )
             logger.info("[VOICE] Connected to OpenAI Realtime API")
 
@@ -1219,8 +1264,12 @@ class VoiceStreamService:
                                 break
                             data = json.loads(msg)
                             self.handle_openai_message(data)
-                    except Exception as e:
-                        logger.error(f"[VOICE] OpenAI listener error: {e}", exc_info=True)
+                    except Exception as exc:
+                        logger.error(
+                            "[VOICE] OpenAI listener failed error_type=%s",
+                            type(exc).__name__,
+                            exc_info=True,
+                        )
 
             openai_thread = eventlet.spawn(listen_openai)
 
@@ -1242,8 +1291,12 @@ class VoiceStreamService:
             openai_thread.kill()
             self.openai_ws.close()
 
-        except Exception as e:
-            logger.error(f"[VOICE] Stream error: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "[VOICE] Stream failed error_type=%s",
+                type(exc).__name__,
+                exc_info=True,
+            )
             if self.openai_ws:
                 self.openai_ws.close()
 
@@ -1267,19 +1320,26 @@ class VoiceStreamService:
             self.requested_vertical = custom.get("vertical") or custom.get("sector")
             self.max_call_seconds = self._resolve_max_call_seconds(custom)
 
-            logger.info(f"[VOICE] Stream started: {self.stream_sid} Call: {self.call_sid}")
+            logger.info(
+                "[VOICE] Stream started stream_ref=%s call_ref=%s",
+                _safe_reference(self.stream_sid),
+                _safe_reference(self.call_sid),
+            )
             if self.max_call_seconds:
                 try:
                     import eventlet
 
                     eventlet.spawn_after(self.max_call_seconds, self._safe_end_call_twilio)
                     logger.info(
-                        "[VOICE] Max call duration armed for call %s: %ss",
-                        self.call_sid,
+                        "[VOICE] Max call duration armed call_ref=%s max_seconds=%s",
+                        _safe_reference(self.call_sid),
                         self.max_call_seconds,
                     )
                 except Exception as exc:
-                    logger.warning("[VOICE] Could not arm max call duration timer: %s", exc)
+                    logger.warning(
+                        "[VOICE] Could not arm max duration error_type=%s",
+                        type(exc).__name__,
+                    )
 
             app_ctx = self.app.app_context() if self.app else current_app.app_context()
             with app_ctx:
@@ -1295,7 +1355,7 @@ class VoiceStreamService:
                         "type": "session.update",
                         "session": {
                             "type": "realtime",
-                            "model": OPENAI_REALTIME_MODEL,
+                            "model": resolve_realtime_model(voice_cfg, current_app.config),
                             "output_modalities": ["audio"],
                             "instructions": self._get_system_instruction(),
                             "audio": {
@@ -1309,7 +1369,10 @@ class VoiceStreamService:
                                         "interrupt_response": True,
                                     },
                                     "transcription": {
-                                        "model": voice_cfg.get("openai_realtime_transcription_model") or "gpt-4o-mini-transcribe",
+                                        "model": resolve_realtime_input_transcription_model(
+                                            voice_cfg,
+                                            current_app.config,
+                                        ),
                                     },
                                 },
                                 "output": {
@@ -1410,238 +1473,27 @@ class VoiceStreamService:
         if msg_type == "error":
             error_info = data.get("error", {})
             if error_info.get("code") == "response_cancel_not_active":
-                logger.warning(f"[VOICE] OpenAI warning: {data}")
+                logger.warning(
+                    "[VOICE] OpenAI warning code=response_cancel_not_active"
+                )
                 self.response_active = False
                 self.response_id = None
                 self.cancel_pending = False
                 return
-            logger.error(f"[VOICE] OpenAI error: {data}")
+            logger.error(
+                "[VOICE] OpenAI realtime error code=%s error_type=%s",
+                error_info.get("code") or "unknown",
+                error_info.get("type") or "unknown",
+            )
             return
 
         return
-
-        if msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-            return
-
-        if msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-            return
-
-        if msg_type == "response.audio.delta":
-            audio_payload = data.get("delta")
-            if audio_payload:
-                self.ws.send(
-                    json.dumps(
-                        {
-                            "event": "media",
-                            "streamSid": self.stream_sid,
-                            "media": {"payload": audio_payload},
-                        }
-                    )
-                )
-            self.response_active = True
-
-        elif msg_type == "response.created":
-            self.response_active = True
-
-        elif msg_type == "response.created":
-            self.response_active = True
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "response.created":
-            self.response_active = True
-            response_payload = data.get("response") or {}
-            self.response_id = (
-                data.get("response_id")
-                or response_payload.get("id")
-                or data.get("id")
-            )
-            self.cancel_pending = False
-        elif msg_type in ("response.canceled", "response.cancelled", "response.failed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-
-        elif msg_type == "input_audio_buffer.speech_started":
-            # Interrupción real-time
-            self.ws.send(json.dumps({"event": "clear", "streamSid": self.stream_sid}))
-            if self.response_active and not self.cancel_pending:
-                cancel_payload = {"type": "response.cancel"}
-                if self.response_id:
-                    cancel_payload["response_id"] = self.response_id
-                self.openai_ws.send(json.dumps(cancel_payload))
-                self.response_active = False
-                self.cancel_pending = True
-
-        elif msg_type == "response.function_call_arguments.done":
-            call_id = data.get("call_id")
-            name = data.get("name")
-            args = data.get("arguments")
-            self.execute_tool(call_id, name, args)
-
-        # ✅ IMPORTANTÍSIMO: cuando el modelo termina de hablar, si ya registramos ticket/pedido -> cortamos la llamada
-        elif msg_type in ("response.done", "response.completed"):
-            self.response_active = False
-            self.response_id = None
-            self.cancel_pending = False
-            if self.pending_end_call:
-                self.pending_end_call = False
-                self._safe_end_call_twilio()
-
-        elif msg_type == "error":
-            error_info = data.get("error", {})
-            if error_info.get("code") == "response_cancel_not_active":
-                logger.warning(f"[VOICE] OpenAI warning: {data}")
-                self.response_active = False
-                self.response_id = None
-                self.cancel_pending = False
-                return
-            logger.error(f"[VOICE] OpenAI error: {data}")
-            if data.get("error", {}).get("code") == "response_cancel_not_active":
-                self.response_active = False
 
     # ----------------------------
     # Tools executor
     # ----------------------------
     def execute_tool(self, call_id, name, args_str):
-        logger.info(f"[VOICE] Executing tool: {name} args: {args_str}")
+        logger.info("[VOICE] Executing tool name=%s", str(name or "unknown")[:80])
         try:
             args = json.loads(args_str) if args_str else {}
             result = "No se pudo procesar la acción."
@@ -1791,7 +1643,10 @@ class VoiceStreamService:
                                     from_number=self._resolve_whatsapp_sender(),
                                 )
                             except Exception as ex:
-                                logger.warning(f"[VOICE] Could not send school case WhatsApp summary: {ex}")
+                                logger.warning(
+                                    "[VOICE] Could not send school case summary error_type=%s",
+                                    type(ex).__name__,
+                                )
 
                 # ----------------------------
                 # MUNICIPIO: Reclamo
@@ -1836,7 +1691,10 @@ class VoiceStreamService:
                         args.setdefault("email", getattr(self.user, "email", None))
 
                     if self.last_ticket_nro:
-                        logger.info(f"[VOICE] Skipping duplicated ticket creation. Existing: {self.last_ticket_nro}")
+                        logger.info(
+                            "[VOICE] Skipping duplicate ticket creation ticket_ref=%s",
+                            _safe_reference(self.last_ticket_nro),
+                        )
                         result = (
                             f"Ya tenés registrado el reclamo número {self.last_ticket_nro}. "
                             "He tomado nota de los detalles adicionales."
@@ -1960,9 +1818,16 @@ class VoiceStreamService:
                                     media_url=promo_image_url or receipt.get("media_url"),
                                     from_number=whatsapp_sender,
                                 )
-                                logger.info(f"[VOICE] Sent Rich Receipt to {whatsapp_target} for ticket {nro}")
+                                logger.info(
+                                    "[VOICE] Rich receipt accepted ticket_ref=%s",
+                                    _safe_reference(nro),
+                                )
                             except Exception as ex:
-                                logger.error(f"[VOICE] Could not send WhatsApp summary: {ex}", exc_info=True)
+                                logger.error(
+                                    "[VOICE] Could not send claim summary error_type=%s",
+                                    type(ex).__name__,
+                                    exc_info=True,
+                                )
 
                         # We do NOT enable pending_end_call here anymore.
                         # We let the AI speak the result (including the ticket number) and ask if anything else is needed.
@@ -2062,7 +1927,10 @@ class VoiceStreamService:
                                     from_number=whatsapp_sender,
                                 )
                             except Exception as ex:
-                                logger.warning(f"[VOICE] Could not send WhatsApp summary for order: {ex}")
+                                logger.warning(
+                                    "[VOICE] Could not send order summary error_type=%s",
+                                    type(ex).__name__,
+                                )
 
                         # We do NOT enable pending_end_call here anymore.
                         # self.pending_end_call = True
@@ -2206,22 +2074,46 @@ class VoiceStreamService:
                     if self.tenant_profile and self.tenant_profile.configuracion:
                         target_number = self.tenant_profile.configuracion.get("human_handoff_number")
 
+                    target_number = _normalize_voice_e164(target_number)
                     if not target_number:
-                        target_number = "+5492610000000"
+                        result = (
+                            "No hay un número de atención humana configurado para esta organización. "
+                            "Dejo tu solicitud registrada para seguimiento."
+                        )
+                    else:
+                        result = "Perfecto. Te transfiero con un agente."
 
-                    result = "Perfecto. Te transfiero con un agente."
-
-                    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and self.call_sid:
+                    account_sid = _runtime_config_value("TWILIO_ACCOUNT_SID")
+                    auth_token = _runtime_config_value("TWILIO_AUTH_TOKEN")
+                    if target_number and account_sid and auth_token and self.call_sid:
                         try:
-                            client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-                            backend_url = current_app.config.get("BACKEND_URL", "").rstrip("/")
-                            transfer_url = f"{backend_url}/twilio/voice/transfer?target={target_number}"
-
-                            client.calls(self.call_sid).update(method="POST", url=transfer_url)
-                            logger.info(f"[VOICE] Transferred call {self.call_sid} to {target_number}")
+                            client = TwilioClient(account_sid, auth_token)
+                            transfer_twiml = VoiceResponse()
+                            transfer_twiml.say(
+                                "Te comunico con un representante. Aguarda un momento, por favor.",
+                                language="es-AR",
+                            )
+                            transfer_twiml.dial(target_number)
+                            client.calls(self.call_sid).update(twiml=str(transfer_twiml))
+                            logger.info(
+                                "[VOICE] Transfer accepted call_ref=%s",
+                                _safe_reference(self.call_sid),
+                            )
                         except Exception as exc:
-                            logger.error(f"[VOICE] Failed to transfer call: {exc}")
-                            result = "No pude transferir la llamada. Probemos de nuevo en un minuto."
+                            logger.error(
+                                "[VOICE] Transfer outcome unknown error_type=%s",
+                                type(exc).__name__,
+                            )
+                            result = (
+                                "No pude confirmar la transferencia. Para evitar duplicarla, "
+                                "dejo tu solicitud registrada para seguimiento."
+                            )
+                    elif target_number:
+                        logger.error("[VOICE] Transfer refused reason=provider_not_configured")
+                        result = (
+                            "La transferencia no está disponible en este momento. "
+                            "Dejo tu solicitud registrada para seguimiento."
+                        )
 
                 # ----------------------------
                 # Finalizar llamada
@@ -2246,5 +2138,10 @@ class VoiceStreamService:
             self.openai_ws.send(json.dumps({"type": "response.create"}))
             self.response_active = True
 
-        except Exception as e:
-            logger.error(f"[VOICE] Tool execution failed: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "[VOICE] Tool execution failed tool=%s error_type=%s",
+                str(name or "unknown")[:80],
+                type(exc).__name__,
+                exc_info=True,
+            )

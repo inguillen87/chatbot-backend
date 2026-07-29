@@ -2219,6 +2219,11 @@ def send_twilio_native_flow(user: User):
                 "ready": bool(survey_context),
                 "id": survey_context.get("id") if survey_context else None,
                 "slug": survey_context.get("slug") if survey_context else None,
+                "instrument_revision": (
+                    survey_context.get("instrument_revision")
+                    if survey_context
+                    else None
+                ),
             },
             "token_ttl_seconds": int(token_ttl or 48 * 60 * 60),
             "security": {

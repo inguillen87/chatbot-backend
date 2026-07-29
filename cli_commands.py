@@ -1,7 +1,9 @@
 # cli_commands.py
 import importlib
+import json
 import logging
 import os
+from collections.abc import Mapping
 
 import click
 from flask import current_app
@@ -13,7 +15,315 @@ from extensions import db
 cli_logger = logging.getLogger(__name__)
 
 
+SURVEY_EFFECT_CLI_CONTRACT_VERSION = "cli.survey_response_effect_dispatch.v1"
+SURVEY_EFFECT_CLI_COMMAND = "dispatch-survey-response-effects"
+SURVEY_EFFECT_CLI_DEFAULT_BATCH_SIZE = 50
+SURVEY_EFFECT_CLI_MAX_BATCH_SIZE = 100
+SURVEY_EFFECT_CLI_DEFAULT_MAX_BATCHES = 10
+SURVEY_EFFECT_CLI_MAX_BATCHES = 100
+SURVEY_EFFECT_CLI_DEFAULT_MAX_EFFECTS = 500
+SURVEY_EFFECT_CLI_MAX_EFFECTS = 10_000
+SURVEY_EFFECT_CLI_EXIT_OK = 0
+SURVEY_EFFECT_CLI_EXIT_FAILURE = 1
+SURVEY_EFFECT_CLI_EXIT_INVALID_ARGUMENTS = 2
+SURVEY_EFFECT_CLI_EXIT_DEAD_EFFECTS = 3
+
+_SURVEY_EFFECT_COUNTER_FIELDS = (
+    "claimed",
+    "processed",
+    "succeeded",
+    "skipped",
+    "retry_wait",
+    "dead",
+    "fenced",
+)
+
+
+def _empty_survey_effect_totals() -> dict[str, int]:
+    return {field: 0 for field in _SURVEY_EFFECT_COUNTER_FIELDS}
+
+
+def _survey_effect_cli_payload(
+    *,
+    tenant_id: int | None,
+    batch_size: int,
+    max_batches: int,
+    max_effects: int,
+    fail_on_dead: bool,
+) -> dict:
+    return {
+        "contract_version": SURVEY_EFFECT_CLI_CONTRACT_VERSION,
+        "command": SURVEY_EFFECT_CLI_COMMAND,
+        "scope": {
+            "mode": "tenant" if tenant_id is not None else "global",
+            "tenant_id": tenant_id,
+        },
+        "limits": {
+            "batch_size": batch_size,
+            "max_batches": max_batches,
+            "max_effects": max_effects,
+        },
+        "exit_policy": {
+            "fail_on_dead": fail_on_dead,
+            "dead_effects_exit_code": SURVEY_EFFECT_CLI_EXIT_DEAD_EFFECTS,
+        },
+        "status": "running",
+        "termination_reason": None,
+        "batches": 0,
+        "totals": _empty_survey_effect_totals(),
+        "outbox_after": None,
+    }
+
+
+def _echo_survey_effect_json(payload: Mapping) -> None:
+    """Emit one machine-readable line and never serialize arbitrary objects."""
+    click.echo(
+        json.dumps(
+            dict(payload),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+
+
+def _survey_effect_tenant_exists(tenant_id: int) -> bool:
+    from models import TenantProfile
+
+    return (
+        db.session.query(TenantProfile.id)
+        .filter(TenantProfile.id == tenant_id)
+        .first()
+        is not None
+    )
+
+
+def _count_dead_survey_response_effects() -> int:
+    from models import SurveyResponseEffect
+
+    return int(
+        db.session.query(SurveyResponseEffect.id)
+        .filter(SurveyResponseEffect.status == "dead")
+        .count()
+    )
+
+
+def _accumulate_survey_effect_batch(
+    totals: dict[str, int], result: Mapping, *, requested_limit: int
+) -> int:
+    """Validate dispatcher counters before using them as loop progress."""
+    if not isinstance(result, Mapping):
+        raise RuntimeError("survey_effect_dispatch_result_invalid")
+
+    parsed: dict[str, int] = {}
+    for field in _SURVEY_EFFECT_COUNTER_FIELDS:
+        raw_value = result.get(field, 0)
+        if isinstance(raw_value, bool):
+            raise RuntimeError("survey_effect_dispatch_counter_invalid")
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("survey_effect_dispatch_counter_invalid") from exc
+        if value < 0:
+            raise RuntimeError("survey_effect_dispatch_counter_invalid")
+        parsed[field] = value
+
+    if parsed["claimed"] > requested_limit:
+        raise RuntimeError("survey_effect_dispatch_claim_limit_exceeded")
+    if parsed["processed"] > parsed["claimed"]:
+        raise RuntimeError("survey_effect_dispatch_counter_inconsistent")
+    if (
+        parsed["succeeded"]
+        + parsed["skipped"]
+        + parsed["retry_wait"]
+        + parsed["dead"]
+        != parsed["processed"]
+    ):
+        raise RuntimeError("survey_effect_dispatch_counter_inconsistent")
+
+    for field, value in parsed.items():
+        totals[field] += value
+    return parsed["claimed"]
+
+
+def _rollback_survey_effect_cli_session() -> None:
+    try:
+        db.session.rollback()
+    except Exception:
+        cli_logger.warning(
+            "Survey response effect CLI session rollback failed",
+            exc_info=False,
+        )
+
+
 def register_commands(app):
+    @app.cli.command(SURVEY_EFFECT_CLI_COMMAND)
+    @click.option(
+        "--tenant-id",
+        type=click.IntRange(min=1),
+        default=None,
+        help="Process only this existing tenant.",
+    )
+    @click.option(
+        "--all-tenants",
+        is_flag=True,
+        help="Process the global outbox. Required when --tenant-id is omitted.",
+    )
+    @click.option(
+        "--batch-size",
+        type=click.IntRange(min=1, max=SURVEY_EFFECT_CLI_MAX_BATCH_SIZE),
+        default=SURVEY_EFFECT_CLI_DEFAULT_BATCH_SIZE,
+        show_default=True,
+        help="Maximum effects claimed by one dispatcher call.",
+    )
+    @click.option(
+        "--max-batches",
+        type=click.IntRange(min=1, max=SURVEY_EFFECT_CLI_MAX_BATCHES),
+        default=SURVEY_EFFECT_CLI_DEFAULT_MAX_BATCHES,
+        show_default=True,
+        help="Hard cap on dispatcher calls for this command invocation.",
+    )
+    @click.option(
+        "--max-effects",
+        type=click.IntRange(min=1, max=SURVEY_EFFECT_CLI_MAX_EFFECTS),
+        default=SURVEY_EFFECT_CLI_DEFAULT_MAX_EFFECTS,
+        show_default=True,
+        help="Hard cap on effects claimed across every batch.",
+    )
+    @click.option(
+        "--fail-on-dead/--allow-dead",
+        default=True,
+        show_default=True,
+        help="Exit 3 when dead effects exist after processing, or allow exit 0.",
+    )
+    @with_appcontext
+    def dispatch_survey_response_effects_command(
+        tenant_id: int | None,
+        all_tenants: bool,
+        batch_size: int,
+        max_batches: int,
+        max_effects: int,
+        fail_on_dead: bool,
+    ):
+        """Drain bounded survey-effect batches and emit one JSON summary.
+
+        Exactly one scope is mandatory: --tenant-id or --all-tenants. Exit
+        codes are stable for automation: 0 completed, 1 operational failure,
+        2 invalid arguments/scope, and 3 dead effects with --fail-on-dead.
+        """
+
+        payload = _survey_effect_cli_payload(
+            tenant_id=tenant_id,
+            batch_size=batch_size,
+            max_batches=max_batches,
+            max_effects=max_effects,
+            fail_on_dead=fail_on_dead,
+        )
+
+        if all_tenants == (tenant_id is not None):
+            payload["scope"] = {
+                "mode": "invalid",
+                "tenant_id": tenant_id,
+            }
+            payload.update(
+                status="rejected",
+                termination_reason="invalid_arguments",
+                reason_code="exactly_one_scope_required",
+            )
+            _echo_survey_effect_json(payload)
+            raise click.exceptions.Exit(SURVEY_EFFECT_CLI_EXIT_INVALID_ARGUMENTS)
+
+        try:
+            from services.survey_response_effects import (
+                dispatch_survey_response_effects,
+                summarize_survey_response_effects,
+            )
+
+            if tenant_id is not None and not _survey_effect_tenant_exists(tenant_id):
+                payload.update(
+                    status="rejected",
+                    termination_reason="invalid_arguments",
+                    reason_code="tenant_not_found",
+                )
+                _echo_survey_effect_json(payload)
+                raise click.exceptions.Exit(
+                    SURVEY_EFFECT_CLI_EXIT_INVALID_ARGUMENTS
+                )
+
+            totals = payload["totals"]
+            for _batch_index in range(max_batches):
+                remaining_effects = max_effects - totals["claimed"]
+                if remaining_effects <= 0:
+                    payload["termination_reason"] = "max_effects"
+                    break
+
+                requested_limit = min(batch_size, remaining_effects)
+                batch_result = dispatch_survey_response_effects(
+                    tenant_id=tenant_id,
+                    limit=requested_limit,
+                )
+                payload["batches"] += 1
+                claimed = _accumulate_survey_effect_batch(
+                    totals,
+                    batch_result,
+                    requested_limit=requested_limit,
+                )
+                if claimed == 0:
+                    payload["termination_reason"] = "drained"
+                    break
+                if totals["claimed"] >= max_effects:
+                    payload["termination_reason"] = "max_effects"
+                    break
+            else:
+                payload["termination_reason"] = "max_batches"
+
+            if payload["termination_reason"] is None:
+                payload["termination_reason"] = "max_effects"
+
+            if tenant_id is not None:
+                outbox_after = summarize_survey_response_effects(tenant_id)
+                if not isinstance(outbox_after, Mapping):
+                    raise RuntimeError("survey_effect_summary_invalid")
+                dead_effects = outbox_after.get("dead", 0)
+                payload["outbox_after"] = dict(outbox_after)
+            else:
+                dead_effects = _count_dead_survey_response_effects()
+                payload["outbox_after"] = {
+                    "scope": "global",
+                    "dead": dead_effects,
+                }
+
+            if isinstance(dead_effects, bool):
+                raise RuntimeError("survey_effect_dead_count_invalid")
+            dead_effects = int(dead_effects)
+            if dead_effects < 0:
+                raise RuntimeError("survey_effect_dead_count_invalid")
+            payload["outbox_after"]["dead"] = dead_effects
+
+            payload["status"] = (
+                "completed_with_dead" if dead_effects else "completed"
+            )
+            _echo_survey_effect_json(payload)
+            if dead_effects and fail_on_dead:
+                raise click.exceptions.Exit(SURVEY_EFFECT_CLI_EXIT_DEAD_EFFECTS)
+        except click.exceptions.Exit:
+            raise
+        except Exception as exc:
+            _rollback_survey_effect_cli_session()
+            payload.update(
+                status="failed",
+                termination_reason="operational_failure",
+                reason_code="dispatch_failed",
+                error_type=type(exc).__name__,
+            )
+            _echo_survey_effect_json(payload)
+            cli_logger.warning(
+                "Survey response effect CLI failed error_type=%s",
+                type(exc).__name__,
+                exc_info=False,
+            )
+            raise click.exceptions.Exit(SURVEY_EFFECT_CLI_EXIT_FAILURE)
+
     @app.cli.command("cargar_datos_iniciales")
     def cargar_datos_command():
         from faq_loader import cargar_faqs, cargar_sugerencias, cargar_usuarios_demo

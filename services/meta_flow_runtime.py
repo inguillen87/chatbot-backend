@@ -409,8 +409,15 @@ class MetaFlowRuntime:
             self._load_order_context(endpoint, invocation)
             return {"screen": "ORDER_DETAILS", "data": {}}
         if invocation.flow_id == SURVEY_FLOW_ID:
-            survey, questions, _ = self._load_survey_context(endpoint, invocation)
-            return _survey_question_response(survey, questions, 0)
+            survey, _, interaction = self._load_survey_context(endpoint, invocation)
+            staged = _survey_staged_answers(interaction.metadata_json)
+            visible_questions = _visible_native_survey_questions(survey, staged)
+            return _survey_question_response(
+                survey,
+                visible_questions,
+                0,
+                interaction=interaction,
+            )
         if invocation.flow_id == CLAIM_EVIDENCE_FLOW_ID:
             return {"screen": "CLAIM_EVIDENCE_LOOKUP", "data": {}}
         return {"screen": "CLAIM_LOOKUP", "data": {}}
@@ -426,21 +433,27 @@ class MetaFlowRuntime:
             self._load_order_context(endpoint, invocation)
             return {"screen": "ORDER_DETAILS", "data": {}}
         if invocation.flow_id == SURVEY_FLOW_ID:
-            survey, questions, interaction = self._load_survey_context(
+            survey, _, interaction = self._load_survey_context(
                 endpoint,
                 invocation,
             )
+            staged = _survey_staged_answers(interaction.metadata_json)
+            visible_questions = _visible_native_survey_questions(survey, staged)
             current_screen = str(payload.get("screen") or "")
             if current_screen == "SURVEY_CONFIRM":
-                target_index = len(questions) - 1
+                target_index = len(visible_questions) - 1
             else:
-                target_index = max(
-                    0,
-                    _SURVEY_QUESTION_SCREENS.index(current_screen) - 1,
-                )
+                current_index = _SURVEY_QUESTION_SCREENS.index(current_screen)
+                if current_index >= len(visible_questions):
+                    raise _action_error(
+                        "survey_screen_out_of_range",
+                        "Flow screen is invalid.",
+                        400,
+                    )
+                target_index = max(0, current_index - 1)
             return _survey_question_response(
                 survey,
-                questions,
+                visible_questions,
                 target_index,
                 interaction=interaction,
             )
@@ -518,9 +531,11 @@ class MetaFlowRuntime:
         current_screen = str(payload.get("screen") or "")
         if current_screen not in _SURVEY_QUESTION_SCREENS:
             raise _action_error("flow_screen_invalid", "Flow screen is invalid.", 400)
-        survey, questions, interaction = self._load_survey_context(endpoint, invocation)
-        question_index = _SURVEY_QUESTION_SCREENS.index(current_screen)
-        if question_index >= len(questions):
+        survey, _, interaction = self._load_survey_context(endpoint, invocation)
+        staged = _survey_staged_answers(interaction.metadata_json)
+        visible_questions = _visible_native_survey_questions(survey, staged)
+        screen_index = _SURVEY_QUESTION_SCREENS.index(current_screen)
+        if screen_index >= len(visible_questions):
             raise _action_error("survey_screen_out_of_range", "Flow screen is invalid.", 400)
 
         selected_option = _required_string(
@@ -530,45 +545,41 @@ class MetaFlowRuntime:
         )
         if not selected_option.isdigit():
             raise _action_error("survey_option_invalid", "Survey option is invalid.", 400)
-        question = questions[question_index]
+        question = visible_questions[screen_index]
         option_ids = {int(option.id) for option in question.opciones}
         selected_option_id = int(selected_option)
         if selected_option_id not in option_ids:
             raise _action_error("survey_option_invalid", "Survey option is invalid.", 400)
 
         metadata = dict(interaction.metadata_json or {})
-        staged = {
-            str(key): int(value)
-            for key, value in (metadata.get("survey_staged_answers") or {}).items()
-            if str(key).isdigit() and str(value).isdigit()
+        staged[int(question.id)] = selected_option_id
+        visible_after_answer = _visible_native_survey_questions(survey, staged)
+        staged = _prune_native_survey_answers(visible_after_answer, staged)
+        metadata["survey_staged_answers"] = {
+            str(question_id): option_id
+            for question_id, option_id in staged.items()
         }
-        staged[str(question.id)] = selected_option_id
-        metadata["survey_staged_answers"] = staged
         metadata["survey_last_screen"] = current_screen
+        metadata["survey_navigation"] = {
+            "instrument_revision": int(survey.structure_revision or 1),
+            "visible_question_ids": [
+                int(item.id) for item in visible_after_answer
+            ],
+            "answered_question_ids": sorted(staged),
+        }
         interaction.metadata_json = metadata
         db.session.add(interaction)
         db.session.commit()
 
-        next_index = question_index + 1
-        if next_index < len(questions):
+        next_index = screen_index + 1
+        if next_index < len(visible_after_answer):
             return _survey_question_response(
                 survey,
-                questions,
+                visible_after_answer,
                 next_index,
                 interaction=interaction,
             )
-        return {
-            "screen": "SURVEY_CONFIRM",
-            "data": {
-                "survey_title": str(survey.titulo or "Votacion"),
-                "answer_summary": f"{len(questions)} respuestas listas para enviar.",
-                "results_note": (
-                    "Al finalizar recibiras el acceso a los resultados en vivo."
-                    if survey.mostrar_resultados_envivo
-                    else "Tu participacion quedara registrada al finalizar."
-                ),
-            },
-        }
+        return _survey_confirmation_response(survey, visible_after_answer)
 
     def _store_claim_context(
         self,
@@ -657,6 +668,7 @@ class MetaFlowRuntime:
         survey, questions, _ = _resolve_survey_context(
             int(endpoint.tenant.id),
             (interaction.metadata_json or {}).get("survey_context"),
+            require_instrument_revision=True,
         )
         return survey, questions, interaction
 
@@ -702,7 +714,7 @@ def authorize_order_context(tenant_id: int, raw_context: Any) -> dict[str, str]:
     return {"kind": canonical_kind, "id": identifier}
 
 
-def authorize_survey_context(tenant_id: int, raw_context: Any) -> dict[str, str]:
+def authorize_survey_context(tenant_id: int, raw_context: Any) -> dict[str, Any]:
     """Validate one published quick vote before issuing a signed Flow token."""
 
     _, _, context = _resolve_survey_context(int(tenant_id), raw_context)
@@ -775,8 +787,8 @@ def apply_whatsapp_flow_completion(
     if not isinstance(answers, Mapping):
         raise _action_error("flow_completion_answers_missing", "Flow completion is invalid.", 400)
 
-    metadata = dict(interaction.metadata_json or {})
-    previous_completion = metadata.get("completion")
+    initial_metadata = dict(interaction.metadata_json or {})
+    previous_completion = initial_metadata.get("completion")
     if isinstance(previous_completion, Mapping) and previous_completion.get("status") == "applied":
         return _completion_response_from_metadata(previous_completion)
 
@@ -824,6 +836,10 @@ def apply_whatsapp_flow_completion(
     }
     if result.get("attachment_count") is not None:
         completion_metadata["attachment_count"] = int(result["attachment_count"])
+    # Completion handlers may add server-owned navigation or evidence state.
+    # Merge the receipt into that current value instead of restoring the stale
+    # snapshot captured before the handler ran.
+    metadata = dict(interaction.metadata_json or {})
     metadata["completion"] = completion_metadata
     interaction.metadata_json = metadata
     db.session.add(interaction)
@@ -1344,20 +1360,20 @@ def _apply_survey_completion(
     survey, questions, survey_context = _resolve_survey_context(
         tenant_id,
         metadata.get("survey_context"),
+        require_instrument_revision=True,
     )
-    raw_staged = metadata.get("survey_staged_answers")
-    staged = raw_staged if isinstance(raw_staged, Mapping) else {}
+    staged_answers = _survey_staged_answers(metadata)
+    visible_questions = _visible_native_survey_questions(survey, staged_answers)
+    staged = _prune_native_survey_answers(visible_questions, staged_answers)
     response_rows: list[dict[str, int]] = []
-    for question in questions:
-        selected = staged.get(str(question.id))
-        try:
-            selected_id = int(selected)
-        except (TypeError, ValueError, OverflowError) as exc:
+    for question in visible_questions:
+        selected_id = staged_answers.get(int(question.id))
+        if selected_id is None:
             raise _action_error(
                 "survey_answers_incomplete",
                 "Survey answers are incomplete.",
                 409,
-            ) from exc
+            )
         if selected_id not in {int(option.id) for option in question.opciones}:
             raise _action_error(
                 "survey_option_invalid",
@@ -1367,6 +1383,21 @@ def _apply_survey_completion(
         response_rows.append(
             {"pregunta_id": int(question.id), "opcion_id": selected_id}
         )
+
+    completion_metadata = dict(metadata)
+    completion_metadata["survey_staged_answers"] = {
+        str(question_id): option_id
+        for question_id, option_id in staged.items()
+    }
+    completion_metadata["survey_navigation"] = {
+        "instrument_revision": int(survey.structure_revision or 1),
+        "visible_question_ids": [
+            int(question.id) for question in visible_questions
+        ],
+        "answered_question_ids": sorted(staged),
+    }
+    interaction.metadata_json = completion_metadata
+    db.session.add(interaction)
 
     from services.encuestas_service import EncuestaError, save_respuesta
 
@@ -1380,10 +1411,18 @@ def _apply_survey_completion(
         "canal": "whatsapp_flow",
         "anon_id": interaction.recipient_hash,
         "phone": phone,
+        "instrument_revision": survey_context["instrument_revision"],
         "metadata": {
             "source": "whatsapp_native_flow",
             "flow_id": SURVEY_FLOW_ID,
             "interaction_id": interaction.id,
+            "instrument_revision": survey_context["instrument_revision"],
+            "visible_question_ids": [
+                int(question.id) for question in visible_questions
+            ],
+            "adaptive_navigation": any(
+                question.logica_condicional is not None for question in questions
+            ),
         },
     }
     request_context = {
@@ -1394,6 +1433,7 @@ def _apply_survey_completion(
         "canal": "whatsapp_flow",
     }
     try:
+        _ensure_physical_outer_transaction_for_nested_write()
         with db.session.begin_nested():
             response = save_respuesta(
                 survey_context["slug"],
@@ -1402,7 +1442,10 @@ def _apply_survey_completion(
                 preferred_tenant_id=tenant_id,
                 authenticated_user=authenticated_user,
                 commit=False,
-                emit_realtime_update=False,
+                # The outer WhatsApp transaction commits the response and both
+                # post-commit effects together.  The webhook dispatches them
+                # only after invocation consumption is durably committed.
+                emit_realtime_update=True,
                 grant_reward=False,
             )
     except EncuestaError as exc:
@@ -1411,9 +1454,13 @@ def _apply_survey_completion(
             if isinstance(getattr(exc, "payload", None), Mapping)
             else ""
         )
-        message = str(exc).lower()
-        if exc.status_code == 409 or "particip" in message:
+        if reason == "survey_response_duplicate":
             code = "survey_already_answered"
+        elif reason in {"survey_concurrent_update", "survey_structure_changed"}:
+            # Preserve the retryable concurrency reason without pretending the
+            # vote was registered.  The caller owns retry policy and must not
+            # automatically replay an ambiguous external submission.
+            code = reason
         elif reason in {"authentication_required", "identity_required"}:
             code = reason
         else:
@@ -1438,6 +1485,7 @@ def _apply_survey_completion(
         "message_type": "interactive_buttons",
         "fuente": "whatsapp_flow_survey_completed",
         "generar_audio": True,
+        "instrument_revision": getattr(response, "instrument_revision", None),
         "entity": {"kind": "survey_response", "id": response.id},
         "realtime_event": {
             "kind": "survey_vote",
@@ -1445,6 +1493,33 @@ def _apply_survey_completion(
             "survey_slug": survey_context["slug"],
         },
     }
+
+
+def _ensure_physical_outer_transaction_for_nested_write() -> None:
+    """Make a SQLite SAVEPOINT subordinate to a real outer transaction.
+
+    Pysqlite does not emit ``BEGIN`` for read-only work.  If ``begin_nested``
+    is the first physical transaction statement, releasing that SAVEPOINT can
+    commit its writes even though SQLAlchemy still exposes a logical outer
+    transaction.  The WhatsApp Flow caller intentionally owns the final
+    commit/rollback, so start a real write transaction before the savepoint.
+    PostgreSQL and other supported drivers already provide the expected outer
+    transaction semantics and need no special statement.
+    """
+
+    connection = db.session.connection()
+    if connection.dialect.name != "sqlite":
+        return
+
+    connection_fairy = connection.connection
+    driver_connection = getattr(
+        connection_fairy,
+        "driver_connection",
+        connection_fairy,
+    )
+    if getattr(driver_connection, "in_transaction", False):
+        return
+    connection.exec_driver_sql("BEGIN IMMEDIATE")
 
 
 def _survey_results_url(slug: str) -> str:
@@ -1523,7 +1598,9 @@ def _completion_response_from_metadata(value: Mapping[str, Any]) -> dict[str, An
 def _resolve_survey_context(
     tenant_id: int,
     raw_context: Any,
-) -> tuple[EncEncuesta, tuple[Any, ...], dict[str, str]]:
+    *,
+    require_instrument_revision: bool = False,
+) -> tuple[EncEncuesta, tuple[Any, ...], dict[str, Any]]:
     if not isinstance(raw_context, Mapping):
         raise _action_error(
             "survey_context_missing",
@@ -1566,10 +1643,86 @@ def _resolve_survey_context(
             "The survey linked to this Flow is unavailable.",
             403,
         )
+    supplied_revision = raw_context.get("instrument_revision")
+    if supplied_revision in (None, ""):
+        supplied_revision = raw_context.get("structure_revision")
+    current_revision = int(survey.structure_revision or 1)
+    has_conditional_logic = any(
+        question.logica_condicional is not None for question in survey.preguntas
+    )
+    if (
+        require_instrument_revision
+        and has_conditional_logic
+        and supplied_revision in (None, "")
+    ):
+        raise _action_error(
+            "survey_instrument_revision_required",
+            "Adaptive survey context is missing its instrument revision.",
+            409,
+        )
+    if supplied_revision not in (None, ""):
+        try:
+            expected_revision = int(supplied_revision)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _action_error(
+                "survey_context_invalid",
+                "The survey linked to this Flow is invalid.",
+                400,
+            ) from exc
+        if (
+            isinstance(supplied_revision, bool)
+            or expected_revision <= 0
+            or str(supplied_revision).strip() != str(expected_revision)
+        ):
+            raise _action_error(
+                "survey_context_invalid",
+                "The survey linked to this Flow is invalid.",
+                400,
+            )
+        if expected_revision != current_revision:
+            raise _action_error(
+                "survey_structure_changed",
+                "The survey changed after this Flow was sent.",
+                409,
+            )
     if int(survey.puntos_recompensa or 0) > 0:
         raise _action_error(
             "survey_rewards_require_webview",
             "Reward surveys require the authenticated web experience.",
+            409,
+        )
+    uniqueness_policy = str(survey.politica_unicidad or "libre").strip().lower()
+    if not bool(survey.anonimo_permitido) or uniqueness_policy in {
+        "por_usuario",
+        "usuario",
+        "user_id",
+        "por_user_id",
+    }:
+        raise _action_error(
+            "survey_authentication_requires_webview",
+            "Authenticated surveys require the web experience.",
+            409,
+        )
+    if uniqueness_policy in {"por_dni", "dni", "por_ip", "ip"}:
+        raise _action_error(
+            "survey_identity_policy_requires_webview",
+            "This survey identity policy requires the web experience.",
+            409,
+        )
+    if uniqueness_policy not in {
+        "libre",
+        "por_cookie",
+        "cookie",
+        "por_phone",
+        "phone",
+        "por_telefono",
+        "telefono",
+        "por_dni_o_phone",
+        "dni_o_phone",
+    }:
+        raise _action_error(
+            "survey_uniqueness_policy_requires_webview",
+            "This survey uniqueness policy requires the web experience.",
             409,
         )
 
@@ -1598,7 +1751,78 @@ def _resolve_survey_context(
                 "This survey contains an invalid option.",
                 409,
             )
-    return survey, questions, {"id": str(survey.id), "slug": slug}
+    # Compile once before authorizing a send. This validates persisted v1/v2
+    # references and proves that the native runtime can evaluate the same
+    # visibility graph as canonical public responses.
+    _visible_native_survey_questions(survey, {})
+    return survey, questions, {
+        "id": str(survey.id),
+        "slug": slug,
+        "instrument_revision": current_revision,
+    }
+
+
+def _survey_staged_answers(metadata: Any) -> dict[int, int]:
+    if not isinstance(metadata, Mapping):
+        return {}
+    raw_staged = metadata.get("survey_staged_answers")
+    if not isinstance(raw_staged, Mapping):
+        return {}
+    staged: dict[int, int] = {}
+    for raw_question_id, raw_option_id in raw_staged.items():
+        try:
+            question_id = int(raw_question_id)
+            option_id = int(raw_option_id)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if question_id > 0 and option_id > 0:
+            staged[question_id] = option_id
+    return staged
+
+
+def _visible_native_survey_questions(
+    survey: EncEncuesta,
+    staged: Mapping[int, int],
+) -> tuple[Any, ...]:
+    from services.encuestas_service import EncuestaError, compile_survey_visibility
+
+    selections = {
+        int(question_id): {int(option_id)}
+        for question_id, option_id in staged.items()
+    }
+    try:
+        visible_questions = compile_survey_visibility(survey).evaluate(
+            selected_option_ids_by_question_id=selections,
+        )
+    except EncuestaError as exc:
+        raise _action_error(
+            "survey_conditional_logic_invalid",
+            "This survey is not compatible with adaptive native navigation.",
+            409,
+        ) from exc
+    if not visible_questions:
+        raise _action_error(
+            "survey_conditional_logic_invalid",
+            "This survey is not compatible with adaptive native navigation.",
+            409,
+        )
+    return tuple(visible_questions)
+
+
+def _prune_native_survey_answers(
+    visible_questions: Sequence[Any],
+    staged: Mapping[int, int],
+) -> dict[int, int]:
+    valid_options_by_question = {
+        int(question.id): {int(option.id) for option in question.opciones}
+        for question in visible_questions
+    }
+    return {
+        int(question_id): int(option_id)
+        for question_id, option_id in staged.items()
+        if int(question_id) in valid_options_by_question
+        and int(option_id) in valid_options_by_question[int(question_id)]
+    }
 
 
 def _survey_question_response(
@@ -1611,15 +1835,22 @@ def _survey_question_response(
     if index < 0 or index >= len(questions):
         raise _action_error("survey_screen_out_of_range", "Flow screen is invalid.", 400)
     question = questions[index]
-    staged = (
-        (interaction.metadata_json or {}).get("survey_staged_answers")
-        if interaction is not None and isinstance(interaction.metadata_json, Mapping)
-        else {}
+    staged = _survey_staged_answers(
+        interaction.metadata_json if interaction is not None else None
     )
-    answered = len(staged) if isinstance(staged, Mapping) else 0
-    progress = f"Pregunta {index + 1} de {len(questions)}"
+    visible_question_ids = {int(item.id) for item in questions}
+    answered = len(visible_question_ids.intersection(staged))
+    adaptive = any(
+        item.logica_condicional is not None for item in survey.preguntas
+    )
+    progress = (
+        f"Pregunta {index + 1}"
+        if adaptive
+        else f"Pregunta {index + 1} de {len(questions)}"
+    )
     if answered:
-        progress += f" - {answered} guardadas"
+        saved_label = "respuesta guardada" if answered == 1 else "respuestas guardadas"
+        progress += f" - {answered} {saved_label}"
     return {
         "screen": _SURVEY_QUESTION_SCREENS[index],
         "data": {
@@ -1630,6 +1861,30 @@ def _survey_question_response(
                 {"id": str(option.id), "title": str(option.texto or "")[:120]}
                 for option in question.opciones
             ],
+        },
+    }
+
+
+def _survey_confirmation_response(
+    survey: EncEncuesta,
+    visible_questions: Sequence[Any],
+) -> dict[str, Any]:
+    answer_count = len(visible_questions)
+    answer_summary = (
+        "1 respuesta lista para enviar."
+        if answer_count == 1
+        else f"{answer_count} respuestas listas para enviar."
+    )
+    return {
+        "screen": "SURVEY_CONFIRM",
+        "data": {
+            "survey_title": str(survey.titulo or "Votacion")[:120],
+            "answer_summary": answer_summary,
+            "results_note": (
+                "Al finalizar recibiras el acceso a los resultados en vivo."
+                if survey.mostrar_resultados_envivo
+                else "Tu participacion quedara registrada al finalizar."
+            ),
         },
     }
 

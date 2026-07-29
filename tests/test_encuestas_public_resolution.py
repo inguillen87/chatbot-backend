@@ -26,6 +26,19 @@ class _DummyRespuesta:
         self.id = respuesta_id
 
 
+def _submission_contract(payload, suffix: str):
+    """Attach durable HTTP identity explicitly instead of mutating the client fixture."""
+
+    submission_id = f"test-public-survey-{suffix}"
+    if isinstance(payload, MultiDict):
+        body = payload.copy()
+        body.setlist("submission_id", [submission_id])
+    else:
+        body = dict(payload)
+        body["submission_id"] = submission_id
+    return body, {"Idempotency-Key": submission_id}
+
+
 def test_resolve_tenant_from_domain_map(app):
     app.config["PUBLIC_ENCUESTAS_DOMAIN_MAP"] = {"chatboc.ar": 7}
     app.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"] = None
@@ -231,10 +244,14 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
 
+    payload, idempotency_headers = _submission_contract(
+        {"respuesta": "ok"},
+        "alias-0001",
+    )
     response = client.post(
         "/public/encuestas/demo-encuesta/respuestas",
-        json={"respuesta": "ok"},
-        headers={"X-Forwarded-For": "1.1.1.1"},
+        json=payload,
+        headers={**idempotency_headers, "X-Forwarded-For": "1.1.1.1"},
     )
     assert response.status_code == 201
     body = response.get_json()
@@ -244,7 +261,7 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     assert body["respuesta_id"] == 123
     assert body["request_id"]
     assert saved_calls["slug"] == "demo-encuesta"
-    assert saved_calls["payload"] == {"respuesta": "ok"}
+    assert saved_calls["payload"] == payload
     assert saved_calls["ctx"]["ip"] == "1.1.1.1"
     assert saved_calls["preferred_tenant_id"] == client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"]
 
@@ -262,10 +279,14 @@ def test_responder_accepts_form_payload(client, monkeypatch):
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
 
     respuestas = [{"pregunta_id": 10, "opcion_ids": [2]}]
+    form_data, idempotency_headers = _submission_contract(
+        {"payload": json.dumps({"respuestas": respuestas})},
+        "form-payload-0001",
+    )
     response = client.post(
         "/public/encuestas/demo-encuesta/responder",
-        data={"payload": json.dumps({"respuestas": respuestas})},
-        headers={"X-Forwarded-For": "2.2.2.2"},
+        data=form_data,
+        headers={**idempotency_headers, "X-Forwarded-For": "2.2.2.2"},
     )
 
     assert response.status_code == 201
@@ -291,10 +312,14 @@ def test_responder_parses_respuestas_field_from_form(client, monkeypatch):
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
 
     respuestas = [{"pregunta_id": 5, "texto_libre": "Sí"}]
+    form_data, idempotency_headers = _submission_contract(
+        {"respuestas": json.dumps(respuestas), "metadata": json.dumps({"canal": "web"})},
+        "form-fields-0001",
+    )
     response = client.post(
         "/public/encuestas/demo-encuesta/responder",
-        data={"respuestas": json.dumps(respuestas), "metadata": json.dumps({"canal": "web"})},
-        headers={"X-Forwarded-For": "3.3.3.3"},
+        data=form_data,
+        headers={**idempotency_headers, "X-Forwarded-For": "3.3.3.3"},
     )
 
     assert response.status_code == 201
@@ -323,11 +348,15 @@ def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
             ("metadata[demographics][genero]", "femenino"),
         ]
     )
+    form_payload, idempotency_headers = _submission_contract(
+        form_payload,
+        "bracketed-form-0001",
+    )
 
     response = client.post(
         "/public/encuestas/demo-encuesta/responder",
         data=form_payload,
-        headers={"X-Forwarded-For": "4.4.4.4"},
+        headers={**idempotency_headers, "X-Forwarded-For": "4.4.4.4"},
         content_type="application/x-www-form-urlencoded",
     )
 
@@ -344,22 +373,69 @@ def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
 
 def test_responder_duplicate_conflict_is_idempotent_success(client, monkeypatch):
     def fake_save(_slug, _payload, _ctx, **kwargs):
-        raise EncuestaError("Ya registramos tu participación", status_code=409)
+        raise EncuestaError(
+            "Ya registramos tu participación",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "survey_response_duplicate",
+                "retryable": False,
+                "action_hint": "show_existing_participation",
+            },
+        )
 
     monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
 
+    payload, idempotency_headers = _submission_contract(
+        {"respuestas": [{"pregunta_id": 1, "texto_libre": "ok"}]},
+        "duplicate-0001",
+    )
     response = client.post(
         "/public/encuestas/demo-encuesta/responder",
-        json={"respuestas": [{"pregunta_id": 1, "texto_libre": "ok"}]},
+        json=payload,
+        headers=idempotency_headers,
     )
 
     assert response.status_code == 200
     assert response.get_json() == {
+        "contract_version": "encuestas.public_response.v1",
         "ok": True,
         "duplicate": True,
+        "reason_code": "survey_response_duplicate",
+        "retryable": False,
         "message": "Ya registramos tu participación",
         "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
     }
+
+
+def test_responder_non_duplicate_conflict_remains_conflict(client, monkeypatch):
+    def fake_save(_slug, _payload, _ctx, **kwargs):
+        raise EncuestaError(
+            "La encuesta cambió desde que abriste el formulario",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.public_response.v2",
+                "reason_code": "survey_structure_changed",
+                "retryable": False,
+                "action_hint": "reload_survey",
+            },
+        )
+
+    monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
+
+    payload, idempotency_headers = _submission_contract(
+        {"respuestas": [{"pregunta_id": 1, "texto_libre": "ok"}]},
+        "conflict-0001",
+    )
+    response = client.post(
+        "/public/encuestas/demo-encuesta/responder",
+        json=payload,
+        headers=idempotency_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["reason_code"] == "survey_structure_changed"
+    assert response.get_json()["retryable"] is False
 
 def test_share_redirects_to_canonical(client):
     client.application.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = "https://www.chatboc.ar"

@@ -265,7 +265,7 @@ def generar_audio(
         _increment_metric("generation_failures")
         return None
 
-    logger.info(f"TTS Service: Attempting to generate audio for text: '{text[:50]}...'")
+    logger.info("TTS Service: generating audio input_chars=%s", len(text))
 
     effective_speed = speed
     if effective_speed is None:
@@ -339,11 +339,14 @@ def generar_audio(
                 finally:
                     if temp_path and os.path.exists(temp_path):
                         os.remove(temp_path)
-                logger.info(f"TTS Service: Cached audio at {cached_rel_path}")
+                logger.info("TTS Service: Audio cached successfully")
                 _increment_metric("cache_writes")
                 return _public_backend_url(cached_rel_path)
-        except Exception as e:
-            logger.warning(f"TTS Service: Failed to cache audio file from {generated_path}: {e}")
+        except Exception as exc:
+            logger.warning(
+                "TTS Service: Failed to cache audio error_type=%s",
+                type(exc).__name__,
+            )
             _increment_metric("cache_write_failures")
 
         # Fallback to returning the original URL if caching fails but URL is valid
@@ -407,7 +410,7 @@ def generar_audio(
         for provider_name in _provider_order_from_env():
             provider = providers.get(provider_name)
             if not provider:
-                logger.debug("TTS Service: Provider '%s' is not available", provider_name)
+                logger.debug("TTS Service: Configured provider is not available")
                 continue
 
             try:
@@ -415,10 +418,9 @@ def generar_audio(
                 audio_url = provider(text)
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.error(
-                    "TTS Service: Provider %s raised an exception: %s",
+                    "TTS Service: Provider %s failed error_type=%s",
                     provider_name,
-                    exc,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
                 continue
 

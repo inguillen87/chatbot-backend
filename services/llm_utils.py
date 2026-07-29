@@ -36,73 +36,15 @@ try:
 except ImportError:
     cohere = None
     CohereAPIError = None
-    # robust_chat también dependería de 'cohere', así que el mock es importante si 'cohere' no está.
+    # Cohere remains optional. Text generation below uses the OpenAI adapter and
+    # never substitutes a data-producing mock when this package is absent.
 
 
-try:
-    from services.cohere_ai import robust_chat
-except ImportError:
-    # This is a fallback for environments where robust_chat might not be available initially
-    # or for simpler testing. Replace with a proper mock if robust_chat is critical.
-    def robust_chat(message: str, **kwargs) -> str:
-        logger.warning("Using mock robust_chat. LLM calls will not be real.")
-
-        # --- Improved Mock for Audio Transcript ---
-        if "poste caído" in message and "Marcelo Guillén" in message and "Sarmiento y San Martín" in message:
-            logger.info("Mock robust_chat: Detected specific audio transcript for Marcelo Guillén.")
-            if "Extract complaint details" in message:
-                return json.dumps({
-                    "tipo_problema": "Luminaria",
-                    "ubicacion_problema": "Sarmiento y San Martín, Junín",
-                    "descripcion_problema": "Tengo un poste caído a mitad de cuadra.",
-                    "nombre_cliente": "Marcelo Guillén",
-                    "email_cliente": "guillen.marse@gmail.com"
-                })
-            elif "Extract contact details" in message:
-                 return json.dumps({
-                    "nombre_cliente": "Marcelo Guillén",
-                    "email_cliente": "guillen.marse@gmail.com",
-                    "direccion_cliente": "Sarmiento y San Martín, Junín"
-                })
-
-        # --- Original Mock Logic as Fallback ---
-        if "Extract contact details" in message:
-            if "John Doe" in message and "123 Main St" in message:
-                return json.dumps({
-                    "nombre_cliente": "John Doe",
-                    "direccion_cliente": "123 Main St, Anytown",
-                    "telefono_cliente": "555-1234",
-                    "email_cliente": "john.doe@example.com"
-                })
-            elif "Jane Smith" in message:
-                 return json.dumps({"nombre_cliente": "Jane Smith"})
-            return json.dumps({})
-        elif "Extract complaint details" in message:
-            if "broken streetlight" in message and "Elm Street" in message:
-                return json.dumps({
-                    "tipo_problema": "Alumbrado público",
-                    "ubicacion_problema": "Calle Elm, cerca del poste 123",
-                    "descripcion_problema": "La farola en la esquina de Elm Street y Oak Avenue está rota y no enciende desde hace 3 días."
-                })
-            return json.dumps({"descripcion_problema": "El usuario reportó un problema."})
-        elif "Update summary" in message:
-            summary_match = re.search(r"Current summary: '''(.*?)'''", message, re.DOTALL)
-            data_match = re.search(r"New data: '''(.*?)'''", message, re.DOTALL)
-            if summary_match and data_match:
-                current_summary = summary_match.group(1)
-                new_data_str = data_match.group(1)
-                try:
-                    new_data = json.loads(new_data_str)
-                    updated_summary = current_summary
-                    for key, value in new_data.items():
-                        updated_summary += f"\n- {key.replace('_', ' ').capitalize()}: {value}"
-                    return updated_summary
-                except json.JSONDecodeError:
-                    return current_summary + "\nError processing new data."
-            return "Mocked summary update."
-
-        logger.warning(f"Mock robust_chat: No specific mock matched for message: {message[:100]}...")
-        return "{}"
+from services.openai_text_service import robust_chat
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_TERRA_MODEL,
+    resolve_openai_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -651,28 +593,40 @@ def _sanitize_llm_text_output(text: str) -> str:
     return stripped.strip('"').strip()
 
 
-def llamar_llm_para_json_estructurado(system_prompt: str, user_prompt: str, model: str = "gpt-4o-mini") -> Optional[Dict | List]:
+def llamar_llm_para_json_estructurado(
+    system_prompt: str,
+    user_prompt: str,
+    model: Optional[str] = None,
+) -> Optional[Dict | List]:
     """
     Calls the LLM requesting a JSON output and parses it safely.
 
     Args:
         system_prompt: The system prompt guiding the LLM's task.
         user_prompt: The user prompt, containing the data to be processed.
-        model: The model to use (default: gpt-4o-mini).
+        model: Explicit model override. When omitted, uses
+            ``OPENAI_CHAT_MODEL_EXTRACTION`` or the role-aware Terra default.
 
     Returns:
         A dictionary or list parsed from the LLM's JSON response, or None on error.
     """
     from services.llm_bridge import llamar_llm_para_generacion_texto
 
-    logger.info(f"Calling LLM for structured JSON output using model: {model}")
+    resolved_model = str(model or "").strip() or resolve_openai_model(
+        "OPENAI_CHAT_MODEL_EXTRACTION",
+        DEFAULT_OPENAI_TERRA_MODEL,
+    )
+    logger.info(
+        "Calling LLM for structured JSON output using model=%s",
+        resolved_model,
+    )
     try:
         response_text = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
             temperature=0.1,  # Lower temp for more deterministic JSON extraction
             json_output=True,
-            model=model
+            model=resolved_model
         )
 
         if not response_text:

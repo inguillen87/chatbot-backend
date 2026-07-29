@@ -43,6 +43,8 @@ class TestMultimodalTicketService(unittest.TestCase):
         self.assertFalse(res["error"])
         self.assertTrue(res["draft"]["auto_create_eligible"])
         self.assertNotIn("reason", res["draft"])
+        request = mock_execute.call_args.args[0]
+        self.assertEqual(request.model, "gpt-5.6-sol")
 
     @patch('services.multimodal_ticket_service.ai_gateway.execute')
     def test_requires_human_review_flag(self, mock_execute):

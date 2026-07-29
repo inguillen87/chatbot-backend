@@ -33,8 +33,11 @@ class InterpretacionService:
                 texto = transcribe_audio_from_url(archivo_adjunto.url, mime)
                 if texto:
                     resultado["texto_extraido"] = texto
-            except Exception as e:
-                logger.error(f"Error transcribiendo audio {archivo_adjunto.url}: {e}", exc_info=True)
+            except Exception as exc:
+                logger.error(
+                    "Error transcribiendo audio adjunto (error_type=%s)",
+                    type(exc).__name__,
+                )
                 resultado["error"] = "Ocurrió un error al procesar el audio."
         elif any(keyword in mime for keyword in ("pdf", "excel", "spreadsheet", "msword", "word", "text/", "csv")):
             doc_result = document_processing_service.process_document_by_id(archivo_adjunto.id)
@@ -78,8 +81,11 @@ class InterpretacionService:
             # Note: This path seems to be for a specific flow and might need auth keys.
             # The unified function handles optional auth.
             texto = transcribe_audio_from_url(audio_url, mime_type)
-        except Exception as e:
-            logger.error(f"Error transcribiendo audio {audio_url}: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "Error transcribiendo audio (error_type=%s)",
+                type(exc).__name__,
+            )
             texto = ""
 
         datos = {}
@@ -105,8 +111,11 @@ class InterpretacionService:
             resp = requests.get(image_url, timeout=10)
             resp.raise_for_status()
             image_bytes = resp.content
-        except Exception as e:
-            logger.error(f"Error descargando imagen {image_url}: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "Error descargando imagen (error_type=%s)",
+                type(exc).__name__,
+            )
             return {"palabras_clave": [], "datos_estructurados": {}}
 
         vision_data = analyze_image_smart(image_bytes)

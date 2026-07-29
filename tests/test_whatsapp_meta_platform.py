@@ -1523,6 +1523,7 @@ def test_survey_flow_send_authorizes_published_context_and_persists_scope(client
         "ready": True,
         "id": str(survey.id),
         "slug": survey.slug,
+        "instrument_revision": 1,
     }
 
     messages = SimpleNamespace(
@@ -1552,6 +1553,7 @@ def test_survey_flow_send_authorizes_published_context_and_persists_scope(client
     assert interaction.metadata_json["survey_context"] == {
         "id": str(survey.id),
         "slug": survey.slug,
+        "instrument_revision": 1,
     }
     sent_variables = json.loads(messages.create.call_args.kwargs["content_variables"])
     assert survey.slug not in json.dumps(sent_variables)

@@ -25,13 +25,19 @@ def make_user():
 class MunicipalStatsTests(unittest.TestCase):
     def setUp(self):
         self.original_auth_helpers = sys.modules.get('utils.auth_helpers')
+
+        # Import the complete production dependency graph before installing the
+        # deliberately minimal auth stub used only to redecorate these route
+        # functions.  Otherwise this test depends on another test having
+        # imported services that need additional auth helpers first.
+        import routes.municipal_legacy as municipal_module
+
         stub = types.ModuleType('utils.auth_helpers')
         stub.token_requerido = lambda f: f
         stub.admin_o_empleado_requerido = lambda f: f
         stub.anon_o_token_requerido = lambda f: f
         sys.modules['utils.auth_helpers'] = stub
 
-        import routes.municipal_legacy as municipal_module
         importlib.reload(municipal_module)
         self.module = municipal_module
 
@@ -40,7 +46,11 @@ class MunicipalStatsTests(unittest.TestCase):
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
         else:
             sys.modules.pop('utils.auth_helpers', None)
-        sys.modules.pop('routes.municipal_legacy', None)
+        # Keep the canonical module object alive so references collected by
+        # other tests retain the same globals, then restore the real auth
+        # decorators on that object.  Evicting it made later patches target a
+        # new module while older route functions kept using the real database.
+        importlib.reload(self.module)
 
     def test_basic_stats(self):
         expected_payload = {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -16,18 +17,21 @@ from models import (
     MunicipioTicket,
     Order,
     ProviderSender,
+    SurveyResponseEffect,
     TenantProfile,
     TicketComentario,
     User,
     WhatsAppFlowInteraction,
 )
 from services.meta_flow_data_exchange import MetaFlowActionError
+import services.encuestas_service as encuesta_service
 from services.meta_flow_runtime import (
     CLAIM_FLOW_ID,
     ORDER_FLOW_ID,
     SURVEY_FLOW_ID,
     apply_whatsapp_flow_completion,
 )
+from services.survey_response_effects import dispatch_survey_response_effects
 from services.whatsapp_flow_security import consume_whatsapp_flow_interaction
 
 
@@ -439,6 +443,22 @@ def test_survey_completion_persists_one_canonical_vote_and_is_idempotent(client)
     assert saved.detalles[0].opcion_id == selected.id
     assert interaction.status == "consumed"
     assert interaction.metadata_json["completion"]["status"] == "applied"
+    staged_effects = SurveyResponseEffect.query.filter_by(
+        tenant_id=tenant.id,
+        response_id=saved.id,
+    ).all()
+    assert len(staged_effects) == 2
+    assert {effect.status for effect in staged_effects} == {"pending"}
+    with patch(
+        "services.encuestas_service.emit_survey_response_update",
+        return_value=True,
+    ):
+        dispatch_result = dispatch_survey_response_effects(
+            tenant_id=tenant.id,
+            response_id=saved.id,
+            limit=3,
+        )
+    assert dispatch_result["succeeded"] == 2
     assert AnalyticsEventV2.query.filter_by(
         tenant_id=tenant.id,
         event_name="vote_submitted",
@@ -460,6 +480,10 @@ def test_survey_completion_persists_one_canonical_vote_and_is_idempotent(client)
 
     assert replay["entity"] == {"kind": "survey_response", "id": str(saved.id)}
     assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 1
+    assert SurveyResponseEffect.query.filter_by(
+        tenant_id=tenant.id,
+        survey_id=survey.id,
+    ).count() == 2
     assert AnalyticsEventV2.query.filter_by(
         tenant_id=tenant.id,
         event_name="vote_submitted",
@@ -468,6 +492,243 @@ def test_survey_completion_persists_one_canonical_vote_and_is_idempotent(client)
         tenant_id=tenant.id,
         event_type=f"whatsapp_flow.{SURVEY_FLOW_ID}.completed",
     ).count() == 1
+
+
+def test_survey_completion_persists_only_current_visible_branch(client):
+    tenant, sender = _tenant_scope("completion-survey-adaptive")
+    survey = _published_quick_vote(
+        tenant,
+        slug="completion-survey-adaptive-vote",
+    )
+    gate = survey.preguntas[0]
+    gate.logical_ref = "priority-gate"
+    gate.opciones[0].logical_ref = "priority-yes"
+    gate.opciones[1].logical_ref = "priority-no"
+    follow_up = EncPregunta(
+        orden=2,
+        tipo="opcion_unica",
+        texto="Detalle de la prioridad",
+        obligatoria=True,
+        logical_ref="priority-detail",
+        logica_condicional={
+            "version": 2,
+            "show_if": {
+                "kind": "group",
+                "operator": "and",
+                "children": [
+                    {
+                        "kind": "option_selected",
+                        "question_ref": "priority-gate",
+                        "option_ref": "priority-yes",
+                    }
+                ],
+            },
+        },
+    )
+    follow_up.opciones = [
+        EncOpcion(orden=1, texto="Centro", logical_ref="detail-center"),
+        EncOpcion(orden=2, texto="Barrios", logical_ref="detail-neighborhoods"),
+    ]
+    outcome = EncPregunta(
+        orden=3,
+        tipo="opcion_unica",
+        texto="Como queres continuar?",
+        obligatoria=True,
+        logical_ref="priority-outcome",
+        logica_condicional={
+            "version": 2,
+            "show_if": {
+                "kind": "group",
+                "operator": "or",
+                "children": [
+                    {
+                        "kind": "group",
+                        "operator": "and",
+                        "children": [
+                            {
+                                "kind": "option_selected",
+                                "question_ref": "priority-gate",
+                                "option_ref": "priority-yes",
+                            },
+                            {
+                                "kind": "option_selected",
+                                "question_ref": "priority-detail",
+                                "option_ref": "detail-center",
+                            },
+                        ],
+                    },
+                    {
+                        "kind": "option_selected",
+                        "question_ref": "priority-gate",
+                        "option_ref": "priority-no",
+                    },
+                ],
+            },
+        },
+    )
+    outcome.opciones = [
+        EncOpcion(orden=1, texto="Enviar", logical_ref="outcome-send"),
+        EncOpcion(orden=2, texto="Revisar", logical_ref="outcome-review"),
+    ]
+    survey.preguntas.extend([follow_up, outcome])
+    db.session.commit()
+    skip_branch = gate.opciones[1]
+    stale_hidden_answer = follow_up.opciones[0]
+    visible_outcome_answer = outcome.opciones[0]
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={
+            "survey_context": {
+                "id": str(survey.id),
+                "slug": survey.slug,
+                "instrument_revision": 1,
+            },
+            "survey_staged_answers": {
+                str(gate.id): skip_branch.id,
+                str(follow_up.id): stale_hidden_answer.id,
+                str(outcome.id): visible_outcome_answer.id,
+            },
+        },
+        data_contract=["confirm_vote"],
+    )
+
+    response = apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=_submission(interaction, {"confirm_vote": True}),
+        anon_id="+5491112345678",
+    )
+    db.session.commit()
+
+    saved = EncRespuesta.query.filter_by(encuesta_id=survey.id).one()
+    db.session.refresh(interaction)
+    assert response["fuente"] == "whatsapp_flow_survey_completed"
+    assert {
+        (detail.pregunta_id, detail.opcion_id) for detail in saved.detalles
+    } == {
+        (gate.id, skip_branch.id),
+        (outcome.id, visible_outcome_answer.id),
+    }
+    assert saved.metadata_payload["instrument_revision"] == 1
+    assert saved.metadata_payload["adaptive_navigation"] is True
+    assert saved.metadata_payload["visible_question_ids"] == [gate.id, outcome.id]
+    assert interaction.metadata_json["survey_staged_answers"] == {
+        str(gate.id): skip_branch.id,
+        str(outcome.id): visible_outcome_answer.id,
+    }
+    assert interaction.metadata_json["survey_navigation"]["visible_question_ids"] == [
+        gate.id,
+        outcome.id,
+    ]
+
+
+def test_survey_completion_nested_savepoint_is_rolled_back_with_outer_transaction_on_sqlite(client):
+    tenant, sender = _tenant_scope("completion-survey-outer-rollback")
+    survey = _published_quick_vote(
+        tenant,
+        slug="completion-survey-outer-rollback-vote",
+    )
+    question = survey.preguntas[0]
+    selected = question.opciones[0]
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={
+            "survey_context": {"id": str(survey.id), "slug": survey.slug},
+            "survey_staged_answers": {str(question.id): selected.id},
+        },
+        data_contract=["confirm_vote"],
+    )
+    survey_id = survey.id
+    tenant_id = tenant.id
+    interaction_id = interaction.id
+
+    result = apply_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction_id,
+        submission=_submission(interaction, {"confirm_vote": True}),
+        anon_id="+5491112345678",
+    )
+
+    # The nested write is visible inside the caller-owned transaction.
+    assert result["entity"]["kind"] == "survey_response"
+    assert EncRespuesta.query.filter_by(encuesta_id=survey_id).count() == 1
+    assert SurveyResponseEffect.query.filter_by(
+        tenant_id=tenant_id,
+        survey_id=survey_id,
+    ).count() == 2
+    assert db.session.get(EncEncuesta, survey_id).structure_locked_at is not None
+
+    # A later failure in invocation consumption/orchestration must undo the
+    # response and its durable structure marker together.
+    db.session.rollback()
+    db.session.remove()
+    assert EncRespuesta.query.filter_by(encuesta_id=survey_id).count() == 0
+    assert SurveyResponseEffect.query.filter_by(
+        tenant_id=tenant_id,
+        survey_id=survey_id,
+    ).count() == 0
+    assert db.session.get(EncEncuesta, survey_id).structure_locked_at is None
+    reloaded_interaction = db.session.get(WhatsAppFlowInteraction, interaction_id)
+    assert (reloaded_interaction.metadata_json or {}).get("completion") is None
+    assert AuditEvent.query.filter_by(
+        tenant_id=tenant_id,
+        event_type=f"whatsapp_flow.{SURVEY_FLOW_ID}.completed",
+    ).count() == 0
+
+
+def test_survey_completion_preserves_concurrency_reason_instead_of_claiming_duplicate(
+    client,
+    monkeypatch,
+):
+    tenant, sender = _tenant_scope("completion-survey-concurrent")
+    survey = _published_quick_vote(tenant, slug="completion-survey-concurrent-vote")
+    question = survey.preguntas[0]
+    interaction = _interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata={
+            "survey_context": {"id": str(survey.id), "slug": survey.slug},
+            "survey_staged_answers": {
+                str(question.id): question.opciones[0].id
+            },
+        },
+        data_contract=["confirm_vote"],
+    )
+
+    def concurrent_update(*_args, **_kwargs):
+        raise encuesta_service.EncuestaError(
+            "La encuesta esta siendo actualizada",
+            status_code=409,
+            payload={
+                "reason_code": "survey_concurrent_update",
+                "retryable": True,
+                "action_hint": "reload_survey",
+            },
+        )
+
+    monkeypatch.setattr(encuesta_service, "save_respuesta", concurrent_update)
+    with pytest.raises(MetaFlowActionError) as exc_info:
+        apply_whatsapp_flow_completion(
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            submission=_submission(interaction, {"confirm_vote": True}),
+            anon_id="+5491112345678",
+        )
+    db.session.rollback()
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "survey_concurrent_update"
+    assert exc_info.value.code != "survey_already_answered"
+    assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 0
+    assert SurveyResponseEffect.query.filter_by(
+        tenant_id=tenant.id,
+        survey_id=survey.id,
+    ).count() == 0
 
 
 def test_survey_completion_rejects_missing_staged_answers(client):
@@ -494,6 +755,10 @@ def test_survey_completion_rejects_missing_staged_answers(client):
 
     assert error.value.code == "survey_answers_incomplete"
     assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 0
+    assert SurveyResponseEffect.query.filter_by(
+        tenant_id=tenant.id,
+        survey_id=survey.id,
+    ).count() == 0
     assert AnalyticsEventV2.query.filter_by(
         tenant_id=tenant.id,
         event_name="vote_submitted",

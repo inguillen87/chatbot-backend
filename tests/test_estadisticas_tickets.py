@@ -47,6 +47,12 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
             sys.modules['utils.auth_helpers'] = self.original_auth_helpers
         else:
             sys.modules.pop('utils.auth_helpers', None)
+        # Restore the production decorators after this module reloads the
+        # route with identity auth stubs.  Without this reload, later app
+        # factories can register a bare ``get_user_locations(current_user)``
+        # view and Flask invokes it without the injected user argument.
+        import routes.estadisticas as estats
+        importlib.reload(estats)
         self.app_context.pop()
 
     @patch('routes.estadisticas.build_stats_for_municipio')

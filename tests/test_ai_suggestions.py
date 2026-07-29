@@ -83,9 +83,21 @@ class TestAISuggestions(unittest.TestCase):
 
     @patch('routes.ai.embed_textos_llm')
     def test_suggest_templates_success(self, mock_embed_textos_llm):
-        mock_embed_textos_llm.return_value = [[0.11]*1024]
-        self._crear_plantilla("Saludo", "Hola, ¿cómo estás {{nombre_cliente}}?", ["saludo"], embedding_value=[0.1]*1024)
-        self._crear_plantilla("Despedida", "Adiós, {{nombre_cliente}}.", ["despedida"], embedding_value=[0.2]*1024)
+        saludo_embedding = [1.0] + [0.0] * 1023
+        despedida_embedding = [0.0, 1.0] + [0.0] * 1022
+        mock_embed_textos_llm.return_value = [saludo_embedding]
+        self._crear_plantilla(
+            "Saludo",
+            "Hola, ¿cómo estás {{nombre_cliente}}?",
+            ["saludo"],
+            embedding_value=saludo_embedding,
+        )
+        self._crear_plantilla(
+            "Despedida",
+            "Adiós, {{nombre_cliente}}.",
+            ["despedida"],
+            embedding_value=despedida_embedding,
+        )
 
         response = self.client.post('/api/ai/suggest-templates',
                                     headers={'Authorization': f'Bearer {self.jwt_token}'},
@@ -140,6 +152,48 @@ class TestAISuggestions(unittest.TestCase):
         self.assertIn("Tenant A Reclamo", names)
         self.assertIn("Global Util", names)
         self.assertNotIn("Tenant B Privada", names)
+
+    @patch('routes.ai.embed_textos_llm')
+    def test_suggest_templates_tie_breaks_by_template_id(self, mock_embed_textos_llm):
+        embedding = [1.0] + [0.0] * 1023
+        mock_embed_textos_llm.return_value = [embedding]
+        db.session.add_all(
+            [
+                PlantillasRespuesta(
+                    id="ffffffff-ffff-ffff-ffff-ffffffffffff",
+                    name="Template Z",
+                    text="Respuesta Z",
+                    keywords=[],
+                    is_active=True,
+                    embedding=embedding,
+                ),
+                PlantillasRespuesta(
+                    id="00000000-0000-0000-0000-000000000001",
+                    name="Template A",
+                    text="Respuesta A",
+                    keywords=[],
+                    is_active=True,
+                    embedding=embedding,
+                ),
+            ]
+        )
+        db.session.commit()
+
+        response = self.client.post(
+            '/api/ai/suggest-templates',
+            headers={'Authorization': f'Bearer {self.jwt_token}'},
+            json={'asunto': 'consulta equivalente', 'top_n': 2},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        ids = [item['id_plantilla'] for item in response.get_json()['sugerencias']]
+        self.assertEqual(
+            ids,
+            [
+                "00000000-0000-0000-0000-000000000001",
+                "ffffffff-ffff-ffff-ffff-ffffffffffff",
+            ],
+        )
 
     def test_suggest_templates_missing_asunto(self):
         response = self.client.post('/api/ai/suggest-templates',

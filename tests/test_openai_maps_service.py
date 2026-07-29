@@ -76,6 +76,9 @@ def test_usa_responses_api_prioritariamente(monkeypatch):
     assert resultado == {"lat": 9.87, "lon": 6.54}
     assert dummy_responses.called_with is not None
     assert dummy_responses.called_with["model"] == openai_maps_service.DEFAULT_MODEL
+    assert dummy_responses.called_with["store"] is False
+    assert dummy_responses.called_with["text"]["format"]["type"] == "json_schema"
+    assert "response_format" not in dummy_responses.called_with
 
 
 def test_fallback_a_chat_completions_del_cliente(monkeypatch):
@@ -117,6 +120,8 @@ def test_fallback_a_chat_completions_del_cliente(monkeypatch):
         dummy_completions.called_with["model"]
         == openai_maps_service.CHAT_FALLBACK_MODEL
     )
+    assert dummy_completions.called_with["reasoning_effort"] == "none"
+    assert "temperature" not in dummy_completions.called_with
 
 
 def test_fallback_final_a_chatcompletion_legado(monkeypatch):
@@ -145,3 +150,31 @@ def test_fallback_final_a_chatcompletion_legado(monkeypatch):
 
     assert resultado == {"lat": 7.89, "lon": 0.12}
     assert dummy_chat.called_with is not None
+    assert (
+        dummy_chat.called_with["model"]
+        == openai_maps_service.LEGACY_CHAT_FALLBACK_MODEL
+    )
+
+
+def test_responses_failure_is_not_retried_through_chat(monkeypatch, caplog):
+    class _Responses:
+        def create(self, **_kwargs):
+            raise RuntimeError("DNI 32877851 token=secret")
+
+    chat_create = types.SimpleNamespace(create=lambda **_: pytest.fail("must not retry"))
+
+    class _Client:
+        def __init__(self, *_, **__):
+            self.responses = _Responses()
+            self.chat = types.SimpleNamespace(completions=chat_create)
+
+    monkeypatch.setattr(openai_maps_service.openai, "OpenAI", _Client)
+
+    with caplog.at_level("WARNING", logger="services.openai_maps_service"):
+        assert _call_service() is None
+
+    rendered = caplog.text
+    assert "fallback_suppressed=true" in rendered
+    assert "RuntimeError" in rendered
+    assert "32877851" not in rendered
+    assert "secret" not in rendered

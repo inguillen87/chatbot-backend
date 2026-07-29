@@ -77,6 +77,50 @@ class TestProactiveFlows(unittest.TestCase):
         self.assertEqual(call_args['datos_iniciales']['descripcion'], "Hay un bache grande en la calle.")
         self.assertEqual(call_args['datos_iniciales']['foto_url'], "http://example.com/bache.jpg")
 
+    @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
+    @patch('services.municipio_responder.analizar_imagen_con_fallback')
+    def test_image_upload_accepts_modern_structured_vision_result(
+        self, mock_analizar_imagen, mock_start_flow
+    ):
+        """Responses-based vision returns the JSON object directly, not a wrapper."""
+
+        mock_analizar_imagen.return_value = {
+            "intent": "crear_reclamo",
+            "data": {
+                "categoria": "Arbolado",
+                "descripcion": "Se observa una rama grande caída sobre la calle.",
+            },
+        }
+        mock_start_flow.return_value = {"message_body": "OK, starting claim."}
+
+        owner_user = User.query.get(1)
+        chat_context = ChatSessionContext(
+            chat_session_id='test_session_modern_vision',
+            user_id=1,
+            context_data={},
+        )
+        db.session.add(chat_context)
+        db.session.commit()
+
+        responder_municipio(
+            pregunta_original={
+                "pregunta": "",
+                "es_foto": True,
+                "foto_url": "https://example.com/rama.jpg",
+            },
+            owner_user=owner_user,
+            rubro_obj=owner_user.rubro,
+            viewer_user=owner_user,
+            chat_db_context=chat_context,
+            channel="whatsapp",
+        )
+
+        mock_start_flow.assert_called_once()
+        datos = mock_start_flow.call_args.kwargs["datos_iniciales"]
+        self.assertEqual(datos["categoria"], "Arbolado")
+        self.assertIn("rama grande", datos["descripcion"])
+        self.assertEqual(datos["foto_url"], "https://example.com/rama.jpg")
+
 
     def test_location_upload_triggers_proactive_flow(self):
         # Arrange

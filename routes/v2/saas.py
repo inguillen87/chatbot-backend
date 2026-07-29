@@ -80,6 +80,14 @@ _LIVE_CHAT_QUEUE_STATES = {
     "offline_waiting_admin_response",
 }
 _INBOX_TEAM_ORIGINS = {"admin_panel", "agent", "team", "operator", "internal", "municipio", "pyme"}
+_HANDOFF_QUEUED_STATES = {
+    "pending",
+    "queued",
+    "waiting_agent",
+    "esperando_agente_en_vivo",
+}
+_HANDOFF_TERMINAL_STATES = {"resolved", "cancelled", "canceled", "expired", "rejected"}
+_HANDOFF_SUPPORTED_CHANNELS = {"operator", "live_chat", "phone"}
 _WHATSAPP_QA_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "qa_whatsapp_flows.py"
 _TWILIO_STATE_SECRET_KEYS = {
     "embedded_signup_code",
@@ -3826,6 +3834,123 @@ def _ticket_sla_payload(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[
     }
 
 
+def _handoff_lifecycle_state(handoff: Mapping[str, Any] | None) -> str:
+    if not isinstance(handoff, Mapping):
+        return "idle"
+    status = str(handoff.get("status") or "").strip().lower()
+    if not status or status in _HANDOFF_TERMINAL_STATES:
+        return "idle"
+    if status == "requested":
+        return "requested"
+    if status in _HANDOFF_QUEUED_STATES:
+        return "queued"
+    if status == "accepted":
+        return "accepted"
+    return "invalid"
+
+
+def _handoff_actor(user: User) -> dict[str, Any]:
+    return {"id": user.id, "name": user.name}
+
+
+def _handoff_action_contracts(
+    *,
+    endpoint: str,
+    handoff: Mapping[str, Any] | None,
+    payload_defaults: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    state = _handoff_lifecycle_state(handoff)
+    defaults = dict(payload_defaults or {})
+    spec = {
+        "idle": ("handoff", "Derivar a una persona", {**defaults, "channel": "operator"}),
+        "requested": ("accept_handoff", "Tomar conversación", defaults),
+        "queued": ("accept_handoff", "Tomar conversación", defaults),
+        "accepted": ("resume_ai", "Devolver a IA", defaults),
+    }.get(state)
+    if not spec:  # Unknown persisted states expose no lifecycle mutation.
+        return []
+    action_id, label, action_defaults = spec
+    return [{
+        "id": action_id,
+        "label": label,
+        "method": "POST",
+        "endpoint": endpoint,
+        "requires": [],
+        "payload_defaults": action_defaults,
+        "delivery_mode": "internal_event",
+        "external_dispatch": False,
+    }]
+
+
+def _validate_handoff_transition(action: str, state: str):
+    allowed = {
+        "handoff": {"idle"},
+        "accept_handoff": {"requested", "queued"},
+        "resume_ai": {"accepted"},
+    }
+    if action in allowed and state not in allowed[action]:
+        return _error_response(
+            "La transicion de handoff no es valida para el estado actual",
+            409,
+            "invalid_handoff_transition",
+            "refresh_inbox",
+        )
+    return None
+
+
+def _normalize_handoff_channel(value: Any) -> str | None:
+    channel = str(value or "operator").strip().lower()
+    channel = {
+        "agent": "operator",
+        "human": "operator",
+        "humano": "operator",
+        "operador": "operator",
+        "livechat": "live_chat",
+    }.get(channel, channel)
+    return channel if channel in _HANDOFF_SUPPORTED_CHANNELS else None
+
+
+def _apply_handoff_transition(
+    extra: dict[str, Any],
+    *,
+    action: str,
+    actor: User,
+    occurred_at: str,
+    channel: str | None = None,
+    reason: Any = None,
+) -> dict[str, Any]:
+    handoff = deepcopy(dict(extra.get("handoff") or {}))
+    actor_ref = _handoff_actor(actor)
+    if action == "handoff":
+        handoff = {
+            "contract_version": "inbox.handoff.v1",
+            "channel": channel or "operator",
+            "status": "requested",
+            "requested_at": occurred_at,
+            "requested_by": actor_ref,
+            "reason": str(reason).strip()[:500] if reason is not None and str(reason).strip() else None,
+        }
+    elif action == "accept_handoff":
+        handoff.update(
+            contract_version="inbox.handoff.v1",
+            status="accepted",
+            accepted_at=occurred_at,
+            accepted_by=actor_ref,
+        )
+    elif action == "resume_ai":
+        handoff.update(
+            contract_version="inbox.handoff.v1",
+            status="resolved",
+            resolved_at=occurred_at,
+            resolved_by=actor_ref,
+            resolution="resume_ai",
+        )
+        archive = extra.get("handoff_history") if isinstance(extra.get("handoff_history"), list) else []
+        extra["handoff_history"] = [*archive, deepcopy(handoff)][-30:]
+    extra["handoff"] = handoff
+    return handoff
+
+
 def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
     base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
@@ -3845,9 +3970,10 @@ def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> li
             **reply_delivery,
         },
         {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
-        {"id": "handoff", "label": "Derivar", "method": "POST", "endpoint": base_endpoint, "requires": ["channel"]},
         {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
     ]
+    handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
+    actions.extend(_handoff_action_contracts(endpoint=base_endpoint, handoff=handoff))
     if status in _CLOSED_TICKET_STATES:
         actions.append({"id": "reopen", "label": "Reabrir", "method": "POST", "endpoint": base_endpoint, "requires": []})
     else:
@@ -4060,6 +4186,8 @@ def _legacy_claim_tracking_links(ticket: MunicipioTicket) -> dict[str, str]:
 def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     base_endpoint = "/api/v2/inbox/omnichannel/actions"
     defaults = {"source_model": "MunicipioTicket", "legacy_id": ticket.id, "ticket_id": ticket.id}
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
+    handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     tracking_links = _legacy_claim_tracking_links(ticket)
     actions = [
         {
@@ -4079,6 +4207,13 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "payload_defaults": defaults,
         },
     ]
+    actions.extend(
+        _handoff_action_contracts(
+            endpoint=base_endpoint,
+            handoff=handoff,
+            payload_defaults=defaults,
+        )
+    )
     if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
         actions.append(
             {
@@ -4129,6 +4264,8 @@ def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
 
 
 def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
+    handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     comments = _legacy_claim_comments(ticket)
     timeline = _legacy_claim_timeline(ticket, comments)
     latest_comment = comments[-1].comentario if comments else None
@@ -4143,6 +4280,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
     queued, pending_count, pending_since = _ticket_live_chat_queue_signals(
         status=ticket.estado,
         timeline=timeline,
+        handoff=handoff,
     )
     live_chat = _inbox_live_chat_contract(
         live_chat_status or {},
@@ -4217,7 +4355,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
             "tracking_href": tracking_links["href"],
             "tracking_credential_transport": tracking_links["credential_transport"],
         },
-        "handoff": None,
+        "handoff": handoff,
         "live_chat": live_chat,
         "created_at": _iso(ticket.fecha),
         "updated_at": _iso(updated_at),
@@ -4760,15 +4898,29 @@ def _emit_legacy_claim_realtime_state(
 
 
 def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfile, ticket_id: int, payload: Mapping[str, Any]):
-    ticket = _legacy_claim_for_tenant(tenant, ticket_id)
+    ticket = (
+        _legacy_claim_query_for_tenant(tenant)
+        .filter(MunicipioTicket.id == ticket_id)
+        .with_for_update()
+        .first()
+    )
     if not ticket:
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
-    if action not in {"assign", "reply", "close", "reopen"}:
+    if action not in {"assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen"}:
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
 
     now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    extra = deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, Mapping) else {}
+    handoff_state = _handoff_lifecycle_state(
+        extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
+    )
+    transition_error = _validate_handoff_transition(action, handoff_state)
+    if transition_error is not None:
+        return transition_error
+
     timeline_updated = False
     recent_comment: TicketComentario | None = None
     delivery_results: dict[str, bool] | None = None
@@ -4776,6 +4928,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     realtime_emitted = False
     realtime_state_events: list[str] = []
     previous_status = str(ticket.estado or "")
+    handoff_event_body: str | None = None
 
     if action == "assign":
         assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
@@ -4806,6 +4959,39 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             )
         )
         timeline_updated = True
+
+    elif action == "handoff":
+        channel = _normalize_handoff_channel(payload.get("channel") or payload.get("target_channel"))
+        if channel is None:
+            return _error_response(
+                "El canal de handoff no es valido",
+                400,
+                "invalid_handoff_channel",
+                "choose_supported_handoff_channel",
+            )
+        _apply_handoff_transition(
+            extra,
+            action="handoff",
+            actor=current_user,
+            occurred_at=now_iso,
+            channel=channel,
+            reason=payload.get("reason"),
+        )
+        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+        handoff_event_body = f"Handoff solicitado al equipo ({channel})"
+
+    elif action == "accept_handoff":
+        _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
+        ticket.asignado_a_id = current_user.id
+        ticket.asignado_en = now
+        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+        handoff_event_body = f"Conversación tomada por {current_user.name}"
+
+    elif action == "resume_ai":
+        _apply_handoff_transition(extra, action="resume_ai", actor=current_user, occurred_at=now_iso)
+        handoff_event_body = f"Conversación devuelta a IA por {current_user.name}"
 
     elif action == "reply":
         if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
@@ -4856,15 +5042,31 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         )
         timeline_updated = True
 
+    if handoff_event_body is not None:
+        ticket.datos_extra = extra
+        flag_modified(ticket, "datos_extra")
+        db.session.add(
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario=handoff_event_body,
+                user_id=current_user.id,
+                es_admin=True,
+                origen="internal",
+                estado_ticket=action,
+            )
+        )
+        timeline_updated = True
+
     ticket.ultima_actividad = now
     db.session.add(ticket)
     db.session.commit()
 
-    realtime_state_events = _emit_legacy_claim_realtime_state(
-        ticket,
-        action=action,
-        previous_status=previous_status,
-    )
+    if action not in {"handoff", "accept_handoff", "resume_ai"}:
+        realtime_state_events = _emit_legacy_claim_realtime_state(
+            ticket,
+            action=action,
+            previous_status=previous_status,
+        )
 
     if action == "reply" and recent_comment is not None:
         delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(ticket, body, recent_comment)
@@ -4880,7 +5082,11 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         )
     delivery = _inbox_action_delivery_payload(
         action=action,
-        channel=_ticket_delivery_channel(delivery_results, ticket.canal_ingreso or "whatsapp"),
+        channel=(
+            "crm"
+            if action in {"handoff", "accept_handoff", "resume_ai"}
+            else _ticket_delivery_channel(delivery_results, ticket.canal_ingreso or "whatsapp")
+        ),
         timeline_updated=timeline_updated,
         source_model="MunicipioTicket",
         status="sent" if external_dispatch else None,
@@ -4930,15 +5136,37 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     if _is_legacy_claim_source(source_model) or (isinstance(raw_ticket_id, str) and raw_ticket_id.startswith("municipio:")):
         return _omnichannel_legacy_claim_action_v2(current_user, tenant, resolved_ticket_id, payload)
 
-    ticket = TenantTicket.query.filter_by(id=resolved_ticket_id, tenant_id=tenant.id).first()
+    ticket = (
+        TenantTicket.query.filter_by(id=resolved_ticket_id, tenant_id=tenant.id)
+        .with_for_update()
+        .first()
+    )
     if not ticket:
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
-    if action not in {"assign", "reply", "handoff", "close", "reopen", "set_priority"}:
+    if action not in {
+        "assign",
+        "reply",
+        "handoff",
+        "accept_handoff",
+        "resume_ai",
+        "close",
+        "reopen",
+        "set_priority",
+    }:
         return _error_response("Accion de inbox no soportada", 400, "unsupported_inbox_action", "send_supported_action")
 
     extra = deepcopy(_ticket_extra(ticket))
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    handoff_state = _handoff_lifecycle_state(
+        extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
+    )
+    transition_error = _validate_handoff_transition(action, handoff_state)
+    if transition_error is not None:
+        return transition_error
+
     event_body = ""
     timeline_updated = False
     reply_visibility = "public"
@@ -4959,6 +5187,40 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             ticket.estado = "en_proceso"
         event_body = f"Asignado a {assignee.name}"
 
+    elif action == "handoff":
+        channel = _normalize_handoff_channel(payload.get("channel") or payload.get("target_channel"))
+        if channel is None:
+            return _error_response(
+                "El canal de handoff no es valido",
+                400,
+                "invalid_handoff_channel",
+                "choose_supported_handoff_channel",
+            )
+        _apply_handoff_transition(
+            extra,
+            action="handoff",
+            actor=current_user,
+            occurred_at=now_iso,
+            channel=channel,
+            reason=payload.get("reason"),
+        )
+        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+        event_body = f"Handoff solicitado al equipo ({channel})"
+
+    elif action == "accept_handoff":
+        _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
+        extra["assignee_id"] = current_user.id
+        extra["assignee_name"] = current_user.name
+        extra["assignee_email"] = current_user.email
+        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+        event_body = f"Conversación tomada por {current_user.name}"
+
+    elif action == "resume_ai":
+        _apply_handoff_transition(extra, action="resume_ai", actor=current_user, occurred_at=now_iso)
+        event_body = f"Conversación devuelta a IA por {current_user.name}"
+
     elif action == "reply":
         body = str(payload.get("body") or payload.get("message") or "").strip()
         if not body:
@@ -4969,27 +5231,15 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         _append_ticket_event(extra, action=action, actor=current_user, body=body, visibility=reply_visibility)
         timeline_updated = True
 
-    elif action == "handoff":
-        channel = str(payload.get("channel") or payload.get("target_channel") or "operator").strip().lower()
-        extra["handoff"] = {
-            "channel": channel,
-            "status": "requested",
-            "requested_at": datetime.now(timezone.utc).isoformat(),
-            "requested_by": {"id": current_user.id, "name": current_user.name},
-            "reason": payload.get("reason"),
-        }
-        ticket.estado = "en_proceso"
-        event_body = f"Handoff solicitado: {channel}"
-
     elif action == "close":
         ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
-        extra["closed_at"] = datetime.now(timezone.utc).isoformat()
+        extra["closed_at"] = now_iso
         extra["closed_by"] = {"id": current_user.id, "name": current_user.name}
         event_body = payload.get("body") or "Ticket cerrado"
 
     elif action == "reopen":
         ticket.estado = str(payload.get("status") or "nuevo").strip().lower() or "nuevo"
-        extra["reopened_at"] = datetime.now(timezone.utc).isoformat()
+        extra["reopened_at"] = now_iso
         extra["reopened_by"] = {"id": current_user.id, "name": current_user.name}
         event_body = payload.get("body") or "Ticket reabierto"
 
@@ -5006,7 +5256,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
 
     ticket.datos_extra = extra
     flag_modified(ticket, "datos_extra")
-    ticket.updated_at = datetime.now(timezone.utc)
+    ticket.updated_at = now
     db.session.add(ticket)
     db.session.commit()
 
@@ -5033,7 +5283,15 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         action=action,
         channel=_ticket_delivery_channel(
             delivery_results,
-            requested_channels[0] if requested_channels else _ticket_channel(ticket),
+            (
+                requested_channels[0]
+                if requested_channels
+                else (
+                    "crm"
+                    if action in {"handoff", "accept_handoff", "resume_ai"}
+                    else _ticket_channel(ticket)
+                )
+            ),
         ),
         timeline_updated=timeline_updated,
         source_model="TenantTicket",

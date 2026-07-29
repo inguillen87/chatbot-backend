@@ -102,7 +102,7 @@ multidict==6.6.3
 murmurhash==1.0.13
 ndg-httpsclient==0.5.1
 numpy==1.26.4
-openai==1.56.0
+openai==2.46.0
 jiter==0.14.0
 packaging==25.0
 pandas==2.3.0

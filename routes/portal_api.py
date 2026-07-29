@@ -12,7 +12,15 @@ from services.demo_experience_contract import build_demo_experience_contract
 from routes.public_resolver import _build_widget_embed_payload, _canonical_widget_token
 from utils.auth_decorators import require_auth_optional, require_auth
 from routes.catalogo import _formatear_producto
-from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta, get_public_encuesta_by_id
+from services.encuestas_service import (
+    EncuestaError,
+    get_public_encuesta_by_id,
+    list_public_encuestas_for_tenant,
+    resolve_survey_submission_id,
+    save_respuesta,
+    serialize_public_encuesta,
+    survey_response_receipt_contract,
+)
 
 portal_api_bp = Blueprint('portal_api', __name__)
 
@@ -1921,16 +1929,17 @@ def get_loyalty_info(tenant_slug):
 @portal_api_bp.route('/surveys/<slug>/responses', methods=['POST'])
 @require_auth
 def submit_portal_survey_response(tenant_slug, slug):
-    tenant = _resolve_context(tenant_slug) # Ensure tenant context
-    # user = g.viewer # Responses logic typically uses user_id from payload or infers it
-
-    from services.encuestas_service import save_respuesta, EncuestaError
-
+    tenant = _resolve_context(tenant_slug)
+    viewer = g.viewer
     data = request.get_json(silent=True) or {}
-
-    # Inject authenticated user info if not present
-    if 'user_id' not in data and g.viewer:
-        data['user_id'] = g.viewer.id
+    try:
+        submission_id = resolve_survey_submission_id(
+            data,
+            header_value=request.headers.get("Idempotency-Key"),
+            required=True,
+        )
+    except EncuestaError as exc:
+        return jsonify(exc.to_dict()), exc.status_code
 
     # Request context for fingerprinting
     request_ctx = {
@@ -1943,15 +1952,35 @@ def submit_portal_survey_response(tenant_slug, slug):
     try:
         # Note: save_respuesta expects PUBLIC SLUG.
         preferred_tenant_id = tenant.encuestas_tenant_id or tenant.id
-        save_respuesta(
+        respuesta = save_respuesta(
             slug,
             data,
             request_ctx,
             preferred_tenant_id=preferred_tenant_id,
+            authenticated_user=viewer,
+            submission_id=submission_id,
         )
-        return jsonify({"success": True}), 201
-    except EncuestaError as e:
-        return jsonify({"error": e.message}), e.status_code
-    except Exception as e:
+        response_payload = {
+            "contract_version": "surveys.public_response.v2",
+            "ok": True,
+            "success": True,
+            "persisted": True,
+            "replayed": bool(getattr(respuesta, "submission_replayed", False)),
+            "respuesta_id": respuesta.id,
+            "response_id": respuesta.id,
+            "instrument_revision": getattr(respuesta, "instrument_revision", None),
+        }
+        receipt_contract = survey_response_receipt_contract(respuesta)
+        if receipt_contract is not None:
+            response_payload["idempotency"] = receipt_contract
+        return (
+            jsonify(response_payload),
+            200 if response_payload["replayed"] else 201,
+        )
+    except EncuestaError as exc:
+        db.session.rollback()
+        return jsonify(exc.to_dict()), exc.status_code
+    except Exception:
+        db.session.rollback()
         current_app.logger.exception("Error submitting survey from portal")
         return jsonify({"error": "Error interno"}), 500

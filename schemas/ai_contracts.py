@@ -2,6 +2,8 @@ from typing import Optional, List, Dict, Any, Union, Literal
 from pydantic import BaseModel, Field, model_validator
 import uuid
 
+from services.openai_model_defaults import DEFAULT_OPENAI_TERRA_MODEL
+
 class GatewayOutputItem(BaseModel):
     type: Literal["text"] = "text"
     text: str
@@ -38,7 +40,9 @@ class GatewayRequest(BaseModel):
     channel: str
     trace_id: Optional[str] = None
 
-    model: str = "gpt-4o-mini"
+    # Generic gateway traffic is latency/cost sensitive; callers that need
+    # quality-first reasoning or vision opt into the Sol tier explicitly.
+    model: str = DEFAULT_OPENAI_TERRA_MODEL
     instructions: Optional[str] = None
     instructions_key: Optional[str] = None
     prompt_variables: Dict[str, Any] = Field(default_factory=dict)

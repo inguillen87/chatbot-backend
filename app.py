@@ -25,7 +25,10 @@ from typing import Pattern
 # proceso se inicia fuera del CLI de Flask.
 from dotenv import load_dotenv
 
-load_dotenv()  # override=False por defecto para respetar variables ya definidas
+# ``utf-8-sig`` accepts regular UTF-8 and also strips a Windows BOM. Without
+# it, a BOM-prefixed first variable is parsed as ``\ufeffOPENAI_API_KEY`` and
+# the application silently behaves as if the configured key did not exist.
+load_dotenv(encoding="utf-8-sig")  # override=False: respect process secrets
 from flask import Flask, request, current_app, g, jsonify
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.exceptions import HTTPException
@@ -33,6 +36,23 @@ from werkzeug.exceptions import HTTPException
 # Logging básico del proyecto
 from services.logging_config import setup_logging
 setup_logging()
+
+
+_SENSITIVE_THIRD_PARTY_LOGGERS = (
+    "twilio.http_client",
+    "httpx",
+    "httpcore",
+)
+
+
+def _suppress_sensitive_third_party_info_logs() -> None:
+    """Keep provider diagnostics at warning/error without request-level payload logs."""
+
+    for logger_name in _SENSITIVE_THIRD_PARTY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+_suppress_sensitive_third_party_info_logs()
 
 # Ruta del proyecto al sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -112,9 +132,9 @@ if os.environ.get("FLASK_ENV") != "production" and not MIGRATIONS_ONLY:
     local_cred_path = os.path.join("data", "google_service_key.json")
     if os.path.exists(local_cred_path):
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = local_cred_path
-        print(f"LOCAL DEV: Set GOOGLE_APPLICATION_CREDENTIALS to '{local_cred_path}'")
+        print("LOCAL DEV: Google application credentials configured")
     else:
-        print(f"LOCAL DEV: Credential file not found at '{local_cred_path}'. Google services may fail.")
+        print("LOCAL DEV: Google application credentials are not configured")
 
 # Listener para SQLite (no afecta Postgres; se envuelve en try/except)
 def my_on_connect_listener(dbapi_connection, connection_record):
@@ -243,7 +263,10 @@ def create_app(config_class=Config):
 
     @app.errorhandler(500)
     def handle_server_error(error):
-        app.logger.exception("Unhandled server error: %s", error)
+        app.logger.error(
+            "Unhandled server error error_type=%s",
+            type(error).__name__,
+        )
         try:
             db.session.rollback()
         except Exception:
@@ -306,11 +329,16 @@ def create_app(config_class=Config):
 
                 valor = session.get("clave_de_prueba")
                 return jsonify({"ok": bool(valor), "value": valor})
-        # Log de headers/cookies
+        # Safe request diagnostics: never emit cookie/header values or tokens.
         @app.before_request
         def log_headers():
-            current_app.logger.debug("--- RAW FLASK REQUEST.COOKIES: %s ---", request.cookies)
-            current_app.logger.debug(f"Request Headers (complete): {dict(request.headers)}")
+            current_app.logger.debug(
+                "Request received method=%s endpoint=%s header_count=%s cookie_count=%s",
+                request.method,
+                request.endpoint or "unmatched",
+                len(request.headers),
+                len(request.cookies),
+            )
 
         @app.before_request
         def attach_current_user():
@@ -323,7 +351,7 @@ def create_app(config_class=Config):
             g.viewer = None
             if current_user and current_user.is_authenticated:
                 g.viewer = current_user
-                current_app.logger.debug(f"User {current_user.id} via Flask-Login.")
+                current_app.logger.debug("Authenticated request source=flask_login")
                 return
 
             token = obtener_token()
@@ -331,7 +359,7 @@ def create_app(config_class=Config):
                 user = user_from_token(token)
                 if user:
                     g.viewer = user
-                    current_app.logger.debug(f"User {user.id} via token.")
+                    current_app.logger.debug("Authenticated request source=bearer_token")
 
         @app.before_request
         def attach_contact_identity():
@@ -674,18 +702,6 @@ def create_app(config_class=Config):
     from routes.media import media_bp
     from routes.accessibility import accessibility_bp
 
-    # Import conditional survey blueprints safely
-    encuestas_admin_publicas_bp = None
-    encuestas_public_publicas_bp = None
-    if not FEATURE_ENCUESTAS:
-        try:
-            from routes.encuestas_publicas import (
-                encuestas_admin_bp as encuestas_admin_publicas_bp,
-                encuestas_public_bp as encuestas_public_publicas_bp,
-            )
-        except ImportError:
-            pass
-
     from routes.pwa_public import pwa_public_bp, pwa_tenant_info_bp, public_api_bp
     from routes.market import market_admin_bp, market_bp
     from routes.portal_api import portal_api_bp
@@ -718,6 +734,15 @@ def create_app(config_class=Config):
     from routes.v2 import register_v2_blueprints
     from cli_commands import register_commands
 
+    # Public survey URLs always resolve through the canonical EncEncuesta stack.
+    # FEATURE_ENCUESTAS may disable that stack through its request guard, but it
+    # must never select the retired PublicSurvey persistence implementation.
+    from routes.encuestas_public import (
+        encuestas_public_bp,
+        encuestas_public_legacy_bp,
+        encuestas_public_share_bp,
+    )
+
     if FEATURE_ENCUESTAS:
         from routes.encuestas_admin import (
             encuestas_admin_api_bp,
@@ -727,11 +752,6 @@ def create_app(config_class=Config):
             encuestas_admin_surveys_legacy_bp,
             encuestas_municipal_api_bp,
             encuestas_municipal_surveys_api_bp,
-        )
-        from routes.encuestas_public import (
-            encuestas_public_bp,
-            encuestas_public_legacy_bp,
-            encuestas_public_share_bp,
         )
 
     from routes.encuestas_analytics import (
@@ -873,9 +893,7 @@ def create_app(config_class=Config):
     app.register_blueprint(public_flow_runtime_bp)
     app.register_blueprint(public_finance_bp)
 
-    if encuestas_admin_publicas_bp:
-        app.register_blueprint(encuestas_admin_publicas_bp)
-    elif FEATURE_ENCUESTAS:
+    if FEATURE_ENCUESTAS:
         app.register_blueprint(encuestas_admin_bp)
 
     app.register_blueprint(pyme_catalog_fix_bp)
@@ -902,10 +920,9 @@ def create_app(config_class=Config):
     from routes.admin_market import admin_market_bp
     app.register_blueprint(admin_market_bp, url_prefix='/api/admin/tenants/<slug>')
 
-    if encuestas_public_publicas_bp:
-        app.register_blueprint(encuestas_public_publicas_bp)
-    elif FEATURE_ENCUESTAS:
-        app.register_blueprint(encuestas_public_bp)
+    app.register_blueprint(encuestas_public_bp)
+    app.register_blueprint(encuestas_public_legacy_bp)
+    app.register_blueprint(encuestas_public_share_bp)
 
     if FEATURE_ENCUESTAS:
         app.register_blueprint(encuestas_admin_api_bp)
@@ -914,8 +931,6 @@ def create_app(config_class=Config):
         app.register_blueprint(encuestas_admin_surveys_legacy_bp)
         app.register_blueprint(encuestas_municipal_api_bp)
         app.register_blueprint(encuestas_municipal_surveys_api_bp)
-        app.register_blueprint(encuestas_public_legacy_bp)
-        app.register_blueprint(encuestas_public_share_bp)
         app.register_blueprint(encuestas_analytics_bp)
         app.register_blueprint(encuestas_analytics_legacy_bp)
         app.register_blueprint(encuestas_analytics_admin_bp)
@@ -965,8 +980,11 @@ def create_app(config_class=Config):
                             "Prefer explicit CLI/bootstrap commands in production."
                         )
 
-                except Exception as e:
-                    app.logger.warning(f"Startup runtime bootstrap failed (continuing): {e}")
+                except Exception as exc:
+                    app.logger.warning(
+                        "Startup runtime bootstrap failed error_type=%s",
+                        type(exc).__name__,
+                    )
                 finally:
                     try:
                         db.session.remove()

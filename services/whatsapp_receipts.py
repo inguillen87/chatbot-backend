@@ -11,6 +11,58 @@ CLAIM_CREATED_TEMPLATE_VARIABLES = {
 }
 
 
+def _normalize_ticket_code(ticket_nro: Any) -> tuple[str, str]:
+    ticket_code = str(ticket_nro or "").strip()
+    ticket_numeric = ticket_code
+    if ticket_numeric.upper().startswith(("M-", "S-")):
+        ticket_numeric = ticket_numeric[2:]
+    return ticket_code, ticket_numeric
+
+
+def build_claim_created_followup_text(consulta_pin: Optional[str]) -> str:
+    """Return the short, non-duplicative companion to the claim receipt.
+
+    The template (or its plain-text fallback) owns the public claim code and
+    tracking link.  This companion only exposes the consultation PIN and tells
+    the citizen how to keep adding evidence to the same ticket, avoiding two
+    full receipts for one confirmation.
+    """
+
+    pin_value = str(consulta_pin or "").strip()
+    lines = []
+    if pin_value:
+        lines.append(f"🔐 Guardá tu PIN de consulta: *{pin_value}*")
+    lines.append(
+        "Respondé a este chat con una foto, un audio o un comentario y lo "
+        "vamos a asociar al mismo reclamo."
+    )
+    return "\n".join(lines)
+
+
+def build_claim_replay_text(
+    *,
+    ticket_nro: str,
+    consulta_pin: Optional[str],
+    tracking_url: Optional[str],
+) -> str:
+    """Render a complete single-message receipt for an idempotent replay."""
+
+    lines = [
+        "✅ Este reclamo ya estaba registrado; no generamos otro ticket.",
+        f"*Código:* {str(ticket_nro or '').strip() or 'Pendiente'}",
+    ]
+    pin_value = str(consulta_pin or "").strip()
+    if pin_value:
+        lines.append(f"*PIN:* {pin_value}")
+    if tracking_url:
+        lines.append(f"*Seguimiento:* {str(tracking_url).strip()}")
+    lines.append(
+        "Podés responder con una foto, un audio o un comentario; lo vamos a "
+        "asociar al mismo reclamo."
+    )
+    return "\n".join(lines)
+
+
 def _format_business_hours(value: Any) -> str:
     if value is None:
         return ""
@@ -127,12 +179,7 @@ def render_ticket_whatsapp(
 
     seguimiento = ""
     if ticket_nro:
-        ticket_id_numeric = str(ticket_nro).replace("M-", "").replace("S-", "")
-        link = (
-            f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}#pin={consulta_pin}"
-            if consulta_pin
-            else f"{base_chat_url.rstrip('/')}/{ticket_id_numeric}"
-        )
+        link = build_claim_tracking_url(base_chat_url, ticket_nro, consulta_pin)
         seguimiento = "\n".join(
             [
                 "",
@@ -166,6 +213,7 @@ def build_claim_created_template_pre_message(
     base_chat_url: str = "https://www.chatboc.ar/chat",
     nombre: Optional[str] = None,
     direccion: Optional[str] = None,
+    within_24h_window: bool = False,
 ) -> Dict[str, Any]:
     """Build a Twilio Content pre-message for a municipal claim receipt.
 
@@ -175,8 +223,7 @@ def build_claim_created_template_pre_message(
     and all backend metadata use /tracking/claim directly.
     """
 
-    ticket_code = str(ticket_nro or "").strip()
-    ticket_numeric = ticket_code.replace("M-", "").replace("S-", "")
+    ticket_code, ticket_numeric = _normalize_ticket_code(ticket_nro)
     pin_value = str(consulta_pin or "").strip()
     tracking_path = f"chat/{ticket_numeric}" if ticket_numeric else "chat"
     if pin_value:
@@ -186,15 +233,14 @@ def build_claim_created_template_pre_message(
         base_chat_url or "https://www.chatboc.ar"
     ).rstrip("/")
 
+    # Keep the operational receipt compact and free of citizen PII.  ``nombre``
+    # and ``direccion`` remain accepted for backwards compatibility, but are
+    # deliberately excluded from both the template fallback and its metadata.
     body_lines = [
-        f"Reclamo registrado: {ticket_code or 'pendiente'}",
-        f"Categoria: {categoria or 'General'}",
-        f"Seguimiento: {tracking_url}",
+        "✅ *Reclamo registrado*",
+        f"*Código:* {ticket_code or 'Pendiente'}",
+        f"*Seguimiento:* {tracking_url}",
     ]
-    if direccion:
-        body_lines.append(f"Ubicacion: {direccion}")
-    if nombre:
-        body_lines.append("Tu mensaje queda asociado al expediente para seguimiento.")
 
     variables = {
         "1": ticket_code,
@@ -207,6 +253,14 @@ def build_claim_created_template_pre_message(
         "variables": variables,
         "content_variables": variables,
         "body": "\n".join(body_lines),
+        "metadata": {
+            # Callers must explicitly prove the active WhatsApp window.  The
+            # default is fail-closed so proactive sends cannot masquerade as
+            # an inbound reply to bypass tenant template policy.
+            "within_24h_window": bool(within_24h_window),
+            "operational_event": "municipal_claim_created",
+            "contains_citizen_pii": False,
+        },
         "fallback": {
             "mode": "plain_text",
             "trigger": "template_missing_pending_or_unapproved",
@@ -222,6 +276,9 @@ def build_claim_created_template_pre_message(
                 "kind": "municipal_claim_receipt",
                 "tracking_required": True,
                 "pin_supported": True,
+                "contains_citizen_pii": False,
+                "tts_allowed": False,
+                "surface_role": "primary_receipt",
                 "pre_message_key": "_twilio_pre_messages",
             },
         },

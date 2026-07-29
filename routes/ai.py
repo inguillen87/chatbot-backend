@@ -107,11 +107,11 @@ def suggest_templates_route(current_user: User):
         return jsonify({"error": "El campo 'top_n' debe ser un entero positivo."}), 400
 
     current_app.logger.info(
-        "[SUGGEST_TEMPLATES] user=%s rol=%s tenant=%s asunto='%s...' top_n=%s",
-        current_user.id,
+        "[SUGGEST_TEMPLATES] request rol=%s scope=%s asunto_chars=%s contexto_chars=%s top_n=%s",
         current_user.rol,
-        getattr(tenant, "slug", None),
-        asunto[:50],
+        "tenant" if tenant else "global",
+        len(asunto),
+        len(contexto_ticket),
         top_n,
     )
 
@@ -128,7 +128,10 @@ def suggest_templates_route(current_user: User):
             return jsonify({"error": "Error al generar el embedding para la consulta."}), 500
         query_embedding = query_embedding_list[0]
     except Exception as exc:
-        current_app.logger.error("[SUGGEST_TEMPLATES] Excepcion al generar embedding: %s", exc, exc_info=True)
+        current_app.logger.error(
+            "[SUGGEST_TEMPLATES] embedding_failed error_type=%s",
+            type(exc).__name__,
+        )
         return jsonify({"error": "Excepcion al procesar la consulta con IA."}), 500
 
     try:
@@ -138,7 +141,10 @@ def suggest_templates_route(current_user: User):
             _template_scope(tenant),
         ).all()
     except Exception as exc:
-        current_app.logger.error("[SUGGEST_TEMPLATES] Error al consultar plantillas: %s", exc, exc_info=True)
+        current_app.logger.error(
+            "[SUGGEST_TEMPLATES] template_query_failed error_type=%s",
+            type(exc).__name__,
+        )
         return jsonify({"error": "Error al obtener plantillas de la base de datos."}), 500
 
     if not plantillas_activas:
@@ -158,10 +164,9 @@ def suggest_templates_route(current_user: User):
             score = cosine_similarity(query_embedding, plantilla.embedding)
         except Exception as exc:
             current_app.logger.error(
-                "[SUGGEST_TEMPLATES] Error calculando similaridad para plantilla ID %s: %s",
+                "[SUGGEST_TEMPLATES] similarity_failed template_id=%s error_type=%s",
                 plantilla.id,
-                exc,
-                exc_info=True,
+                type(exc).__name__,
             )
             score = 0.0
 
@@ -174,16 +179,22 @@ def suggest_templates_route(current_user: User):
                     "scope": "global" if plantilla.tenant_id is None else "tenant",
                     "name": plantilla.name,
                     "text": plantilla.text,
-                    "score": round(score, 4),
+                    "score": score,
                 }
             )
 
-    sugerencias_ordenadas = sorted(sugerencias_con_score, key=lambda item: item["score"], reverse=True)
-    final_sugerencias = sugerencias_ordenadas[:top_n]
+    sugerencias_ordenadas = sorted(
+        sugerencias_con_score,
+        key=lambda item: (-item["score"], item["id_plantilla"]),
+    )
+    final_sugerencias = [
+        {**item, "score": round(item["score"], 4)}
+        for item in sugerencias_ordenadas[:top_n]
+    ]
 
     current_app.logger.info(
-        "[SUGGEST_TEMPLATES] Devolviendo %s sugerencias tenant=%s",
+        "[SUGGEST_TEMPLATES] completed suggestions=%s scope=%s",
         len(final_sugerencias),
-        getattr(tenant, "slug", None),
+        "tenant" if tenant else "global",
     )
     return jsonify({"sugerencias": final_sugerencias}), 200

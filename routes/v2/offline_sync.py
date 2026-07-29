@@ -7,15 +7,12 @@ from flask import Blueprint, jsonify, request
 
 offline_sync_bp = Blueprint("offline_sync", __name__, url_prefix="/api")
 
+OFFLINE_SYNC_RETIRED_CONTRACT_VERSION = "offline.sync.retired.v1"
+
 
 def _request_id() -> str:
     incoming = (request.headers.get("X-Request-Id") or request.headers.get("X-Correlation-Id") or "").strip()
     return incoming or uuid.uuid4().hex
-
-
-def _stable_suffix(value: Any) -> str:
-    text = "".join(ch for ch in str(value or "") if ch.isalnum() or ch in {"_", "-"}).strip("_-")
-    return text[:48] or uuid.uuid4().hex[:12]
 
 
 def _json_response(payload: dict[str, Any], status: int = 200):
@@ -28,44 +25,30 @@ def _json_response(payload: dict[str, Any], status: int = 200):
     return response
 
 
-@offline_sync_bp.route("/surveys/sync", methods=["POST"])
-def sync_survey_responses():
-    payload = request.get_json(silent=True)
-    if isinstance(payload, list):
-        synced = len(payload)
-    elif isinstance(payload, dict):
-        items = payload.get("items") or payload.get("responses") or payload.get("respuestas")
-        synced = len(items) if isinstance(items, list) else 1
-    else:
-        synced = 0
-
+def _retired_sync_response(*, canonical_endpoint: str):
     return _json_response(
         {
-            "ok": True,
-            "contract_version": "surveys.sync.v1",
-            "synced": synced,
-            "idempotency_key": request.headers.get("Idempotency-Key") or (payload or {}).get("idempotency_key")
-            if isinstance(payload, dict)
-            else request.headers.get("Idempotency-Key"),
-        }
+            "contract_version": OFFLINE_SYNC_RETIRED_CONTRACT_VERSION,
+            "ok": False,
+            "persisted": False,
+            "reason_code": "non_durable_sync_endpoint",
+            "retryable": False,
+            "action_hint": "use_canonical_endpoint",
+            "canonical_endpoint": canonical_endpoint,
+        },
+        410,
+    )
+
+
+@offline_sync_bp.route("/surveys/sync", methods=["POST"])
+def sync_survey_responses():
+    return _retired_sync_response(
+        canonical_endpoint="/api/v2/public/surveys/{public_token}/respond",
     )
 
 
 @offline_sync_bp.route("/tickets/draft/sync", methods=["POST"])
 def sync_ticket_draft():
-    payload = request.get_json(silent=True) or {}
-    idempotency_key = request.headers.get("Idempotency-Key") or payload.get("idempotency_key")
-    ticket_id = payload.get("ticket_id") or payload.get("id") or payload.get("nro_ticket")
-    if not ticket_id:
-        suffix = _stable_suffix(idempotency_key or uuid.uuid4().hex[:12]).upper()
-        ticket_id = f"TCK-{suffix}"
-
-    return _json_response(
-        {
-            "ok": True,
-            "contract_version": "tickets.draft_sync.v1",
-            "ticket_id": str(ticket_id),
-            "idempotency_key": idempotency_key,
-            "status": "draft_synced",
-        }
+    return _retired_sync_response(
+        canonical_endpoint="/api/pwa/app/tickets",
     )

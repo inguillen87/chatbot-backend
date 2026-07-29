@@ -14,7 +14,9 @@ selection instructions to maintain full visibility of all choices.
   `TTS_PROVIDER_ORDER` (for example `"cohere,openai"`). Each provider accepts
   fine tuning via environment variables such as `OPENAI_TTS_VOICE`,
   `OPENAI_TTS_DEFAULT_VOICE`, `OPENAI_TTS_FALLBACK_VOICE`, `OPENAI_TTS_MODEL`,
-  `COHERE_TTS_VOICE` and the `TTS_SPEECH_SPEED` multiplier.  Voices like `sol`
+  `OPENAI_TTS_MENU_MODEL`, `COHERE_TTS_VOICE` and the `TTS_SPEECH_SPEED`
+  multiplier. OpenAI speech defaults to `gpt-4o-mini-tts`; both model settings
+  remain independently overridable. Voices like `sol`
   are mapped automatically to the closest option accepted by OpenAI to avoid
   breaking existing deployments.  When no explicit voice is provided the
   orchestrator now honours `OPENAI_TTS_DEFAULT_VOICE` and falls back to the
@@ -29,18 +31,31 @@ selection instructions to maintain full visibility of all choices.
   pronunciations friendly for usuarios rioplatenses.
 - Realtime voice calls (Twilio Media Streams) now use a dedicated model
   setting: `OPENAI_REALTIME_SPEECH_MODEL` (fallback compatible with
-  `OPENAI_REALTIME_MODEL`), defaulting to `gpt-realtime`. This is scoped to
-  live speech sessions and does not change the regular chat-model defaults.
-- Chat model selection is now channel-aware and configurable: use
-  `OPENAI_CHAT_MODEL_DEFAULT` as base, plus `OPENAI_CHAT_MODEL_WHATSAPP` and
-  `OPENAI_CHAT_MODEL_WIDGET` for premium channels when desired (for example
-  `gpt-5-mini` on WhatsApp/widget). For long/complex threads you can also set
-  `OPENAI_CHAT_MODEL_HIGH_COMPLEXITY` with thresholds via
-  `OPENAI_CHAT_COMPLEXITY_MIN_CHARS` and `OPENAI_CHAT_COMPLEXITY_MIN_TURNS`.
+  `OPENAI_REALTIME_MODEL`), defaulting to `gpt-realtime-2.1`. Live captions use
+  a dedicated `type=transcription` session configured with
+  `OPENAI_LIVE_TRANSCRIPTION_MODEL`, defaulting to `gpt-live-transcribe`.
+  Outbound callbacks additionally require `TWILIO_VOICE_PHONE_NUMBER`, a
+  voice-enabled PSTN caller ID in E.164 format. The generic WhatsApp sender is
+  never used as an implicit voice caller ID, and accepted callbacks register
+  Twilio status events at `/voice/status`.
+  Optional caption guidance inside speech-to-speech calls is independently
+  configured with `OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL` (or legacy
+  `OPENAI_REALTIME_TRANSCRIPTION_MODEL`), defaulting to `gpt-4o-transcribe`.
+  These settings do not change the regular chat-model defaults.
+- Chat model selection is channel- and workload-aware. The code-level general
+  default is `gpt-5.6-sol`; the supplied `.env.example` keeps Sol for general,
+  claims and high-complexity work, while mapping routine WhatsApp, widget,
+  voice and structured-extraction work to `gpt-5.6-terra` to bound latency and
+  cost. Override these roles independently with `OPENAI_CHAT_MODEL_DEFAULT`,
+  `OPENAI_CHAT_MODEL_WHATSAPP`, `OPENAI_CHAT_MODEL_WIDGET`,
+  `OPENAI_CHAT_MODEL_HIGH_COMPLEXITY`, `OPENAI_WHATSAPP_AGENT_MODEL`,
+  `OPENAI_CLAIM_AGENT_MODEL`, `OPENAI_VOICE_AGENT_MODEL` and
+  `OPENAI_CHAT_MODEL_EXTRACTION`. Complexity thresholds remain configurable
+  through `OPENAI_CHAT_COMPLEXITY_MIN_CHARS` and
+  `OPENAI_CHAT_COMPLEXITY_MIN_TURNS`.
 - Analytics and AI summaries are also configurable via
   `OPENAI_ANALYTICS_MODEL`, `OPENAI_SENTIMENT_MODEL` and
-  `OPENAI_TICKET_SUMMARY_MODEL` (defaults set to `gpt-5-mini` for higher
-  quality insights).
+  `OPENAI_TICKET_SUMMARY_MODEL`; their balanced default is `gpt-5.6-terra`.
 - The sanitizer normalises common abreviaturas argentinas (por ejemplo "Av." o
   "CABA") y refuerza las pausas en puntos y comas para que la lectura sonorice de
   manera pausada y entendible.

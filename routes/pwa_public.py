@@ -13,10 +13,13 @@ from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile
 from middleware import require_tenant
 from services.encuestas_service import (
     EncuestaError,
+    find_survey_response_replay,
     get_public_encuesta,
     list_public_encuestas_for_tenant,
+    resolve_survey_submission_id,
     save_respuesta,
     serialize_public_encuesta,
+    survey_response_receipt_contract,
 )
 from services.catalog_seed import ensure_seed_catalog
 from services.common_utils import parse_precio_flexible
@@ -758,15 +761,15 @@ def get_survey(slug: str):
 def respond_survey(slug: str):
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
+    payload = request.get_json(silent=True) or {}
     try:
-        encuesta = get_public_encuesta(slug, preferred_tenant_id=tenant_id)
+        submission_id = resolve_survey_submission_id(
+            payload,
+            header_value=request.headers.get("Idempotency-Key"),
+            required=True,
+        )
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
-
-    if tenant_id and encuesta.tenant_id != tenant_id:
-        abort(404, description="Encuesta no encontrada")
-
-    payload = request.get_json(silent=True) or {}
     request_ctx = {
         "ip": request.headers.get("X-Forwarded-For") or request.remote_addr,
         "user_agent": request.headers.get("User-Agent"),
@@ -781,15 +784,41 @@ def respond_survey(slug: str):
         ),
         "canal": payload.get("source") or payload.get("channel") or payload.get("canal") or "pwa",
     }
-    try:
-        respuesta = save_respuesta(
-            slug,
-            payload,
-            request_ctx,
-            preferred_tenant_id=tenant_id,
-        )
-    except EncuestaError as exc:
-        return jsonify(exc.to_dict()), exc.status_code
+
+    respuesta = None
+    if submission_id is not None:
+        try:
+            respuesta = find_survey_response_replay(
+                slug,
+                payload,
+                request_ctx,
+                submission_id=submission_id,
+                preferred_tenant_id=tenant_id,
+            )
+        except EncuestaError as exc:
+            return jsonify(exc.to_dict()), exc.status_code
+        if respuesta is not None and tenant_id and respuesta.tenant_id != tenant_id:
+            abort(404, description="Encuesta no encontrada")
+
+    if respuesta is None:
+        try:
+            encuesta = get_public_encuesta(slug, preferred_tenant_id=tenant_id)
+        except EncuestaError as exc:
+            return jsonify(exc.to_dict()), exc.status_code
+
+        if tenant_id and encuesta.tenant_id != tenant_id:
+            abort(404, description="Encuesta no encontrada")
+
+        try:
+            respuesta = save_respuesta(
+                slug,
+                payload,
+                request_ctx,
+                preferred_tenant_id=tenant_id,
+                submission_id=submission_id,
+            )
+        except EncuestaError as exc:
+            return jsonify(exc.to_dict()), exc.status_code
 
     from routes.v2.surveys import (
         _build_operational_next_steps,
@@ -830,9 +859,12 @@ def respond_survey(slug: str):
     response_payload = {
         "ok": True,
         "contract_version": "surveys.public_response.v2",
+        "persisted": True,
+        "replayed": bool(getattr(respuesta, "submission_replayed", False)),
         "id": respuesta.id,
         "respuesta_id": respuesta.id,
         "response_id": respuesta.id,
+        "instrument_revision": getattr(respuesta, "instrument_revision", None),
         "public_state": public_state,
         "estado_publico": public_state,
         "links": links,
@@ -855,6 +887,9 @@ def respond_survey(slug: str):
             "callback_expected": False,
         },
     }
+    receipt_contract = survey_response_receipt_contract(respuesta)
+    if receipt_contract is not None:
+        response_payload["idempotency"] = receipt_contract
     if live_results_enabled:
         live_results_url = links["live_results_endpoint"]
         response_payload["live_results_url"] = live_results_url
@@ -873,7 +908,7 @@ def respond_survey(slug: str):
         ],
     )
     response = jsonify(response_payload)
-    response.status_code = 201
+    response.status_code = 200 if response_payload["replayed"] else 201
     return response
 
 

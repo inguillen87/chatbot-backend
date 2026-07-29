@@ -6,6 +6,7 @@ import time
 import unicodedata
 
 from services.common_utils import build_menu_tts_cache_namespace
+from services.openai_model_defaults import DEFAULT_OPENAI_TTS_MODEL
 
 EDUCATION_PROFILE_CONTRACT_VERSION = "education.profile.v1"
 EDUCATION_QUICK_MENU_CONTRACT_VERSION = "education.quick_menu.v1"
@@ -658,7 +659,7 @@ def build_education_whatsapp_menu_payload(
             version="v1",
         ),
         "tts_voice": "shimmer",
-        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", DEFAULT_OPENAI_TTS_MODEL),
         "tts_speed": menu_tts_speed,
         "menu_key": "menu_colegio",
         "menu_version": "v1",

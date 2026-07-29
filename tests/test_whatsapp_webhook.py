@@ -12,7 +12,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("SKIP_INIT_TENANTS", "1")
 
-from flask import g
+from flask import Flask, g
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root_whatsapp = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -54,6 +54,11 @@ from routes.whatsapp_webhook import (
     CHATBOC_DEMO_DEFAULT_WHATSAPP_NUMBER,
     CHATBOC_DEMO_DEFAULT_RESET_WHATSAPP_NUMBER,
     CHATBOC_DEMO_TENANT_SLUG,
+    _log,
+    _safe_log_value,
+    _safe_outbound_log_metadata,
+    _safe_provider_reference,
+    _safe_session_context_metadata,
 )
 from services.whatsapp_enterprise_rules import (
     RATE_LIMIT_RESERVATION_EVENT,
@@ -64,6 +69,105 @@ from services.whatsapp_receipts import build_claim_created_template_pre_message
 # and to avoid potential issues if models.py itself tries to import app-context related things early.
 # However, for direct use in tests, they are typically at the top. Let's try keeping them here.
 import models
+
+
+class WhatsAppWebhookLogPrivacyUnitTestCase(unittest.TestCase):
+    def test_safe_log_value_redacts_provider_secrets_pii_urls_and_coordinates(self):
+        raw = (
+            "AccountSid=AC11111111111111111111111111111111 "
+            "ServiceSid=MG22222222222222222222222222222222 "
+            "email=vecino@example.test phone=+54 9 261 316-8608 "
+            "coords=-32.889458,-68.845839 "
+            "https://media.twilio.test/private.ogg?token=super-secret "
+            "Bearer eyJ.private.signature api_key=sk-private PIN 167779 DNI: 32877851 "
+            "lat=-32.889458 longitude=-68.845839"
+        )
+
+        safe = _safe_log_value(raw)
+
+        for secret in (
+            "AC11111111111111111111111111111111",
+            "MG22222222222222222222222222222222",
+            "vecino@example.test",
+            "+54 9 261 316-8608",
+            "-32.889458",
+            "-68.845839",
+            "media.twilio.test",
+            "super-secret",
+            "eyJ.private.signature",
+            "sk-private",
+            "167779",
+            "32877851",
+        ):
+            self.assertNotIn(secret, safe)
+        self.assertIn("[redacted-provider-id]", safe)
+        self.assertIn("[redacted-email]", safe)
+        self.assertIn("[redacted-url]", safe)
+        self.assertIn("[redacted-coordinates]", safe)
+
+    def test_safe_log_summarizes_containers_and_never_renders_exception_message(self):
+        secret_url = "https://api.twilio.test/media?sig=private"
+        self.assertEqual(
+            _safe_log_value({"transcript": "mi DNI es 32877851", "url": secret_url}),
+            "dict(count=2)",
+        )
+        self.assertEqual(
+            _safe_log_value(RuntimeError(f"download failed {secret_url}")),
+            "RuntimeError",
+        )
+
+        app = Flask(__name__)
+        with app.app_context(), self.assertLogs(app.logger, level="ERROR") as captured:
+            _log(
+                "error",
+                "Provider operation failed error=%s",
+                RuntimeError(f"download failed {secret_url}"),
+                exc_info=True,
+            )
+        rendered = "\n".join(captured.output)
+        self.assertIn("RuntimeError", rendered)
+        self.assertNotIn(secret_url, rendered)
+        self.assertNotIn("private", rendered)
+        self.assertNotIn("Traceback", rendered)
+
+    def test_operational_metadata_excludes_bodies_urls_recipients_and_context_values(self):
+        outbound = _safe_outbound_log_metadata(
+            {
+                "from_": "whatsapp:+5492611111111",
+                "to": "whatsapp:+5492622222222",
+                "body": "DNI 32877851; PIN 167779",
+                "media_url": ["https://signed.example.test/file?token=secret"],
+                "content_sid": "HX33333333333333333333333333333333",
+            }
+        )
+        context = _safe_session_context_metadata(
+            {
+                "private-person@example.test": "DNI 32877851",
+                "historial_chat": [{"content": "transcripcion privada"}],
+                "last_whatsapp_flow_submission": {"token": "secret"},
+            }
+        )
+
+        self.assertEqual(outbound["body_length"], len("DNI 32877851; PIN 167779"))
+        self.assertEqual(outbound["media_count"], 1)
+        self.assertTrue(outbound["has_template"])
+        self.assertNotIn("body", outbound)
+        self.assertNotIn("media_url", outbound)
+        self.assertNotIn("to", outbound)
+        self.assertNotIn("from_", outbound)
+        self.assertNotIn("keys", context)
+        self.assertEqual(context["key_count"], 3)
+        self.assertEqual(context["history_items"], 1)
+        self.assertNotIn("private-person@example.test", str(context))
+
+    def test_provider_reference_is_stable_and_non_reversible(self):
+        raw_sid = "SM44444444444444444444444444444444"
+        first = _safe_provider_reference(raw_sid)
+        second = _safe_provider_reference(raw_sid)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("sha256:"))
+        self.assertNotIn(raw_sid, first)
 
 
 class WhatsAppTwilioSanitizationTestCase(unittest.TestCase):
@@ -626,6 +730,9 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         mock_bot.assert_called_once()
+        bot_kwargs = mock_bot.call_args.kwargs
+        self.assertEqual(bot_kwargs.get("tenant_id"), tenant.id)
+        self.assertEqual(getattr(bot_kwargs.get("tenant_profile"), "id", None), tenant.id)
 
         mapping = WhatsappNumero.query.filter_by(numero_whatsapp="+15559876543").first()
         self.assertIsNotNone(mapping)
@@ -638,6 +745,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             chat_session_id=f"whatsapp_{self.mock_client_user.id}_+15557654322"
         ).first()
         self.assertIsNotNone(session)
+        self.assertEqual(session.tenant_id, tenant.id)
         self.assertNotEqual((session.context_data or {}).get("estado_conversacion"), "chatboc_demo_hub")
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
@@ -1571,6 +1679,84 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertIsNotNone(contact_state)
         self.assertIsNotNone(contact_state.last_inbound_at)
 
+    def test_whatsapp_webhook_logs_only_operational_metadata_for_sensitive_turn(self):
+        self._set_owner_tipo_chat("municipio")
+        self._attach_tenant_to_owner(slug="privacy-log", tipo="municipio")
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+
+        inbound_sid = "SM55555555555555555555555555555555"
+        outbound_sid = "SM66666666666666666666666666666666"
+        account_sid = "AC77777777777777777777777777777777"
+        email = "private-neighbor@example.test"
+        dni = "32877851"
+        pin = "167779"
+        media_url = "https://signed.example.test/claim.png?token=private-token"
+        tracking_url = "https://chatboc.example.test/tracking/claim/401746?pin=167779"
+        transcript = (
+            "Tengo un poste caido en Don Bosco 55 esquina Sarmiento; "
+            f"DNI {dni}; email {email}; telefono +54 9 261 316-8608"
+        )
+        mock_twilio_message = MagicMock()
+        mock_twilio_message.sid = outbound_sid
+        self.mock_twilio_create.return_value = mock_twilio_message
+
+        response_payload = {
+            "message_body": f"Reclamo creado. PIN {pin}. Seguimiento: {tracking_url}",
+            "image_url": media_url,
+            "options_list": [],
+            "message_type": "text",
+        }
+        payload = {
+            "AccountSid": account_sid,
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "MessageSid": inbound_sid,
+            "Body": transcript,
+            "Latitude": "-32.889458",
+            "Longitude": "-68.845839",
+            "Address": "Don Bosco 55 esquina Sarmiento",
+            "ProfileName": "Persona Privada",
+        }
+
+        with patch(
+            "routes.whatsapp_webhook.responder_chatboc",
+            return_value=response_payload,
+        ), patch(
+            "routes.whatsapp_webhook._twilio_account_sid_matches",
+            return_value=True,
+        ), self.assertLogs(self.app.logger, level="DEBUG") as captured:
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={"X-Twilio-Signature": "private-signature"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        rendered = "\n".join(captured.output)
+        for sensitive_value in (
+            inbound_sid,
+            outbound_sid,
+            account_sid,
+            email,
+            dni,
+            pin,
+            media_url,
+            tracking_url,
+            "private-token",
+            "Don Bosco",
+            "Sarmiento",
+            "+54 9 261 316-8608",
+            "-32.889458",
+            "-68.845839",
+            self.test_whatsapp_number_str,
+            self.test_user_number_str,
+            transcript,
+        ):
+            self.assertNotIn(sensitive_value, rendered)
+        self.assertIn("body_length", rendered)
+        self.assertIn("message_ref=sha256:", rendered)
+
     def test_twilio_whatsapp_status_persists_delivery_ledger_idempotently(self):
         tenant = self._attach_tenant_to_owner(slug="junin-status", tipo="municipio")
         sender = ProviderSender(
@@ -1594,7 +1780,10 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "ApiVersion": "2010-04-01",
         }
 
-        with patch("routes.whatsapp_webhook.TWILIO_AUTH_TOKEN", None):
+        with patch(
+            "routes.whatsapp_webhook.TWILIO_AUTH_TOKEN",
+            None,
+        ), self.assertLogs(self.app.logger, level="INFO") as captured:
             first_response = self.client.post(
                 "/twilio/whatsapp/status",
                 data=payload,
@@ -1625,6 +1814,18 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertEqual(event.payload.get("MessagingServiceSid"), "MG_STATUS_TEST")
         self.assertNotIn("To", event.payload)
         self.assertNotIn("From", event.payload)
+        rendered_logs = "\n".join(captured.output)
+        self.assertIn("message_ref=sha256:", rendered_logs)
+        for sensitive_value in (
+            payload["AccountSid"],
+            payload["MessagingServiceSid"],
+            payload["MessageSid"],
+            payload["To"],
+            payload["From"],
+            self.test_user_number_str,
+            self.test_whatsapp_number_str,
+        ):
+            self.assertNotIn(sensitive_value, rendered_logs)
 
     def test_twilio_whatsapp_failed_status_reconciles_native_flow_without_pii(self):
         tenant = self._attach_tenant_to_owner(slug="junin-flow-status", tipo="municipio")
@@ -3778,6 +3979,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
                 "language": "es",
                 "approved": True,
                 "approvalStatus": "APPROVED",
+                "lastStatusAt": datetime.now(timezone.utc).isoformat(),
             }
         }
         with patch("routes.whatsapp_webhook.responder_chatboc", return_value=response_payload), \
@@ -3799,6 +4001,82 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             json.loads(template_kwargs.get("content_variables", "{}")),
             {"1": "Junin", "2": "641277", "3": "Luminaria"},
         )
+
+    def test_whatsapp_pre_message_stale_manifest_falls_back_inside_24h(self):
+        tenant = self._attach_tenant_to_owner(tipo="municipio")
+        client = MagicMock()
+        manifest = {
+            "chatboc_gov_claim_created_v2": {
+                "sid": "HXstaleapprovalsnapshot",
+                "language": "es",
+                "approved": True,
+                "approvalStatus": "APPROVED",
+                "lastStatusAt": (datetime.now(timezone.utc) - timedelta(days=31)).isoformat(),
+            }
+        }
+
+        with patch(
+            "routes.whatsapp_webhook._load_twilio_template_manifest",
+            return_value=manifest,
+        ):
+            _dispatch_twilio_pre_messages(
+                client,
+                f"whatsapp:{self.test_whatsapp_number_str}",
+                f"whatsapp:{self.test_user_number_str}",
+                {
+                    "_twilio_pre_messages": [
+                        {
+                            "channels": ["whatsapp"],
+                            "template_name": "chatboc_gov_claim_created_v2",
+                            "variables": {"1": "M-123", "2": "chat/123"},
+                            "body": "Reclamo M-123 registrado.",
+                            "metadata": {"within_24h_window": True},
+                        }
+                    ]
+                },
+                lambda candidate: candidate,
+                tenant_profile=tenant,
+            )
+
+        client.messages.create.assert_called_once()
+        kwargs = client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs.get("body"), "Reclamo M-123 registrado.")
+        self.assertNotIn("content_sid", kwargs)
+
+    def test_whatsapp_pre_message_invalid_variable_contract_uses_nested_fallback(self):
+        tenant = self._attach_tenant_to_owner(tipo="municipio")
+        client = MagicMock()
+
+        _dispatch_twilio_pre_messages(
+            client,
+            f"whatsapp:{self.test_whatsapp_number_str}",
+            f"whatsapp:{self.test_user_number_str}",
+            {
+                "_twilio_pre_messages": [
+                    {
+                        "channels": ["whatsapp"],
+                        "content_sid": "HXexplicitapprovedtemplate",
+                        "variables": {"1": "M-123", "2": ""},
+                        "fallback": {
+                            "mode": "plain_text",
+                            "body": "Reclamo M-123 registrado.",
+                        },
+                        "metadata": {"within_24h_window": True},
+                        "template_contract": {
+                            "variables": {"1": "claim_code", "2": "tracking_path"},
+                        },
+                    }
+                ]
+            },
+            lambda candidate: candidate,
+            tenant_profile=tenant,
+        )
+
+        client.messages.create.assert_called_once()
+        kwargs = client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs.get("body"), "Reclamo M-123 registrado.")
+        self.assertNotIn("content_sid", kwargs)
+        self.assertNotIn("content_variables", kwargs)
 
     def test_claim_created_pre_message_exposes_template_contract_metadata(self):
         pre_message = build_claim_created_template_pre_message(

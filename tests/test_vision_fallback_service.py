@@ -1,105 +1,144 @@
 import base64
 import os
 import unittest
-from unittest.mock import MagicMock, patch, ANY
+from types import SimpleNamespace
+from unittest.mock import ANY, MagicMock, patch
 
-from services.vision_fallback_service import analyze_image_smart
+from flask import Flask
+
+from services import vision_fallback_service as vision_service
 
 
 class TestVisionFallbackService(unittest.TestCase):
-    @patch("services.vision_fallback_service.OpenAI")
-    def test_chat_completion_fallback(self, mock_openai):
-        from types import SimpleNamespace
+    def setUp(self):
+        vision_service._OPENAI_CLIENT = None
+        vision_service._OPENAI_CLIENT_KEY_DIGEST = None
 
-        message = SimpleNamespace(
-            content='{"labels": ["calle"], "objects": ["auto"], "text": "hola"}'
+    def tearDown(self):
+        vision_service._OPENAI_CLIENT = None
+        vision_service._OPENAI_CLIENT_KEY_DIGEST = None
+
+    def test_responses_api_uses_documented_image_and_structured_output_shape(self):
+        response = SimpleNamespace(
+            output_text='{"labels": ["bache"], "objects": ["auto"], "text": "peligro"}',
+            output=[],
         )
-        mock_completion = MagicMock()
-        mock_completion.choices = [MagicMock(message=message)]
-        mock_chat = MagicMock()
-        mock_chat.completions.create.return_value = mock_completion
-        mock_client = MagicMock(spec=["chat"])
-        mock_client.chat = mock_chat
-        mock_openai.return_value = mock_client
+        client = MagicMock()
+        client.responses.create.return_value = response
 
-        os.environ["OPENAI_API_KEY"] = "test-key"
-        result = analyze_image_smart(b"image-bytes")
+        with patch.object(vision_service, "_get_openai_client", return_value=client):
+            result = vision_service.analyze_image_smart(b"\x89PNG\r\n\x1a\nimage")
 
-        self.assertEqual(result["labels"][0]["description"], "calle")
+        self.assertEqual(result["labels"][0]["description"], "bache")
         self.assertEqual(result["objects"][0]["name"], "auto")
+        request = client.responses.create.call_args.kwargs
+        self.assertEqual(request["model"], vision_service.DEFAULT_OPENAI_VISION_MODEL)
+        self.assertFalse(request["store"])
+        self.assertNotIn("temperature", request)
+        self.assertEqual(request["text"]["format"]["type"], "json_schema")
+        self.assertTrue(request["text"]["format"]["strict"])
+        image_part = request["input"][0]["content"][1]
+        self.assertEqual(image_part["type"], "input_image")
+        self.assertEqual(image_part["detail"], "auto")
+        self.assertTrue(image_part["image_url"].startswith("data:image/png;base64,"))
+        self.assertNotIn("image", image_part)
+        self.assertFalse(client.chat.completions.create.called)
 
-    @patch("services.vision_fallback_service.OpenAI")
-    def test_openai_extra_text(self, mock_openai):
-        from types import SimpleNamespace
+    def test_ambiguous_responses_failure_is_not_retried_or_sent_to_fallback_provider(self):
+        sensitive = "DNI 32877851 https://private.example.test?token=secret"
+        client = MagicMock()
+        client.responses.create.side_effect = RuntimeError(sensitive)
 
-        message = SimpleNamespace(
-            content='Aquí tienes {"labels": ["calle"], "objects": ["bache"], "text": ""}'
+        with (
+            patch.object(vision_service, "_get_openai_client", return_value=client),
+            patch.object(vision_service, "_call_cohere") as cohere,
+            patch.dict(os.environ, {"VISION_COHERE_ENABLED": "true"}, clear=False),
+            self.assertLogs("services.vision_fallback_service", level="WARNING") as logs,
+        ):
+            result = vision_service.analyze_image_smart(b"image")
+
+        self.assertEqual(result, {"labels": [], "objects": []})
+        client.responses.create.assert_called_once()
+        self.assertFalse(client.chat.completions.create.called)
+        cohere.assert_not_called()
+        rendered = "\n".join(logs.output)
+        self.assertIn("error_type=RuntimeError", rendered)
+        self.assertIn("fallback_suppressed=true", rendered)
+        self.assertNotIn(sensitive, rendered)
+        self.assertNotIn("32877851", rendered)
+
+    def test_lazy_client_uses_flask_config_and_disables_sdk_retries(self):
+        app = Flask(__name__)
+        app.config["OPENAI_API_KEY"] = "app-key"
+        app.config["OPENAI_VISION_TIMEOUT_SECONDS"] = "17"
+
+        with (
+            app.app_context(),
+            patch("services.vision_fallback_service.httpx.Client") as http_client,
+            patch("services.vision_fallback_service.OpenAI") as openai,
+        ):
+            first = vision_service._get_openai_client()
+            second = vision_service._get_openai_client()
+
+        self.assertIs(first, second)
+        openai.assert_called_once_with(
+            api_key="app-key",
+            http_client=http_client.return_value,
+            max_retries=0,
+            timeout=17.0,
         )
-        mock_completion = MagicMock()
-        mock_completion.choices = [MagicMock(message=message)]
-        mock_chat = MagicMock()
-        mock_chat.completions.create.return_value = mock_completion
-        mock_client = MagicMock(spec=["chat"])
-        mock_client.chat = mock_chat
-        mock_openai.return_value = mock_client
 
-        os.environ["OPENAI_API_KEY"] = "test-key"
-        result = analyze_image_smart(b"img")
-        self.assertEqual(result["objects"][0]["name"], "bache")
+    def test_json_parse_warning_does_not_log_provider_output(self):
+        sensitive = "not-json DNI 32877851 token=secret"
+        with self.assertLogs("services.vision_fallback_service", level="WARNING") as logs:
+            result = vision_service._safe_json_loads(sensitive)
+
+        self.assertEqual(result, {})
+        rendered = "\n".join(logs.output)
+        self.assertIn(f"response_chars={len(sensitive)}", rendered)
+        self.assertNotIn(sensitive, rendered)
+        self.assertNotIn("32877851", rendered)
 
     @patch("services.vision_fallback_service._call_cohere")
     @patch("services.vision_fallback_service._call_openai", return_value=None)
-    def test_cohere_fallback(self, mock_openai, mock_cohere):
-        mock_cohere.return_value = {"labels": ["calle"], "objects": ["bache"], "text": ""}
+    def test_explicit_cohere_fallback_remains_available_before_openai_send(
+        self,
+        _openai,
+        cohere,
+    ):
+        cohere.return_value = {"labels": ["calle"], "objects": ["bache"], "text": ""}
         with patch.dict(os.environ, {"VISION_COHERE_ENABLED": "true"}, clear=False):
-            result = analyze_image_smart(b"bytes")
+            result = vision_service.analyze_image_smart(b"bytes")
+
         self.assertEqual(result["objects"][0]["name"], "bache")
 
     @patch("cohere.Client")
-    def test_generate_receives_image_url(self, mock_client_cls):
-        from services.vision_fallback_service import _call_cohere
-
-        mock_client = MagicMock()
-        mock_client.chat.side_effect = TypeError("no images param")
-        gen_resp = MagicMock()
-        gen_resp.generations = [MagicMock(text='{"labels": [], "objects": [], "text": ""}')]
-        mock_client.generate.return_value = gen_resp
-        mock_client_cls.return_value = mock_client
+    def test_generate_receives_image_url_for_pre_request_sdk_type_fallback(self, client_cls):
+        client = MagicMock()
+        client.chat.side_effect = TypeError("no images param")
+        client.generate.return_value = MagicMock(
+            generations=[MagicMock(text='{"labels": [], "objects": [], "text": ""}')]
+        )
+        client_cls.return_value = client
 
         with patch.dict(
             os.environ,
             {"COHERE_API_KEY": "abc", "VISION_COHERE_ENABLED": "true"},
             clear=False,
         ):
-            _call_cohere(b"img-bytes")
+            vision_service._call_cohere(b"img-bytes")
 
-        b64 = base64.b64encode(b"img-bytes").decode("utf-8")
-        mock_client.generate.assert_called_once_with(
+        encoded = base64.b64encode(b"img-bytes").decode("utf-8")
+        client.generate.assert_called_once_with(
             model="command-r-plus",
             prompt=ANY,
-            image_url=f"data:image/jpeg;base64,{b64}",
+            image_url=f"data:image/jpeg;base64,{encoded}",
         )
-
-    @patch("services.vision_fallback_service.OpenAI")
-    def test_responses_api_used_when_available(self, mock_openai):
-        from types import SimpleNamespace
-
-        output = [SimpleNamespace(content=[SimpleNamespace(text='{"labels": ["bache"], "objects": ["auto"], "text": "peligro"}')])]
-        responses_obj = MagicMock()
-        responses_obj.create.return_value = SimpleNamespace(output=output)
-        mock_client = MagicMock()
-        mock_client.responses = responses_obj
-        mock_openai.return_value = mock_client
-
-        os.environ["OPENAI_API_KEY"] = "key"
-        result = analyze_image_smart(b"img")
-        self.assertEqual(result["labels"][0]["description"], "bache")
-        self.assertEqual(result["objects"][0]["name"], "auto")
 
     @patch("services.vision_fallback_service._call_openai", return_value=None)
     @patch("services.vision_fallback_service._call_cohere", return_value=None)
-    def test_all_providers_fail(self, mock_cohere, mock_openai):
-        result = analyze_image_smart(b"img")
+    def test_all_providers_fail(self, _cohere, _openai):
+        result = vision_service.analyze_image_smart(b"img")
         self.assertEqual(result, {"labels": [], "objects": []})
 
 

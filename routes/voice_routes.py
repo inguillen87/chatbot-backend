@@ -299,9 +299,28 @@ def _demo_voice_reply_for(input_text: str | None) -> str:
 
 
 def _validate_twilio_request() -> bool:
-    if not TWILIO_AUTH_TOKEN:
+    """Validate Twilio webhooks and fail closed outside explicit test/dev mode."""
+
+    if current_app.config.get("TESTING") and not current_app.config.get(
+        "VOICE_VALIDATE_TWILIO_IN_TESTS"
+    ):
         return True
-    validator = RequestValidator(TWILIO_AUTH_TOKEN)
+
+    auth_token = (
+        current_app.config.get("TWILIO_AUTH_TOKEN")
+        or os.environ.get("TWILIO_AUTH_TOKEN")
+        or TWILIO_AUTH_TOKEN
+    )
+    if not auth_token:
+        environment = str(current_app.config.get("ENV") or "").strip().lower()
+        allow_unsigned = bool(current_app.config.get("TESTING")) or (
+            _is_truthy(current_app.config.get("VOICE_ALLOW_UNSIGNED_TWILIO_WEBHOOKS"))
+            and environment not in {"prod", "production"}
+        )
+        if not allow_unsigned:
+            logger.error("Twilio voice webhook rejected reason=auth_token_missing")
+        return allow_unsigned
+    validator = RequestValidator(str(auth_token))
     return validator.validate(
         request.url,
         request.form,
@@ -453,16 +472,22 @@ def voice_welcome():
             elif client_user.nombre_empresa:
                 tenant_name = client_user.nombre_empresa
 
-    except Exception as e:
-        current_app.logger.error(f"[VOICE_WELCOME] Error resolving context: {e}")
+    except Exception as exc:
+        current_app.logger.error(
+            "[VOICE_WELCOME] context resolution failed error_type=%s",
+            type(exc).__name__,
+        )
 
     greeting_text = f"Hola {user_name}, soy {assistant_name} de {tenant_name}. ¿En qué puedo ayudarte hoy?"
 
     audio_url = None
     try:
         audio_url = generar_audio(greeting_text)
-    except Exception as e:
-        current_app.logger.error(f"[VOICE_WELCOME] TTS failed: {e}")
+    except Exception as exc:
+        current_app.logger.error(
+            "[VOICE_WELCOME] TTS failed error_type=%s",
+            type(exc).__name__,
+        )
 
     gather = Gather(
         input='speech dtmf',
@@ -514,6 +539,9 @@ def voice_transfer():
     Endpoint that returns TwiML to transfer the call to a human agent.
     Expected to be called via Call Update API.
     """
+    if not _validate_twilio_request():
+        return "Forbidden", 403
+
     target = request.args.get("target") or request.form.get("target")
     response = VoiceResponse()
 
@@ -531,10 +559,8 @@ def voice_process():
     Legacy Endpoint that processes speech input (Gather) and returns TwiML.
     Kept for backward compatibility or non-streaming flows.
     """
-    if TWILIO_AUTH_TOKEN:
-        validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
-           return "Forbidden", 403
+    if not _validate_twilio_request():
+        return "Forbidden", 403
 
     user_speech = request.form.get('SpeechResult')
     digits = request.form.get('Digits')
@@ -611,10 +637,8 @@ def voice_status():
     """
     Handles call status updates.
     """
-    if TWILIO_AUTH_TOKEN:
-        validator = RequestValidator(TWILIO_AUTH_TOKEN)
-        if not validator.validate(request.url, request.form, request.headers.get('X-Twilio-Signature', '')):
-           return "Forbidden", 403
+    if not _validate_twilio_request():
+        return "Forbidden", 403
 
     call_sid = request.form.get('CallSid')
     call_status = request.form.get('CallStatus')

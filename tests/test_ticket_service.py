@@ -253,6 +253,59 @@ class TicketServiceTests(unittest.TestCase):
         service.crear_nuevo_ticket('municipio', ticket_data)
         self.assertEqual(dummy_creator.last_ticket_data['telefono_vecino'], '351122395')
 
+    def test_ticket_creation_log_excludes_citizen_pii_and_tracking_pin(self):
+        service = ts.ServicioTickets()
+
+        class DummyCreator:
+            def create(self, ticket_data):
+                class DummyTicket(SimpleNamespace):
+                    def __getattr__(self, name):
+                        return None
+
+                return DummyTicket(
+                    id=41,
+                    nro_ticket=772401,
+                    asunto="Poste caido frente a mi domicilio",
+                    categoria="Luminaria",
+                    estado="nuevo",
+                    tenant_id=9,
+                    municipio_id=9,
+                    nombre_vecino="Persona Privada",
+                    telefono_vecino="+5492613999999",
+                    email_vecino="persona-privada@example.com",
+                    dni_vecino="32999999",
+                    consulta_pin="654321",
+                )
+
+        service.creators["municipio"] = DummyCreator()
+        ticket_data = {
+            "categoria": "Luminaria",
+            "municipio_id": 9,
+            "nombre_vecino": "Persona Privada",
+            "telefono_vecino": "+5492613999999",
+            "email_vecino": "persona-privada@example.com",
+            "dni_vecino": "32999999",
+            "consulta_pin": "654321",
+        }
+
+        with patch.object(ts.logger, "info") as info_log:
+            service.crear_nuevo_ticket("municipio", ticket_data)
+
+        rendered_logs = " ".join(
+            " ".join(str(value) for value in call.args)
+            for call in info_log.call_args_list
+        )
+        self.assertIn("Ticket persisted", rendered_logs)
+        for secret_value in (
+            "Persona Privada",
+            "+5492613999999",
+            "persona-privada@example.com",
+            "32999999",
+            "654321",
+            "Poste caido frente a mi domicilio",
+        ):
+            self.assertNotIn(secret_value, rendered_logs)
+
 
     def test_mapa_pyme_filtra_por_tenant(self):
         DummyTicket = SimpleNamespace

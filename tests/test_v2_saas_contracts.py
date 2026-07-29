@@ -2598,6 +2598,16 @@ class V2SaasContractsTest(unittest.TestCase):
             survey_flow_blueprint["native_limits"]["reward_surveys_use_webview"]
         )
         self.assertTrue(
+            survey_flow_blueprint["native_limits"]["adaptive_navigation"]
+        )
+        self.assertEqual(
+            survey_flow_blueprint["native_limits"]["conditional_logic_versions"],
+            [1, 2],
+        )
+        self.assertTrue(
+            survey_flow_blueprint["native_limits"]["instrument_revision_pinned"]
+        )
+        self.assertTrue(
             webview_flows["survey_vote"]["meta_flow_artifact"][
                 "publishable_flow_json"
             ]
@@ -2952,6 +2962,198 @@ class V2SaasContractsTest(unittest.TestCase):
             self.assertIn("tenant_slug", risky_item)
             self.assertIn("risk_reason", risky_item)
         self.assertIn("drilldown_endpoint_template", payload["frontend_contract"])
+
+    def test_tenant_inbox_handoff_lifecycle_is_backend_driven_and_audited(self):
+        def post_action(action, user=None, **data):
+            return self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={"action": action, **data},
+                headers=self._auth(user or self.owner),
+            )
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        initial_actions = {item["id"]: item for item in detail.get_json()["item"]["allowed_actions"]}
+        self.assertIn("handoff", initial_actions)
+        self.assertNotIn("accept_handoff", initial_actions)
+        self.assertNotIn("resume_ai", initial_actions)
+        self.assertEqual(initial_actions["handoff"]["payload_defaults"], {"channel": "operator"})
+        self.assertEqual(initial_actions["handoff"]["requires"], [])
+        self.assertFalse(initial_actions["handoff"]["external_dispatch"])
+
+        requested = post_action("handoff", reason="La familia necesita asistencia humana")
+        self.assertEqual(requested.status_code, 200, requested.get_json())
+        requested_payload = requested.get_json()
+        self.assertFalse(requested_payload["delivery"]["external_dispatch"])
+        self.assertEqual(requested_payload["delivery"]["mode"], "internal_event")
+        handoff = requested_payload["ticket"]["handoff"]
+        self.assertEqual(handoff["contract_version"], "inbox.handoff.v1")
+        self.assertEqual(handoff["status"], "requested")
+        self.assertEqual(handoff["channel"], "operator")
+        self.assertEqual(handoff["requested_by"]["id"], self.owner.id)
+        requested_actions = {item["id"]: item for item in requested_payload["ticket"]["allowed_actions"]}
+        self.assertEqual(requested_actions["accept_handoff"]["label"], "Tomar conversación")
+        self.assertNotIn("handoff", requested_actions)
+
+        timeline_size = len(requested_payload["ticket"]["timeline"])
+        duplicate_request = post_action("handoff")
+        self.assertEqual(duplicate_request.status_code, 409, duplicate_request.get_json())
+        self.assertEqual(duplicate_request.get_json()["reason_code"], "invalid_handoff_transition")
+        db.session.refresh(self.ticket)
+        self.assertEqual(len(self.ticket.datos_extra["comments"]), timeline_size)
+
+        accepted = post_action("accept_handoff", self.employee)
+        self.assertEqual(accepted.status_code, 200, accepted.get_json())
+        accepted_ticket = accepted.get_json()["ticket"]
+        accepted_handoff = accepted_ticket["handoff"]
+        self.assertEqual(accepted_handoff["status"], "accepted")
+        self.assertTrue(accepted_handoff["accepted_at"])
+        self.assertEqual(accepted_handoff["accepted_by"]["id"], self.employee.id)
+        self.assertEqual(accepted_ticket["assignee"]["id"], self.employee.id)
+        accepted_actions = {item["id"]: item for item in accepted_ticket["allowed_actions"]}
+        self.assertEqual(accepted_actions["resume_ai"]["label"], "Devolver a IA")
+        self.assertNotIn("accept_handoff", accepted_actions)
+
+        accepted_timeline_size = len(accepted_ticket["timeline"])
+        duplicate_accept = post_action("accept_handoff", self.employee)
+        self.assertEqual(duplicate_accept.status_code, 409, duplicate_accept.get_json())
+        db.session.refresh(self.ticket)
+        self.assertEqual(len(self.ticket.datos_extra["comments"]), accepted_timeline_size)
+
+        resumed = post_action("resume_ai", self.employee)
+        self.assertEqual(resumed.status_code, 200, resumed.get_json())
+        resolved_handoff = resumed.get_json()["ticket"]["handoff"]
+        self.assertEqual(resolved_handoff["status"], "resolved")
+        self.assertEqual(resolved_handoff["resolution"], "resume_ai")
+        self.assertTrue(resolved_handoff["resolved_at"])
+        self.assertEqual(resolved_handoff["resolved_by"]["id"], self.employee.id)
+        resumed_actions = {item["id"]: item for item in resumed.get_json()["ticket"]["allowed_actions"]}
+        self.assertIn("handoff", resumed_actions)
+        self.assertNotIn("resume_ai", resumed_actions)
+        db.session.refresh(self.ticket)
+        self.assertEqual(self.ticket.datos_extra["handoff_history"][-1]["resolution"], "resume_ai")
+
+        duplicate_resume = post_action("resume_ai", self.employee)
+        self.assertEqual(duplicate_resume.status_code, 409, duplicate_resume.get_json())
+
+    def test_tenant_inbox_handoff_preserves_tenant_isolation(self):
+        foreign_owner = User(
+            name="Foreign owner",
+            email="foreign-handoff@test.com",
+            rol="admin",
+            tenant_slug="foreign-handoff",
+        )
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-handoff",
+            nombre="Foreign tenant",
+            tipo="pyme",
+            pyme_id=foreign_owner.id,
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_owner.tenant_id = foreign_tenant.id
+        foreign_ticket = TenantTicket(
+            tenant_id=foreign_tenant.id,
+            descripcion="Ticket de otro tenant",
+            estado="nuevo",
+            origen="web",
+            datos_extra={},
+        )
+        db.session.add(foreign_ticket)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{foreign_ticket.id}/actions",
+            json={"action": "handoff"},
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 404, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "ticket_not_found")
+        db.session.refresh(foreign_ticket)
+        self.assertNotIn("handoff", foreign_ticket.datos_extra)
+
+    def test_legacy_claim_handoff_lifecycle_uses_datos_extra_and_internal_comments(self):
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-880001",
+            consulta_pin="880001",
+            pregunta="Necesito hablar con un operador",
+            asunto="Atencion ciudadana",
+            categoria="otros",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        def post_action(action, user=None):
+            return self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={"source_model": "MunicipioTicket", "legacy_id": legacy.id, "action": action},
+                headers=self._auth(user or self.owner),
+            )
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{legacy.id}?source_model=MunicipioTicket",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        initial_actions = {item["id"]: item for item in detail.get_json()["item"]["allowed_actions"]}
+        handoff_defaults = initial_actions["handoff"]["payload_defaults"]
+        self.assertEqual(handoff_defaults["source_model"], "MunicipioTicket")
+        self.assertEqual(handoff_defaults["legacy_id"], legacy.id)
+        self.assertEqual(handoff_defaults["ticket_id"], legacy.id)
+        self.assertEqual(handoff_defaults["channel"], "operator")
+
+        requested = post_action("handoff")
+        self.assertEqual(requested.status_code, 200, requested.get_json())
+        self.assertFalse(requested.get_json()["delivery"]["external_dispatch"])
+        self.assertEqual(requested.get_json()["delivery"]["mode"], "internal_event")
+        self.assertFalse(requested.get_json()["delivery"]["realtime"]["emitted"])
+        self.assertEqual(requested.get_json()["ticket"]["handoff"]["status"], "requested")
+        self.assertIn(
+            "accept_handoff",
+            {item["id"] for item in requested.get_json()["ticket"]["allowed_actions"]},
+        )
+        self.assertEqual(TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(), 1)
+
+        duplicate = post_action("handoff")
+        self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+        self.assertEqual(TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(), 1)
+
+        accepted = post_action("accept_handoff", self.employee)
+        self.assertEqual(accepted.status_code, 200, accepted.get_json())
+        accepted_ticket = accepted.get_json()["ticket"]
+        self.assertEqual(accepted_ticket["handoff"]["status"], "accepted")
+        self.assertEqual(accepted_ticket["handoff"]["accepted_by"]["id"], self.employee.id)
+        self.assertEqual(accepted_ticket["assignee"]["id"], self.employee.id)
+
+        resumed = post_action("resume_ai", self.employee)
+        self.assertEqual(resumed.status_code, 200, resumed.get_json())
+        handoff = resumed.get_json()["ticket"]["handoff"]
+        self.assertEqual(handoff["status"], "resolved")
+        self.assertEqual(handoff["resolution"], "resume_ai")
+        self.assertEqual(handoff["resolved_by"]["id"], self.employee.id)
+        self.assertIn("handoff", {item["id"] for item in resumed.get_json()["ticket"]["allowed_actions"]})
+
+        comments = TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).order_by(TicketComentario.id.asc()).all()
+        self.assertEqual([item.estado_ticket for item in comments], ["handoff", "accept_handoff", "resume_ai"])
+        self.assertTrue(all(item.origen == "internal" for item in comments))
+        db.session.refresh(legacy)
+        self.assertEqual(legacy.asignado_a_id, self.employee.id)
+        self.assertTrue(legacy.asignado_en)
+        self.assertEqual(legacy.datos_extra["handoff"]["accepted_by"]["id"], self.employee.id)
+        self.assertEqual(legacy.datos_extra["handoff"]["resolution"], "resume_ai")
 
 
 if __name__ == "__main__":

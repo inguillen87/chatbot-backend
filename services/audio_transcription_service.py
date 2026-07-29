@@ -2,8 +2,10 @@
 
 import hashlib
 import io
+import logging
 import os
 import time
+from threading import Lock
 
 import re
 import requests
@@ -12,25 +14,149 @@ from openai import OpenAI
 
 from collections import OrderedDict
 
-# Initialize a shared OpenAI client once at import time so it can be mocked in tests.
-# If no API key is configured, fall back to a dummy key so unit tests can run without
-# external credentials. Use a custom HTTP client that ignores proxy env vars (common
-# in CI) to avoid initialization errors.
-http_client = httpx.Client(proxy=None, trust_env=False)
-openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", "test"), http_client=http_client)
-DEFAULT_STT_MODEL = "gpt-4o-mini-transcribe"
+logger = logging.getLogger(__name__)
+
+# Keep these module-level names for backwards-compatible test injection, but build
+# the real client only when STT is first used. This is important because app.py may
+# load dotenv after this module has been imported by another entrypoint.
+http_client: httpx.Client | None = None
+openai_client: OpenAI | None = None
+_OPENAI_CLIENT_LOCK = Lock()
+
+# Current OpenAI guidance recommends gpt-transcribe for completed recordings.
+# Keep OPENAI_STT_MODEL as an explicit rollout/rollback boundary per deployment.
+DEFAULT_STT_MODEL = "gpt-transcribe"
 DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS = 12
+# OpenAI's file-transcription API documents a 25 MB upload ceiling. Deployments may
+# choose a lower operational limit, but never raise it above the provider contract.
+OPENAI_TRANSCRIPTION_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024
+DEFAULT_STT_MAX_AUDIO_BYTES = OPENAI_TRANSCRIPTION_UPLOAD_LIMIT_BYTES
 AUTO_LANGUAGE_MARKERS = {"", "auto", "detect", "none", "null"}
 SUPPORTED_TRANSLATION_LANGUAGES = ("es", "en", "pt")
 _TRUTHY_VALUES = {"1", "true", "yes", "on"}
 _FALSEY_VALUES = {"0", "false", "no", "off"}
 _STT_CACHE: OrderedDict[str, tuple[float, str]] = OrderedDict()
 
+_MIME_EXTENSION_MAP = {
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/mp4": "m4a",
+    "audio/x-m4a": "m4a",
+    "audio/m4a": "m4a",
+    "audio/mpga": "mpga",
+    "audio/wav": "wav",
+    "audio/wave": "wav",
+    "audio/x-wav": "wav",
+    "audio/webm": "webm",
+    "video/webm": "webm",
+    # WhatsApp voice notes use Ogg/Opus. The API already accepts these in the
+    # deployed flow; retaining the real container extension is safer than naming
+    # Ogg bytes as WebM merely to match a documentation allow-list.
+    "audio/ogg": "ogg",
+    "application/ogg": "ogg",
+    "audio/opus": "ogg",
+}
+
 
 def clear_transcription_cache() -> None:
     """Clear the in-memory STT cache. Primarily used by tests."""
 
     _STT_CACHE.clear()
+
+
+def _runtime_setting(name: str, default=None):
+    """Resolve a setting from Flask config first, then the process environment.
+
+    Importing Flask lazily keeps this service usable from scripts and workers that
+    do not have an application context.
+    """
+
+    try:
+        from flask import current_app, has_app_context
+
+        if has_app_context() and name in current_app.config:
+            return current_app.config.get(name)
+    except (ImportError, RuntimeError):
+        pass
+
+    value = os.getenv(name)
+    return default if value is None else value
+
+
+def _openai_api_key() -> str | None:
+    value = _runtime_setting("OPENAI_API_KEY")
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _get_openai_client() -> OpenAI | None:
+    """Return the shared OpenAI client, creating it only on first real use."""
+
+    global http_client, openai_client
+
+    # This fast path also preserves the existing test seam where callers patch
+    # ``openai_client`` with a mock.
+    if openai_client is not None:
+        return openai_client
+
+    api_key = _openai_api_key()
+    if not api_key:
+        logger.warning("OpenAI STT unavailable reason=missing_api_key")
+        return None
+
+    with _OPENAI_CLIENT_LOCK:
+        if openai_client is not None:
+            return openai_client
+
+        http_client = httpx.Client(proxy=None, trust_env=False)
+        openai_client = OpenAI(api_key=api_key, http_client=http_client)
+        return openai_client
+
+
+def _canonical_mime_type(mime_type: str | None) -> str:
+    """Strip MIME parameters and normalize case for cache/file handling."""
+
+    return str(mime_type or "").split(";", 1)[0].strip().lower()
+
+
+def _stt_max_audio_bytes() -> int:
+    configured = _runtime_setting(
+        "STT_MAX_AUDIO_BYTES",
+        _runtime_setting("OPENAI_STT_MAX_AUDIO_BYTES", DEFAULT_STT_MAX_AUDIO_BYTES),
+    )
+    try:
+        parsed = int(configured)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_STT_MAX_AUDIO_BYTES
+
+    return min(
+        OPENAI_TRANSCRIPTION_UPLOAD_LIMIT_BYTES,
+        max(1, parsed),
+    )
+
+
+def _safe_error_status(exc: Exception) -> str:
+    """Extract only a non-sensitive provider/HTTP status for operational logs."""
+
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+
+    if isinstance(status, int):
+        return str(status)
+    if isinstance(status, str) and status.isdigit():
+        return status
+    return "unknown"
+
+
+def _log_transcription_failure(provider: str, exc: Exception) -> None:
+    logger.warning(
+        "Audio transcription provider failed provider=%s error_type=%s status_code=%s",
+        provider,
+        type(exc).__name__,
+        _safe_error_status(exc),
+    )
 
 
 def _truthy_env(*names: str) -> bool:
@@ -63,9 +189,9 @@ def _stt_config_fingerprint() -> str:
     return "|".join(
         [
             ",".join(_stt_provider_order()),
-            os.getenv("OPENAI_STT_MODEL", DEFAULT_STT_MODEL),
+            str(_runtime_setting("OPENAI_STT_MODEL", DEFAULT_STT_MODEL)),
             str(resolve_transcription_language() or "auto"),
-            os.getenv("TRANSLATION_TARGET_LANGUAGE", "es"),
+            str(_runtime_setting("TRANSLATION_TARGET_LANGUAGE", "es")),
         ]
     )
 
@@ -113,13 +239,26 @@ def _stt_content_cache_key(audio_bytes: bytes, mime_type: str) -> str:
 
 def _audio_download_timeout_seconds() -> float:
     try:
-        return max(1.0, float(os.getenv("STT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS", str(DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS))))
+        return max(
+            1.0,
+            float(
+                _runtime_setting(
+                    "STT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS",
+                    str(DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS),
+                )
+            ),
+        )
     except (TypeError, ValueError):
         return float(DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS)
 
 
-def _safe_audio_filename(mime_type: str) -> str:
-    extension = mime_type.split("/")[-1] if "/" in mime_type else "audio"
+def _safe_audio_filename(mime_type: str | None) -> str:
+    canonical_mime = _canonical_mime_type(mime_type)
+    mapped_extension = _MIME_EXTENSION_MAP.get(canonical_mime)
+    if mapped_extension:
+        return f"audio.{mapped_extension}"
+
+    extension = canonical_mime.split("/")[-1] if "/" in canonical_mime else "audio"
     safe_extension = re.sub(r"[^a-zA-Z0-9]", "", extension) or "audio"
     return f"audio.{safe_extension}"
 
@@ -163,7 +302,7 @@ def _stt_provider_order() -> list[str]:
 def resolve_transcription_language() -> str | None:
     """Return the configured STT language or None for automatic detection."""
 
-    language = os.getenv("OPENAI_STT_LANGUAGE", "auto").strip().lower()
+    language = str(_runtime_setting("OPENAI_STT_LANGUAGE", "auto") or "auto").strip().lower()
     if language in AUTO_LANGUAGE_MARKERS:
         return None
     return language
@@ -175,11 +314,12 @@ def audio_translation_capabilities() -> dict:
     return {
         "enabled": True,
         "mode": "transcribe_detect_translate_for_reasoning",
-        "transcription_model": os.getenv("OPENAI_STT_MODEL", DEFAULT_STT_MODEL),
+        "transcription_model": str(_runtime_setting("OPENAI_STT_MODEL", DEFAULT_STT_MODEL)),
         "language_detection": resolve_transcription_language() is None,
         "supported_languages": list(SUPPORTED_TRANSLATION_LANGUAGES),
-        "target_language": os.getenv("TRANSLATION_TARGET_LANGUAGE", "es"),
+        "target_language": str(_runtime_setting("TRANSLATION_TARGET_LANGUAGE", "es")),
         "preserve_original_transcript": True,
+        "max_audio_bytes": _stt_max_audio_bytes(),
         "providers": _stt_provider_order(),
         "cache": {
             "enabled": _stt_cache_enabled(),
@@ -191,7 +331,10 @@ def audio_translation_capabilities() -> dict:
 
 def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
     language = resolve_transcription_language()
-    model = os.getenv("OPENAI_STT_MODEL", DEFAULT_STT_MODEL)
+    model = str(_runtime_setting("OPENAI_STT_MODEL", DEFAULT_STT_MODEL))
+    client = _get_openai_client()
+    if client is None:
+        return None
 
     with io.BytesIO(audio_bytes) as audio_file:
         audio_file.name = filename
@@ -201,7 +344,7 @@ def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
         }
         if language:
             payload["language"] = language
-        transcription = openai_client.audio.transcriptions.create(**payload)
+        transcription = client.audio.transcriptions.create(**payload)
 
     return getattr(transcription, "text", None)
 
@@ -222,6 +365,16 @@ def transcribe_audio_bytes(
     if not audio_bytes:
         return None
 
+    max_audio_bytes = _stt_max_audio_bytes()
+    if len(audio_bytes) > max_audio_bytes:
+        logger.warning(
+            "Audio transcription rejected reason=file_too_large size_bytes=%s max_bytes=%s",
+            len(audio_bytes),
+            max_audio_bytes,
+        )
+        return None
+
+    mime_type = _canonical_mime_type(mime_type)
     content_cache_key = _stt_content_cache_key(audio_bytes, mime_type)
     cached_text = _stt_cache_get(content_cache_key)
     if cached_text:
@@ -241,16 +394,16 @@ def transcribe_audio_bytes(
         if provider == "openai":
             try:
                 text = _transcribe_with_openai(audio_bytes, filename)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                print(f"OpenAI STT error: {exc}")
+            except Exception as exc:  # pragma: no cover - provider-dependent errors
+                _log_transcription_failure("openai", exc)
                 text = None
         elif provider == "cohere" and _cohere_stt_enabled():
             try:
                 from services.cohere_stt_bridge import transcribir_audio_cohere
 
                 text = transcribir_audio_cohere(audio_bytes, mime_type)
-            except Exception as exc:  # pragma: no cover - defensive logging
-                print(f"Cohere STT error: {exc}")
+            except Exception as exc:  # pragma: no cover - provider-dependent errors
+                _log_transcription_failure("cohere", exc)
                 text = None
         else:
             text = None
@@ -287,6 +440,7 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
     """
 
     try:
+        mime_type = _canonical_mime_type(mime_type)
         url_cache_key = _stt_url_cache_key(url, mime_type)
         cached_text = _stt_cache_get(url_cache_key)
         if cached_text:
@@ -296,11 +450,38 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
         audio_response = requests.get(url, auth=auth, timeout=_audio_download_timeout_seconds())
         audio_response.raise_for_status()
 
+        content_length = None
+        headers = getattr(audio_response, "headers", None)
+        if headers is not None:
+            raw_content_length = headers.get("Content-Length")
+            if isinstance(raw_content_length, (str, int)):
+                try:
+                    content_length = int(raw_content_length)
+                except (TypeError, ValueError):
+                    content_length = None
+
+        max_audio_bytes = _stt_max_audio_bytes()
+        if content_length is not None and content_length > max_audio_bytes:
+            logger.warning(
+                "Audio transcription rejected reason=file_too_large size_bytes=%s max_bytes=%s",
+                content_length,
+                max_audio_bytes,
+            )
+            return None
+
         return transcribe_audio_bytes(audio_response.content, mime_type, cache_url=url)
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error downloading audio file: {e}")
+    except requests.exceptions.RequestException as exc:
+        logger.warning(
+            "Audio download failed error_type=%s status_code=%s",
+            type(exc).__name__,
+            _safe_error_status(exc),
+        )
         return None
-    except Exception as e:
-        print(f"Error during audio transcription: {e}")
+    except Exception as exc:
+        logger.warning(
+            "Audio transcription pipeline failed error_type=%s status_code=%s",
+            type(exc).__name__,
+            _safe_error_status(exc),
+        )
         return None

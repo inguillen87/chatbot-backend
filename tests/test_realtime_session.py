@@ -27,20 +27,24 @@ class TestRealtimeSessionService(unittest.TestCase):
             status_code = 200
             text = "ok"
             def json(self):
-                return {"value": "ek_mock_secret", "session": {"id": "sess_mock", "model": "gpt-realtime"}}
+                return {"value": "ek_mock_secret", "session": {"id": "sess_mock", "model": "gpt-realtime-2.1"}}
 
         mock_post.return_value = MockResponse()
 
         result = realtime_session_service.create_session(tenant_id=1)
         self.assertEqual(result["status_code"], 200)
         self.assertEqual(result["client_secret"], "ek_mock_secret")
-        self.assertEqual(result["model"], "gpt-realtime")
+        self.assertEqual(result["model"], "gpt-realtime-2.1")
         mock_post.assert_called_once()
         args, kwargs = mock_post.call_args
         self.assertEqual(args[0], "https://api.openai.com/v1/realtime/client_secrets")
         self.assertEqual(kwargs["json"]["session"]["type"], "realtime")
         self.assertEqual(kwargs["json"]["session"]["output_modalities"], ["audio"])
         self.assertEqual(kwargs["json"]["session"]["audio"]["input"]["turn_detection"]["type"], "semantic_vad")
+        self.assertEqual(
+            kwargs["json"]["session"]["audio"]["input"]["transcription"]["model"],
+            "gpt-4o-transcribe",
+        )
         self.assertIn("session_id", result)
 
     @patch('services.realtime_session_service.requests.post')

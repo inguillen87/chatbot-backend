@@ -102,7 +102,19 @@ def responder_chatboc(
     **kwargs,
 ):
     """Envía la consulta al handler correcto según el rubro y tipo de chat."""
-    logger.debug(f"[responder_chatboc] START - Args: pregunta='{pregunta}', owner_user_id='{getattr(owner_user, 'id', 'N/A')}', current_user_id='{getattr(current_user, 'id', 'N/A')}', anon_id='{anon_id}', tipo_chat_inicial='{tipo_chat}', rubro_obj_id='{getattr(rubro_obj, 'id', 'N/A')}', chat_session_uuid='{chat_session_uuid}', channel='{channel}'")
+    question_length = len(pregunta) if isinstance(pregunta, str) else None
+    logger.debug(
+        "[responder_chatboc] start owner_id=%s viewer_id=%s tipo=%s rubro_id=%s "
+        "channel=%s question_type=%s question_length=%s has_session=%s",
+        getattr(owner_user, "id", None),
+        getattr(current_user, "id", None),
+        tipo_chat,
+        getattr(rubro_obj, "id", None),
+        channel,
+        type(pregunta).__name__,
+        question_length,
+        bool(chat_session_uuid),
+    )
 
     # --- Low-confidence STT handling ---
     if isinstance(pregunta, dict) and 'confidence' in pregunta and 'transcript' in pregunta:
@@ -294,10 +306,10 @@ def responder_chatboc(
                             datos_interpretados_de_archivo = analisis_resultado
                     except Exception as exc:  # pragma: no cover - logged for observability
                         current_app.logger.error(
-                            "Error interpretando imagen para ArchivoAdjunto ID %s: %s",
+                            "Error interpretando imagen para ArchivoAdjunto ID %s "
+                            "(error_type=%s)",
                             archivo_id,
-                            exc,
-                            exc_info=True,
+                            type(exc).__name__,
                         )
             elif file_url and mime_type.startswith("audio/"):
                 kwargs.setdefault("es_audio", True)
@@ -309,8 +321,12 @@ def responder_chatboc(
                 if not transcript:
                     try:
                         transcript = transcribe_audio_from_url(file_url, mime_type)
-                    except Exception as e:
-                        logger.error(f"Error inesperado durante la transcripción de audio web: {e}", exc_info=True)
+                    except Exception as exc:
+                        logger.error(
+                            "Error inesperado durante la transcripción de audio web "
+                            "(error_type=%s)",
+                            type(exc).__name__,
+                        )
 
                 if transcript:
                     # This is the key change: pass the transcript in the same way WhatsApp does,
@@ -325,9 +341,10 @@ def responder_chatboc(
                     datos_interpretados_de_archivo["texto_transcrito"] = transcript
 
                     current_app.logger.info(
-                        "Transcripción de audio web completada para ArchivoAdjunto ID %s. Texto: '%s'",
+                        "Transcripción de audio web completada para ArchivoAdjunto ID %s "
+                        "(caracteres=%s)",
                         archivo_id,
-                        transcript[:100]
+                        len(transcript),
                     )
                 else:
                     current_app.logger.warning(
@@ -393,8 +410,11 @@ def responder_chatboc(
                             datos_interpretados_de_archivo = {"texto_extraido": doc_ai_result.text}
                         else:
                             datos_interpretados_de_archivo = {"error": "No se pudo procesar el documento."}
-                except requests.exceptions.RequestException as e:
-                    current_app.logger.error(f"Error descargando archivo de WhatsApp: {e}")
+                except requests.exceptions.RequestException as exc:
+                    current_app.logger.error(
+                        "Error descargando archivo de WhatsApp (error_type=%s)",
+                        type(exc).__name__,
+                    )
                     datos_interpretados_de_archivo = {"error": "No se pudo descargar el archivo."}
             else:
                 datos_interpretados_de_archivo = {}
@@ -585,7 +605,7 @@ def responder_chatboc(
             )
             if audio_url:
                 response_data['audio_url'] = audio_url
-                logger.info(f"Generated audio response at {audio_url}")
+                logger.info("Generated audio response (url_present=%s)", bool(audio_url))
 
     if isinstance(response_data, dict) and response_data.get("fuente") == "pyme_municipio_confusion_handler":
         quick_actions = (demo_metadata or {}).get("quick_actions") or []

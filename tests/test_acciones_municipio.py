@@ -539,7 +539,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         viewer_user.direccion = "Calle 1"
 
         owner_user = MagicMock(spec=User)
-        owner_user.municipio_id = "muni-test"
+        owner_user.id = 1
+        owner_user.municipio_id = 1
 
         context = {
             CONTEXTO_MUNICIPIO: {'datos_parciales_llm_reclamo': {}, 'contacto_usuario': {}},
@@ -610,7 +611,8 @@ class TestAccionesMunicipio(unittest.TestCase):
         viewer_user.direccion = "Calle 1"
 
         owner_user = MagicMock(spec=User)
-        owner_user.municipio_id = "muni-test"
+        owner_user.id = 1
+        owner_user.municipio_id = 1
 
         context = {
             CONTEXTO_MUNICIPIO: {'datos_parciales_llm_reclamo': {}, 'contacto_usuario': {}},
@@ -623,15 +625,16 @@ class TestAccionesMunicipio(unittest.TestCase):
         }
 
         handler = CrearReclamoActionHandler(context)
-        respuesta = handler.execute({
-            'categoria': 'Luminaria',
-            'descripcion': 'poste caido',
-            'ubicacion': 'Calle 123',
-            'usuario': 'Ana',
-            'telefono': '2615550000',
-            'email': 'vecina@example.com',
-            'pin': '654321',
-        })
+        with self.assertLogs('services.actions.municipio_actions', level='INFO') as captured_logs:
+            respuesta = handler.execute({
+                'categoria': 'Luminaria',
+                'descripcion': 'poste caido',
+                'ubicacion': 'Calle 123',
+                'usuario': 'Ana',
+                'telefono': '2615550000',
+                'email': 'vecina@example.com',
+                'pin': '654321',
+            })
 
         self.assertTrue(respuesta.get('success'))
         self.assertNotIn('whatsapp_receipt', respuesta)
@@ -643,16 +646,27 @@ class TestAccionesMunicipio(unittest.TestCase):
             '1': 'M-12345',
             '2': 'chat/12345#pin=654321',
         })
+        self.assertTrue(template.get('metadata', {}).get('within_24h_window'))
         self.assertIn('https://example.com/tracking/claim/12345#pin=654321', template.get('body', ''))
+        self.assertIn('*Código:* M-12345', template.get('body', ''))
+        self.assertNotIn('Ana', template.get('body', ''))
+        self.assertNotIn('Calle 123', template.get('body', ''))
         message_body = respuesta.get('message_body', '')
-        self.assertIn('Ver seguimiento: https://example.com/tracking/claim/12345#pin=654321', message_body)
-        self.assertIn('Reclamo recibido. El seguimiento quedo abierto', message_body)
-        self.assertIn('Podes sumar una foto, audio o comentario', message_body)
-        self.assertNotIn('Deje abierto', message_body)
+        self.assertIn('PIN de consulta: *654321*', message_body)
+        self.assertIn('foto, un audio o un comentario', message_body)
+        self.assertIn('mismo reclamo', message_body)
+        self.assertNotIn('M-12345', message_body)
+        self.assertNotIn('https://example.com/tracking/claim', message_body)
         self.assertNotIn('1. Menu', message_body)
         self.assertNotIn('2. Cancelar', message_body)
+        self.assertNotIn('delayed_payload', respuesta)
+        self.assertNotIn('delay_seconds', respuesta)
+        self.assertNotIn('image_url', respuesta)
+        self.assertFalse(respuesta.get('generar_audio'))
+        self.assertTrue(respuesta.get('skip_audio_generation'))
         self.assertEqual(respuesta.get('message_type'), 'text')
         self.assertEqual(respuesta.get('options_list'), [])
+        self.assertEqual(respuesta.get('message_to_user'), message_body)
         self.assertEqual(respuesta.get('whatsapp_flow'), 'claim_status')
         self.assertEqual(respuesta.get('tracking_url'), 'https://example.com/tracking/claim/12345#pin=654321')
         self.assertEqual(respuesta.get('webview_url'), 'https://example.com/tracking/claim/12345#pin=654321')
@@ -662,6 +676,37 @@ class TestAccionesMunicipio(unittest.TestCase):
             respuesta.get('data', {}).get('tracking_url'),
             'https://example.com/tracking/claim/12345#pin=654321',
         )
+        self.assertEqual(
+            respuesta.get('data', {}).get('receipt_delivery'),
+            {
+                'primary_surface': 'twilio_template_or_plain_text_fallback',
+                'followup_surface': 'pin_and_evidence_instructions',
+                'tts_allowed': False,
+            },
+        )
+        self.assertEqual(respuesta.get('contexto_actualizado', {}).get('latest_ticket_id'), 1)
+        self.assertEqual(
+            respuesta.get('contexto_actualizado', {}).get('latest_ticket_nro'),
+            'M-12345',
+        )
+        self.assertEqual(
+            respuesta.get('contexto_actualizado', {}).get('latest_ticket_pin'),
+            '654321',
+        )
+
+        operational_logs = '\n'.join(captured_logs.output)
+        for sensitive_value in (
+            'Ana',
+            '2615550000',
+            '+549111111111',
+            'vecina@example.com',
+            '30111222',
+            'Calle 123',
+            'Calle 1',
+            '654321',
+            'poste caido',
+        ):
+            self.assertNotIn(sensitive_value, operational_logs)
 
     @patch('services.herramientas_municipio.geocode_address')
     def test_direccion_es_valida(self, mock_geocode):
@@ -840,6 +885,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         viewer = MagicMock(spec=User)
         viewer.id = 10
         owner = MagicMock(spec=User)
+        owner.id = 1
         owner.municipio_id = 1
         context = {
             "viewer_user_obj": viewer,
@@ -858,7 +904,8 @@ class TestAccionesMunicipio(unittest.TestCase):
             "email": "juan@example.com",
             "direccion": "Calle Falsa 123",
         }
-        resp = handler.execute(datos)
+        with self.assertLogs('services.actions.municipio_actions', level='INFO') as captured_logs:
+            resp = handler.execute(datos)
         self.assertTrue(resp["success"])
         mock_crear_ticket.assert_called_once()
         ticket_kwargs = mock_crear_ticket.call_args.kwargs['ticket_data']
@@ -866,6 +913,18 @@ class TestAccionesMunicipio(unittest.TestCase):
         self.assertEqual(ticket_kwargs['latitud'], -32.9)
         self.assertEqual(ticket_kwargs['longitud'], -68.8)
         self.assertEqual(ticket_kwargs['direccion_contacto'], 'Calle Falsa 123')
+        rendered_logs = "\n".join(captured_logs.output)
+        self.assertIn("supplied_fields=", rendered_logs)
+        for sensitive_value in (
+            "Juan Perez",
+            "12345678",
+            "juan@example.com",
+            "Calle Falsa 123",
+            "Plaza Central",
+            "-32.9",
+            "-68.8",
+        ):
+            self.assertNotIn(sensitive_value, rendered_logs)
 
     @patch('services.municipio_responder.handle_llm_interaction', return_value=(None, {}))
     @patch('services.municipio_responder.google_search')

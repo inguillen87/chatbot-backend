@@ -455,7 +455,19 @@ class ServicioTickets:
                 db.session.add(comentario)
 
             db.session.commit()
-            logger.info(f"Ticket #{ticket.nro_ticket} (ID: {ticket.id}) ({tipo_ticket}) creado localmente. Municipio ID: {getattr(ticket, 'municipio_id', 'N/A')}. Datos: {ticket.__dict__}")
+            # Ticket models contain phone numbers, email, DNI, free-form text
+            # and the public tracking PIN.  Logging ``__dict__`` exposed all of
+            # that in provider logs.  Keep only operational identifiers and
+            # state; incident correlation does not require citizen PII.
+            logger.info(
+                "Ticket persisted id=%s number=%s type=%s tenant_id=%s municipio_id=%s status=%s",
+                getattr(ticket, "id", None),
+                getattr(ticket, "nro_ticket", None),
+                tipo_ticket,
+                getattr(ticket, "tenant_id", None),
+                getattr(ticket, "municipio_id", None),
+                getattr(ticket, "estado", None),
+            )
 
             # Integración con SIGEM para tickets municipales
             if tipo_ticket == "municipio" and isinstance(ticket, MunicipioTicket):

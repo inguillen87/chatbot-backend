@@ -712,12 +712,22 @@ class TenantTicket(db.Model, TimestampMixin):
     longitud = db.Column(db.Float, nullable=True)
     datos_extra = db.Column(JSONType, nullable=True)
     fingerprint = db.Column(db.String(120), nullable=True, index=True)
+    # Public-intake credentials are never stored.  Only opaque hashes and the
+    # HMAC version needed to re-derive a receipt are persisted.
+    intake_idempotency_hash = db.Column(db.String(64), nullable=True)
+    intake_payload_hash = db.Column(db.String(64), nullable=True)
+    claim_receipt_secret_version = db.Column(db.String(16), nullable=True)
 
     tenant = db.relationship("TenantProfile", back_populates="tickets")
     user = db.relationship("User", backref=db.backref("tenant_tickets", lazy="dynamic"))
 
     __table_args__ = (
         db.Index("ix_tenant_ticket_tenant_estado", "tenant_id", "estado"),
+        db.UniqueConstraint(
+            "tenant_id",
+            "intake_idempotency_hash",
+            name="uq_tenant_ticket_tenant_intake_idempotency",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - simple representation
@@ -1280,12 +1290,19 @@ class PointsTransaction(db.Model, TimestampMixin):
     delta = db.Column(db.Integer, nullable=False)
     saldo_final = db.Column(db.Integer, nullable=False)
     metadata_payload = db.Column("metadata", JSONType, nullable=True)
+    idempotency_key = db.Column(db.String(191), nullable=True)
 
     user = db.relationship("User", backref=db.backref("points_transactions", lazy="dynamic"))
     tenant = db.relationship("TenantProfile")
 
     __table_args__ = (
         db.Index("ix_points_tx_user_tenant", "user_id", "tenant_id"),
+        db.Index(
+            "uq_points_transaction_tenant_idempotency",
+            "tenant_id",
+            "idempotency_key",
+            unique=True,
+        ),
     )
 
 
@@ -2041,11 +2058,216 @@ class LlmInteractionLog(db.Model):
         return f"<LlmInteractionLog id={self.id} session_id={self.chat_session_id} status='{self.status}'>"
 
 
+class SurveyDraft(db.Model, TimestampMixin):
+    """Durable, tenant-scoped work-in-progress survey payload."""
+
+    __tablename__ = "survey_draft"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    draft_id = db.Column(db.String(160), nullable=False)
+    idempotency_key = db.Column(db.String(128), nullable=True)
+    schema_version = db.Column(db.String(32), nullable=False, default="survey-draft.v1")
+    revision = db.Column(db.Integer, nullable=False, default=1)
+    payload = db.Column(JSONType, nullable=False, default=dict)
+    payload_hash = db.Column(db.String(64), nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+
+    tenant = db.relationship(
+        "TenantProfile",
+        backref=db.backref("survey_drafts", lazy="dynamic", cascade="all, delete-orphan"),
+    )
+    creator = db.relationship("User", foreign_keys=[created_by])
+
+    __table_args__ = (
+        db.UniqueConstraint("tenant_id", "draft_id", name="uq_survey_draft_tenant_draft"),
+        db.CheckConstraint("revision >= 1", name="ck_survey_draft_revision_positive"),
+        db.Index("ix_survey_draft_tenant_updated", "tenant_id", "updated_at"),
+    )
+
+
+class SurveyDraftIdempotency(db.Model):
+    """Durable binding preventing a successful draft save from being applied twice."""
+
+    __tablename__ = "survey_draft_idempotency"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    survey_draft_id = db.Column(
+        db.Integer,
+        db.ForeignKey("survey_draft.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    idempotency_key = db.Column(db.String(128), nullable=False)
+    draft_id = db.Column(db.String(160), nullable=False)
+    schema_version = db.Column(db.String(32), nullable=False)
+    payload_hash = db.Column(db.String(64), nullable=False)
+    applied_revision = db.Column(db.Integer, nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    survey_draft = db.relationship(
+        "SurveyDraft",
+        backref=db.backref("idempotency_receipts", lazy="dynamic", cascade="all, delete-orphan"),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_survey_draft_idempotency_tenant_key",
+        ),
+        db.CheckConstraint(
+            "applied_revision >= 1",
+            name="ck_survey_draft_idempotency_revision_positive",
+        ),
+        db.Index(
+            "ix_survey_draft_idempotency_tenant_draft",
+            "tenant_id",
+            "survey_draft_id",
+        ),
+    )
+
+
+class SurveyDraftMaterialization(db.Model):
+    """Immutable receipt binding one draft revision to one real survey."""
+
+    __tablename__ = "survey_draft_materialization"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    survey_draft_id = db.Column(
+        db.Integer,
+        db.ForeignKey("survey_draft.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    survey_id = db.Column(
+        db.Integer,
+        db.ForeignKey("enc_encuesta.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    draft_id = db.Column(db.String(160), nullable=False)
+    draft_revision = db.Column(db.Integer, nullable=False)
+    schema_version = db.Column(db.String(32), nullable=False)
+    document_ref = db.Column(db.String(160), nullable=False)
+    payload_hash = db.Column(db.String(64), nullable=False)
+    operation_fingerprint = db.Column(db.String(64), nullable=False)
+    idempotency_key = db.Column(db.String(128), nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="SET NULL"), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    survey_draft = db.relationship("SurveyDraft", foreign_keys=[survey_draft_id])
+    survey = db.relationship("EncEncuesta", foreign_keys=[survey_id])
+    creator = db.relationship("User", foreign_keys=[created_by])
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "survey_id",
+            name="uq_survey_materialization_survey_id",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "survey_draft_id",
+            "draft_revision",
+            name="uq_survey_materialization_tenant_draft_revision",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_survey_materialization_tenant_key",
+        ),
+        db.CheckConstraint(
+            "draft_revision >= 1",
+            name="ck_survey_materialization_revision_positive",
+        ),
+        db.Index(
+            "ix_survey_materialization_tenant_draft_id_revision",
+            "tenant_id",
+            "draft_id",
+            "draft_revision",
+        ),
+        db.Index(
+            "ix_survey_draft_materialization_survey_id",
+            "survey_id",
+        ),
+    )
+
+
+class SurveyDraftMaterializationAlias(db.Model):
+    """Durably reserves every idempotency key replaying a materialization."""
+
+    __tablename__ = "survey_draft_materialization_alias"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    materialization_id = db.Column(
+        db.Integer,
+        db.ForeignKey("survey_draft_materialization.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    idempotency_key = db.Column(db.String(128), nullable=False)
+    operation_fingerprint = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    materialization = db.relationship(
+        "SurveyDraftMaterialization",
+        backref=db.backref("idempotency_aliases", lazy="dynamic", cascade="all, delete-orphan"),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_survey_materialization_alias_tenant_key",
+        ),
+        db.Index(
+            "ix_survey_materialization_alias_tenant_receipt",
+            "tenant_id",
+            "materialization_id",
+        ),
+    )
+
+
 class EncEncuesta(db.Model, TimestampMixin):
     __tablename__ = "enc_encuesta"
 
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(db.Integer, nullable=False, index=True)
+    document_ref = db.Column(db.String(160), nullable=True)
     slug = db.Column(db.String(160), unique=True, nullable=False)
     titulo = db.Column(db.String(255), nullable=False)
     descripcion = db.Column(db.Text, nullable=True)
@@ -2060,6 +2282,20 @@ class EncEncuesta(db.Model, TimestampMixin):
     es_votacion_envivo = db.Column(db.Boolean, default=False, nullable=False)
     mostrar_resultados_envivo = db.Column(db.Boolean, default=False, nullable=False)
     permitir_comentarios = db.Column(db.Boolean, default=False, nullable=False)
+    # ``structure_revision`` is an internal concurrency token.  Structural
+    # writers bump it while holding the survey row write guard; responders
+    # capture it before validating answers so a stale instrument can never be
+    # persisted after a concurrent edit.
+    structure_revision = db.Column(
+        db.Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    # Once the first response is persisted this marker is intentionally never
+    # cleared, even if responses are later removed.  Historical participation
+    # permanently freezes the referential structure of the instrument.
+    structure_locked_at = db.Column(db.DateTime(timezone=True), nullable=True)
     created_by = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
 
     preguntas = db.relationship(
@@ -2100,16 +2336,24 @@ class EncPregunta(db.Model, TimestampMixin):
     __tablename__ = "enc_pregunta"
     __table_args__ = (
         UniqueConstraint("encuesta_id", "orden", name="uq_enc_pregunta_encuesta_orden"),
+        Index(
+            "uq_enc_pregunta_encuesta_logical_ref",
+            "encuesta_id",
+            "logical_ref",
+            unique=True,
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
     encuesta_id = db.Column(db.Integer, db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"), nullable=False)
     orden = db.Column(db.Integer, nullable=False)
+    logical_ref = db.Column(db.String(160), nullable=True)
     tipo = db.Column(db.String(30), nullable=False)
     texto = db.Column(db.Text, nullable=False)
     obligatoria = db.Column(db.Boolean, default=False, nullable=False)
     min_selecciones = db.Column(db.Integer, nullable=True)
     max_selecciones = db.Column(db.Integer, nullable=True)
+    logica_condicional = db.Column("conditional_logic", JSONType, nullable=True)
 
     encuesta = db.relationship("EncEncuesta", back_populates="preguntas")
     opciones = db.relationship(
@@ -2124,11 +2368,18 @@ class EncOpcion(db.Model, TimestampMixin):
     __tablename__ = "enc_opcion"
     __table_args__ = (
         UniqueConstraint("pregunta_id", "orden", name="uq_enc_opcion_pregunta_orden"),
+        Index(
+            "uq_enc_opcion_pregunta_logical_ref",
+            "pregunta_id",
+            "logical_ref",
+            unique=True,
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
     pregunta_id = db.Column(db.Integer, db.ForeignKey("enc_pregunta.id", ondelete="CASCADE"), nullable=False)
     orden = db.Column(db.Integer, nullable=False)
+    logical_ref = db.Column(db.String(160), nullable=True)
     texto = db.Column(db.Text, nullable=False)
     valor = db.Column(db.String(120), nullable=True)
 
@@ -2177,6 +2428,216 @@ class EncRespuesta(db.Model, TimestampMixin):
         order_by="EncRespuestaDetalle.id",
     )
     snapshot = db.relationship("EncAnchorSnapshot", back_populates="respuestas")
+
+
+class SurveyResponseReceipt(db.Model):
+    """Immutable receipt for an exactly-once public survey submission."""
+
+    __tablename__ = "survey_response_receipt"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    survey_id = db.Column(
+        db.Integer,
+        db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    response_id = db.Column(
+        db.Integer,
+        db.ForeignKey("enc_respuesta.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    submission_id_hash = db.Column(db.String(64), nullable=False)
+    payload_hash = db.Column(db.String(64), nullable=False)
+    canonical_version = db.Column(
+        db.String(32),
+        nullable=False,
+        default="survey-response.v1",
+    )
+    instrument_revision = db.Column(db.Integer, nullable=False)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default="surveys.response_receipt.v1",
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    survey = db.relationship("EncEncuesta", foreign_keys=[survey_id])
+    response = db.relationship(
+        "EncRespuesta",
+        foreign_keys=[response_id],
+        backref=db.backref("submission_receipt", uselist=False),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "submission_id_hash",
+            name="uq_survey_response_receipt_tenant_submission",
+        ),
+        db.UniqueConstraint(
+            "response_id",
+            name="uq_survey_response_receipt_response",
+        ),
+        db.CheckConstraint(
+            "instrument_revision >= 1",
+            name="ck_survey_response_receipt_revision_positive",
+        ),
+        db.Index(
+            "ix_survey_response_receipt_tenant_survey_created",
+            "tenant_id",
+            "survey_id",
+            "created_at",
+        ),
+    )
+
+
+class SurveyResponseEffect(db.Model, TimestampMixin):
+    """Durable, independently retryable side effect for one survey response."""
+
+    __tablename__ = "survey_response_effect_outbox"
+
+    CONTRACT_VERSION = "surveys.response_effect.v1"
+
+    EFFECT_ANALYTICS = "analytics.v1"
+    EFFECT_REWARD = "reward.v1"
+    EFFECT_REALTIME = "realtime.v2"
+    EFFECT_TYPES = (EFFECT_ANALYTICS, EFFECT_REWARD, EFFECT_REALTIME)
+
+    STATUS_PENDING = "pending"
+    STATUS_PROCESSING = "processing"
+    STATUS_RETRY_WAIT = "retry_wait"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_SKIPPED = "skipped"
+    STATUS_DEAD = "dead"
+    STATUSES = (
+        STATUS_PENDING,
+        STATUS_PROCESSING,
+        STATUS_RETRY_WAIT,
+        STATUS_SUCCEEDED,
+        STATUS_SKIPPED,
+        STATUS_DEAD,
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    survey_id = db.Column(
+        db.Integer,
+        db.ForeignKey("enc_encuesta.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    response_id = db.Column(
+        db.Integer,
+        db.ForeignKey("enc_respuesta.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    effect_type = db.Column(db.String(32), nullable=False)
+    effect_key = db.Column(db.String(191), nullable=False)
+    scope_key = db.Column(db.String(191), nullable=False)
+    payload_json = db.Column(JSONType, nullable=False, default=dict)
+    status = db.Column(
+        db.String(20),
+        nullable=False,
+        default=STATUS_PENDING,
+        server_default=STATUS_PENDING,
+    )
+    attempt_count = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    max_attempts = db.Column(
+        db.Integer,
+        nullable=False,
+        default=8,
+        server_default="8",
+    )
+    available_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    lease_token = db.Column(db.String(64), nullable=True)
+    leased_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    processed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    result_json = db.Column(JSONType, nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+
+    tenant = db.relationship("TenantProfile", foreign_keys=[tenant_id])
+    survey = db.relationship("EncEncuesta", foreign_keys=[survey_id])
+    response = db.relationship("EncRespuesta", foreign_keys=[response_id])
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "effect_key",
+            name="uq_survey_response_effect_key",
+        ),
+        db.UniqueConstraint(
+            "response_id",
+            "effect_type",
+            name="uq_survey_response_effect_response_type",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "effect_type",
+            "scope_key",
+            name="uq_survey_response_effect_tenant_type_scope",
+        ),
+        db.CheckConstraint(
+            "effect_type IN ('analytics.v1', 'reward.v1', 'realtime.v2')",
+            name="ck_survey_response_effect_type",
+        ),
+        db.CheckConstraint(
+            "status IN ('pending', 'processing', 'retry_wait', 'succeeded', 'skipped', 'dead')",
+            name="ck_survey_response_effect_status",
+        ),
+        db.CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_survey_response_effect_attempts_nonnegative",
+        ),
+        db.CheckConstraint(
+            "max_attempts >= 1",
+            name="ck_survey_response_effect_max_attempts_positive",
+        ),
+        db.CheckConstraint(
+            "attempt_count <= max_attempts",
+            name="ck_survey_response_effect_attempts_within_max",
+        ),
+        db.Index(
+            "ix_survey_response_effect_due",
+            "status",
+            "available_at",
+            "leased_until",
+        ),
+        db.Index(
+            "ix_survey_response_effect_tenant_due",
+            "tenant_id",
+            "status",
+            "available_at",
+        ),
+    )
 
 
 class EncRespuestaDetalle(db.Model, TimestampMixin):

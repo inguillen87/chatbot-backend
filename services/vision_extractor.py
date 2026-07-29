@@ -1,16 +1,23 @@
 from __future__ import annotations
 
-import json
+import base64
 import logging
 import io
 import re
+import zipfile
 from typing import List, Optional
 
-import openai
-
-from services.vision_fallback_service import analyze_image_smart, analyze_image_structured, analyze_text_structured
+from services import vision_fallback_service
+from services.vision_fallback_service import (
+    TABLE_SCHEMA_ONLY,
+    analyze_image_smart,
+    analyze_image_structured,
+    analyze_text_structured,
+)
 
 logger = logging.getLogger(__name__)
+
+MAX_OPENAI_FILE_BYTES = 20 * 1024 * 1024
 
 
 _IMAGE_SIGNATURES = (
@@ -23,13 +30,6 @@ _BINARY_DOCUMENT_SIGNATURES = (
     b"PK\x03\x04",  # docx, xlsx, odt and other zip-based office files
     b"\xd0\xcf\x11\xe0",  # legacy Office compound documents
 )
-
-
-def _client() -> object:
-    ctor = getattr(openai, "OpenAI", None)
-    if ctor:
-        return ctor()
-    return openai
 
 
 def _looks_like_image(file_bytes: bytes) -> bool:
@@ -210,32 +210,113 @@ def _extract_with_project_fallbacks(file_bytes: bytes, prompt: str) -> Optional[
     return None
 
 
-def extract_table_from_file(file_bytes: bytes, prompt: str, model: str = "gpt-4.1-mini") -> Optional[List[dict]]:
+def _file_input_metadata(file_bytes: bytes) -> tuple[str, str, bool] | None:
+    if file_bytes.startswith(b"%PDF"):
+        return "document.pdf", "application/pdf", True
+    if not file_bytes.startswith(b"PK\x03\x04"):
+        return None
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+            names = archive.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return None
+    if any(name.startswith("xl/") for name in names):
+        return (
+            "document.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            False,
+        )
+    if any(name.startswith("word/") for name in names):
+        return (
+            "document.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            False,
+        )
+    if any(name.startswith("ppt/") for name in names):
+        return (
+            "document.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            False,
+        )
+    return None
+
+
+def _extract_binary_file_with_openai(
+    file_bytes: bytes,
+    prompt: str,
+    model: str,
+) -> Optional[List[dict]]:
+    metadata = _file_input_metadata(file_bytes)
+    if metadata is None or not (0 < len(file_bytes) <= MAX_OPENAI_FILE_BYTES):
+        return None
+    filename, mime_type, is_pdf = metadata
+    try:
+        client = vision_fallback_service._get_openai_client()
+    except vision_fallback_service.OpenAIConfigurationError:
+        return None
+
+    encoded = base64.b64encode(file_bytes).decode("ascii")
+    file_part = {
+        "type": "input_file",
+        "filename": filename,
+        "file_data": f"data:{mime_type};base64,{encoded}",
+    }
+    if is_pdf:
+        file_part["detail"] = "auto"
+    request = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    file_part,
+                    {"type": "input_text", "text": _table_prompt(prompt)},
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "file_table",
+                "schema": TABLE_SCHEMA_ONLY,
+                "strict": True,
+            }
+        },
+        "max_output_tokens": vision_fallback_service._max_output_tokens(),
+        "store": False,
+    }
+    safety_identifier = vision_fallback_service._privacy_safe_identifier(
+        vision_fallback_service._content_safety_subject("file", file_bytes)
+    )
+    if safety_identifier:
+        request["safety_identifier"] = safety_identifier
+    try:
+        response = client.responses.create(**request)
+    except Exception as exc:
+        logger.warning(
+            "OpenAI file extraction failed model=%s error_type=%s",
+            model,
+            type(exc).__name__,
+        )
+        return None
+    payload = vision_fallback_service._safe_json_loads(
+        vision_fallback_service._response_output_text(response)
+    )
+    return _coerce_rows(payload)
+
+
+def extract_table_from_file(
+    file_bytes: bytes,
+    prompt: str,
+    model: str | None = None,
+) -> Optional[List[dict]]:
     fallback_rows = _extract_with_project_fallbacks(file_bytes, prompt)
     if fallback_rows:
         return fallback_rows
 
-    try:
-        client = _client()
-        response = client.responses.create(  # type: ignore[attr-defined]
-            model=model,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "input_file", "input_file": file_bytes},
-                    ],
-                }
-            ],
-            format={"type": "json_object"},
-        )
-        message = response.output[0].content[0].text  # type: ignore[index]
+    # Do not submit the same image/text a second time through another API shape.
+    if _looks_like_image(file_bytes) or _decode_text(file_bytes) or _decode_pdf_text(file_bytes):
+        return None
 
-        data = json.loads(message)
-        rows = _coerce_rows(data)
-        if rows:
-            return rows
-    except Exception as exc:  # pragma: no cover - best effort
-        logger.error("Error usando OpenAI Vision: %s", exc)
-    return None
+    resolved_model = model or vision_fallback_service._openai_model()
+    return _extract_binary_file_with_openai(file_bytes, prompt, resolved_model)

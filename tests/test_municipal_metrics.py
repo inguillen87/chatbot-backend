@@ -1,4 +1,5 @@
 import unittest
+import importlib
 from types import SimpleNamespace
 from unittest.mock import patch
 import sys
@@ -8,8 +9,6 @@ import os
 project_root_municipal_metrics = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if project_root_municipal_metrics not in sys.path:
     sys.path.insert(0, project_root_municipal_metrics)
-
-from routes.municipal_legacy import municipal_metrics
 
 class DummySession:
     def __init__(self):
@@ -45,10 +44,15 @@ def make_user():
 
 class MunicipalMetricsTests(unittest.TestCase):
     def test_basic_counts(self):
+        # Resolve the live module at execution time.  Other legacy-route tests
+        # intentionally reload and evict this module; retaining a function
+        # imported during collection would make these patches target a
+        # different module instance and leak a real database dependency.
+        municipal_module = importlib.import_module('routes.municipal_legacy')
         db_mock = make_db()
-        with patch('routes.municipal_legacy.db', db_mock), \
-             patch('routes.municipal_legacy.jsonify', lambda x: x):
-            resp = municipal_metrics.__wrapped__(make_user())
+        with patch.object(municipal_module, 'db', db_mock), \
+             patch.object(municipal_module, 'jsonify', lambda x: x):
+            resp = municipal_module.municipal_metrics.__wrapped__(make_user())
         self.assertEqual(resp['cards'][0]['value'], 5)
         self.assertEqual(resp['cards'][1]['value'], 10)
         self.assertEqual(resp['cards'][2]['value'], 20)

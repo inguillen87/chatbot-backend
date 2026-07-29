@@ -57,6 +57,7 @@ _CORS_ALLOWED_HEADERS = [
     "X-Tenant-Id",
     "X-Widget-Token",
     "X-Whatsapp-Dst",
+    "Idempotency-Key",
 ]
 
 _CORS_EXPOSE_HEADERS = ["Content-Type", "Authorization", "X-Anon-Id", "Anon-Id"]

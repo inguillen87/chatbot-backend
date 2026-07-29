@@ -233,3 +233,136 @@ def v2_detect_sla_breaches_task(self, tenant_id: int):
     except Exception as exc:
         db.session.rollback()
         raise self.retry(exc=exc)
+
+
+SURVEY_RESPONSE_EFFECT_TASK_NAME = "tasks.dispatch_survey_response_effects"
+SURVEY_RESPONSE_EFFECT_TASK_CONTRACT_VERSION = (
+    "tasks.dispatch_survey_response_effects.v1"
+)
+SURVEY_RESPONSE_EFFECT_TASK_DEFAULT_LIMIT = 50
+SURVEY_RESPONSE_EFFECT_TASK_MAX_LIMIT = 100
+
+
+def _positive_tenant_id(value):
+    """Return a positive integer tenant id, rejecting lossy coercions."""
+    if isinstance(value, bool):
+        return None
+
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+    if normalized <= 0:
+        return None
+    if isinstance(value, float) and not value.is_integer():
+        return None
+    return normalized
+
+
+def _bounded_survey_response_effect_limit(value) -> int:
+    """Keep every worker invocation inside a small, predictable batch."""
+    if isinstance(value, bool):
+        return SURVEY_RESPONSE_EFFECT_TASK_DEFAULT_LIMIT
+
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return SURVEY_RESPONSE_EFFECT_TASK_DEFAULT_LIMIT
+
+    return max(1, min(normalized, SURVEY_RESPONSE_EFFECT_TASK_MAX_LIMIT))
+
+
+def _survey_response_effect_task_context(task) -> dict:
+    request = getattr(task, "request", None)
+    retries = int(getattr(request, "retries", 0) or 0)
+    return {
+        "task_id": getattr(request, "id", None),
+        "attempt": retries + 1,
+    }
+
+
+def _rollback_survey_response_effect_task_session() -> None:
+    """Best-effort cleanup that never masks the error that triggers retry."""
+    try:
+        db.session.rollback()
+    except Exception:
+        logger.exception(
+            "[SURVEY_RESPONSE_EFFECT_TASK] Failed to roll back the DB session"
+        )
+
+
+@celery_app.task(
+    name=SURVEY_RESPONSE_EFFECT_TASK_NAME,
+    bind=True,
+    max_retries=4,
+    default_retry_delay=60,
+    acks_late=True,
+)
+def dispatch_survey_response_effects_task(
+    self,
+    tenant_id: int,
+    limit: int = SURVEY_RESPONSE_EFFECT_TASK_DEFAULT_LIMIT,
+):
+    """Dispatch a bounded batch of durable survey effects for one tenant."""
+    normalized_tenant_id = _positive_tenant_id(tenant_id)
+    bounded_limit = _bounded_survey_response_effect_limit(limit)
+    task_context = _survey_response_effect_task_context(self)
+
+    if normalized_tenant_id is None:
+        logger.warning(
+            "[SURVEY_RESPONSE_EFFECT_TASK] Rejected invalid tenant scope task_id=%s",
+            task_context["task_id"],
+        )
+        return {
+            "contract_version": SURVEY_RESPONSE_EFFECT_TASK_CONTRACT_VERSION,
+            "status": "rejected",
+            "reason_code": "tenant_id_invalid",
+            "retryable": False,
+            "tenant_id": None,
+            "limit": bounded_limit,
+            **task_context,
+        }
+
+    try:
+        # Lazy import avoids coupling every Celery worker import to the outbox
+        # dispatcher while still registering this task through services.tasks.
+        from services.survey_response_effects import (
+            dispatch_survey_response_effects,
+        )
+
+        dispatcher_result = dispatch_survey_response_effects(
+            tenant_id=normalized_tenant_id,
+            limit=bounded_limit,
+        )
+        result = {
+            "contract_version": SURVEY_RESPONSE_EFFECT_TASK_CONTRACT_VERSION,
+            "status": "completed",
+            "tenant_id": normalized_tenant_id,
+            "limit": bounded_limit,
+            "dispatcher": dispatcher_result,
+            **task_context,
+        }
+        logger.info(
+            "[SURVEY_RESPONSE_EFFECT_TASK] Completed task_id=%s tenant_id=%s "
+            "limit=%s claimed=%s processed=%s succeeded=%s dead=%s",
+            task_context["task_id"],
+            normalized_tenant_id,
+            bounded_limit,
+            dispatcher_result.get("claimed", 0),
+            dispatcher_result.get("processed", 0),
+            dispatcher_result.get("succeeded", 0),
+            dispatcher_result.get("dead", 0),
+        )
+        return result
+    except Exception as exc:
+        _rollback_survey_response_effect_task_session()
+        logger.warning(
+            "[SURVEY_RESPONSE_EFFECT_TASK] Retrying task_id=%s tenant_id=%s "
+            "attempt=%s error_type=%s",
+            task_context["task_id"],
+            normalized_tenant_id,
+            task_context["attempt"],
+            type(exc).__name__,
+        )
+        raise self.retry(exc=exc)

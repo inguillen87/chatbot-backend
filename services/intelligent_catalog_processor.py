@@ -12,8 +12,19 @@ from services.analisis_archivo_service import AnalisisArchivoService
 from services.llm_utils import llamar_llm_para_json_estructurado
 from utils.money_ar import parse_ars
 from services.r2_service import r2_service
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_SOL_MODEL,
+    resolve_openai_model,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _catalog_processing_model() -> str:
+    return resolve_openai_model(
+        "OPENAI_CATALOG_PROCESSING_MODEL",
+        DEFAULT_OPENAI_SOL_MODEL,
+    )
 
 class IntelligentCatalogProcessor:
     def __init__(self, user_id: int):
@@ -182,11 +193,15 @@ class IntelligentCatalogProcessor:
         response_json = llamar_llm_para_json_estructurado(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model="gpt-4o"
+            model=_catalog_processing_model(),
         )
 
         if not response_json or not isinstance(response_json, list):
-            logger.error(f"LLM did not return a valid list of products. Response: {response_json}")
+            logger.error(
+                "LLM did not return a valid product list model=%s response_type=%s",
+                _catalog_processing_model(),
+                type(response_json).__name__,
+            )
             return []
 
         return response_json
@@ -239,7 +254,11 @@ class IntelligentCatalogProcessor:
             try:
                 system_prompt = "Eres un asistente de marketing. Tu tarea es generar una descripción de producto concisa y atractiva."
                 user_prompt = f"Genera una descripción para el producto '{item_data.get('nombre')}' de la marca '{item_data.get('marca')}'. Sé breve y destaca sus características principales."
-                description = llamar_llm_para_json_estructurado(system_prompt=system_prompt, user_prompt=user_prompt)
+                description = llamar_llm_para_json_estructurado(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model=_catalog_processing_model(),
+                )
                 if description and isinstance(description, str):
                     item_data['descripcion'] = description
             except Exception as e:

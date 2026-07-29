@@ -736,7 +736,9 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         question = public_payload["preguntas"][0]
         first_option = question["opciones"][0]
         second_option = question["opciones"][1]
+        first_submission_id = "gov-vote-first-submission-0001"
         first_vote_body = {
+            "submission_id": first_submission_id,
             "user_id": self.citizen.id,
             "anon_id": "browser-installation-a",
             "source": "web",
@@ -749,6 +751,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             json=first_vote_body,
             headers={
                 **self._citizen_headers(),
+                "Idempotency-Key": first_submission_id,
                 "X-Forwarded-For": "203.0.113.41",
                 "X-Request-Id": "gov-vote-first-1",
             },
@@ -757,6 +760,9 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         first_ack = first_vote.get_json()
         self.assertTrue(first_ack["ok"])
         self.assertEqual(first_ack["contract_version"], "surveys.public_response.v2")
+        self.assertFalse(first_ack["replayed"])
+        self.assertEqual(first_ack["idempotency"]["submission_id"], first_submission_id)
+        self.assertEqual(first_ack["idempotency"]["disposition"], "accepted")
         self.assertEqual(first_ack["realtime"]["room"], expected_room)
         self.assertEqual(first_ack["realtime"]["socket"]["join_payload"], {"room": expected_room})
         realtime_events = socket_client.get_received()
@@ -769,15 +775,35 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertEqual(live_event["args"][0]["contract_version"], "surveys.live_results.v2")
         self.assertEqual(live_event["args"][0]["total_respuestas"], 1)
 
+        replay = self.client.post(
+            published_payload["links"]["respond_endpoint"],
+            json=first_vote_body,
+            headers={
+                **self._citizen_headers(),
+                "Idempotency-Key": first_submission_id,
+                "X-Forwarded-For": "203.0.113.41",
+                "X-Request-Id": "gov-vote-first-replay-1",
+            },
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        replay_ack = replay.get_json()
+        self.assertTrue(replay_ack["replayed"])
+        self.assertEqual(replay_ack["response_id"], first_ack["response_id"])
+        self.assertEqual(replay_ack["idempotency"]["submission_id"], first_submission_id)
+        self.assertEqual(replay_ack["idempotency"]["disposition"], "replayed")
+        self.assertEqual(socket_client.get_received(), [])
+
         stored_response = EncRespuesta.query.filter_by(encuesta_id=survey_id).one()
         self.assertEqual(stored_response.user_id, self.citizen.id)
         self.assertEqual(len(stored_response.huella_unica), 64)
         self.assertRegex(stored_response.huella_unica, r"^[0-9a-f]{64}$")
         self.assertNotEqual(stored_response.huella_unica, str(self.citizen.id))
 
+        duplicate_submission_id = "gov-vote-duplicate-submission-0001"
         duplicate_vote = self.client.post(
             published_payload["links"]["respond_endpoint"],
             json={
+                "submission_id": duplicate_submission_id,
                 "user_id": self.citizen.id,
                 "anon_id": "browser-installation-b",
                 "source": "whatsapp_webview",
@@ -787,6 +813,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             },
             headers={
                 **self._citizen_headers(),
+                "Idempotency-Key": duplicate_submission_id,
                 "X-Forwarded-For": "198.51.100.92",
                 "X-Request-Id": "gov-vote-duplicate-1",
             },
@@ -794,6 +821,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertEqual(duplicate_vote.status_code, 409, duplicate_vote.get_json())
         duplicate_payload = duplicate_vote.get_json()
         self.assertEqual(duplicate_payload["status_code"], 409)
+        self.assertEqual(duplicate_payload["reason_code"], "survey_response_duplicate")
         self.assertFalse(duplicate_payload["retryable"])
         self.assertIn("participaci", duplicate_payload["message"].lower())
         self.assertEqual(EncRespuesta.query.filter_by(encuesta_id=survey_id).count(), 1)
@@ -852,9 +880,11 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertEqual(closed.get_json()["estado"], "cerrada")
         socket_client.get_received()
 
+        late_submission_id = "gov-vote-after-close-submission-0001"
         late_vote = self.client.post(
             published_payload["links"]["respond_endpoint"],
             json={
+                "submission_id": late_submission_id,
                 "user_id": late_citizen.id,
                 "source": "web",
                 "respuestas": [
@@ -863,6 +893,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             },
             headers={
                 "Authorization": f"Bearer {late_token}",
+                "Idempotency-Key": late_submission_id,
                 "X-Tenant-Slug": self.tenant.slug,
                 "X-Forwarded-For": "198.51.100.93",
                 "X-Request-Id": "gov-vote-after-close-1",

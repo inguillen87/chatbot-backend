@@ -44,12 +44,15 @@ from services.realtime_voice_profiles import (
     build_realtime_voice_tools,
     infer_realtime_voice_vertical,
     resolve_realtime_fallback_model,
+    resolve_realtime_input_transcription_model,
     resolve_realtime_model,
+    resolve_realtime_transcription_model,
     resolve_realtime_voice,
 )
 from services.plan_access import integration_access_payload
 from services.public_tenant_config import sanitize_public_tenant_config
 from services.common_utils import build_menu_tts_cache_namespace, clean_text_for_tts
+from services.openai_model_defaults import DEFAULT_OPENAI_TTS_MODEL
 
 public_resolver_bp = Blueprint("public_resolver_bp", __name__, url_prefix="/api/public")
 public_municipios_bp = Blueprint("public_municipios_bp", __name__)
@@ -147,6 +150,12 @@ def _realtime_trial_policy(cfg: dict | None = None) -> dict:
         minimum=0,
         maximum=100,
     )
+    transcription_sessions = _bounded_int(
+        cfg.get("demo_realtime_max_transcription_sessions"),
+        voice_sessions,
+        minimum=0,
+        maximum=100,
+    )
     return {
         "contract_version": "demo.realtime_trial_policy.v1",
         "enabled": bool(cfg.get("demo_realtime_trial_enabled", True)),
@@ -160,6 +169,10 @@ def _realtime_trial_policy(cfg: dict | None = None) -> dict:
             "video": {
                 "max_sessions": video_sessions,
                 "media": ["audio", "video", "text"],
+            },
+            "transcription": {
+                "max_sessions": transcription_sessions,
+                "media": ["audio", "text"],
             },
         },
         "upgrade_required_after_limit": True,
@@ -979,7 +992,10 @@ def _widget_fixed_menu_audio_contract(
         "tts_cache_text": text,
         "audio_text": text,
         "tts_voice": os.getenv("OPENAI_TTS_WIDGET_MENU_VOICE", "shimmer"),
-        "tts_model": os.getenv("OPENAI_TTS_WIDGET_MENU_MODEL", "tts-1-hd"),
+        "tts_model": os.getenv(
+            "OPENAI_TTS_WIDGET_MENU_MODEL",
+            DEFAULT_OPENAI_TTS_MODEL,
+        ),
         "tts_speed": 0.92,
         "audio_cache_policy": _fixed_menu_audio_policy(),
         "warmup": {
@@ -1235,6 +1251,10 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
     requested_model = request_payload.get("model") or request_payload.get("recommended_model")
     model = str(resolve_realtime_model(cfg, current_app.config))
     fallback_model = str(resolve_realtime_fallback_model(cfg, current_app.config))
+    live_transcription_model = str(resolve_realtime_transcription_model(cfg, current_app.config))
+    input_transcription_model = str(
+        resolve_realtime_input_transcription_model(cfg, current_app.config)
+    )
     voice = str(request_payload.get("voice") or resolve_realtime_voice(cfg, current_app.config))
     transport = str(request_payload.get("transport") or transports.get("browser") or "webrtc")
     requested_profile = str(request_payload.get("profile") or request_payload.get("realtime_profile") or "realtime_voice_native")
@@ -1266,7 +1286,9 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
         "active_vertical": voice_vertical,
         "recommended_model": model,
         "fallback_model": fallback_model,
-        "requested_model_ignored": str(requested_model) if requested_model and str(requested_model) != model else None,
+        "live_transcription_model": live_transcription_model,
+        "input_transcription_model": input_transcription_model,
+        "requested_model_ignored": bool(requested_model and str(requested_model) != model),
         "capabilities_contract": REALTIME_VOICE_CONTRACT_VERSION,
         "avatar_contract_version": CHATBOC_BOT_AVATAR_CONTRACT_VERSION,
         "openai_realtime_contract": "client_secrets.v2",
@@ -1274,6 +1296,41 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
         "translation": translation_policy,
         "avatar_contract": avatar_contract,
     }
+
+    if channel == "transcription":
+        session_metadata["session_type"] = "transcription"
+        return {
+            "expires_after": {
+                "anchor": "created_at",
+                "seconds": int(cfg.get("openai_realtime_client_secret_ttl_seconds") or 600),
+            },
+            "session": {
+                "type": "transcription",
+                "audio": {
+                    "input": {
+                        "format": _realtime_audio_format(
+                            cfg.get("openai_live_transcription_audio_format") or "pcm16"
+                        ),
+                        "noise_reduction": {
+                            "type": cfg.get("openai_realtime_noise_reduction") or "near_field"
+                        },
+                        "transcription": {"model": live_transcription_model},
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "create_response": False,
+                            "interrupt_response": False,
+                            "prefix_padding_ms": int(
+                                cfg.get("openai_live_transcription_prefix_padding_ms") or 300
+                            ),
+                            "silence_duration_ms": int(
+                                cfg.get("openai_live_transcription_silence_duration_ms") or 500
+                            ),
+                        },
+                    }
+                },
+            },
+            "metadata": {k: v for k, v in session_metadata.items() if v is not None},
+        }
 
     return {
         "expires_after": {
@@ -1302,7 +1359,7 @@ def _build_realtime_session_payload(tenant: TenantProfile, cfg: dict, *, channel
                         "interrupt_response": True,
                     },
                     "transcription": {
-                        "model": cfg.get("openai_realtime_transcription_model") or "gpt-4o-mini-transcribe",
+                        "model": input_transcription_model,
                     },
                 },
                 "output": {
@@ -1370,7 +1427,7 @@ def create_realtime_session():
 
     cfg = _normalize_widget_config(tenant.configuracion, tenant.widget_settings)
     requested_channel = str(payload.get("channel") or "voice").strip().lower()
-    channel = "video" if requested_channel == "video" else "voice"
+    channel = requested_channel if requested_channel in {"voice", "video", "transcription"} else "voice"
 
     if channel == "video" and not bool(cfg.get("realtime_video_enabled", False)):
         _audit_realtime_event(tenant, event_name="realtime_session_denied", channel=channel, metadata={"reason": "video_disabled"})
@@ -1378,6 +1435,14 @@ def create_realtime_session():
     if channel == "voice" and not bool(cfg.get("realtime_voice_enabled", True)):
         _audit_realtime_event(tenant, event_name="realtime_session_denied", channel=channel, metadata={"reason": "voice_disabled"})
         return _realtime_error_response("voice_realtime_disabled", 400)
+    if channel == "transcription" and not bool(cfg.get("realtime_transcription_enabled", True)):
+        _audit_realtime_event(
+            tenant,
+            event_name="realtime_session_denied",
+            channel=channel,
+            metadata={"reason": "transcription_disabled"},
+        )
+        return _realtime_error_response("realtime_transcription_disabled", 400)
 
     anon_id = (
         payload.get("anon_id")
@@ -1425,6 +1490,10 @@ def create_realtime_session():
         return _realtime_error_response("openai_api_key_missing", 503)
 
     session_payload = _build_realtime_session_payload(tenant, cfg, channel=channel, request_payload=payload)
+    effective_model = (
+        session_payload["session"].get("model")
+        or (((session_payload["session"].get("audio") or {}).get("input") or {}).get("transcription") or {}).get("model")
+    )
     openai_payload = {
         "expires_after": session_payload["expires_after"],
         "session": session_payload["session"],
@@ -1442,12 +1511,17 @@ def create_realtime_session():
             raw = response.read().decode("utf-8")
             session_data = json.loads(raw) if raw else {}
     except urllib_error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="ignore") if getattr(exc, "fp", None) else ""
-        current_app.logger.warning("[realtime] OpenAI session error %s: %s", exc.code, detail[:500])
+        current_app.logger.warning(
+            "[realtime] OpenAI session request failed status=%s error_type=HTTPError",
+            exc.code,
+        )
         _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_http_error", "status": exc.code})
         return _realtime_error_response("openai_realtime_session_error", 502, upstream_status=exc.code)
     except Exception as exc:
-        current_app.logger.exception("[realtime] Failed creating realtime session: %s", exc)
+        current_app.logger.warning(
+            "[realtime] OpenAI session request failed error_type=%s",
+            type(exc).__name__,
+        )
         _audit_realtime_event(tenant, event_name="realtime_session_failed", channel=channel, metadata={"reason": "openai_unavailable"})
         return _realtime_error_response("openai_realtime_unavailable", 502)
 
@@ -1467,13 +1541,18 @@ def create_realtime_session():
         consume=True,
     )
 
-    _audit_realtime_event(tenant, event_name="realtime_session_created", channel=channel, metadata={"model": session_payload["session"].get("model")})
+    _audit_realtime_event(
+        tenant,
+        event_name="realtime_session_created",
+        channel=channel,
+        metadata={"model": effective_model},
+    )
 
     public_payload = {
         "ok": True,
         "tenant": tenant.slug,
         "channel": channel,
-        "model": session_payload["session"].get("model"),
+        "model": effective_model,
         "avatar": session_payload.get("metadata", {}),
         "avatar_contract": session_payload.get("metadata", {}).get("avatar_contract"),
         "trial_policy": trial_usage.get("policy"),

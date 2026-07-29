@@ -15,6 +15,11 @@ from models import MunicipioTicket, MunicipioPost
 from database import db
 from services.openai_bridge import client as openai_client
 from services.openai_maps_service import geocodificar_inversa_llm, geocodificar_texto_llm
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_TERRA_MODEL,
+    chat_completion_compatibility_options,
+    resolve_openai_model,
+)
 from services.estacionamiento_utils import aproximar_coordenadas_por_texto
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -370,30 +375,43 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
         if not openai_client:
             raise ConnectionError("OpenAI client is not initialized.")
 
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
+        model = resolve_openai_model(
+            "OPENAI_ADDRESS_NORMALIZATION_MODEL",
+            DEFAULT_OPENAI_TERRA_MODEL,
+        )
+        request_kwargs = {
+            "model": model,
+            "messages": [
                 {
                     "role": "system",
                     "content": "Sos un experto en normalización de direcciones argentinas. Tu única función es devolver un objeto JSON con los datos de la dirección.",
                 },
                 {"role": "user", "content": prompt},
             ],
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
+            "response_format": {"type": "json_object"},
+        }
+        request_kwargs.update(chat_completion_compatibility_options(model))
+        response = openai_client.chat.completions.create(**request_kwargs)
         respuesta_llm = response.choices[0].message.content
         parsed_data = json.loads(respuesta_llm)
         if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
             logger.warning(
-                f"LLM no pudo extraer datos clave de la dirección: '{texto_direccion}'. Respuesta: {respuesta_llm}"
+                "[ParseDireccion] LLM response missing required fields model=%s input_chars=%s",
+                model,
+                len(texto_direccion),
             )
         else:
-            logger.info(f"Dirección parseada con LLM para '{texto_direccion}': {parsed_data}")
+            logger.info(
+                "[ParseDireccion] Address normalized model=%s input_chars=%s",
+                model,
+                len(texto_direccion),
+            )
             return parsed_data
-    except (json.JSONDecodeError, Exception) as e:
+    except Exception as exc:
         logger.error(
-            f"Error al parsear dirección con LLM (OpenAI): {e}. Respuesta cruda: '{locals().get('respuesta_llm', 'N/A')}'"
+            "[ParseDireccion] OpenAI normalization failed error_type=%s input_chars=%s",
+            type(exc).__name__,
+            len(texto_direccion),
         )
 
     # Fallback determinístico si el LLM no entrega datos útiles
@@ -402,7 +420,8 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
         return parsed_fallback
 
     logger.warning(
-        f"[ParseDireccion] No se pudo extraer dirección de forma automática para '{texto_direccion}'."
+        "[ParseDireccion] Address could not be normalized input_chars=%s",
+        len(texto_direccion),
     )
     return None
 

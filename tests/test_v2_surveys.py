@@ -9,7 +9,18 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import EncEncuesta, EncRespuesta, PointsTransaction, TenantProfile, User
+from models import (
+    AnalyticsEventV2,
+    EncEncuesta,
+    EncRespuesta,
+    PointsTransaction,
+    SurveyDraft,
+    SurveyDraftIdempotency,
+    SurveyResponseEffect,
+    SurveyResponseReceipt,
+    TenantProfile,
+    User,
+)
 from routes.v2.surveys import _public_response_rate_buckets
 from socket_service import _is_authorized_survey_room, emit_survey_update
 from services.demo_surveys import (
@@ -35,6 +46,7 @@ class V2SurveysApiTest(unittest.TestCase):
         self.ctx.push()
         db.create_all()
         self.client = self.app.test_client()
+        self._survey_submission_sequence = 0
 
         self.admin_1 = self._create_user("admin-survey-a@test.com", "admin", "tenant-surv-a")
         self.tenant_1 = TenantProfile(
@@ -88,6 +100,55 @@ class V2SurveysApiTest(unittest.TestCase):
         )
         return {"Authorization": f"Bearer {token}"}
 
+    def _post_public_response(
+        self,
+        endpoint,
+        *,
+        json,
+        headers=None,
+        client=None,
+        submission_id=None,
+        **kwargs,
+    ):
+        """Submit through the production idempotency contract explicitly.
+
+        Every invocation gets a fresh deterministic key unless the test owns a
+        specific key already. Tests exercising exact replay continue to call
+        the client directly with the same key twice.
+        """
+
+        self._survey_submission_sequence += 1
+        body = dict(json or {})
+        request_headers = dict(headers or {})
+        body_key = next(
+            (
+                body.get(field)
+                for field in (
+                    "submission_id",
+                    "submissionId",
+                    "idempotency_key",
+                    "idempotencyKey",
+                )
+                if body.get(field)
+            ),
+            None,
+        )
+        key = (
+            submission_id
+            or body_key
+            or request_headers.get("Idempotency-Key")
+            or f"test-survey-response-{self._survey_submission_sequence:04d}"
+        )
+        body.setdefault("submission_id", key)
+        request_headers.setdefault("Idempotency-Key", key)
+        target_client = client or self.client
+        return target_client.post(
+            endpoint,
+            json=body,
+            headers=request_headers,
+            **kwargs,
+        )
+
     def _create_payload(self):
         now = datetime.utcnow()
         return {
@@ -126,6 +187,66 @@ class V2SurveysApiTest(unittest.TestCase):
         option_id = public_payload["preguntas"][0]["opciones"][0]["id"]
         answer = {"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]}
         return headers, survey_id, token, public_payload, answer
+
+    def test_legacy_entity_id_collision_cannot_cross_tenant_boundary(self):
+        # These legacy IDs inhabit the User table namespace and must never be
+        # interpreted as TenantProfile IDs.
+        self.admin_1.municipio_id = self.tenant_2.id
+        self.admin_1.pyme_id = self.tenant_2.id
+        db.session.commit()
+
+        cross_tenant_headers = {
+            **self._auth(self.admin_1),
+            "X-Tenant-Slug": self.tenant_2.slug,
+        }
+        denied_list = self.client.get("/api/v2/surveys", headers=cross_tenant_headers)
+        self.assertIn(denied_list.status_code, {403, 404}, denied_list.get_json())
+
+        denied_create = self.client.post(
+            "/api/v2/surveys",
+            json=self._create_payload(),
+            headers=cross_tenant_headers,
+        )
+        self.assertIn(denied_create.status_code, {403, 404}, denied_create.get_json())
+        self.assertEqual(EncEncuesta.query.filter_by(tenant_id=self.tenant_2.id).count(), 0)
+
+        own_headers = {
+            **self._auth(self.admin_1),
+            "X-Tenant-Slug": self.tenant_1.slug,
+        }
+        allowed_create = self.client.post(
+            "/api/v2/surveys",
+            json=self._create_payload(),
+            headers=own_headers,
+        )
+        self.assertEqual(allowed_create.status_code, 201, allowed_create.get_json())
+        self.assertEqual(allowed_create.get_json()["tenant_id"], self.tenant_1.id)
+
+    def test_authorized_superadmin_persists_explicitly_resolved_tenant(self):
+        superadmin = self._create_user(
+            "survey-superadmin@test.com",
+            "super_admin",
+            self.tenant_1.slug,
+        )
+        superadmin.tenant_id = self.tenant_1.id
+        db.session.commit()
+
+        headers = {
+            **self._auth(superadmin),
+            "X-Tenant-Slug": self.tenant_2.slug,
+        }
+        # Production superadmins authenticate through Clerk; this test isolates
+        # tenant resolution after that authentication gate has succeeded.
+        with patch("utils.auth_helpers.user_from_token", return_value=superadmin):
+            response = self.client.post(
+                "/api/v2/surveys",
+                json=self._create_payload(),
+                headers=headers,
+            )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        survey_id = response.get_json()["id"]
+        self.assertEqual(response.get_json()["tenant_id"], self.tenant_2.id)
+        self.assertEqual(db.session.get(EncEncuesta, survey_id).tenant_id, self.tenant_2.id)
 
     def test_admin_can_create_publish_and_public_respond(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
@@ -169,6 +290,15 @@ class V2SurveysApiTest(unittest.TestCase):
             "X-Turnstile-Token",
         )
         self.assertEqual(
+            public_payload.get("frontend_contract", {}).get("idempotency", {}).get("body_field"),
+            "submission_id",
+        )
+        self.assertTrue(
+            public_payload.get("frontend_contract", {})
+            .get("idempotency", {})
+            .get("required_for_exactly_once")
+        )
+        self.assertEqual(
             public_payload.get("links", {}).get("respond_endpoint"),
             f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_1.slug}",
         )
@@ -182,7 +312,10 @@ class V2SurveysApiTest(unittest.TestCase):
             "source": "web",
             "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
         }
-        respond_resp = self.client.post(f"/api/v2/public/surveys/{token}/respond", json=respond_payload)
+        respond_resp = self._post_public_response(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=respond_payload,
+        )
         self.assertEqual(respond_resp.status_code, 201)
         ack = respond_resp.get_json()
         self.assertTrue(ack.get("ok"))
@@ -264,7 +397,7 @@ class V2SurveysApiTest(unittest.TestCase):
         question_id = public_get.get("preguntas", [])[0].get("id")
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
 
-        respond_resp = self.client.post(
+        respond_resp = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={
                 "anon_id": "anon-hidden-1",
@@ -295,7 +428,7 @@ class V2SurveysApiTest(unittest.TestCase):
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
         answer = {"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]}
 
-        missing_identity = self.client.post(
+        missing_identity = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "user_id": voter.id, "dni": "32877851"},
         )
@@ -306,14 +439,14 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(missing_payload.get("action_hint"), "authenticate")
         self.assertEqual(missing_payload.get("required_identity"), ["bearer"])
 
-        identified = self.client.post(
+        identified = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "dni": "32877851"},
             headers=self._auth(voter),
         )
         self.assertEqual(identified.status_code, 201, identified.get_json())
 
-        duplicate = self.client.post(
+        duplicate = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "dni": "32877851"},
             headers=self._auth(voter),
@@ -342,7 +475,7 @@ class V2SurveysApiTest(unittest.TestCase):
         )
         for endpoint, identity_key, anon_id in submissions:
             with self.subTest(endpoint=endpoint, identity_key=identity_key):
-                response = self.client.post(
+                response = self._post_public_response(
                     endpoint,
                     json={**answer, identity_key: forged_target.id, "anon_id": anon_id},
                     headers={"X-Anon-Id": anon_id},
@@ -382,7 +515,7 @@ class V2SurveysApiTest(unittest.TestCase):
         )
         for endpoint in endpoints:
             with self.subTest(endpoint=endpoint):
-                response = self.client.post(
+                response = self._post_public_response(
                     endpoint,
                     json={**answer, "user_id": forged_target.id},
                 )
@@ -403,14 +536,14 @@ class V2SurveysApiTest(unittest.TestCase):
         encuesta.puntos_recompensa = 45
         db.session.commit()
 
-        first = self.client.post(
+        first = self._post_public_response(
             f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
             json={**answer, "userId": forged_target.id},
             headers=self._auth(voter),
         )
         self.assertEqual(first.status_code, 201, first.get_json())
 
-        legacy_duplicate = self.client.post(
+        legacy_duplicate = self._post_public_response(
             f"/api/public/encuestas/{token}/responder",
             json={**answer, "userId": forged_target.id},
             headers=self._auth(voter),
@@ -418,7 +551,7 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(legacy_duplicate.status_code, 200, legacy_duplicate.get_json())
         self.assertTrue(legacy_duplicate.get_json().get("duplicate"))
 
-        duplicate = self.client.post(
+        duplicate = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "user_id": forged_target.id},
             headers=self._auth(voter),
@@ -440,6 +573,89 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(len(reward_transactions), 1)
         self.assertEqual(reward_transactions[0].delta, 45)
 
+    def test_portal_response_uses_authenticated_identity_and_durable_receipt(self):
+        voter = self._create_user(
+            "portal-receipt-voter@test.com",
+            "usuario",
+            self.tenant_1.slug,
+        )
+        forged_target = self._create_user(
+            "portal-receipt-forged@test.com",
+            "usuario",
+            self.tenant_1.slug,
+        )
+        db.session.commit()
+
+        create_payload = self._create_payload()
+        create_payload["uniqueness_policy"] = "por_usuario"
+        admin_headers, survey_id, token, _, answer = (
+            self._create_published_answer_context(create_payload)
+        )
+        encuesta = db.session.get(EncEncuesta, survey_id)
+        encuesta.puntos_recompensa = 25
+        db.session.commit()
+
+        submission_id = "portal-survey-receipt-0001"
+        response_payload = {
+            **answer,
+            "submission_id": submission_id,
+            "user_id": forged_target.id,
+        }
+        portal_headers = {
+            **self._auth(voter),
+            "Idempotency-Key": submission_id,
+        }
+        endpoint = (
+            f"/api/v1/portal/{self.tenant_1.slug}/surveys/{token}/responses"
+        )
+
+        first = self.client.post(
+            endpoint,
+            json=response_payload,
+            headers=portal_headers,
+        )
+        closed = self.client.post(
+            f"/api/v2/surveys/{survey_id}/close",
+            headers=admin_headers,
+        )
+        replay = self.client.post(
+            endpoint,
+            json=response_payload,
+            headers=portal_headers,
+        )
+
+        self.assertEqual(first.status_code, 201, first.get_json())
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        first_ack = first.get_json()
+        replay_ack = replay.get_json()
+        self.assertTrue(first_ack["persisted"])
+        self.assertFalse(first_ack["replayed"])
+        self.assertTrue(replay_ack["persisted"])
+        self.assertTrue(replay_ack["replayed"])
+        self.assertEqual(first_ack["response_id"], replay_ack["response_id"])
+        self.assertEqual(
+            replay_ack["idempotency"]["disposition"],
+            "replayed",
+        )
+
+        responses = EncRespuesta.query.filter_by(encuesta_id=survey_id).all()
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(responses[0].user_id, voter.id)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+        db.session.refresh(voter)
+        db.session.refresh(forged_target)
+        self.assertEqual(voter.saldo_puntos, 25)
+        self.assertEqual(forged_target.saldo_puntos or 0, 0)
+        self.assertEqual(
+            PointsTransaction.query.filter_by(
+                user_id=voter.id,
+                tenant_id=self.tenant_1.id,
+                tipo="encuesta",
+            ).count(),
+            1,
+        )
+
     def test_authenticated_free_responses_only_grant_one_survey_reward(self):
         voter = self._create_user("free-reward-voter@test.com", "usuario", self.tenant_1.slug)
         db.session.commit()
@@ -456,7 +672,7 @@ class V2SurveysApiTest(unittest.TestCase):
             f"/api/public/encuestas/{token}/responder",
         )
         for index, endpoint in enumerate(submissions, start=1):
-            response = self.client.post(
+            response = self._post_public_response(
                 endpoint,
                 json={**answer, "anon_id": f"free-reward-{index}"},
                 headers={**self._auth(voter), "X-Anon-Id": f"free-reward-{index}"},
@@ -487,14 +703,14 @@ class V2SurveysApiTest(unittest.TestCase):
         _, survey_id, token, _, answer = self._create_published_answer_context(payload)
         anon_headers = {"X-Anon-Id": "stable-browser-visitor"}
 
-        first = self.client.post(
+        first = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "anon_id": "changing-body-id-1"},
             headers=anon_headers,
         )
         self.assertEqual(first.status_code, 201, first.get_json())
 
-        duplicate = self.client.post(
+        duplicate = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={**answer, "anon_id": "changing-body-id-2"},
             headers=anon_headers,
@@ -508,7 +724,11 @@ class V2SurveysApiTest(unittest.TestCase):
         _, survey_id, token, _, answer = self._create_published_answer_context(payload)
 
         no_cookie_client = self.app.test_client(use_cookies=False)
-        response = no_cookie_client.post(f"/api/v2/public/surveys/{token}/respond", json=answer)
+        response = self._post_public_response(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=answer,
+            client=no_cookie_client,
+        )
 
         self.assertEqual(response.status_code, 400, response.get_json())
         error = response.get_json()
@@ -569,7 +789,7 @@ class V2SurveysApiTest(unittest.TestCase):
 
         question_id = public_payload["preguntas"][0]["id"]
         option_id = public_payload["preguntas"][0]["opciones"][0]["id"]
-        respond_resp = self.client.post(
+        respond_resp = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]},
         )
@@ -588,7 +808,7 @@ class V2SurveysApiTest(unittest.TestCase):
         question_id = public_get.get("preguntas", [])[0].get("id")
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
 
-        respond_resp = self.client.post(
+        respond_resp = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_1.slug}",
             json={
                 "anon_id": "anon-tenant-scoped-1",
@@ -623,7 +843,7 @@ class V2SurveysApiTest(unittest.TestCase):
         question_id = public_get.get("preguntas", [])[0].get("id")
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
 
-        first_resp = self.client.post(
+        first_resp = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={
                 "anon_id": "anon-rate-1",
@@ -637,7 +857,7 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(first_resp.headers.get("X-RateLimit-Remaining"), "0")
         self.assertEqual(first_resp.get_json().get("request_id"), "survey-rate-1")
 
-        limited_resp = self.client.post(
+        limited_resp = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={
                 "anon_id": "anon-rate-2",
@@ -668,7 +888,7 @@ class V2SurveysApiTest(unittest.TestCase):
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
 
         with patch("routes.v2.surveys.verify_turnstile", return_value=False) as verify_turnstile_mock:
-            response = self.client.post(
+            response = self._post_public_response(
                 f"/api/v2/public/surveys/{token}/respond",
                 json={
                     "anon_id": "anon-turnstile-invalid",
@@ -704,7 +924,7 @@ class V2SurveysApiTest(unittest.TestCase):
 
         with patch.dict(os.environ, {"CLOUDFLARE_TURNSTILE_SECRET_KEY": "", "TURNSTILE_SECRET_KEY": ""}):
             with patch("routes.v2.surveys.verify_turnstile", return_value=True) as verify_turnstile_mock:
-                response = self.client.post(
+                response = self._post_public_response(
                     f"/api/v2/public/surveys/{token}/respond",
                     json={
                         "anon_id": "anon-turnstile-missing-secret",
@@ -735,7 +955,7 @@ class V2SurveysApiTest(unittest.TestCase):
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
 
         with patch("routes.v2.surveys.verify_turnstile", return_value=True) as verify_turnstile_mock:
-            response = self.client.post(
+            response = self._post_public_response(
                 f"/api/v2/public/surveys/{token}/respond",
                 json={
                     "anon_id": "anon-turnstile-valid",
@@ -832,6 +1052,7 @@ class V2SurveysApiTest(unittest.TestCase):
         response = self.client.post(
             "/api/v2/surveys/draft",
             json={
+                "schema_version": "survey-builder.v2",
                 "title": "Borrador offline",
                 "description": "",
                 "questions": [{"id": "question-1", "title": "", "type": "single"}],
@@ -847,6 +1068,199 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(payload.get("status"), "draft")
         self.assertEqual(payload.get("draft_id"), "draft_draft-offline-1")
         self.assertEqual(payload.get("idempotency_key"), "draft-offline-1")
+        self.assertEqual(payload.get("schema_version"), "survey-builder.v2")
+        self.assertTrue(payload.get("persisted"))
+        self.assertEqual(payload.get("revision"), 1)
+        self.assertIsNotNone(payload.get("created_at"))
+        self.assertIsNotNone(payload.get("updated_at"))
+        self.assertEqual(SurveyDraft.query.count(), 1)
+        stored = SurveyDraft.query.one()
+        self.assertEqual(stored.schema_version, "survey-builder.v2")
+        self.assertEqual(SurveyDraftIdempotency.query.count(), 1)
+
+        restored = self.client.get(
+            f"/api/v2/surveys/draft/{payload['draft_id']}",
+            headers=headers,
+        )
+        self.assertEqual(restored.status_code, 200, restored.get_json())
+        restored_payload = restored.get_json()
+        self.assertEqual(restored_payload.get("revision"), 1)
+        self.assertEqual(restored_payload.get("draft", {}).get("title"), "Borrador offline")
+        self.assertEqual(
+            restored_payload.get("draft", {}).get("questions", [])[0].get("title"),
+            "",
+        )
+
+    def test_survey_draft_replay_is_idempotent_and_changed_content_increments_revision(self):
+        headers = {
+            **self._auth(self.admin_1),
+            "X-Tenant-Slug": self.tenant_1.slug,
+            "Idempotency-Key": "durable-draft-1",
+        }
+        initial_payload = {
+            "draft_id": "draft-durable-1",
+            "title": "Entrevista vecinal",
+            "questions": [],
+        }
+
+        first = self.client.post("/api/v2/surveys/draft", json=initial_payload, headers=headers)
+        replay = self.client.post("/api/v2/surveys/draft", json=initial_payload, headers=headers)
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertEqual(first.get_json().get("revision"), 1)
+        self.assertEqual(replay.get_json().get("revision"), 1)
+        self.assertEqual(SurveyDraft.query.filter_by(tenant_id=self.tenant_1.id).count(), 1)
+
+        reused_for_another_draft = self.client.post(
+            "/api/v2/surveys/draft",
+            json={**initial_payload, "draft_id": "draft-durable-duplicate"},
+            headers=headers,
+        )
+        self.assertEqual(reused_for_another_draft.status_code, 409, reused_for_another_draft.get_json())
+        self.assertEqual(
+            reused_for_another_draft.get_json().get("reason_code"),
+            "draft_idempotency_conflict",
+        )
+        self.assertEqual(SurveyDraft.query.filter_by(tenant_id=self.tenant_1.id).count(), 1)
+
+        same_key_changed_content = self.client.post(
+            "/api/v2/surveys/draft",
+            json={**initial_payload, "revision": 1, "description": "No debe aplicarse"},
+            headers=headers,
+        )
+        self.assertEqual(same_key_changed_content.status_code, 409, same_key_changed_content.get_json())
+        self.assertEqual(
+            same_key_changed_content.get_json().get("reason_code"),
+            "draft_idempotency_conflict",
+        )
+        unchanged = SurveyDraft.query.filter_by(
+            tenant_id=self.tenant_1.id,
+            draft_id=initial_payload["draft_id"],
+        ).one()
+        self.assertEqual(unchanged.revision, 1)
+        self.assertNotIn("description", unchanged.payload)
+
+        missing_revision = self.client.post(
+            "/api/v2/surveys/draft",
+            json={**initial_payload, "description": "Tampoco debe aplicarse"},
+            headers={**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug},
+        )
+        self.assertEqual(missing_revision.status_code, 409, missing_revision.get_json())
+        self.assertEqual(missing_revision.get_json().get("reason_code"), "draft_revision_conflict")
+        self.assertEqual(missing_revision.get_json().get("current_revision"), 1)
+        unchanged = SurveyDraft.query.filter_by(
+            tenant_id=self.tenant_1.id,
+            draft_id=initial_payload["draft_id"],
+        ).one()
+        self.assertEqual(unchanged.revision, 1)
+        self.assertNotIn("description", unchanged.payload)
+
+        changed_headers = {**headers, "Idempotency-Key": "durable-draft-2"}
+        changed = self.client.post(
+            "/api/v2/surveys/draft",
+            json={**initial_payload, "revision": 1, "description": "Nueva descripcion"},
+            headers=changed_headers,
+        )
+        self.assertEqual(changed.status_code, 200, changed.get_json())
+        self.assertEqual(changed.get_json().get("revision"), 2)
+        self.assertEqual(changed.get_json().get("draft", {}).get("description"), "Nueva descripcion")
+        self.assertEqual(SurveyDraftIdempotency.query.count(), 2)
+
+        delayed_replay = self.client.post(
+            "/api/v2/surveys/draft",
+            json=initial_payload,
+            headers=headers,
+        )
+        self.assertEqual(delayed_replay.status_code, 200, delayed_replay.get_json())
+        self.assertEqual(delayed_replay.get_json().get("revision"), 2)
+        self.assertEqual(
+            delayed_replay.get_json().get("draft", {}).get("description"),
+            "Nueva descripcion",
+        )
+
+    def test_survey_draft_rejects_payload_above_configured_limit(self):
+        self.app.config["SURVEY_DRAFT_MAX_BYTES"] = 256
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+
+        response = self.client.post(
+            "/api/v2/surveys/draft",
+            json={"draft_id": "draft-too-large", "description": "x" * 512},
+            headers=headers,
+        )
+
+        self.assertEqual(response.status_code, 413, response.get_json())
+        self.assertEqual(response.get_json().get("reason_code"), "survey_draft_too_large")
+        self.assertEqual(response.get_json().get("action_hint"), "reduce_draft_size")
+        self.assertEqual(SurveyDraft.query.count(), 0)
+
+    def test_survey_draft_stale_revision_returns_conflict_without_overwrite(self):
+        headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        draft_id = "draft-revision-conflict"
+        first = self.client.post(
+            "/api/v2/surveys/draft",
+            json={"draft_id": draft_id, "title": "Version 1", "questions": []},
+            headers=headers,
+        )
+        self.assertEqual(first.status_code, 200, first.get_json())
+        second = self.client.post(
+            "/api/v2/surveys/draft",
+            json={"draft_id": draft_id, "revision": 1, "title": "Version 2", "questions": []},
+            headers=headers,
+        )
+        self.assertEqual(second.status_code, 200, second.get_json())
+        self.assertEqual(second.get_json().get("revision"), 2)
+
+        stale = self.client.post(
+            "/api/v2/surveys/draft",
+            json={"draft_id": draft_id, "revision": 1, "title": "Version obsoleta", "questions": []},
+            headers=headers,
+        )
+        self.assertEqual(stale.status_code, 409, stale.get_json())
+        conflict = stale.get_json()
+        self.assertEqual(conflict.get("reason_code"), "draft_revision_conflict")
+        self.assertEqual(conflict.get("current_revision"), 2)
+        self.assertEqual(conflict.get("draft", {}).get("title"), "Version 2")
+
+        current = SurveyDraft.query.filter_by(tenant_id=self.tenant_1.id, draft_id=draft_id).one()
+        self.assertEqual(current.revision, 2)
+        self.assertEqual(current.payload.get("title"), "Version 2")
+
+    def test_survey_draft_restore_and_listing_are_tenant_scoped(self):
+        shared_draft_id = "draft-shared-id"
+        headers_1 = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
+        headers_2 = {**self._auth(self.admin_2), "X-Tenant-Slug": self.tenant_2.slug}
+
+        saved_1 = self.client.post(
+            "/api/v2/surveys/draft",
+            json={"draft_id": shared_draft_id, "title": "Tenant A", "questions": []},
+            headers=headers_1,
+        )
+        self.assertEqual(saved_1.status_code, 200, saved_1.get_json())
+
+        hidden_from_tenant_2 = self.client.get(
+            f"/api/v2/surveys/draft/{shared_draft_id}",
+            headers=headers_2,
+        )
+        self.assertEqual(hidden_from_tenant_2.status_code, 404, hidden_from_tenant_2.get_json())
+
+        saved_2 = self.client.post(
+            "/api/v2/surveys/draft",
+            json={"draft_id": shared_draft_id, "title": "Tenant B", "questions": []},
+            headers=headers_2,
+        )
+        self.assertEqual(saved_2.status_code, 200, saved_2.get_json())
+        self.assertEqual(SurveyDraft.query.filter_by(draft_id=shared_draft_id).count(), 2)
+
+        restored_1 = self.client.get(f"/api/v2/surveys/draft/{shared_draft_id}", headers=headers_1)
+        restored_2 = self.client.get(f"/api/v2/surveys/draft/{shared_draft_id}", headers=headers_2)
+        self.assertEqual(restored_1.get_json().get("draft", {}).get("title"), "Tenant A")
+        self.assertEqual(restored_2.get_json().get("draft", {}).get("title"), "Tenant B")
+
+        listed_1 = self.client.get("/api/v2/surveys/drafts?limit=1", headers=headers_1)
+        self.assertEqual(listed_1.status_code, 200, listed_1.get_json())
+        self.assertEqual(listed_1.get_json().get("total"), 1)
+        self.assertEqual(listed_1.get_json().get("items", [])[0].get("draft", {}).get("title"), "Tenant A")
 
     def test_free_plan_can_create_and_save_survey_draft_as_self_service_module(self):
         self.tenant_1.plan = "free"
@@ -877,7 +1291,10 @@ class V2SurveysApiTest(unittest.TestCase):
         close_resp = self.client.post(f"/api/v2/surveys/{survey_id}/close", headers=headers)
         self.assertEqual(close_resp.status_code, 200)
 
-        failed_resp = self.client.post(f"/api/v2/public/surveys/{token}/respond", json={"respuestas": []})
+        failed_resp = self._post_public_response(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={"respuestas": []},
+        )
         self.assertEqual(failed_resp.status_code, 403)
 
 
@@ -890,7 +1307,7 @@ class V2SurveysApiTest(unittest.TestCase):
         public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
         question_id = public_get.get("preguntas", [])[0].get("id")
         option_id = public_get.get("preguntas", [])[0].get("opciones", [])[0].get("id")
-        self.client.post(
+        self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
             json={"anon_id": "a-analytics-1", "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]},
         )
@@ -899,6 +1316,320 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(analytics_resp.status_code, 200)
         stats = (analytics_resp.get_json() or {}).get("stats") or {}
         self.assertGreaterEqual(int(stats.get("total_votes") or 0), 1)
+
+    def test_public_response_receipt_replays_once_without_side_effects(self):
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        submission_id = "survey-submit-once-0001"
+        payload = {
+            **answer,
+            "submission_id": submission_id,
+            "anon_id": "anon-receipt-once",
+            "metadata": {"submittedAt": "2026-07-28T13:00:00.000Z"},
+        }
+        headers = {"Idempotency-Key": submission_id}
+
+        with patch(
+            "services.encuestas_service.emit_survey_response_update",
+            return_value=True,
+        ) as realtime_mock:
+            first = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json=payload,
+                headers=headers,
+            )
+            replay = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json=payload,
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 201, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        first_ack = first.get_json()
+        replay_ack = replay.get_json()
+        self.assertTrue(first_ack["persisted"])
+        self.assertFalse(first_ack["replayed"])
+        self.assertEqual(first_ack["idempotency"]["disposition"], "accepted")
+        self.assertTrue(replay_ack["persisted"])
+        self.assertTrue(replay_ack["replayed"])
+        self.assertEqual(replay_ack["idempotency"]["disposition"], "replayed")
+        self.assertEqual(first_ack["response_id"], replay_ack["response_id"])
+        self.assertEqual(
+            first_ack["idempotency"]["receipt_id"],
+            replay_ack["idempotency"]["receipt_id"],
+        )
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+        effects = SurveyResponseEffect.query.order_by(SurveyResponseEffect.effect_type).all()
+        self.assertEqual(len(effects), 2)
+        self.assertEqual({effect.status for effect in effects}, {"succeeded"})
+        self.assertEqual(
+            AnalyticsEventV2.query.filter_by(
+                tenant_id=self.tenant_1.id,
+                event_name="vote_submitted",
+            ).count(),
+            1,
+        )
+        realtime_mock.assert_called_once()
+
+    def test_public_response_receipt_conflicts_on_changed_payload(self):
+        _, _, token, public_payload, answer = self._create_published_answer_context(self._create_payload())
+        submission_id = "survey-submit-conflict-0001"
+        payload = {
+            **answer,
+            "submission_id": submission_id,
+            "anon_id": "anon-receipt-conflict",
+        }
+        headers = {"Idempotency-Key": submission_id}
+        first = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=payload,
+            headers=headers,
+        )
+        self.assertEqual(first.status_code, 201, first.get_json())
+
+        changed = {
+            **payload,
+            "respuestas": [
+                {
+                    "pregunta_id": public_payload["preguntas"][0]["id"],
+                    "opcion_id": public_payload["preguntas"][0]["opciones"][1]["id"],
+                }
+            ],
+        }
+        conflict = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=changed,
+            headers=headers,
+        )
+
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["reason_code"], "survey_submission_id_conflict")
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_public_response_receipt_replay_skips_rate_limit_and_turnstile(self):
+        self.app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 1
+        self.app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
+        _public_response_rate_buckets.clear()
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        submission_id = "survey-submit-turnstile-0001"
+        payload = {
+            **answer,
+            "submission_id": submission_id,
+            "anon_id": "anon-receipt-turnstile",
+            "turnstile_token": "one-shot-token",
+        }
+        headers = {"Idempotency-Key": submission_id}
+
+        with patch("routes.v2.surveys.verify_turnstile", return_value=True) as first_verify:
+            first = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json=payload,
+                headers=headers,
+            )
+        with patch("routes.v2.surveys.verify_turnstile", return_value=False) as replay_verify:
+            replay = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json=payload,
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 201, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertTrue(replay.get_json()["replayed"])
+        self.assertEqual(replay.get_json()["security"]["status"], "receipt_replay")
+        first_verify.assert_called_once()
+        replay_verify.assert_not_called()
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_public_response_ack_enrichment_failure_still_returns_durable_ack(self):
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        submission_id = "survey-submit-ack-fallback-0001"
+        payload = {
+            **answer,
+            "submission_id": submission_id,
+            "anon_id": "anon-ack-fallback",
+        }
+        headers = {"Idempotency-Key": submission_id}
+
+        with patch(
+            "routes.v2.surveys._build_public_survey_response_ack",
+            side_effect=RuntimeError("simulated enrichment failure"),
+        ):
+            response = self.client.post(
+                f"/api/v2/public/surveys/{token}/respond",
+                json=payload,
+                headers=headers,
+            )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        ack = response.get_json()
+        self.assertTrue(ack["persisted"])
+        self.assertFalse(ack["replayed"])
+        self.assertEqual(
+            ack["warning"]["reason_code"],
+            "survey_response_ack_enrichment_failed",
+        )
+        self.assertEqual(ack["idempotency"]["disposition"], "accepted")
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_public_response_receipt_is_shared_by_v2_legacy_and_pwa(self):
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        submission_id = "survey-submit-cross-route-0001"
+        payload = {
+            **answer,
+            "submission_id": submission_id,
+            "anon_id": "anon-receipt-cross-route",
+            "source": "web",
+        }
+        headers = {"Idempotency-Key": submission_id}
+
+        first = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=payload,
+            headers=headers,
+        )
+        legacy = self.client.post(
+            f"/api/public/encuestas/v1/{token}/responder",
+            json=payload,
+            headers=headers,
+        )
+        pwa = self.client.post(
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+            json=payload,
+            headers=headers,
+        )
+
+        self.assertEqual(first.status_code, 201, first.get_json())
+        self.assertEqual(legacy.status_code, 200, legacy.get_json())
+        self.assertEqual(pwa.status_code, 200, pwa.get_json())
+        response_ids = {
+            first.get_json()["response_id"],
+            legacy.get_json()["response_id"],
+            pwa.get_json()["response_id"],
+        }
+        self.assertEqual(len(response_ids), 1)
+        self.assertTrue(legacy.get_json()["idempotency"]["replayed"])
+        self.assertTrue(pwa.get_json()["idempotency"]["replayed"])
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_committed_receipt_replays_after_close_without_reopening_intake(self):
+        headers, survey_id, token, public_payload, answer = (
+            self._create_published_answer_context(self._create_payload())
+        )
+        submission_id = "survey-submit-after-close-0001"
+        payload = {
+            **answer,
+            "submission_id": submission_id,
+            "anon_id": "anon-receipt-after-close",
+        }
+        idempotency_headers = {"Idempotency-Key": submission_id}
+
+        first = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=payload,
+            headers=idempotency_headers,
+        )
+        self.assertEqual(first.status_code, 201, first.get_json())
+        response_id = first.get_json()["response_id"]
+
+        closed = self.client.post(
+            f"/api/v2/surveys/{survey_id}/close",
+            headers=headers,
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        self.assertEqual(
+            self.client.get(f"/api/v2/public/surveys/{token}").status_code,
+            403,
+        )
+
+        changed_payload = {
+            **payload,
+            "respuestas": [
+                {
+                    "pregunta_id": public_payload["preguntas"][0]["id"],
+                    "opcion_id": public_payload["preguntas"][0]["opciones"][1]["id"],
+                }
+            ],
+        }
+        changed = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=changed_payload,
+            headers=idempotency_headers,
+        )
+        self.assertEqual(changed.status_code, 409, changed.get_json())
+        self.assertEqual(
+            changed.get_json()["reason_code"],
+            "survey_submission_id_conflict",
+        )
+
+        fresh_payload = {
+            **answer,
+            "submission_id": "survey-submit-after-close-fresh-0002",
+            "anon_id": "anon-receipt-after-close-fresh",
+        }
+        fresh = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=fresh_payload,
+            headers={"Idempotency-Key": fresh_payload["submission_id"]},
+        )
+        self.assertEqual(fresh.status_code, 403, fresh.get_json())
+
+        replay_paths = (
+            f"/api/v2/public/surveys/{token}/respond",
+            f"/api/public/encuestas/v1/{token}/responder",
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+        )
+        for path in replay_paths:
+            with self.subTest(path=path):
+                replay = self.client.post(
+                    path,
+                    json=payload,
+                    headers=idempotency_headers,
+                )
+                self.assertEqual(replay.status_code, 200, replay.get_json())
+                ack = replay.get_json()
+                self.assertTrue(ack["persisted"])
+                self.assertTrue(ack["replayed"])
+                self.assertEqual(ack["response_id"], response_id)
+                self.assertEqual(
+                    ack["idempotency"]["disposition"],
+                    "replayed",
+                )
+
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_public_response_rejects_mismatched_submission_ids(self):
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        response = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond",
+            json={**answer, "submission_id": "survey-body-key-0001"},
+            headers={"Idempotency-Key": "survey-header-key-0001"},
+        )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "survey_submission_id_mismatch")
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 0)
+
+    def test_legacy_public_response_cors_allows_idempotency_key(self):
+        response = self.client.options(
+            "/api/public/encuestas/v1/example/responder",
+            headers={"Origin": "http://localhost:8080"},
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertIn(
+            "Idempotency-Key",
+            response.headers.get("Access-Control-Allow-Headers", ""),
+        )
 
     def test_tenant_isolation_on_list(self):
         headers_1 = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}

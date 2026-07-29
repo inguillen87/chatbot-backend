@@ -4,6 +4,10 @@ import logging
 import uuid
 import httpx
 from cachetools import TTLCache
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_TTS_MODEL,
+    resolve_openai_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +23,10 @@ _OPENAI_SUPPORTED_VOICES = {
     "sage",
     "shimmer",
     "nova",
+    "ballad",
+    "verse",
+    "marin",
+    "cedar",
 }
 
 _VOICE_ALIASES = {
@@ -52,8 +60,7 @@ def _normalize_voice(requested_voice: str | None) -> str:
             return candidate
 
         logger.warning(
-            "OpenAI TTS voice '%s' is not supported. Falling back to '%s'.",
-            requested_voice,
+            "OpenAI TTS requested voice is unsupported; using fallback=%s",
             fallback,
         )
 
@@ -94,13 +101,17 @@ def generar_audio_openai(
         return None
 
     selected_voice = _normalize_voice(voice)
+    selected_model = model or resolve_openai_model(
+        "OPENAI_TTS_MODEL",
+        DEFAULT_OPENAI_TTS_MODEL,
+    )
 
     cache_key = "|".join(
         [
             text,
             str(speed),
             selected_voice,
-            model or "",
+            selected_model,
             style or "",
         ]
     )
@@ -115,17 +126,22 @@ def generar_audio_openai(
         http_client = httpx.Client(proxy=None, trust_env=False)
         client = openai.OpenAI(api_key=api_key, http_client=http_client)
 
-        logger.info(f"Requesting OpenAI speech synthesis for text: '{text[:50]}...'")
+        logger.info(
+            "Requesting OpenAI speech synthesis model=%s voice=%s input_chars=%s",
+            selected_model,
+            selected_voice,
+            len(text),
+        )
 
         request_payload = {
-            "model": model or os.getenv("OPENAI_TTS_MODEL", "tts-1"),
+            "model": selected_model,
             "voice": selected_voice,
             "input": text,
             "speed": speed,
         }
 
         if style:
-            request_payload["style"] = style
+            request_payload["instructions"] = style
 
         response = client.audio.speech.create(**request_payload)
 
@@ -143,14 +159,18 @@ def generar_audio_openai(
 
         # Stream the response content to the file
         response.stream_to_file(output_path)
-        logger.info(f"Audio content written to file: {output_path}")
+        logger.info("OpenAI speech audio written output_format=mp3")
 
         _TTS_CACHE[cache_key] = public_url_path
 
         return public_url_path
 
-    except Exception as e:
-        logger.error(f"An error occurred during OpenAI speech synthesis: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "OpenAI speech synthesis failed model=%s error_type=%s",
+            selected_model,
+            type(exc).__name__,
+        )
         return None
 
 if __name__ == '__main__':
@@ -159,6 +179,6 @@ if __name__ == '__main__':
     test_text = "Hola, este es un audio de prueba generado por OpenAI."
     audio_path = generar_audio_openai(test_text)
     if audio_path:
-        logger.info(f"Audio generado con éxito en: {audio_path}")
+        logger.info("Audio generado con éxito")
     else:
         logger.error("Falló la generación de audio con OpenAI.")

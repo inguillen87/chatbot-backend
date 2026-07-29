@@ -32,6 +32,7 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_qr_service import build_qr_png
 from services.encuestas_service import (
     EncuestaError,
+    find_survey_response_replay,
     get_public_encuesta,
     list_public_encuestas_for_tenant,
     save_respuesta,
@@ -41,6 +42,8 @@ from services.encuestas_service import (
     list_comentarios,
     reportar_comentario,
     resolve_optional_survey_bearer_user,
+    resolve_survey_submission_id,
+    survey_response_receipt_contract,
     verify_social_comment_token,
 )
 from services.encuestas_analytics_service import calculate_live_results
@@ -805,6 +808,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     "Anon-Id",
                     "X-Tenant-Slug",
                     "X-Tenant",
+                    "Idempotency-Key",
                 ],
             )
 
@@ -924,9 +928,74 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         response.headers.setdefault("X-Request-Id", request_id)
         return response
 
+    def _response_ack(respuesta, *, request_id: str):
+        response_payload = {
+            "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
+            "ok": True,
+            "success": True,
+            "persisted": True,
+            "replayed": bool(getattr(respuesta, "submission_replayed", False)),
+            "respuesta_id": respuesta.id,
+            "response_id": respuesta.id,
+            "instrument_revision": getattr(respuesta, "instrument_revision", None),
+            "request_id": request_id,
+        }
+        receipt_contract = survey_response_receipt_contract(respuesta)
+        if receipt_contract is not None:
+            response_payload["idempotency"] = receipt_contract
+        response = jsonify(response_payload)
+        response.headers.setdefault("X-Request-Id", request_id)
+        return response, 200 if response_payload["replayed"] else 201
+
     def _handle_responder(slug: str):
         ip = _extract_ip()
         tenant_id = _resolve_tenant_from_request()
+        payload = _extract_request_payload()
+        try:
+            submission_id = resolve_survey_submission_id(
+                payload,
+                header_value=request.headers.get("Idempotency-Key"),
+                # Demo acknowledgements are synthetic and non-durable. All
+                # canonical writes require a stable caller-owned key.
+                required=not is_demo_survey_slug(slug),
+            )
+        except EncuestaError as err:
+            return _public_error_response(err)
+        request_ctx = {
+            "ip": ip,
+            "user_agent": request.headers.get("User-Agent"),
+            "anon_id": request.cookies.get("Anon-Id")
+            or request.headers.get("X-Anon-Id"),
+            "canal": request.args.get("canal"),
+        }
+        authenticated_user = None
+        authenticated_user_resolved = False
+        if submission_id is not None and not is_demo_survey_slug(slug):
+            try:
+                authenticated_user = resolve_optional_survey_bearer_user(
+                    request.headers.get("Authorization"),
+                    contract_version=ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
+                )
+                authenticated_user_resolved = True
+                replay = find_survey_response_replay(
+                    slug,
+                    payload,
+                    request_ctx,
+                    submission_id=submission_id,
+                    preferred_tenant_id=tenant_id,
+                    authenticated_user=authenticated_user,
+                )
+            except EncuestaError as err:
+                # The replay lookup is an optimization that lets committed
+                # retries bypass one-shot controls.  Survey resolution remains
+                # authoritative inside ``save_respuesta``; a miss must fall
+                # through so every public alias reuses that single handler.
+                if err.status_code != 404:
+                    return _public_error_response(err)
+                replay = None
+            if replay is not None:
+                return _response_ack(replay, request_id=_resolve_request_id())
+
         if not _rate_limit(ip):
             wrapped = EncuestaError(
                 "Demasiadas respuestas desde esta IP. Intenta más tarde.",
@@ -935,14 +1004,6 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             )
             return _public_error_response(wrapped)
 
-        request_ctx = {
-            "ip": ip,
-            "user_agent": request.headers.get("User-Agent"),
-            "anon_id": request.cookies.get("Anon-Id")
-            or request.headers.get("X-Anon-Id"),
-            "canal": request.args.get("canal"),
-        }
-        payload = _extract_request_payload()
         demo_ack = build_demo_survey_response_ack(slug, payload)
         if demo_ack:
             request_id = _resolve_request_id()
@@ -952,24 +1013,30 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             return response, 201
 
         try:
-            authenticated_user = resolve_optional_survey_bearer_user(
-                request.headers.get("Authorization"),
-                contract_version=ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
-            )
+            if not authenticated_user_resolved:
+                authenticated_user = resolve_optional_survey_bearer_user(
+                    request.headers.get("Authorization"),
+                    contract_version=ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
+                )
             respuesta = save_respuesta(
                 slug,
                 payload,
                 request_ctx,
                 preferred_tenant_id=tenant_id,
                 authenticated_user=authenticated_user,
+                submission_id=submission_id,
             )
         except EncuestaError as err:
-            if err.status_code == 409:
+            reason_code = str((err.payload or {}).get("reason_code") or "").strip()
+            if err.status_code == 409 and reason_code == "survey_response_duplicate":
                 return (
                     jsonify(
                         {
+                            "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
                             "ok": True,
                             "duplicate": True,
+                            "reason_code": reason_code,
+                            "retryable": False,
                             "message": "Ya registramos tu participación",
                             "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
                         }
@@ -977,18 +1044,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     200,
                 )
             return _public_error_response(err)
-        request_id = _resolve_request_id()
-        response = jsonify(
-            {
-                "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
-                "ok": True,
-                "success": True,
-                "respuesta_id": respuesta.id,
-                "request_id": request_id,
-            }
-        )
-        response.headers.setdefault("X-Request-Id", request_id)
-        return response, 201
+        return _response_ack(respuesta, request_id=_resolve_request_id())
 
     @bp.route("/<slug>/responder", methods=["POST", "OPTIONS"])
     @bp.route("/v1/<slug>/responder", methods=["POST", "OPTIONS"])

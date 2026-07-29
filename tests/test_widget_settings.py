@@ -1,5 +1,7 @@
+import io
 import json
 import unittest
+from urllib import error as urllib_error
 from unittest.mock import patch
 
 try:
@@ -253,7 +255,7 @@ class WidgetSettingsTests(unittest.TestCase):
                 "channel": "voice",
                 "widget_token": self.owner.token,
                 "model": "gpt-4o-realtime-preview",
-                "fallback_model": "gpt-realtime",
+                "fallback_model": "gpt-realtime-2.1",
                 "voice": "marin",
                 "transport": "webrtc",
                 "profile": "realtime_voice_native",
@@ -263,11 +265,11 @@ class WidgetSettingsTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual(payload["model"], "gpt-realtime")
-        self.assertEqual(payload["avatar"]["fallback_model"], "gpt-realtime")
+        self.assertEqual(payload["model"], "gpt-realtime-2.1")
+        self.assertEqual(payload["avatar"]["fallback_model"], "gpt-realtime-2.1")
         self.assertEqual(payload["avatar"]["transport"], "webrtc")
         self.assertEqual(payload["avatar"]["active_vertical"], "municipio")
-        self.assertEqual(payload["avatar"]["requested_model_ignored"], "gpt-4o-realtime-preview")
+        self.assertTrue(payload["avatar"]["requested_model_ignored"])
         self.assertEqual(payload["avatar"]["openai_realtime_contract"], "client_secrets.v2")
         self.assertEqual(payload["avatar"]["avatar_type"], "chatboc_bot")
         self.assertEqual(payload["avatar"]["avatar_persona"], "bot_chatboc")
@@ -279,10 +281,14 @@ class WidgetSettingsTests(unittest.TestCase):
         upstream_payload = json.loads(request_obj.data.decode("utf-8"))
         self.assertEqual(request_obj.full_url, "https://api.openai.com/v1/realtime/client_secrets")
         self.assertEqual(upstream_payload["session"]["type"], "realtime")
-        self.assertEqual(upstream_payload["session"]["model"], "gpt-realtime")
+        self.assertEqual(upstream_payload["session"]["model"], "gpt-realtime-2.1")
         self.assertEqual(upstream_payload["session"]["output_modalities"], ["audio"])
         self.assertEqual(upstream_payload["session"]["audio"]["output"]["voice"], "marin")
         self.assertEqual(upstream_payload["session"]["audio"]["input"]["turn_detection"]["type"], "semantic_vad")
+        self.assertEqual(
+            upstream_payload["session"]["audio"]["input"]["transcription"]["model"],
+            "gpt-4o-transcribe",
+        )
         self.assertEqual(upstream_payload["session"]["tracing"]["metadata"]["openai_endpoint"], "/v1/realtime/client_secrets")
         self.assertIn("ingles", upstream_payload["session"]["instructions"])
         self.assertIn("portugues", upstream_payload["session"]["instructions"])
@@ -291,6 +297,79 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertIn("capturar_lead_comercial", tool_names)
         self.assertIn("registrar_solicitud_operativa", tool_names)
         self.assertIsNone(request_obj.get_header("Openai-beta"))
+
+    @patch("routes.public_resolver.urllib_request.urlopen")
+    def test_public_realtime_session_builds_ga_live_transcription_contract(self, mock_urlopen):
+        class MockOpenAIResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"id": "transcription_123", "client_secret": {"value": "ek_mock"}}
+                ).encode("utf-8")
+
+        mock_urlopen.return_value = MockOpenAIResponse()
+        self.app.config["OPENAI_API_KEY"] = "mock-key"
+
+        response = self.client.post(
+            "/api/public/realtime/session",
+            json={
+                "tenant_slug": self.tenant.slug,
+                "channel": "transcription",
+                "widget_token": self.owner.token,
+                "transport": "webrtc",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["channel"], "transcription")
+        self.assertEqual(payload["model"], "gpt-live-transcribe")
+        request_obj = mock_urlopen.call_args.args[0]
+        upstream_payload = json.loads(request_obj.data.decode("utf-8"))
+        session = upstream_payload["session"]
+        self.assertEqual(session["type"], "transcription")
+        self.assertNotIn("model", session)
+        self.assertNotIn("tools", session)
+        self.assertNotIn("output_modalities", session)
+        self.assertEqual(
+            session["audio"]["input"]["transcription"]["model"],
+            "gpt-live-transcribe",
+        )
+        self.assertEqual(session["audio"]["input"]["turn_detection"]["type"], "server_vad")
+        self.assertFalse(session["audio"]["input"]["turn_detection"]["create_response"])
+
+    @patch("routes.public_resolver.urllib_request.urlopen")
+    def test_public_realtime_upstream_error_log_excludes_provider_body(self, mock_urlopen):
+        sensitive = "DNI 32877851 token=secret private upstream detail"
+        mock_urlopen.side_effect = urllib_error.HTTPError(
+            "https://api.openai.com/v1/realtime/client_secrets",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(sensitive.encode("utf-8")),
+        )
+        self.app.config["OPENAI_API_KEY"] = "mock-key"
+
+        with self.assertLogs(self.app.logger.name, level="WARNING") as logs:
+            response = self.client.post(
+                "/api/public/realtime/session",
+                json={
+                    "tenant_slug": self.tenant.slug,
+                    "channel": "voice",
+                    "widget_token": self.owner.token,
+                },
+            )
+
+        self.assertEqual(response.status_code, 502)
+        rendered = "\n".join(logs.output)
+        self.assertIn("status=400", rendered)
+        self.assertNotIn(sensitive, rendered)
+        self.assertNotIn("32877851", rendered)
 
     def test_public_realtime_voice_capabilities_expose_bot_avatar_and_business_tools(self):
         response = self.client.get(

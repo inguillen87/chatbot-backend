@@ -6,6 +6,7 @@ import pandas as pd
 from typing import Dict, Any, Tuple, Optional, List
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.response_formatter import render_audio_text
+from services.openai_model_defaults import DEFAULT_OPENAI_TTS_MODEL
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
 
 # --- PLACEHOLDER DEFINITIONS ---
@@ -1103,7 +1104,7 @@ def _get_main_menu_payload(
         "generar_audio": True,
         # Menú principal: priorizamos una voz más natural y modelo de mayor calidad.
         "tts_voice": "shimmer",
-        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", "tts-1-hd"),
+        "tts_model": os.getenv("OPENAI_TTS_MENU_MODEL", DEFAULT_OPENAI_TTS_MODEL),
         "tts_speed": menu_tts_speed,
         "tts_cache_text": audio_text,
         "tts_cache_namespace": build_menu_tts_cache_namespace(

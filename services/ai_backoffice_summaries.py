@@ -7,6 +7,10 @@ from uuid import uuid4
 from flask import current_app
 
 from services.llm_orchestrator import build_llm_task_policy, llamar_llm_con_fallback
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_SOL_MODEL,
+    resolve_openai_model,
+)
 
 
 def _safe_json_payload(value: Any) -> str:
@@ -54,8 +58,12 @@ def _call_backoffice_llm(
     prompt: str,
     tenant_type: str,
     task_type: str,
-    model_env_default: str = "gpt-4o-mini",
+    model_env_default: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    model = model_env_default or resolve_openai_model(
+        "OPENAI_BACKOFFICE_MODEL",
+        DEFAULT_OPENAI_SOL_MODEL,
+    )
     response, context = llamar_llm_con_fallback(
         current_app._get_current_object(),
         prompt,
@@ -66,7 +74,7 @@ def _call_backoffice_llm(
         },
         [],
         f"backoffice-{task_type}-{uuid4().hex[:10]}",
-        model=model_env_default,
+        model=model,
         task_type=task_type,
     )
     return response if isinstance(response, dict) else {}, context if isinstance(context, dict) else {}

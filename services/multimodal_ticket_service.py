@@ -3,6 +3,10 @@ from typing import Dict, Any, Optional
 from schemas.ai_contracts import GatewayRequest, GatewayInputItem
 from services.ai_gateway import ai_gateway
 from schemas.multimodal_ticket import TicketDraftSchema
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_SOL_MODEL,
+    resolve_openai_model,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,12 +26,16 @@ class MultimodalTicketService:
         Uses the AIGateway to process an image and return a structured ticket draft.
         """
 
+        model = resolve_openai_model(
+            "OPENAI_TICKET_VISION_MODEL",
+            DEFAULT_OPENAI_SOL_MODEL,
+        )
         request = GatewayRequest(
             tenant_id=tenant_id,
             actor_id=actor_id,
             actor_type="user",
             channel="web", # or portal/widget based on where it came from
-            model="gpt-4o", # Model capable of vision
+            model=model,
             instructions=self.system_instructions,
             input_items=[
                 GatewayInputItem(type="image", url=image_url)
@@ -38,11 +46,16 @@ class MultimodalTicketService:
         response = ai_gateway.execute(request)
 
         if response.status == "error" or response.status == "refused":
-            logger.error(f"Failed to extract ticket from image: {response.error_message or response.refusal}")
+            logger.error(
+                "Ticket image extraction failed model=%s status=%s error_code=%s",
+                model,
+                response.status,
+                response.error_code or "vision_analysis_failed",
+            )
             return {
                 "error": True,
                 "message": "No se pudo analizar la imagen.",
-                "details": response.error_message or response.refusal
+                "details": response.error_code or "vision_analysis_failed",
             }
 
         if response.structured_output:

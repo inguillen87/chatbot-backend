@@ -8,6 +8,12 @@ class ChatbotPromptTests(unittest.TestCase):
         prompt = get_system_prompt({"tipo_entidad": "municipio"})
         self.assertEqual(prompt, MUNICIPIO_SYSTEM_PROMPT)
         self.assertIn('"target": "municipio"', prompt)
+        self.assertIn('`consulta_estado_ticket`', prompt)
+        self.assertIn('`solicitar_llamada`', prompt)
+        self.assertIn('"solicita_llamada": false', prompt)
+        self.assertIn('poste caído', prompt)
+        self.assertIn('¿cuál es mi PIN?', prompt)
+        self.assertIn('La palabra "sí" dentro de una corrección', prompt)
 
     def test_pyme_prompt_includes_demo_context(self):
         usuario = {

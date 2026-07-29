@@ -225,6 +225,29 @@ class TestTTSOrchestratorCache(unittest.TestCase):
             finally:
                 os.chdir(original_cwd)
 
+    def test_provider_failure_logs_only_safe_diagnostics(self):
+        sensitive = "DNI 32877851 token=secret C:/private/generated.mp3"
+        with (
+            patch.dict(
+                os.environ,
+                {"TTS_CACHE_ENABLED": "false", "TTS_PROVIDER_ORDER": "openai"},
+                clear=False,
+            ),
+            patch(
+                "services.openai_tts_bridge.generar_audio_openai",
+                side_effect=RuntimeError(sensitive),
+            ),
+            self.assertLogs("services.tts_orchestrator", level="INFO") as logs,
+        ):
+            result = generar_audio(sensitive, cache_namespace="privacy-test")
+
+        self.assertIsNone(result)
+        rendered = "\n".join(logs.output)
+        self.assertIn("error_type=RuntimeError", rendered)
+        self.assertNotIn("32877851", rendered)
+        self.assertNotIn("token=secret", rendered)
+        self.assertNotIn("C:/private", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

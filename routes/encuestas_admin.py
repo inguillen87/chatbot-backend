@@ -4,6 +4,7 @@ from __future__ import annotations
 from flask import Blueprint, current_app, jsonify, request, g
 
 from config.feature_flags import FEATURE_ENCUESTAS
+from database import db
 from services.encuestas_service import (
     EncuestaError,
     create_encuesta,
@@ -71,6 +72,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta = create_encuesta(request.get_json(force=True), current_user)
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_encuesta(encuesta)), 201
 
@@ -81,6 +83,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta = update_encuesta(encuesta_id, request.get_json(force=True), current_user)
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
         return jsonify(serialize_encuesta(encuesta)), 200
 
@@ -92,6 +95,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta = duplicate_encuesta(encuesta_id, request.get_json(silent=True) or {}, current_user)
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
         return jsonify({"ok": True, "source_id": encuesta_id, "encuesta": serialize_encuesta(encuesta)}), 201
 
@@ -102,6 +106,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             delete_encuesta(encuesta_id, current_user)
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
         return jsonify({"ok": True, "encuesta_id": encuesta_id}), 200
 
@@ -112,6 +117,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta, link = publicar_encuesta(encuesta_id, current_user)
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
 
         base_url = (
@@ -142,6 +148,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         try:
             encuesta = cerrar_encuesta(encuesta_id, current_user)
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
         return jsonify({"ok": True, "estado": encuesta.estado}), 200
 
@@ -263,6 +270,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 scenario=scenario,
             )
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
         return jsonify(result), 200
 
@@ -340,6 +348,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
                 "report_count": comentario.report_count
             }), 200
         except EncuestaError as err:
+            db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
 
     return bp

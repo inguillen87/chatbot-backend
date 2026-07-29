@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -18,8 +19,8 @@ from urllib.parse import quote_plus
 
 from flask import current_app, g, has_request_context, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
-from sqlalchemy import func, or_, inspect
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, or_, inspect, text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import joinedload, load_only
 
 from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
@@ -37,10 +38,13 @@ from models import (
     EncSegmento,
     EncComentario,
     PointsTransaction,
+    SurveyDraftMaterialization,
+    SurveyResponseReceipt,
     TenantProfile,
     User,
 )
 from services.user_service import get_user_profile_identity
+from services.survey_refs import is_canonical_survey_logical_ref
 try:
     from socket_service import emit_survey_update, emit_survey_comment
 except ImportError:
@@ -57,6 +61,27 @@ except Exception:  # pragma: no cover - analytics optional in some contexts
 
 _BOOTSTRAP_TENANT_ID: Optional[int] = None
 _ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
+SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION = "surveys.response_receipt.v1"
+SURVEY_RESPONSE_CANONICAL_VERSION = "survey-response.v1"
+_SURVEY_SUBMISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
+_SURVEY_SUBMISSION_ID_FIELDS = (
+    "submission_id",
+    "submissionId",
+    "idempotency_key",
+    "idempotencyKey",
+)
+_SURVEY_RECEIPT_EXCLUDED_FIELDS = frozenset(
+    {
+        *_SURVEY_SUBMISSION_ID_FIELDS,
+        "turnstile_token",
+        "turnstileToken",
+        "cloudflare_turnstile_token",
+        "cf-turnstile-response",
+        "cf_turnstile_response",
+        "request_id",
+        "requestId",
+    }
+)
 
 
 def _public_schedule_now() -> datetime:
@@ -151,6 +176,369 @@ class EncuestaError(Exception):
         data = {"error": self.message}
         data.update(self.payload)
         return data
+
+
+def _survey_concurrency_error(
+    message: str = "La encuesta esta siendo actualizada. Intenta nuevamente.",
+    *,
+    reason_code: str = "survey_concurrent_update",
+) -> EncuestaError:
+    return EncuestaError(
+        message,
+        status_code=409,
+        payload={
+            "contract_version": "surveys.structure_guard.v1",
+            "reason_code": reason_code,
+            "retryable": True,
+            "action_hint": "reload_survey",
+        },
+    )
+
+
+def _survey_duplicate_response_error() -> EncuestaError:
+    return EncuestaError(
+        "Ya registramos tu participacion",
+        status_code=409,
+        payload={
+            "contract_version": "surveys.public_response.v2",
+            "reason_code": "survey_response_duplicate",
+            "retryable": False,
+            "action_hint": "show_existing_participation",
+        },
+    )
+
+
+def _survey_submission_error(
+    message: str,
+    *,
+    reason_code: str,
+    status_code: int = 400,
+    action_hint: str = "check_submission_id",
+) -> EncuestaError:
+    return EncuestaError(
+        message,
+        status_code=status_code,
+        payload={
+            "contract_version": SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
+            "reason_code": reason_code,
+            "retryable": False,
+            "action_hint": action_hint,
+        },
+    )
+
+
+def resolve_survey_submission_id(
+    payload: Optional[Mapping[str, Any]],
+    *,
+    header_value: Optional[Any] = None,
+    required: bool = False,
+) -> Optional[str]:
+    """Resolve one caller-supplied idempotency key without inventing identity."""
+
+    supplied: List[Tuple[str, str]] = []
+    if header_value not in (None, ""):
+        supplied.append(("Idempotency-Key", str(header_value).strip()))
+    if isinstance(payload, Mapping):
+        for field in _SURVEY_SUBMISSION_ID_FIELDS:
+            raw_value = payload.get(field)
+            if raw_value in (None, ""):
+                continue
+            supplied.append((field, str(raw_value).strip()))
+
+    values = {value for _, value in supplied if value}
+    if len(values) > 1:
+        raise _survey_submission_error(
+            "Idempotency-Key y submission_id deben coincidir",
+            reason_code="survey_submission_id_mismatch",
+        )
+    submission_id = next(iter(values), None)
+    if submission_id is None:
+        if required:
+            raise _survey_submission_error(
+                "submission_id es obligatorio para garantizar el registro",
+                reason_code="survey_submission_id_required",
+            )
+        return None
+    if not _SURVEY_SUBMISSION_ID_PATTERN.fullmatch(submission_id):
+        raise _survey_submission_error(
+            "submission_id debe tener entre 8 y 128 caracteres seguros",
+            reason_code="survey_submission_id_invalid",
+        )
+    return submission_id
+
+
+def _survey_submission_conflict_error() -> EncuestaError:
+    return _survey_submission_error(
+        "submission_id ya fue usado con otra respuesta",
+        reason_code="survey_submission_id_conflict",
+        status_code=409,
+        action_hint="use_original_payload_or_new_submission_id",
+    )
+
+
+def _is_retryable_survey_lock_error(exc: OperationalError) -> bool:
+    original = getattr(exc, "orig", None)
+    sqlstate = str(
+        getattr(original, "sqlstate", None)
+        or getattr(original, "pgcode", None)
+        or ""
+    ).upper()
+    if sqlstate in {"55P03", "40001", "40P01", "57014"}:
+        return True
+
+    sqlite_error_code = getattr(original, "sqlite_errorcode", None)
+    if sqlite_error_code in {5, 6}:  # SQLITE_BUSY / SQLITE_LOCKED
+        return True
+    message = str(original or exc).strip().lower()
+    return any(
+        marker in message
+        for marker in (
+            "database is locked",
+            "database table is locked",
+            "database is busy",
+        )
+    )
+
+
+def _acquire_encuesta_write_guard(encuesta_id: int) -> EncEncuesta:
+    """Serialize survey structure/state changes and response validation.
+
+    ``SELECT .. FOR UPDATE`` is a no-op on SQLite.  A no-op ``UPDATE`` is not:
+    PostgreSQL takes a row write lock and SQLite takes its database write lock.
+    Both therefore serialize the first response with structural edits.  The
+    statement deliberately uses raw SQL so SQLAlchemy does not apply the
+    ``updated_at`` Python on-update default for a lock-only operation.
+
+    Response writes use :func:`_acquire_encuesta_response_guard` instead.  That
+    helper keeps this exclusive path for the first response and for SQLite,
+    while already-frozen PostgreSQL instruments use a shared row lock.
+    """
+
+    try:
+        result = db.session.execute(
+            text(
+                "UPDATE enc_encuesta "
+                "SET structure_revision = structure_revision "
+                "WHERE id = :encuesta_id"
+            ),
+            {"encuesta_id": int(encuesta_id)},
+        )
+    except OperationalError as exc:
+        if _is_retryable_survey_lock_error(exc):
+            raise _survey_concurrency_error() from exc
+        # Schema drift, missing columns and unrelated database failures are
+        # server errors.  Mislabeling them as a retryable 409 hides a broken
+        # deployment and encourages pointless client retries.
+        raise
+
+    if result.rowcount == 0:
+        raise EncuestaError("Encuesta no encontrada", status_code=404)
+
+    return _load_encuesta_after_guard(encuesta_id)
+
+
+def _load_encuesta_after_guard(encuesta_id: int) -> EncEncuesta:
+    """Refresh the ORM instrument after a database lock statement wins."""
+
+    encuesta = db.session.get(EncEncuesta, int(encuesta_id))
+    if encuesta is None:
+        raise EncuestaError("Encuesta no encontrada", status_code=404)
+
+    # The identity map may contain the pre-lock lookup performed for tenant
+    # authorization.  Refresh scalar state and expire the instrument so every
+    # validation below observes the version that won the write guard.
+    db.session.refresh(encuesta)
+    db.session.expire(encuesta, ["preguntas", "links", "segmentos"])
+    return encuesta
+
+
+def _acquire_encuesta_response_guard(encuesta_id: int) -> EncEncuesta:
+    """Protect response validation without serializing frozen PG instruments.
+
+    ``structure_locked_at`` is irreversible.  Once it is non-null, structural
+    writers can only enter through the exclusive no-op ``UPDATE`` guard and
+    must reject structural changes.  PostgreSQL responders therefore acquire
+    ``FOR SHARE`` on that parent row: many responders may hold it together,
+    while ``UPDATE``/``DELETE`` writers wait until every response transaction
+    finishes.  The conditional lock query also waits for an in-flight writer
+    and returns its committed row version before validation continues.
+
+    A null marker still takes the exclusive guard, preserving the race between
+    the first response and a structural edit.  SQLite has no compatible shared
+    row-lock primitive and serializes all writers at database level, so it
+    deliberately retains the exclusive guard for both correctness and clear
+    ``SQLITE_BUSY`` handling.  Unknown dialects fail safe the same way.
+    """
+
+    bind = db.session.get_bind()
+    dialect_name = str(getattr(getattr(bind, "dialect", None), "name", "")).lower()
+    if dialect_name != "postgresql":
+        return _acquire_encuesta_write_guard(encuesta_id)
+
+    try:
+        result = db.session.execute(
+            text(
+                "SELECT id FROM enc_encuesta "
+                "WHERE id = :encuesta_id "
+                "AND structure_locked_at IS NOT NULL "
+                "FOR SHARE"
+            ),
+            {"encuesta_id": int(encuesta_id)},
+        )
+        locked_id = result.scalar_one_or_none()
+    except OperationalError as exc:
+        if _is_retryable_survey_lock_error(exc):
+            raise _survey_concurrency_error() from exc
+        raise
+
+    if locked_id is None:
+        # Missing rows and not-yet-frozen instruments are intentionally
+        # distinguished by the exclusive guard's rowcount/refresh checks.
+        return _acquire_encuesta_write_guard(encuesta_id)
+
+    return _load_encuesta_after_guard(encuesta_id)
+
+
+def _ensure_locked_public_encuesta(encuesta: EncEncuesta) -> None:
+    """Re-check public eligibility after waiting for the write guard."""
+
+    if encuesta.estado != "publicada":
+        raise EncuestaError(
+            "La encuesta no esta activa",
+            status_code=403,
+            payload={"reason_code": "survey_not_published"},
+        )
+    if current_app.config.get("ENABLE_DEMO_MODE"):
+        _ensure_demo_public_window(encuesta)
+    if not encuesta.esta_activa():
+        raise EncuestaError(
+            "La encuesta no esta en su ventana de participacion",
+            status_code=403,
+            payload={"reason_code": "survey_outside_active_window"},
+        )
+
+
+def _survey_structure_is_locked(encuesta: EncEncuesta) -> bool:
+    """Return the durable lock state, with a legacy-row safety fallback."""
+
+    if encuesta.structure_locked_at is not None:
+        return True
+    return (
+        db.session.query(EncRespuesta.id)
+        .filter(EncRespuesta.encuesta_id == encuesta.id)
+        .first()
+        is not None
+    )
+
+
+def _structure_locked_error(encuesta: EncEncuesta, detail: str) -> EncuestaError:
+    return EncuestaError(
+        "No se puede modificar la estructura de una encuesta con respuestas registradas",
+        status_code=409,
+        payload={
+            "contract_version": "surveys.structure_guard.v1",
+            "reason_code": "survey_structure_locked",
+            "detail": detail,
+            "encuesta_id": encuesta.id,
+            "structure_locked_at": (
+                encuesta.structure_locked_at.isoformat()
+                if encuesta.structure_locked_at is not None
+                else None
+            ),
+        },
+    )
+
+
+def _expected_structure_revision(data: Mapping[str, Any]) -> Optional[int]:
+    raw_revision: Any = data.get("expected_structure_revision")
+    if raw_revision is None and isinstance(data.get("structure_guard"), Mapping):
+        raw_revision = data["structure_guard"].get("revision")
+    if raw_revision is None:
+        return None
+    if isinstance(raw_revision, bool):
+        raise EncuestaError(
+            "expected_structure_revision debe ser un entero positivo",
+            status_code=400,
+            payload={"reason_code": "survey_structure_revision_invalid"},
+        )
+    try:
+        revision = int(raw_revision)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise EncuestaError(
+            "expected_structure_revision debe ser un entero positivo",
+            status_code=400,
+            payload={"reason_code": "survey_structure_revision_invalid"},
+        ) from exc
+    if revision <= 0 or str(raw_revision).strip() != str(revision):
+        raise EncuestaError(
+            "expected_structure_revision debe ser un entero positivo",
+            status_code=400,
+            payload={"reason_code": "survey_structure_revision_invalid"},
+        )
+    return revision
+
+
+def _structure_revision_conflict(
+    encuesta: EncEncuesta,
+    expected_revision: int,
+) -> EncuestaError:
+    return EncuestaError(
+        "La encuesta cambio desde que abriste el editor. Recargala antes de guardar.",
+        status_code=409,
+        payload={
+            "contract_version": "surveys.structure_guard.v1",
+            "reason_code": "survey_structure_revision_conflict",
+            "expected_revision": expected_revision,
+            "current_revision": int(encuesta.structure_revision or 1),
+            "retryable": False,
+            "action_hint": "reload_survey",
+        },
+    )
+
+
+def _submitted_instrument_revision(payload: Mapping[str, Any]) -> Optional[int]:
+    if "instrument_revision" not in payload:
+        return None
+    raw_revision = payload.get("instrument_revision")
+    if isinstance(raw_revision, bool):
+        raise EncuestaError(
+            "instrument_revision debe ser un entero positivo",
+            status_code=400,
+            payload={"reason_code": "survey_instrument_revision_invalid"},
+        )
+    try:
+        revision = int(raw_revision)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise EncuestaError(
+            "instrument_revision debe ser un entero positivo",
+            status_code=400,
+            payload={"reason_code": "survey_instrument_revision_invalid"},
+        ) from exc
+    if revision <= 0 or str(raw_revision).strip() != str(revision):
+        raise EncuestaError(
+            "instrument_revision debe ser un entero positivo",
+            status_code=400,
+            payload={"reason_code": "survey_instrument_revision_invalid"},
+        )
+    return revision
+
+
+def _stale_instrument_error(
+    encuesta: EncEncuesta,
+    submitted_revision: int,
+) -> EncuestaError:
+    return EncuestaError(
+        "La encuesta cambio desde que abriste el formulario. Recargala antes de responder.",
+        status_code=409,
+        payload={
+            "contract_version": "surveys.public_response.v2",
+            "reason_code": "survey_structure_changed",
+            "submitted_instrument_revision": submitted_revision,
+            "current_instrument_revision": int(encuesta.structure_revision or 1),
+            "retryable": False,
+            "action_hint": "reload_survey",
+        },
+    )
 
 
 def _env_flag(name: str, default: bool = True) -> bool:
@@ -885,8 +1273,52 @@ def _generate_unique_slug(initial_slug: str) -> str:
 
 def _determine_tenant_id(user: Any) -> int:
     tenant_profile = getattr(g, "tenant_profile", None)
-    if tenant_profile and is_authorized_superadmin_user(user):
-        return tenant_profile.id
+    if tenant_profile is not None:
+        try:
+            resolved_tenant_id = int(getattr(tenant_profile, "id", 0) or 0)
+        except (TypeError, ValueError):
+            resolved_tenant_id = 0
+        if not resolved_tenant_id:
+            raise EncuestaError("No se pudo determinar el tenant solicitado", status_code=403)
+        if is_authorized_superadmin_user(user):
+            return resolved_tenant_id
+
+        try:
+            authoritative_user_tenant_id = int(getattr(user, "tenant_id", 0) or 0)
+        except (TypeError, ValueError):
+            authoritative_user_tenant_id = 0
+        if authoritative_user_tenant_id == resolved_tenant_id:
+            return resolved_tenant_id
+
+        # Transitional owner fallback is accepted only when no authoritative
+        # user.tenant_id exists and this resolved TenantProfile points back to
+        # the principal. If the legacy principal also has a tenant_slug, it
+        # must agree. Legacy User.municipio_id/pyme_id values are deliberately
+        # never compared with TenantProfile.id.
+        user_slug = str(getattr(user, "tenant_slug", "") or "").strip().lower()
+        profile_slug = str(getattr(tenant_profile, "slug", "") or "").strip().lower()
+        try:
+            user_id = int(getattr(user, "id", 0) or 0)
+        except (TypeError, ValueError):
+            user_id = 0
+        owner_ids = set()
+        for value in (
+            getattr(tenant_profile, "municipio_id", None),
+            getattr(tenant_profile, "pyme_id", None),
+        ):
+            try:
+                owner_ids.add(int(value))
+            except (TypeError, ValueError):
+                continue
+        if (
+            not authoritative_user_tenant_id
+            and user_id
+            and user_id in owner_ids
+            and (not user_slug or user_slug == profile_slug)
+        ):
+            return resolved_tenant_id
+
+        raise EncuestaError("No tenés permiso para este tenant", status_code=403)
 
     tenant_candidate = (
         getattr(user, "tenant_id", None)
@@ -913,10 +1345,6 @@ def determine_tenant_id_for_user(user: Any) -> int:
 def _ensure_tenant_access(encuesta: EncEncuesta, user: Any) -> None:
     tenant_id = _determine_tenant_id(user)
     if encuesta.tenant_id == tenant_id:
-        return
-
-    tenant_profile = getattr(g, "tenant_profile", None)
-    if tenant_profile and int(getattr(tenant_profile, "id", 0) or 0) == int(encuesta.tenant_id):
         return
 
     raise EncuestaError("No tenés permiso para esta encuesta", status_code=403)
@@ -967,10 +1395,12 @@ def _normalize_pregunta_tipo(raw_tipo: Any) -> str:
         "opcion_unica": "opcion_unica",
         "texto": "abierta",
         "text": "abierta",
+        "free_text": "abierta",
         "open": "abierta",
         "open_text": "abierta",
         "open-text": "abierta",
         "rating_emoji": "rating_emoji",
+        "emoji_rating": "rating_emoji",
         "emoji": "rating_emoji",
     }
 
@@ -1029,7 +1459,27 @@ def _normalize_option_entries(opciones: Sequence[Any]) -> List[Dict[str, Any]]:
             continue
 
         opcion = dict(opt)
+        opcion["_logical_ref_supplied"] = (
+            "logical_ref" in opt or "option_ref" in opt
+        )
         opcion["texto"] = texto_limpio
+        raw_logical_ref = opcion.get("logical_ref")
+        raw_option_ref = opcion.get("option_ref")
+        if (
+            raw_logical_ref not in (None, "")
+            and raw_option_ref not in (None, "")
+            and str(raw_logical_ref).strip() != str(raw_option_ref).strip()
+        ):
+            raise EncuestaError(
+                "logical_ref y option_ref deben identificar la misma opcion",
+                status_code=400,
+                payload={
+                    "reason_code": "survey_logical_ref_invalid",
+                    "field": "option_ref",
+                },
+            )
+        raw_ref = raw_option_ref if raw_option_ref not in (None, "") else raw_logical_ref
+        opcion["logical_ref"] = _normalize_logical_ref(raw_ref, field="option_ref")
         orden = _coerce_int_or_none(opcion.get("orden"))
         if orden is None:
             orden = len(normalized) + 1
@@ -1039,9 +1489,445 @@ def _normalize_option_entries(opciones: Sequence[Any]) -> List[Dict[str, Any]]:
     return normalized
 
 
+_CONDITIONAL_LOGIC_KEYS = frozenset({"version", "show_if"})
+_CONDITIONAL_SHOW_IF_KEYS = frozenset({"question_order", "option_order"})
+_CONDITIONAL_SOURCE_TYPES = frozenset({"opcion_unica", "opcion_multiple"})
+_CONDITIONAL_V2_GROUP_KEYS = frozenset({"kind", "operator", "children"})
+_CONDITIONAL_V2_LEAF_KEYS = frozenset(
+    {"kind", "question_ref", "option_ref"}
+)
+_CONDITIONAL_V2_OPERATORS = frozenset({"and", "or"})
+_CONDITIONAL_V2_MAX_DEPTH = 4
+_CONDITIONAL_V2_MAX_NODES = 64
+_CONDITIONAL_V2_MAX_LEAVES = 32
+_CONDITIONAL_V2_MAX_CHILDREN = 16
+
+
+def _normalize_logical_ref(value: Any, *, field: str) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise EncuestaError(
+            f"{field} debe ser un identificador de texto",
+            status_code=400,
+            payload={
+                "reason_code": "survey_logical_ref_invalid",
+                "field": field,
+            },
+        )
+    if not is_canonical_survey_logical_ref(value):
+        raise EncuestaError(
+            f"{field} debe tener hasta 160 caracteres seguros",
+            status_code=400,
+            payload={
+                "reason_code": "survey_logical_ref_invalid",
+                "field": field,
+            },
+        )
+    return value
+
+
+def _conditional_logic_error(
+    detail: str,
+    *,
+    contract_version: str = "surveys.conditional_logic.v1",
+    **context: Any,
+) -> EncuestaError:
+    clean_context = {key: value for key, value in context.items() if value is not None}
+    return EncuestaError(
+        "La logica condicional de la encuesta es invalida",
+        status_code=400,
+        payload={
+            "contract_version": contract_version,
+            "reason_code": "survey_conditional_logic_invalid",
+            "action_hint": "fix_conditional_logic",
+            "detail": detail,
+            "context": clean_context,
+            **clean_context,
+        },
+    )
+
+
+def _strict_positive_order(
+    value: Any,
+    *,
+    field: str,
+    question_index: Optional[int] = None,
+    question_order: Optional[int] = None,
+    option_index: Optional[int] = None,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise _conditional_logic_error(
+            f"{field} debe ser un entero positivo y no booleano",
+            field=field,
+            question_index=question_index,
+            question_order=question_order,
+            option_index=option_index,
+            received_type=type(value).__name__,
+        )
+    return value
+
+
+def _conditional_logic_contract_version(version: Any) -> str:
+    if not isinstance(version, bool) and version == 2:
+        return "surveys.conditional_logic.v2"
+    return "surveys.conditional_logic.v1"
+
+
+def _strict_conditional_ref(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not is_canonical_survey_logical_ref(value):
+        raise _conditional_logic_error(
+            f"{field} debe ser una referencia canonica segura",
+            contract_version="surveys.conditional_logic.v2",
+            field=field,
+            received_type=type(value).__name__,
+        )
+    return value
+
+
+def _normalize_conditional_v2_node(
+    value: Any,
+    *,
+    field: str,
+    depth: int,
+    counters: Dict[str, int],
+    seen_leaves: set[Tuple[str, str]],
+    question_index: Optional[int],
+    question_order: Optional[int],
+) -> Dict[str, Any]:
+    contract_version = "surveys.conditional_logic.v2"
+    if depth > _CONDITIONAL_V2_MAX_DEPTH:
+        raise _conditional_logic_error(
+            "La expresion condicional supera la profundidad maxima",
+            contract_version=contract_version,
+            field=field,
+            question_index=question_index,
+            question_order=question_order,
+            max_depth=_CONDITIONAL_V2_MAX_DEPTH,
+        )
+    if not isinstance(value, Mapping):
+        raise _conditional_logic_error(
+            f"{field} debe ser un objeto",
+            contract_version=contract_version,
+            field=field,
+            question_index=question_index,
+            question_order=question_order,
+            received_type=type(value).__name__,
+        )
+
+    counters["nodes"] += 1
+    if counters["nodes"] > _CONDITIONAL_V2_MAX_NODES:
+        raise _conditional_logic_error(
+            "La expresion condicional supera la cantidad maxima de nodos",
+            contract_version=contract_version,
+            field=field,
+            question_index=question_index,
+            question_order=question_order,
+            max_nodes=_CONDITIONAL_V2_MAX_NODES,
+        )
+
+    kind = value.get("kind")
+    keys = set(value.keys())
+    if kind == "group":
+        if keys != _CONDITIONAL_V2_GROUP_KEYS:
+            raise _conditional_logic_error(
+                "Un grupo v2 debe contener exactamente kind, operator y children",
+                contract_version=contract_version,
+                field=field,
+                question_index=question_index,
+                question_order=question_order,
+                expected_keys=sorted(_CONDITIONAL_V2_GROUP_KEYS),
+                received_keys=sorted(str(key) for key in keys),
+            )
+        operator = value.get("operator")
+        if operator not in _CONDITIONAL_V2_OPERATORS:
+            raise _conditional_logic_error(
+                "operator debe ser and u or",
+                contract_version=contract_version,
+                field=f"{field}.operator",
+                question_index=question_index,
+                question_order=question_order,
+                received_value=operator,
+            )
+        children = value.get("children")
+        if not isinstance(children, list):
+            raise _conditional_logic_error(
+                "children debe ser una lista",
+                contract_version=contract_version,
+                field=f"{field}.children",
+                question_index=question_index,
+                question_order=question_order,
+                received_type=type(children).__name__,
+            )
+        if not children or len(children) > _CONDITIONAL_V2_MAX_CHILDREN:
+            raise _conditional_logic_error(
+                "Cada grupo debe contener entre 1 y 16 hijos",
+                contract_version=contract_version,
+                field=f"{field}.children",
+                question_index=question_index,
+                question_order=question_order,
+                child_count=len(children),
+                max_children=_CONDITIONAL_V2_MAX_CHILDREN,
+            )
+        return {
+            "kind": "group",
+            "operator": operator,
+            "children": [
+                _normalize_conditional_v2_node(
+                    child,
+                    field=f"{field}.children[{child_index}]",
+                    depth=depth + 1,
+                    counters=counters,
+                    seen_leaves=seen_leaves,
+                    question_index=question_index,
+                    question_order=question_order,
+                )
+                for child_index, child in enumerate(children)
+            ],
+        }
+
+    if kind == "option_selected":
+        if keys != _CONDITIONAL_V2_LEAF_KEYS:
+            raise _conditional_logic_error(
+                "Una hoja v2 debe contener exactamente kind, question_ref y option_ref",
+                contract_version=contract_version,
+                field=field,
+                question_index=question_index,
+                question_order=question_order,
+                expected_keys=sorted(_CONDITIONAL_V2_LEAF_KEYS),
+                received_keys=sorted(str(key) for key in keys),
+            )
+        question_ref = _strict_conditional_ref(
+            value.get("question_ref"),
+            field=f"{field}.question_ref",
+        )
+        option_ref = _strict_conditional_ref(
+            value.get("option_ref"),
+            field=f"{field}.option_ref",
+        )
+        leaf_key = (question_ref, option_ref)
+        if leaf_key in seen_leaves:
+            raise _conditional_logic_error(
+                "La misma condicion option_selected no puede repetirse",
+                contract_version=contract_version,
+                field=field,
+                question_index=question_index,
+                question_order=question_order,
+                source_question_ref=question_ref,
+                source_option_ref=option_ref,
+            )
+        seen_leaves.add(leaf_key)
+        counters["leaves"] += 1
+        if counters["leaves"] > _CONDITIONAL_V2_MAX_LEAVES:
+            raise _conditional_logic_error(
+                "La expresion condicional supera la cantidad maxima de hojas",
+                contract_version=contract_version,
+                field=field,
+                question_index=question_index,
+                question_order=question_order,
+                max_leaves=_CONDITIONAL_V2_MAX_LEAVES,
+            )
+        return {
+            "kind": "option_selected",
+            "question_ref": question_ref,
+            "option_ref": option_ref,
+        }
+
+    raise _conditional_logic_error(
+        "Cada nodo v2 debe ser group u option_selected",
+        contract_version=contract_version,
+        field=f"{field}.kind",
+        question_index=question_index,
+        question_order=question_order,
+        received_value=kind,
+    )
+
+
+def _iter_conditional_v2_leaves(node: Mapping[str, Any]):
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current["kind"] == "option_selected":
+            yield current
+            continue
+        stack.extend(reversed(current["children"]))
+
+
+def _iter_mandatory_conditional_v2_leaves(node: Mapping[str, Any]):
+    """Yield leaves that every successful path through ``node`` must satisfy."""
+
+    if node["kind"] == "option_selected":
+        yield node
+        return
+    if node["operator"] != "and":
+        return
+    for child in node["children"]:
+        yield from _iter_mandatory_conditional_v2_leaves(child)
+
+
+def _iter_conditional_v2_and_groups(node: Mapping[str, Any]):
+    """Yield every conjunction, including conjunctions nested below an OR."""
+
+    if node["kind"] == "option_selected":
+        return
+    if node["operator"] == "and":
+        yield node
+    for child in node["children"]:
+        yield from _iter_conditional_v2_and_groups(child)
+
+
+def _normalize_conditional_logic(
+    value: Any,
+    *,
+    question_index: Optional[int] = None,
+    question_order: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise _conditional_logic_error(
+            "conditional_logic debe ser null o un objeto",
+            question_index=question_index,
+            question_order=question_order,
+            field="conditional_logic",
+            received_type=type(value).__name__,
+        )
+
+    version = value.get("version")
+    contract_version = _conditional_logic_contract_version(version)
+    keys = set(value.keys())
+    if keys != _CONDITIONAL_LOGIC_KEYS:
+        raise _conditional_logic_error(
+            "conditional_logic debe contener exactamente version y show_if",
+            contract_version=contract_version,
+            question_index=question_index,
+            question_order=question_order,
+            field="conditional_logic",
+            expected_keys=sorted(_CONDITIONAL_LOGIC_KEYS),
+            received_keys=sorted(str(key) for key in keys),
+        )
+
+    if (
+        isinstance(version, bool)
+        or not isinstance(version, int)
+        or version not in {1, 2}
+    ):
+        raise _conditional_logic_error(
+            "conditional_logic.version debe ser el entero 1 o 2",
+            contract_version=contract_version,
+            question_index=question_index,
+            question_order=question_order,
+            field="conditional_logic.version",
+            received_type=type(version).__name__,
+            received_value=version,
+        )
+
+    show_if = value.get("show_if")
+    if version == 2:
+        normalized_show_if = _normalize_conditional_v2_node(
+            show_if,
+            field="conditional_logic.show_if",
+            depth=1,
+            counters={"nodes": 0, "leaves": 0},
+            seen_leaves=set(),
+            question_index=question_index,
+            question_order=question_order,
+        )
+        if normalized_show_if["kind"] != "group":
+            raise _conditional_logic_error(
+                "conditional_logic.show_if debe ser un grupo raiz",
+                contract_version="surveys.conditional_logic.v2",
+                field="conditional_logic.show_if",
+                question_index=question_index,
+                question_order=question_order,
+            )
+        return {"version": 2, "show_if": normalized_show_if}
+
+    if not isinstance(show_if, Mapping):
+        raise _conditional_logic_error(
+            "conditional_logic.show_if debe ser un objeto",
+            question_index=question_index,
+            question_order=question_order,
+            field="conditional_logic.show_if",
+            received_type=type(show_if).__name__,
+        )
+    show_if_keys = set(show_if.keys())
+    if show_if_keys != _CONDITIONAL_SHOW_IF_KEYS:
+        raise _conditional_logic_error(
+            "show_if debe contener exactamente question_order y option_order",
+            question_index=question_index,
+            question_order=question_order,
+            field="conditional_logic.show_if",
+            expected_keys=sorted(_CONDITIONAL_SHOW_IF_KEYS),
+            received_keys=sorted(str(key) for key in show_if_keys),
+        )
+
+    source_question_order = _strict_positive_order(
+        show_if.get("question_order"),
+        field="conditional_logic.show_if.question_order",
+        question_index=question_index,
+        question_order=question_order,
+    )
+    source_option_order = _strict_positive_order(
+        show_if.get("option_order"),
+        field="conditional_logic.show_if.option_order",
+        question_index=question_index,
+        question_order=question_order,
+    )
+    return {
+        "version": 1,
+        "show_if": {
+            "question_order": source_question_order,
+            "option_order": source_option_order,
+        },
+    }
+
+
+def normalize_survey_conditional_logic(
+    value: Any,
+    *,
+    question_index: Optional[int] = None,
+    question_order: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
+    """Normalize the shared survey conditional-logic contract.
+
+    Canonical document materializers use this public boundary so AST shape,
+    reference syntax, and complexity limits cannot drift from executable
+    survey validation.
+    """
+
+    return _normalize_conditional_logic(
+        value,
+        question_index=question_index,
+        question_order=question_order,
+    )
+
+
 def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str, Any]:
     payload = dict(pregunta)
     missing: List[str] = []
+    payload["_logical_ref_supplied"] = (
+        "logical_ref" in pregunta or "question_ref" in pregunta
+    )
+
+    raw_logical_ref = payload.get("logical_ref")
+    raw_question_ref = payload.get("question_ref")
+    if (
+        raw_logical_ref not in (None, "")
+        and raw_question_ref not in (None, "")
+        and str(raw_logical_ref).strip() != str(raw_question_ref).strip()
+    ):
+        raise EncuestaError(
+            "logical_ref y question_ref deben identificar la misma pregunta",
+            status_code=400,
+            payload={
+                "reason_code": "survey_logical_ref_invalid",
+                "field": "question_ref",
+                "question_index": index,
+            },
+        )
+    raw_ref = raw_question_ref if raw_question_ref not in (None, "") else raw_logical_ref
+    payload["logical_ref"] = _normalize_logical_ref(raw_ref, field="question_ref")
 
     raw_tipo = payload.get("tipo") or payload.get("type")
     if not raw_tipo:
@@ -1068,10 +1954,11 @@ def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str
     if payload.get("orden") is None:
         payload["orden"] = index + 1
     else:
-        try:
-            payload["orden"] = int(payload.get("orden"))
-        except (TypeError, ValueError):
-            payload["orden"] = index + 1
+        payload["orden"] = _strict_positive_order(
+            payload.get("orden"),
+            field="question.order",
+            question_index=index,
+        )
 
     if "obligatoria" not in payload and "required" in payload:
         payload["obligatoria"] = bool(payload.get("required"))
@@ -1093,13 +1980,334 @@ def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str
     payload["max_selecciones"] = _coerce_int_or_none(
         payload.get("max_selecciones")
     )
+    min_selections = payload["min_selecciones"]
+    max_selections = payload["max_selecciones"]
+    if min_selections is not None and min_selections < 0:
+        raise _conditional_logic_error(
+            "min_selecciones no puede ser negativo",
+            field="min_selecciones",
+            question_index=index,
+            question_order=payload["orden"],
+        )
+    if max_selections is not None and max_selections < 0:
+        raise _conditional_logic_error(
+            "max_selecciones no puede ser negativo",
+            field="max_selecciones",
+            question_index=index,
+            question_order=payload["orden"],
+        )
+    if (
+        min_selections is not None
+        and max_selections is not None
+        and min_selections > max_selections
+    ):
+        raise _conditional_logic_error(
+            "min_selecciones no puede superar max_selecciones",
+            field="selection_bounds",
+            question_index=index,
+            question_order=payload["orden"],
+        )
+    if tipo in {"opcion_unica", "rating_emoji"} and (
+        (min_selections is not None and min_selections > 1)
+        or (max_selections is not None and max_selections > 1)
+    ):
+        raise _conditional_logic_error(
+            "Las preguntas de seleccion unica admiten como maximo una opcion",
+            field="selection_bounds",
+            question_index=index,
+            question_order=payload["orden"],
+            question_type=tipo,
+        )
 
-    opciones = _normalize_option_entries(payload.get("opciones") or [])
+    raw_opciones = payload.get("opciones") or []
+    for option_index, raw_option in enumerate(raw_opciones):
+        if isinstance(raw_option, Mapping) and raw_option.get("orden") is not None:
+            _strict_positive_order(
+                raw_option.get("orden"),
+                field="option.order",
+                question_index=index,
+                question_order=payload["orden"],
+                option_index=option_index,
+            )
+
+    opciones = _normalize_option_entries(raw_opciones)
     payload["opciones"] = opciones
-    if tipo in {"opcion_unica", "opcion_multiple"} and not opciones:
+    if tipo in {"opcion_unica", "opcion_multiple", "rating_emoji"} and not opciones:
         raise EncuestaError(f"Pregunta #{index + 1} requiere opciones")
 
+    has_conditional_logic = "conditional_logic" in payload
+    has_spanish_alias = "logica_condicional" in payload
+    if has_conditional_logic and has_spanish_alias:
+        if payload.get("conditional_logic") != payload.get("logica_condicional"):
+            raise _conditional_logic_error(
+                "No se pueden enviar conditional_logic y logica_condicional con valores distintos",
+                question_index=index,
+                question_order=payload["orden"],
+                field="conditional_logic",
+            )
+    raw_conditional_logic = (
+        payload.get("conditional_logic")
+        if has_conditional_logic
+        else payload.get("logica_condicional")
+    )
+    payload["conditional_logic"] = _normalize_conditional_logic(
+        raw_conditional_logic,
+        question_index=index,
+        question_order=payload["orden"],
+    )
+    payload.pop("logica_condicional", None)
+
     return payload
+
+
+def _validate_instrument_payload(
+    preguntas_payload: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    normalized = [
+        _validate_pregunta_payload(dict(raw_payload or {}), index)
+        for index, raw_payload in enumerate(preguntas_payload or [])
+    ]
+
+    questions_by_order: Dict[int, Dict[str, Any]] = {}
+    questions_by_ref: Dict[str, Dict[str, Any]] = {}
+    question_refs: set[str] = set()
+    for index, question in enumerate(normalized):
+        order = question["orden"]
+        if order in questions_by_order:
+            raise _conditional_logic_error(
+                "Cada pregunta debe tener un orden unico",
+                field="question.order",
+                question_index=index,
+                question_order=order,
+                duplicate_order=order,
+            )
+        questions_by_order[order] = question
+
+        question_ref = question.get("logical_ref")
+        if question_ref is not None:
+            if question_ref in question_refs:
+                raise EncuestaError(
+                    "Cada question_ref debe ser unico dentro de la encuesta",
+                    status_code=400,
+                    payload={
+                        "reason_code": "survey_logical_ref_duplicate",
+                        "field": "question_ref",
+                        "question_ref": question_ref,
+                    },
+                )
+            question_refs.add(question_ref)
+            questions_by_ref[question_ref] = question
+
+        option_orders: set[int] = set()
+        option_refs: set[str] = set()
+        for option_index, option in enumerate(question.get("opciones") or []):
+            option_order = option["orden"]
+            if option_order in option_orders:
+                raise _conditional_logic_error(
+                    "Cada opcion de una pregunta debe tener un orden unico",
+                    field="option.order",
+                    question_index=index,
+                    question_order=order,
+                    option_index=option_index,
+                    duplicate_order=option_order,
+                )
+            option_orders.add(option_order)
+            option_ref = option.get("logical_ref")
+            if option_ref is not None:
+                if option_ref in option_refs:
+                    raise EncuestaError(
+                        "Cada option_ref debe ser unico dentro de su pregunta",
+                        status_code=400,
+                        payload={
+                            "reason_code": "survey_logical_ref_duplicate",
+                            "field": "option_ref",
+                            "question_order": order,
+                            "option_ref": option_ref,
+                        },
+                    )
+                option_refs.add(option_ref)
+
+    if not normalized:
+        return normalized
+
+    first_order = min(questions_by_order)
+    first_question = questions_by_order[first_order]
+    if first_question.get("conditional_logic") is not None:
+        first_logic = first_question["conditional_logic"]
+        raise _conditional_logic_error(
+            "La primera pregunta no puede ser condicional",
+            contract_version=_conditional_logic_contract_version(
+                first_logic.get("version")
+            ),
+            field="conditional_logic",
+            question_order=first_order,
+        )
+
+    for question_order, question in questions_by_order.items():
+        conditional_logic = question.get("conditional_logic")
+        if conditional_logic is None:
+            continue
+        version = conditional_logic["version"]
+        contract_version = _conditional_logic_contract_version(version)
+        show_if = conditional_logic["show_if"]
+        if version == 1:
+            source_order = show_if["question_order"]
+            source_option_order = show_if["option_order"]
+            source_question = questions_by_order.get(source_order)
+            if source_question is None:
+                raise _conditional_logic_error(
+                    "La pregunta fuente de show_if no existe",
+                    field="conditional_logic.show_if.question_order",
+                    question_order=question_order,
+                    source_question_order=source_order,
+                )
+            # A strict backward-only edge makes the graph acyclic by construction
+            # and avoids recursion over attacker-controlled instrument sizes.
+            if source_order >= question_order:
+                raise _conditional_logic_error(
+                    "La pregunta fuente debe aparecer antes que la pregunta condicional",
+                    field="conditional_logic.show_if.question_order",
+                    question_order=question_order,
+                    source_question_order=source_order,
+                )
+            if source_question.get("tipo") not in _CONDITIONAL_SOURCE_TYPES:
+                raise _conditional_logic_error(
+                    "La pregunta fuente debe ser de opcion unica o multiple",
+                    field="conditional_logic.show_if.question_order",
+                    question_order=question_order,
+                    source_question_order=source_order,
+                    source_question_type=source_question.get("tipo"),
+                )
+            source_option_orders = {
+                option["orden"] for option in source_question.get("opciones") or []
+            }
+            if source_option_order not in source_option_orders:
+                raise _conditional_logic_error(
+                    "La opcion fuente de show_if no existe",
+                    field="conditional_logic.show_if.option_order",
+                    question_order=question_order,
+                    source_question_order=source_order,
+                    source_option_order=source_option_order,
+                )
+            continue
+
+        for leaf in _iter_conditional_v2_leaves(show_if):
+            source_question_ref = leaf["question_ref"]
+            source_option_ref = leaf["option_ref"]
+            source_question = questions_by_ref.get(source_question_ref)
+            if source_question is None:
+                raise _conditional_logic_error(
+                    "La pregunta fuente de option_selected no existe",
+                    contract_version=contract_version,
+                    field="conditional_logic.show_if.question_ref",
+                    question_order=question_order,
+                    source_question_ref=source_question_ref,
+                )
+            source_order = source_question["orden"]
+            if source_order >= question_order:
+                raise _conditional_logic_error(
+                    "La pregunta fuente debe aparecer antes que la pregunta condicional",
+                    contract_version=contract_version,
+                    field="conditional_logic.show_if.question_ref",
+                    question_order=question_order,
+                    source_question_order=source_order,
+                    source_question_ref=source_question_ref,
+                )
+            if source_question.get("tipo") not in _CONDITIONAL_SOURCE_TYPES:
+                raise _conditional_logic_error(
+                    "La pregunta fuente debe ser de opcion unica o multiple",
+                    contract_version=contract_version,
+                    field="conditional_logic.show_if.question_ref",
+                    question_order=question_order,
+                    source_question_order=source_order,
+                    source_question_ref=source_question_ref,
+                    source_question_type=source_question.get("tipo"),
+                )
+            source_options_by_ref = {
+                option.get("logical_ref"): option
+                for option in source_question.get("opciones") or []
+                if option.get("logical_ref") is not None
+            }
+            if source_option_ref not in source_options_by_ref:
+                raise _conditional_logic_error(
+                    "La opcion fuente no existe o no pertenece a la pregunta indicada",
+                    contract_version=contract_version,
+                    field="conditional_logic.show_if.option_ref",
+                    question_order=question_order,
+                    source_question_order=source_order,
+                    source_question_ref=source_question_ref,
+                    source_option_ref=source_option_ref,
+                )
+
+        for conjunction in _iter_conditional_v2_and_groups(show_if):
+            mandatory_single_choice_options: Dict[str, str] = {}
+            for leaf in _iter_mandatory_conditional_v2_leaves(conjunction):
+                source_question_ref = leaf["question_ref"]
+                source_question = questions_by_ref[source_question_ref]
+                if source_question.get("tipo") != "opcion_unica":
+                    continue
+                source_option_ref = leaf["option_ref"]
+                previous_option_ref = mandatory_single_choice_options.get(
+                    source_question_ref
+                )
+                if (
+                    previous_option_ref is not None
+                    and previous_option_ref != source_option_ref
+                ):
+                    raise _conditional_logic_error(
+                        "AND no puede exigir opciones distintas de una pregunta de opcion unica",
+                        contract_version=contract_version,
+                        field="conditional_logic.show_if",
+                        question_order=question_order,
+                        source_question_ref=source_question_ref,
+                        first_option_ref=previous_option_ref,
+                        conflicting_option_ref=source_option_ref,
+                    )
+                mandatory_single_choice_options[source_question_ref] = (
+                    source_option_ref
+                )
+
+    return normalized
+
+
+def validate_survey_instrument_payload(
+    preguntas_payload: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Validate a complete instrument using the executable survey rules."""
+
+    return _validate_instrument_payload(preguntas_payload)
+
+
+def _persisted_question_payload(pregunta: EncPregunta) -> Dict[str, Any]:
+    return {
+        "id": pregunta.id,
+        "question_ref": pregunta.logical_ref,
+        "orden": pregunta.orden,
+        "tipo": pregunta.tipo,
+        "texto": pregunta.texto,
+        "obligatoria": pregunta.obligatoria,
+        "min_selecciones": pregunta.min_selecciones,
+        "max_selecciones": pregunta.max_selecciones,
+        "conditional_logic": deepcopy(pregunta.logica_condicional),
+        "opciones": [
+            {
+                "id": opcion.id,
+                "option_ref": opcion.logical_ref,
+                "orden": opcion.orden,
+                "texto": opcion.texto,
+                "valor": opcion.valor,
+            }
+            for opcion in pregunta.opciones
+        ],
+    }
+
+
+def _validate_persisted_instrument(encuesta: EncEncuesta) -> None:
+    if not any(pregunta.logica_condicional is not None for pregunta in encuesta.preguntas):
+        return
+    _validate_instrument_payload(
+        [_persisted_question_payload(pregunta) for pregunta in encuesta.preguntas]
+    )
 
 
 def _normalize_identity_aliases(data: Mapping[str, Any]) -> Dict[str, Any]:
@@ -1112,6 +2320,26 @@ def _normalize_identity_aliases(data: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
+    if "document_ref" in data:
+        incoming_document_ref = _normalize_logical_ref(
+            data.get("document_ref"),
+            field="document_ref",
+        )
+        if (
+            encuesta.document_ref is not None
+            and incoming_document_ref != encuesta.document_ref
+        ):
+            raise EncuestaError(
+                "document_ref no puede cambiar ni borrarse una vez persistido",
+                status_code=409,
+                payload={
+                    "reason_code": "survey_logical_ref_immutable",
+                    "field": "document_ref",
+                    "encuesta_id": encuesta.id,
+                },
+            )
+        if encuesta.document_ref is None:
+            encuesta.document_ref = incoming_document_ref
     encuesta.titulo = data.get("titulo", encuesta.titulo)
     encuesta.descripcion = data.get("descripcion", encuesta.descripcion)
     encuesta.tipo = data.get("tipo", encuesta.tipo)
@@ -1137,17 +2365,19 @@ def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
 
 def _build_pregunta_entities(encuesta: EncEncuesta, preguntas_payload: Sequence[Dict[str, Any]]) -> List[EncPregunta]:
     preguntas: List[EncPregunta] = []
-    for idx, pregunta_payload in enumerate(preguntas_payload):
-        payload = _validate_pregunta_payload(pregunta_payload, idx)
+    normalized_payloads = _validate_instrument_payload(preguntas_payload)
+    for idx, payload in enumerate(normalized_payloads):
         pregunta_tipo = _normalize_pregunta_tipo(payload.get("tipo", "opcion_unica"))
         pregunta = EncPregunta(
             encuesta=encuesta,
             orden=int(payload.get("orden", idx + 1)),
+            logical_ref=payload.get("logical_ref"),
             tipo=pregunta_tipo,
             texto=(payload.get("texto") or "").strip(),
             obligatoria=bool(payload.get("obligatoria", False)),
             min_selecciones=_coerce_int_or_none(payload.get("min_selecciones")),
             max_selecciones=_coerce_int_or_none(payload.get("max_selecciones")),
+            logica_condicional=deepcopy(payload.get("conditional_logic")),
         )
         opciones_payload = payload.get("opciones") or []
         for opt in opciones_payload:
@@ -1164,12 +2394,78 @@ def _build_pregunta_entities(encuesta: EncEncuesta, preguntas_payload: Sequence[
             opcion = EncOpcion(
                 pregunta=pregunta,
                 orden=int(opt.get("orden", len(pregunta.opciones) + 1)),
+                logical_ref=opt.get("logical_ref"),
                 texto=texto_opcion,
-                valor=opt.get("valor") or opt.get("value"),
+                valor=(opt["valor"] if "valor" in opt else opt.get("value")),
             )
             pregunta.opciones.append(opcion)
         preguntas.append(pregunta)
     return preguntas
+
+
+def _preserve_persisted_logical_refs(
+    encuesta: EncEncuesta,
+    preguntas_payload: Sequence[Dict[str, Any]],
+) -> None:
+    """Keep canonical refs immutable when an editable survey is rebuilt."""
+
+    existing_questions = {
+        pregunta.id: pregunta
+        for pregunta in encuesta.preguntas
+        if pregunta.id is not None
+    }
+    for payload in preguntas_payload:
+        question_id = _payload_int_id(payload, "id", "pregunta_id", "question_id")
+        question = existing_questions.get(question_id)
+        if question is None:
+            continue
+        incoming_ref = payload.get("logical_ref")
+        if question.logical_ref:
+            if (
+                payload.get("_logical_ref_supplied")
+                and incoming_ref != question.logical_ref
+            ):
+                raise EncuestaError(
+                    "question_ref no puede cambiar una vez persistido",
+                    status_code=409,
+                    payload={
+                        "reason_code": "survey_logical_ref_immutable",
+                        "field": "question_ref",
+                        "pregunta_id": question.id,
+                    },
+                )
+            payload["logical_ref"] = question.logical_ref
+
+        existing_options = {
+            option.id: option
+            for option in question.opciones
+            if option.id is not None
+        }
+        for option_payload in payload.get("opciones") or []:
+            option_id = _payload_int_id(
+                option_payload,
+                "id",
+                "opcion_id",
+                "option_id",
+            )
+            option = existing_options.get(option_id)
+            if option is None or not option.logical_ref:
+                continue
+            incoming_option_ref = option_payload.get("logical_ref")
+            if (
+                option_payload.get("_logical_ref_supplied")
+                and incoming_option_ref != option.logical_ref
+            ):
+                raise EncuestaError(
+                    "option_ref no puede cambiar una vez persistido",
+                    status_code=409,
+                    payload={
+                        "reason_code": "survey_logical_ref_immutable",
+                        "field": "option_ref",
+                        "opcion_id": option.id,
+                    },
+                )
+            option_payload["logical_ref"] = option.logical_ref
 
 
 def _payload_int_id(payload: Mapping[str, Any], *keys: str) -> Optional[int]:
@@ -1181,11 +2477,11 @@ def _payload_int_id(payload: Mapping[str, Any], *keys: str) -> Optional[int]:
     return None
 
 
-def _apply_non_destructive_question_updates(
+def _prepare_non_destructive_question_updates(
     encuesta: EncEncuesta,
     preguntas_payload: Sequence[Dict[str, Any]],
-) -> None:
-    """Apply text/config edits without invalidating existing answers.
+) -> Tuple[List[Dict[str, Any]], Dict[int, EncPregunta]]:
+    """Validate text/config edits without mutating an answered survey.
 
     Public surveys with responses can receive full-form PUT payloads from the
     admin UI. Rebuilding the questions would break historical answer
@@ -1195,11 +2491,10 @@ def _apply_non_destructive_question_updates(
     """
 
     existing_questions = {pregunta.id: pregunta for pregunta in encuesta.preguntas if pregunta.id is not None}
-    normalized_payloads: List[Dict[str, Any]] = []
+    normalized_payloads = _validate_instrument_payload(preguntas_payload)
     seen_questions: set[int] = set()
 
-    for idx, raw_payload in enumerate(preguntas_payload or []):
-        payload = _validate_pregunta_payload(dict(raw_payload or {}), idx)
+    for payload in normalized_payloads:
         question_id = _payload_int_id(payload, "id", "pregunta_id", "question_id")
         if question_id is None or question_id not in existing_questions:
             raise EncuestaError(
@@ -1224,6 +2519,19 @@ def _apply_non_destructive_question_updates(
         seen_questions.add(question_id)
 
         question = existing_questions[question_id]
+        if (
+            payload.get("_logical_ref_supplied")
+            and payload.get("logical_ref") != question.logical_ref
+        ):
+            raise EncuestaError(
+                "No se puede modificar question_ref con respuestas registradas",
+                status_code=409,
+                payload={
+                    "reason_code": "survey_logical_ref_immutable",
+                    "field": "question_ref",
+                    "pregunta_id": question_id,
+                },
+            )
         if _normalize_pregunta_tipo(payload.get("tipo")) != question.tipo:
             raise EncuestaError(
                 "No se puede modificar el tipo de una pregunta con respuestas registradas",
@@ -1231,6 +2539,28 @@ def _apply_non_destructive_question_updates(
                 payload={
                     "reason_code": "survey_structure_locked",
                     "detail": "El tipo de pregunta no puede cambiar despues de recibir respuestas.",
+                    "encuesta_id": encuesta.id,
+                    "pregunta_id": question_id,
+                },
+            )
+        if payload.get("orden") != question.orden:
+            raise EncuestaError(
+                "No se puede modificar el orden de una pregunta con respuestas registradas",
+                status_code=409,
+                payload={
+                    "reason_code": "survey_structure_locked",
+                    "detail": "El orden de la pregunta no puede cambiar despues de recibir respuestas.",
+                    "encuesta_id": encuesta.id,
+                    "pregunta_id": question_id,
+                },
+            )
+        if payload.get("conditional_logic") != question.logica_condicional:
+            raise EncuestaError(
+                "No se puede modificar la logica condicional de una encuesta con respuestas registradas",
+                status_code=409,
+                payload={
+                    "reason_code": "survey_structure_locked",
+                    "detail": "La logica condicional no puede cambiar despues de recibir respuestas.",
                     "encuesta_id": encuesta.id,
                     "pregunta_id": question_id,
                 },
@@ -1276,8 +2606,32 @@ def _apply_non_destructive_question_updates(
                         },
                     )
                 seen_options.add(option_id)
-
-        normalized_payloads.append(payload)
+                if option_payload.get("orden") != existing_options[option_id].orden:
+                    raise EncuestaError(
+                        "No se puede modificar el orden de las opciones con respuestas registradas",
+                        status_code=409,
+                        payload={
+                            "reason_code": "survey_structure_locked",
+                            "detail": "El orden de las opciones no puede cambiar despues de recibir respuestas.",
+                            "encuesta_id": encuesta.id,
+                            "pregunta_id": question_id,
+                            "opcion_id": option_id,
+                        },
+                    )
+                if (
+                    option_payload.get("_logical_ref_supplied")
+                    and option_payload.get("logical_ref")
+                    != existing_options[option_id].logical_ref
+                ):
+                    raise EncuestaError(
+                        "No se puede modificar option_ref con respuestas registradas",
+                        status_code=409,
+                        payload={
+                            "reason_code": "survey_logical_ref_immutable",
+                            "field": "option_ref",
+                            "opcion_id": option_id,
+                        },
+                    )
 
     if set(existing_questions) != seen_questions:
         raise EncuestaError(
@@ -1291,6 +2645,14 @@ def _apply_non_destructive_question_updates(
             },
         )
 
+
+    return normalized_payloads, existing_questions
+
+
+def _apply_prepared_non_destructive_question_updates(
+    normalized_payloads: Sequence[Dict[str, Any]],
+    existing_questions: Mapping[int, EncPregunta],
+) -> None:
     for payload in normalized_payloads:
         question_id = _payload_int_id(payload, "id", "pregunta_id", "question_id")
         if question_id is None:
@@ -1300,6 +2662,7 @@ def _apply_non_destructive_question_updates(
         question.obligatoria = bool(payload.get("obligatoria", False))
         question.min_selecciones = _coerce_int_or_none(payload.get("min_selecciones"))
         question.max_selecciones = _coerce_int_or_none(payload.get("max_selecciones"))
+        question.logica_condicional = deepcopy(payload.get("conditional_logic"))
 
         existing_options = {opcion.id: opcion for opcion in question.opciones if opcion.id is not None}
         for option_payload in payload.get("opciones") or []:
@@ -1314,6 +2677,14 @@ def _apply_non_destructive_question_updates(
                 or ""
             ).strip()
             option.valor = option_payload.get("valor") or option_payload.get("value")
+
+
+def _apply_non_destructive_question_updates(
+    encuesta: EncEncuesta,
+    preguntas_payload: Sequence[Dict[str, Any]],
+) -> None:
+    prepared = _prepare_non_destructive_question_updates(encuesta, preguntas_payload)
+    _apply_prepared_non_destructive_question_updates(*prepared)
 
 
 def _normalize_tags(tags: Optional[Sequence[Any]]) -> List[str]:
@@ -1513,7 +2884,12 @@ def _get_auto_seed_config(encuesta: EncEncuesta) -> Optional[Dict[str, Any]]:
     return None
 
 
-def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
+def create_encuesta(
+    data: Dict[str, Any],
+    user: Any,
+    *,
+    commit: bool = True,
+) -> EncEncuesta:
     if not data:
         raise EncuestaError("Payload vacío")
 
@@ -1536,9 +2912,22 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
         slug_hint=slug_seed,
         tenant_id=tenant_id,
     )
+    if auto_seed_cfg and not commit:
+        raise EncuestaError(
+            "auto_seed_demo no es compatible con una creacion transaccional diferida",
+            status_code=422,
+            payload={
+                "reason_code": "survey_auto_seed_deferred_unsupported",
+                "action_hint": "remove_auto_seed_demo",
+            },
+        )
 
     encuesta = EncEncuesta(
         tenant_id=tenant_id,
+        document_ref=_normalize_logical_ref(
+            payload.get("document_ref"),
+            field="document_ref",
+        ),
         slug=slug,
         titulo=titulo,
         descripcion=payload.get("descripcion"),
@@ -1563,12 +2952,26 @@ def create_encuesta(data: Dict[str, Any], user: Any) -> EncEncuesta:
 
     db.session.add(encuesta)
     try:
-        db.session.commit()
+        db.session.flush()
+        if commit:
+            db.session.commit()
     except IntegrityError as exc:
-        db.session.rollback()
+        if commit:
+            db.session.rollback()
         raise EncuestaError("No se pudo crear la encuesta (slug duplicado?)") from exc
 
-    current_app.logger.info("[encuestas] Encuesta %s creada por %s", encuesta.id, getattr(user, "id", None))
+    if commit:
+        current_app.logger.info(
+            "[encuestas] Encuesta %s creada por %s",
+            encuesta.id,
+            getattr(user, "id", None),
+        )
+    else:
+        current_app.logger.debug(
+            "[encuestas] Encuesta %s preparada para commit atomico por %s",
+            encuesta.id,
+            getattr(user, "id", None),
+        )
 
     if auto_seed_cfg:
         seed_encuesta_respuestas_demo(
@@ -1589,6 +2992,17 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     _ensure_tenant_access(encuesta, user)
 
+    encuesta = _acquire_encuesta_write_guard(encuesta_id)
+    _ensure_tenant_access(encuesta, user)
+
+    expected_revision = _expected_structure_revision(data)
+    if (
+        "preguntas" in data
+        and expected_revision is not None
+        and expected_revision != int(encuesta.structure_revision or 1)
+    ):
+        raise _structure_revision_conflict(encuesta, expected_revision)
+
     if encuesta.estado == "cerrada":
         raise EncuestaError(
             "La encuesta está cerrada y no se puede modificar",
@@ -1598,10 +3012,25 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
     if encuesta.estado not in {"borrador", "publicada"}:
         raise EncuestaError("La encuesta no se puede modificar", status_code=409)
 
-    puede_actualizar_estructura = True
+    puede_actualizar_estructura = not _survey_structure_is_locked(encuesta)
     municipality_hint = data.get("municipality") or data.get("municipio")
     has_auto_seed_update = "auto_seed_demo" in data
     raw_auto_seed_cfg = data.get("auto_seed_demo") if has_auto_seed_update else None
+
+    # Preflight the complete instrument and every operation that can raise an
+    # EncuestaError before mutating the ORM object or flushing DELETEs.
+    normalized_questions: Optional[List[Dict[str, Any]]] = None
+    prepared_locked_questions: Optional[
+        Tuple[List[Dict[str, Any]], Dict[int, EncPregunta]]
+    ] = None
+    if "preguntas" in data:
+        normalized_questions = _validate_instrument_payload(data.get("preguntas") or [])
+        _preserve_persisted_logical_refs(encuesta, normalized_questions)
+        if not puede_actualizar_estructura:
+            prepared_locked_questions = _prepare_non_destructive_question_updates(
+                encuesta,
+                normalized_questions,
+            )
 
     raw_slug = None
     if "slug" in data:
@@ -1609,6 +3038,7 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
     elif "codigo" in data:
         raw_slug = data.get("codigo")
 
+    candidate_slug: Optional[str] = None
     if raw_slug is not None:
         candidate_slug = _slugify(str(raw_slug))
         if not candidate_slug:
@@ -1621,30 +3051,41 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
             )
             if exists:
                 raise EncuestaError("Ya existe una encuesta con ese slug", status_code=409)
-            encuesta.slug = candidate_slug
 
-    if encuesta.estado == "publicada" and "preguntas" in data:
-        puede_actualizar_estructura = encuesta.respuestas.count() == 0
+    # Parse date values now so an invalid later field cannot leave title or
+    # description dirty when a direct caller catches and commits the session.
+    if data.get("inicio_at"):
+        _parse_datetime(data.get("inicio_at"))
+    if data.get("fin_at"):
+        _parse_datetime(data.get("fin_at"))
+
+    prepared_auto_seed_config: Optional[Dict[str, Any]] = None
+    if has_auto_seed_update:
+        prepared_auto_seed_config = _normalize_auto_seed_config(
+            raw_auto_seed_cfg,
+            municipality_label=municipality_hint,
+            slug_hint=candidate_slug or encuesta.slug,
+            tenant_id=encuesta.tenant_id,
+        )
+
+    if candidate_slug is not None:
+        encuesta.slug = candidate_slug
 
     _apply_common_updates(encuesta, data)
 
-    if "preguntas" in data:
+    if normalized_questions is not None:
         if not puede_actualizar_estructura:
-            _apply_non_destructive_question_updates(encuesta, data.get("preguntas") or [])
+            assert prepared_locked_questions is not None
+            _apply_prepared_non_destructive_question_updates(*prepared_locked_questions)
         else:
+            encuesta.structure_revision = int(encuesta.structure_revision or 1) + 1
             encuesta.preguntas.clear()
             db.session.flush()
-            nuevas_preguntas = _build_pregunta_entities(encuesta, data.get("preguntas") or [])
+            nuevas_preguntas = _build_pregunta_entities(encuesta, normalized_questions)
             encuesta.preguntas.extend(nuevas_preguntas)
 
     if has_auto_seed_update:
-        auto_seed_cfg = _normalize_auto_seed_config(
-            raw_auto_seed_cfg,
-            municipality_label=municipality_hint,
-            slug_hint=encuesta.slug,
-            tenant_id=encuesta.tenant_id,
-        )
-        _persist_auto_seed_config(encuesta, auto_seed_cfg)
+        _persist_auto_seed_config(encuesta, prepared_auto_seed_config)
 
     try:
         db.session.commit()
@@ -1669,6 +3110,9 @@ def duplicate_encuesta(encuesta_id: int, data: Optional[Dict[str, Any]], user: A
     if not source:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     _ensure_tenant_access(source, user)
+    source = _acquire_encuesta_write_guard(encuesta_id)
+    _ensure_tenant_access(source, user)
+    _validate_persisted_instrument(source)
 
     payload = data or {}
     requested_title = _clean_str(payload.get("titulo") or payload.get("title"), max_length=255)
@@ -1698,16 +3142,19 @@ def duplicate_encuesta(encuesta_id: int, data: Optional[Dict[str, Any]], user: A
     for question in source.preguntas:
         cloned_question = EncPregunta(
             orden=question.orden,
+            logical_ref=question.logical_ref,
             tipo=question.tipo,
             texto=question.texto,
             obligatoria=question.obligatoria,
             min_selecciones=question.min_selecciones,
             max_selecciones=question.max_selecciones,
+            logica_condicional=deepcopy(question.logica_condicional),
         )
         for option in question.opciones:
             cloned_question.opciones.append(
                 EncOpcion(
                     orden=option.orden,
+                    logical_ref=option.logical_ref,
                     texto=option.texto,
                     valor=option.valor,
                 )
@@ -1742,11 +3189,14 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     _ensure_tenant_access(encuesta, user)
+    encuesta = _acquire_encuesta_write_guard(encuesta_id)
+    _ensure_tenant_access(encuesta, user)
     if encuesta.estado not in {"borrador", "publicada"}:
         raise EncuestaError("La encuesta no se puede publicar", status_code=409)
     if not encuesta.preguntas:
         raise EncuestaError("La encuesta debe tener preguntas para publicarse")
 
+    _validate_persisted_instrument(encuesta)
     _ensure_publication_window(encuesta)
 
     encuesta.estado = "publicada"
@@ -1822,6 +3272,8 @@ def cerrar_encuesta(encuesta_id: int, user: Any) -> EncEncuesta:
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     _ensure_tenant_access(encuesta, user)
+    encuesta = _acquire_encuesta_write_guard(encuesta_id)
+    _ensure_tenant_access(encuesta, user)
     encuesta.estado = "cerrada"
     encuesta.fin_at = encuesta.fin_at or _public_schedule_now()
     db.session.commit()
@@ -1835,7 +3287,28 @@ def delete_encuesta(encuesta_id: int, user: Any) -> None:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
 
     _ensure_tenant_access(encuesta, user)
+    encuesta = _acquire_encuesta_write_guard(encuesta_id)
+    _ensure_tenant_access(encuesta, user)
     tenant_id = encuesta.tenant_id
+
+    materialization = SurveyDraftMaterialization.query.filter_by(
+        tenant_id=tenant_id,
+        survey_id=encuesta.id,
+    ).first()
+    if materialization is not None:
+        raise EncuestaError(
+            "Una encuesta materializada no puede eliminarse porque conserva un recibo auditable",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.materialization.v1",
+                "reason_code": "survey_materialization_delete_blocked",
+                "retryable": False,
+                "action_hint": "archive_or_close_survey",
+                "survey_id": encuesta.id,
+                "draft_id": materialization.draft_id,
+                "draft_revision": materialization.draft_revision,
+            },
+        )
 
     db.session.delete(encuesta)
     try:
@@ -2380,6 +3853,7 @@ def get_public_encuesta(
     *,
     allow_inactive_for_user: Optional[Any] = None,
     preferred_tenant_id: Optional[int] = None,
+    allow_inactive_for_receipt_lookup: bool = False,
 ) -> EncEncuesta:
     normalized_slug = (slug_publico or "").strip().lower()
     if not normalized_slug:
@@ -2460,6 +3934,13 @@ def get_public_encuesta(
             preview_user = None
         else:
             return encuesta
+
+    # Exactly-once recovery must remain possible after the participation window
+    # closes.  This bypass is deliberately internal and only used by the receipt
+    # lookup, which first proves that the caller's tenant-scoped submission key
+    # already has a committed receipt.  It never authorizes a new response.
+    if allow_inactive_for_receipt_lookup:
+        return encuesta
 
     if encuesta.estado != "publicada":
         raise EncuestaError(
@@ -2889,22 +4370,224 @@ def _extract_texto_libre(item: Mapping[str, Any]) -> Optional[str]:
     return None
 
 
-def _validate_respuesta_payload(
+def _evaluate_conditional_v2_node(
+    node: Mapping[str, Any],
+    *,
+    visible_question_refs: set[str],
+    selected_option_refs_by_question_ref: Mapping[str, set[str]],
+) -> bool:
+    if node["kind"] == "option_selected":
+        source_question_ref = node["question_ref"]
+        return (
+            source_question_ref in visible_question_refs
+            and node["option_ref"]
+            in selected_option_refs_by_question_ref.get(source_question_ref, set())
+        )
+
+    results = (
+        _evaluate_conditional_v2_node(
+            child,
+            visible_question_refs=visible_question_refs,
+            selected_option_refs_by_question_ref=(
+                selected_option_refs_by_question_ref
+            ),
+        )
+        for child in node["children"]
+    )
+    return all(results) if node["operator"] == "and" else any(results)
+
+
+def _is_conditional_question_visible(
+    pregunta: EncPregunta,
+    *,
+    visible_question_orders: set[int],
+    selected_orders_by_question_order: Mapping[int, set[int]],
+    visible_question_refs: Optional[set[str]] = None,
+    selected_option_refs_by_question_ref: Optional[
+        Mapping[str, set[str]]
+    ] = None,
+) -> Tuple[bool, Optional[int], Optional[int]]:
+    conditional_logic = pregunta.logica_condicional
+    if conditional_logic is None:
+        return True, None, None
+    show_if = conditional_logic["show_if"]
+    if conditional_logic["version"] == 2:
+        visible = _evaluate_conditional_v2_node(
+            show_if,
+            visible_question_refs=visible_question_refs or set(),
+            selected_option_refs_by_question_ref=(
+                selected_option_refs_by_question_ref or {}
+            ),
+        )
+        return visible, None, None
+
+    source_question_order = show_if["question_order"]
+    source_option_order = show_if["option_order"]
+    visible = (
+        source_question_order in visible_question_orders
+        and source_option_order
+        in selected_orders_by_question_order.get(source_question_order, set())
+    )
+    return visible, source_question_order, source_option_order
+
+
+class SurveyVisibilityPlan:
+    """Validated, request-local visibility plan reusable across responses."""
+
+    def __init__(self, encuesta: EncEncuesta) -> None:
+        _validate_persisted_instrument(encuesta)
+        self.questions = tuple(
+            sorted(encuesta.preguntas, key=lambda item: item.orden)
+        )
+        self._options_by_question_id = {
+            pregunta.id: {option.id: option for option in pregunta.opciones}
+            for pregunta in self.questions
+        }
+        self._options_by_question_ref = {
+            pregunta.logical_ref: {
+                option.logical_ref: option
+                for option in pregunta.opciones
+                if option.logical_ref is not None
+            }
+            for pregunta in self.questions
+            if pregunta.logical_ref is not None
+        }
+
+    @staticmethod
+    def _selection_values(value: Any) -> Tuple[Any, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (str, bytes)) or not isinstance(
+            value, (Sequence, set, frozenset)
+        ):
+            return (value,)
+        return tuple(value)
+
+    def evaluate(
+        self,
+        *,
+        selected_option_ids_by_question_id: Optional[
+            Mapping[int, Sequence[int] | set[int]]
+        ] = None,
+        selected_option_refs_by_question_ref: Optional[
+            Mapping[str, Sequence[str] | set[str]]
+        ] = None,
+    ) -> Tuple[EncPregunta, ...]:
+        """Return visible questions; hidden-source selections never propagate."""
+
+        ids_by_question = selected_option_ids_by_question_id or {}
+        refs_by_question = selected_option_refs_by_question_ref or {}
+        visible_questions: List[EncPregunta] = []
+        visible_question_orders: set[int] = set()
+        selected_orders_by_question_order: Dict[int, set[int]] = {}
+        visible_question_refs: set[str] = set()
+        selected_refs_by_question_ref: Dict[str, set[str]] = {}
+
+        for pregunta in self.questions:
+            visible, _, _ = _is_conditional_question_visible(
+                pregunta,
+                visible_question_orders=visible_question_orders,
+                selected_orders_by_question_order=(
+                    selected_orders_by_question_order
+                ),
+                visible_question_refs=visible_question_refs,
+                selected_option_refs_by_question_ref=(
+                    selected_refs_by_question_ref
+                ),
+            )
+            if not visible:
+                continue
+
+            visible_questions.append(pregunta)
+            visible_question_orders.add(pregunta.orden)
+            if pregunta.logical_ref is not None:
+                visible_question_refs.add(pregunta.logical_ref)
+
+            selected_options_by_id: Dict[int, EncOpcion] = {}
+            for raw_id in self._selection_values(
+                ids_by_question.get(pregunta.id)
+            ):
+                try:
+                    option_id = int(raw_id)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                option = self._options_by_question_id.get(
+                    pregunta.id, {}
+                ).get(option_id)
+                if option is not None:
+                    selected_options_by_id[option.id] = option
+
+            if pregunta.logical_ref is not None:
+                for raw_ref in self._selection_values(
+                    refs_by_question.get(pregunta.logical_ref)
+                ):
+                    if not isinstance(raw_ref, str):
+                        continue
+                    option = self._options_by_question_ref.get(
+                        pregunta.logical_ref, {}
+                    ).get(raw_ref)
+                    if option is not None:
+                        selected_options_by_id[option.id] = option
+
+            selected_options = selected_options_by_id.values()
+            selected_orders_by_question_order[pregunta.orden] = {
+                option.orden for option in selected_options
+            }
+            if pregunta.logical_ref is not None:
+                selected_refs_by_question_ref[pregunta.logical_ref] = {
+                    option.logical_ref
+                    for option in selected_options
+                    if option.logical_ref is not None
+                }
+
+        return tuple(visible_questions)
+
+
+def compile_survey_visibility(encuesta: EncEncuesta) -> SurveyVisibilityPlan:
+    """Compile and validate one survey without process-global mutable caching."""
+
+    return SurveyVisibilityPlan(encuesta)
+
+
+def resolve_visible_survey_questions(
+    encuesta: EncEncuesta,
+    *,
+    selected_option_ids_by_question_id: Optional[
+        Mapping[int, Sequence[int] | set[int]]
+    ] = None,
+    selected_option_refs_by_question_ref: Optional[
+        Mapping[str, Sequence[str] | set[str]]
+    ] = None,
+) -> Tuple[EncPregunta, ...]:
+    """One-shot wrapper around :func:`compile_survey_visibility`."""
+
+    return compile_survey_visibility(encuesta).evaluate(
+        selected_option_ids_by_question_id=(
+            selected_option_ids_by_question_id
+        ),
+        selected_option_refs_by_question_ref=(
+            selected_option_refs_by_question_ref
+        ),
+    )
+
+
+def _validate_legacy_respuesta_payload(
     encuesta: EncEncuesta,
     respuestas_payload: Sequence[Dict[str, Any]],
 ) -> List[EncRespuestaDetalle]:
+    """Preserve historical answer semantics for instruments without branching."""
+
     detalles: List[EncRespuestaDetalle] = []
     preguntas_map = {p.id: p for p in encuesta.preguntas}
+    answered_ids: set[int] = set()
 
-    answered_ids = set()
     for item in respuestas_payload:
         pregunta_id = _extract_pregunta_id(item)
         if not pregunta_id:
             raise EncuestaError("Respuesta sin pregunta_id")
         pregunta = preguntas_map.get(pregunta_id)
         if not pregunta:
-            raise EncuestaError("Pregunta inválida en respuestas")
-
+            raise EncuestaError("Pregunta invalida en respuestas")
         if pregunta.id in answered_ids:
             raise EncuestaError(
                 "Cada pregunta debe aparecer una sola vez en respuestas",
@@ -2917,36 +4600,40 @@ def _validate_respuesta_payload(
                 },
             )
 
-        respuesta_detalle = EncRespuestaDetalle(
-            pregunta_id=pregunta.id,
-        )
+        respuesta_detalle = EncRespuestaDetalle(pregunta_id=pregunta.id)
         answered_ids.add(pregunta.id)
 
-        if pregunta.tipo in {"opcion_unica", "opcion_multiple"}:
+        if pregunta.tipo in {"opcion_unica", "opcion_multiple", "rating_emoji"}:
             opcion_ids = _extract_opcion_ids(item, pregunta)
             opciones_validas = {op.id: op for op in pregunta.opciones}
             seleccionadas: List[int] = []
             for opcion_id in opcion_ids:
                 opcion = opciones_validas.get(opcion_id)
                 if not opcion:
-                    raise EncuestaError("Opción inválida seleccionada")
+                    raise EncuestaError("Opcion invalida seleccionada")
                 seleccionadas.append(opcion.id)
-                detalle_opcion = EncRespuestaDetalle(
-                    pregunta_id=pregunta.id,
-                    opcion_id=opcion.id,
+                detalles.append(
+                    EncRespuestaDetalle(
+                        pregunta_id=pregunta.id,
+                        opcion_id=opcion.id,
+                    )
                 )
-                detalles.append(detalle_opcion)
+            if pregunta.tipo == "rating_emoji" and len(seleccionadas) > 1:
+                raise EncuestaError("La pregunta admite una sola opcion seleccionada")
             if pregunta.obligatoria and not seleccionadas:
                 raise EncuestaError("Pregunta obligatoria sin opciones seleccionadas")
             min_sel = pregunta.min_selecciones or (1 if pregunta.obligatoria else 0)
-            max_sel = pregunta.max_selecciones or len(opciones_validas)
+            max_sel = (
+                1
+                if pregunta.tipo == "rating_emoji"
+                else pregunta.max_selecciones or len(opciones_validas)
+            )
             if not (min_sel <= len(seleccionadas) <= max_sel):
                 raise EncuestaError("Cantidad de opciones seleccionadas fuera de rango")
             continue
 
         if pregunta.tipo == "abierta":
-            texto = _extract_texto_libre(item)
-            texto = _sanitize_text(texto)
+            texto = _sanitize_text(_extract_texto_libre(item))
             if pregunta.obligatoria and not texto:
                 raise EncuestaError("Pregunta abierta obligatoria sin texto")
             respuesta_detalle.texto_libre = texto
@@ -2958,8 +4645,172 @@ def _validate_respuesta_payload(
     for pregunta in encuesta.preguntas:
         if pregunta.obligatoria and pregunta.id not in answered_ids:
             raise EncuestaError("Falta responder una pregunta obligatoria")
+    return detalles
+
+
+def _validate_conditional_respuesta_payload(
+    encuesta: EncEncuesta,
+    respuestas_payload: Sequence[Dict[str, Any]],
+) -> List[EncRespuestaDetalle]:
+    """Validate answers in two passes so branching cannot be bypassed."""
+
+    _validate_persisted_instrument(encuesta)
+    preguntas_map = {p.id: p for p in encuesta.preguntas}
+    parsed_by_question_id: Dict[int, Dict[str, Any]] = {}
+
+    # Pass one: validate every submitted answer without attaching it to a
+    # response entity. A later visibility error therefore cannot persist data.
+    for item in respuestas_payload:
+        pregunta_id = _extract_pregunta_id(item)
+        if not pregunta_id:
+            raise EncuestaError("Respuesta sin pregunta_id")
+        pregunta = preguntas_map.get(pregunta_id)
+        if not pregunta:
+            raise EncuestaError("Pregunta invalida en respuestas")
+        if pregunta.id in parsed_by_question_id:
+            raise EncuestaError(
+                "Cada pregunta debe aparecer una sola vez en respuestas",
+                status_code=400,
+                payload={
+                    "contract_version": "surveys.public_response.v2",
+                    "reason_code": "duplicate_question_response",
+                    "action_hint": "merge_question_answers",
+                    "question_id": pregunta.id,
+                },
+            )
+
+        parsed: Dict[str, Any] = {
+            "details": [],
+            "has_substantive_answer": False,
+            "selected_option_orders": set(),
+            "selected_option_refs": set(),
+        }
+        parsed_by_question_id[pregunta.id] = parsed
+
+        if pregunta.tipo in {"opcion_unica", "opcion_multiple", "rating_emoji"}:
+            opcion_ids = _extract_opcion_ids(item, pregunta)
+            opciones_validas = {op.id: op for op in pregunta.opciones}
+            seleccionadas: List[int] = []
+            for opcion_id in opcion_ids:
+                opcion = opciones_validas.get(opcion_id)
+                if not opcion:
+                    raise EncuestaError("Opcion invalida seleccionada")
+                seleccionadas.append(opcion.id)
+                parsed["selected_option_orders"].add(opcion.orden)
+                if opcion.logical_ref is not None:
+                    parsed["selected_option_refs"].add(opcion.logical_ref)
+                parsed["details"].append(
+                    EncRespuestaDetalle(
+                        pregunta_id=pregunta.id,
+                        opcion_id=opcion.id,
+                    )
+                )
+
+            if pregunta.tipo in {"opcion_unica", "rating_emoji"} and len(seleccionadas) > 1:
+                raise EncuestaError("La pregunta admite una sola opcion seleccionada")
+            min_sel = pregunta.min_selecciones or 0
+            max_sel = (
+                1
+                if pregunta.tipo in {"opcion_unica", "rating_emoji"}
+                else pregunta.max_selecciones or len(opciones_validas)
+            )
+            if not (min_sel <= len(seleccionadas) <= max_sel):
+                raise EncuestaError("Cantidad de opciones seleccionadas fuera de rango")
+            parsed["has_substantive_answer"] = bool(seleccionadas)
+            continue
+
+        if pregunta.tipo == "abierta":
+            texto = _sanitize_text(_extract_texto_libre(item))
+            parsed["details"].append(
+                EncRespuestaDetalle(
+                    pregunta_id=pregunta.id,
+                    texto_libre=texto,
+                )
+            )
+            parsed["has_substantive_answer"] = bool(texto)
+            continue
+
+        raise EncuestaError("Tipo de pregunta no soportado")
+
+    # Pass two: derive visibility strictly from earlier, validated selections.
+    detalles: List[EncRespuestaDetalle] = []
+    visible_question_orders: set[int] = set()
+    selected_orders_by_question_order: Dict[int, set[int]] = {}
+    visible_question_refs: set[str] = set()
+    selected_option_refs_by_question_ref: Dict[str, set[str]] = {}
+    for pregunta in sorted(encuesta.preguntas, key=lambda item: item.orden):
+        visible, source_question_order, source_option_order = (
+            _is_conditional_question_visible(
+                pregunta,
+                visible_question_orders=visible_question_orders,
+                selected_orders_by_question_order=selected_orders_by_question_order,
+                visible_question_refs=visible_question_refs,
+                selected_option_refs_by_question_ref=(
+                    selected_option_refs_by_question_ref
+                ),
+            )
+        )
+
+        submitted = parsed_by_question_id.get(pregunta.id)
+        if not visible:
+            if submitted is not None:
+                raise EncuestaError(
+                    "Se envio una respuesta para una pregunta oculta",
+                    status_code=400,
+                    payload={
+                        "contract_version": "surveys.public_response.v2",
+                        "reason_code": "hidden_question_answered",
+                        "action_hint": "remove_hidden_answer",
+                        "question_id": pregunta.id,
+                        "question_order": pregunta.orden,
+                        "source_question_order": source_question_order,
+                        "source_option_order": source_option_order,
+                    },
+                )
+            continue
+
+        visible_question_orders.add(pregunta.orden)
+        if pregunta.logical_ref is not None:
+            visible_question_refs.add(pregunta.logical_ref)
+        if pregunta.obligatoria and (
+            submitted is None or not submitted["has_substantive_answer"]
+        ):
+            raise EncuestaError(
+                "Falta responder una pregunta obligatoria visible",
+                status_code=400,
+                payload={
+                    "contract_version": "surveys.public_response.v2",
+                    "reason_code": "required_visible_question_missing",
+                    "action_hint": "answer_visible_question",
+                    "question_id": pregunta.id,
+                    "question_order": pregunta.orden,
+                },
+            )
+        if submitted is None:
+            selected_orders_by_question_order[pregunta.orden] = set()
+            if pregunta.logical_ref is not None:
+                selected_option_refs_by_question_ref[pregunta.logical_ref] = set()
+            continue
+
+        selected_orders_by_question_order[pregunta.orden] = set(
+            submitted["selected_option_orders"]
+        )
+        if pregunta.logical_ref is not None:
+            selected_option_refs_by_question_ref[pregunta.logical_ref] = set(
+                submitted["selected_option_refs"]
+            )
+        detalles.extend(submitted["details"])
 
     return detalles
+
+
+def _validate_respuesta_payload(
+    encuesta: EncEncuesta,
+    respuestas_payload: Sequence[Dict[str, Any]],
+) -> List[EncRespuestaDetalle]:
+    if not any(pregunta.logica_condicional is not None for pregunta in encuesta.preguntas):
+        return _validate_legacy_respuesta_payload(encuesta, respuestas_payload)
+    return _validate_conditional_respuesta_payload(encuesta, respuestas_payload)
 
 
 def _persist_respuesta_entity(
@@ -2967,9 +4818,24 @@ def _persist_respuesta_entity(
     detalles: Sequence[EncRespuestaDetalle],
     *,
     commit: bool = True,
+    expected_structure_revision: Optional[int] = None,
 ) -> EncRespuesta:
     if not detalles:
         raise EncuestaError("Debe enviar respuestas")
+
+    encuesta = _acquire_encuesta_response_guard(respuesta.encuesta_id)
+    current_revision = int(encuesta.structure_revision or 1)
+    if (
+        expected_structure_revision is not None
+        and current_revision != int(expected_structure_revision)
+    ):
+        raise _survey_concurrency_error(
+            "La estructura de la encuesta cambio mientras se preparaba la respuesta.",
+            reason_code="survey_structure_changed",
+        )
+
+    if encuesta.structure_locked_at is None:
+        encuesta.structure_locked_at = datetime.now(timezone.utc)
 
     respuesta.detalles = list(detalles)
     db.session.add(respuesta)
@@ -2984,7 +4850,7 @@ def _persist_respuesta_entity(
             db.session.rollback()
         message = str(getattr(exc, "orig", exc)).lower()
         if "uq_enc_respuesta_huella" in message or "huella_unica" in message:
-            raise EncuestaError("Ya registramos tu participación", status_code=409) from exc
+            raise _survey_duplicate_response_error() from exc
 
         logger = _current_app_logger()
         if logger:
@@ -3156,6 +5022,306 @@ def _coerce_respuestas_payload(value: Optional[Any]) -> List[Dict[str, Any]]:
     return []
 
 
+def _canonical_receipt_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise EncuestaError(
+                "La respuesta contiene un numero no valido",
+                status_code=400,
+                payload={"reason_code": "survey_submission_payload_invalid"},
+            )
+        return 0 if value == 0 else value
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_receipt_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_receipt_value(item) for item in value]
+    if isinstance(value, set):
+        normalized = [_canonical_receipt_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
+        )
+    return unicodedata.normalize("NFC", str(value))
+
+
+def _survey_response_payload_hash(
+    encuesta: EncEncuesta,
+    payload: Mapping[str, Any],
+    request_ctx: Mapping[str, Any],
+    *,
+    authenticated_user_id: Optional[int],
+    detalles: Sequence[EncRespuestaDetalle],
+) -> str:
+    """Hash the logical, persistible submission while excluding transport secrets."""
+
+    canonical_body = {
+        str(key): value
+        for key, value in payload.items()
+        if key not in _SURVEY_RECEIPT_EXCLUDED_FIELDS
+        and key not in {"respuestas", "answers", "user_id", "userId"}
+    }
+    canonical_answers: Dict[int, Dict[str, Any]] = {}
+    for detalle in detalles:
+        answer = canonical_answers.setdefault(
+            int(detalle.pregunta_id),
+            {"question_id": int(detalle.pregunta_id), "option_ids": [], "text": None},
+        )
+        if detalle.opcion_id is not None:
+            answer["option_ids"].append(int(detalle.opcion_id))
+        if detalle.texto_libre is not None:
+            answer["text"] = _sanitize_text(detalle.texto_libre)
+    for answer in canonical_answers.values():
+        answer["option_ids"] = sorted(set(answer["option_ids"]))
+
+    canonical = {
+        "canonical_version": SURVEY_RESPONSE_CANONICAL_VERSION,
+        "tenant_id": int(encuesta.tenant_id),
+        "survey_id": int(encuesta.id),
+        "instrument_revision": int(encuesta.structure_revision or 1),
+        "participant": {
+            "authenticated_user_id": authenticated_user_id,
+            "anon_id": payload.get("anon_id")
+            or payload.get("anonId")
+            or request_ctx.get("anon_id"),
+            "dni": payload.get("dni")
+            or payload.get("documento")
+            or payload.get("document"),
+            "phone": payload.get("phone")
+            or payload.get("telefono")
+            or payload.get("tel")
+            or payload.get("whatsapp"),
+        },
+        "answers": [canonical_answers[key] for key in sorted(canonical_answers)],
+        "body": canonical_body,
+    }
+    encoded = json.dumps(
+        _canonical_receipt_value(canonical),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _survey_submission_id_hash(tenant_id: int, submission_id: str) -> str:
+    scoped = f"{SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION}:{int(tenant_id)}:{submission_id}"
+    return hashlib.sha256(scoped.encode("utf-8")).hexdigest()
+
+
+def _mark_survey_response_receipt(
+    respuesta: EncRespuesta,
+    receipt: SurveyResponseReceipt,
+    submission_id: str,
+    *,
+    replayed: bool,
+) -> EncRespuesta:
+    respuesta.instrument_revision = int(receipt.instrument_revision)
+    respuesta.submission_id = submission_id
+    respuesta.submission_replayed = bool(replayed)
+    respuesta.submission_persisted = True
+    respuesta.submission_receipt_id = int(receipt.id)
+    respuesta.submission_receipt_contract_version = receipt.contract_version
+    return respuesta
+
+
+def _resolve_survey_response_receipt(
+    encuesta: EncEncuesta,
+    submission_id: str,
+    payload_hash: str,
+) -> Optional[EncRespuesta]:
+    receipt = SurveyResponseReceipt.query.filter_by(
+        tenant_id=encuesta.tenant_id,
+        submission_id_hash=_survey_submission_id_hash(encuesta.tenant_id, submission_id),
+    ).first()
+    if receipt is None:
+        return None
+    if (
+        int(receipt.survey_id) != int(encuesta.id)
+        or receipt.payload_hash != payload_hash
+        or receipt.canonical_version != SURVEY_RESPONSE_CANONICAL_VERSION
+        or int(receipt.instrument_revision) != int(encuesta.structure_revision or 1)
+    ):
+        raise _survey_submission_conflict_error()
+    respuesta = receipt.response or db.session.get(EncRespuesta, receipt.response_id)
+    if respuesta is None:
+        raise EncuestaError(
+            "El recibo de la respuesta no tiene una respuesta asociada",
+            status_code=500,
+            payload={
+                "contract_version": SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
+                "reason_code": "survey_submission_receipt_corrupt",
+                "retryable": False,
+                "action_hint": "contact_support",
+            },
+        )
+    return _mark_survey_response_receipt(
+        respuesta,
+        receipt,
+        submission_id,
+        replayed=True,
+    )
+
+
+def survey_response_receipt_contract(respuesta: EncRespuesta) -> Optional[Dict[str, Any]]:
+    submission_id = getattr(respuesta, "submission_id", None)
+    receipt_id = getattr(respuesta, "submission_receipt_id", None)
+    if not submission_id or receipt_id is None:
+        return None
+    replayed = bool(getattr(respuesta, "submission_replayed", False))
+    return {
+        "contract_version": getattr(
+            respuesta,
+            "submission_receipt_contract_version",
+            SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
+        ),
+        "canonical_version": SURVEY_RESPONSE_CANONICAL_VERSION,
+        "receipt_id": int(receipt_id),
+        "submission_id": submission_id,
+        "response_id": int(respuesta.id),
+        "instrument_revision": int(getattr(respuesta, "instrument_revision", 1) or 1),
+        "state": "committed",
+        "disposition": "replayed" if replayed else "accepted",
+        "persisted": True,
+        "replayed": replayed,
+    }
+
+
+def find_survey_response_replay(
+    slug_publico: str,
+    payload: Mapping[str, Any],
+    request_ctx: Mapping[str, Any],
+    *,
+    submission_id: Optional[str],
+    preferred_tenant_id: Optional[int] = None,
+    authenticated_user: Optional[User] = None,
+) -> Optional[EncRespuesta]:
+    """Return a committed replay before one-shot security checks are repeated."""
+
+    if submission_id is None:
+        return None
+    encuesta = get_public_encuesta(
+        slug_publico,
+        preferred_tenant_id=preferred_tenant_id,
+        allow_inactive_for_receipt_lookup=True,
+    )
+    # Do not expose or validate an inactive instrument for a fresh submission.
+    # Only the holder of a key that already resolves to a durable receipt may
+    # continue into the exact-payload verification below.
+    existing_receipt = SurveyResponseReceipt.query.filter_by(
+        tenant_id=encuesta.tenant_id,
+        submission_id_hash=_survey_submission_id_hash(
+            encuesta.tenant_id,
+            submission_id,
+        ),
+    ).first()
+    if existing_receipt is None:
+        return None
+
+    submitted_revision = _submitted_instrument_revision(payload)
+    expected_revision = int(encuesta.structure_revision or 1)
+    if submitted_revision is not None and submitted_revision != expected_revision:
+        raise _stale_instrument_error(encuesta, submitted_revision)
+    authenticated_response_user = _resolve_authenticated_response_user(authenticated_user)
+    authenticated_user_id = (
+        int(authenticated_response_user.id)
+        if authenticated_response_user is not None
+        else None
+    )
+    raw_respuestas = payload.get("respuestas")
+    if raw_respuestas is None and "answers" in payload:
+        raw_respuestas = payload.get("answers")
+    respuestas_payload = _coerce_respuestas_payload(raw_respuestas)
+    if not respuestas_payload:
+        raise EncuestaError("Debe enviar respuestas")
+    detalles = _validate_respuesta_payload(encuesta, respuestas_payload)
+    payload_hash = _survey_response_payload_hash(
+        encuesta,
+        payload,
+        request_ctx,
+        authenticated_user_id=authenticated_user_id,
+        detalles=detalles,
+    )
+    return _resolve_survey_response_receipt(encuesta, submission_id, payload_hash)
+
+
+def _build_survey_response_analytics_event(
+    encuesta: EncEncuesta,
+    respuesta: EncRespuesta,
+    *,
+    slug_publico: str,
+    respuestas_payload: Sequence[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build the immutable, PII-minimized analytics intent for one response."""
+
+    tenant = db.session.get(TenantProfile, encuesta.tenant_id)
+    tenant_type = _clean_str(getattr(tenant, "tipo", None), max_length=20) or "municipio"
+    public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
+    event_name = (
+        "vote_submitted"
+        if bool(getattr(encuesta, "es_votacion_envivo", False))
+        or str(getattr(encuesta, "tipo", "") or "").strip().lower() in {"votacion", "votacion_envivo", "live_vote"}
+        else "survey_answer_submitted"
+    )
+    selected_options: List[Dict[str, Any]] = []
+    open_answers = 0
+    for detalle in respuesta.detalles or []:
+        if getattr(detalle, "opcion_id", None) is not None:
+            selected_options.append(
+                {
+                    "pregunta_id": detalle.pregunta_id,
+                    "opcion_id": detalle.opcion_id,
+                }
+            )
+        if getattr(detalle, "texto_libre", None):
+            open_answers += 1
+
+    payload = {
+        "contract_version": "analytics.survey_response_event.v1",
+        "encuesta_id": encuesta.id,
+        "survey_id": encuesta.id,
+        "slug": public_slug,
+        "slug_publico": public_slug,
+        "response_id": respuesta.id,
+        "respuesta_id": respuesta.id,
+        "survey_type": getattr(encuesta, "tipo", None),
+        "is_live_vote": bool(getattr(encuesta, "es_votacion_envivo", False)),
+        "live_results_visible": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
+        "answers_count": len(respuestas_payload),
+        "selected_options_count": len(selected_options),
+        "open_answers_count": open_answers,
+        "selected_options": selected_options[:40],
+        "has_geo": respuesta.lat is not None and respuesta.lng is not None,
+        "has_contact_identity": bool(respuesta.user_id or respuesta.dni or respuesta.phone),
+        "has_demographics": bool(respuesta.genero or respuesta.rango_etario or respuesta.edad),
+        "utm_source": respuesta.utm_source,
+        "utm_campaign": respuesta.utm_campaign,
+        "barrio": respuesta.barrio,
+        "ciudad": respuesta.ciudad,
+        "provincia": respuesta.provincia,
+        "pais": respuesta.pais,
+    }
+    return {
+        "tenant_id": encuesta.tenant_id,
+        "event_name": event_name,
+        "payload": payload,
+        "user_id": _coerce_int(respuesta.user_id),
+        "anon_id": respuesta.huella_unica or None,
+        "channel": respuesta.canal or "public_survey",
+        "session_id": respuesta.huella_unica or None,
+        "lat": respuesta.lat,
+        "lng": respuesta.lng,
+        "entity_ref": f"survey:{encuesta.id}:response:{respuesta.id}",
+        "tenant_type": tenant_type,
+    }
+
+
 def _track_survey_response_analytics(
     encuesta: EncEncuesta,
     respuesta: EncRespuesta,
@@ -3163,74 +5329,24 @@ def _track_survey_response_analytics(
     slug_publico: str,
     respuestas_payload: Sequence[Dict[str, Any]],
     commit: bool = True,
-) -> None:
-    """Feed public survey/vote responses into the canonical analytics stream."""
+) -> bool:
+    """Feed one response into analytics; durable callers use the outbox instead."""
 
     if not analytics_ingestor:
-        return
+        return False
 
     try:
-        tenant = db.session.get(TenantProfile, encuesta.tenant_id)
-        tenant_type = _clean_str(getattr(tenant, "tipo", None), max_length=20) or "municipio"
-        public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
-        event_name = (
-            "vote_submitted"
-            if bool(getattr(encuesta, "es_votacion_envivo", False))
-            or str(getattr(encuesta, "tipo", "") or "").strip().lower() in {"votacion", "votacion_envivo", "live_vote"}
-            else "survey_answer_submitted"
+        event = _build_survey_response_analytics_event(
+            encuesta,
+            respuesta,
+            slug_publico=slug_publico,
+            respuestas_payload=respuestas_payload,
         )
-        selected_options: List[Dict[str, Any]] = []
-        open_answers = 0
-        for detalle in respuesta.detalles or []:
-            if getattr(detalle, "opcion_id", None) is not None:
-                selected_options.append(
-                    {
-                        "pregunta_id": detalle.pregunta_id,
-                        "opcion_id": detalle.opcion_id,
-                    }
-                )
-            if getattr(detalle, "texto_libre", None):
-                open_answers += 1
-
-        payload = {
-            "contract_version": "analytics.survey_response_event.v1",
-            "encuesta_id": encuesta.id,
-            "survey_id": encuesta.id,
-            "slug": public_slug,
-            "slug_publico": public_slug,
-            "response_id": respuesta.id,
-            "respuesta_id": respuesta.id,
-            "survey_type": getattr(encuesta, "tipo", None),
-            "is_live_vote": bool(getattr(encuesta, "es_votacion_envivo", False)),
-            "live_results_visible": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
-            "answers_count": len(respuestas_payload),
-            "selected_options_count": len(selected_options),
-            "open_answers_count": open_answers,
-            "selected_options": selected_options[:40],
-            "has_geo": respuesta.lat is not None and respuesta.lng is not None,
-            "has_contact_identity": bool(respuesta.user_id or respuesta.dni or respuesta.phone),
-            "has_demographics": bool(respuesta.genero or respuesta.rango_etario or respuesta.edad),
-            "utm_source": respuesta.utm_source,
-            "utm_campaign": respuesta.utm_campaign,
-            "barrio": respuesta.barrio,
-            "ciudad": respuesta.ciudad,
-            "provincia": respuesta.provincia,
-            "pais": respuesta.pais,
-        }
         analytics_ingestor.track(
-            tenant_id=encuesta.tenant_id,
-            event_name=event_name,
-            payload=payload,
-            user_id=_coerce_int(respuesta.user_id),
-            anon_id=respuesta.huella_unica or None,
-            channel=respuesta.canal or "public_survey",
-            session_id=respuesta.huella_unica or None,
-            lat=respuesta.lat,
-            lng=respuesta.lng,
-            entity_ref=f"survey:{encuesta.id}:response:{respuesta.id}",
-            tenant_type=tenant_type,
+            **event,
             commit=commit,
         )
+        return True
     except Exception:
         logger = _current_app_logger()
         if logger:
@@ -3239,22 +5355,45 @@ def _track_survey_response_analytics(
                 getattr(encuesta, "id", None),
                 getattr(respuesta, "id", None),
             )
+        return False
 
 
-def _grant_survey_reward_once(
+def _grant_survey_reward_effect(
     encuesta: EncEncuesta,
     respuesta: EncRespuesta,
     authenticated_user: User,
-) -> bool:
+    *,
+    reward_points: Optional[int] = None,
+    idempotency_key: Optional[str] = None,
+    commit: bool = True,
+) -> str:
+    """Credit the durable survey entitlement inside the caller's transaction.
+
+    The outbox owns first-response arbitration.  This helper only guarantees
+    that the resulting ledger entry is idempotent and that balance + ledger are
+    committed atomically with the effect completion when ``commit=False``.
+    """
+
     try:
-        reward_points = int(encuesta.puntos_recompensa or 0)
+        reward_points = int(
+            encuesta.puntos_recompensa if reward_points is None else reward_points
+        )
     except (TypeError, ValueError):
         reward_points = 0
     if reward_points <= 0:
-        return False
+        return "skipped"
 
     tenant_id = encuesta.tenant_id
-    idempotency_key = f"survey_reward:{encuesta.id}:user:{authenticated_user.id}"
+    expected_user_id = _coerce_int(getattr(respuesta, "user_id", None))
+    if expected_user_id is None or expected_user_id != _coerce_int(authenticated_user.id):
+        raise ValueError("La identidad de la recompensa no coincide con la respuesta")
+    if _coerce_int(getattr(respuesta, "tenant_id", None)) != _coerce_int(tenant_id):
+        raise ValueError("El tenant de la recompensa no coincide con la respuesta")
+
+    idempotency_key = (
+        _clean_str(idempotency_key, max_length=160)
+        or f"survey_reward:{encuesta.id}:user:{authenticated_user.id}"
+    )
 
     try:
         locked_user = (
@@ -3265,33 +5404,29 @@ def _grant_survey_reward_once(
         if locked_user is None:
             raise ValueError("Usuario no encontrado para acreditar puntos")
 
-        existing_rewards = PointsTransaction.query.filter_by(
+        existing_reward = PointsTransaction.query.filter_by(
+            user_id=locked_user.id,
+            tenant_id=tenant_id,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing_reward is not None:
+            return "already_credited"
+
+        # Historical rows predate the indexed idempotency column.  Keep the
+        # metadata fallback so deploying the migration never credits them twice.
+        historical_rewards = PointsTransaction.query.filter_by(
             user_id=locked_user.id,
             tenant_id=tenant_id,
             tipo="encuesta",
         ).all()
-        for transaction in existing_rewards:
+        for transaction in historical_rewards:
             metadata = (
                 transaction.metadata_payload
                 if isinstance(transaction.metadata_payload, dict)
                 else {}
             )
             if metadata.get("idempotency_key") == idempotency_key:
-                db.session.commit()
-                return False
-
-        prior_response = (
-            EncRespuesta.query.filter(
-                EncRespuesta.encuesta_id == encuesta.id,
-                EncRespuesta.user_id == locked_user.id,
-                EncRespuesta.id != respuesta.id,
-            )
-            .order_by(EncRespuesta.id.asc())
-            .first()
-        )
-        if prior_response is not None:
-            db.session.commit()
-            return False
+                return "already_credited"
 
         locked_user.saldo_puntos = (locked_user.saldo_puntos or 0) + reward_points
         db.session.add(
@@ -3301,6 +5436,7 @@ def _grant_survey_reward_once(
                 tipo="encuesta",
                 delta=reward_points,
                 saldo_final=locked_user.saldo_puntos,
+                idempotency_key=idempotency_key,
                 metadata_payload={
                     "idempotency_key": idempotency_key,
                     "source": "survey_response",
@@ -3309,11 +5445,28 @@ def _grant_survey_reward_once(
                 },
             )
         )
-        db.session.commit()
-        return True
+        if commit:
+            db.session.commit()
+        return "credited"
     except Exception:
-        db.session.rollback()
+        if commit:
+            db.session.rollback()
         raise
+
+
+def _grant_survey_reward_once(
+    encuesta: EncEncuesta,
+    respuesta: EncRespuesta,
+    authenticated_user: User,
+) -> bool:
+    """Compatibility wrapper for callers that still own their commit."""
+
+    return _grant_survey_reward_effect(
+        encuesta,
+        respuesta,
+        authenticated_user,
+        commit=True,
+    ) == "credited"
 
 
 def save_respuesta(
@@ -3326,8 +5479,8 @@ def save_respuesta(
     commit: bool = True,
     emit_realtime_update: bool = True,
     grant_reward: bool = True,
+    submission_id: Optional[str] = None,
 ) -> EncRespuesta:
-    encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
     if not isinstance(payload, dict):
         if isinstance(payload, Mapping):
             payload = dict(payload)
@@ -3335,6 +5488,47 @@ def save_respuesta(
             raise EncuestaError("Debe enviar respuestas")
     else:
         payload = dict(payload)
+
+    submission_id = resolve_survey_submission_id(
+        payload,
+        header_value=submission_id,
+        required=False,
+    )
+    if submission_id is not None and not commit:
+        raise EncuestaError(
+            "submission_id no admite una transaccion externa sin savepoint propietario",
+            status_code=500,
+            payload={
+                "contract_version": SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
+                "reason_code": "survey_submission_external_transaction_unsupported",
+                "retryable": False,
+                "action_hint": "call_with_commit_or_omit_submission_id",
+            },
+        )
+
+    if submission_id is not None:
+        replay = find_survey_response_replay(
+            slug_publico,
+            payload,
+            request_ctx,
+            submission_id=submission_id,
+            preferred_tenant_id=preferred_tenant_id,
+            authenticated_user=authenticated_user,
+        )
+        if replay is not None:
+            return replay
+
+    encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
+    encuesta = _acquire_encuesta_response_guard(encuesta.id)
+    _ensure_locked_public_encuesta(encuesta)
+    expected_structure_revision = int(encuesta.structure_revision or 1)
+
+    submitted_instrument_revision = _submitted_instrument_revision(payload)
+    if (
+        submitted_instrument_revision is not None
+        and submitted_instrument_revision != expected_structure_revision
+    ):
+        raise _stale_instrument_error(encuesta, submitted_instrument_revision)
 
     # Public callers may send these legacy fields, but they never establish identity.
     payload.pop("user_id", None)
@@ -3354,6 +5548,22 @@ def save_respuesta(
         raise EncuestaError("Debe enviar respuestas")
 
     detalles = _validate_respuesta_payload(encuesta, respuestas_payload)
+    submission_payload_hash: Optional[str] = None
+    if submission_id is not None:
+        submission_payload_hash = _survey_response_payload_hash(
+            encuesta,
+            payload,
+            request_ctx,
+            authenticated_user_id=authenticated_user_id,
+            detalles=detalles,
+        )
+        replay = _resolve_survey_response_receipt(
+            encuesta,
+            submission_id,
+            submission_payload_hash,
+        )
+        if replay is not None:
+            return replay
     metadata_raw = payload.get("metadata")
     metadata = _normalize_metadata(metadata_raw)
     metadata_dict = metadata if isinstance(metadata, dict) else None
@@ -3413,7 +5623,7 @@ def save_respuesta(
     if fingerprint:
         existing = EncRespuesta.query.filter_by(encuesta_id=encuesta.id, huella_unica=fingerprint).first()
         if existing:
-            raise EncuestaError("Ya registramos tu participación", status_code=409)
+            raise _survey_duplicate_response_error()
 
     genero = _normalize_genero(payload.get("genero") or payload.get("sexo"))
     edad = _coerce_int(payload.get("edad"))
@@ -3513,7 +5723,103 @@ def save_respuesta(
         content_hash=None,
     )
 
-    respuesta = _persist_respuesta_entity(respuesta, detalles, commit=commit)
+    try:
+        respuesta = _persist_respuesta_entity(
+            respuesta,
+            detalles,
+            commit=False,
+            expected_structure_revision=expected_structure_revision,
+        )
+    except EncuestaError as exc:
+        if commit:
+            db.session.rollback()
+        if (
+            submission_id is not None
+            and submission_payload_hash is not None
+            and str((exc.payload or {}).get("reason_code") or "")
+            == "survey_response_duplicate"
+        ):
+            replay = _resolve_survey_response_receipt(
+                encuesta,
+                submission_id,
+                submission_payload_hash,
+            )
+            if replay is not None:
+                return replay
+        raise
+
+    receipt: Optional[SurveyResponseReceipt] = None
+    if submission_id is not None and submission_payload_hash is not None:
+        receipt = SurveyResponseReceipt(
+            tenant_id=tenant_id,
+            survey_id=encuesta.id,
+            response_id=respuesta.id,
+            submission_id_hash=_survey_submission_id_hash(tenant_id, submission_id),
+            payload_hash=submission_payload_hash,
+            canonical_version=SURVEY_RESPONSE_CANONICAL_VERSION,
+            instrument_revision=expected_structure_revision,
+            contract_version=SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
+        )
+        db.session.add(receipt)
+
+    try:
+        from services.survey_response_effects import stage_survey_response_effects
+
+        stage_survey_response_effects(
+            encuesta,
+            respuesta,
+            slug_publico=slug_publico,
+            respuestas_payload=respuestas_payload,
+            authenticated_user=authenticated_response_user,
+            grant_reward=grant_reward,
+            emit_realtime_update=emit_realtime_update,
+            stage_analytics=True,
+        )
+        if commit:
+            db.session.commit()
+        else:
+            db.session.flush()
+    except IntegrityError as exc:
+        if commit:
+            db.session.rollback()
+        if submission_id is not None and submission_payload_hash is not None:
+            replay = _resolve_survey_response_receipt(
+                encuesta,
+                submission_id,
+                submission_payload_hash,
+            )
+            if replay is not None:
+                return replay
+            current_app.logger.exception(
+                "[encuestas] Error al guardar recibo idempotente para encuesta %s",
+                encuesta.id,
+            )
+            raise EncuestaError(
+                "No se pudo confirmar el recibo de la respuesta",
+                status_code=500,
+                payload={
+                    "contract_version": SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
+                    "reason_code": "survey_submission_receipt_failed",
+                    "retryable": True,
+                    "action_hint": "retry_same_submission_id",
+                },
+            ) from exc
+        raise EncuestaError("No se pudo confirmar la respuesta durable", status_code=500) from exc
+    except Exception:
+        if commit:
+            db.session.rollback()
+        raise
+
+    if receipt is not None and submission_id is not None:
+        respuesta = _mark_survey_response_receipt(
+            respuesta,
+            receipt,
+            submission_id,
+            replayed=False,
+        )
+    # Unmapped response metadata lets every transport acknowledge the exact
+    # instrument accepted without exposing the administrative structure guard.
+    respuesta.instrument_revision = expected_structure_revision
 
     current_app.logger.info(
         "[encuestas] Nueva respuesta %s para encuesta %s desde %s",
@@ -3521,35 +5827,34 @@ def save_respuesta(
         encuesta.id,
         ip,
     )
-    _track_survey_response_analytics(
-        encuesta,
-        respuesta,
-        slug_publico=slug_publico,
-        respuestas_payload=respuestas_payload,
-        commit=commit,
-    )
 
-    # Otorgar puntos si corresponde
-    if (
-        encuesta.puntos_recompensa
-        and encuesta.puntos_recompensa > 0
-        and authenticated_response_user
-        and grant_reward
-    ):
+    if commit:
         try:
-            _grant_survey_reward_once(encuesta, respuesta, authenticated_response_user)
-        except Exception:
-            current_app.logger.exception("[encuestas] Error al otorgar puntos por encuesta")
+            from services.survey_response_effects import dispatch_survey_response_effects
 
-    # Emitir actualizaciones en tiempo real si corresponde
-    if emit_realtime_update:
-        emit_survey_response_update(encuesta, slug_publico)
+            dispatch_survey_response_effects(response_id=respuesta.id, limit=3)
+        except Exception:
+            db.session.rollback()
+            current_app.logger.exception(
+                "[encuestas] Efectos post-commit pendientes para respuesta %s",
+                respuesta.id,
+            )
 
     return respuesta
 
 
-def emit_survey_response_update(encuesta: EncEncuesta, slug_publico: str) -> bool:
-    """Emit the canonical post-commit live result update for one survey."""
+def emit_survey_response_update(
+    encuesta: EncEncuesta,
+    slug_publico: str,
+    *,
+    event_envelope: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    """Emit the canonical post-commit live result update for one survey.
+
+    ``event_envelope`` carries the durable outbox event identity.  It is nested
+    under ``event`` so a retry cannot overwrite the live-results contract, and
+    only the non-sensitive canonical fields are forwarded to clients.
+    """
 
     if not encuesta.mostrar_resultados_envivo or not emit_survey_update:
         return False
@@ -3574,6 +5879,23 @@ def emit_survey_response_update(encuesta: EncEncuesta, slug_publico: str) -> boo
                 "[encuestas] Error calculando live-results v2 para socket; se emite contrato legacy"
             )
             live_stats = _compute_live_results(encuesta)
+        if event_envelope is not None and isinstance(live_stats, dict):
+            safe_event: Dict[str, Any] = {}
+            for field in (
+                "contract_version",
+                "event_id",
+                "event_name",
+                "tenant_id",
+                "survey_id",
+                "response_id",
+                "slug",
+            ):
+                value = event_envelope.get(field)
+                if value is not None:
+                    safe_event[field] = value
+            if safe_event:
+                live_stats["event"] = safe_event
+
         emit_slugs = [public_slug, slug_publico]
         for emit_slug in dict.fromkeys(str(item).strip() for item in emit_slugs if item):
             emit_survey_update(emit_slug, live_stats, tenant_slug=tenant_slug)
@@ -3640,6 +5962,9 @@ def seed_encuesta_respuestas_demo(
         raise EncuestaError("Debe solicitar al menos una respuesta demo")
 
     encuesta = get_encuesta(encuesta_id, user=user)
+    encuesta = _acquire_encuesta_write_guard(encuesta_id)
+    _ensure_tenant_access(encuesta, user)
+    _validate_persisted_instrument(encuesta)
     tenant_id = encuesta.tenant_id
     geo_metadata = _resolve_geo_metadata_for_tenant(tenant_id)
     if not geo_metadata and geo_profile_key:
@@ -3649,6 +5974,11 @@ def seed_encuesta_respuestas_demo(
     reset_summary: Optional[Dict[str, int]] = None
     if reset_data:
         reset_summary = _reset_encuesta_demo_data(encuesta)
+        encuesta = _acquire_encuesta_write_guard(encuesta_id)
+        _ensure_tenant_access(encuesta, user)
+        _validate_persisted_instrument(encuesta)
+
+    expected_structure_revision = int(encuesta.structure_revision or 1)
 
     rng = random.Random(seed)
 
@@ -3747,7 +6077,26 @@ def seed_encuesta_respuestas_demo(
         )
 
         respuestas_items: List[Dict[str, Any]] = []
-        for pregunta in encuesta.preguntas:
+        visible_question_orders: set[int] = set()
+        selected_orders_by_question_order: Dict[int, set[int]] = {}
+        visible_question_refs: set[str] = set()
+        selected_option_refs_by_question_ref: Dict[str, set[str]] = {}
+        for pregunta in sorted(encuesta.preguntas, key=lambda item: item.orden):
+            visible, _, _ = _is_conditional_question_visible(
+                pregunta,
+                visible_question_orders=visible_question_orders,
+                selected_orders_by_question_order=selected_orders_by_question_order,
+                visible_question_refs=visible_question_refs,
+                selected_option_refs_by_question_ref=(
+                    selected_option_refs_by_question_ref
+                ),
+            )
+            if not visible:
+                continue
+            visible_question_orders.add(pregunta.orden)
+            if pregunta.logical_ref is not None:
+                visible_question_refs.add(pregunta.logical_ref)
+
             if pregunta is location_question:
                 opcion_ids: List[int] = []
                 if standard_location_options and rng.random() > 0.2:
@@ -3764,11 +6113,40 @@ def seed_encuesta_respuestas_demo(
                     barrio_label = barrio_label or opcion.texto
                 if opcion_ids:
                     respuestas_items.append({"pregunta_id": pregunta.id, "opcion_ids": opcion_ids})
+                    selected_orders_by_question_order[pregunta.orden] = {
+                        opcion.orden
+                        for opcion in pregunta.opciones
+                        if opcion.id in opcion_ids
+                    }
+                    if pregunta.logical_ref is not None:
+                        selected_option_refs_by_question_ref[
+                            pregunta.logical_ref
+                        ] = {
+                            opcion.logical_ref
+                            for opcion in pregunta.opciones
+                            if opcion.id in opcion_ids
+                            and opcion.logical_ref is not None
+                        }
+                else:
+                    selected_orders_by_question_order[pregunta.orden] = set()
+                    if pregunta.logical_ref is not None:
+                        selected_option_refs_by_question_ref[
+                            pregunta.logical_ref
+                        ] = set()
                 continue
 
-            if pregunta.tipo == "opcion_unica" and pregunta.opciones:
+            if pregunta.tipo in {"opcion_unica", "rating_emoji"} and pregunta.opciones:
                 opcion = rng.choice(pregunta.opciones)
                 respuestas_items.append({"pregunta_id": pregunta.id, "opcion_ids": [opcion.id]})
+                selected_orders_by_question_order[pregunta.orden] = {opcion.orden}
+                if pregunta.logical_ref is not None:
+                    selected_option_refs_by_question_ref[
+                        pregunta.logical_ref
+                    ] = (
+                        {opcion.logical_ref}
+                        if opcion.logical_ref is not None
+                        else set()
+                    )
                 continue
 
             if pregunta.tipo == "opcion_multiple" and pregunta.opciones:
@@ -3778,6 +6156,11 @@ def seed_encuesta_respuestas_demo(
                 min_sel = pregunta.min_selecciones or (1 if pregunta.obligatoria else 0)
                 min_sel = max(0, min_sel)
                 if max_sel <= 0:
+                    selected_orders_by_question_order[pregunta.orden] = set()
+                    if pregunta.logical_ref is not None:
+                        selected_option_refs_by_question_ref[
+                            pregunta.logical_ref
+                        ] = set()
                     continue
                 cantidad_sel = rng.randint(max(1, min_sel), max_sel)
                 seleccionadas = rng.sample(opciones, k=cantidad_sel)
@@ -3785,6 +6168,17 @@ def seed_encuesta_respuestas_demo(
                     "pregunta_id": pregunta.id,
                     "opcion_ids": [op.id for op in seleccionadas],
                 })
+                selected_orders_by_question_order[pregunta.orden] = {
+                    opcion.orden for opcion in seleccionadas
+                }
+                if pregunta.logical_ref is not None:
+                    selected_option_refs_by_question_ref[
+                        pregunta.logical_ref
+                    ] = {
+                        opcion.logical_ref
+                        for opcion in seleccionadas
+                        if opcion.logical_ref is not None
+                    }
                 continue
 
             texto = rng.choice(comentarios)
@@ -3792,6 +6186,9 @@ def seed_encuesta_respuestas_demo(
                 "pregunta_id": pregunta.id,
                 "texto_libre": texto,
             })
+            selected_orders_by_question_order[pregunta.orden] = set()
+            if pregunta.logical_ref is not None:
+                selected_option_refs_by_question_ref[pregunta.logical_ref] = set()
 
         if not respuestas_items:
             skipped += 1
@@ -3880,8 +6277,17 @@ def seed_encuesta_respuestas_demo(
         )
 
         try:
-            _persist_respuesta_entity(respuesta, detalles)
-        except EncuestaError:
+            _persist_respuesta_entity(
+                respuesta,
+                detalles,
+                expected_structure_revision=expected_structure_revision,
+            )
+        except EncuestaError as exc:
+            if (exc.payload or {}).get("reason_code") in {
+                "survey_concurrent_update",
+                "survey_structure_changed",
+            }:
+                raise
             skipped += 1
             continue
 
@@ -3902,6 +6308,11 @@ def seed_encuesta_respuestas_demo(
         encuesta.id,
         skipped,
     )
+
+    if created == 0:
+        # Release the lock-only transaction.  The durable structure marker is
+        # intentionally written only when at least one response commits.
+        db.session.rollback()
 
     return {
         "encuesta_id": encuesta.id,
@@ -4358,6 +6769,7 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         response_type, internal_type = _map_pregunta_tipo_for_response(pregunta.tipo)
         question_payload = {
             "id": pregunta.id,
+            "question_ref": pregunta.logical_ref,
             "orden": pregunta.orden,
             "tipo": response_type,
             "type": response_type,
@@ -4366,9 +6778,11 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
             "obligatoria": pregunta.obligatoria,
             "min_selecciones": pregunta.min_selecciones,
             "max_selecciones": pregunta.max_selecciones,
+            "conditional_logic": deepcopy(pregunta.logica_condicional),
             "opciones": [
                 {
                     "id": opcion.id,
+                    "option_ref": opcion.logical_ref,
                     "orden": opcion.orden,
                     "texto": opcion.texto,
                     "valor": opcion.valor,
@@ -4384,6 +6798,7 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
+        "document_ref": encuesta.document_ref,
         "slug": encuesta.slug,
         "slug_publico": slug_publico,
         "canonical_slug": slug_publico or encuesta.slug,
@@ -4405,6 +6820,16 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "es_votacion_envivo": encuesta.es_votacion_envivo,
         "mostrar_resultados_envivo": encuesta.mostrar_resultados_envivo,
         "permitir_comentarios": encuesta.permitir_comentarios,
+        "structure_guard": {
+            "contract_version": "surveys.structure_guard.v1",
+            "revision": int(encuesta.structure_revision or 1),
+            "locked": _survey_structure_is_locked(encuesta),
+            "locked_at": (
+                encuesta.structure_locked_at.isoformat()
+                if encuesta.structure_locked_at is not None
+                else None
+            ),
+        },
         "tags": _collect_encuesta_tags(encuesta),
         "preguntas": [_serialize_question(pregunta) for pregunta in encuesta.preguntas],
     }
@@ -4412,6 +6837,10 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
 
 def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str] = None) -> Dict[str, Any]:
     data = serialize_encuesta(encuesta)
+    # Optimistic-lock metadata is an administrative editing contract and is
+    # never part of the public participation surface.
+    data.pop("structure_guard", None)
+    data["instrument_revision"] = int(encuesta.structure_revision or 1)
     uniqueness_policy = str(encuesta.politica_unicidad or "libre").strip().lower()
     authentication_required = (
         uniqueness_policy in _AUTHENTICATED_USER_POLICIES
@@ -4431,6 +6860,18 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
         "identity": {
             "mode": data["auth_mode"],
             "provider": "chatboc_session",
+        },
+        "idempotency": {
+            "contract_version": SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
+            "supported": True,
+            "required": True,
+            "required_for_exactly_once": True,
+            "header": "Idempotency-Key",
+            "body_field": "submission_id",
+            "min_length": 8,
+            "max_length": 128,
+            "accepted_status": 201,
+            "replay_status": 200,
         },
     }
     canonical_slug = _resolve_public_slug(encuesta) or encuesta.slug

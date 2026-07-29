@@ -3,6 +3,7 @@ import uuid
 import requests
 from typing import Dict, Any, Optional
 from flask import current_app
+from extensions import db
 from models import TenantProfile
 from services.realtime_voice_profiles import (
     build_chatboc_bot_avatar_contract,
@@ -10,6 +11,7 @@ from services.realtime_voice_profiles import (
     build_realtime_voice_instructions,
     build_realtime_voice_tools,
     infer_realtime_voice_vertical,
+    resolve_realtime_input_transcription_model,
     resolve_realtime_model,
     resolve_realtime_voice,
 )
@@ -46,8 +48,11 @@ class RealtimeSessionService:
             return {"error": "Configuración de IA no disponible", "status_code": 500}
 
         model = resolve_realtime_model(app_config=current_app.config)
+        transcription_model = resolve_realtime_input_transcription_model(
+            app_config=current_app.config
+        )
         voice = resolve_realtime_voice(app_config=current_app.config)
-        tenant = TenantProfile.query.get(tenant_id) if tenant_id else None
+        tenant = db.session.get(TenantProfile, tenant_id) if tenant_id else None
         cfg = tenant.configuracion if tenant and isinstance(tenant.configuracion, dict) else {}
         vertical = infer_realtime_voice_vertical(tenant)
         translation_policy = build_multilingual_translation_policy(cfg, current_app.config)
@@ -79,7 +84,7 @@ class RealtimeSessionService:
                             "create_response": True,
                             "interrupt_response": True,
                         },
-                        "transcription": {"model": "gpt-4o-mini-transcribe"},
+                        "transcription": {"model": transcription_model},
                     },
                     "output": {
                         "format": self._audio_format("pcm16"),
@@ -98,7 +103,10 @@ class RealtimeSessionService:
             resp = requests.post(self.openai_url, json=payload, headers=headers, timeout=10)
 
             if resp.status_code != 200:
-                logger.error(f"Failed to create Realtime session: {resp.text}")
+                logger.warning(
+                    "OpenAI Realtime session request failed status=%s",
+                    resp.status_code,
+                )
                 return {"error": "Error al generar sesión de voz", "status_code": resp.status_code}
 
             data = resp.json()
@@ -115,8 +123,11 @@ class RealtimeSessionService:
                 "status_code": 200
             }
 
-        except Exception as e:
-            logger.error(f"Exception creating Realtime session: {e}")
+        except Exception as exc:
+            logger.warning(
+                "OpenAI Realtime session request failed error_type=%s",
+                type(exc).__name__,
+            )
             return {"error": "Error interno", "status_code": 500}
 
 realtime_session_service = RealtimeSessionService()

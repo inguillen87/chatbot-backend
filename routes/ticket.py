@@ -2,9 +2,12 @@ import json
 import os
 import uuid
 import logging
+import hashlib
+from functools import wraps
 from typing import Any, Mapping, Optional
+from flask_limiter.errors import RateLimitExceeded
 from werkzeug.utils import secure_filename
-from flask import Blueprint, g, request, jsonify, current_app, send_from_directory, render_template
+from flask import Blueprint, g, request, jsonify, current_app, make_response, send_from_directory, render_template
 from socket_service import (
     emit_ticket_update,
     emit_ticket_comment,
@@ -52,7 +55,20 @@ from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from utils.tenant import get_current_tenant, get_current_tenant_profile
 from utils.errors import ApiError
-from utils.roles import canonical_role, ROLE_EMPLEADO, ROLE_SUPERADMIN, ROLE_TENANT_ADMIN
+from extensions import limiter
+from routes.tracking_ui import (
+    _deduct_tracking_failure,
+    _tracking_failure_rate_limit,
+    _tracking_failure_rate_limited,
+    _tracking_subject_failure_rate_limit,
+)
+from utils.roles import (
+    canonical_role,
+    is_authorized_superadmin_user,
+    ROLE_EMPLEADO,
+    ROLE_SUPERADMIN,
+    ROLE_TENANT_ADMIN,
+)
 logger = logging.getLogger("app")
 
 from utils.recaptcha import verify_recaptcha
@@ -80,6 +96,7 @@ TICKET_PUBLIC_RECIPIENT_ROLES = {
     "user",
     "usuario",
 }
+TICKET_PUBLIC_LOOKUP_RATE_SCOPE = "ticket-public-number-lookup"
 TICKET_READ_REQUIRED_CAPABILITIES = [
     "tickets.read",
     "crm.tickets.read",
@@ -1134,6 +1151,15 @@ def _ticket_json(payload: dict, status_code: int = 200, request_id: Optional[str
     return response
 
 
+def _ticket_private_no_store_response(response):
+    """Prevent ticket credentials and PII from being stored by shared caches."""
+
+    response = make_response(response)
+    response.headers["Cache-Control"] = "private, no-store, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
 def _ticket_degraded_meta(reasons: list[str] | None = None) -> dict:
     reasons = [str(reason) for reason in (reasons or []) if reason]
     return {
@@ -1610,6 +1636,97 @@ def _ticket_scope_access_allows(ticket_type: str, ticket_obj, current_user: Opti
         tenant_municipio_id if ticket_type == "municipio" else None,
         tenant_pyme_id if ticket_type == "pyme" else None,
     )
+
+
+def _authenticated_municipio_lookup_allows(
+    ticket_obj: MunicipioTicket,
+    actor_user: Optional[User],
+) -> bool:
+    """Keep number-based municipal lookups inside the authenticated tenant.
+
+    ``anon_o_token_requerido`` exposes the resolved widget owner for JWT
+    requests, so merely having a valid JWT is not proof that the caller owns a
+    ticket. This guard supports current tenant profiles and legacy municipal
+    owners while rejecting end-user roles and cross-tenant lookups.
+    """
+
+    if not actor_user:
+        return False
+
+    role = canonical_role(getattr(actor_user, "rol", None))
+    if role == ROLE_SUPERADMIN:
+        return is_authorized_superadmin_user(actor_user)
+    is_employee = _is_employee_user(actor_user)
+    if not is_employee and role not in TICKET_BACKOFFICE_ROLES:
+        return bool(
+            getattr(ticket_obj, "user_id", None) is not None
+            and getattr(ticket_obj, "user_id", None) == getattr(actor_user, "id", None)
+        )
+
+    municipio_id = getattr(ticket_obj, "municipio_id", None)
+    tenant_allows = _ticket_scope_access_allows("municipio", ticket_obj, actor_user)
+    legacy_scope_allows = bool(
+        getattr(ticket_obj, "tenant_id", None) is None
+        and municipio_id
+        and municipio_id in _get_allowed_municipio_ids(actor_user)
+    )
+    if not (tenant_allows or legacy_scope_allows):
+        return False
+
+    if is_employee:
+        return getattr(ticket_obj, "asignado_a_id", None) == getattr(actor_user, "id", None)
+
+    return True
+
+
+def _ticket_public_lookup_is_authenticated() -> bool:
+    """Return whether the number lookup is using a validated JWT principal."""
+
+    return bool(
+        getattr(g, "jwt_user", None)
+        and getattr(g, "owner_resolution_source", None) == "jwt_widget_owner"
+    )
+
+
+def _ticket_public_lookup_failure_subject_key() -> str:
+    """Build a stable ticket bucket that ignores unrelated query parameters."""
+
+    ticket_reference = str((request.view_args or {}).get("nro_ticket") or "").strip().upper()
+    if ticket_reference.startswith("M-"):
+        ticket_reference = ticket_reference[2:].strip()
+    subject = f"claim:ticket:{ticket_reference.lower()}"
+    subject_fingerprint = hashlib.sha256(subject.encode("utf-8")).hexdigest()
+    return f"tracking-subject-failure:{subject_fingerprint}"
+
+
+def _ticket_public_lookup_failure_rate_key() -> str:
+    client_ip = request.remote_addr or "0.0.0.0"
+    return f"tracking-ip-failure:{client_ip}:{_ticket_public_lookup_failure_subject_key()}"
+
+
+def _deduct_ticket_public_lookup_failure(response) -> bool:
+    """Count only failed PIN lookups, never authenticated authorization failures."""
+
+    return bool(
+        not _ticket_public_lookup_is_authenticated()
+        and _deduct_tracking_failure(response)
+    )
+
+
+def _handle_ticket_public_lookup_rate_limit(view):
+    """Preserve the limiter response when this view is called through an alias."""
+
+    @wraps(view)
+    def decorated(*args, **kwargs):
+        try:
+            return view(*args, **kwargs)
+        except RateLimitExceeded as error:
+            response = getattr(error, "response", None)
+            if response is None:
+                response = _tracking_failure_rate_limited(None)
+            return _ticket_private_no_store_response(response)
+
+    return decorated
 
 
 def _get_allowed_municipio_id(current_user: User) -> Optional[int]:
@@ -2945,6 +3062,23 @@ def _serialize_ticket_details(ticket, ticket_type):
 
 @ticket_bp.route('/tickets/municipio/por_numero/<string:nro_ticket>', methods=['GET'])
 @anon_o_token_requerido
+@_handle_ticket_public_lookup_rate_limit
+@limiter.shared_limit(
+    _tracking_subject_failure_rate_limit,
+    scope=TICKET_PUBLIC_LOOKUP_RATE_SCOPE,
+    key_func=_ticket_public_lookup_failure_subject_key,
+    exempt_when=_ticket_public_lookup_is_authenticated,
+    deduct_when=_deduct_ticket_public_lookup_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
+@limiter.shared_limit(
+    _tracking_failure_rate_limit,
+    scope=TICKET_PUBLIC_LOOKUP_RATE_SCOPE,
+    key_func=_ticket_public_lookup_failure_rate_key,
+    exempt_when=_ticket_public_lookup_is_authenticated,
+    deduct_when=_deduct_ticket_public_lookup_failure,
+    on_breach=_tracking_failure_rate_limited,
+)
 def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: str):
     """Consulta un ticket municipal por su número."""
     request_id = _ticket_request_id()
@@ -2954,28 +3088,50 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
         normalizado = normalizado.split("-", 1)[1]
 
     ticket = None
+    actor_user = (
+        current_user
+        or getattr(g, "jwt_user", None)
+        or _effective_ticket_actor(current_user, owner_user)
+    )
     authenticated_lookup = bool(current_user) or bool(
-        owner_user and getattr(g, "owner_resolution_source", None) == "jwt_widget_owner"
+        actor_user and getattr(g, "owner_resolution_source", None) == "jwt_widget_owner"
     )
     if authenticated_lookup:
-        # Petición autenticada: no requiere PIN ni reCAPTCHA
+        # A JWT may skip the public PIN only inside its own tenant scope.
         ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado).first()
+        if ticket and not _authenticated_municipio_lookup_allows(ticket, actor_user):
+            current_app.logger.warning(
+                "Cross-tenant ticket lookup denied actor_user_id=%s ticket_id=%s request_id=%s",
+                getattr(actor_user, "id", None),
+                getattr(ticket, "id", None),
+                request_id,
+            )
+            # Do not reveal whether a ticket number exists in another tenant.
+            ticket = None
     else:
         pin = request.args.get("pin")
         if not pin:
-            return jsonify({"error": "PIN requerido."}), 400
+            return _ticket_private_no_store_response(
+                (jsonify({"error": "PIN requerido."}), 400)
+            )
         token = request.args.get("recaptcha_token")
         if token and token.lower() not in ("undefined", "null"):
             if not verify_recaptcha(token):
-                return jsonify({"error": "Verificación reCAPTCHA fallida."}), 400
+                return _ticket_private_no_store_response(
+                    (jsonify({"error": "Verificación reCAPTCHA fallida."}), 400)
+                )
 
         ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado, consulta_pin=pin).first()
 
     if not ticket:
-        return jsonify({"error": "Ticket no encontrado."}), 404
+        return _ticket_private_no_store_response(
+            (jsonify({"error": "Ticket no encontrado."}), 404)
+        )
 
     ticket_data = _serialize_ticket_details(ticket, "municipio")
-    return _ticket_json(ticket_data, request_id=request_id)
+    return _ticket_private_no_store_response(
+        _ticket_json(ticket_data, request_id=request_id)
+    )
 
 
 def _public_tracking_payload(ticket: MunicipioTicket) -> dict:

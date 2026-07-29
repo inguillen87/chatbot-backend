@@ -3,7 +3,7 @@ import re
 import json
 import uuid
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Any
 from enum import Enum, auto
 from urllib.parse import urlparse
@@ -2256,7 +2256,7 @@ def get_or_create_user_by_phone(phone_number: str, owner_user: models.User) -> O
         tipo_chat=owner_user.tipo_chat,
         plan='gratis',
         acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
-        fecha_aceptacion_terminos=datetime.utcnow()
+        fecha_aceptacion_terminos=datetime.now(timezone.utc)
     )
     nuevo_usuario.name = "Vecino/a"
     nuevo_usuario.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura
@@ -2311,7 +2311,7 @@ def get_or_create_pyme_user_by_token(token: str) -> Optional[models.User]:
         tipo_chat='pyme',
         plan='gratis', # O el plan por defecto que corresponda
         acepto_terminos=True, # Asumimos aceptación para que el sistema funcione
-        fecha_aceptacion_terminos=datetime.utcnow()
+        fecha_aceptacion_terminos=datetime.now(timezone.utc)
     )
     nuevo_pyme_user.name = f"Empresa {token[:8]}"
     nuevo_pyme_user.set_password(str(uuid.uuid4())) # Contraseña aleatoria y segura

@@ -22,12 +22,18 @@ from models import EncEncuesta, EncRespuesta, EncPregunta, EncRespuestaDetalle, 
 from services.openai_bridge import client as openai_client
 from services.encuestas_service import (
     EncuestaError,
+    compile_survey_visibility,
     get_encuesta,
     get_public_encuesta,
     _parse_datetime,
     _resolve_geo_metadata_for_tenant,
 )
 from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
+from services.openai_model_defaults import (
+    DEFAULT_OPENAI_SOL_MODEL,
+    chat_completion_compatibility_options,
+    resolve_openai_model,
+)
 from utils.heatmap import (
     build_feature_collection,
     compute_heatmap_cell_id,
@@ -71,6 +77,13 @@ SURVEY_AI_ADVISORY_POLICY = {
     "python_handlers_remain_authority": True,
     "requires_operator_confirmation": True,
 }
+
+
+def _survey_analytics_model() -> str:
+    return resolve_openai_model(
+        "OPENAI_SURVEY_ANALYTICS_MODEL",
+        DEFAULT_OPENAI_SOL_MODEL,
+    )
 LIVE_ANALYTICS_RANGE_CONTRACT_VERSION = "surveys.analytics_range.v1"
 LIVE_ANALYTICS_RANGE_PRESETS = {
     "last_60m": "Últimos 60 minutos",
@@ -836,11 +849,23 @@ def _build_heatmap_metadata(
 
 def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
+    visibility_plan = compile_survey_visibility(encuesta)
     respuestas = _collect_respuestas(encuesta, filtros)
     total = len(respuestas)
 
     opciones_por_pregunta = defaultdict(Counter)
+    selecciones_unicas_por_pregunta = defaultdict(Counter)
     textos_abiertos: Dict[int, List[str]] = defaultdict(list)
+    elegibles_por_pregunta: Counter = Counter()
+    respuestas_por_pregunta: Counter = Counter()
+    preguntas_por_id = {pregunta.id: pregunta for pregunta in encuesta.preguntas}
+    tipos_respuesta_opcion = frozenset(
+        {"opcion_unica", "opcion_multiple", "rating_emoji"}
+    )
+    opciones_validas_por_pregunta = {
+        pregunta.id: {opcion.id for opcion in pregunta.opciones}
+        for pregunta in encuesta.preguntas
+    }
     canales = Counter()
     utm = Counter()
     participantes_unicos: set[str] = set()
@@ -852,11 +877,6 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
     paises = Counter()
     edades: List[int] = []
 
-    preguntas_obligatorias = {
-        pregunta.id
-        for pregunta in encuesta.preguntas
-        if getattr(pregunta, "obligatoria", False)
-    }
     respuestas_completas = 0
 
     for respuesta in respuestas:
@@ -888,16 +908,68 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
         if isinstance(respuesta.edad, int):
             edades.append(respuesta.edad)
 
-        detalles_por_pregunta = defaultdict(list)
+        selected_option_ids_by_question_id: Dict[int, set[int]] = defaultdict(set)
+        preguntas_con_respuesta_sustantiva: set[int] = set()
         for detalle in respuesta.detalles:
+            pregunta = preguntas_por_id.get(detalle.pregunta_id)
             if detalle.opcion_id:
                 opciones_por_pregunta[detalle.pregunta_id][detalle.opcion_id] += 1
-            detalles_por_pregunta[detalle.pregunta_id].append(detalle)
+                selected_option_ids_by_question_id[detalle.pregunta_id].add(
+                    detalle.opcion_id
+                )
+                opcion_es_valida = (
+                    detalle.opcion_id
+                    in opciones_validas_por_pregunta.get(
+                        detalle.pregunta_id, set()
+                    )
+                )
+                if (
+                    pregunta is not None
+                    and pregunta.tipo in tipos_respuesta_opcion
+                    and opcion_es_valida
+                ):
+                    preguntas_con_respuesta_sustantiva.add(detalle.pregunta_id)
             if detalle.texto_libre:
                 textos_abiertos[detalle.pregunta_id].append(detalle.texto_libre)
+                if (
+                    pregunta is not None
+                    and pregunta.tipo == "abierta"
+                    and str(detalle.texto_libre).strip()
+                ):
+                    preguntas_con_respuesta_sustantiva.add(detalle.pregunta_id)
 
-        if preguntas_obligatorias:
-            if all(detalles_por_pregunta.get(pid) for pid in preguntas_obligatorias):
+        preguntas_visibles = visibility_plan.evaluate(
+            selected_option_ids_by_question_id=(
+                selected_option_ids_by_question_id
+            )
+        )
+        preguntas_visibles_ids = {
+            pregunta.id for pregunta in preguntas_visibles
+        }
+        preguntas_respondidas_ids = preguntas_con_respuesta_sustantiva.intersection(
+            preguntas_visibles_ids
+        )
+        elegibles_por_pregunta.update(preguntas_visibles_ids)
+        respuestas_por_pregunta.update(preguntas_respondidas_ids)
+        for pregunta_id in preguntas_visibles_ids:
+            for opcion_id in selected_option_ids_by_question_id.get(
+                pregunta_id, set()
+            ).intersection(opciones_validas_por_pregunta.get(pregunta_id, set())):
+                # One response contributes at most once to an option's new
+                # respondent-based rates, even if historical data contains
+                # duplicate detail rows. Legacy counters above remain intact.
+                selecciones_unicas_por_pregunta[pregunta_id][opcion_id] += 1
+
+        preguntas_obligatorias_visibles = {
+            pregunta.id
+            for pregunta in preguntas_visibles
+            if getattr(pregunta, "obligatoria", False)
+        }
+        if preguntas_obligatorias_visibles:
+            if all(
+                pid in preguntas_con_respuesta_sustantiva
+                for pid in preguntas_obligatorias_visibles
+            ):
                 respuestas_completas += 1
         else:
             respuestas_completas += 1
@@ -905,18 +977,48 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
     preguntas_summary = []
     for pregunta in encuesta.preguntas:
         normalized_tipo = _normalize_question_type(pregunta.tipo)
+        respuestas_elegibles = elegibles_por_pregunta[pregunta.id]
+        respuestas_respondidas = respuestas_por_pregunta[pregunta.id]
+        tasa_respuesta_elegible = (
+            respuestas_respondidas / respuestas_elegibles * 100
+            if respuestas_elegibles
+            else 0
+        )
         pregunta_data = {
             "pregunta_id": pregunta.id,
             "texto": pregunta.texto,
             "tipo": normalized_tipo,
             "tipo_interno": pregunta.tipo,
             "total_respuestas": total,
+            "respuestas_elegibles": respuestas_elegibles,
+            "respuestas_respondidas": respuestas_respondidas,
+            "tasa_respuesta_elegible": round(tasa_respuesta_elegible, 2),
         }
         if normalized_tipo in {"single_choice", "multiple_choice"}:
             opciones = []
             for opcion in pregunta.opciones:
                 conteo = opciones_por_pregunta[pregunta.id][opcion.id]
+                respuestas_seleccionaron = selecciones_unicas_por_pregunta[
+                    pregunta.id
+                ][opcion.id]
                 porcentaje = (conteo / total * 100) if total else 0
+                porcentaje_total_encuesta = (
+                    respuestas_seleccionaron / total * 100
+                    if total
+                    else 0
+                )
+                porcentaje_elegibles = (
+                    respuestas_seleccionaron / respuestas_elegibles * 100
+                    if respuestas_elegibles
+                    else 0
+                )
+                porcentaje_respuestas_pregunta = (
+                    respuestas_seleccionaron / respuestas_respondidas * 100
+                    if respuestas_respondidas
+                    else 0
+                )
+                # These are per-option selection rates. For multiple-choice
+                # questions their sum may legitimately exceed 100 percent.
                 opciones.append(
                     {
                         "opcion_id": opcion.id,
@@ -924,6 +1026,16 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                         "conteo": conteo,
                         "value": conteo,
                         "porcentaje": round(porcentaje, 2),
+                        "respuestas_seleccionaron": respuestas_seleccionaron,
+                        "porcentaje_total_encuesta": round(
+                            porcentaje_total_encuesta, 2
+                        ),
+                        "porcentaje_elegibles": round(
+                            porcentaje_elegibles, 2
+                        ),
+                        "porcentaje_respuestas_pregunta": round(
+                            porcentaje_respuestas_pregunta, 2
+                        ),
                     }
                 )
             pregunta_data["opciones"] = opciones
@@ -944,7 +1056,25 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
             opciones = []
             for opcion in pregunta.opciones:
                 conteo = opciones_por_pregunta[pregunta.id][opcion.id]
+                respuestas_seleccionaron = selecciones_unicas_por_pregunta[
+                    pregunta.id
+                ][opcion.id]
                 porcentaje = (conteo / total * 100) if total else 0
+                porcentaje_total_encuesta = (
+                    respuestas_seleccionaron / total * 100
+                    if total
+                    else 0
+                )
+                porcentaje_elegibles = (
+                    respuestas_seleccionaron / respuestas_elegibles * 100
+                    if respuestas_elegibles
+                    else 0
+                )
+                porcentaje_respuestas_pregunta = (
+                    respuestas_seleccionaron / respuestas_respondidas * 100
+                    if respuestas_respondidas
+                    else 0
+                )
                 opciones.append(
                     {
                         "opcion_id": opcion.id,
@@ -952,6 +1082,16 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                         "conteo": conteo,
                         "value": conteo,
                         "porcentaje": round(porcentaje, 2),
+                        "respuestas_seleccionaron": respuestas_seleccionaron,
+                        "porcentaje_total_encuesta": round(
+                            porcentaje_total_encuesta, 2
+                        ),
+                        "porcentaje_elegibles": round(
+                            porcentaje_elegibles, 2
+                        ),
+                        "porcentaje_respuestas_pregunta": round(
+                            porcentaje_respuestas_pregunta, 2
+                        ),
                     }
                 )
             pregunta_data["opciones"] = opciones
@@ -1241,15 +1381,22 @@ def _generate_openai_executive_brief(
         "insights (array de 2 strings accionables), risk_level (low|medium|high)."
     )
 
+    model = _survey_analytics_model()
+    request_kwargs = {
+        "model": model,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+    }
+    request_kwargs.update(
+        chat_completion_compatibility_options(model, legacy_temperature=0.2)
+    )
+
     try:
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            temperature=0.2,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
+            **request_kwargs,
         )
         raw = (response.choices[0].message.content or "").strip()
         parsed = json.loads(raw)
@@ -1265,8 +1412,12 @@ def _generate_openai_executive_brief(
             risk_level = "medium"
 
         return {"headline": headline, "insights": insights, "risk_level": risk_level}
-    except Exception:
-        logger.warning("[encuestas_analytics] OpenAI brief enrichment failed", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "[encuestas_analytics] OpenAI brief enrichment failed model=%s error_type=%s",
+            model,
+            type(exc).__name__,
+        )
         return None
 
 
@@ -1418,7 +1569,7 @@ def _generate_ai_executive_brief(
             brief = _normalize_ai_brief_response(
                 raw_brief,
                 provider="openai",
-                model=os.getenv("OPENAI_SURVEY_ANALYTICS_MODEL", "gpt-4o-mini"),
+                model=_survey_analytics_model(),
             )
         if brief:
             return brief

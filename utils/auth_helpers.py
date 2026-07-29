@@ -1592,6 +1592,7 @@ def anon_o_token_requerido(f):
         current_user = None  # El usuario final que chatea (el "viewer")
         owner_user = None    # El dueño del bot (la "entidad", ej: municipio)
         owner_resolution_source = "anonymous"
+        authenticated_jwt_user = None
 
         demo_token_detected = False
         token_payload: Dict[str, Any] = {}
@@ -1603,6 +1604,7 @@ def anon_o_token_requerido(f):
             jwt_user = user_from_token(token)
             token_payload = _decode_token_payload(token) if _is_jwt_token(token) else {}
             if jwt_user:
+                authenticated_jwt_user = jwt_user
                 current_app.logger.info(f"Request authenticated via JWT. User ID: {jwt_user.id}")
                 owner_user = _resolve_owner_user(jwt_user)
                 owner_resolution_source = "jwt_widget_owner"
@@ -1675,6 +1677,10 @@ def anon_o_token_requerido(f):
         g.token_payload = dict(token_payload) if token_payload else {}
         g.auth_token = token
         g.current_user = current_user
+        # Keep the real JWT principal distinct from the resolved widget owner.
+        # Public-capable routes can enforce employee/owner scope without
+        # changing this decorator's legacy function arguments.
+        g.jwt_user = authenticated_jwt_user
         g.owner_user = owner_user
         g.owner_resolution_source = owner_resolution_source
 

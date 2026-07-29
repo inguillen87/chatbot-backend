@@ -1,7 +1,8 @@
 import logging
+import hashlib
 import re
 import os
-from flask import current_app, url_for
+from flask import current_app, has_app_context, url_for
 from models import WhatsappNumero, User, ChatSessionContext
 from extensions import db
 from utils.db_utils import safe_flag_modified
@@ -19,21 +20,39 @@ TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
 MESSAGING_SERVICE_SID = os.environ.get("MESSAGING_SERVICE_SID")
 
+
+def _runtime_config_value(name: str, legacy_value: str | None = None) -> str | None:
+    if has_app_context():
+        configured = current_app.config.get(name)
+        if configured not in (None, ""):
+            return str(configured).strip()
+    configured = os.environ.get(name)
+    if configured not in (None, ""):
+        return str(configured).strip()
+    return str(legacy_value).strip() if legacy_value not in (None, "") else None
+
+
+def _safe_reference(value: object) -> str:
+    raw = str(value or "").strip()
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12] if raw else "missing"
+
 def initiate_outbound_call(to_number, from_number, chat_session_id=None):
     """
     Triggers an outbound call to the user using Twilio.
     The call will connect to the /voice/welcome webhook.
     """
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+    account_sid = _runtime_config_value("TWILIO_ACCOUNT_SID", TWILIO_ACCOUNT_SID)
+    auth_token = _runtime_config_value("TWILIO_AUTH_TOKEN", TWILIO_AUTH_TOKEN)
+    if not account_sid or not auth_token:
         logger.error("Twilio credentials missing for voice call.")
         return False
 
-    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+    client = Client(account_sid, auth_token)
 
     # In production, this must be the public HTTPS URL.
     # We use url_for with _external=True to generate absolute URL.
     # Note: Flask's SERVER_NAME or equivalent must be set correctly, or use APP_BASE_URL config.
-    base_url = current_app.config.get("APP_BASE_URL") or current_app.config.get("BACKEND_URL")
+    base_url = _runtime_config_value("APP_BASE_URL") or _runtime_config_value("BACKEND_URL")
     if not base_url:
         logger.error("APP_BASE_URL or BACKEND_URL not set. Cannot trigger voice call.")
         return False
@@ -44,31 +63,40 @@ def initiate_outbound_call(to_number, from_number, chat_session_id=None):
         url = f"{url}?{urlencode({'chat_session_id': chat_session_id})}"
 
     try:
-        # Sanitize numbers for Voice API (E.164 required, no whatsapp: prefix)
-        to_number_voice = to_number.replace("whatsapp:", "").strip()
+        # The action boundary already resolves a dedicated voice-enabled caller
+        # ID. Never replace it with the generic WhatsApp sender: being valid for
+        # messaging does not make a number valid for PSTN voice.
+        to_number_voice = str(to_number or "").replace("whatsapp:", "").strip()
+        from_number_voice = str(from_number or "").replace("whatsapp:", "").strip()
+        e164_pattern = re.compile(r"^\+[1-9]\d{7,14}$")
+        if not e164_pattern.fullmatch(to_number_voice):
+            logger.error("Outbound call refused reason=invalid_destination")
+            return False
+        if not e164_pattern.fullmatch(from_number_voice):
+            logger.error("Outbound call refused reason=invalid_voice_caller_id")
+            return False
 
-        # Determine valid Caller ID
-        # If from_number is a WhatsApp ID (e.g. whatsapp:+1...), it cannot be used as Caller ID.
-        # We must use a verified Twilio number.
-        from_number_voice = from_number.replace("whatsapp:", "").strip()
-
-        # Check if from_number is likely valid (e.g. matching configured numbers)
-        # For simplicity/safety, we prefer the environment variable TWILIO_PHONE_NUMBER if set
-        twilio_verified_number = os.environ.get("TWILIO_PHONE_NUMBER")
-
-        if twilio_verified_number:
-            from_number_voice = twilio_verified_number
+        status_callback = f"{base_url.rstrip('/')}/voice/status"
 
         call = client.calls.create(
             to=to_number_voice,
             from_=from_number_voice,
             url=url,
-            method="POST"
+            method="POST",
+            status_callback=status_callback,
+            status_callback_method="POST",
+            status_callback_event=["initiated", "ringing", "answered", "completed"],
         )
-        logger.info(f"Outbound call initiated SID: {call.sid}")
+        logger.info(
+            "Outbound call accepted provider=twilio call_ref=%s",
+            _safe_reference(getattr(call, "sid", None)),
+        )
         return True
-    except Exception as e:
-        logger.error(f"Failed to initiate outbound call: {e}")
+    except Exception as exc:
+        logger.error(
+            "Outbound call request failed provider=twilio error_type=%s outcome=unknown",
+            type(exc).__name__,
+        )
         return False
 
 def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
@@ -86,7 +114,7 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%")).first()
 
         if not whatsapp_mapping:
-             logger.warning(f"Could not find tenant for bot phone {bot_phone_clean}")
+             logger.warning("Voice tenant resolution failed reason=sender_not_registered")
              return {"text": "Lo siento, hubo un error de configuración.", "audio_url": None}
 
         client_user = whatsapp_mapping.user
@@ -219,9 +247,12 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
 
                 # Append a spoken notification
                 message_body += " Te acabo de enviar un mensaje con los enlaces y la información detallada para que la tengas a mano."
-                logger.info(f"Sent OOB message with URLs to {user_phone_clean}")
-            except Exception as e:
-                logger.error(f"Failed to send OOB message: {e}")
+                logger.info("Voice out-of-band message accepted channel=whatsapp")
+            except Exception as exc:
+                logger.error(
+                    "Voice out-of-band message failed error_type=%s",
+                    type(exc).__name__,
+                )
 
         # Check for Human Handoff Intent
         accion_backend = response_dict.get("accion_backend")
@@ -323,13 +354,17 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         audio_url = None
         try:
             audio_url = generar_audio(speech_text)
-        except Exception as e:
-            logger.error(f"Failed to generate TTS audio: {e}")
+        except Exception as exc:
+            logger.error("Voice TTS failed error_type=%s", type(exc).__name__)
 
         return {"text": speech_text, "audio_url": audio_url}
 
-    except Exception as e:
-        logger.error(f"Error in handle_voice_interaction: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Voice interaction failed error_type=%s",
+            type(exc).__name__,
+            exc_info=True,
+        )
         return {"text": "Hubo un error al procesar tu solicitud.", "audio_url": None}
 
 def handle_call_status(call_sid, call_status, to_number, from_number, direction):
@@ -352,7 +387,7 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%")).first()
 
         if not whatsapp_mapping:
-            logger.warning(f"Could not find tenant for bot phone {bot_phone_clean}")
+            logger.warning("Voice status tenant resolution failed reason=sender_not_registered")
             return
 
         client_user = whatsapp_mapping.user
@@ -448,7 +483,11 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
                      message_body += "\n\n📷 Si tenés una foto del problema, podés enviarla respondiendo a este mensaje."
 
             except Exception as e_rich:
-                logger.error(f"Error building rich receipt for voice fallback: {e_rich}", exc_info=True)
+                logger.error(
+                    "Voice fallback receipt build failed error_type=%s",
+                    type(e_rich).__name__,
+                    exc_info=True,
+                )
                 # Fallback to basic text if rich receipt fails
                 message_body = (
                     f"Gracias por tu llamada.\n\n✅ *Ticket generado con éxito*\n"
@@ -479,10 +518,14 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
             from_number=whatsapp_sender,
             messaging_service_sid=None if whatsapp_sender else MESSAGING_SERVICE_SID,
         )
-        logger.info(f"Sent post-call summary to {user_phone_clean}")
+        logger.info("Voice post-call summary accepted channel=whatsapp")
 
-    except Exception as e:
-        logger.error(f"Error handling call status: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Voice status handling failed error_type=%s",
+            type(exc).__name__,
+            exc_info=True,
+        )
 
 def _clean_text_for_speech(text):
     """

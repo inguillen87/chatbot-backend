@@ -106,6 +106,7 @@ class TestIntelligentCatalogProcessor:
         mock_llm_call.assert_called_once()
         call_args, call_kwargs = mock_llm_call.call_args
         assert extracted_text in call_kwargs['user_prompt']
+        assert call_kwargs['model'] == 'gpt-5.6-sol'
 
 
         # Check DB

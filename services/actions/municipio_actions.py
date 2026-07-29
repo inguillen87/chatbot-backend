@@ -1,12 +1,14 @@
 # services/actions/municipio_actions.py
 import logging
+import hashlib
 import os
 import re
 import sys
 import time
 from urllib.parse import urlparse
 
-from sqlalchemy import func, or_
+from flask import current_app, has_app_context
+from sqlalchemy import func, text
 
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any, Optional
@@ -28,6 +30,8 @@ from services.categorias_municipio import (
 from services.ticket_utils import build_claim_tracking_url, formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.whatsapp_receipts import (
     build_claim_created_template_pre_message,
+    build_claim_created_followup_text,
+    build_claim_replay_text,
     render_ticket_whatsapp,
 )
 from services.live_chat_schedule import build_tenant_live_chat_status
@@ -40,6 +44,7 @@ from services.common_utils import _get_main_menu_payload
 from services import promo_service
 from services.voice_handler import initiate_outbound_call
 from services.conversation_summaries import build_claim_confirmation_payload
+from utils.db_utils import safe_flag_modified
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,153 @@ def _format_ticket_code(prefix: str, raw_ticket_number: Any) -> str:
     if raw_value.upper().startswith(normalized_prefix):
         return f"{normalized_prefix}{raw_value[len(normalized_prefix):]}"
     return f"{normalized_prefix}{raw_value}"
+
+
+def _normalize_voice_e164(
+    value: Any,
+    *,
+    default_country_code: str = "54",
+) -> Optional[str]:
+    """Return a conservative E.164 destination for PSTN calls.
+
+    WhatsApp identities normally include the international ``+`` prefix and
+    are preserved.  A number explicitly typed without a prefix is formatted
+    with the tenant's configured calling code (Argentina by default) instead
+    of being mistaken for an arbitrary international destination.
+    """
+
+    raw_value = str(value or "").strip()
+    if raw_value.lower().startswith("whatsapp:"):
+        raw_value = raw_value.split(":", 1)[1].strip()
+    if not raw_value or re.search(r"[A-Za-z]", raw_value):
+        return None
+
+    if raw_value.startswith("+"):
+        candidate = f"+{re.sub(r'\D', '', raw_value)}"
+    else:
+        country_code = re.sub(r"\D", "", str(default_country_code or "54")) or "54"
+        candidate = formatear_telefono_e164(raw_value, cod_pais=country_code)
+
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", candidate or ""):
+        return None
+    return candidate
+
+
+def _voice_country_code(tenant: Any) -> str:
+    tenant_config = getattr(tenant, "configuracion", None)
+    if isinstance(tenant_config, dict):
+        configured = (
+            tenant_config.get("voice_country_calling_code")
+            or tenant_config.get("country_calling_code")
+        )
+        digits = re.sub(r"\D", "", str(configured or ""))
+        if 1 <= len(digits) <= 3 and not digits.startswith("0"):
+            return digits
+    return "54"
+
+
+def _resolve_callback_destination(
+    context: Dict[str, Any],
+    action_data: Dict[str, Any],
+    viewer_user: Any,
+    *,
+    country_code: str,
+) -> tuple[Optional[str], bool]:
+    """Resolve the first valid citizen phone without ever using owner data."""
+
+    candidates = [
+        action_data.get("telefono"),
+        action_data.get("phone"),
+        context.get("anon_id"),
+        getattr(viewer_user, "telefono", None) if viewer_user else None,
+    ]
+
+    chat_data = context.get("chat_db_context_data")
+    if isinstance(chat_data, dict):
+        municipal_context = chat_data.get(CONTEXTO_MUNICIPIO)
+        if isinstance(municipal_context, dict):
+            contact = municipal_context.get("contacto_usuario")
+            if isinstance(contact, dict):
+                candidates.append(contact.get("telefono"))
+
+    direct_municipal_context = context.get(CONTEXTO_MUNICIPIO)
+    if isinstance(direct_municipal_context, dict):
+        contact = direct_municipal_context.get("contacto_usuario")
+        if isinstance(contact, dict):
+            candidates.append(contact.get("telefono"))
+
+    for candidate in candidates:
+        normalized = _normalize_voice_e164(
+            candidate,
+            default_country_code=country_code,
+        )
+        if normalized:
+            return normalized, True
+    return None, any(str(candidate or "").strip() for candidate in candidates)
+
+
+def _resolve_voice_caller_id(tenant: Any) -> Optional[str]:
+    """Resolve only an explicitly voice-enabled PSTN caller ID."""
+
+    tenant_config = getattr(tenant, "configuracion", None)
+    if isinstance(tenant_config, dict) and tenant_config.get("voice_caller_id"):
+        return str(tenant_config["voice_caller_id"]).strip()
+
+    if has_app_context():
+        configured = current_app.config.get("TWILIO_VOICE_PHONE_NUMBER")
+        if configured:
+            return str(configured).strip()
+    configured = os.environ.get("TWILIO_VOICE_PHONE_NUMBER")
+    return str(configured).strip() if configured else None
+
+
+def _acquire_municipal_claim_confirmation_lock(
+    session,
+    *,
+    confirmation_id: str,
+    tenant_id: Any = None,
+    municipio_id: Any = None,
+) -> bool:
+    """Serialize one logical claim confirmation on PostgreSQL.
+
+    The confirmation id is also stored on the ticket for durable replay.  The
+    transaction-scoped advisory lock closes the read-before-create race without
+    adding a migration to the already active survey migration chain.  SQLite is
+    used only by tests/local development here, so no PostgreSQL-specific
+    statement is issued there; durable sequential replay remains active.
+    """
+
+    if not confirmation_id:
+        return True
+    scope_kind = "tenant" if tenant_id else "municipio" if municipio_id else ""
+    scope_value = tenant_id or municipio_id
+    if not scope_kind or not scope_value:
+        return False
+
+    try:
+        bind = session.get_bind()
+        if getattr(getattr(bind, "dialect", None), "name", "") != "postgresql":
+            return True
+        seed = f"municipal-claim:{scope_kind}:{scope_value}:{confirmation_id}"
+        lock_id = int.from_bytes(
+            hashlib.sha256(seed.encode("utf-8")).digest()[:8],
+            byteorder="big",
+            signed=True,
+        )
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": lock_id},
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "No se pudo adquirir el bloqueo idempotente del reclamo municipal."
+        )
+        try:
+            session.rollback()
+        except Exception:
+            logger.exception("No se pudo revertir la sesion tras fallar el bloqueo.")
+        return False
 
 
 def _normalize_url_for_comparison(raw_url: str) -> tuple[str, str]:
@@ -324,34 +476,144 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
     return direccion_es_valida(ubicacion)
 
 
-def _resolve_municipio_tenant_ids(owner_user, context: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
-    """Resolve tenant_id and municipio_id for municipal tickets."""
+def _normalize_positive_scope_id(value: Any) -> Optional[int]:
+    """Return a database-safe positive identifier or ``None``.
 
+    ORM identities are integers.  Reject arbitrary objects (including mocks)
+    before they can reach a bound SQL parameter; coercing such objects can
+    silently select an unrelated tenant.
+    """
+
+    if type(value) is int:
+        return value if value > 0 else None
+    if isinstance(value, str):
+        candidate = value.strip()
+        if re.fullmatch(r"[1-9][0-9]*", candidate):
+            return int(candidate)
+    return None
+
+
+def _normalize_tenant_slug(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _resolve_municipio_tenant_ids(owner_user, context: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """Resolve tenant and municipality scope without arbitrary cross-tenant fallback."""
+
+    context = context or {}
     municipio_config = (context or {}).get("municipio_config_actual", {}) or {}
-    tenant_slug = (
+    tenant_slug = _normalize_tenant_slug(
         municipio_config.get("tenant_slug")
         or municipio_config.get("slug")
         or getattr(owner_user, "tenant_slug", None)
     )
-    owner_id = (
-        getattr(owner_user, "municipio_id", None)
-        or getattr(owner_user, "id", None)
+    owner_user_id = _normalize_positive_scope_id(getattr(owner_user, "id", None))
+    legacy_municipio_id = (
+        _normalize_positive_scope_id(getattr(owner_user, "municipio_id", None))
+        or owner_user_id
     )
+    valid_owner_ids = {
+        value for value in (owner_user_id, legacy_municipio_id) if value is not None
+    }
+
+    explicit_profile = context.get("tenant_profile")
+    chat_db_context = context.get("chat_db_context_obj")
+    explicit_ids = []
+    for value in (
+        context.get("tenant_id"),
+        getattr(chat_db_context, "tenant_id", None),
+        getattr(explicit_profile, "id", None),
+    ):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        normalized = _normalize_positive_scope_id(value)
+        if normalized is None:
+            logger.error("Invalid explicit tenant scope; refusing municipal fallback.")
+            return None, None
+        if normalized not in explicit_ids:
+            explicit_ids.append(normalized)
+
+    if len(explicit_ids) > 1:
+        logger.error(
+            "Conflicting explicit tenant scopes detected (tenant_ids=%s); refusing ticket action.",
+            explicit_ids,
+        )
+        return None, None
+
+    def _valid_tenant(candidate) -> bool:
+        if candidate is None:
+            return False
+        candidate_owner_id = _normalize_positive_scope_id(
+            getattr(candidate, "municipio_id", None)
+        )
+        return not valid_owner_ids or candidate_owner_id in valid_owner_ids
+
+    if explicit_ids:
+        requested_tenant_id = explicit_ids[0]
+        tenant = (
+            explicit_profile
+            if _normalize_positive_scope_id(getattr(explicit_profile, "id", None))
+            == requested_tenant_id
+            else TenantProfile.query.filter_by(id=requested_tenant_id).one_or_none()
+        )
+        if not _valid_tenant(tenant):
+            logger.error(
+                "Explicit tenant does not belong to municipal owner "
+                "(tenant_id=%s owner_id=%s); refusing ticket action.",
+                requested_tenant_id,
+                owner_user_id,
+            )
+            return None, None
+        return (
+            _normalize_positive_scope_id(getattr(tenant, "id", None)),
+            _normalize_positive_scope_id(getattr(tenant, "municipio_id", None))
+            or legacy_municipio_id,
+        )
+
+    if explicit_profile is not None:
+        if not _valid_tenant(explicit_profile):
+            logger.error("Explicit tenant profile does not belong to municipal owner.")
+            return None, None
+        return (
+            _normalize_positive_scope_id(getattr(explicit_profile, "id", None)),
+            _normalize_positive_scope_id(getattr(explicit_profile, "municipio_id", None))
+            or legacy_municipio_id,
+        )
 
     tenant = None
     if tenant_slug:
-        tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).first()
-    if not tenant and owner_id:
-        tenant = TenantProfile.query.filter_by(municipio_id=owner_id).first()
+        tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).one_or_none()
+        if tenant is not None and not _valid_tenant(tenant):
+            logger.error("Tenant slug does not belong to municipal owner; refusing ticket action.")
+            return None, None
+    if not tenant and owner_user_id:
+        candidates = TenantProfile.query.filter_by(municipio_id=owner_user_id).all()
+        active_candidates = [candidate for candidate in candidates if candidate.is_active]
+        unambiguous_candidates = active_candidates or candidates
+        if len(unambiguous_candidates) == 1:
+            tenant = unambiguous_candidates[0]
+        elif len(unambiguous_candidates) > 1:
+            logger.error(
+                "Multiple municipal tenants found for owner_id=%s without explicit scope; "
+                "refusing ticket action.",
+                owner_user_id,
+            )
+            return None, None
 
-    tenant_id = getattr(tenant, "id", None)
-    municipio_id = getattr(tenant, "municipio_id", None) or owner_id
+    tenant_id = _normalize_positive_scope_id(getattr(tenant, "id", None))
+    municipio_id = (
+        _normalize_positive_scope_id(getattr(tenant, "municipio_id", None))
+        or legacy_municipio_id
+    )
 
     if not municipio_id:
         logger.warning(
             "[tickets] municipio_id missing while resolving tenant. tenant_slug=%s owner_id=%s",
             tenant_slug,
-            owner_id,
+            owner_user_id,
         )
 
     return tenant_id, municipio_id
@@ -468,9 +730,23 @@ class BuscarEstacionamientoActionHandler(BaseActionHandler):
 
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing CrearReclamoActionHandler with data: {action_data}")
+        logger.info(
+            "Executing CrearReclamoActionHandler channel=%s supplied_fields=%s",
+            str(self.context.get("channel") or "unknown").lower(),
+            sorted(str(key) for key in action_data.keys()),
+        )
 
-        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO, {})
+        contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO)
+        if not isinstance(contexto_reclamo, dict):
+            chat_context_data = self.context.get("chat_db_context_data")
+            if isinstance(chat_context_data, dict):
+                contexto_reclamo = chat_context_data.setdefault(CONTEXTO_MUNICIPIO, {})
+                # Keep both access paths pointing at the same live object.  The
+                # guided flow stores its state below ``chat_db_context_data``
+                # while action handlers historically read the top-level key.
+                self.context[CONTEXTO_MUNICIPIO] = contexto_reclamo
+            else:
+                contexto_reclamo = {}
         viewer_user = self.context.get("viewer_user_obj")
         datos_parciales_llm = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
         contacto_ctx = contexto_reclamo.get("contacto_usuario", {})
@@ -543,10 +819,20 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 # Likely a description or junk text
                 if not descripcion:
                     descripcion = ubicacion_llm # Move to description if empty
-                logger.info(f"[VALIDATION] Location rejected (too long or narrative): {ubicacion_llm}")
+                logger.info(
+                    "Municipal claim location rejected reason=narrative "
+                    "has_coordinates=%s token_count=%s",
+                    has_valid_coordinates,
+                    len(lower_ubi.split()),
+                )
                 ubicacion_llm = None
             elif not _ubicacion_es_valida(ubicacion_llm) and not has_valid_coordinates:
-                logger.info(f"[VALIDATION] Ubicacion invalida detectada: {ubicacion_llm}")
+                logger.info(
+                    "Municipal claim location rejected reason=invalid "
+                    "has_coordinates=%s token_count=%s",
+                    has_valid_coordinates,
+                    len(lower_ubi.split()),
+                )
                 ubicacion_llm = None
 
         if descripcion:
@@ -582,7 +868,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 contexto_reclamo.setdefault("referencia_ubicacion", parsed_address.get("referencia"))
         if ubicacion_llm and not distrito_llm and direccion_es_valida(ubicacion_llm):
             try:
-                logger.info(f"Attempting to parse district from address: {ubicacion_llm}")
+                logger.info(
+                    "Attempting municipal district parsing location_chars=%s",
+                    len(str(ubicacion_llm)),
+                )
                 parsed_addr = parse_direccion(
                     ubicacion_llm,
                     municipio_config,
@@ -592,7 +881,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 else:
                     distrito_llm = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
             except Exception as e:
-                logger.warning(f"Failed to parse district from address: {e}")
+                logger.warning(
+                    "Municipal district parsing failed error_type=%s",
+                    type(e).__name__,
+                )
                 distrito_llm = municipio_config.get("ciudad") or municipio_config.get("ciudad_default")
         elif geocoded_from_coords and geocoded_from_coords.get("localidad"):
             distrito_llm = geocoded_from_coords.get("localidad")
@@ -799,9 +1091,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         campos_faltantes = [campo for campo in campos_requeridos if not datos_finales_reclamo.get(campo)]
 
-        logger.info(f"DEBUG: Campos requeridos: {campos_requeridos}")
-        logger.info(f"DEBUG: Datos finales reclamo: {datos_finales_reclamo}")
-        logger.info(f"DEBUG: campos_faltantes after check: {campos_faltantes}")
+        logger.info(
+            "Municipal claim validation required_fields=%s missing_fields=%s "
+            "present_fields_count=%s",
+            sorted(str(field) for field in campos_requeridos),
+            sorted(str(field) for field in campos_faltantes),
+            sum(bool(value) for value in datos_finales_reclamo.values()),
+        )
 
         # La lógica de confirmación ahora se maneja en 'municipio_responder.py'
         # Este handler ahora solo valida y crea.
@@ -867,6 +1163,21 @@ class CrearReclamoActionHandler(BaseActionHandler):
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
         tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
+        if not tenant_id and not municipio_id:
+            logger.error("Municipal claim creation refused because tenant scope is unresolved.")
+            return {
+                "success": False,
+                "message_body": (
+                    "No pude validar el municipio que debe recibir el reclamo. "
+                    "No se creó ningún ticket; intentá nuevamente en unos minutos."
+                ),
+                "message_to_user": (
+                    "No pude validar el municipio que debe recibir el reclamo. "
+                    "No se creó ningún ticket; intentá nuevamente en unos minutos."
+                ),
+                "message_type": "text",
+                "fuente": "municipio_tenant_scope_rejected",
+            }
         linked_user_id = getattr(viewer_user, "id", None)
         if not linked_user_id and email_final:
             existing_contact_user = (
@@ -907,8 +1218,129 @@ class CrearReclamoActionHandler(BaseActionHandler):
             "consulta_pin": pin_final,
         }
 
+        confirmation_id_raw = action_data.get("claim_confirmation_id")
+        confirmation_id = (
+            str(confirmation_id_raw).strip()
+            if confirmation_id_raw is not None
+            else ""
+        )
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", confirmation_id):
+            confirmation_id = ""
+        if confirmation_id:
+            ticket_data["datos_extra"] = {
+                "whatsapp_claim_confirmation_id": confirmation_id,
+            }
+
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
-        logger.info(f"Data for servicio_tickets.crear_nuevo_ticket: {ticket_data_cleaned}")
+        logger.info(
+            "Creating municipal claim ticket metadata=%s",
+            {
+                "tenant_id": tenant_id,
+                "municipio_id": municipio_id,
+                "linked_user_id": linked_user_id,
+                "categoria": ticket_data_cleaned.get("categoria"),
+                "canal": ticket_data_cleaned.get("canal_ingreso"),
+                "has_photo": bool(ticket_data_cleaned.get("foto_url_directa")),
+                "has_coordinates": bool(
+                    ticket_data_cleaned.get("latitud") is not None
+                    and ticket_data_cleaned.get("longitud") is not None
+                ),
+                "has_confirmation_id": bool(confirmation_id),
+            },
+        )
+
+        def _find_confirmation_replay() -> MunicipioTicket | None:
+            if not confirmation_id:
+                return None
+            if not tenant_id and not municipio_id:
+                return None
+            query = MunicipioTicket.query
+            if tenant_id:
+                query = query.filter(MunicipioTicket.tenant_id == tenant_id)
+            elif municipio_id:
+                query = query.filter(MunicipioTicket.municipio_id == municipio_id)
+            anon_value = ticket_data_cleaned.get("anon_id")
+            if anon_value:
+                query = query.filter(MunicipioTicket.anon_id == anon_value)
+            return (
+                query.filter(
+                    MunicipioTicket.datos_extra[
+                        "whatsapp_claim_confirmation_id"
+                    ].as_string()
+                    == confirmation_id
+                )
+                .order_by(MunicipioTicket.id.desc())
+                .first()
+            )
+
+        def _confirmation_replay_response(ticket: MunicipioTicket) -> Dict[str, Any]:
+            ticket_code = _format_ticket_code("M", ticket.nro_ticket)
+            replay_pin = str(ticket.consulta_pin or "").strip() or None
+            base_chat_url = municipio_config.get("base_chat_url", "https://www.chatboc.ar/chat")
+            tracking_url = build_claim_tracking_url(base_chat_url, ticket_code, replay_pin)
+            message = build_claim_replay_text(
+                ticket_nro=ticket_code,
+                consulta_pin=replay_pin,
+                tracking_url=tracking_url,
+            )
+            replay_payload = {
+                "success": True,
+                "message_body": message,
+                "message_to_user": message,
+                "message_type": "text",
+                "data": {
+                    "ticket_id": ticket.id,
+                    "nro_ticket": ticket_code,
+                    "consulta_pin": replay_pin,
+                    "tracking_url": tracking_url,
+                    "deduplicated": True,
+                },
+                "contexto_actualizado": {
+                    "latest_ticket_id": ticket.id,
+                    "latest_ticket_nro": ticket_code,
+                    "latest_ticket_pin": replay_pin,
+                    "latest_tracking_url": tracking_url,
+                    "last_ticket_code": ticket_code,
+                },
+            }
+            if str(self.context.get("channel") or "").lower().startswith("whatsapp"):
+                replay_payload.update(
+                    {
+                        "generar_audio": False,
+                        "skip_audio_generation": True,
+                    }
+                )
+            return replay_payload
+
+        if confirmation_id and not _acquire_municipal_claim_confirmation_lock(
+            db.session,
+            confirmation_id=confirmation_id,
+            tenant_id=tenant_id,
+            municipio_id=municipio_id,
+        ):
+            logger.error(
+                "Se rechaza una confirmacion sin alcance o sin bloqueo idempotente."
+            )
+            return {
+                "success": False,
+                "message_body": (
+                    "No pude validar de forma segura el municipio del reclamo. "
+                    "No se creó ningún ticket; por favor, volvé a intentarlo."
+                ),
+                "message_to_user": (
+                    "No pude validar de forma segura el municipio del reclamo. "
+                    "No se creó ningún ticket; por favor, volvé a intentarlo."
+                ),
+                "message_type": "text",
+            }
+
+        confirmation_replay = _find_confirmation_replay()
+        if confirmation_replay is not None:
+            logger.warning(
+                "Confirmacion de reclamo repetida; se reutiliza ticket %s.",
+                confirmation_replay.nro_ticket,
+            )
+            return _confirmation_replay_response(confirmation_replay)
 
         dedupe_window_seconds = _parse_int_env("CHATBOC_RECLAMO_DEDUP_WINDOW_SECONDS", 600)
         dedupe_fingerprint = {
@@ -933,17 +1365,15 @@ class CrearReclamoActionHandler(BaseActionHandler):
             ticket_nro_prev = previous_ticket.get("ticket_nro")
             pin_prev = previous_ticket.get("consulta_pin")
             tracking_url = previous_ticket.get("tracking_url")
-            dedupe_message = (
-                "Ya habíamos registrado este reclamo hace instantes ✅\n"
-                f"• Ticket: *{ticket_nro_prev or 'N/A'}*"
+            dedupe_message = build_claim_replay_text(
+                ticket_nro=ticket_nro_prev,
+                consulta_pin=pin_prev,
+                tracking_url=tracking_url,
             )
-            if pin_prev:
-                dedupe_message += f"\n• PIN: *{pin_prev}*"
-            if tracking_url:
-                dedupe_message += f"\n• Seguimiento: {tracking_url}"
-            return {
+            dedupe_payload = {
                 "success": True,
                 "message_body": dedupe_message,
+                "message_to_user": dedupe_message,
                 "message_type": "text",
                 "data": {
                     "nro_ticket": ticket_nro_prev,
@@ -951,16 +1381,33 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "tracking_url": tracking_url,
                     "deduplicated": True,
                 },
+                "contexto_actualizado": {
+                    "latest_ticket_id": previous_ticket.get("ticket_id"),
+                    "latest_ticket_nro": ticket_nro_prev,
+                    "latest_ticket_pin": pin_prev,
+                    "latest_tracking_url": tracking_url,
+                    "last_ticket_code": ticket_nro_prev,
+                },
             }
-
-        # Enhanced logging for debugging contact info
-        logger.info(f"DEBUG_CONTACT_INFO: nombre='{ticket_data_cleaned.get('nombre_vecino')}', "
-                    f"telefono='{ticket_data_cleaned.get('telefono_vecino')}', "
-                    f"email='{ticket_data_cleaned.get('email_vecino')}'")
+            if str(self.context.get("channel") or "").lower().startswith("whatsapp"):
+                dedupe_payload.update(
+                    {
+                        "generar_audio": False,
+                        "skip_audio_generation": True,
+                    }
+                )
+            return dedupe_payload
 
         try:
             ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
             if not ticket_creado:
+                # A concurrent confirmation can lose the create race.  The
+                # ticket service rolls the failed transaction back, so query
+                # the durable confirmation receipt once more before surfacing
+                # an error to the citizen.
+                confirmation_replay = _find_confirmation_replay()
+                if confirmation_replay is not None:
+                    return _confirmation_replay_response(confirmation_replay)
                 raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
 
             # 'ticket_creado' is now always a dict.
@@ -971,7 +1418,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
             try:
-                from models import ArchivoAdjunto, MunicipioTicket, TicketComentario, db
+                from models import ArchivoAdjunto, TicketComentario
                 from routes.ticket import serialize_ticket_to_json
                 from socket_service import emit_new_ticket
 
@@ -1026,10 +1473,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     )
             except Exception as e_notify:
                 logger.error(
-                    "Error enviando notificación en tiempo real para ticket %s: %s",
-                    nro_ticket_str,
-                    e_notify,
-                    exc_info=True,
+                    "Municipal claim realtime notification failed ticket_id=%s "
+                    "error_type=%s",
+                    ticket_creado.get("id"),
+                    type(e_notify).__name__,
                 )
 
             # Completar datos desde tramites.json si existen
@@ -1074,8 +1521,18 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "telefono": telefono_final,
                 "direccion": direccion_contacto,
             }
-            if CONTEXTO_MUNICIPIO in self.context and isinstance(self.context[CONTEXTO_MUNICIPIO], dict):
-                municipio_ctx = self.context[CONTEXTO_MUNICIPIO]
+            chat_db_context_obj = self.context.get("chat_db_context_obj")
+            fresh_chat_data = (
+                getattr(chat_db_context_obj, "context_data", None)
+                if chat_db_context_obj is not None
+                else None
+            )
+            if isinstance(fresh_chat_data, dict):
+                municipio_ctx = fresh_chat_data.setdefault(CONTEXTO_MUNICIPIO, {})
+            else:
+                municipio_ctx = self.context.get(CONTEXTO_MUNICIPIO)
+
+            if isinstance(municipio_ctx, dict):
                 for stale_key in (
                     "reclamo_flow_v2",
                     "historial_llm_reclamo",
@@ -1090,6 +1547,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 }
                 from services.municipio_responder import ConversationState
                 municipio_ctx["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+                contexto_reclamo = municipio_ctx
+                self.context[CONTEXTO_MUNICIPIO] = municipio_ctx
+                if isinstance(fresh_chat_data, dict):
+                    fresh_chat_data[CONTEXTO_MUNICIPIO] = municipio_ctx
+                    self.context["chat_db_context_data"] = fresh_chat_data
+                    chat_db_context_obj.context_data = fresh_chat_data
+                    safe_flag_modified(chat_db_context_obj, "context_data")
                 logger.info(
                     "Contexto de reclamo limpiado. Nuevo estado: %s",
                     municipio_ctx["estado_conversacion"],
@@ -1121,6 +1585,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             base_chat_url = municipio_config.get('base_chat_url', 'https://www.chatboc.ar/chat')
             promo_image_url = _resolve_promo_image_url(municipio_config)
             channel_value = (self.context.get("channel") or "").strip().lower()
+            is_whatsapp_channel = channel_value.startswith("whatsapp")
             is_web_like_channel = (
                 not channel_value
                 or channel_value.startswith("web")
@@ -1143,8 +1608,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
             if botones_finales is None:
                 botones_finales = []
 
-            # Log para debug
-            logger.info(f"Respuesta formateada: '{mensaje_respuesta}', Botones: {botones_finales}")
+            logger.info(
+                "Municipal claim receipt formatted ticket_id=%s channel=%s "
+                "button_count=%s",
+                ticket_creado.get("id"),
+                channel_value or "unknown",
+                len(botones_finales),
+            )
 
             # Append promotional content (image, CTA and button) in a structured way
             promo_section = promo_service.build_ticket_promo_section(
@@ -1211,8 +1681,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     botones_finales,
                 )
 
-            # Delayed menu
-            menu_payload = _get_main_menu_payload(self.context)
+            # WhatsApp already has an open ticket conversation.  A delayed
+            # main menu is useful on web, but creates an unrelated extra turn
+            # (and can trigger menu TTS) immediately after the receipt.
+            menu_payload = None if is_whatsapp_channel else _get_main_menu_payload(self.context)
 
             claim_confirmation = build_claim_confirmation_payload(
                 categoria=categoria_display,
@@ -1230,8 +1702,6 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "options_list": botones_finales,
                 "message_type": "interactive_buttons" if botones_finales else "text",
                 "image_url": promo_image_url,
-                "delayed_payload": menu_payload,
-                "delay_seconds": 20,
                 "data": {
                     "ticket_id": ticket_creado.get('id'),
                     "nro_ticket": nro_ticket_str,
@@ -1244,6 +1714,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "confirmation_card": claim_confirmation,
                 }
             }
+            if not is_whatsapp_channel:
+                response_payload.update(
+                    {
+                        "delayed_payload": menu_payload,
+                        "delay_seconds": 20,
+                    }
+                )
             tracking_url = build_claim_tracking_url(base_chat_url, nro_ticket_str, pin_final)
             if tracking_url:
                 response_payload.update(
@@ -1272,24 +1749,24 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "awaiting_ticket_photo": True,
                 "awaiting_ticket_photo_until": time.time() + 600,
             }
-            response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
-                kind="reclamo",
-                nombre=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
-                ticket_nro=nro_ticket_str,
-                categoria=categoria_display,
-                descripcion=descripcion,
-                direccion=ubicacion_llm,
-                dni=ticket_data_cleaned.get("dni_vecino"),
-                consulta_pin=pin_final,
-                base_chat_url=base_chat_url,
-                promo_image_url=promo_image_url,
-                promo_text=promo_text,
-                contacto_especializado=contacto_especializado,
-                info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
-                include_menu=channel_value != "whatsapp",
-            )
-            if channel_value == "whatsapp":
-                receipt = response_payload["whatsapp_receipt"]
+            if not is_whatsapp_channel:
+                response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
+                    kind="reclamo",
+                    nombre=ticket_data_cleaned.get("nombre_vecino", "Vecino/a"),
+                    ticket_nro=nro_ticket_str,
+                    categoria=categoria_display,
+                    descripcion=descripcion,
+                    direccion=ubicacion_llm,
+                    dni=ticket_data_cleaned.get("dni_vecino"),
+                    consulta_pin=pin_final,
+                    base_chat_url=base_chat_url,
+                    promo_image_url=promo_image_url,
+                    promo_text=promo_text,
+                    contacto_especializado=contacto_especializado,
+                    info_url=municipio_config.get("link_web") or municipio_config.get("url_web"),
+                    include_menu=True,
+                )
+            if is_whatsapp_channel:
                 pre_messages = list(response_payload.get("_twilio_pre_messages") or [])
                 pre_messages.append(
                     build_claim_created_template_pre_message(
@@ -1297,24 +1774,23 @@ class CrearReclamoActionHandler(BaseActionHandler):
                         categoria=categoria_display,
                         consulta_pin=pin_final,
                         base_chat_url=base_chat_url,
-                        nombre=ticket_data_cleaned.get("nombre_vecino"),
-                        direccion=ubicacion_llm,
+                        within_24h_window=True,
                     )
                 )
                 response_payload["_twilio_pre_messages"] = pre_messages
-                response_payload["message_body"] = "\n".join(
-                    line
-                    for line in [
-                        "Reclamo recibido. El seguimiento quedo abierto y cada nueva respuesta se asociara al ticket.",
-                        f"Ver seguimiento: {tracking_url}" if tracking_url else "",
-                        "Podes sumar una foto, audio o comentario respondiendo por aca.",
-                    ]
-                    if line
-                ).strip()
+                response_payload["message_body"] = build_claim_created_followup_text(pin_final)
                 response_payload["options_list"] = []
                 response_payload["message_type"] = "text"
-                response_payload["image_url"] = receipt.get("media_url") or promo_image_url
-                response_payload.pop("whatsapp_receipt", None)
+                response_payload["generar_audio"] = False
+                response_payload["skip_audio_generation"] = True
+                response_payload.setdefault("data", {})["receipt_delivery"] = {
+                    "primary_surface": "twilio_template_or_plain_text_fallback",
+                    "followup_surface": "pin_and_evidence_instructions",
+                    "tts_allowed": False,
+                }
+                # The operational receipt must not become a promotional media
+                # card or a third delivery surface.
+                response_payload.pop("image_url", None)
 
             tracking_url = (
                 response_payload.get("contexto_actualizado", {}) or {}
@@ -1322,6 +1798,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             contexto_reclamo["last_created_reclamo"] = {
                 "ts": time.time(),
                 "fingerprint": dedupe_fingerprint,
+                "ticket_id": ticket_creado.get("id"),
                 "ticket_nro": nro_ticket_str,
                 "consulta_pin": pin_final,
                 "tracking_url": tracking_url,
@@ -1335,23 +1812,29 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "descripcion": descripcion,
                 "consulta_pin": pin_final,
             }
-            final_response = _apply_whatsapp_closing_promo(
-                response_payload,
-                context=self.context,
-                caption_values=caption_values,
+            final_response = (
+                response_payload
+                if is_whatsapp_channel
+                else _apply_whatsapp_closing_promo(
+                    response_payload,
+                    context=self.context,
+                    caption_values=caption_values,
+                )
             )
             # Preserve the legacy action-handler contract while channel
             # orchestrators migrate to the unified message_body field.
             final_response.setdefault("message_to_user", final_response.get("message_body"))
             return final_response
         except Exception as e:
-            logger.error(f"Error en CrearReclamoActionHandler: {e}", exc_info=True)
+            logger.error(
+                "Municipal claim creation failed error_type=%s",
+                type(e).__name__,
+            )
             response = {
                 "success": False,
                 "message_body": "Hubo un problema al registrar tu reclamo. Por favor, intenta de nuevo más tarde.",
-                "error_details": str(e)
+                "error_code": "claim_creation_failed",
             }
-            print(f"DEBUG: CrearReclamoActionHandler returning error: {response}")
             return response
 
 class ConsultarEstadoTicketActionHandler(BaseActionHandler):
@@ -1390,7 +1873,7 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
             )
             return {
                 "success": False,
-                "message_to_user": "No pude validar el municipio asociado a esta consulta. VolvÃ© a iniciar el seguimiento desde el enlace del ticket.",
+                "message_to_user": "No pude validar el municipio asociado a esta consulta. Volvé a iniciar el seguimiento desde el enlace del ticket.",
                 "message_type": "text",
             }
 
@@ -1398,12 +1881,11 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
             nro_ticket=ticket_id_str,
             consulta_pin=pin,
         )
-        scope_filters = []
         if tenant_id:
-            scope_filters.append(MunicipioTicket.tenant_id == tenant_id)
+            ticket_query = ticket_query.filter(MunicipioTicket.tenant_id == tenant_id)
         if municipio_id:
-            scope_filters.append(MunicipioTicket.municipio_id == municipio_id)
-        ticket = ticket_query.filter(or_(*scope_filters)).first()
+            ticket_query = ticket_query.filter(MunicipioTicket.municipio_id == municipio_id)
+        ticket = ticket_query.first()
         if not ticket:
             return {
                 "success": False,
@@ -1473,7 +1955,13 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
 
 class HacerSugerenciaActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing HacerSugerenciaActionHandler with data: {action_data}")
+        logger.info(
+            "Executing HacerSugerenciaActionHandler supplied_fields=%s "
+            "has_location=%s has_coordinates=%s",
+            sorted(str(key) for key in action_data.keys()),
+            bool(action_data.get("ubicacion")),
+            bool(action_data.get("coordenadas")),
+        )
         descripcion_sugerencia = action_data.get("descripcion")
         if not descripcion_sugerencia:
             return {
@@ -1536,6 +2024,21 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
         user_id_db = getattr(viewer_user, "id", None)
         anon_id_db = self.context.get("anon_id") if not user_id_db else None
         tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
+        if not tenant_id and not municipio_id:
+            logger.error("Municipal suggestion creation refused because tenant scope is unresolved.")
+            return {
+                "success": False,
+                "message_to_user": (
+                    "No pude validar el municipio que debe recibir la sugerencia. "
+                    "No se creó ningún ticket; intentá nuevamente en unos minutos."
+                ),
+                "message_body": (
+                    "No pude validar el municipio que debe recibir la sugerencia. "
+                    "No se creó ningún ticket; intentá nuevamente en unos minutos."
+                ),
+                "message_type": "text",
+                "fuente": "municipio_tenant_scope_rejected",
+            }
         nombre_vecino_final = nombre_vecino or getattr(viewer_user, "nombre", "Ciudadano Anónimo")
 
         ticket_data = {
@@ -1990,7 +2493,7 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
         """
         Inicia una llamada saliente al usuario para continuar la interacción por voz.
         """
-        logger.info(f"Executing SolicitarLlamadaActionHandler with data: {action_data}")
+        logger.info("Executing outbound callback action")
 
         viewer_user = self.context.get("viewer_user_obj")
         owner_user = self.context.get("user_obj")
@@ -2020,58 +2523,62 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
         #         "message_type": "text"
         #     }
 
-        # Validar si tenemos el teléfono del usuario
-        # En WhatsApp, anon_id suele ser el número
-        user_phone = self.context.get("anon_id")
-
-        if not user_phone:
-             # Try getting from user object
-             if viewer_user and viewer_user.telefono:
-                 user_phone = viewer_user.telefono
-
-        if not user_phone:
+        country_code = _voice_country_code(tenant)
+        clean_user_phone, had_destination_candidate = _resolve_callback_destination(
+            self.context,
+            action_data,
+            viewer_user,
+            country_code=country_code,
+        )
+        if not clean_user_phone:
             return {
                 "success": False,
-                "message_to_user": "No pude identificar tu número de teléfono para llamarte. Por favor, escribime desde un número válido.",
-                "message_type": "text"
+                "message_to_user": (
+                    "Para llamarte necesito un teléfono válido con código de país. "
+                    "Escribilo y voy a continuar sin perder el contexto."
+                ),
+                "message_type": "text",
+                "pedir_info": "telefono",
+                "data": {
+                    "delivery_state": (
+                        "rejected_invalid_destination"
+                        if had_destination_candidate
+                        else "rejected_missing_destination"
+                    )
+                },
             }
 
-        # Validar si tenemos el número del bot (owner) para usar como caller ID
-        # Necesitamos buscar el WhatsappNumero asociado al owner_user
-        # O usar un default si no es crítico que sea el mismo número
-
-        # Por simplicidad, intentamos usar el número configurado en Twilio o el del tenant
-        # Pero Twilio requiere que el 'From' sea un número verificado o comprado.
-        # Asumimos que el sistema usa el numero principal de Twilio por defecto si no se especifica otro.
-        bot_phone = os.environ.get("TWILIO_PHONE_NUMBER")
-
-        # Intentar obtener el numero especifico del tenant si existe
-        if hasattr(owner_user, 'whatsapp_numeros') and owner_user.whatsapp_numeros:
-             # Tomar el primero activo
-             for wn in owner_user.whatsapp_numeros:
-                 if wn.is_active:
-                     bot_phone = wn.numero_whatsapp
-                     break
+        # A WhatsApp sender is not necessarily voice-enabled. Never fall back
+        # to TWILIO_PHONE_NUMBER; callbacks require a dedicated PSTN caller ID.
+        bot_phone = _resolve_voice_caller_id(tenant)
 
         if not bot_phone:
-             return {
+            logger.error("Outbound callback refused reason=voice_caller_id_missing")
+            return {
                 "success": False,
-                "message_to_user": "Lo siento, el servicio de llamadas no está disponible en este momento (error de configuración).",
-                "message_type": "text"
+                "message_to_user": (
+                    "La devolución de llamada no está disponible en este momento. "
+                    "Ya registré tu pedido para que puedas continuar por chat."
+                ),
+                "message_type": "text",
+                "data": {"delivery_state": "rejected_invalid_caller_id"},
             }
 
-        # Nota: Twilio no permite llamadas OUTBOUND a "whatsapp:+...", tiene que ser al numero real "+..."
-        # Si 'user_phone' viene sin 'whatsapp:', está bien. Si viene con, hay que limpiarlo.
-        # Y el destino debe ser PSTN (red telefónica), no la app de WhatsApp (Voice API es distinta).
-
-        # Corrección: Para llamadas de voz PSTN, los números deben ser E.164 limpios.
-        clean_user_phone = user_phone.replace("whatsapp:", "").strip()
-        if not clean_user_phone.startswith("+"):
-             clean_user_phone = f"+{clean_user_phone}"
-
-        clean_bot_phone = bot_phone.replace("whatsapp:", "").strip()
-        if not clean_bot_phone.startswith("+"):
-             clean_bot_phone = f"+{clean_bot_phone}"
+        clean_bot_phone = _normalize_voice_e164(
+            bot_phone,
+            default_country_code=country_code,
+        )
+        if not clean_bot_phone:
+            logger.error("Outbound callback refused reason=voice_caller_id_invalid")
+            return {
+                "success": False,
+                "message_to_user": (
+                    "La devolución de llamada no está disponible en este momento. "
+                    "Ya registré tu pedido para que puedas continuar por chat."
+                ),
+                "message_type": "text",
+                "data": {"delivery_state": "rejected_invalid_caller_id"},
+            }
 
         success = initiate_outbound_call(
             to_number=clean_user_phone,
@@ -2082,14 +2589,22 @@ class SolicitarLlamadaActionHandler(BaseActionHandler):
         if success:
             return {
                 "success": True,
-                "message_to_user": "¡Listo! Te estoy llamando en este momento. Atendé por favor.",
-                "message_type": "text"
+                "message_to_user": (
+                    "La solicitud de llamada fue aceptada. Deberías recibirla en unos instantes; "
+                    "si no conecta, podés seguir por este chat sin perder el contexto."
+                ),
+                "message_type": "text",
+                "data": {"delivery_state": "provider_accepted"},
             }
         else:
             return {
                 "success": False,
-                "message_to_user": "Hubo un error al intentar llamarte. Por favor, intentá de nuevo más tarde o continuá por chat.",
-                "message_type": "text"
+                "message_to_user": (
+                    "No pude confirmar que la llamada haya sido iniciada. Para evitar duplicarla, "
+                    "sigamos por este chat o volvé a solicitarla más tarde."
+                ),
+                "message_type": "text",
+                "data": {"delivery_state": "provider_outcome_unknown"},
             }
 
 # Add other handlers as needed

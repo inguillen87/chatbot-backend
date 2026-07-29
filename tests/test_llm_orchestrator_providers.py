@@ -1,6 +1,7 @@
 from unittest.mock import Mock, patch
 
 from services import llm_orchestrator
+from services.openai_bridge import LLMProviderPreRequestError
 
 
 def test_provider_order_skips_unconfigured_gemini(monkeypatch):
@@ -38,13 +39,13 @@ def test_llamar_llm_con_fallback_uses_gemini(monkeypatch):
     mock_gemini.assert_called_once()
 
 
-def test_gemini_fallback_does_not_receive_openai_model(monkeypatch):
+def test_safe_pre_request_fallback_does_not_send_openai_model_to_gemini(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "test")
     monkeypatch.delenv("GEMINI_CHAT_MODEL", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
 
-    mock_openai = Mock(side_effect=ConnectionError("openai unavailable"))
+    mock_openai = Mock(side_effect=LLMProviderPreRequestError("openai_not_configured"))
     mock_gemini = Mock(return_value=({"message_body": "hola gemini"}, {"provider": "gemini"}))
     with patch("services.llm_orchestrator.llamar_openai", mock_openai), patch(
         "services.gemini_bridge.llamar_gemini",
@@ -61,6 +62,31 @@ def test_gemini_fallback_does_not_receive_openai_model(monkeypatch):
     assert response["message_body"] == "hola gemini"
     assert context["provider"] == "gemini"
     assert mock_gemini.call_args.kwargs["model"] is None
+
+
+def test_ambiguous_provider_failure_fails_closed_without_switching(monkeypatch, caplog):
+    monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test")
+
+    mock_openai = Mock(side_effect=ConnectionError("private-request-state-32877851"))
+    mock_gemini = Mock(return_value=({"message_body": "unsafe retry"}, {}))
+    with patch("services.llm_orchestrator.llamar_openai", mock_openai), patch(
+        "services.gemini_bridge.llamar_gemini",
+        mock_gemini,
+    ):
+        response, context = llm_orchestrator.llamar_llm_con_fallback(
+            None,
+            "hola",
+            {},
+            [],
+            "session-no-retry",
+        )
+
+    assert response["accion_backend"] == "error_fatal_llm"
+    assert context == {}
+    mock_openai.assert_called_once()
+    mock_gemini.assert_not_called()
+    assert "private-request-state-32877851" not in caplog.text
 
 
 def test_provider_order_includes_enabled_ollama(monkeypatch):
@@ -139,6 +165,13 @@ def test_build_llm_task_policy_keeps_realtime_conservative(monkeypatch):
     assert policy["provider_order"] == ["openai"]
     assert policy["open_source_ready"] is False
     assert policy["realtime_safe"] is True
+    assert policy["fallback_behavior"] == "pre_request_only_then_fail_closed"
+
+
+def test_openai_default_model_is_current_sol(monkeypatch):
+    monkeypatch.delenv("OPENAI_CHAT_MODEL_DEFAULT", raising=False)
+
+    assert llm_orchestrator._model_for_provider("OpenAI", None) == "gpt-5.6-sol"
 
 
 def test_llamar_llm_con_fallback_routes_by_task_type(monkeypatch):

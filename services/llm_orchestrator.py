@@ -1,10 +1,23 @@
 import logging
 import os
-from services.openai_bridge import llamar_openai
+
+from services.openai_bridge import (
+    DEFAULT_CHAT_MODEL,
+    llamar_openai,
+)
 from services.gemini_bridge import is_gemini_llm_configured
 from services.ollama_bridge import is_ollama_llm_configured
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_log_identifier(value: object, default: str = "unknown") -> str:
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > 80:
+        return default
+    if any(not (char.isalnum() or char in "._-/:") for char in candidate):
+        return default
+    return candidate
 
 
 def _truthy_env(*names: str) -> bool:
@@ -142,7 +155,7 @@ def build_llm_task_policy(task_type: object | None = None) -> dict:
             "ollama": "OLLAMA_CHAT_MODEL",
             "cohere": "COHERE_CHAT_MODEL",
         },
-        "fallback_behavior": "try_ordered_providers_then_deterministic_json",
+        "fallback_behavior": "pre_request_only_then_fail_closed",
     }
 
 
@@ -171,7 +184,7 @@ def _model_for_provider(provider_name: str, requested_model: str | None) -> str 
     if provider_name == "OpenAI":
         if requested and not requested_lower.startswith(("gemini", "glm-", "llama", "qwen")):
             return requested
-        return os.getenv("OPENAI_CHAT_MODEL_DEFAULT") or "gpt-4o-mini"
+        return os.getenv("OPENAI_CHAT_MODEL_DEFAULT") or DEFAULT_CHAT_MODEL
 
     if provider_name == "Gemini":
         if requested_lower.startswith("gemini"):
@@ -192,7 +205,7 @@ def llamar_llm_con_fallback(
     usuario: dict,
     historial: list,
     chat_session_id: str,
-    model: str = "gpt-4o-mini",
+    model: str = DEFAULT_CHAT_MODEL,
     task_type: str | None = None,
 ):
     """
@@ -212,10 +225,10 @@ def llamar_llm_con_fallback(
     providers = [_resolve_provider(name) for name in _task_provider_order(resolved_task_type)]
     providers = [provider for provider in providers if provider]
 
-    last_error = None
+    last_error_code = "llm_no_provider_available"
     for name, func in providers:
         try:
-            logger.info(f"Attempting LLM call with provider: {name}")
+            logger.info("Attempting LLM call provider=%s", name)
             if name in {"OpenAI", "Gemini", "Ollama"}:
                 provider_model = _model_for_provider(name, model)
                 return func(
@@ -227,12 +240,35 @@ def llamar_llm_con_fallback(
                     model=provider_model,
                 )
             return func(app, mensaje_usuario, usuario, historial, chat_session_id)
-        except Exception as exc:  # pragma: no cover - defensive logging
-            last_error = exc
-            logger.warning(f"{name} call failed with error: {exc}")
+        except Exception as exc:  # pragma: no cover - defensive provider boundary
+            error_code = _safe_log_identifier(
+                getattr(exc, "code", None),
+                type(exc).__name__,
+            )
+            safe_to_fallback = bool(getattr(exc, "safe_to_fallback", False))
+            last_error_code = error_code
+            if safe_to_fallback:
+                logger.warning(
+                    "LLM provider unavailable before request provider=%s code=%s; "
+                    "trying next configured provider",
+                    name,
+                    last_error_code,
+                )
+                continue
+
+            # API/network/parse failures can happen after a request was accepted.
+            # A provider switch would create an untracked semantic retry, so the
+            # orchestrator deliberately stops here.
+            logger.error(
+                "LLM provider failure is not retry-safe provider=%s error_type=%s",
+                name,
+                type(exc).__name__,
+            )
+            break
 
     logger.error(
-        "All LLM providers failed. Last error: %s", last_error, exc_info=True
+        "LLM orchestration failed closed code=%s",
+        last_error_code,
     )
     error_response = {
         "message_body": (

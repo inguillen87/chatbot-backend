@@ -2954,7 +2954,15 @@ def _webview_blueprint_payload(
                 "required_questions_only": True,
                 "max_questions": 5,
                 "max_options_per_question": 20,
+                "adaptive_navigation": True,
+                "conditional_logic_versions": [1, 2],
+                "instrument_revision_pinned": True,
                 "reward_surveys_use_webview": True,
+                "webview_identity_policies": [
+                    "por_dni",
+                    "por_ip",
+                    "por_usuario",
+                ],
             },
         },
         "catalog_order_builder": {

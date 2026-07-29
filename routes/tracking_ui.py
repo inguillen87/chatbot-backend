@@ -1,5 +1,5 @@
 from flask import Blueprint, render_template, request, jsonify, abort, current_app, make_response
-from models import PymePedido, TenantProfile, db, Order, User, PymeTicket, TicketComentario, MunicipioTicket
+from models import PymePedido, TenantProfile, TenantTicket, db, Order, User, PymeTicket, TicketComentario, MunicipioTicket
 from services.pedido_service import servicio_pedidos
 from extensions import limiter
 import json
@@ -8,18 +8,25 @@ from datetime import datetime
 from services.ticket_service import servicio_tickets
 from socket_service import emit_new_chat_message, emit_ticket_unread_changed
 import random
+import re
 import uuid
 from sqlalchemy import func
+from sqlalchemy.exc import DataError, StatementError
 from services.ticket_realtime_state import build_ticket_collaboration_state
 from utils.time_utils import get_local_now
 from services.tracking_experience import (
     TRACKING_EXPERIENCE_CONTRACT_VERSION,
     build_claim_tracking_experience,
     build_order_tracking_experience,
+    build_tenant_claim_tracking_experience,
     order_supports_redacted_tracking,
     resolve_order_by_code,
     resolve_tenant_for_order,
     validate_order_tracking_access,
+)
+from services.tenant_claim_receipts import (
+    TenantClaimReceiptSecretUnavailable,
+    validate_tenant_claim_pin,
 )
 
 tracking_ui_bp = Blueprint('tracking_ui_bp', __name__)
@@ -28,6 +35,7 @@ tracking_ui_bp = Blueprint('tracking_ui_bp', __name__)
 _DEFAULT_TRACKING_FAILURE_LIMIT = 5
 _DEFAULT_TRACKING_FAILURE_WINDOW_SECONDS = 60
 _DEFAULT_TRACKING_SUBJECT_FAILURE_LIMIT = 20
+_MAX_TENANT_TICKET_PUBLIC_ID = 2_147_483_647
 
 
 def _tracking_pin(payload: dict | None = None) -> str:
@@ -122,9 +130,13 @@ def _tracking_failure_subject_key() -> str:
     # cannot create fresh buckets. The PIN fingerprint is only a fallback.
     if ticket_reference is not None and str(ticket_reference).strip():
         normalized_reference = str(ticket_reference).strip().lower()
-        if kind == "claim" and normalized_reference.upper().startswith(("M-", "S-")):
+        subject_type = "ticket"
+        if kind == "claim" and normalized_reference.upper().startswith("T-"):
             normalized_reference = normalized_reference[2:].strip()
-        subject = f"{kind}:ticket:{normalized_reference}"
+            subject_type = "tenant-ticket"
+        elif kind == "claim" and normalized_reference.upper().startswith(("M-", "S-")):
+            normalized_reference = normalized_reference[2:].strip()
+        subject = f"{kind}:{subject_type}:{normalized_reference}"
     elif pin is not None and str(pin).strip():
         pin_fingerprint = hashlib.sha256(str(pin).strip().encode("utf-8")).hexdigest()
         subject = f"{kind}:pin:{pin_fingerprint}"
@@ -289,6 +301,10 @@ def _claim_code_candidates(code: str | None) -> list[str]:
 
 
 def _find_claim_by_public_code(code: str | None, pin: str | None = None) -> MunicipioTicket | None:
+    # T- is a reserved namespace for receipt-backed TenantTicket claims.  No
+    # legacy MunicipioTicket lookup may ever consume that namespace.
+    if str(code or "").strip().upper().startswith("T-"):
+        return None
     candidates = _claim_code_candidates(code)
     if not candidates:
         return None
@@ -305,6 +321,34 @@ def _find_claim_by_public_code(code: str | None, pin: str | None = None) -> Muni
     if not lower_candidates:
         return None
     return base_query.filter(func.lower(MunicipioTicket.nro_ticket).in_(lower_candidates)).first()
+
+
+def _find_tenant_claim_by_public_code(code: str | None) -> TenantTicket | None:
+    match = re.fullmatch(r"T-([1-9]\d*)", str(code or "").strip(), flags=re.IGNORECASE)
+    if not match:
+        return None
+    digits = match.group(1)
+    # TenantTicket uses a signed SQL INTEGER primary key. Reject before
+    # binding so oversized attacker-controlled integers never reach a driver.
+    if len(digits) > 10:
+        return None
+    try:
+        ticket_id = int(digits)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if ticket_id > _MAX_TENANT_TICKET_PUBLIC_ID:
+        return None
+    try:
+        return db.session.get(TenantTicket, ticket_id)
+    except (OverflowError, DataError, StatementError):
+        # Some dialects wrap integer binding failures in StatementError and
+        # may leave the request transaction unusable until rollback.
+        db.session.rollback()
+        return None
+
+
+def _resolve_tenant_claim_tenant(ticket: TenantTicket) -> TenantProfile | None:
+    return db.session.get(TenantProfile, ticket.tenant_id) if ticket.tenant_id else None
 
 
 def _build_public_claim_message_payload(
@@ -497,6 +541,26 @@ def tracking_experience():
         return _tracking_error("code requerido.", 400, "tracking_code_required", "send_tracking_code")
 
     if kind in {"claim", "reclamo"}:
+        if code.upper().startswith("T-"):
+            ticket = _find_tenant_claim_by_public_code(code)
+            supplied_pin = str(request.headers.get("X-Tracking-Pin") or "").strip()
+            if ticket is None:
+                return _tracking_error("Reclamo no encontrado.", 404, "claim_not_found", "check_code_and_pin")
+            try:
+                access_granted = validate_tenant_claim_pin(ticket, supplied_pin)
+            except TenantClaimReceiptSecretUnavailable:
+                return _tracking_error(
+                    "Seguimiento temporalmente no disponible.",
+                    503,
+                    "tracking_unavailable",
+                    "retry_later",
+                    retryable=True,
+                )
+            if not access_granted:
+                return _tracking_error("Reclamo no encontrado.", 404, "claim_not_found", "check_code_and_pin")
+            tenant = _resolve_tenant_claim_tenant(ticket)
+            return _tracking_json(build_tenant_claim_tracking_experience(ticket, tenant))
+
         pin = _tracking_pin()
         if not pin:
             return _tracking_error("pin requerido.", 400, "tracking_pin_required", "send_pin")
