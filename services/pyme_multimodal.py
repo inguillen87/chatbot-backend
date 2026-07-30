@@ -21,10 +21,19 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote_plus
 
 from flask import current_app
+from sqlalchemy.exc import IntegrityError
 
 from models import CatalogoItem, ChatSessionContext, PedidoConversacional, PymePedido, TenantProfile, TenantTicket, db
+from services.domain_effect_gate import (
+    DomainEffectOutboxConfigurationError,
+    resolve_domain_effect_outbox_policy,
+)
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.order_attachment_preview import build_crm_order_draft
+from services.order_idempotency import (
+    existing_order_payload_matches,
+    order_payload_hash,
+)
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
 from services.document_processing_service import document_processing_service
@@ -830,33 +839,158 @@ def persist_order(
 
     total = state.cart.get("total", state.cart.get("subtotal", 0.0))
     direccion = state.delivery.get("address") or context.get("direccion_cliente") or context.get("direccion")
+    tenant_id = context.get("tenant_id")
+    idempotency_key = str(context.get("idempotency_key") or "").strip() or None
+    if idempotency_key and (len(idempotency_key) > 128 or not tenant_id):
+        logger.error(
+            "[PYME_FLOW] invalid_order_idempotency_context",
+            extra={"request_id": request_id, "has_tenant": bool(tenant_id)},
+        )
+        return None
+
+    pedido_payload = {
+        "pyme_id": owner_user_id,
+        "tenant_id": tenant_id,
+        "asunto": "Pedido generado desde el asistente",
+        "detalles": json.dumps(detalles_items, ensure_ascii=False),
+        "monto_total": total,
+        "moneda": currency,
+        "user_id": viewer_user_id,
+        "nombre_cliente": context.get("nombre_cliente") or context.get("nombre"),
+        "email_cliente": context.get("email_cliente") or context.get("email"),
+        "telefono_cliente": context.get("telefono_cliente") or context.get("telefono"),
+        "direccion": direccion,
+        "latitud": state.delivery.get("lat"),
+        "longitud": state.delivery.get("lng"),
+        "estado": "pendiente",
+    }
+
+    # Queue-canary confirmations enter the canonical order service so the
+    # legacy order, both CRM projections and every provider intent share one
+    # transaction. Non-canary tenants intentionally keep this flow's historic
+    # behavior below: persist only PymePedido and do not dispatch or project.
+    try:
+        from flask import has_app_context
+
+        if has_app_context():
+            mode = str(
+                current_app.config.get("DOMAIN_EFFECT_OUTBOX_MODE", "legacy")
+                or "legacy"
+            ).strip().lower()
+            if not tenant_id and mode == "queue":
+                raise DomainEffectOutboxConfigurationError(
+                    "domain_effect_tenant_invalid"
+                )
+            policy = (
+                resolve_domain_effect_outbox_policy(
+                    current_app.config,
+                    tenant_id=tenant_id,
+                )
+                if tenant_id
+                else None
+            )
+            if policy and policy.enabled:
+                from services.pedido_service import PedidoService
+
+                return PedidoService().crear_nuevo_pedido(
+                    {
+                        **pedido_payload,
+                        "rubro": (
+                            context.get("rubro")
+                            or context.get("rubro_nombre")
+                            or "general_pyme"
+                        ),
+                        "idempotency_key": idempotency_key,
+                        "channel": context.get("channel") or "whatsapp",
+                    }
+                )
+    except DomainEffectOutboxConfigurationError as exc:
+        logger.error(
+            "[PYME_FLOW] order_outbox_configuration_rejected",
+            extra={
+                "request_id": request_id,
+                "tenant_id": tenant_id,
+                "reason_code": str(exc),
+            },
+        )
+        return None
+
+    expected_payload_hash = (
+        order_payload_hash(pedido_payload) if idempotency_key else None
+    )
+
+    def accept_existing(existing: PymePedido, *, raced: bool = False) -> Optional[PymePedido]:
+        matches, legacy_contract = existing_order_payload_matches(
+            existing,
+            expected_payload_hash or "",
+        )
+        if not matches:
+            logger.warning(
+                "[PYME_FLOW] order_idempotency_payload_conflict",
+                extra={
+                    "pedido_id": existing.id,
+                    "tenant_id": existing.tenant_id,
+                    "legacy_contract": legacy_contract,
+                    "raced": raced,
+                },
+            )
+            return None
+        logger.info(
+            "[PYME_FLOW] order_idempotent_replay",
+            extra={
+                "pedido_id": existing.id,
+                "tenant_id": existing.tenant_id,
+                "legacy_contract": legacy_contract,
+                "raced": raced,
+            },
+        )
+        return existing
+
+    if idempotency_key:
+        existing = PymePedido.query.filter_by(
+            tenant_id=tenant_id,
+            idempotency_key=idempotency_key,
+        ).first()
+        if existing:
+            return accept_existing(existing)
 
     pedido = PymePedido(
         owner_user_id,
-        "Pedido generado desde el asistente",
-        json.dumps(detalles_items, ensure_ascii=False),
+        pedido_payload["asunto"],
+        pedido_payload["detalles"],
         monto_total=total,
+        moneda=currency,
         user_id=viewer_user_id,
-        nombre_cliente=context.get("nombre_cliente") or context.get("nombre"),
-        email_cliente=context.get("email_cliente") or context.get("email"),
-        telefono_cliente=context.get("telefono_cliente") or context.get("telefono"),
+        nombre_cliente=pedido_payload["nombre_cliente"],
+        email_cliente=pedido_payload["email_cliente"],
+        telefono_cliente=pedido_payload["telefono_cliente"],
         direccion=direccion,
         latitud=state.delivery.get("lat"),
         longitud=state.delivery.get("lng"),
+        tenant_id=tenant_id,
+        idempotency_key=idempotency_key,
+        idempotency_payload_hash=expected_payload_hash,
     )
     db.session.add(pedido)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        if tenant_id and idempotency_key:
+            existing = PymePedido.query.filter_by(
+                tenant_id=tenant_id,
+                idempotency_key=idempotency_key,
+            ).first()
+            if existing:
+                return accept_existing(existing, raced=True)
+        raise
     logger.info(
         "[PYME_FLOW] order_created",
         extra={
-            "request_id": request_id,
             "pedido_id": getattr(pedido, "id", None),
-            "nro_pedido": getattr(pedido, "nro_pedido", None),
-            "total": total,
-            "items": [
-                {"sku": item.get("sku"), "qty": item.get("qty"), "unitPrice": item.get("unitPrice")}
-                for item in state.cart.get("items", [])
-            ],
+            "tenant_id": getattr(pedido, "tenant_id", None),
+            "item_count": len(detalles_items),
+            "idempotency_bound": bool(expected_payload_hash),
         },
     )
     return pedido

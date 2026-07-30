@@ -2,6 +2,64 @@
 
 Objetivo: mejorar llamadas de WhatsApp/telefono con voz nativa Realtime, sin volver a armar STT -> LLM -> TTS. La integracion se hizo sobre la base existente: Twilio Voice/Media Streams en `/twilio/voice/inbound` y `/twilio/voice/stream`, mas sesiones WebRTC del widget en `/api/public/realtime/session`.
 
+La continuidad PSTN/WhatsApp usa `channel.session_identity.v1`: un binding HMAC
+por tenant/canal/proveedor y un UUID aleatorio. Voz no reconstruye IDs globales
+con teléfono y sólo copia contexto WhatsApp cuando el binding del mismo tenant
+e identidad queda verificado. Producción exige `CHANNEL_SESSION_IDENTITY_MODE=enforce`
+antes de habilitar el lifecycle realtime; ver `docs/channel-session-identity-runbook.md`.
+
+## Seguridad de Twilio Media Streams
+
+- El webhook TwiML firma un envelope `v1` con `CallSid`, origen, destino, tenant, vertical, intent, sesion, modo demo, duracion maxima, timestamp y nonce.
+- `VOICE_STREAM_SIGNING_SECRET` (minimo 32 bytes) es la clave preferida. Si falta, se deriva una clave separada por dominio desde `TWILIO_AUTH_TOKEN`; el token nunca se usa directamente ni se envia en TwiML.
+- El WebSocket exige `connected`/`start` dentro de un numero y timeout acotados. Firma, TTL, campos de transporte, tenant y consumo one-time se validan antes de abrir OpenAI Realtime.
+- El nonce se consume atomica y globalmente con Redis `SET NX EX`. El store se resuelve desde `VOICE_STREAM_REPLAY_REDIS_URL`, `SOCKETIO_MESSAGE_QUEUE_URL`, `SOCKETIO_REDIS_URL` o un `CELERY_BROKER_URL` explicitamente definido en el entorno.
+- En runtime, un store ausente o caido rechaza el stream (`replay_store_missing` / `replay_store_unavailable`): no existe fallback local y no se abre OpenAI.
+- El store en memoria solo puede habilitarse con `TESTING=true` y `VOICE_STREAM_REPLAY_ALLOW_IN_MEMORY_TEST_STORE=true`; no ofrece ni pretende ofrecer garantia entre procesos.
+- Limites operativos por defecto: `VOICE_STREAM_ENVELOPE_TTL_SECONDS=120`, `VOICE_STREAM_PREFLIGHT_TIMEOUT_SECONDS=5`, `VOICE_STREAM_PREFLIGHT_MAX_EVENTS=3` y `VOICE_STREAM_PREFLIGHT_MAX_MESSAGE_BYTES=32768`.
+
+## Consentimiento y lifecycle de llamadas v1
+
+- `ENABLE_VOICE_CONSENT_LIFECYCLE_V1` es un opt-in estricto y queda `false` en
+  Render hasta aplicar `20260730_voice_consent_v1`, configurar Redis y completar
+  staging. Apagado, faltante o inválido significa cero `<Connect><Stream>` y cero
+  conexión a OpenAI.
+- Cada tenant debe declarar los tres campos de política, sin defaults implícitos:
+  `voice_consent_policy={"version":"voice.consent.v1","ai_processing":"explicit_per_call","recording":"disabled"}`.
+  Un objeto ausente o incompleto falla cerrado.
+- El webhook firmado registra `received` y `consent_pending`, y pregunta mediante
+  `Gather input="dtmf"`. No se habilita reconocimiento de voz para capturar la
+  decisión. `1` se traduce en memoria a `granted`; `2` a `declined`. El dígito,
+  teléfonos, audio y transcripciones nunca se guardan en el ledger ni se escriben
+  en logs.
+- Cada consentimiento queda unido a `tenant_id + CallSid + policy_version`, y
+  `(provider, CallSid)` es globalmente único: un callback no puede re-vincular
+  la identidad de una llamada a otro tenant. El
+  WebSocket vuelve a cargar ese grant desde base de datos después de validar y
+  consumir el envelope, y antes de resolver contexto o ejecutar `ws_connect`.
+  HMAC no equivale a consentimiento. Además reclama atómicamente el CallSid con
+  un evento único `stream:claimed`: aunque Twilio reintente el webhook y reciba
+  otro envelope/nonce válido, una segunda conexión no puede abrir otro puente.
+  La transacción vuelve a cargar y bloquear la política actual: conservar la
+  misma versión pero cambiar `ai_processing` a `disabled` revoca el grant.
+- Estados persistidos: `received`, `consent_pending`, `stream_authorized`,
+  `completed` y `failed`. Los eventos son append-only e idempotentes; un terminal
+  no se reabre por callbacks fuera de orden. `answered`, `ringing` o el ACK de una
+  creación Twilio no se presentan como `connected` ni `completed`.
+- Grabación queda deshabilitada dos veces: la política v1 sólo acepta
+  `recording=disabled` y la base impide `recording_allowed=true` o
+  `recording_enabled=true`. Este slice no implementa grabación.
+- Timeout o decisión ausente se materializan como `declined`, igual que un
+  rechazo explícito. Policy version distinta, tenant cruzado o persistencia
+  caída también terminan sin puente de IA. Ninguna de estas negativas puede
+  revertirse dentro de la misma llamada.
+- La transferencia sólo emite `<Dial>` si la llamada ya tiene grant y el destino
+  E.164 coincide exactamente con `human_handoff_number`/`telefono_atencion` del
+  tenant. El endpoint no acepta un número libre como autoridad.
+- El DTMF v1 se limita a consentimiento. No es todavía un IVR general. Los
+  callbacks terminales actualizan el ledger, pero la certificación real
+  PSTN/WhatsApp Business Calling sigue pendiente de staging con Twilio.
+
 ## Decisiones backend
 
 - Modelo recomendado por defecto: `gpt-realtime`.
@@ -84,6 +142,8 @@ Frontend deberia renderizar CTA de llamada solo si:
 
 - `realtime_voice.features.tool_calling === true`
 - `support_channels.voice_call.enabled === true`
+- `realtime_voice.phone_consent.rollout_enabled === true`
+- `realtime_voice.transports.media_streams_ready === true`
 
 Si voz esta apagada por tenant, backend responde HTTP 200 degradable:
 

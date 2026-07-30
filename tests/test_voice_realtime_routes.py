@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from flask import Flask
@@ -11,9 +12,45 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.app = Flask(__name__)
         self.app.config["TESTING"] = True
         self.app.config["BACKEND_URL"] = "https://api.chatboc.test"
+        self.app.config["VOICE_STREAM_SIGNING_SECRET"] = "route-test-secret-with-at-least-32-bytes"
+        self.app.config["ENABLE_VOICE_CONSENT_LIFECYCLE_V1"] = True
         self.app.config["TWILIO_FALLBACK_SAY_LANGUAGE"] = "es-US"
         self.app.register_blueprint(voice_bp)
         self.client = self.app.test_client()
+        self.lifecycle = SimpleNamespace(
+            consent_status="granted",
+            consent_policy_version="voice.consent.v1",
+            state="stream_authorized",
+            ai_processing_allowed=True,
+            recording_allowed=False,
+            recording_enabled=False,
+        )
+
+        def resolve_tenant(**kwargs):
+            return SimpleNamespace(
+                id=1,
+                slug=kwargs.get("requested_tenant_slug") or "tenant-default",
+                configuracion={
+                    "voice_consent_policy": {
+                        "version": "voice.consent.v1",
+                        "ai_processing": "explicit_per_call",
+                        "recording": "disabled",
+                    }
+                },
+                is_active=True,
+            )
+
+        self._patchers = [
+            patch("routes.voice_routes.resolve_authoritative_voice_tenant", side_effect=resolve_tenant),
+            patch("routes.voice_routes.begin_voice_consent", return_value=self.lifecycle),
+            patch("routes.voice_routes.assert_voice_stream_authorized", return_value=self.lifecycle),
+        ]
+        for patcher in self._patchers:
+            patcher.start()
+
+    def tearDown(self):
+        for patcher in reversed(self._patchers):
+            patcher.stop()
 
     def _twilio_payload(self):
         return {
@@ -24,8 +61,7 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         }
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
-    @patch("routes.voice_routes.generar_audio")
-    def test_voice_welcome_defaults_to_realtime_stream_without_tts(self, mock_generar_audio):
+    def test_voice_welcome_defaults_to_realtime_stream_after_grant(self):
         response = self.client.post("/voice/welcome", data=self._twilio_payload())
 
         self.assertEqual(response.status_code, 200)
@@ -34,7 +70,24 @@ class VoiceRealtimeRoutesTestCase(unittest.TestCase):
         self.assertIn("wss://api.chatboc.test/twilio/voice/stream", body)
         self.assertIn("from_number", body)
         self.assertIn("<Redirect>", body)
-        mock_generar_audio.assert_not_called()
+
+    @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
+    @patch("routes.voice_routes.begin_voice_consent")
+    def test_first_voice_webhook_asks_dtmf_consent_without_stream(self, mock_begin):
+        mock_begin.return_value = SimpleNamespace(
+            consent_status="required",
+            consent_policy_version="voice.consent.v1",
+            state="consent_pending",
+        )
+
+        response = self.client.post("/twilio/voice/inbound", data=self._twilio_payload())
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_data(as_text=True)
+        self.assertIn("<Gather", body)
+        self.assertIn('input="dtmf"', body)
+        self.assertIn("Marca 1", body)
+        self.assertNotIn("<Connect>", body)
 
     @patch("routes.voice_routes.TWILIO_AUTH_TOKEN", None)
     def test_twilio_voice_inbound_uses_realtime_stream(self):

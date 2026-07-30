@@ -111,7 +111,12 @@ class ChatOrchestrator:
         try:
             # Pass the global_context to the handler instance
             handler_instance = handler_class(self.global_context)
-            logger.info(f"Executing action '{action_name}' with handler '{handler_class.__name__}' and data: {action_data}")
+            logger.info(
+                "Executing action=%s handler=%s supplied_fields=%s",
+                action_name,
+                handler_class.__name__,
+                sorted(map(str, action_data)),
+            )
             action_result = handler_instance.execute(action_data)
             action_result["executed_action_handler"] = handler_class.__name__ # Add which handler ran
 

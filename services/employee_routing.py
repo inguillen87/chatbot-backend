@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from models import CatalogoItem, CategoriaTicket, MunicipioTicket, PymeTicket, TenantProfile, TenantTicket, User
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 from services.education_contracts import education_case_taxonomy, is_education_tenant
+from services.tenant_ticket_scope import scoped_municipio_ticket_query
 
 
 EMPLOYEE_ROUTING_CONTRACT_VERSION = "employee.routing.v1"
@@ -364,14 +365,7 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
 
 
 def municipio_ticket_query_for_tenant(tenant: TenantProfile):
-    conditions = []
-    if getattr(tenant, "id", None):
-        conditions.append(MunicipioTicket.tenant_id == tenant.id)
-    if getattr(tenant, "municipio_id", None):
-        conditions.append(MunicipioTicket.municipio_id == tenant.municipio_id)
-    if not conditions:
-        return MunicipioTicket.query.filter(False)
-    return MunicipioTicket.query.filter(or_(*conditions))
+    return scoped_municipio_ticket_query(tenant)
 
 
 def pyme_ticket_query_for_tenant(tenant: TenantProfile):

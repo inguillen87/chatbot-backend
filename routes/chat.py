@@ -57,6 +57,7 @@ from services.demo_surveys import build_demo_survey_chat_menu
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
+from services.tenant_ticket_scope import normalize_municipio_ticket_write_scope
 from routes.v2.tenants import decode_demo_session_token
 from routes.auth import _first_active_tenant_for_demo
 from utils.auth_helpers import (
@@ -267,16 +268,13 @@ def _notify_superadmin_new_lead(ticket: MunicipioTicket, *, lead_nombre: str, le
         )
 
 
-def _create_demo_lead_ticket(*, owner_user: Optional[User], anon_id: Optional[str], chat_session_id: str, lead_nombre: str, lead_telefono: str, lead_email: str, rubro_demo: str) -> MunicipioTicket:
-    tenant_id = getattr(owner_user, "tenant_id", None)
-    if not tenant_id and owner_user is not None:
-        tenant_ref = (
-            getattr(owner_user, "tenant", None)
-            or getattr(owner_user, "tenant_profile", None)
-            or getattr(owner_user, "tenant_profile_municipio", None)
-            or getattr(owner_user, "tenant_profile_pyme", None)
-        )
-        tenant_id = getattr(tenant_ref, "id", None)
+def _create_demo_lead_ticket(*, tenant: Optional[TenantProfile], owner_user: Optional[User], anon_id: Optional[str], chat_session_id: str, lead_nombre: str, lead_telefono: str, lead_email: str, rubro_demo: str) -> MunicipioTicket:
+    scope = normalize_municipio_ticket_write_scope(
+        {
+            "tenant_id": getattr(tenant, "id", None),
+            "municipio_id": getattr(owner_user, "id", None),
+        }
+    )
 
     ticket = MunicipioTicket(
         pregunta="Prospecto generado desde demo pública",
@@ -288,8 +286,8 @@ def _create_demo_lead_ticket(*, owner_user: Optional[User], anon_id: Optional[st
         email_vecino=lead_email,
         canal_ingreso="web_demo_widget",
         anon_id=anon_id,
-        municipio_id=getattr(owner_user, "id", None),
-        tenant_id=tenant_id,
+        municipio_id=scope["municipio_id"],
+        tenant_id=scope["tenant_id"],
     )
     db.session.add(ticket)
     db.session.flush()
@@ -3783,6 +3781,7 @@ def _procesar_chat(
                 lead_email = lead_text.strip().lower()
 
                 lead_ticket = _create_demo_lead_ticket(
+                    tenant=tenant_for_demo,
                     owner_user=owner_del_bot,
                     anon_id=anon_id,
                     chat_session_id=lead_chat_session_id,

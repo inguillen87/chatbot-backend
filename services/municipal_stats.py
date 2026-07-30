@@ -14,11 +14,16 @@ from sqlalchemy import Float, and_, case, cast, func, or_
 from models import (
     MunicipioTicket,
     SugerenciaCiudadano,
+    TenantProfile,
     TicketComentario,
     TicketSatisfaccion,
     db,
 )
 from utils.time_utils import get_local_now
+from services.tenant_ticket_scope import (
+    municipio_ticket_scope_filter,
+    resolve_unique_tenant_for_owner,
+)
 
 
 # Estados que consideramos como tickets cerrados/resueltos para las métricas.
@@ -217,7 +222,7 @@ def _apply_suggestion_filters(query, filters: StatsFilters | None):
 
 
 def _compute_time_to_first_response(
-    municipio_id: int, filters: StatsFilters | None
+    tenant: TenantProfile, filters: StatsFilters | None
 ) -> list[float]:
     """Return the response times in hours for tickets con primera respuesta."""
 
@@ -242,7 +247,7 @@ def _compute_time_to_first_response(
     query = (
         db.session.query(response_seconds_expr.label("segundos"))
         .join(first_admin_comment, first_admin_comment.c.ticket_id == MunicipioTicket.id)
-        .filter(MunicipioTicket.municipio_id == municipio_id)
+        .filter(municipio_ticket_scope_filter(tenant))
     )
     query = _apply_ticket_filters(query, filters)
     rows = query.all()
@@ -252,7 +257,7 @@ def _compute_time_to_first_response(
 
 
 def _compute_time_to_close(
-    municipio_id: int, filters: StatsFilters | None
+    tenant: TenantProfile, filters: StatsFilters | None
 ) -> list[float]:
     """Return closure times in hours for closed tickets."""
 
@@ -264,7 +269,7 @@ def _compute_time_to_close(
     query = (
         db.session.query(cierre_segundos_expr.label("segundos"))
         .filter(
-            MunicipioTicket.municipio_id == municipio_id,
+            municipio_ticket_scope_filter(tenant),
             MunicipioTicket.estado.in_(_CLOSED_STATES),
             MunicipioTicket.ultima_actividad.isnot(None),
         )
@@ -301,7 +306,14 @@ def build_stats_for_municipio(
 ) -> dict:
     """Return detailed analytics for tickets and citizen suggestions."""
 
-    if not municipio_id:
+    tenant_resolution = None
+    if municipio_id:
+        try:
+            tenant_resolution = resolve_unique_tenant_for_owner(municipio_id)
+        except ValueError:
+            tenant_resolution = None
+
+    if not municipio_id or tenant_resolution is None or tenant_resolution.status != "unique":
         return {
             "resumen": {
                 "total": 0,
@@ -344,11 +356,11 @@ def build_stats_for_municipio(
 
     ahora = now or get_local_now()
     active_filters = filters if filters and not filters.is_empty() else None
+    tenant = tenant_resolution.tenant
+    ticket_scope = municipio_ticket_scope_filter(tenant)
 
     def _tickets_query(*columns):
-        query = db.session.query(*columns).filter(
-            MunicipioTicket.municipio_id == municipio_id
-        )
+        query = db.session.query(*columns).filter(ticket_scope)
         return _apply_ticket_filters(query, active_filters)
 
     # --- Tickets por estado -------------------------------------------------
@@ -415,9 +427,7 @@ def build_stats_for_municipio(
     )
     categoria_satisfaccion_rows = (
         _apply_ticket_filters(
-            categoria_satisfaccion_query.filter(
-                MunicipioTicket.municipio_id == municipio_id
-            ),
+            categoria_satisfaccion_query.filter(ticket_scope),
             active_filters,
         )
         .group_by(MunicipioTicket.categoria)
@@ -547,10 +557,8 @@ def build_stats_for_municipio(
     )
 
     # --- Tiempos de respuesta y cierre ------------------------------------
-    tiempos_respuesta_horas = _compute_time_to_first_response(
-        municipio_id, active_filters
-    )
-    tiempos_cierre_horas = _compute_time_to_close(municipio_id, active_filters)
+    tiempos_respuesta_horas = _compute_time_to_first_response(tenant, active_filters)
+    tiempos_cierre_horas = _compute_time_to_close(tenant, active_filters)
 
     tiempos_respuesta = _summarize_hours(tiempos_respuesta_horas)
     tiempos_cierre = _summarize_hours(tiempos_cierre_horas)
@@ -640,7 +648,7 @@ def build_stats_for_municipio(
     )
     satisfaccion_global = (
         _apply_ticket_filters(
-            satisfaccion_query.filter(MunicipioTicket.municipio_id == municipio_id),
+            satisfaccion_query.filter(ticket_scope),
             active_filters,
         )
         .first()
@@ -674,9 +682,7 @@ def build_stats_for_municipio(
     )
     satisfaccion_distribucion_rows = (
         _apply_ticket_filters(
-            satisfaccion_distribucion_query.filter(
-                MunicipioTicket.municipio_id == municipio_id
-            ),
+            satisfaccion_distribucion_query.filter(ticket_scope),
             active_filters,
         )
         .group_by(TicketSatisfaccion.puntuacion)
@@ -791,4 +797,3 @@ def build_stats_for_municipio(
     }
 
     return datos
-

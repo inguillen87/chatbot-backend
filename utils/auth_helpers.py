@@ -19,6 +19,8 @@ import secrets
 from services.demo_registry import demo_rubro_for_token
 from utils.roles import (
     ROLE_EMPLEADO,
+    ROLE_SUPERADMIN,
+    ROLE_TENANT_ADMIN,
     canonical_role,
     is_authorized_superadmin_user,
     is_super_admin_role,
@@ -222,40 +224,108 @@ def bump_auth_session_version(user: User) -> int:
 
 
 def auth_tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
-    """Resolve the tenant that controls whether a user may authenticate."""
+    """Resolve one authoritative tenant without selecting an arbitrary match.
+
+    Explicit user membership and legacy owner membership must agree.  Any
+    missing, conflicting, or ambiguous association is returned as ``None`` so
+    privileged callers can fail closed.
+    """
 
     if user is None:
         return None
 
+    def _owner_tenants(owner_id: object) -> list[TenantProfile]:
+        try:
+            normalized_owner_id = int(owner_id)
+        except (TypeError, ValueError):
+            return []
+        if normalized_owner_id <= 0:
+            return []
+        return list(
+            TenantProfile.query.filter(
+                (TenantProfile.municipio_id == normalized_owner_id)
+                | (TenantProfile.pyme_id == normalized_owner_id)
+            )
+            .order_by(TenantProfile.id.asc())
+            .limit(2)
+            .all()
+        )
+
     def _direct_tenant(candidate: User) -> Optional[TenantProfile]:
+        explicit_tenants: list[TenantProfile] = []
         tenant_id = getattr(candidate, "tenant_id", None)
         if tenant_id:
             tenant = db.session.get(TenantProfile, tenant_id)
-            if tenant is not None:
-                return tenant
+            if tenant is None:
+                return None
+            explicit_tenants.append(tenant)
 
         tenant_slug = str(getattr(candidate, "tenant_slug", None) or "").strip()
         if tenant_slug:
-            tenant = TenantProfile.query.filter_by(slug=tenant_slug).first()
-            if tenant is not None:
-                return tenant
+            tenant = TenantProfile.query.filter_by(slug=tenant_slug).one_or_none()
+            if tenant is None:
+                return None
+            explicit_tenants.append(tenant)
 
-        return TenantProfile.query.filter(
-            (TenantProfile.municipio_id == candidate.id)
-            | (TenantProfile.pyme_id == candidate.id)
-        ).first()
+        explicit_ids = {int(tenant.id) for tenant in explicit_tenants}
+        if len(explicit_ids) > 1:
+            return None
+        explicit_tenant = explicit_tenants[0] if explicit_tenants else None
+
+        owned_candidates = _owner_tenants(getattr(candidate, "id", None))
+        if len(owned_candidates) > 1:
+            return None
+        owned_tenant = owned_candidates[0] if owned_candidates else None
+        if explicit_tenant is not None and owned_tenant is not None:
+            return explicit_tenant if explicit_tenant.id == owned_tenant.id else None
+        if explicit_tenant is not None:
+            return explicit_tenant
+        return owned_tenant
 
     tenant = _direct_tenant(user)
-    if tenant is not None:
-        return tenant
-
     owner_id = getattr(user, "empresa_id", None)
     if owner_id:
         owner = db.session.get(User, owner_id)
-        if owner is not None:
-            return _direct_tenant(owner)
+        if owner is None:
+            return None
+        owner_tenant = _direct_tenant(owner)
+        if owner_tenant is None:
+            return None
+        if tenant is not None and tenant.id != owner_tenant.id:
+            return None
+        return owner_tenant
 
-    return None
+    return tenant
+
+
+def admin_surface_access_allowed(
+    user: Optional[User],
+    *,
+    allow_employee: bool = True,
+) -> bool:
+    """Authorize an administrative surface using role and tenant identity."""
+
+    if user is None:
+        return False
+    role = canonical_role(getattr(user, "rol", None))
+    if role == ROLE_SUPERADMIN:
+        return is_authorized_superadmin_user(user)
+
+    allowed_roles = {ROLE_TENANT_ADMIN}
+    if allow_employee:
+        allowed_roles.add(ROLE_EMPLEADO)
+    if role not in allowed_roles:
+        return False
+
+    try:
+        tenant = auth_tenant_for_user(user)
+    except Exception:
+        current_app.logger.exception(
+            "[auth] Failed to resolve administrative tenant for user %s",
+            getattr(user, "id", None),
+        )
+        return False
+    return bool(tenant is not None and getattr(tenant, "is_active", True) is not False)
 
 
 def user_tenant_auth_allowed(user: Optional[User]) -> bool:
@@ -1549,10 +1619,10 @@ def _set_anon_cookie(resp, anon_id: Optional[str]):
 
 
 def admin_o_empleado_requerido(f):
-    """Permite solo a admins (empresa_id None) o empleados."""
+    """Allow only tenant-bound admins/employees or an authorized superadmin."""
     @wraps(f)
     def decorated(user: User, *args, **kwargs):
-        if user.empresa_id is not None and canonical_role(getattr(user, "rol", None)) != ROLE_EMPLEADO:
+        if not admin_surface_access_allowed(user, allow_employee=True):
             return jsonify({"error": "Permisos insuficientes"}), 403
         return f(user, *args, **kwargs)
 

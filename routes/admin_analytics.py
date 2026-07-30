@@ -14,10 +14,11 @@ from typing import Any
 from flask import Blueprint, Response, abort, jsonify, request
 from sqlalchemy import func, or_
 
-from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, MunicipioTicket, PymeTicket, TicketComentario
+from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, db
 from services.analytics import get_geo_heatmap, get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
+from services.tenant_ticket_scope import municipio_ticket_scope_filter
 from utils.map_config import get_map_config
 
 admin_analytics_bp = Blueprint("admin_analytics", __name__, url_prefix="/admin/analytics")
@@ -843,6 +844,7 @@ def _build_realtime_comments(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     comments: list[dict[str, Any]] = []
+    tenant = db.session.get(TenantProfile, tenant_id)
 
     for row in events:
         metadata = row.metadata if isinstance(row.metadata, dict) else {}
@@ -895,8 +897,7 @@ def _build_realtime_comments(
         .filter(TicketComentario.fecha >= cutoff)
         .filter(
             or_(
-                MunicipioTicket.tenant_id == tenant_id,
-                MunicipioTicket.municipio_id == tenant_id,
+                municipio_ticket_scope_filter(tenant),
                 PymeTicket.tenant_id == tenant_id,
             )
         )
@@ -1238,6 +1239,7 @@ def _coerce_window_minutes(value: Any, *, default: int = 30) -> int:
 
 def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[str, Any]:
     tenant_id = _tenant_id_as_int(filters.tenant_id)
+    tenant = db.session.get(TenantProfile, tenant_id)
     window_minutes = _coerce_window_minutes(window_minutes)
     cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
 
@@ -1281,8 +1283,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         .filter(TicketComentario.fecha >= cutoff)
         .filter(
             or_(
-                MunicipioTicket.tenant_id == tenant_id,
-                MunicipioTicket.municipio_id == tenant_id,
+                municipio_ticket_scope_filter(tenant),
                 PymeTicket.tenant_id == tenant_id,
             )
         )

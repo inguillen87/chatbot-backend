@@ -16,6 +16,10 @@ from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
 from services.ai_backoffice_summaries import generate_backoffice_analytics_summary, generate_backoffice_ticket_summary
 from services.ai_provider_status import build_ai_provider_status
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    resolve_municipio_ticket_access_tenant,
+)
 from services.vision_fallback_service import analyze_image_text, analyze_text_structured
 
 admin_ai_bp = Blueprint("admin_ai_bp", __name__, url_prefix="/admin")
@@ -202,17 +206,20 @@ def _resolve_ticket_for_ai(ticket_id: int, scope: str, payload: dict):
 
 
 def _resolve_ticket_access_tenant(ticket, scope: str):
+    if scope == "municipio":
+        try:
+            tenant = resolve_municipio_ticket_access_tenant(ticket)
+        except TicketTenantScopeError:
+            abort(404, description="ticket not found")
+        return str(tenant.id), tenant
+
     tenant_id = getattr(ticket, "tenant_id", None)
     if tenant_id:
         tenant = db.session.get(TenantProfile, tenant_id)
         return str(tenant_id), tenant
 
-    if scope == "municipio":
-        owner_id = getattr(ticket, "municipio_id", None) or getattr(ticket, "user_id", None)
-        tenant = TenantProfile.query.filter_by(municipio_id=owner_id).first() if owner_id else None
-    else:
-        owner_id = getattr(ticket, "rubro_id", None) or getattr(ticket, "pyme_id", None) or getattr(ticket, "user_id", None)
-        tenant = TenantProfile.query.filter_by(pyme_id=owner_id).first() if owner_id else None
+    owner_id = getattr(ticket, "rubro_id", None) or getattr(ticket, "pyme_id", None) or getattr(ticket, "user_id", None)
+    tenant = TenantProfile.query.filter_by(pyme_id=owner_id).first() if owner_id else None
 
     if tenant:
         return str(tenant.id), tenant

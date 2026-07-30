@@ -1,7 +1,7 @@
 import json
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy.exc import IntegrityError
 
@@ -11,6 +11,7 @@ from app import create_app, db
 from config import Config
 from models import MarketOrder, Order, PedidoConversacional, PymePedido, TenantProfile, User
 from services.pedido_service import PedidoService
+from services.order_idempotency import order_payload_hash
 
 
 class PedidoServiceMultitenantConfig(Config):
@@ -103,12 +104,187 @@ class PedidoServiceMultitenantTest(unittest.TestCase):
 
         self.assertIsNotNone(first)
         self.assertEqual(repeated.id, first.id)
+        self.assertEqual(len(first.idempotency_payload_hash), 64)
         self.assertIsNotNone(second_tenant)
         self.assertNotEqual(second_tenant.id, first.id)
         self.assertEqual(
             PymePedido.query.filter_by(idempotency_key="checkout-1").count(),
             2,
         )
+
+    def test_same_key_with_changed_payload_fails_closed(self):
+        service = PedidoService()
+        original = self._payload(
+            owner=self.owner_1,
+            tenant=self.tenant_1,
+            key="checkout-bound-payload",
+        )
+        changed = dict(original)
+        changed["monto_total"] = 999
+
+        with (
+            patch("services.pedido_service.generar_pdf_nota_pedido", return_value=None),
+            patch("services.pedido_service.notification_dispatcher.dispatch_order_created"),
+            patch.object(service, "sync_order_model_from_pyme", return_value=None),
+            patch.object(service, "sync_market_order_from_pyme", return_value=None),
+        ):
+            first = service.crear_nuevo_pedido(original)
+            conflict = service.crear_nuevo_pedido(changed)
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(conflict)
+        self.assertEqual(first.monto_total, 10)
+        self.assertEqual(
+            PymePedido.query.filter_by(
+                tenant_id=self.tenant_1.id,
+                idempotency_key="checkout-bound-payload",
+            ).count(),
+            1,
+        )
+
+    def test_matching_legacy_order_without_hash_can_replay_but_changed_payload_cannot(self):
+        payload = self._payload(
+            owner=self.owner_1,
+            tenant=self.tenant_1,
+            key="legacy-checkout",
+        )
+        legacy = PymePedido(
+            pyme_id=self.owner_1.id,
+            tenant_id=self.tenant_1.id,
+            asunto=payload["asunto"],
+            detalles=payload["detalles"],
+            monto_total=payload["monto_total"],
+            moneda=payload["moneda"],
+            idempotency_key=payload["idempotency_key"],
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        service = PedidoService()
+        replay = service.crear_nuevo_pedido(dict(payload))
+        changed = dict(payload)
+        changed["direccion"] = "Otra direccion 999"
+        conflict = service.crear_nuevo_pedido(changed)
+
+        self.assertEqual(replay.id, legacy.id)
+        self.assertIsNone(conflict)
+        self.assertIsNone(legacy.idempotency_payload_hash)
+
+    def test_unique_race_recovery_compares_payload_before_replay(self):
+        service = PedidoService()
+        payload = self._payload(
+            owner=self.owner_1,
+            tenant=self.tenant_1,
+            key="race-checkout",
+        )
+        existing = PymePedido(
+            pyme_id=self.owner_1.id,
+            tenant_id=self.tenant_1.id,
+            asunto=payload["asunto"],
+            detalles=payload["detalles"],
+            monto_total=payload["monto_total"],
+            moneda=payload["moneda"],
+            idempotency_key=payload["idempotency_key"],
+            idempotency_payload_hash=order_payload_hash(payload),
+        )
+        db.session.add(existing)
+        db.session.commit()
+
+        query = MagicMock()
+        query.filter_by.return_value.first.side_effect = [None, existing]
+        integrity_error = IntegrityError("insert", {}, RuntimeError("duplicate"))
+        with (
+            patch.object(PymePedido, "query", query),
+            patch.object(db.session, "commit", side_effect=integrity_error),
+        ):
+            recovered = service.crear_nuevo_pedido(dict(payload))
+
+        self.assertEqual(recovered.id, existing.id)
+
+    def test_order_creation_log_does_not_emit_customer_narrative(self):
+        service = PedidoService()
+        payload = self._payload(
+            owner=self.owner_1,
+            tenant=self.tenant_1,
+            key="privacy-log-checkout",
+        )
+        payload.update(
+            {
+                "nombre_cliente": "Persona Narrativa Secreta",
+                "email_cliente": "persona.narrativa@example.test",
+                "direccion": "Calle Privada 123",
+            }
+        )
+        with (
+            patch("services.pedido_service.generar_pdf_nota_pedido", return_value=None),
+            patch("services.pedido_service.notification_dispatcher.dispatch_order_created"),
+            patch.object(service, "sync_order_model_from_pyme", return_value=None),
+            patch.object(service, "sync_market_order_from_pyme", return_value=None),
+            self.assertLogs("services.pedido_service", level="INFO") as captured,
+        ):
+            created = service.crear_nuevo_pedido(payload)
+
+        self.assertIsNotNone(created)
+        rendered = "\n".join(captured.output)
+        self.assertIn("order_created", rendered)
+        self.assertNotIn("Persona Narrativa Secreta", rendered)
+        self.assertNotIn("persona.narrativa@example.test", rendered)
+        self.assertNotIn("Calle Privada 123", rendered)
+
+    def test_order_context_survives_reload_and_drives_crm_projections(self):
+        service = PedidoService()
+        payload = self._payload(
+            owner=self.owner_1,
+            tenant=self.tenant_1,
+            key="persisted-order-context",
+        )
+        payload.update({"rubro": "Almacén", "channel": "whatsapp"})
+
+        with (
+            patch("services.pedido_service.generar_pdf_nota_pedido", return_value=None),
+            patch("services.pedido_service.notification_dispatcher.dispatch_order_created"),
+        ):
+            created = service.crear_nuevo_pedido(payload)
+
+        self.assertIsNotNone(created)
+        created_id = created.id
+        order_number = created.nro_pedido
+        tenant_id = self.tenant_1.id
+        db.session.expunge_all()
+
+        reloaded = db.session.get(PymePedido, created_id)
+        self.assertEqual(reloaded.rubro, "Almacén")
+        self.assertEqual(reloaded.channel, "whatsapp")
+        self.assertEqual(reloaded.to_dict()["rubro"], "Almacén")
+        self.assertEqual(reloaded.to_dict()["channel"], "whatsapp")
+
+        canonical = db.session.get(Order, order_number)
+        market = MarketOrder.legacy_safe_query().filter_by(
+            tenant_id=tenant_id,
+            external_provider="pyme_pedido",
+            external_order_id=order_number,
+        ).one()
+        self.assertEqual(canonical.channel, "whatsapp")
+        self.assertEqual(market.channel, "whatsapp")
+
+    def test_order_context_length_limits_fail_before_database_write(self):
+        service = PedidoService()
+        invalid_rubro = self._payload(
+            owner=self.owner_1,
+            tenant=self.tenant_1,
+            key="invalid-rubro-context",
+        )
+        invalid_rubro["rubro"] = "r" * 101
+        invalid_channel = self._payload(
+            owner=self.owner_1,
+            tenant=self.tenant_1,
+            key="invalid-channel-context",
+        )
+        invalid_channel["channel"] = "c" * 51
+
+        self.assertIsNone(service.crear_nuevo_pedido(invalid_rubro))
+        self.assertIsNone(service.crear_nuevo_pedido(invalid_channel))
+        self.assertEqual(PymePedido.query.count(), 0)
 
     def test_same_tenant_duplicate_idempotency_key_is_rejected_by_database(self):
         first = PymePedido(

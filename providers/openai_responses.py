@@ -19,7 +19,12 @@ from services.tool_registry import tool_registry
 logger = logging.getLogger(__name__)
 
 class OpenAIResponsesProvider:
-    """Adapter for the current OpenAI Responses API, with Chat Completions fallback."""
+    """Adapter for the current OpenAI Responses API.
+
+    Chat Completions is used only by clients that do not expose ``responses``.
+    Once a Responses request starts, an exception has an ambiguous outcome and
+    must never trigger a second provider request automatically.
+    """
 
     def __init__(self, client: Optional[OpenAI] = None):
         # Allow injecting a client, otherwise try to fall back to the bridge instance or create one.
@@ -34,6 +39,10 @@ class OpenAIResponsesProvider:
 
     def _supports_responses_api(self) -> bool:
         return bool(getattr(self.client, "responses", None))
+
+    def _supports_responses_stream(self) -> bool:
+        responses = getattr(self.client, "responses", None)
+        return callable(getattr(responses, "stream", None))
 
     def _normalize_tools_for_responses(self, tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
         if not tools:
@@ -128,7 +137,7 @@ class OpenAIResponsesProvider:
             usage_metrics.cached_tokens = self._get_attr(input_details, "cached_tokens", 0) or 0
         return usage_metrics
 
-    def _generate_with_responses_api(self, request: GatewayRequest, *, start_time: float) -> GatewayResponse:
+    def _responses_request_kwargs(self, request: GatewayRequest) -> Dict[str, Any]:
         tools = self._normalize_tools_for_responses(request.tools)
         kwargs: Dict[str, Any] = {
             "model": request.model,
@@ -161,6 +170,11 @@ class OpenAIResponsesProvider:
             for k, v in request.provider_options.items():
                 if k not in kwargs:
                     kwargs[k] = v
+
+        return kwargs
+
+    def _generate_with_responses_api(self, request: GatewayRequest, *, start_time: float) -> GatewayResponse:
+        kwargs = self._responses_request_kwargs(request)
 
         response = self.client.responses.create(**kwargs)
         text_val = self._extract_response_text(response)
@@ -210,12 +224,81 @@ class OpenAIResponsesProvider:
             cost_estimate=0.0,
         )
 
+    def _generate_stream_with_responses_api(self, request: GatewayRequest):
+        kwargs = self._responses_request_kwargs(request)
+        text_chunks: List[str] = []
+
+        with self.client.responses.stream(**kwargs) as stream:
+            for event in stream:
+                event_type = self._get_attr(event, "type", "")
+                if event_type == "response.output_text.delta":
+                    delta = self._get_attr(event, "delta", "") or ""
+                    if delta:
+                        text_chunks.append(delta)
+                        yield {"type": "response.delta", "data": {"text": delta}}
+
+            response = stream.get_final_response()
+
+        tool_calls = self._extract_response_tool_calls(response)
+        mapped_tool_calls = [
+            {"id": call.id, "name": call.name, "arguments": call.arguments}
+            for call in tool_calls
+        ]
+        for call in mapped_tool_calls:
+            yield {
+                "type": "tool.started",
+                "data": {"tool_call_id": call["id"], "name": call["name"]},
+            }
+            yield {"type": "tool.completed", "data": call}
+
+        status_raw = str(self._get_attr(response, "status", "completed") or "completed")
+        if mapped_tool_calls:
+            status = "tool_calls_pending"
+        elif status_raw == "completed":
+            status = "completed"
+        elif status_raw == "incomplete":
+            status = "incomplete"
+        elif status_raw in {"refused", "content_filter"}:
+            status = "refused"
+        else:
+            status = "error"
+
+        text_value = "".join(text_chunks) or self._extract_response_text(response)
+        yield {
+            "type": "response.completed",
+            "data": {
+                "status": status,
+                "text": text_value,
+                "tool_calls": mapped_tool_calls,
+                "provider_response_id": self._get_attr(response, "id"),
+            },
+        }
+
     def generate_stream(self, request: GatewayRequest):
         """
         Executes a complete AI request utilizing the OpenAI SDK with streaming.
         Yields dictionaries representing typed events for the AIStreamService.
         """
         start_time = time.perf_counter()
+
+        if self._supports_responses_stream():
+            try:
+                yield from self._generate_stream_with_responses_api(request)
+            except Exception as exc:
+                logger.error(
+                    "OpenAI Responses stream failed request_id=%s error_type=%s status_code=%s",
+                    request.request_id,
+                    type(exc).__name__,
+                    getattr(exc, "status_code", None),
+                )
+                yield {
+                    "type": "response.error",
+                    "data": {
+                        "error_code": "provider_outcome_unknown",
+                        "message": "OpenAI Responses stream failed; automatic replay is disabled.",
+                    },
+                }
+            return
 
         # 1. Build messages payload
         messages = []
@@ -341,11 +424,19 @@ class OpenAIResponsesProvider:
                     }
                 }
 
-        except Exception as e:
-            logger.error(f"Provider Stream Exception: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "OpenAI Chat Completions stream failed request_id=%s error_type=%s status_code=%s",
+                request.request_id,
+                type(exc).__name__,
+                getattr(exc, "status_code", None),
+            )
             yield {
                 "type": "response.error",
-                "data": {"error_code": "provider_error", "message": str(e)}
+                "data": {
+                    "error_code": "provider_outcome_unknown",
+                    "message": "OpenAI stream failed; automatic replay is disabled.",
+                }
             }
 
     def generate(self, request: GatewayRequest) -> GatewayResponse:
@@ -355,8 +446,23 @@ class OpenAIResponsesProvider:
         if self._supports_responses_api():
             try:
                 return self._generate_with_responses_api(request, start_time=start_time)
-            except Exception as e:
-                logger.warning("Responses API provider failed; falling back to Chat Completions.", exc_info=True)
+            except Exception as exc:
+                logger.error(
+                    "OpenAI Responses request failed request_id=%s error_type=%s status_code=%s",
+                    request.request_id,
+                    type(exc).__name__,
+                    getattr(exc, "status_code", None),
+                )
+                latency = int((time.perf_counter() - start_time) * 1000.0)
+                return GatewayResponse(
+                    request_id=request.request_id,
+                    model=request.model,
+                    conversation_id=request.conversation_id,
+                    status="error",
+                    error_code="provider_outcome_unknown",
+                    error_message="OpenAI Responses request failed; automatic replay is disabled.",
+                    latency_ms=latency,
+                )
 
         # 1. Build messages payload
         messages = []
@@ -528,15 +634,20 @@ class OpenAIResponsesProvider:
                 cost_estimate=0.0, # Handled by telemetry later
             )
 
-        except Exception as e:
-            logger.error(f"Provider Exception: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "OpenAI Chat Completions request failed request_id=%s error_type=%s status_code=%s",
+                request.request_id,
+                type(exc).__name__,
+                getattr(exc, "status_code", None),
+            )
             latency = int((time.perf_counter() - start_time) * 1000.0)
             return GatewayResponse(
                 request_id=request.request_id,
                 model=request.model,
                 conversation_id=request.conversation_id,
                 status="error",
-                error_code="provider_error",
-                error_message=str(e),
+                error_code="provider_outcome_unknown",
+                error_message="OpenAI request failed; automatic replay is disabled.",
                 latency_ms=latency
             )

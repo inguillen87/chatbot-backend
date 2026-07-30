@@ -1,18 +1,33 @@
 from flask import Blueprint, request, current_app, Response, url_for
 from twilio.twiml.voice_response import VoiceResponse, Gather, Play, Connect, Dial
 from twilio.request_validator import RequestValidator
-from models import WhatsappNumero, ChatSessionContext, User
+from models import ChatSessionContext
 from extensions import db, sock
 from services.voice_handler import handle_voice_interaction, handle_call_status
-from services.tts_orchestrator import generar_audio
 from utils.db_utils import ensure_chat_session_context_schema
-from sqlalchemy.orm import joinedload
 import os
 import json
 import base64
 import logging
+import re
 import unicodedata
 from services.voice_stream_service import VoiceStreamService
+from services.voice_stream_envelope import (
+    VoiceStreamEnvelopeError,
+    create_voice_stream_envelope,
+)
+from services.voice_consent_lifecycle import (
+    VoiceConsentLifecycleError,
+    assert_voice_stream_authorized,
+    begin_voice_consent,
+    mark_voice_lifecycle_failed,
+    record_voice_consent_decision,
+    record_voice_consent_missing,
+    record_voice_provider_status,
+    resolve_authoritative_voice_tenant,
+    resolve_voice_consent_policy,
+    voice_consent_lifecycle_enabled,
+)
 
 from utils.auth_helpers import token_requerido
 from services.realtime_session_service import realtime_session_service
@@ -328,7 +343,40 @@ def _validate_twilio_request() -> bool:
     )
 
 
-def _voice_stream_twiml_response() -> Response:
+def _voice_control_response(message: str, *, status: int = 200) -> Response:
+    """Return bounded TwiML without opening an audio-input processor."""
+
+    response = VoiceResponse()
+    _voice_say(response, message)
+    response.hangup()
+    return Response(str(response), mimetype="text/xml", status=status)
+
+
+def _resolve_voice_http_tenant():
+    return resolve_authoritative_voice_tenant(
+        from_number=request.form.get("From"),
+        to_number=request.form.get("To"),
+        direction=request.form.get("Direction"),
+        requested_tenant_slug=_current_voice_tenant(),
+        config=current_app.config,
+    )
+
+
+def _voice_consent_action_url(tenant_slug: str) -> str:
+    params = {
+        "tenant": tenant_slug,
+        "vertical": _current_voice_vertical(),
+        "intent": _normalize_voice_text(request.values.get("intent")),
+        "chat_session_id": request.values.get("chat_session_id"),
+    }
+    return url_for(
+        "voice.voice_consent",
+        _external=True,
+        **{key: value for key, value in params.items() if value},
+    )
+
+
+def _voice_stream_twiml_response(*, authoritative_tenant=None) -> Response:
     response = VoiceResponse()
 
     call_sid = request.form.get('CallSid')
@@ -340,34 +388,162 @@ def _voice_stream_twiml_response() -> Response:
     ws_url = backend_url.replace("http://", "ws://").replace("https://", "wss://")
     stream_url = f"{ws_url}/twilio/voice/stream"
 
+    if not voice_consent_lifecycle_enabled(current_app.config):
+        return _voice_control_response(
+            "La atencion por inteligencia artificial no esta habilitada en este momento."
+        )
+
+    try:
+        tenant_profile = authoritative_tenant or _resolve_voice_http_tenant()
+        policy = resolve_voice_consent_policy(tenant_profile)
+        if policy.ai_processing != "explicit_per_call":
+            raise VoiceConsentLifecycleError("policy_disabled")
+        lifecycle = assert_voice_stream_authorized(
+            tenant_id=tenant_profile.id,
+            call_sid=call_sid,
+        )
+        if lifecycle.consent_policy_version != policy.version:
+            raise VoiceConsentLifecycleError("call_policy_mismatch")
+    except VoiceConsentLifecycleError as exc:
+        logger.warning("Twilio voice stream refused reason=%s", exc.code)
+        return _voice_control_response(
+            "Necesitamos tu consentimiento antes de iniciar la atencion inteligente."
+        )
+
+    tenant = str(tenant_profile.slug or "").strip()
+    vertical = _current_voice_vertical()
+    intent = _normalize_voice_text(request.values.get("intent"))
+    is_demo = _is_chatboc_demo_voice_number(from_number, to_number)
+    max_call_seconds = _chatboc_demo_voice_max_seconds() if is_demo else None
+
+    try:
+        envelope = create_voice_stream_envelope(
+            call_sid=call_sid,
+            from_number=from_number,
+            to_number=to_number,
+            tenant_slug=tenant,
+            vertical=vertical,
+            intent=intent,
+            chat_session_id=source_chat_session_id,
+            demo=is_demo,
+            max_call_seconds=max_call_seconds,
+            config=current_app.config,
+        )
+    except VoiceStreamEnvelopeError as exc:
+        logger.error(
+            "Twilio voice stream unavailable reason=%s",
+            exc.code,
+        )
+        _voice_say(
+            response,
+            "La atencion inteligente no esta disponible en este momento. "
+            "Continuamos con el menu telefonico.",
+        )
+        response.redirect(_demo_voice_action_url("voice.voice_fallback"))
+        return Response(str(response), mimetype='text/xml')
+
     response.pause(length=1)
 
     connect = Connect()
     stream = connect.stream(url=stream_url)
-    stream.parameter(name="from_number", value=from_number)
-    stream.parameter(name="to_number", value=to_number)
-    stream.parameter(name="call_sid", value=call_sid)
-    tenant = _current_voice_tenant()
-    vertical = _current_voice_vertical()
-    intent = _normalize_voice_text(request.values.get("intent"))
-    if tenant:
-        stream.parameter(name="tenant", value=tenant)
-        stream.parameter(name="tenant_slug", value=tenant)
-    if vertical:
-        stream.parameter(name="vertical", value=vertical)
-        stream.parameter(name="sector", value=vertical)
-    if intent:
-        stream.parameter(name="intent", value=intent)
-    if _is_chatboc_demo_voice_number(from_number, to_number):
-        stream.parameter(name="max_call_seconds", value=str(_chatboc_demo_voice_max_seconds()))
+    for name in (
+        "from_number",
+        "to_number",
+        "call_sid",
+        "tenant_slug",
+        "vertical",
+        "intent",
+        "chat_session_id",
+        "demo",
+        "max_call_seconds",
+        "version",
+        "ts",
+        "nonce",
+        "signature",
+    ):
+        value = envelope.get(name)
+        if value not in (None, ""):
+            stream.parameter(name=name, value=value)
+    if envelope["tenant_slug"]:
+        stream.parameter(name="tenant", value=envelope["tenant_slug"])
+    if envelope["vertical"]:
+        stream.parameter(name="sector", value=envelope["vertical"])
+    if envelope["demo"] == "1":
         stream.parameter(name="demo_hub", value="chatboc")
-    if source_chat_session_id:
-        stream.parameter(name="chat_session_id", value=source_chat_session_id)
 
     response.append(connect)
     response.redirect(_demo_voice_action_url("voice.voice_fallback"))
 
     return Response(str(response), mimetype='text/xml')
+
+
+def _voice_consent_entry_response() -> Response:
+    """Create an auditable call receipt and ask for consent using DTMF only."""
+
+    if not voice_consent_lifecycle_enabled(current_app.config):
+        logger.warning("Twilio voice consent unavailable reason=feature_disabled")
+        return _voice_control_response(
+            "La atencion telefonica inteligente todavia no esta habilitada para esta organizacion."
+        )
+
+    try:
+        tenant = _resolve_voice_http_tenant()
+        policy = resolve_voice_consent_policy(tenant)
+        lifecycle = begin_voice_consent(
+            tenant_id=tenant.id,
+            call_sid=request.form.get("CallSid"),
+            direction=request.form.get("Direction"),
+            policy=policy,
+        )
+    except Exception as exc:
+        db.session.rollback()
+        reason = exc.code if isinstance(exc, VoiceConsentLifecycleError) else "persistence_unavailable"
+        logger.error("Twilio voice consent unavailable reason=%s", reason)
+        return _voice_control_response(
+            "La atencion inteligente no esta disponible en este momento."
+        )
+
+    if policy.ai_processing == "disabled":
+        try:
+            mark_voice_lifecycle_failed(
+                tenant_id=tenant.id,
+                call_sid=request.form.get("CallSid"),
+                reason_code="policy_disabled",
+            )
+        except Exception:
+            db.session.rollback()
+            logger.error("Twilio voice policy-disabled audit unavailable")
+        return _voice_control_response(
+            "Esta organizacion no tiene habilitado el procesamiento de voz por inteligencia artificial."
+        )
+    if lifecycle.state in {"completed", "failed"}:
+        return _voice_control_response(
+            "Esta llamada ya fue finalizada y no puede volver a abrirse."
+        )
+    if lifecycle.consent_status == "granted":
+        return _voice_stream_twiml_response(authoritative_tenant=tenant)
+    if lifecycle.consent_status == "declined":
+        return _voice_control_response(
+            "Respetamos tu decision. No enviaremos el audio a inteligencia artificial ni grabaremos la llamada."
+        )
+
+    response = VoiceResponse()
+    gather = Gather(
+        input="dtmf",
+        num_digits=1,
+        action=_voice_consent_action_url(str(tenant.slug)),
+        method="POST",
+        timeout=8,
+        action_on_empty_result=True,
+    )
+    _voice_say(
+        gather,
+        "Para usar el asistente de voz, necesitamos enviar el audio en tiempo real al proveedor de inteligencia artificial. "
+        "Esta funcion no graba la llamada. Marca 1 para aceptar o 2 para rechazar.",
+    )
+    response.append(gather)
+    response.hangup()
+    return Response(str(response), mimetype="text/xml")
 
 
 @voice_bp.route('/api/realtime/session', methods=['POST'])
@@ -396,6 +572,19 @@ def voice_fallback():
     """
     Fallback endpoint for Twilio errors.
     """
+    if not _validate_twilio_request():
+        return "Forbidden", 403
+    try:
+        tenant = _resolve_voice_http_tenant()
+        assert_voice_stream_authorized(
+            tenant_id=tenant.id,
+            call_sid=request.form.get("CallSid"),
+        )
+    except VoiceConsentLifecycleError:
+        return _voice_control_response(
+            "La llamada finalizo sin iniciar procesamiento inteligente."
+        )
+
     response = VoiceResponse()
     _append_demo_voice_gather(response, _fallback_prompt_for_current_context())
     _voice_say(response, "No te escuché. Te mando el menú por WhatsApp y podés volver a llamar cuando quieras.")
@@ -409,6 +598,16 @@ def voice_demo_process():
     """
     if not _validate_twilio_request():
         return "Forbidden", 403
+    try:
+        tenant = _resolve_voice_http_tenant()
+        assert_voice_stream_authorized(
+            tenant_id=tenant.id,
+            call_sid=request.form.get("CallSid"),
+        )
+    except VoiceConsentLifecycleError:
+        return _voice_control_response(
+            "La llamada finalizo sin iniciar procesamiento inteligente."
+        )
 
     input_text = request.form.get("SpeechResult") or request.form.get("Digits")
     response = VoiceResponse()
@@ -423,104 +622,29 @@ def voice_welcome():
     Compatibility endpoint for older Twilio webhooks.
     By default, calls are upgraded to OpenAI Realtime through Twilio Media Streams.
     """
-    response = VoiceResponse()
-
     if not _validate_twilio_request():
         return "Forbidden", 403
 
     if not _legacy_voice_gather_enabled():
-        return _voice_stream_twiml_response()
+        return _voice_consent_entry_response()
 
-    user_phone = request.form.get("To", "").replace("whatsapp:", "").strip()
-    bot_phone = request.form.get("From", "").replace("whatsapp:", "").strip()
-    direction = request.form.get("Direction", "outbound-api")
-
-    if direction == "inbound":
-        user_phone, bot_phone = bot_phone, user_phone
-
-    user_name = "Vecino"
-    tenant_name = "tu municipio"
-    assistant_name = "el asistente virtual"
-
-    try:
-        whatsapp_mapping = WhatsappNumero.query.options(
-             joinedload(WhatsappNumero.user).joinedload(User.rubro)
-        ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone.replace('+','').replace(' ','')}%")).first()
-
-        client_user = whatsapp_mapping.user if whatsapp_mapping else None
-
-        if client_user:
-            from services.pymes import get_or_create_user_by_phone
-            end_user = get_or_create_user_by_phone(user_phone, client_user)
-            if end_user and end_user.name and end_user.name != "Vecino/a":
-                user_name = end_user.name
-
-            tenant_profile = (
-                getattr(client_user, "tenant", None)
-                or getattr(client_user, "tenant_profile", None)
-                or getattr(client_user, "tenant_profile_municipio", None)
-            )
-            if tenant_profile and tenant_profile.configuracion:
-                config = tenant_profile.configuracion
-                tenant_name = (
-                    config.get("nombre_municipio")
-                    or config.get("nombre")
-                    or getattr(client_user, "nombre_empresa", None)
-                    or tenant_name
-                )
-                assistant_name = config.get("assistant_name") or config.get("bot_name") or assistant_name
-            elif client_user.nombre_empresa:
-                tenant_name = client_user.nombre_empresa
-
-    except Exception as exc:
-        current_app.logger.error(
-            "[VOICE_WELCOME] context resolution failed error_type=%s",
-            type(exc).__name__,
-        )
-
-    greeting_text = f"Hola {user_name}, soy {assistant_name} de {tenant_name}. ¿En qué puedo ayudarte hoy?"
-
-    audio_url = None
-    try:
-        audio_url = generar_audio(greeting_text)
-    except Exception as exc:
-        current_app.logger.error(
-            "[VOICE_WELCOME] TTS failed error_type=%s",
-            type(exc).__name__,
-        )
-
-    gather = Gather(
-        input='speech dtmf',
-        num_digits=1,
-        action=_demo_voice_action_url("voice.voice_process"),
-        language=_twilio_gather_language(),
-        speechTimeout='auto',
-        timeout=5,
-        bargeIn=True
+    # The legacy speech Gather is intentionally unavailable until it can carry
+    # the same durable consent contract. DTMF consent must not be bypassed by a
+    # compatibility flag.
+    return _voice_control_response(
+        "El modo telefonico anterior no esta disponible. Usa el canal de voz seguro."
     )
-
-    if audio_url:
-        gather.play(audio_url)
-    else:
-        _voice_say(gather, greeting_text)
-
-    response.append(gather)
-
-    _voice_say(response, "No te escuché. ¿Podrías repetirlo?")
-    response.redirect(_demo_voice_action_url("voice.voice_welcome"))
-
-    return Response(str(response), mimetype='text/xml')
 
 @voice_bp.route('/twilio/voice/inbound', methods=['POST'])
 def voice_inbound_stream():
     """
-    Primary endpoint for inbound calls using Twilio Media Streams & OpenAI Realtime.
-    Returns TwiML with <Connect><Stream>.
+    Primary inbound endpoint. It asks for durable explicit consent before it
+    can return TwiML containing a Media Stream.
     """
     if not _validate_twilio_request():
         return "Forbidden", 403
 
-    return _voice_stream_twiml_response()
+    return _voice_consent_entry_response()
 
 
 @voice_bp.route('/twilio/voice', methods=['POST'])
@@ -531,7 +655,60 @@ def voice_inbound_stream_alias():
     if not _validate_twilio_request():
         return "Forbidden", 403
 
-    return _voice_stream_twiml_response()
+    return _voice_consent_entry_response()
+
+
+@voice_bp.route('/twilio/voice/consent', methods=['POST'])
+def voice_consent():
+    """Consume a one-digit decision; raw DTMF is never persisted or logged."""
+
+    if not _validate_twilio_request():
+        return "Forbidden", 403
+    if not voice_consent_lifecycle_enabled(current_app.config):
+        return _voice_control_response(
+            "La atencion inteligente no esta habilitada en este momento."
+        )
+
+    try:
+        tenant = _resolve_voice_http_tenant()
+        policy = resolve_voice_consent_policy(tenant)
+        if policy.ai_processing != "explicit_per_call":
+            raise VoiceConsentLifecycleError("policy_disabled")
+
+        # Translate the transport digit in memory. The ledger only receives a
+        # bounded semantic decision code.
+        digit = str(request.form.get("Digits") or "").strip()
+        if digit == "1":
+            record_voice_consent_decision(
+                tenant_id=tenant.id,
+                call_sid=request.form.get("CallSid"),
+                decision="granted",
+            )
+            return _voice_stream_twiml_response(authoritative_tenant=tenant)
+        if digit == "2":
+            record_voice_consent_decision(
+                tenant_id=tenant.id,
+                call_sid=request.form.get("CallSid"),
+                decision="declined",
+            )
+            return _voice_control_response(
+                "Respetamos tu decision. No enviaremos el audio a inteligencia artificial ni grabaremos la llamada."
+            )
+
+        record_voice_consent_missing(
+            tenant_id=tenant.id,
+            call_sid=request.form.get("CallSid"),
+        )
+        return _voice_control_response(
+            "No recibimos una autorizacion valida. La atencion inteligente no se inicio."
+        )
+    except Exception as exc:
+        db.session.rollback()
+        reason = exc.code if isinstance(exc, VoiceConsentLifecycleError) else "persistence_unavailable"
+        logger.error("Twilio voice consent decision refused reason=%s", reason)
+        return _voice_control_response(
+            "No pudimos confirmar el consentimiento. La atencion inteligente no se inicio."
+        )
 
 @voice_bp.route('/twilio/voice/transfer', methods=['POST'])
 def voice_transfer():
@@ -544,10 +721,39 @@ def voice_transfer():
 
     target = request.args.get("target") or request.form.get("target")
     response = VoiceResponse()
+    try:
+        if not voice_consent_lifecycle_enabled(current_app.config):
+            raise VoiceConsentLifecycleError("voice_consent_feature_disabled")
+        tenant = _resolve_voice_http_tenant()
+        assert_voice_stream_authorized(
+            tenant_id=tenant.id,
+            call_sid=request.form.get("CallSid"),
+        )
+        tenant_config = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        configured_target = (
+            tenant_config.get("human_handoff_number")
+            or tenant_config.get("telefono_atencion")
+        )
+        requested_target = _normalize_phone(target)
+        allowed_target = _normalize_phone(configured_target)
+        e164_pattern = re.compile(r"^\+[1-9]\d{7,14}$")
+        if (
+            not e164_pattern.fullmatch(requested_target)
+            or not e164_pattern.fullmatch(allowed_target)
+            or requested_target != allowed_target
+        ):
+            raise VoiceConsentLifecycleError("transfer_target_not_authorized")
+    except VoiceConsentLifecycleError as exc:
+        logger.warning("Twilio voice transfer refused reason=%s", exc.code)
+        _voice_say(response, "La transferencia no esta disponible en este momento.")
+        return Response(str(response), mimetype="text/xml")
 
-    if target:
-        _voice_say(response, "Transfiriendo a un representante. Aguarde un momento, por favor.")
-        response.dial(target)
+    if requested_target:
+        _voice_say(
+            response,
+            "Vamos a intentar comunicarte con un representante. Aguarda un momento, por favor.",
+        )
+        response.dial(requested_target)
     else:
         _voice_say(response, "Lo siento, no pude conectar con un representante.")
 
@@ -561,6 +767,20 @@ def voice_process():
     """
     if not _validate_twilio_request():
         return "Forbidden", 403
+    if not voice_consent_lifecycle_enabled(current_app.config):
+        return _voice_control_response(
+            "La atencion inteligente no esta habilitada en este momento."
+        )
+    try:
+        tenant = _resolve_voice_http_tenant()
+        assert_voice_stream_authorized(
+            tenant_id=tenant.id,
+            call_sid=request.form.get("CallSid"),
+        )
+    except VoiceConsentLifecycleError:
+        return _voice_control_response(
+            "Necesitamos tu consentimiento antes de procesar audio."
+        )
 
     user_speech = request.form.get('SpeechResult')
     digits = request.form.get('Digits')
@@ -645,6 +865,25 @@ def voice_status():
     to_number = request.form.get("To")
     from_number = request.form.get("From")
     direction = request.form.get("Direction")
+
+    if voice_consent_lifecycle_enabled(current_app.config):
+        try:
+            tenant = _resolve_voice_http_tenant()
+            policy = resolve_voice_consent_policy(tenant)
+            record_voice_provider_status(
+                tenant_id=tenant.id,
+                call_sid=call_sid,
+                direction=direction,
+                policy=policy,
+                provider_status=call_status,
+            )
+        except Exception as exc:
+            db.session.rollback()
+            reason = exc.code if isinstance(exc, VoiceConsentLifecycleError) else "persistence_unavailable"
+            logger.error("Twilio voice status refused reason=%s", reason)
+            # A non-2xx response asks Twilio to retry rather than silently
+            # claiming that a lifecycle update was persisted.
+            return Response(status=503)
 
     handle_call_status(call_sid, call_status, to_number, from_number, direction)
 

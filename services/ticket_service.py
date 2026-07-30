@@ -1,31 +1,148 @@
 # services/ticket_service.py
+import hashlib
+import json
+import logging
+import math
 import os
 import random
-from datetime import datetime, timedelta
+import re
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from typing import Dict, Any, Literal, Union, Iterable, Optional
-import logging
 
 from models import (
+    ArchivoAdjunto,
     MunicipioTicket,
     PymeTicket,
     TicketComentario,
+    TicketDomainEffectReceipt,
     TicketSatisfaccion,
     Conversacion,
+    TenantProfile,
     User,
     db,
 )
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from sqlalchemy import func, or_
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
 from services.notification_dispatcher import notification_dispatcher
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    normalize_municipio_ticket_write_scope,
+    resolve_municipio_ticket_access_tenant,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+    tenant_owner_ids,
+)
 from services.user_service import build_identity_subject
 
 logger = logging.getLogger(__name__)
 
 _CLOSED_STATES = {"cerrado"}
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,191}$")
+_WHATSAPP_TURN_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,80}$")
+_EFFECT_SUFFIX_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+
+
+class TicketIdempotencyError(RuntimeError):
+    """Base error for fail-closed ticket idempotency decisions."""
+
+
+class TicketIdempotencyValidationError(TicketIdempotencyError, ValueError):
+    """Raised when an idempotency identity has no safe tenant scope."""
+
+
+class TicketIdempotencyConflict(TicketIdempotencyError):
+    """Raised when one tenant-scoped key is reused for different input."""
+
+    code = "ticket_idempotency_payload_conflict"
+
+
+class TicketIdempotencyReplayUnavailable(TicketIdempotencyError):
+    """Raised when a receipt exists but its domain object no longer does."""
+
+    code = "ticket_idempotency_replay_unavailable"
+
+
+def build_whatsapp_ticket_effect_key(
+    tenant_id: Any,
+    durable_turn_id: Any,
+    effect: str,
+) -> str:
+    """Build a bounded tenant/turn/effect identity safe for persistence."""
+
+    try:
+        normalized_tenant_id = int(tenant_id)
+    except (TypeError, ValueError) as exc:
+        raise TicketIdempotencyValidationError(
+            "A durable ticket effect requires a positive tenant_id."
+        ) from exc
+    if isinstance(tenant_id, bool) or normalized_tenant_id <= 0:
+        raise TicketIdempotencyValidationError(
+            "A durable ticket effect requires a positive tenant_id."
+        )
+
+    normalized_turn_id = str(durable_turn_id or "").strip()
+    normalized_effect = str(effect or "").strip()
+    if not _WHATSAPP_TURN_RE.fullmatch(normalized_turn_id):
+        raise TicketIdempotencyValidationError("Invalid durable WhatsApp turn identity.")
+    if not _EFFECT_SUFFIX_RE.fullmatch(normalized_effect):
+        raise TicketIdempotencyValidationError("Invalid ticket effect identity.")
+
+    key = f"whatsapp:{normalized_tenant_id}:{normalized_turn_id}:{normalized_effect}"
+    if not _IDEMPOTENCY_KEY_RE.fullmatch(key):
+        raise TicketIdempotencyValidationError("Ticket idempotency key is too long or unsafe.")
+    return key
+
+
+def _canonicalize_idempotency_value(value: Any) -> Any:
+    """Normalize JSON-compatible domain input without retaining it."""
+
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TicketIdempotencyValidationError(
+                "Non-finite numbers are not valid ticket payload values."
+            )
+        return value
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise TicketIdempotencyValidationError(
+                "Non-finite decimals are not valid ticket payload values."
+            )
+        return {"$decimal": format(value, "f")}
+    if isinstance(value, (datetime, date)):
+        return {"$datetime": value.isoformat()}
+    if isinstance(value, dict):
+        return {
+            str(key): _canonicalize_idempotency_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize_idempotency_value(item) for item in value]
+    raise TicketIdempotencyValidationError(
+        f"Unsupported ticket payload type: {type(value).__name__}."
+    )
+
+
+def canonical_ticket_payload_hash(effect_kind: str, payload: Dict[str, Any]) -> str:
+    """Return a stable SHA-256 digest for one ticket domain effect."""
+
+    canonical_payload = _canonicalize_idempotency_value(
+        {"effect_kind": effect_kind, "payload": payload}
+    )
+    encoded = json.dumps(
+        canonical_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 class TicketCreator:
@@ -48,7 +165,7 @@ class MunicipioTicketCreator(TicketCreator):
         return MunicipioTicket(
             user_id=ticket_data.get("user_id"),
             municipio_id=ticket_data.get("municipio_id"),
-            tenant_id=ticket_data.get("tenant_id") or ticket_data.get("municipio_id"), # Ensure tenant_id is set
+            tenant_id=ticket_data.get("tenant_id"),
             anon_id=ticket_data.get("anon_id"),
             asunto=ticket_data.get("asunto", "Sin Asunto"),
             categoria=ticket_data.get("categoria", "General"),
@@ -146,19 +263,26 @@ class ServicioTickets:
         )
 
     def _municipal_employee_scope_filter(self, ticket: MunicipioTicket):
-        conditions = []
-        if getattr(ticket, "municipio_id", None):
+        try:
+            tenant = resolve_municipio_ticket_access_tenant(ticket)
+        except TicketTenantScopeError:
+            return User.id == None  # noqa: E711
+
+        conditions = [User.tenant_id == tenant.id]
+        owners = tenant_owner_ids(tenant)
+        if len(owners) == 1:
+            owner_resolution = resolve_unique_tenant_for_owner(owners[0])
+        else:
+            owner_resolution = None
+        if owner_resolution is not None and owner_resolution.status == "unique":
+            owner_id = owners[0]
             conditions.extend(
                 [
-                    User.empresa_id == ticket.municipio_id,
-                    User.municipio_id == ticket.municipio_id,
-                    User.id == ticket.municipio_id,
+                    User.empresa_id == owner_id,
+                    User.municipio_id == owner_id,
+                    User.id == owner_id,
                 ]
             )
-        if getattr(ticket, "tenant_id", None):
-            conditions.append(User.tenant_id == ticket.tenant_id)
-        if not conditions:
-            conditions.append(User.id == None)  # noqa: E711
         return or_(*conditions)
 
     def _pyme_employee_scope_filter(self, ticket: PymeTicket, owner_id: Optional[int]):
@@ -219,10 +343,17 @@ class ServicioTickets:
 
         return filtrados
 
-    def _calcular_carga_empleado_municipal(self, empleado: User, municipio_id: int) -> int:
+    def _calcular_carga_empleado_municipal(
+        self,
+        empleado: User,
+        ticket: MunicipioTicket,
+    ) -> int:
+        try:
+            tenant = resolve_municipio_ticket_access_tenant(ticket)
+        except TicketTenantScopeError:
+            return 0
         return (
-            MunicipioTicket.query.filter(
-                MunicipioTicket.municipio_id == municipio_id,
+            scoped_municipio_ticket_query(tenant).filter(
                 MunicipioTicket.asignado_a_id == empleado.id,
                 ~MunicipioTicket.estado.in_(list(_CLOSED_STATES)),
             )
@@ -259,7 +390,7 @@ class ServicioTickets:
                 return None
             empleado = min(
                 candidatos,
-                key=lambda emp: self._calcular_carga_empleado_municipal(emp, ticket.municipio_id),
+                key=lambda emp: self._calcular_carga_empleado_municipal(emp, ticket),
             )
 
         if not empleado:
@@ -396,16 +527,207 @@ class ServicioTickets:
 
         return empleado
 
+    @staticmethod
+    def _prepare_idempotency_identity(
+        idempotency_key: Optional[str],
+        idempotency_tenant_id: Optional[int],
+    ) -> Optional[tuple[str, int]]:
+        if idempotency_key is None and idempotency_tenant_id is None:
+            return None
+        if idempotency_key is None or idempotency_tenant_id is None:
+            raise TicketIdempotencyValidationError(
+                "Ticket idempotency requires both key and tenant_id."
+            )
+
+        normalized_key = str(idempotency_key).strip()
+        if not _IDEMPOTENCY_KEY_RE.fullmatch(normalized_key):
+            raise TicketIdempotencyValidationError("Invalid ticket idempotency key.")
+        try:
+            normalized_tenant_id = int(idempotency_tenant_id)
+        except (TypeError, ValueError) as exc:
+            raise TicketIdempotencyValidationError(
+                "Ticket idempotency requires a positive tenant_id."
+            ) from exc
+        if isinstance(idempotency_tenant_id, bool) or normalized_tenant_id <= 0:
+            raise TicketIdempotencyValidationError(
+                "Ticket idempotency requires a positive tenant_id."
+            )
+        return normalized_key, normalized_tenant_id
+
+    @staticmethod
+    def _ticket_payload_for_hash(ticket_data: Dict[str, Any]) -> Dict[str, Any]:
+        volatile_fields = {
+            "nro_ticket",
+            "consulta_pin",
+            "fecha",
+            "created_at",
+            "updated_at",
+            "ultima_actividad",
+        }
+        return {
+            key: value
+            for key, value in ticket_data.items()
+            if key not in volatile_fields and value is not None
+        }
+
+    @staticmethod
+    def _comment_payload_for_hash(
+        ticket_id: int,
+        tipo_ticket: str,
+        comentario_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return {
+            "ticket_id": int(ticket_id),
+            "tipo_ticket": tipo_ticket,
+            "comentario": comentario_data.get("comentario"),
+            "user_id": comentario_data.get("user_id"),
+            "anon_id": comentario_data.get("anon_id"),
+            "es_admin": bool(comentario_data.get("es_admin", False)),
+            "archivo_adjunto_id": comentario_data.get("archivo_adjunto_id"),
+            "origen": comentario_data.get("origen", "chat"),
+            "estado_ticket": comentario_data.get("estado_ticket"),
+            "emit_notifications": bool(
+                comentario_data.get("emit_notifications", True)
+            ),
+            "emit_socket": bool(comentario_data.get("emit_socket", True)),
+        }
+
+    @staticmethod
+    def _find_effect_receipt(
+        tenant_id: int,
+        idempotency_key: str,
+    ) -> Optional[TicketDomainEffectReceipt]:
+        return TicketDomainEffectReceipt.query.filter_by(
+            tenant_id=tenant_id,
+            idempotency_key=idempotency_key,
+        ).first()
+
+    @staticmethod
+    def _verify_effect_receipt(
+        receipt: TicketDomainEffectReceipt,
+        *,
+        effect_kind: str,
+        payload_hash: str,
+        resource_type: str,
+    ) -> None:
+        if (
+            receipt.effect_kind != effect_kind
+            or receipt.payload_hash != payload_hash
+            or receipt.resource_type != resource_type
+        ):
+            logger.warning(
+                "Ticket idempotency conflict receipt_id=%s tenant_id=%s effect_kind=%s",
+                getattr(receipt, "id", None),
+                getattr(receipt, "tenant_id", None),
+                effect_kind,
+            )
+            raise TicketIdempotencyConflict(
+                "The tenant-scoped idempotency key was already used for a different ticket effect."
+            )
+
+    @staticmethod
+    def _serialize_ticket(ticket: Union[PymeTicket, MunicipioTicket], tipo_ticket: str) -> dict:
+        ticket_dict = {
+            "id": ticket.id,
+            "nro_ticket": ticket.nro_ticket,
+            "asunto": ticket.asunto,
+            "categoria": ticket.categoria,
+            "estado": ticket.estado,
+            "direccion": ticket.direccion,
+            "user_id": ticket.user_id,
+            "anon_id": ticket.anon_id,
+        }
+        if tipo_ticket == "municipio":
+            ticket_dict["detalles"] = ticket.detalles
+            ticket_dict["nombre_vecino"] = getattr(ticket, "nombre_vecino", None)
+            ticket_dict["telefono_vecino"] = getattr(ticket, "telefono_vecino", None)
+            ticket_dict["email_vecino"] = getattr(ticket, "email_vecino", None)
+            ticket_dict["municipio_id"] = getattr(ticket, "municipio_id", None)
+            ticket_dict["consulta_pin"] = getattr(ticket, "consulta_pin", None)
+            ticket_dict["datos_extra"] = getattr(ticket, "datos_extra", None) or {}
+        else:
+            ticket_dict["consulta_pin"] = getattr(ticket, "consulta_pin", None)
+            ticket_dict["detalles"] = ticket.pregunta
+            ticket_dict["rubro_id"] = getattr(ticket, "rubro_id", None)
+            ticket_dict["datos_extra"] = getattr(ticket, "datos_extra", None) or {}
+        return ticket_dict
+
+    def _replay_ticket_effect(
+        self,
+        receipt: TicketDomainEffectReceipt,
+        *,
+        tipo_ticket: Literal["municipio", "pyme"],
+        effect_kind: str,
+        payload_hash: str,
+        return_object: bool,
+    ) -> Union[PymeTicket, MunicipioTicket, dict]:
+        if tipo_ticket not in {"municipio", "pyme"}:
+            raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
+        resource_type = f"{tipo_ticket}_ticket"
+        self._verify_effect_receipt(
+            receipt,
+            effect_kind=effect_kind,
+            payload_hash=payload_hash,
+            resource_type=resource_type,
+        )
+        model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
+        ticket = db.session.get(model, receipt.resource_id)
+        if ticket is None:
+            raise TicketIdempotencyReplayUnavailable(
+                "The ticket idempotency receipt exists but its ticket is unavailable."
+            )
+        logger.info(
+            "Replaying ticket effect receipt_id=%s tenant_id=%s resource_id=%s",
+            receipt.id,
+            receipt.tenant_id,
+            receipt.resource_id,
+        )
+        if return_object:
+            return ticket
+        return self._serialize_ticket(ticket, tipo_ticket)
+
+    def _replay_comment_effect(
+        self,
+        receipt: TicketDomainEffectReceipt,
+        *,
+        effect_kind: str,
+        payload_hash: str,
+    ) -> TicketComentario:
+        self._verify_effect_receipt(
+            receipt,
+            effect_kind=effect_kind,
+            payload_hash=payload_hash,
+            resource_type="ticket_comentario",
+        )
+        comment = db.session.get(TicketComentario, receipt.resource_id)
+        if comment is None:
+            raise TicketIdempotencyReplayUnavailable(
+                "The ticket idempotency receipt exists but its comment is unavailable."
+            )
+        logger.info(
+            "Replaying ticket comment effect receipt_id=%s tenant_id=%s resource_id=%s",
+            receipt.id,
+            receipt.tenant_id,
+            receipt.resource_id,
+        )
+        return comment
+
     def crear_nuevo_ticket(
         self,
         tipo_ticket: Literal["municipio", "pyme"],
         ticket_data: Dict[str, Any],
         *,
         return_object: bool = False,
+        idempotency_key: Optional[str] = None,
+        idempotency_tenant_id: Optional[int] = None,
     ) -> Union[PymeTicket, MunicipioTicket, None, dict]:
         creator = self.creators.get(tipo_ticket)
         if not creator:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
+
+        # Generated numbers and normalization must not alter caller state or
+        # become part of the canonical request digest.
+        ticket_data = dict(ticket_data or {})
 
         # Inferir categoría a partir de campos alternativos si no fue provista
         if not ticket_data.get("categoria"):
@@ -421,12 +743,57 @@ class ServicioTickets:
         if "categoria" in ticket_data:
             ticket_data["categoria"] = normalize_category(ticket_data.get("categoria"))
 
-        ticket_data["nro_ticket"] = random.randint(100000, 999999)
-        try:
-            # Eliminar el prefijo "Reclamo (LLM):" del asunto si existe
-            if ticket_data.get("asunto", "").startswith("Reclamo (LLM):"):
-                ticket_data["asunto"] = ticket_data["asunto"].replace("Reclamo (LLM):", "").strip()
+        # Eliminar el prefijo "Reclamo (LLM):" del asunto si existe.
+        if ticket_data.get("asunto", "").startswith("Reclamo (LLM):"):
+            ticket_data["asunto"] = ticket_data["asunto"].replace("Reclamo (LLM):", "").strip()
 
+        idempotency_identity = self._prepare_idempotency_identity(
+            idempotency_key,
+            idempotency_tenant_id,
+        )
+        effect_kind = f"ticket.create.{tipo_ticket}"
+        payload_hash = None
+        if idempotency_identity:
+            normalized_key, normalized_tenant_id = idempotency_identity
+            payload_tenant_id = ticket_data.get("tenant_id")
+            if payload_tenant_id is not None:
+                try:
+                    payload_tenant_id = int(payload_tenant_id)
+                except (TypeError, ValueError) as exc:
+                    raise TicketIdempotencyValidationError(
+                        "Ticket payload has an invalid tenant_id."
+                    ) from exc
+                if payload_tenant_id != normalized_tenant_id:
+                    raise TicketIdempotencyValidationError(
+                        "Ticket payload tenant_id does not match its idempotency tenant."
+                    )
+            ticket_data["tenant_id"] = normalized_tenant_id
+
+        if tipo_ticket == "municipio":
+            ticket_data = normalize_municipio_ticket_write_scope(ticket_data)
+
+        if idempotency_identity:
+            normalized_key, normalized_tenant_id = idempotency_identity
+            payload_hash = canonical_ticket_payload_hash(
+                effect_kind,
+                self._ticket_payload_for_hash(ticket_data),
+            )
+            existing_receipt = self._find_effect_receipt(
+                normalized_tenant_id,
+                normalized_key,
+            )
+            if existing_receipt is not None:
+                return self._replay_ticket_effect(
+                    existing_receipt,
+                    tipo_ticket=tipo_ticket,
+                    effect_kind=effect_kind,
+                    payload_hash=payload_hash,
+                    return_object=return_object,
+                )
+
+        ticket_data["nro_ticket"] = random.randint(100000, 999999)
+        effects_queued = False
+        try:
             ticket = creator.create(ticket_data)
             db.session.add(ticket)
             db.session.flush() # flush para obtener el ID del ticket para el comentario
@@ -454,6 +821,58 @@ class ServicioTickets:
                     comentario.pyme_ticket = ticket
                 db.session.add(comentario)
 
+            if idempotency_identity:
+                normalized_key, normalized_tenant_id = idempotency_identity
+                db.session.add(
+                    TicketDomainEffectReceipt(
+                        tenant_id=normalized_tenant_id,
+                        idempotency_key=normalized_key,
+                        effect_kind=effect_kind,
+                        payload_hash=payload_hash,
+                        resource_type=f"{tipo_ticket}_ticket",
+                        resource_id=ticket.id,
+                        result_json={
+                            "id": ticket.id,
+                            "nro_ticket": (
+                                str(ticket.nro_ticket)
+                                if tipo_ticket == "municipio"
+                                else ticket.nro_ticket
+                            ),
+                            "tipo_ticket": tipo_ticket,
+                        },
+                    )
+                )
+
+            # Canary tenants stage every external ticket-created effect in the
+            # same transaction as the ticket.  The helper deliberately does
+            # not commit: a staging/configuration failure must roll the whole
+            # domain write back instead of silently falling through to a
+            # best-effort direct send.
+            try:
+                from flask import has_app_context
+
+                if has_app_context():
+                    from services.ticket_domain_effects import stage_ticket_created_effects
+
+                    effects_queued = stage_ticket_created_effects(
+                        ticket,
+                        tipo_ticket=tipo_ticket,
+                        expected_owner_id=(
+                            ticket_data.get("municipio_id")
+                            if tipo_ticket == "municipio"
+                            else ticket_data.get("pyme_id")
+                        ),
+                        session=db.session,
+                    )
+            except Exception:
+                db.session.rollback()
+                logger.exception(
+                    "Ticket effect staging failed type=%s tenant_id=%s",
+                    tipo_ticket,
+                    getattr(ticket, "tenant_id", None),
+                )
+                raise
+
             db.session.commit()
             # Ticket models contain phone numbers, email, DNI, free-form text
             # and the public tracking PIN.  Logging ``__dict__`` exposed all of
@@ -469,25 +888,55 @@ class ServicioTickets:
                 getattr(ticket, "estado", None),
             )
 
-            # Integración con SIGEM para tickets municipales
-            if tipo_ticket == "municipio" and isinstance(ticket, MunicipioTicket):
+            if effects_queued:
+                logger.info(
+                    "Ticket external effects queued id=%s type=%s tenant_id=%s",
+                    ticket.id,
+                    tipo_ticket,
+                    getattr(ticket, "tenant_id", None),
+                )
+                # The database poller remains authoritative.  Celery is only a
+                # best-effort post-commit wakeup, so a broker failure must not
+                # roll back or duplicate the already committed ticket/effects.
                 try:
-                    sigem_success = enviar_ticket_a_sigem(ticket)
-                    if sigem_success:
-                        logger.info(f"Ticket #{ticket.nro_ticket} enviado a SIGEM exitosamente.")
-                    else:
-                        logger.warning(f"Ticket #{ticket.nro_ticket} NO pudo ser enviado a SIGEM (función devolvió False).")
-                except Exception as e_sigem:
-                    # Loggear el error pero no revertir la creación local del ticket.
-                    # La integración externa no debe impedir el funcionamiento primario.
-                    logger.error(f"Error durante el envío del Ticket #{ticket.nro_ticket} a SIGEM: {e_sigem}", exc_info=True)
+                    from services.domain_effect_worker import (
+                        enqueue_domain_effect_dispatch,
+                    )
 
-            # Notificaciones centralizadas (email, whatsapp, admin)
-            # notification_dispatcher no tiene un metodo especifico para tickets aun,
-            # pero podemos adaptar o llamar a _notificar_ticket_por_email por ahora
-            # y extender dispatcher despues.
-            # Para mantener consistencia con el pedido del usuario:
-            self._notificar_ticket_por_email(ticket, tipo_ticket, ticket_data)
+                    enqueue_domain_effect_dispatch(
+                        tenant_id=int(getattr(ticket, "tenant_id")),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Ticket effect wakeup failed id=%s tenant_id=%s error_type=%s",
+                        ticket.id,
+                        getattr(ticket, "tenant_id", None),
+                        type(exc).__name__,
+                    )
+            else:
+                # Integración con SIGEM para tickets municipales
+                if tipo_ticket == "municipio" and isinstance(ticket, MunicipioTicket):
+                    try:
+                        sigem_success = enviar_ticket_a_sigem(ticket)
+                        if sigem_success:
+                            logger.info(f"Ticket #{ticket.nro_ticket} enviado a SIGEM exitosamente.")
+                        else:
+                            logger.warning(f"Ticket #{ticket.nro_ticket} NO pudo ser enviado a SIGEM (función devolvió False).")
+                    except Exception as exc:
+                        # Loggear el error pero no revertir la creación local del ticket.
+                        # La integración externa no debe impedir el funcionamiento primario.
+                        logger.error(
+                            "Error durante el envío de ticket a SIGEM ticket_id=%s error_type=%s",
+                            ticket.id,
+                            type(exc).__name__,
+                        )
+
+                # Notificaciones centralizadas (email, whatsapp, admin)
+                # notification_dispatcher no tiene un metodo especifico para tickets aun,
+                # pero podemos adaptar o llamar a _notificar_ticket_por_email por ahora
+                # y extender dispatcher despues.
+                # Para mantener consistencia con el pedido del usuario:
+                self._notificar_ticket_por_email(ticket, tipo_ticket, ticket_data)
 
             # Notificar panel en tiempo real
             # This logic was moved to the action handlers to avoid circular imports
@@ -503,37 +952,36 @@ class ServicioTickets:
             # except Exception as e_notify:
             #     logger.error(f"Error enviando notificación en tiempo real para ticket #{ticket.nro_ticket}: {e_notify}", exc_info=True)
 
-            # Convertir el objeto ticket a un diccionario para un retorno consistente
-            ticket_dict = {
-                "id": ticket.id,
-                "nro_ticket": ticket.nro_ticket,
-                "asunto": ticket.asunto,
-                "categoria": ticket.categoria,
-                "estado": ticket.estado,
-                "direccion": ticket.direccion,
-                "user_id": ticket.user_id,
-                "anon_id": ticket.anon_id
-            }
-            if tipo_ticket == "municipio":
-                ticket_dict["detalles"] = ticket.detalles
-                ticket_dict["nombre_vecino"] = getattr(ticket, 'nombre_vecino', None)
-                ticket_dict["telefono_vecino"] = getattr(ticket, 'telefono_vecino', None)
-                ticket_dict["email_vecino"] = getattr(ticket, 'email_vecino', None)
-                ticket_dict["municipio_id"] = getattr(ticket, 'municipio_id', None)
-                ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
-                ticket_dict["datos_extra"] = getattr(ticket, "datos_extra", None) or {}
-            elif tipo_ticket == "pyme":
-                ticket_dict["consulta_pin"] = getattr(ticket, 'consulta_pin', None)
-                ticket_dict["detalles"] = ticket.pregunta # PymeTicket uses 'pregunta'
-                ticket_dict["rubro_id"] = getattr(ticket, 'rubro_id', None)
-                ticket_dict["datos_extra"] = getattr(ticket, "datos_extra", None) or {}
-
             if return_object:
                 return ticket
-            return ticket_dict
-        except SQLAlchemyError as e:
+            return self._serialize_ticket(ticket, tipo_ticket)
+        except IntegrityError as e:
             db.session.rollback()
-            logger.error(f"Error de DB al crear ticket: {e}", exc_info=True)
+            if idempotency_identity and payload_hash:
+                normalized_key, normalized_tenant_id = idempotency_identity
+                winning_receipt = self._find_effect_receipt(
+                    normalized_tenant_id,
+                    normalized_key,
+                )
+                if winning_receipt is not None:
+                    return self._replay_ticket_effect(
+                        winning_receipt,
+                        tipo_ticket=tipo_ticket,
+                        effect_kind=effect_kind,
+                        payload_hash=payload_hash,
+                        return_object=return_object,
+                    )
+            logger.error(
+                "Integrity error al crear ticket: %s",
+                type(e).__name__,
+            )
+            return None
+        except SQLAlchemyError as exc:
+            db.session.rollback()
+            logger.error(
+                "Error de DB al crear ticket error_type=%s",
+                type(exc).__name__,
+            )
             return None
 
     def _notificar_ticket_por_email(self, ticket, tipo_ticket: str, ticket_data: Dict[str, Any]) -> None:
@@ -590,11 +1038,96 @@ class ServicioTickets:
                 exc_info=True,
             )
 
-    def crear_comentario(self, ticket_id: int, tipo_ticket: Literal["municipio", "pyme"], comentario_data: Dict[str, Any]) -> Union[TicketComentario, None]:
+    def crear_comentario(
+        self,
+        ticket_id: int,
+        tipo_ticket: Literal["municipio", "pyme"],
+        comentario_data: Dict[str, Any],
+        *,
+        idempotency_key: Optional[str] = None,
+        idempotency_tenant_id: Optional[int] = None,
+        legacy_effects_owned_by_caller: bool = False,
+    ) -> Union[TicketComentario, None]:
+        """Persist one comment and stage canary effects in the same transaction.
+
+        ``legacy_effects_owned_by_caller`` only suppresses the post-commit
+        direct-send fallback. It never suppresses durable outbox staging, so a
+        caller can preserve an existing legacy dispatcher without duplicating
+        effects for canary tenants.
+        """
+        if tipo_ticket not in {"municipio", "pyme"}:
+            raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
+
+        comentario_data = dict(comentario_data or {})
+        idempotency_identity = self._prepare_idempotency_identity(
+            idempotency_key,
+            idempotency_tenant_id,
+        )
+        effect_kind = f"ticket.comment.{tipo_ticket}"
+        payload_hash = None
+        if idempotency_identity:
+            normalized_key, normalized_tenant_id = idempotency_identity
+            payload_hash = canonical_ticket_payload_hash(
+                effect_kind,
+                self._comment_payload_for_hash(ticket_id, tipo_ticket, comentario_data),
+            )
+            existing_receipt = self._find_effect_receipt(
+                normalized_tenant_id,
+                normalized_key,
+            )
+            if existing_receipt is not None:
+                return self._replay_comment_effect(
+                    existing_receipt,
+                    effect_kind=effect_kind,
+                    payload_hash=payload_hash,
+                )
+
         TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         ticket = db.session.get(TicketModel, ticket_id)
         if not ticket:
             return None
+        attachment_id = comentario_data.get("archivo_adjunto_id")
+        if attachment_id is not None:
+            try:
+                attachment_id = int(attachment_id)
+            except (TypeError, ValueError):
+                return None
+            attachment = db.session.get(ArchivoAdjunto, attachment_id)
+            if attachment is None:
+                return None
+            if tipo_ticket == "municipio":
+                attachment_matches = (
+                    attachment.municipio_ticket_id == ticket.id
+                    and attachment.pyme_ticket_id is None
+                )
+            else:
+                attachment_matches = (
+                    attachment.pyme_ticket_id == ticket.id
+                    and attachment.municipio_ticket_id is None
+                )
+            if not attachment_matches:
+                logger.warning(
+                    "Rejected cross-ticket attachment comment ticket_type=%s ticket_id=%s attachment_id=%s",
+                    tipo_ticket,
+                    ticket_id,
+                    attachment_id,
+                )
+                return None
+            comentario_data["archivo_adjunto_id"] = attachment_id
+        if idempotency_identity:
+            normalized_key, normalized_tenant_id = idempotency_identity
+            ticket_tenant_id = getattr(ticket, "tenant_id", None)
+            try:
+                ticket_tenant_id = int(ticket_tenant_id)
+            except (TypeError, ValueError) as exc:
+                raise TicketIdempotencyValidationError(
+                    "A durable comment requires a tenant-scoped ticket."
+                ) from exc
+            if ticket_tenant_id != normalized_tenant_id:
+                raise TicketIdempotencyValidationError(
+                    "Ticket tenant_id does not match its comment idempotency tenant."
+                )
+        comment_effects_queued = False
         try:
             nuevo_comentario = TicketComentario(
                 comentario=comentario_data.get("comentario"),
@@ -602,7 +1135,8 @@ class ServicioTickets:
                 anon_id=comentario_data.get("anon_id"),
                 es_admin=comentario_data.get("es_admin", False),
                 archivo_adjunto_id=comentario_data.get("archivo_adjunto_id"), # Add the new field
-                origen=comentario_data.get("origen", "chat") # Guardar el origen
+                origen=comentario_data.get("origen", "chat"), # Guardar el origen
+                estado_ticket=comentario_data.get("estado_ticket"),
             )
             if tipo_ticket == "municipio":
                 nuevo_comentario.municipio_ticket = ticket
@@ -611,9 +1145,83 @@ class ServicioTickets:
             db.session.add(nuevo_comentario)
             if hasattr(ticket, "ultima_actividad"):
                 ticket.ultima_actividad = get_local_now()
+            db.session.flush()
+            if idempotency_identity:
+                normalized_key, normalized_tenant_id = idempotency_identity
+                db.session.add(
+                    TicketDomainEffectReceipt(
+                        tenant_id=normalized_tenant_id,
+                        idempotency_key=normalized_key,
+                        effect_kind=effect_kind,
+                        payload_hash=payload_hash,
+                        resource_type="ticket_comentario",
+                        resource_id=nuevo_comentario.id,
+                        result_json={
+                            "id": nuevo_comentario.id,
+                            "ticket_id": int(ticket_id),
+                            "tipo_ticket": tipo_ticket,
+                        },
+                    )
+                )
+
+            try:
+                from flask import has_app_context
+
+                if has_app_context():
+                    from services.ticket_domain_effects import (
+                        stage_ticket_comment_effects,
+                    )
+
+                    comment_effects_queued = stage_ticket_comment_effects(
+                        nuevo_comentario,
+                        ticket,
+                        tipo_ticket=tipo_ticket,
+                        emit_notifications=bool(
+                            comentario_data.get("emit_notifications", True)
+                        ),
+                        emit_socket=bool(comentario_data.get("emit_socket", True)),
+                        session=db.session,
+                    )
+            except Exception:
+                db.session.rollback()
+                logger.exception(
+                    "Ticket comment effect staging failed type=%s tenant_id=%s",
+                    tipo_ticket,
+                    getattr(ticket, "tenant_id", None),
+                )
+                raise
             db.session.commit()
-            should_notify = comentario_data.get("emit_notifications", True)
-            if should_notify:
+            should_notify = bool(
+                comentario_data.get("emit_notifications", True)
+            ) and not legacy_effects_owned_by_caller
+            if comment_effects_queued:
+                logger.info(
+                    "Ticket comment external effects queued comment_id=%s ticket_id=%s "
+                    "type=%s tenant_id=%s",
+                    nuevo_comentario.id,
+                    ticket.id,
+                    tipo_ticket,
+                    getattr(ticket, "tenant_id", None),
+                )
+                # The database poller is authoritative; this only reduces
+                # notification latency after the transaction is durable.
+                try:
+                    from services.domain_effect_worker import (
+                        enqueue_domain_effect_dispatch,
+                    )
+
+                    enqueue_domain_effect_dispatch(
+                        tenant_id=int(getattr(ticket, "tenant_id")),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Ticket comment effect wakeup failed comment_id=%s "
+                        "tenant_id=%s error_type=%s",
+                        nuevo_comentario.id,
+                        getattr(ticket, "tenant_id", None),
+                        type(exc).__name__,
+                    )
+            elif should_notify:
                 try:
                     from services.email_service import (
                         enviar_email_ticket_novedad,
@@ -631,7 +1239,14 @@ class ServicioTickets:
                             comentario_reciente=nuevo_comentario,
                         )
                         enviar_sms_ticket_novedad(ticket, mensaje_notificacion)
-                        if tipo_ticket == "municipio": # Por ahora, WhatsApp solo para municipio
+                        from services.ticket_domain_effects import (
+                            pyme_whatsapp_chat_enabled,
+                        )
+
+                        if tipo_ticket == "municipio" or (
+                            tipo_ticket == "pyme"
+                            and pyme_whatsapp_chat_enabled()
+                        ):
                             enviar_whatsapp_ticket_novedad(ticket, mensaje_notificacion)
                     else: # Notificar al admin/empleado
                         enviar_email_ticket_admin(
@@ -640,13 +1255,19 @@ class ServicioTickets:
                             comentario_reciente=nuevo_comentario,
                             mensaje_resumen=mensaje_completo,
                         )
-                except Exception as e:  # pragma: no cover - not essential for tests
-                    logger.error(f"Error enviando notificaciones tras crear comentario para ticket {ticket.id if ticket else 'N/A'}: {e}", exc_info=True)
+                except Exception as exc:  # pragma: no cover - not essential for tests
+                    logger.error(
+                        "Error enviando notificaciones tras crear comentario ticket_id=%s error_type=%s",
+                        ticket.id if ticket else None,
+                        type(exc).__name__,
+                    )
 
-            emit_socket = comentario_data.get("emit_socket", True)
+            emit_socket = bool(
+                comentario_data.get("emit_socket", True)
+            ) and not legacy_effects_owned_by_caller
             # Emitir evento de socket para Live Chat (Admin Panel) solo cuando
             # la ruta llamadora no emite un evento normalizado propio.
-            if emit_socket:
+            if emit_socket and not comment_effects_queued:
                 try:
                     from socket_service import emit_new_chat_message
 
@@ -658,13 +1279,39 @@ class ServicioTickets:
                         "message": nuevo_comentario.to_dict(),
                     })
 
-                except Exception as e_sock:
-                    logger.error(f"Error emitting socket event for comment on ticket {ticket_id}: {e_sock}", exc_info=True)
+                except Exception as exc:
+                    logger.error(
+                        "Error emitting socket event for ticket comment ticket_id=%s error_type=%s",
+                        ticket_id,
+                        type(exc).__name__,
+                    )
 
             return nuevo_comentario
-        except SQLAlchemyError as e:
+        except IntegrityError as e:
             db.session.rollback()
-            logger.error(f"Error de DB al crear comentario: {e}", exc_info=True)
+            if idempotency_identity and payload_hash:
+                normalized_key, normalized_tenant_id = idempotency_identity
+                winning_receipt = self._find_effect_receipt(
+                    normalized_tenant_id,
+                    normalized_key,
+                )
+                if winning_receipt is not None:
+                    return self._replay_comment_effect(
+                        winning_receipt,
+                        effect_kind=effect_kind,
+                        payload_hash=payload_hash,
+                    )
+            logger.error(
+                "Integrity error al crear comentario: %s",
+                type(e).__name__,
+            )
+            return None
+        except SQLAlchemyError as exc:
+            db.session.rollback()
+            logger.error(
+                "Error de DB al crear comentario error_type=%s",
+                type(exc).__name__,
+            )
             return None
 
     def guardar_encuesta(
@@ -674,6 +1321,8 @@ class ServicioTickets:
         puntuacion: int,
         comentario: str | None = None,
     ) -> Union[TicketSatisfaccion, None]:
+        if tipo_ticket not in {"municipio", "pyme"}:
+            return None
         try:
             encuesta = TicketSatisfaccion(
                 ticket_id=ticket_id,
@@ -701,14 +1350,16 @@ class ServicioTickets:
         que tengan ubicación registrada. Formato: [{ "lat": lat, "lng": lng }]
         """
         try:
+            resolution = resolve_unique_tenant_for_owner(municipio_id)
+            if resolution.status != "unique" or resolution.tenant is None:
+                return []
             tickets = (
-                MunicipioTicket.query
-                .filter(MunicipioTicket.municipio_id == municipio_id)
+                scoped_municipio_ticket_query(resolution.tenant)
                 .filter(MunicipioTicket.latitud.isnot(None), MunicipioTicket.longitud.isnot(None))
                 .all()
             )
             return [{"lat": t.latitud, "lng": t.longitud} for t in tickets]
-        except SQLAlchemyError as e:
+        except (SQLAlchemyError, TicketTenantScopeError) as e:
             logger.error(
                 f"Error de DB al obtener locations de tickets para municipio {municipio_id}: {e}", exc_info=True
             )
@@ -734,6 +1385,9 @@ class ServicioTickets:
         agrupados por ubicación y con un peso (cantidad de tickets).
         Permite filtrar por municipio/rubro, rango de fechas y categoría.
         """
+        if tipo_ticket not in {"municipio", "pyme"}:
+            logger.warning("[TICKET_SERVICE_MAPA] Invalid ticket type: %s", tipo_ticket)
+            return []
         Model = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
         try:
             logger.info(
@@ -750,6 +1404,22 @@ class ServicioTickets:
             )
 
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            if tipo_ticket == "municipio":
+                tenant = None
+                if tenant_id is not None:
+                    from models import TenantProfile
+
+                    tenant = db.session.get(TenantProfile, tenant_id)
+                elif municipio_id is not None:
+                    resolution = resolve_unique_tenant_for_owner(municipio_id)
+                    if resolution.status == "unique":
+                        tenant = resolution.tenant
+                if tenant is None:
+                    logger.warning(
+                        "[TICKET_SERVICE_MAPA] Municipal heatmap rejected without exact tenant scope"
+                    )
+                    return []
+                query = scoped_municipio_ticket_query(tenant, query=query)
 
             distrito_filtrado = distrito.strip() if isinstance(distrito, str) else None
             if distrito_filtrado and hasattr(Model, "distrito"):
@@ -800,8 +1470,6 @@ class ServicioTickets:
                     & (TicketSatisfaccion.tipo == tipo_ticket),
                 )
 
-            if tipo_ticket == "municipio" and municipio_id is not None:
-                query = query.filter_by(municipio_id=municipio_id)
             if tipo_ticket == "pyme":
                 if tenant_id is None:
                     logger.warning(
@@ -929,7 +1597,7 @@ class ServicioTickets:
                 resultado_heatmap[:3] if resultado_heatmap else [],
             )
             return resultado_heatmap
-        except SQLAlchemyError as e:
+        except (SQLAlchemyError, TicketTenantScopeError) as e:
             logger.error(
                 f"Error de DB al obtener tickets para mapa de calor: {e}", exc_info=True
             )
@@ -1133,25 +1801,103 @@ class ServicioTickets:
             {"estado": "resuelto", **estados["resuelto"]},
         ]
 
-    def migrar_tickets_de_anonimo(self, anon_id: str, nuevo_user_id: int) -> int:
+    def migrar_tickets_de_anonimo(
+        self,
+        anon_id: str,
+        nuevo_user_id: int,
+        *,
+        tenant_id: int | None = None,
+    ) -> int:
         """Asigna a ``nuevo_user_id`` todos los tickets y comentarios
         vinculados al ``anon_id`` proporcionado."""
         if not anon_id or not nuevo_user_id:
             logger.warning("migrar_tickets_de_anonimo llamado sin parametros validos")
             return 0
 
+        tenant = None
+        if tenant_id is not None:
+            try:
+                tenant = db.session.get(TenantProfile, int(tenant_id))
+            except (TypeError, ValueError):
+                tenant = None
+        else:
+            user = db.session.get(User, nuevo_user_id)
+            explicit_tenant_id = getattr(user, "tenant_id", None) if user is not None else None
+            if explicit_tenant_id:
+                tenant = db.session.get(TenantProfile, explicit_tenant_id)
+            elif user is not None:
+                owner_ids = []
+                for raw_owner_id in (
+                    getattr(user, "municipio_id", None),
+                    getattr(user, "pyme_id", None),
+                    getattr(user, "empresa_id", None),
+                ):
+                    try:
+                        owner_id = int(raw_owner_id)
+                    except (TypeError, ValueError):
+                        continue
+                    if owner_id > 0 and owner_id not in owner_ids:
+                        owner_ids.append(owner_id)
+                candidates = set()
+                for owner_id in owner_ids:
+                    resolution = resolve_unique_tenant_for_owner(owner_id)
+                    if resolution.status != "unique" or resolution.tenant is None:
+                        candidates.clear()
+                        break
+                    candidates.add(int(resolution.tenant.id))
+                if len(candidates) == 1:
+                    tenant = db.session.get(TenantProfile, candidates.pop())
+
+        if tenant is None:
+            logger.warning(
+                "Anonymous ticket migration skipped: tenant scope unavailable user_id=%s",
+                nuevo_user_id,
+            )
+            return 0
+
         try:
+            municipio_ids = [
+                row[0]
+                for row in scoped_municipio_ticket_query(tenant)
+                .filter(MunicipioTicket.anon_id == anon_id)
+                .with_entities(MunicipioTicket.id)
+                .all()
+            ]
+            pyme_ids = [
+                row[0]
+                for row in PymeTicket.query.filter(
+                    PymeTicket.tenant_id == tenant.id,
+                    PymeTicket.anon_id == anon_id,
+                )
+                .with_entities(PymeTicket.id)
+                .all()
+            ]
             muni_count = (
-                MunicipioTicket.query.filter_by(anon_id=anon_id)
-                .update({"user_id": nuevo_user_id})
+                MunicipioTicket.query.filter(MunicipioTicket.id.in_(municipio_ids))
+                .update(
+                    {"user_id": nuevo_user_id, "anon_id": None},
+                    synchronize_session=False,
+                )
             )
             pyme_count = (
-                PymeTicket.query.filter_by(anon_id=anon_id)
-                .update({"user_id": nuevo_user_id})
+                PymeTicket.query.filter(PymeTicket.id.in_(pyme_ids))
+                .update(
+                    {"user_id": nuevo_user_id, "anon_id": None},
+                    synchronize_session=False,
+                )
             )
             comentario_count = (
-                TicketComentario.query.filter_by(anon_id=anon_id)
-                .update({"user_id": nuevo_user_id})
+                TicketComentario.query.filter(
+                    TicketComentario.anon_id == anon_id,
+                    or_(
+                        TicketComentario.municipio_ticket_id.in_(municipio_ids),
+                        TicketComentario.pyme_ticket_id.in_(pyme_ids),
+                    ),
+                )
+                .update(
+                    {"user_id": nuevo_user_id, "anon_id": None},
+                    synchronize_session=False,
+                )
             )
             # db.session.commit() # <<< ELIMINADO
             total = (muni_count or 0) + (pyme_count or 0) + (comentario_count or 0)

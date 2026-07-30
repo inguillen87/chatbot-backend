@@ -9,7 +9,10 @@ import os
 
 class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ConsultarPuntosDeInteresActionHandler with data: {action_data}")
+        logger.info(
+            "Executing ConsultarPuntosDeInteresActionHandler supplied_fields=%s",
+            sorted(map(str, action_data)),
+        )
 
         # Cargar el mapeo de palabras clave a categorías
         try:

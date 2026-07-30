@@ -68,6 +68,10 @@ from services.education_contracts import (
     is_education_tenant,
 )
 from services.demo_surveys import build_demo_survey_chat_menu
+from services.source_event_context import (
+    SOURCE_EVENT_CONTEXT_FIELDS,
+    bind_source_event_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -275,12 +279,24 @@ def _first_real_customer_name(*values: Optional[str]) -> Optional[str]:
     return None
 
 
-def _tenant_profile_for_pyme_owner(owner_user: Any, preferred_slug: Optional[str] = None):
+def _tenant_profile_for_pyme_owner(
+    owner_user: Any,
+    preferred_slug: Optional[str] = None,
+    preferred_id: Any = None,
+):
     owner_id = getattr(owner_user, "id", None)
     if not owner_id:
         return None
 
     query = models.TenantProfile.query.filter_by(pyme_id=owner_id, is_active=True)
+    try:
+        normalized_preferred_id = int(preferred_id) if preferred_id is not None else None
+    except (TypeError, ValueError):
+        normalized_preferred_id = None
+    if normalized_preferred_id:
+        tenant = query.filter_by(id=normalized_preferred_id).first()
+        if tenant:
+            return tenant
     if preferred_slug:
         tenant = (
             query.filter(func.lower(models.TenantProfile.slug) == str(preferred_slug).strip().lower())
@@ -2152,7 +2168,12 @@ from services.google_search import google_search
 class FallbackHandler(BaseHandler):
     def execute(self, action_data):
         pregunta = action_data.get("pregunta", "")
-        logger.warning(f"[PYME_FALLBACK_HANDLER] Pregunta no manejada: '{pregunta}', Intención: {self.context.get('intencion')}, Estado: {self.pyme_ctx.get('estado_conversacion')}")
+        logger.warning(
+            "[PYME_FALLBACK_HANDLER] Unhandled input length=%s intent=%s state=%s",
+            len(str(pregunta or "")),
+            self.context.get("intencion"),
+            self.pyme_ctx.get("estado_conversacion"),
+        )
 
         search_results = google_search(pregunta)
 
@@ -2373,6 +2394,19 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         chat_db_context.context_data["mensajes_previos_llm_formato"] = old_hist
 
     pyme_ctx_actual = chat_db_context.context_data.setdefault(CONTEXTO_PYME, {})
+    source_event_context, source_context_changed = bind_source_event_context(
+        chat_db_context.context_data,
+        CONTEXTO_PYME,
+        received_payload,
+    )
+    if source_event_context:
+        received_payload.update(source_event_context)
+        kwargs.update(source_event_context)
+    if source_context_changed:
+        try:
+            flag_modified(chat_db_context, "context_data")
+        except Exception:  # pragma: no cover - admite contextos livianos en integraciones/tests
+            logger.debug("No se pudo marcar context_data como modificado", exc_info=True)
     education_context = (
         received_payload.get("education_context")
         or received_payload.get("education_profile")
@@ -2528,8 +2562,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     tenant_profile = _tenant_profile_for_pyme_owner(
         owner_user,
         preferred_slug=(education_context or {}).get("tenant_slug") if isinstance(education_context, dict) else None,
+        preferred_id=received_payload.get("tenant_id"),
     )
     tenant_slug = tenant_profile.slug if tenant_profile else None
+    tenant_id_for_turn = getattr(tenant_profile, "id", None) if tenant_profile else None
 
     nombre_pyme_display = (
         getattr(owner_user, "nombre_empresa", None)
@@ -2593,6 +2629,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "pregunta_actual_usuario": cta_message,
             "intencion": "hablar_con_agente",
             "action": live_chat_cta_action,
+            **source_event_context,
         }
         handler_result = DerivarHumanoActionHandlerPyme(handler_context).execute(
             {
@@ -2654,6 +2691,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "channel": channel,
             "target_entity_type": "pyme",
             "pregunta_actual_usuario": pregunta_str,
+            **source_event_context,
         }
         handler = DerivarHumanoActionHandlerPyme(handler_context)
         handler_result = handler.execute({"motivo_derivacion": urgency_reason})
@@ -2728,6 +2766,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
             "email_cliente": pyme_ctx_actual.get("email_cliente"),
             "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
+            "tenant_id": tenant_id_for_turn,
+            **source_event_context,
         }
     )
 
@@ -2901,6 +2941,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                         "channel": channel,
                         "target_entity_type": "pyme",
                         "pregunta_actual_usuario": transcripcion,
+                        "tenant_id": tenant_id_for_turn,
+                        **source_event_context,
                     }
                     handler = DerivarHumanoActionHandlerPyme(handler_context)
                     handler_result = handler.execute({"motivo_derivacion": "Solicitud de contacto por nota de voz"})
@@ -2934,6 +2976,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                             "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
                             "email_cliente": pyme_ctx_actual.get("email_cliente"),
                             "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
+                            "tenant_id": tenant_id_for_turn,
+                            **source_event_context,
                         },
                         channel=channel,
                         parsed_items=extraer_productos_pedido(transcripcion)
@@ -3087,6 +3131,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                 "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
                 "email_cliente": pyme_ctx_actual.get("email_cliente"),
                 "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
+                "tenant_id": tenant_id_for_turn,
+                **source_event_context,
             },
             channel=channel,
             parsed_items=parsed_items,
@@ -3124,6 +3170,8 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                             "telefono_cliente": pyme_ctx_actual.get("telefono_cliente"),
                             "email_cliente": pyme_ctx_actual.get("email_cliente"),
                             "direccion_cliente": pyme_ctx_actual.get("direccion_cliente"),
+                            "tenant_id": tenant_id_for_turn,
+                            **source_event_context,
                         },
                         channel=channel,
                         parsed_items=extraer_productos_pedido(texto_audio)
@@ -3333,8 +3381,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         rubro_nombre_para_contexto = "general"
     rubro_nombre_para_contexto = rubro_nombre_para_contexto.lower()
 
-    tenant_profile = getattr(owner_user, "tenant_profile_pyme", None)
-    tenant_id = tenant_profile.id if tenant_profile else None
+    tenant_id = tenant_id_for_turn
 
     global_context_for_orchestrator = {
         CONTEXTO_PYME: pyme_ctx_actual,
@@ -3362,6 +3409,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         "ultimo_adjunto": pyme_ctx_actual.get("ultimo_adjunto"),
         "education_context": education_context if is_education_context else None,
         "vertical": "educacion" if is_education_context else None,
+        **source_event_context,
     }
 
     # --- 5. Ejecutar Acción vía ChatOrchestrator ---
@@ -3422,6 +3470,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
                     "ultima_ubicacion_usuario",
                     "ultimo_adjunto",
                     "datos_interpretados_archivo",
+                    *SOURCE_EVENT_CONTEXT_FIELDS,
                 ]
                 if key in pyme_ctx_actual
             }

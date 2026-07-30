@@ -6,10 +6,13 @@ import json
 import time
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
-from flask import Blueprint, Response, current_app, jsonify, request
+from flask import Blueprint, Response, current_app, g, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
+from database import db
+from models import AuditEvent
 from services.encuestas_analytics_service import (
     export_csv as export_csv_stream,
     get_alerts,
@@ -24,8 +27,17 @@ from services.encuestas_analytics_service import (
     get_timeseries,
 )
 from services.encuestas_service import EncuestaError, get_encuesta
+from services.survey_access_policy import (
+    SURVEY_EXPORT_CAPABILITY,
+    SURVEY_PII_READ_CAPABILITY,
+    missing_survey_capabilities,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
+
+
+SURVEY_ANALYTICS_ERROR_CONTRACT = "surveys.analytics.error.v1"
+SURVEY_EXPORT_AUDIT_CONTRACT = "surveys.analytics.export_audit.v1"
 
 
 def _feature_guard():
@@ -52,8 +64,181 @@ def _parse_filtros() -> dict:
     return filtros
 
 
-def _authorize_encuesta(current_user, encuesta_id: int) -> None:
-    get_encuesta(encuesta_id, user=current_user)
+def _request_id() -> str:
+    incoming = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+        or ""
+    )
+    request_id = str(incoming).strip() or uuid.uuid4().hex
+    g.request_id = request_id
+    return request_id
+
+
+def _analytics_error_response(
+    message: str,
+    *,
+    status_code: int,
+    reason_code: str,
+    action_hint: str,
+    required_capabilities: list[str] | None = None,
+    missing_capabilities: list[str] | None = None,
+    retryable: bool = False,
+    extra: dict[str, Any] | None = None,
+):
+    """Return the stable analytics error contract without breaking legacy clients.
+
+    ``error`` intentionally remains a string because every existing survey
+    analytics alias exposed that shape. New clients can rely on the explicit
+    contract fields while legacy clients keep rendering the same message.
+    """
+
+    request_id = _request_id()
+    payload: dict[str, Any] = {
+        "ok": False,
+        "contract_version": SURVEY_ANALYTICS_ERROR_CONTRACT,
+        "status_code": int(status_code),
+        "reason_code": reason_code,
+        "retryable": bool(retryable),
+        "action_hint": action_hint,
+        "request_id": request_id,
+        "error": message,
+        "message": message,
+    }
+    if required_capabilities is not None:
+        payload["required_capabilities"] = list(required_capabilities)
+    if missing_capabilities is not None:
+        payload["missing_capabilities"] = list(missing_capabilities)
+    if extra:
+        for key, value in extra.items():
+            payload.setdefault(key, value)
+
+    response = jsonify(payload)
+    response.status_code = int(status_code)
+    response.headers["X-Request-Id"] = request_id
+    return response
+
+
+def _encuesta_error_response(error: EncuestaError):
+    status_code = int(getattr(error, "status_code", 500) or 500)
+    original = error.to_dict() if hasattr(error, "to_dict") else {}
+    message = str(original.get("error") or getattr(error, "message", None) or error)
+    if status_code == 403:
+        reason_code = str(original.get("reason_code") or "survey_tenant_access_denied")
+        action_hint = str(original.get("action_hint") or "select_authorized_tenant")
+    elif status_code == 404:
+        reason_code = str(original.get("reason_code") or "survey_not_found")
+        action_hint = str(original.get("action_hint") or "check_survey_id")
+    else:
+        reason_code = str(original.get("reason_code") or "survey_analytics_failed")
+        action_hint = str(original.get("action_hint") or "retry_later")
+    extra = {
+        key: value
+        for key, value in original.items()
+        if key not in {"error", "contract_version", "status_code", "reason_code", "retryable", "action_hint"}
+    }
+    return _analytics_error_response(
+        message,
+        status_code=status_code,
+        reason_code=reason_code,
+        action_hint=action_hint,
+        retryable=bool(original.get("retryable", status_code >= 500)),
+        extra=extra,
+    )
+
+
+def _require_survey_capabilities(current_user, *required: str):
+    normalized_required = [str(item).strip().lower() for item in required if str(item).strip()]
+    missing = missing_survey_capabilities(current_user, *normalized_required)
+    if not missing:
+        return None
+
+    reason_code = (
+        "survey_export_capability_required"
+        if SURVEY_EXPORT_CAPABILITY in missing
+        else "survey_pii_read_capability_required"
+    )
+    return _analytics_error_response(
+        "No tenes permisos para acceder a estos datos de la encuesta.",
+        status_code=403,
+        reason_code=reason_code,
+        action_hint="request_capability_from_tenant_admin",
+        required_capabilities=normalized_required,
+        missing_capabilities=missing,
+    )
+
+
+def _authorize_encuesta(current_user, encuesta_id: int):
+    return get_encuesta(encuesta_id, user=current_user)
+
+
+def _record_export_audit(*, current_user, encuesta, export_format: str, filtros: dict) -> None:
+    """Persist the authorization event before any export bytes are returned.
+
+    The event records only stable control-plane metadata. Filter names/values,
+    request IP, coordinates, response contents, and identifiers supplied by a
+    participant are deliberately excluded.
+    """
+
+    try:
+        tenant_id = int(getattr(encuesta, "tenant_id", 0) or 0)
+    except (TypeError, ValueError) as exc:
+        raise EncuestaError(
+            "No se pudo determinar el tenant para auditar la exportacion.",
+            status_code=503,
+            payload={
+                "reason_code": "survey_export_audit_scope_unavailable",
+                "retryable": False,
+                "action_hint": "repair_survey_tenant_scope",
+            },
+        ) from exc
+    if tenant_id <= 0:
+        raise EncuestaError(
+            "No se pudo determinar el tenant para auditar la exportacion.",
+            status_code=503,
+            payload={
+                "reason_code": "survey_export_audit_scope_unavailable",
+                "retryable": False,
+                "action_hint": "repair_survey_tenant_scope",
+            },
+        )
+
+    event = AuditEvent(
+        tenant_id=tenant_id,
+        actor_user_id=getattr(current_user, "id", None),
+        event_type="survey.analytics.export_requested",
+        resource_type="survey_analytics_export",
+        resource_id=str(getattr(encuesta, "id", "") or ""),
+        details={
+            "contract_version": SURVEY_EXPORT_AUDIT_CONTRACT,
+            "format": str(export_format).strip().lower(),
+            "stage": "authorized",
+            "filter_count": len(filtros or {}),
+            "raw_filters_recorded": False,
+            "raw_pii_recorded": False,
+        },
+        ip_address=None,
+    )
+    try:
+        db.session.add(event)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception(
+            "[encuestas.analytics.export] audit persistence failed encuesta_id=%s format=%s",
+            getattr(encuesta, "id", None),
+            export_format,
+        )
+        raise EncuestaError(
+            "No se pudo registrar la auditoria obligatoria de la exportacion.",
+            status_code=503,
+            payload={
+                "reason_code": "survey_export_audit_failed",
+                "retryable": True,
+                "action_hint": "retry_later",
+            },
+        ) from exc
 
 
 
@@ -138,9 +323,12 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         filtros = _parse_filtros()
         try:
             _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+            if denied is not None:
+                return denied
             data = get_summary(encuesta_id, filtros)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/summary", view_func=summary, methods=["GET"])
@@ -156,7 +344,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
             _authorize_encuesta(current_user, encuesta_id)
             data = get_timeseries(encuesta_id, granularity, filtros)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/timeseries", view_func=timeseries, methods=["GET"])
@@ -172,9 +360,12 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         resolution = request.args.get("resolution", type=int)
         try:
             _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+            if denied is not None:
+                return denied
             data = get_heatmap(encuesta_id, filtros, resolution=resolution)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         response = jsonify(data)
         elapsed_ms = round((time.perf_counter() - request_started) * 1000.0, 2)
         response.headers.setdefault("X-Request-Id", request_id)
@@ -208,7 +399,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                 horizon_minutes=horizon_minutes,
             )
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/forecast", view_func=forecast, methods=["GET"])
@@ -228,7 +419,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                 min_activity_threshold=min_activity,
             )
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/alerts", view_func=alerts, methods=["GET"])
@@ -239,9 +430,12 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         filtros = _parse_filtros()
         try:
             _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+            if denied is not None:
+                return denied
             data = get_executive_brief(encuesta_id, filtros)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/brief", view_func=brief, methods=["GET"])
@@ -259,9 +453,12 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         fast_mode = str(request.args.get("fast") or request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
             _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+            if denied is not None:
+                return denied
             data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity, fast_mode=fast_mode)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
 
         if use_envelope:
             envelope = {
@@ -341,7 +538,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                 segment_b=segment_b,
             )
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/segments/compare", view_func=segment_compare, methods=["GET"])
@@ -355,7 +552,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
             _authorize_encuesta(current_user, encuesta_id)
             data = get_segment_suggestions(encuesta_id, filtros=filtros, limit=limit)
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/segments/suggestions", view_func=segment_suggestions, methods=["GET"])
@@ -368,6 +565,9 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         burst_threshold = request.args.get("burst_threshold", default=10, type=int) or 10
         try:
             _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+            if denied is not None:
+                return denied
             data = get_anomaly_report(
                 encuesta_id,
                 filtros=filtros,
@@ -375,7 +575,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                 burst_threshold=burst_threshold,
             )
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
         return jsonify(data)
 
     bp.add_url_rule("/anomalies", view_func=anomalies, methods=["GET"])
@@ -385,9 +585,22 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     def export_view(current_user, encuesta_id: int):
         filtros = _parse_filtros()
         try:
-            _authorize_encuesta(current_user, encuesta_id)
+            encuesta = _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(
+                current_user,
+                SURVEY_EXPORT_CAPABILITY,
+                SURVEY_PII_READ_CAPABILITY,
+            )
+            if denied is not None:
+                return denied
+            _record_export_audit(
+                current_user=current_user,
+                encuesta=encuesta,
+                export_format="csv",
+                filtros=filtros,
+            )
         except EncuestaError as err:
-            return jsonify(err.to_dict()), err.status_code
+            return _encuesta_error_response(err)
 
         def generate():
             try:
@@ -396,7 +609,10 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
             except EncuestaError as err:
                 yield "error,{}\n".format(err.message)
 
-        headers = {"Content-Disposition": f"attachment; filename=encuesta-{encuesta_id}.csv"}
+        headers = {
+            "Content-Disposition": f"attachment; filename=encuesta-{encuesta_id}.csv",
+            "X-Request-Id": _request_id(),
+        }
         return Response(generate(), mimetype="text/csv", headers=headers)
 
     bp.add_url_rule("/export.csv", view_func=export_view, methods=["GET"])
@@ -407,17 +623,25 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
         filtros = _parse_filtros()
         try:
-            _authorize_encuesta(current_user, encuesta_id)
+            encuesta = _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(
+                current_user,
+                SURVEY_EXPORT_CAPABILITY,
+                SURVEY_PII_READ_CAPABILITY,
+            )
+            if denied is not None:
+                return denied
+            _record_export_audit(
+                current_user=current_user,
+                encuesta=encuesta,
+                export_format="pdf",
+                filtros=filtros,
+            )
             summary = get_summary(encuesta_id, filtros)
             heatmap = get_heatmap(encuesta_id, filtros)
             brief_data = get_executive_brief(encuesta_id, filtros)
         except EncuestaError as err:
-            payload = err.to_dict()
-            if isinstance(payload, dict):
-                payload.setdefault("ok", False)
-                payload.setdefault("request_id", request_id)
-            response = jsonify(payload)
-            response.status_code = err.status_code
+            response = _encuesta_error_response(err)
             response.headers.setdefault("X-Request-Id", request_id)
             return response
 

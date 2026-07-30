@@ -545,6 +545,17 @@ def test_claim_evidence_completion_persists_metadata_once_and_cannot_be_rewritte
     ).count() == 1
     original_batch = json.loads(json.dumps(batch, sort_keys=True))
 
+    identical_replay = apply_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=_submission(interaction, first_answers),
+        anon_id="+5491112345678",
+    )
+    assert identical_replay == {
+        key: value for key, value in response.items() if key != "realtime_event"
+    }
+    assert "realtime_event" not in identical_replay
+
     replay_answers = {
         "ticket_number": "M-703003",
         PHOTO_FIELD: [
@@ -563,16 +574,17 @@ def test_claim_evidence_completion_persists_metadata_once_and_cannot_be_rewritte
         ],
         DOCUMENT_FIELD: [],
     }
-    replay = apply_completion(
-        tenant_id=tenant.id,
-        interaction_id=interaction.id,
-        submission=_submission(interaction, replay_answers),
-        anon_id="+5491199999999",
-    )
+    with pytest.raises(MetaFlowActionError) as exc_info:
+        apply_completion(
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            submission=_submission(interaction, replay_answers),
+            anon_id="+5491199999999",
+        )
+    assert exc_info.value.code == "flow_completion_payload_conflict"
     db.session.commit()
 
     db.session.refresh(ticket)
-    assert replay["fuente"] == "whatsapp_flow_claim_evidence_completed"
     assert ticket.datos_extra[TICKET_EVIDENCE_KEY] == [original_batch]
     assert AuditEvent.query.filter_by(
         tenant_id=tenant.id,

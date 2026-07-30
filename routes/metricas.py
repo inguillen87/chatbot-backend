@@ -83,7 +83,10 @@ def get_municipal_metrics_summary(usuario_actual):
     ):
         return jsonify({"error": "No autorizado"}), 403
 
-    service = MunicipioMetricasService(municipio_id=usuario_actual.municipio_id)
+    service = MunicipioMetricasService(
+        municipio_id=usuario_actual.municipio_id,
+        tenant_id=getattr(usuario_actual, "tenant_id", None),
+    )
     summary = {
         "total_tickets": service.get_total_tickets(),
         "open_tickets": service.get_open_tickets(),

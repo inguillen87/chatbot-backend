@@ -43,6 +43,7 @@ from .repository import (
 def _filters_cache_key(filters: AnalyticsFilters, *extra: Any) -> Tuple:
     return (
         filters.tenant_id,
+        filters.tenant_profile_id,
         filters.scope,
         filters.date_from.isoformat() if filters.date_from else None,
         filters.date_to.isoformat() if filters.date_to else None,
@@ -535,6 +536,7 @@ def _operations_summary(filters: AnalyticsFilters) -> Dict[str, Any]:
         bbox=filters.bbox,
         pyme_ids=filters.pyme_ids,
         resolution=filters.resolution,
+        tenant_profile_id=filters.tenant_profile_id,
     )
     municipio_data = _municipio_summary(municipio_filters)
     pyme_data = _pyme_summary(pyme_filters)

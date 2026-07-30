@@ -23,7 +23,6 @@ from models import (
     User,
     WhatsAppFlowInteraction,
 )
-from routes.v2.surveys import _public_response_rate_buckets
 from routes.v2.tenants import create_demo_session_token
 from services import meta_flow_runtime
 from services.meta_flow_media import DownloadedFlowMedia
@@ -54,7 +53,6 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.ctx = self.app.app_context()
         self.ctx.push()
         db.create_all()
-        _public_response_rate_buckets.clear()
         self.client = self.app.test_client()
 
         self.admin = User(
@@ -102,7 +100,6 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         db.session.commit()
 
     def tearDown(self):
-        _public_response_rate_buckets.clear()
         db.session.remove()
         db.drop_all()
         self.ctx.pop()

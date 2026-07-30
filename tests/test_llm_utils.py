@@ -205,6 +205,26 @@ class TestLLMUtils(unittest.TestCase):
         self.assertEqual(result, expected)
 
     @patch('services.llm_utils.robust_chat')
+    def test_complaint_provider_error_log_excludes_secret_and_citizen_text(
+        self, mock_robust_chat
+    ):
+        secret = "sk-proj-private-test-secret"
+        citizen_text = "Soy Maria Perez y vivo en Calle Privada 123"
+        mock_robust_chat.side_effect = RuntimeError(
+            f"Incorrect API key {secret}; input={citizen_text}"
+        )
+
+        with self.assertLogs("services.llm_utils", level="ERROR") as captured:
+            result = extract_complaint_details_llm(citizen_text)
+
+        rendered = "\n".join(captured.output)
+        self.assertNotIn(secret, rendered)
+        self.assertNotIn("Maria Perez", rendered)
+        self.assertNotIn("Calle Privada", rendered)
+        self.assertIn("error_type=RuntimeError", rendered)
+        self.assertIsInstance(result, dict)
+
+    @patch('services.llm_utils.robust_chat')
     def test_update_summary_with_llm_extraction_basic_append(self, mock_robust_chat):
         # Test the basic append logic (mocking LLM to simulate it not being the advanced one)
         # To force basic append, we make robust_chat behave like the simple mock defined in llm_utils.py

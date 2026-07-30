@@ -48,17 +48,28 @@ class AddressResolver:
 
     # Detect intersection
     def _parse_intersection(self, text: str) -> Optional[Dict[str, Any]]:
+        # Citizens often append a landmark after the address (for example
+        # ``Don Bosco 56 esquina Sarmiento. Plaza Junín``).  Keep it as a
+        # reference instead of allowing it to become part of the second street.
+        address_part, separator, reference_part = text.partition(".")
+        if not separator:
+            address_part, separator, reference_part = text.partition(";")
+        reference = reference_part.strip(" ,.;") if separator else None
         pattern = r"\b(?:esquina|esq\.?|y|e|&|/)\b"
-        if not re.search(pattern, text):
+        if not re.search(pattern, address_part):
             return None
-        parts = [p.strip() for p in re.split(pattern, text) if p.strip()]
+        parts = [p.strip() for p in re.split(pattern, address_part) if p.strip()]
         if len(parts) != 2:
             return None
         street_a = re.sub(r"\d+", "", parts[0]).strip()
         street_b = re.sub(r"\d+", "", parts[1]).strip()
         number_hint_match = re.search(r"\d+", parts[0])
         number_hint = number_hint_match.group(0) if number_hint_match else None
-        return {"streets": [street_a, street_b], "number_hint": number_hint}
+        return {
+            "streets": [street_a, street_b],
+            "number_hint": number_hint,
+            "reference": reference,
+        }
 
     def _geocode(self, street_query: str) -> List[Dict[str, Any]]:
         """
@@ -88,8 +99,12 @@ class AddressResolver:
                     "raw_google_result": gmaps_result,
                 }
             ]
-        except Exception as e:
-            logger.error(f"Geocode via location_service failed for '{full_query}': {e}", exc_info=True)
+        except Exception as exc:
+            logger.error(
+                "Geocode via location_service failed query_length=%s error_type=%s",
+                len(full_query),
+                type(exc).__name__,
+            )
             return []
 
     def resolve(self, raw_address: str) -> Optional[Dict[str, Any]]:
@@ -98,19 +113,31 @@ class AddressResolver:
         if raw_address.strip().upper() == "N/A":
             return None
         normalized = self._normalize(raw_address)
-        # Remove trailing occurrences of the municipality city/province to allow
-        # inputs like "Don Bosco 55 Junin" or "Sarmiento y San Martin Junin".
+        normalized = re.sub(
+            r"^(?:(?:la\s+)?(?:direccion|ubicacion|dirección|ubicación|lugar)"
+            r"(?:\s+exacta)?\s*(?::|-|es|queda(?:\s+en)?)?\s+)",
+            "",
+            normalized,
+        ).strip()
+        # Remove trailing city/province hints from the address itself, but do not
+        # strip words from a landmark appended after punctuation (``Plaza
+        # Junín`` is a reference name, not merely a municipality suffix).
+        suffix_target, suffix_separator, suffix_reference = normalized.partition(".")
+        if not suffix_separator:
+            suffix_target, suffix_separator, suffix_reference = normalized.partition(";")
         tokens = [t for t in (self._city_norm, self._state_norm) if t]
         changed = True
         while changed:
             changed = False
             for token in tokens:
                 pattern = rf"(?:,\s*)?\b{re.escape(token)}\b\s*$"
-                new_normalized = re.sub(pattern, "", normalized).strip()
-                if new_normalized != normalized:
-                    normalized = new_normalized
+                new_normalized = re.sub(pattern, "", suffix_target).strip()
+                if new_normalized != suffix_target:
+                    suffix_target = new_normalized
                     changed = True
-        normalized = re.sub(r"\s+", " ", normalized).strip().strip(",")
+        normalized = re.sub(r"\s+", " ", suffix_target).strip().strip(",")
+        if suffix_separator and suffix_reference.strip():
+            normalized = f"{normalized}{suffix_separator} {suffix_reference.strip()}"
 
         # Detect external jurisdictions mentioned explicitly
         for j in self.conflicting:
@@ -125,8 +152,12 @@ class AddressResolver:
             street_query = f"{inter['streets'][0]} & {inter['streets'][1]}"
             try:
                 candidates = self._geocode(street_query)
-            except Exception as e:
-                logger.error(f"Geocode failed for intersection '{street_query}': {e}")
+            except Exception as exc:
+                logger.error(
+                    "Geocode failed for intersection query_length=%s error_type=%s",
+                    len(street_query),
+                    type(exc).__name__,
+                )
                 return None
             if not candidates:
                 return None
@@ -134,12 +165,23 @@ class AddressResolver:
             lat = float(geo.get("lat"))
             lon = float(geo.get("lon"))
             validez = self._within_bounds(lat, lon)
-            formatted = f"{inter['streets'][0].title()} y {inter['streets'][1].title()}, {self.city}, {self.state}, {self.country}"
+            street_a = inter["streets"][0].title()
+            if inter.get("number_hint"):
+                street_a = f"{street_a} {inter['number_hint']}"
+            formatted = (
+                f"{street_a} y {inter['streets'][1].title()}, "
+                f"{self.city}, {self.state}, {self.country}"
+            )
+            if inter.get("reference"):
+                formatted += f" (referencia: {inter['reference'].title()})"
             return {
                 "calle": None,
-                "numero": None,
+                "numero": inter.get("number_hint"),
                 "entre_calles": [s.title() for s in inter["streets"]],
                 "barrio": None,
+                "referencia": inter.get("reference").title()
+                if inter.get("reference")
+                else None,
                 "localidad": self.city,
                 "provincia": self.state,
                 "pais": self.country,
@@ -167,8 +209,12 @@ class AddressResolver:
         street_query = f"{street} {number}" if number else street
         try:
             candidates = self._geocode(street_query)
-        except Exception as e:
-            logger.error(f"Geocode failed for '{street_query}': {e}")
+        except Exception as exc:
+            logger.error(
+                "Geocode failed query_length=%s error_type=%s",
+                len(street_query),
+                type(exc).__name__,
+            )
             return None
         if not candidates:
             return None

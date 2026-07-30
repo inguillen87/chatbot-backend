@@ -14,7 +14,12 @@ import pandas as pd
 from flask import current_app, has_app_context
 import h3
 from extensions import db
-from models import MunicipioTicket
+from models import MunicipioTicket, TenantProfile
+from services.tenant_ticket_scope import (
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+    tenant_owner_ids,
+)
 from utils.heatmap import enrich_heatmap_points
 from utils.privacy import pseudoanonymize
 from utils.time_utils import get_local_now
@@ -86,10 +91,35 @@ def load_incidents_for_municipio(
     *,
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
+    tenant_id: Optional[int] = None,
 ) -> List[IncidentRecord]:
     """Fetch incidents for the given municipality and convert them to records."""
 
-    query = db.session.query(MunicipioTicket).filter(MunicipioTicket.municipio_id == municipio_id)
+    tenant = None
+    try:
+        normalized_owner_id = int(municipio_id)
+    except (TypeError, ValueError):
+        return []
+    if tenant_id is not None:
+        try:
+            tenant = db.session.get(TenantProfile, int(tenant_id))
+        except (TypeError, ValueError):
+            tenant = None
+        if tenant is None or normalized_owner_id not in tenant_owner_ids(tenant):
+            return []
+    else:
+        try:
+            resolution = resolve_unique_tenant_for_owner(normalized_owner_id)
+        except ValueError:
+            return []
+        if resolution.status != "unique" or resolution.tenant is None:
+            return []
+        tenant = resolution.tenant
+
+    query = scoped_municipio_ticket_query(
+        tenant,
+        query=db.session.query(MunicipioTicket),
+    )
     if date_from is not None:
         query = query.filter(MunicipioTicket.fecha >= date_from)
     if date_to is not None:

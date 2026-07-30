@@ -5,10 +5,12 @@ from flask import Blueprint, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from services.encuestas_anchor_service import (
+    ANCHOR_CONTRACT_VERSION,
     build_snapshot,
     generate_merkle_proof,
     list_snapshots,
-    publish_snapshot,
+    serialize_anchor_snapshot,
+    simulate_snapshot_anchor,
 )
 from services.encuestas_service import EncuestaError
 from utils.auth_helpers import token_requerido
@@ -79,35 +81,44 @@ def _handle_snapshot_creation(encuesta_id: int, current_user):
         snap = build_snapshot(encuesta_id, desde, hasta, current_user)
     except EncuestaError as err:
         return jsonify(err.to_dict()), err.status_code
-    return (
-        jsonify(
-            {
-                "snapshot_id": snap.id,
-                "root_hash": snap.root_hash,
-                "total_respuestas": snap.total_respuestas,
-                "desde_at": snap.desde_at.isoformat(),
-                "hasta_at": snap.hasta_at.isoformat(),
-            }
-        ),
-        200,
-    )
+    return jsonify(serialize_anchor_snapshot(snap)), 200
 
 
-def _handle_snapshot_publish(snapshot_id: int):
+def _handle_snapshot_simulation(encuesta_id: int, snapshot_id: int, current_user):
     chain = (request.get_json(silent=True) or {}).get("chain", "polygon")
     try:
-        snap = publish_snapshot(snapshot_id, chain=chain)
+        snap = simulate_snapshot_anchor(
+            encuesta_id=encuesta_id,
+            snapshot_id=snapshot_id,
+            user=current_user,
+            requested_chain=chain,
+        )
     except EncuestaError as err:
         return jsonify(err.to_dict()), err.status_code
-    return jsonify({"ok": True, "tx_id": snap.tx_id, "anchor_status": snap.anchor_status}), 200
+    serialized = serialize_anchor_snapshot(snap)
+    return jsonify({"ok": True, "operation": "local_simulation", **serialized}), 200
 
 
-def _handle_snapshot_verify(snapshot_id: int):
+def _handle_snapshot_verify(encuesta_id: int, snapshot_id: int, current_user):
     respuesta_id = request.args.get("respuesta_id", type=int)
     if not respuesta_id:
-        return jsonify({"error": "respuesta_id requerido"}), 400
+        return (
+            jsonify(
+                {
+                    "error": "respuesta_id requerido",
+                    "contract_version": ANCHOR_CONTRACT_VERSION,
+                    "reason_code": "response_id_required",
+                }
+            ),
+            400,
+        )
     try:
-        data = generate_merkle_proof(snapshot_id, respuesta_id)
+        data = generate_merkle_proof(
+            encuesta_id=encuesta_id,
+            snapshot_id=snapshot_id,
+            respuesta_id=respuesta_id,
+            user=current_user,
+        )
     except EncuestaError as err:
         return jsonify(err.to_dict()), err.status_code
     return jsonify({"ok": True, **data}), 200
@@ -132,30 +143,37 @@ def snapshot_legacy(current_user, encuesta_id: int):
     return _handle_snapshot_creation(encuesta_id, current_user)
 
 
+@encuestas_anchor_bp.route("/simulate/<int:snapshot_id>", methods=["POST"])
 @encuestas_anchor_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
 @token_requerido
 @require_role("admin", "super_admin")
 def publish(current_user, encuesta_id: int, snapshot_id: int):
-    return _handle_snapshot_publish(snapshot_id)
+    return _handle_snapshot_simulation(encuesta_id, snapshot_id, current_user)
 
 
+@encuestas_anchor_legacy_bp.route("/simulate/<int:snapshot_id>", methods=["POST"])
 @encuestas_anchor_legacy_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
+@encuestas_anchor_admin_bp.route("/simulate/<int:snapshot_id>", methods=["POST"])
 @encuestas_anchor_admin_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
+@encuestas_anchor_municipal_bp.route("/simulate/<int:snapshot_id>", methods=["POST"])
 @encuestas_anchor_municipal_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
+@encuestas_anchor_admin_surveys_bp.route("/simulate/<int:snapshot_id>", methods=["POST"])
 @encuestas_anchor_admin_surveys_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
+@encuestas_anchor_legacy_surveys_bp.route("/simulate/<int:snapshot_id>", methods=["POST"])
 @encuestas_anchor_legacy_surveys_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
+@encuestas_anchor_municipal_surveys_bp.route("/simulate/<int:snapshot_id>", methods=["POST"])
 @encuestas_anchor_municipal_surveys_bp.route("/publish/<int:snapshot_id>", methods=["POST"])
 @token_requerido
 @require_role("admin", "super_admin")
 def publish_legacy(current_user, encuesta_id: int, snapshot_id: int):
-    return _handle_snapshot_publish(snapshot_id)
+    return _handle_snapshot_simulation(encuesta_id, snapshot_id, current_user)
 
 
 @encuestas_anchor_bp.route("/<int:snapshot_id>/verify", methods=["GET"])
 @token_requerido
 @require_role("admin", "super_admin", "empleado")
 def verify(current_user, encuesta_id: int, snapshot_id: int):
-    return _handle_snapshot_verify(snapshot_id)
+    return _handle_snapshot_verify(encuesta_id, snapshot_id, current_user)
 
 
 @encuestas_anchor_legacy_bp.route("/<int:snapshot_id>/verify", methods=["GET"])
@@ -167,7 +185,7 @@ def verify(current_user, encuesta_id: int, snapshot_id: int):
 @token_requerido
 @require_role("admin", "super_admin", "empleado")
 def verify_legacy(current_user, encuesta_id: int, snapshot_id: int):
-    return _handle_snapshot_verify(snapshot_id)
+    return _handle_snapshot_verify(encuesta_id, snapshot_id, current_user)
 
 
 @encuestas_anchor_bp.route("/snapshots", methods=["GET"])

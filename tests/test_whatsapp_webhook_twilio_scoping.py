@@ -14,7 +14,16 @@ from twilio.request_validator import RequestValidator
 from app import create_app
 from config import Config
 from extensions import db
-from models import MessagingEventLedger, ProviderSender, TenantProfile, User, WhatsappNumero
+from models import (
+    MessagingEventLedger,
+    MunicipioTicket,
+    ProviderSender,
+    PymeTicket,
+    TenantProfile,
+    TenantTicket,
+    User,
+    WhatsappNumero,
+)
 from routes import whatsapp_webhook as webhook_module
 
 
@@ -173,6 +182,301 @@ class TwilioWebhookCredentialScopingTestCase(unittest.TestCase):
         client_factory.assert_called_once_with(CHILD_ACCOUNT_SID, CHILD_AUTH_TOKEN)
         child_client.messages.create.assert_called()
         self.parent_client.messages.create.assert_not_called()
+
+    def test_child_media_download_uses_child_account_credentials(self):
+        self._create_sender(child_scoped=True)
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "",
+            "MessageSid": "SM_child_media_inbound",
+            "MediaMessageSid": "MM_child_media_inbound",
+            "MediaUrl0": "https://api.twilio.com/media/private-audio",
+            "MediaContentType0": "audio/ogg",
+        }
+        child_client = MagicMock()
+        child_client.messages.create.return_value = SimpleNamespace(sid="SM_child_media_reply")
+        media_response = MagicMock(content=b"tenant scoped audio")
+        media_response.raise_for_status.return_value = None
+        attachment = SimpleNamespace(
+            id=501,
+            url="https://cdn.example.test/audio.ogg",
+            mime="audio/ogg",
+            nombre_original="audio.ogg",
+            analisis=None,
+        )
+
+        with (
+            patch.object(webhook_module, "Client", return_value=child_client),
+            patch.object(webhook_module, "responder_chatboc", return_value=self._bot_response()),
+            patch.object(webhook_module.requests, "get", return_value=media_response) as media_get,
+            patch.object(webhook_module, "create_attachment_with_thumbnail", return_value=attachment),
+            patch.object(webhook_module, "create_whatsapp_assisted_intake", return_value=None),
+            patch(
+                "services.audio_transcription_service.transcribe_audio_bytes",
+                return_value="Necesito informacion",
+            ),
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": self._signature(
+                        "/webhook/whatsapp",
+                        payload,
+                        CHILD_AUTH_TOKEN,
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        media_get.assert_called_once()
+        self.assertEqual(
+            media_get.call_args.kwargs["auth"],
+            (CHILD_ACCOUNT_SID, CHILD_AUTH_TOKEN),
+        )
+        self.assertTrue(media_get.call_args.kwargs["stream"])
+        media_response.close.assert_called_once_with()
+        self.parent_client.messages.create.assert_not_called()
+
+    def test_oversize_chunked_media_is_closed_and_never_persisted(self):
+        self._create_sender(child_scoped=True)
+        self.app.config["WHATSAPP_MEDIA_MAX_BYTES"] = 1024
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "Archivo adjunto",
+            "MessageSid": "SM_child_media_oversize",
+            "MediaMessageSid": "MM_child_media_oversize",
+            "MediaUrl0": "https://api.twilio.com/media/oversize",
+            "MediaContentType0": "audio/ogg",
+        }
+        child_client = MagicMock()
+        child_client.messages.create.return_value = SimpleNamespace(sid="SM_child_reply")
+        media_response = MagicMock()
+        media_response.headers = {}
+        media_response.raise_for_status.return_value = None
+        media_response.iter_content.return_value = [b"1" * 800, b"2" * 300]
+
+        with (
+            patch.object(webhook_module, "Client", return_value=child_client),
+            patch.object(webhook_module, "responder_chatboc", return_value=self._bot_response()),
+            patch.object(webhook_module.requests, "get", return_value=media_response),
+            patch.object(webhook_module, "create_attachment_with_thumbnail") as create_attachment,
+            patch(
+                "services.audio_transcription_service.transcribe_audio_bytes"
+            ) as transcribe_audio,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": self._signature(
+                        "/webhook/whatsapp",
+                        payload,
+                        CHILD_AUTH_TOKEN,
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        media_response.close.assert_called_once_with()
+        create_attachment.assert_not_called()
+        transcribe_audio.assert_not_called()
+
+    def test_failed_audio_download_replies_honestly_once_and_never_calls_the_bot(self):
+        self._create_sender(child_scoped=True)
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "",
+            "MessageSid": "SMaudiofailure001",
+            "MediaMessageSid": "MMaudiofailure001",
+            "NumMedia": "1",
+            "MediaUrl0": "https://api.twilio.com/media/unavailable-audio",
+            "MediaContentType0": "audio/ogg; codecs=opus",
+        }
+        child_client = MagicMock()
+        child_client.messages.create.return_value = SimpleNamespace(sid="SMhonestfallback001")
+
+        with (
+            patch.object(webhook_module, "Client", return_value=child_client),
+            patch.object(
+                webhook_module.requests,
+                "get",
+                side_effect=webhook_module.requests.exceptions.RequestException("provider unavailable"),
+            ) as media_get,
+            patch.object(webhook_module, "create_attachment_with_thumbnail") as create_attachment,
+            patch.object(webhook_module, "create_whatsapp_assisted_intake") as assisted_intake,
+            patch.object(webhook_module, "responder_chatboc") as responder,
+        ):
+            headers = {
+                "X-Twilio-Signature": self._signature(
+                    "/webhook/whatsapp",
+                    payload,
+                    CHILD_AUTH_TOKEN,
+                )
+            }
+            first = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+            duplicate = self.client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(media_get.call_count, 1)
+        create_attachment.assert_not_called()
+        assisted_intake.assert_not_called()
+        responder.assert_not_called()
+        child_client.messages.create.assert_called_once()
+        reply = child_client.messages.create.call_args.kwargs["body"]
+        self.assertIn("no pude", reply.lower())
+        self.assertIn("no voy a adivinar", reply.lower())
+        self.assertEqual(TenantTicket.query.count(), 0)
+        self.assertEqual(MunicipioTicket.query.count(), 0)
+        self.assertEqual(PymeTicket.query.count(), 0)
+
+    def test_application_ogg_with_parameters_uses_audio_transcription_contract(self):
+        self._create_sender(child_scoped=True)
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "Body": "",
+            "MessageSid": "SMapplicationogg001",
+            "MediaMessageSid": "MMapplicationogg001",
+            "NumMedia": "1",
+            "MediaUrl0": "https://api.twilio.com/media/note.ogg",
+            "MediaContentType0": "Application/Ogg; codecs=opus",
+        }
+        child_client = MagicMock()
+        child_client.messages.create.return_value = SimpleNamespace(sid="SMapplicationoggreply001")
+        media_response = MagicMock(content=b"ogg-opus")
+        media_response.raise_for_status.return_value = None
+        attachment = SimpleNamespace(
+            id=701,
+            url="https://cdn.example.test/note.ogg",
+            mime="application/ogg; codecs=opus",
+            nombre_original="note.ogg",
+            analisis=None,
+        )
+
+        with (
+            patch.object(webhook_module, "Client", return_value=child_client),
+            patch.object(webhook_module.requests, "get", return_value=media_response),
+            patch.object(webhook_module, "create_attachment_with_thumbnail", return_value=attachment),
+            patch.object(webhook_module, "clasificar_adjunto_whatsapp") as classifier,
+            patch.object(webhook_module, "create_whatsapp_assisted_intake", return_value=None),
+            patch.object(webhook_module, "responder_chatboc", return_value=self._bot_response()) as responder,
+            patch(
+                "services.audio_transcription_service.transcribe_audio_bytes",
+                return_value="Hay un árbol caído frente a la escuela",
+            ) as transcribe,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={
+                    "X-Twilio-Signature": self._signature(
+                        "/webhook/whatsapp",
+                        payload,
+                        CHILD_AUTH_TOKEN,
+                    )
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        transcribe.assert_called_once_with(
+            b"ogg-opus",
+            "Application/Ogg; codecs=opus",
+            cache_url=payload["MediaUrl0"],
+        )
+        classifier.assert_not_called()
+        responder.assert_called_once()
+        self.assertEqual(
+            responder.call_args.kwargs["pregunta"],
+            "Hay un árbol caído frente a la escuela",
+        )
+
+    def test_unanalysed_video_sticker_and_vcard_get_actionable_reply_without_ticket(self):
+        self._create_sender(child_scoped=True)
+        child_client = MagicMock()
+        child_client.messages.create.return_value = SimpleNamespace(sid="SMmediafallbackreply001")
+        cases = (
+            ("video/mp4", "clip.mp4", "video"),
+            ("image/webp", "", "sticker"),
+            ("text/vcard", "persona.vcf", "contacto"),
+        )
+
+        with (
+            patch.object(webhook_module, "Client", return_value=child_client),
+            patch.object(webhook_module.requests, "get") as media_get,
+            patch.object(webhook_module, "create_attachment_with_thumbnail") as create_attachment,
+            patch.object(webhook_module, "clasificar_adjunto_whatsapp") as classifier,
+            patch.object(webhook_module, "create_whatsapp_assisted_intake") as assisted_intake,
+            patch.object(webhook_module, "responder_chatboc") as responder,
+        ):
+            media_response = MagicMock(content=b"bounded-media")
+            media_response.raise_for_status.return_value = None
+            media_get.return_value = media_response
+            create_attachment.side_effect = [
+                SimpleNamespace(
+                    id=800 + index,
+                    url=f"https://cdn.example.test/media-{index}",
+                    mime=mime_type,
+                    nombre_original=body or f"media-{index}",
+                    analisis=None,
+                )
+                for index, (mime_type, body, _label) in enumerate(cases)
+            ]
+
+            for index, (mime_type, body, _label) in enumerate(cases):
+                payload = {
+                    "AccountSid": CHILD_ACCOUNT_SID,
+                    "MessagingServiceSid": MESSAGING_SERVICE_SID,
+                    "To": f"whatsapp:{SENDER_NUMBER}",
+                    "From": f"whatsapp:{RECIPIENT_NUMBER}",
+                    "Body": body,
+                    "MessageSid": f"SMspecialmedia{index:03d}",
+                    "MediaMessageSid": f"MMspecialmedia{index:03d}",
+                    "NumMedia": "1",
+                    "MediaUrl0": f"https://api.twilio.com/media/{index}",
+                    "MediaContentType0": mime_type,
+                }
+                response = self.client.post(
+                    "/webhook/whatsapp",
+                    data=payload,
+                    headers={
+                        "X-Twilio-Signature": self._signature(
+                            "/webhook/whatsapp",
+                            payload,
+                            CHILD_AUTH_TOKEN,
+                        )
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(media_get.call_count, len(cases))
+        self.assertEqual(create_attachment.call_count, len(cases))
+        self.assertEqual(child_client.messages.create.call_count, len(cases))
+        classifier.assert_not_called()
+        assisted_intake.assert_not_called()
+        responder.assert_not_called()
+        rendered_replies = "\n".join(
+            call.kwargs["body"].lower()
+            for call in child_client.messages.create.call_args_list
+        )
+        for _mime_type, _body, label in cases:
+            self.assertIn(label, rendered_replies)
+        self.assertNotIn("persona.vcf", rendered_replies)
+        self.assertEqual(TenantTicket.query.count(), 0)
+        self.assertEqual(MunicipioTicket.query.count(), 0)
+        self.assertEqual(PymeTicket.query.count(), 0)
 
     def test_parent_signature_is_rejected_for_child_sender(self):
         self._create_sender(child_scoped=True)

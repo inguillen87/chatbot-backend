@@ -10,6 +10,7 @@ from utils.auth_helpers import user_from_token
 from utils.response_utils import ensure_buttons_compatibility
 from utils.roles import canonical_role, is_authorized_superadmin_user
 from typing import Any, Optional, Set
+from urllib.parse import urlparse
 from uuid import UUID
 import jwt
 import os
@@ -39,6 +40,193 @@ PUBLIC_TICKET_COMMENT_ORIGINS = {
     "whatsapp",
     "widget",
 }
+
+SURVEY_EFFECT_WORKER_ROLE = "survey-effect-worker"
+_SOCKET_QUEUE_CHANNEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+class SurveyRealtimeTransportError(RuntimeError):
+    """A worker cannot prove that its Socket.IO event enters shared pub/sub."""
+
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def build_fail_closed_socketio_redis_manager(
+    queue_url: str,
+    *,
+    channel: str,
+    timeout_seconds: float = 2,
+):
+    """Build the worker's write-only Redis manager with publish confirmation.
+
+    ``python-socketio`` retries a Redis publish once and then normally logs and
+    returns ``None``. Its caller discards that return value, which would let an
+    outbox worker mark an event successful after a definite broker failure.
+    The worker-specific subclass converts that exhausted publish into a
+    sanitized exception. A return value of zero is still a valid Redis publish
+    (there simply were no subscribers at that instant).
+    """
+
+    from socketio.redis_manager import RedisManager
+
+    class _FailClosedWorkerRedisManager(RedisManager):
+        def _publish(self, data):
+            subscriber_count = super()._publish(data)
+            if subscriber_count is None:
+                raise SurveyRealtimeTransportError(
+                    "survey_realtime_shared_transport_publish_failed"
+                )
+            return subscriber_count
+
+    return _FailClosedWorkerRedisManager(
+        str(queue_url),
+        channel=str(channel),
+        write_only=True,
+        redis_options={
+            "socket_connect_timeout": float(timeout_seconds),
+            "socket_timeout": float(timeout_seconds),
+            "retry_on_timeout": False,
+        },
+    )
+
+
+def _survey_realtime_process_role() -> str:
+    configured = ""
+    try:
+        configured = str(current_app.config.get("CHATBOC_PROCESS_ROLE") or "")
+    except RuntimeError:
+        configured = ""
+    return (configured or os.getenv("CHATBOC_PROCESS_ROLE", "")).strip().lower()
+
+
+def _survey_realtime_queue_config() -> tuple[str, str, float]:
+    queue_url = str(
+        current_app.config.get("SOCKETIO_MESSAGE_QUEUE_URL")
+        or os.getenv("SOCKETIO_MESSAGE_QUEUE_URL", "")
+        or os.getenv("SOCKETIO_REDIS_URL", "")
+    ).strip()
+    channel = str(
+        current_app.config.get(
+            "SOCKETIO_MESSAGE_QUEUE_CHANNEL",
+            "chatboc-realtime-v1",
+        )
+        or ""
+    ).strip()
+    try:
+        timeout = float(
+            current_app.config.get(
+                "SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS",
+                2,
+            )
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_queue_timeout_invalid"
+        ) from exc
+    if timeout < 0.1 or timeout > 10:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_queue_timeout_invalid"
+        )
+    return queue_url, channel, timeout
+
+
+def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
+    """Verify the delivery boundary used by a durable realtime effect.
+
+    The web process may use its in-process Socket.IO manager when no shared
+    queue is configured. The permanent survey-effect worker is a different
+    process and therefore has no such fallback: it must be a write-only Redis
+    publisher on the exact queue/channel configured for the web process, and
+    Redis must answer immediately before the effect is allowed to emit.
+
+    This verifies the transport, not browser delivery. Realtime remains
+    at-least-once and consumers deduplicate the stable outbox ``event_id``.
+    """
+
+    process_role = _survey_realtime_process_role()
+    queue_url, channel, timeout = _survey_realtime_queue_config()
+    shared_required = process_role == SURVEY_EFFECT_WORKER_ROLE
+    if not queue_url:
+        if shared_required:
+            raise SurveyRealtimeTransportError(
+                "survey_realtime_shared_transport_not_configured"
+            )
+        return {
+            "transport": "socketio_in_process",
+            "shared": False,
+            "verified": True,
+        }
+
+    parsed = urlparse(queue_url)
+    if parsed.scheme.lower() not in {"redis", "rediss"} or not parsed.hostname:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_shared_transport_url_invalid"
+        )
+    if not _SOCKET_QUEUE_CHANNEL_PATTERN.fullmatch(channel):
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_shared_transport_channel_invalid"
+        )
+
+    manager = getattr(getattr(socketio, "server", None), "manager", None)
+    try:
+        from socketio.redis_manager import RedisManager
+    except Exception as exc:  # pragma: no cover - dependency import guard
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_redis_manager_unavailable"
+        ) from exc
+    if not isinstance(manager, RedisManager):
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_shared_manager_not_initialized"
+        )
+    if str(getattr(manager, "redis_url", "") or "") != queue_url:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_shared_manager_url_mismatch"
+        )
+    if str(getattr(manager, "channel", "") or "") != channel:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_shared_manager_channel_mismatch"
+        )
+    manager_write_only = bool(getattr(manager, "write_only", False))
+    if shared_required and not manager_write_only:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_worker_manager_not_write_only"
+        )
+    if not shared_required and manager_write_only:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_web_manager_not_subscribed"
+        )
+
+    try:
+        from redis import Redis
+
+        redis_client = Redis.from_url(
+            queue_url,
+            socket_connect_timeout=timeout,
+            socket_timeout=timeout,
+            retry_on_timeout=False,
+        )
+        try:
+            reachable = redis_client.ping() is True
+        finally:
+            redis_client.close()
+    except Exception as exc:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_shared_transport_unreachable"
+        ) from exc
+    if not reachable:
+        raise SurveyRealtimeTransportError(
+            "survey_realtime_shared_transport_unreachable"
+        )
+
+    return {
+        "transport": "socketio_redis_pubsub",
+        "shared": True,
+        "verified": True,
+        "channel": channel,
+        "publisher_mode": "write_only" if manager_write_only else "subscriber",
+    }
 
 
 def _clerk_user_id_for_user(user: Optional[User]) -> str:
@@ -1070,7 +1258,10 @@ def handle_send_chat_message(data):
 
     if nuevo_comentario:
         db.session.commit()
-        # 1. Emitir el nuevo mensaje a todos en la sala del chat en vivo.
+        # ServicioTickets owns every email/SMS/WhatsApp effect. Queue
+        # canaries staged those effects with the comment transaction, while
+        # legacy tenants already used the existing direct path. This handler
+        # only owns the realtime room event because emit_socket=False above.
         emit_new_chat_message({
             'socket_room': room,
             'ticket_id': ticket_id,
@@ -1080,26 +1271,6 @@ def handle_send_chat_message(data):
             'message': nuevo_comentario.to_dict(),
         })
 
-        # 2. Enviar notificaciones a otros canales (Email, SMS, WhatsApp)
-        try:
-            if ticket_obj:
-                from services.email_service import (
-                    enviar_email_ticket_novedad,
-                    enviar_sms_ticket_novedad,
-                    enviar_whatsapp_ticket_novedad,
-                )
-                mensaje_notificacion = f"Un agente ha respondido a tu ticket #{ticket_obj.nro_ticket}: \"{message_text}\""
-
-                enviar_email_ticket_novedad(ticket_obj, mensaje_notificacion)
-                enviar_sms_ticket_novedad(ticket_obj, mensaje_notificacion)
-                if ticket_type == "municipio" or current_app.config.get("ENABLE_PYME_WHATSAPP_CHAT", True):
-                    enviar_whatsapp_ticket_novedad(ticket_obj, mensaje_notificacion)
-
-                current_app.logger.info(f"Notificaciones por respuesta de agente enviadas para ticket {ticket_id} (tipo {ticket_type}).")
-            else:
-                current_app.logger.error(f"No se encontró el ticket {ticket_id} (tipo {ticket_type}) para enviar notificaciones.")
-        except Exception as e_notif:
-            current_app.logger.error(f"Error durante el envío de notificaciones para respuesta de agente en ticket {ticket_id}: {e_notif}", exc_info=True)
     else:
         current_app.logger.error(f"No se pudo guardar el comentario para el ticket {ticket_type} {ticket_id}")
 

@@ -28,6 +28,7 @@ from models import (
 )
 from services.commerce_unified import dedupe_unified_orders
 from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
+from services.tenant_ticket_scope import scoped_municipio_ticket_query
 
 
 _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
@@ -578,14 +579,7 @@ def _collect_ticket_records(tenant: TenantProfile, start_date: datetime, end_dat
 
 
 def _municipio_ticket_query(tenant: TenantProfile):
-    conditions = [MunicipioTicket.tenant_id == tenant.id]
-    municipio_id = getattr(tenant, "municipio_id", None)
-    if municipio_id:
-        conditions.append(
-            (MunicipioTicket.tenant_id.is_(None))
-            & (MunicipioTicket.municipio_id == municipio_id)
-        )
-    return MunicipioTicket.query.filter(or_(*conditions))
+    return scoped_municipio_ticket_query(tenant)
 
 
 def _ticket_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:

@@ -4,11 +4,8 @@ from __future__ import annotations
 import io
 import json
 import os
-import time
 import uuid
-from collections import defaultdict, deque
 import re
-from threading import Lock
 from typing import Any, Dict, Iterator, Mapping, Optional, Pattern, Sequence, Union
 
 from flask import (
@@ -54,15 +51,16 @@ from services.demo_surveys import (
     build_demo_surveys_votings_contract,
     is_demo_survey_slug,
 )
+from services.public_survey_intake import (
+    attach_public_survey_rate_limit_headers,
+    enforce_public_survey_intake,
+    enforce_public_survey_replay_scope,
+    public_survey_client_ip,
+)
 from models import TenantProfile
 from utils.auth_helpers import obtener_token, user_from_token
 
 ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION = "encuestas.public_response.v1"
-
-_DEFAULT_RATE_LIMIT = 150
-_DEFAULT_RATE_PERIOD = 60
-_rate_buckets: defaultdict[str, deque] = defaultdict(deque)
-_rate_lock = Lock()
 
 AllowedOrigin = Union[str, Pattern[str]]
 
@@ -550,48 +548,7 @@ def _resolve_share_image(encuesta: Optional[dict]) -> Optional[str]:
 
 
 def _extract_ip() -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.remote_addr or "0.0.0.0"
-
-
-def _coerce_positive_int(value: Any, default: int) -> int:
-    try:
-        coerced = int(value)
-    except (TypeError, ValueError):
-        return default
-    return coerced if coerced > 0 else default
-
-
-def _resolve_rate_settings() -> tuple[int, int]:
-    limit = current_app.config.get("PUBLIC_ENCUESTAS_RATE_LIMIT")
-    period = current_app.config.get("PUBLIC_ENCUESTAS_RATE_PERIOD")
-
-    if limit is None:
-        limit = os.getenv("PUBLIC_ENCUESTAS_RATE_LIMIT")
-    if period is None:
-        period = os.getenv("PUBLIC_ENCUESTAS_RATE_PERIOD")
-
-    resolved_limit = _coerce_positive_int(limit, _DEFAULT_RATE_LIMIT)
-    resolved_period = _coerce_positive_int(period, _DEFAULT_RATE_PERIOD)
-    return resolved_limit, resolved_period
-
-
-def _rate_limit(ip: str) -> bool:
-    limit, period = _resolve_rate_settings()
-    if limit <= 0 or period <= 0:
-        return True
-
-    now = time.time()
-    with _rate_lock:
-        bucket = _rate_buckets[ip]
-        while bucket and now - bucket[0] > period:
-            bucket.popleft()
-        if len(bucket) >= limit:
-            return False
-        bucket.append(now)
-        return True
+    return public_survey_client_ip()
 
 
 def _iter_allowed_origins() -> Iterator[AllowedOrigin]:
@@ -653,7 +610,7 @@ def _merge_header_values(response, header_name: str, values: list[str]) -> None:
         response.headers[header_name] = ", ".join(updated)
 
 
-def _resolve_tenant_from_request() -> Optional[int]:
+def _resolve_tenant_from_request(*, explicit_only: bool = False) -> Optional[int]:
     """Infer the tenant/municipio identifier for a public survey listing."""
 
     arg_candidates = [
@@ -699,6 +656,9 @@ def _resolve_tenant_from_request() -> Optional[int]:
                 return int(tenant.id)
             except (TypeError, ValueError):
                 continue
+
+    if explicit_only:
+        return None
 
     token = obtener_token()
     owner_candidate = getattr(g, "_obtener_token_owner", None)
@@ -809,6 +769,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     "X-Tenant-Slug",
                     "X-Tenant",
                     "Idempotency-Key",
+                    "X-Turnstile-Token",
                 ],
             )
 
@@ -929,6 +890,8 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         return response
 
     def _response_ack(respuesta, *, request_id: str):
+        from services.survey_governance import response_governance_contract
+
         response_payload = {
             "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
             "ok": True,
@@ -939,6 +902,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             "response_id": respuesta.id,
             "instrument_revision": getattr(respuesta, "instrument_revision", None),
             "request_id": request_id,
+            "governance": response_governance_contract(respuesta),
         }
         receipt_contract = survey_response_receipt_contract(respuesta)
         if receipt_contract is not None:
@@ -950,7 +914,9 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     def _handle_responder(slug: str):
         ip = _extract_ip()
         tenant_id = _resolve_tenant_from_request()
+        explicit_tenant_id = _resolve_tenant_from_request(explicit_only=True)
         payload = _extract_request_payload()
+        request_id = _resolve_request_id()
         try:
             submission_id = resolve_survey_submission_id(
                 payload,
@@ -994,22 +960,45 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     return _public_error_response(err)
                 replay = None
             if replay is not None:
-                return _response_ack(replay, request_id=_resolve_request_id())
+                replay_scope = enforce_public_survey_replay_scope(
+                    replay,
+                    preferred_tenant_id=explicit_tenant_id,
+                )
+                if replay_scope is not None:
+                    error_payload = replay_scope.error_payload()
+                    error_payload["request_id"] = request_id
+                    response = jsonify(error_payload)
+                    response.headers.setdefault("X-Request-Id", request_id)
+                    return response, replay_scope.status_code or 404
+                return _response_ack(replay, request_id=request_id)
 
-        if not _rate_limit(ip):
-            wrapped = EncuestaError(
-                "Demasiadas respuestas desde esta IP. Intenta más tarde.",
-                status_code=429,
-                payload={"reason_code": "rate_limited", "retryable": False},
+        intake_decision = enforce_public_survey_intake(
+            slug,
+            payload,
+            preferred_tenant_id=explicit_tenant_id,
+            request_id=request_id,
+            synthetic=is_demo_survey_slug(slug),
+        )
+        if not intake_decision.allowed:
+            error_payload = intake_decision.error_payload()
+            error_payload["request_id"] = request_id
+            response = jsonify(error_payload)
+            response.headers.setdefault("X-Request-Id", request_id)
+            attach_public_survey_rate_limit_headers(
+                response,
+                intake_decision.rate_limit,
             )
-            return _public_error_response(wrapped)
+            return response, intake_decision.status_code or 503
 
         demo_ack = build_demo_survey_response_ack(slug, payload)
         if demo_ack:
-            request_id = _resolve_request_id()
             demo_ack["request_id"] = request_id
             response = jsonify(demo_ack)
             response.headers.setdefault("X-Request-Id", request_id)
+            attach_public_survey_rate_limit_headers(
+                response,
+                intake_decision.rate_limit,
+            )
             return response, 201
 
         try:
@@ -1044,7 +1033,12 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     200,
                 )
             return _public_error_response(err)
-        return _response_ack(respuesta, request_id=_resolve_request_id())
+        response, status_code = _response_ack(respuesta, request_id=request_id)
+        attach_public_survey_rate_limit_headers(
+            response,
+            intake_decision.rate_limit,
+        )
+        return response, status_code
 
     @bp.route("/<slug>/responder", methods=["POST", "OPTIONS"])
     @bp.route("/v1/<slug>/responder", methods=["POST", "OPTIONS"])

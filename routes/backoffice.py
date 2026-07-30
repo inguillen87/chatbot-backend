@@ -29,6 +29,10 @@ from services.plan_access import (
     integration_feature_payload,
     integration_plan_required_payload,
 )
+from services.tenant_ticket_scope import (
+    municipio_ticket_scope_filter,
+    scoped_municipio_ticket_query,
+)
 from utils.auth_helpers import token_requerido
 from utils.roles import canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user, normalize_tenant_slug
 
@@ -245,12 +249,7 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
 def _case_queries(tenant: TenantProfile, *, since: datetime):
     scope = _tenant_scope(tenant)
     if scope == "municipio":
-        query = MunicipioTicket.query.filter(
-            or_(
-                MunicipioTicket.tenant_id == tenant.id,
-                MunicipioTicket.municipio_id == tenant.municipio_id,
-            )
-        )
+        query = scoped_municipio_ticket_query(tenant)
         return [query.filter(MunicipioTicket.fecha >= since)]
     if scope == "pyme":
         tickets = PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id).filter(PymeTicket.fecha >= since)
@@ -309,10 +308,7 @@ def _top_pending_category(tenant: TenantProfile, *, since: datetime) -> tuple[st
     else:
         row = (
             MunicipioTicket.query.filter(
-                or_(
-                    MunicipioTicket.tenant_id == tenant.id,
-                    MunicipioTicket.municipio_id == tenant.municipio_id,
-                ),
+                municipio_ticket_scope_filter(tenant),
                 MunicipioTicket.fecha >= since,
             )
             .filter(func.lower(MunicipioTicket.estado).in_([state.lower() for state in _PENDING_STATES]))
@@ -730,11 +726,8 @@ def _ticket_records_for(tenant: TenantProfile, scope: str) -> tuple[str, list[An
         )
         return "pyme", records
 
-    clauses = [MunicipioTicket.tenant_id == tenant.id]
-    if tenant.municipio_id:
-        clauses.append(MunicipioTicket.municipio_id == tenant.municipio_id)
     records = (
-        MunicipioTicket.query.filter(or_(*clauses))
+        scoped_municipio_ticket_query(tenant)
         .order_by(MunicipioTicket.fecha.desc(), MunicipioTicket.id.desc())
         .all()
     )

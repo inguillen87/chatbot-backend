@@ -21,6 +21,9 @@ class DummySession:
     def rollback(self):
         pass
 
+    def get(self, _model, object_id):
+        return SimpleNamespace(id=object_id)
+
 
 db_stub = SimpleNamespace(session=DummySession())
 
@@ -62,6 +65,10 @@ class OmnichannelServiceTest(unittest.TestCase):
             omni, "TicketComentario", DummyComment
         ), patch.object(omni, "_deduplicate_contact", return_value=DummyUser()), patch.object(
             omni, "_buscar_ticket_abierto", return_value=None
+        ), patch.object(
+            omni,
+            "normalize_municipio_ticket_write_scope",
+            return_value={"tenant_id": 3, "municipio_id": 30},
         ), patch.object(
             omni, "servicio_tickets", autospec=True
         ) as servicio_mock:

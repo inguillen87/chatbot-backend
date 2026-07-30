@@ -38,6 +38,14 @@ from services.meta_flow_runtime import (
     authorize_order_context,
     authorize_survey_context,
 )
+from services.message_templates import (
+    WHATSAPP_TEMPLATE_PACK_CATALOG_VERSION,
+    normalize_whatsapp_template_vertical,
+    whatsapp_template_definition_hash,
+    whatsapp_template_lifecycle,
+    whatsapp_template_pack,
+    whatsapp_template_pack_catalog,
+)
 from services.whatsapp_enterprise_rules import (
     WhatsAppEnterpriseRulesService,
     whatsapp_flow_rate_limit_reservation_key,
@@ -61,6 +69,9 @@ whatsapp_rules_bp = Blueprint("whatsapp_rules_bp", __name__)
 TWILIO_CONTENT_API_URL = "https://content.twilio.com/v1/Content"
 TWILIO_CONFIRMATION_TTL_SECONDS = 15 * 60
 META_FLOW_PUBLICATION_ATTESTATION_TTL_SECONDS = 60 * 60
+WHATSAPP_TEMPLATE_PACKS_READ = "whatsapp.templates.read"
+WHATSAPP_TEMPLATE_PACKS_MANAGE = "whatsapp.templates.manage"
+WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER = "chatboc"
 
 
 class TwilioContentApiError(RuntimeError):
@@ -113,17 +124,211 @@ def _strict_boolean(payload: dict, field: str, *, default: bool) -> bool:
 def _template_registry_payload(row: MessageTemplateRegistry | None) -> dict:
     if not row:
         return {"configured": False}
+    metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+    source = (
+        "chatboc_versioned_pack"
+        if str(row.provider or "").strip().lower() in {"chatboc", "local"}
+        else "message_template_registry"
+    )
+    lifecycle = whatsapp_template_lifecycle(
+        row.status,
+        source=source,
+        provider_reference=row.content_sid or row.external_template_id,
+        observed_at=row.last_sync_at,
+    )
+    local_only = source == "chatboc_versioned_pack"
+    provider_reference = row.content_sid or row.external_template_id
     return {
-        "configured": True,
+        "configured": bool(provider_reference and not local_only),
+        "local_configured": local_only,
+        "remote_configured": bool(provider_reference and not local_only),
         "id": row.id,
         "name": row.name,
         "language": row.language,
         "category": row.category,
-        "status": row.status,
+        "status": lifecycle["state"],
+        "provider_status": row.status,
+        "lifecycle": lifecycle,
         "content_sid": row.content_sid,
         "external_template_id": row.external_template_id,
         "last_sync_at": row.last_sync_at.isoformat() if row.last_sync_at else None,
+        "source": metadata.get("source") or source,
     }
+
+
+def _flatten_template_capability_values(value) -> set[str]:
+    if value in (None, ""):
+        return set()
+    if isinstance(value, str):
+        return {item.strip().lower() for item in value.split(",") if item.strip()}
+    if isinstance(value, dict):
+        return {
+            str(key).strip().lower()
+            for key, enabled in value.items()
+            if enabled and str(key).strip()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        values: set[str] = set()
+        for item in value:
+            values.update(_flatten_template_capability_values(item))
+        return values
+    normalized = str(value).strip().lower()
+    return {normalized} if normalized else set()
+
+
+def _template_pack_capabilities(user: User) -> set[str]:
+    role = canonical_role(getattr(user, "rol", None))
+    if role == ROLE_SUPERADMIN:
+        return {"*", WHATSAPP_TEMPLATE_PACKS_READ, WHATSAPP_TEMPLATE_PACKS_MANAGE}
+    if role == ROLE_TENANT_ADMIN:
+        return {WHATSAPP_TEMPLATE_PACKS_READ, WHATSAPP_TEMPLATE_PACKS_MANAGE}
+
+    metadata = getattr(user, "accesibilidad", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    employee_scope = metadata.get("employee_scope")
+    employee_scope = employee_scope if isinstance(employee_scope, dict) else {}
+    capabilities: set[str] = set()
+    for container in (metadata, employee_scope):
+        for key in ("permissions", "permisos", "capabilities", "scopes"):
+            capabilities.update(_flatten_template_capability_values(container.get(key)))
+    if role == "empleado":
+        capabilities.add(WHATSAPP_TEMPLATE_PACKS_READ)
+    return capabilities
+
+
+def _require_template_pack_capability(user: User, tenant, capability: str) -> set[str]:
+    if not _is_authorized_for_tenant(user, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        abort(403, description="Acceso denegado")
+    capabilities = _template_pack_capabilities(user)
+    if capability not in capabilities and "*" not in capabilities:
+        abort(403, description=f"Capability requerida: {capability}")
+    return capabilities
+
+
+def _template_pack_registry_map(tenant) -> dict[str, dict]:
+    base_catalog = whatsapp_template_pack_catalog()
+    template_names = {
+        str(template.get("name") or "")
+        for pack in base_catalog["packs"]
+        for template in pack["templates"]
+        if template.get("name")
+    }
+    if not template_names:
+        return {}
+    rows = (
+        MessageTemplateRegistry.query.filter(
+            MessageTemplateRegistry.tenant_id == tenant.id,
+            MessageTemplateRegistry.channel == "whatsapp",
+            MessageTemplateRegistry.name.in_(template_names),
+        )
+        .order_by(MessageTemplateRegistry.updated_at.desc())
+        .all()
+    )
+    state_priority = {
+        "approved": 6,
+        "approval_pending": 5,
+        "content_created": 4,
+        "rejected": 3,
+        "stale": 2,
+        "local_draft": 1,
+    }
+    selected: dict[str, dict] = {}
+    selected_score: dict[str, int] = {}
+    for row in rows:
+        source = (
+            "chatboc_versioned_pack"
+            if str(row.provider or "").strip().lower() in {"chatboc", "local"}
+            else "message_template_registry"
+        )
+        lifecycle = whatsapp_template_lifecycle(
+            row.status,
+            source=source,
+            provider_reference=row.content_sid or row.external_template_id,
+            observed_at=row.last_sync_at,
+        )
+        score = state_priority.get(str(lifecycle["state"]), 0)
+        if row.name in selected and selected_score[row.name] >= score:
+            continue
+        selected_score[row.name] = score
+        selected[row.name] = {
+            "id": row.id,
+            "source": source,
+            "provider": row.provider,
+            "status": row.status,
+            "content_sid": row.content_sid,
+            "external_template_id": row.external_template_id,
+            "last_sync_at": row.last_sync_at,
+        }
+    return selected
+
+
+def _template_pack_catalog_payload(tenant, user: User) -> dict:
+    payload = whatsapp_template_pack_catalog(_template_pack_registry_map(tenant))
+    capabilities = _template_pack_capabilities(user)
+    payload.update(
+        {
+            "tenant": {"id": tenant.id, "slug": tenant.slug},
+            "capabilities": {
+                "read": WHATSAPP_TEMPLATE_PACKS_READ in capabilities or "*" in capabilities,
+                "materialize_local_draft": WHATSAPP_TEMPLATE_PACKS_MANAGE in capabilities or "*" in capabilities,
+                "required_for_mutation": WHATSAPP_TEMPLATE_PACKS_MANAGE,
+            },
+            "endpoints": {
+                "catalog": "/api/admin/whatsapp/template-packs",
+                "materialize_template": "/api/admin/whatsapp/template-packs/{vertical}/drafts",
+            },
+        }
+    )
+    return payload
+
+
+def _template_pack_idempotency_key(payload: dict) -> str:
+    header_value = str(request.headers.get("Idempotency-Key") or "").strip()
+    body_value = str(payload.get("idempotency_key") or "").strip()
+    if header_value and body_value and header_value != body_value:
+        abort(400, description="Idempotency-Key e idempotency_key deben coincidir")
+    value = header_value or body_value
+    if not re.fullmatch(r"[A-Za-z0-9_.:\-]{8,120}", value):
+        abort(400, description="Idempotency-Key debe tener entre 8 y 120 caracteres seguros")
+    return value
+
+
+def _template_pack_request_fingerprint(tenant_id: int, vertical: str, pack: dict) -> str:
+    template_hashes = {
+        str(template["name"]): whatsapp_template_definition_hash(template)
+        for template in pack["templates"]
+    }
+    canonical = json.dumps(
+        {
+            "tenant_id": tenant_id,
+            "catalog_version": WHATSAPP_TEMPLATE_PACK_CATALOG_VERSION,
+            "vertical": vertical,
+            "pack_id": pack["pack_id"],
+            "pack_version": pack["pack_version"],
+            "template_hashes": template_hashes,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _find_template_pack_idempotency_receipt(tenant_id: int, idempotency_key: str) -> dict | None:
+    rows = MessageTemplateRegistry.query.filter_by(
+        tenant_id=tenant_id,
+        provider=WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER,
+        channel="whatsapp",
+    ).all()
+    for row in rows:
+        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        receipts = metadata.get("materialization_receipts")
+        if not isinstance(receipts, list):
+            continue
+        for receipt in receipts:
+            if isinstance(receipt, dict) and receipt.get("idempotency_key") == idempotency_key:
+                return dict(receipt)
+    return None
 
 
 def _find_twilio_manifest_item(tenant, template_id: str) -> dict | None:
@@ -960,6 +1165,201 @@ def update_rules(user: User):
     db.session.commit()
 
     return jsonify({"updated": True})
+
+
+@whatsapp_rules_bp.route("/api/admin/whatsapp/template-packs", methods=["GET"])
+@token_requerido
+@require_tenant
+def list_whatsapp_template_packs(user: User):
+    """Return tenant-scoped previews and fail-closed provider lifecycle state."""
+
+    tenant = _readiness_tenant_for_user(user)
+    _require_template_pack_capability(user, tenant, WHATSAPP_TEMPLATE_PACKS_READ)
+    return jsonify(_template_pack_catalog_payload(tenant, user)), 200
+
+
+@whatsapp_rules_bp.route(
+    "/api/admin/whatsapp/template-packs/<vertical>/drafts",
+    methods=["POST"],
+)
+@token_requerido
+@require_tenant
+def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
+    """Persist immutable local drafts only; this endpoint never contacts Twilio/Meta."""
+
+    tenant = _readiness_tenant_for_user(user)
+    _require_template_pack_capability(user, tenant, WHATSAPP_TEMPLATE_PACKS_MANAGE)
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        abort(400, description="El body debe ser un objeto JSON")
+
+    normalized_vertical = normalize_whatsapp_template_vertical(vertical)
+    pack = whatsapp_template_pack(normalized_vertical)
+    if not normalized_vertical or not pack:
+        abort(404, description="Pack de plantillas no encontrado")
+    requested_version = str(payload.get("pack_version") or pack["pack_version"]).strip()
+    if requested_version != pack["pack_version"]:
+        abort(
+            409,
+            description=(
+                f"pack_version no coincide: disponible {pack['pack_version']}"
+            ),
+        )
+
+    idempotency_key = _template_pack_idempotency_key(payload)
+    request_fingerprint = _template_pack_request_fingerprint(
+        tenant.id,
+        normalized_vertical,
+        pack,
+    )
+    existing_receipt = _find_template_pack_idempotency_receipt(
+        tenant.id,
+        idempotency_key,
+    )
+    if existing_receipt:
+        if existing_receipt.get("request_fingerprint") != request_fingerprint:
+            abort(409, description="Idempotency-Key ya pertenece a otra operacion")
+        catalog = _template_pack_catalog_payload(tenant, user)
+        selected_pack = next(
+            item for item in catalog["packs"] if item["vertical"] == normalized_vertical
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "created": False,
+                "idempotent_replay": True,
+                "provider_calls_performed": False,
+                "tenant": catalog["tenant"],
+                "pack": selected_pack,
+                "idempotency": {
+                    "key": idempotency_key,
+                    "request_fingerprint": request_fingerprint,
+                },
+            }
+        ), 200
+
+    now = datetime.now(timezone.utc)
+    receipt = {
+        "idempotency_key": idempotency_key,
+        "request_fingerprint": request_fingerprint,
+        "recorded_at": now.isoformat(),
+        "actor_user_id": user.id,
+    }
+    created_count = 0
+    reused_count = 0
+    rows: list[MessageTemplateRegistry] = []
+
+    for template in pack["templates"]:
+        definition_hash = whatsapp_template_definition_hash(template)
+        row = MessageTemplateRegistry.query.filter_by(
+            tenant_id=tenant.id,
+            provider=WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER,
+            channel="whatsapp",
+            name=template["name"],
+            language=template["language"],
+        ).first()
+        if row:
+            metadata = dict(row.metadata_json) if isinstance(row.metadata_json, dict) else {}
+            pack_metadata = metadata.get("template_pack")
+            pack_metadata = pack_metadata if isinstance(pack_metadata, dict) else {}
+            if pack_metadata.get("definition_hash") != definition_hash:
+                abort(
+                    409,
+                    description=(
+                        f"La definicion versionada {template['name']} ya existe con otro hash; "
+                        "publica una nueva version del pack"
+                    ),
+                )
+            reused_count += 1
+        else:
+            metadata = {}
+            components = [{"type": "body", "body": template["body"]}]
+            if template.get("cta"):
+                components.append({"type": "cta", **dict(template["cta"])})
+            row = MessageTemplateRegistry(
+                tenant_id=tenant.id,
+                provider=WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER,
+                channel="whatsapp",
+                name=template["name"],
+                language=template["language"],
+                category=template["category"],
+                status="local_draft",
+                body_preview=template["body"],
+                components=components,
+            )
+            db.session.add(row)
+            created_count += 1
+
+        metadata.update(
+            {
+                "source": "chatboc_versioned_pack",
+                "template_pack": {
+                    "catalog_version": WHATSAPP_TEMPLATE_PACK_CATALOG_VERSION,
+                    "pack_id": pack["pack_id"],
+                    "pack_version": pack["pack_version"],
+                    "vertical": normalized_vertical,
+                    "intent": template["intent"],
+                    "definition_hash": definition_hash,
+                },
+            }
+        )
+        receipts = metadata.get("materialization_receipts")
+        receipts = list(receipts) if isinstance(receipts, list) else []
+        receipts.append(receipt)
+        metadata["materialization_receipts"] = receipts[-20:]
+        row.metadata_json = metadata
+        rows.append(row)
+
+    db.session.flush()
+    db.session.add(
+        AuditEvent(
+            tenant_id=tenant.id,
+            actor_user_id=user.id,
+            event_type="whatsapp_template_pack.local_drafts_materialized",
+            resource_type="whatsapp_template_pack",
+            resource_id=pack["pack_id"],
+            details={
+                "catalog_version": WHATSAPP_TEMPLATE_PACK_CATALOG_VERSION,
+                "pack_version": pack["pack_version"],
+                "vertical": normalized_vertical,
+                "created_count": created_count,
+                "reused_count": reused_count,
+                "idempotency_key": idempotency_key,
+                "request_fingerprint": request_fingerprint,
+                "provider_calls_performed": False,
+                "resulting_state": "local_draft",
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        abort(409, description="El pack fue materializado por otra operacion concurrente")
+
+    catalog = _template_pack_catalog_payload(tenant, user)
+    selected_pack = next(
+        item for item in catalog["packs"] if item["vertical"] == normalized_vertical
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "created": bool(created_count),
+            "idempotent_replay": False,
+            "created_count": created_count,
+            "reused_count": reused_count,
+            "provider_calls_performed": False,
+            "tenant": catalog["tenant"],
+            "pack": selected_pack,
+            "idempotency": {
+                "key": idempotency_key,
+                "request_fingerprint": request_fingerprint,
+            },
+        }
+    ), (201 if created_count else 200)
 
 
 @whatsapp_rules_bp.route("/api/admin/templates", methods=["GET"])

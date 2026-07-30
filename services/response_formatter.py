@@ -331,16 +331,25 @@ def build_interactive_response(options: list,
         if message_type == 'text':
             final_body = _repair_text(body_text).strip()
 
-            nav_buttons = [
-                {"texto": "Menú", "action_id": "menu_principal"},
-                {"texto": "Cancelar", "action_id": "cancelar"},
-            ]
-            existing_ids = {_navigation_key(o) for o in options}
-            for btn in nav_buttons:
-                nav_key = _navigation_key(btn)
-                if nav_key not in existing_ids:
-                    options.append(btn)
-                    existing_ids.add(nav_key)
+            # Terminal operational receipts (for example, a newly-created
+            # municipal claim) deliberately close the previous interaction.
+            # Appending generic navigation there creates a second surface,
+            # stores stale numeric options and can make the next reply look
+            # like a confirmation/cancellation of the completed flow.
+            suppress_navigation = bool(
+                original_bot_response.get("_suppress_whatsapp_navigation")
+            )
+            if not suppress_navigation:
+                nav_buttons = [
+                    {"texto": "Menú", "action_id": "menu_principal"},
+                    {"texto": "Cancelar", "action_id": "cancelar"},
+                ]
+                existing_ids = {_navigation_key(o) for o in options}
+                for btn in nav_buttons:
+                    nav_key = _navigation_key(btn)
+                    if nav_key not in existing_ids:
+                        options.append(btn)
+                        existing_ids.add(nav_key)
 
             # Separate options that are simple URLs from those that require a
             # numeric reply. URL-only options should be displayed inline and

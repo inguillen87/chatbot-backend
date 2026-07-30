@@ -2,7 +2,7 @@ services:
   # 1. El Servidor Web Principal (Flask)
   - type: web
     name: chatboc-backend
-    env: python
+    runtime: python
     # SECURITY OPERATIONS: api.chatboc.ar is already attached to this existing
     # service outside the Blueprint. Keep its onrender.com subdomain disabled
     # in Render Dashboard; redeclaring the domain here fails Blueprint validation.
@@ -105,6 +105,63 @@ services:
         sync: false
       - key: ZOHO_SMTP_PASSWORD
         sync: false
+      - key: EMAIL_NOTIFICATIONS_ENABLED
+        value: "false"
+      - key: SMTP_REQUIRE_AUTH
+        value: "true"
+      # Governance-sensitive core remains off until migration + scoped staging.
+      - key: ENABLE_ASSESSMENT_INTERVIEWS_V1
+        value: "false"
+      # Fail-closed rollout: keep legacy sends until the migration, worker and
+      # a tenant-scoped provider smoke test are all verified in Render.
+      - key: DOMAIN_EFFECT_OUTBOX_MODE
+        value: legacy
+      - key: DOMAIN_EFFECT_OUTBOX_SECRET
+        sync: false
+      - key: DOMAIN_EFFECT_OUTBOX_TENANT_IDS
+        value: ""
+      - key: DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES
+        value: "4096"
+      - key: DOMAIN_EFFECT_OUTBOX_LEASE_SECONDS
+        value: "180"
+      - key: DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS
+        value: "8"
+      - key: DOMAIN_EFFECT_OUTBOX_WORKER_BATCH_SIZE
+        value: "20"
+      - key: DOMAIN_EFFECT_OUTBOX_WORKER_POLL_SECONDS
+        value: "0.5"
+      - key: DOMAIN_EFFECT_OUTBOX_CELERY_WAKEUP_ENABLED
+        value: "false"
+      - key: SURVEY_RESPONSE_EFFECT_LEASE_SECONDS
+        value: "120"
+      - key: SURVEY_RESPONSE_EFFECT_WORKER_BATCH_SIZE
+        value: "50"
+      - key: SURVEY_RESPONSE_EFFECT_WORKER_MAX_TENANTS_PER_CYCLE
+        value: "50"
+      - key: SURVEY_RESPONSE_EFFECT_WORKER_POLL_SECONDS
+        value: "0.5"
+      - key: SURVEY_IDENTITY_HMAC_SECRET_V1
+        sync: false
+      # Canonical channel sessions are tenant-scoped and contain no raw phone
+      # number in their binding or primary key. Shadow is the migration phase;
+      # switch to enforce before enabling durable WhatsApp or realtime voice.
+      - key: CHANNEL_SESSION_IDENTITY_MODE
+        value: shadow
+      - key: CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1
+        sync: false
+      - key: CHANNEL_SESSION_IDENTITY_VERSION_V1
+        value: v1
+      # Shared Socket.IO pub/sub for events emitted outside the web process.
+      # Configure one Redis/Redis-TLS URL in the web service; the survey worker
+      # receives that exact secret and channel through fromService below.
+      - key: SOCKETIO_MESSAGE_QUEUE_URL
+        sync: false
+      - key: SOCKETIO_MESSAGE_QUEUE_CHANNEL
+        value: chatboc-realtime-v1
+      - key: SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS
+        value: "2"
+      - key: SIGEM_LIVE_ENABLED
+        value: "false"
       - key: HUGGINGFACE_API_TOKEN
         sync: false
       - key: HUGGINGFACE_ENABLED
@@ -145,6 +202,21 @@ services:
         sync: false
       - key: TWILIO_AUTH_TOKEN
         sync: false
+      - key: VOICE_STREAM_SIGNING_SECRET
+        sync: false
+      - key: VOICE_STREAM_ENVELOPE_TTL_SECONDS
+        value: "120"
+      - key: VOICE_STREAM_PREFLIGHT_TIMEOUT_SECONDS
+        value: "5"
+      - key: VOICE_STREAM_PREFLIGHT_MAX_EVENTS
+        value: "3"
+      - key: VOICE_STREAM_PREFLIGHT_MAX_MESSAGE_BYTES
+        value: "32768"
+      - key: ENABLE_VOICE_CONSENT_LIFECYCLE_V1
+        value: "false"
+      # One-time replay consumption reuses SOCKETIO_MESSAGE_QUEUE_URL above.
+      # VOICE_STREAM_REPLAY_REDIS_URL may override it manually when isolation
+      # in a dedicated Redis database is required.
       - key: TWILIO_FALLBACK_VOICE
         value: Polly.Lupe-Neural
       - key: TWILIO_FALLBACK_SAY_LANGUAGE
@@ -203,9 +275,222 @@ services:
         sync: false
 
   # 2. El Cron Job (Automatización Semanal)
+  # Durable external-effect worker. It is safe to deploy in legacy mode:
+  # it idles until an explicit tenant canary is enabled on both services.
+  - type: worker
+    name: chatboc-domain-effects
+    runtime: python
+    buildCommand: "./build.sh"
+    startCommand: "python -m services.domain_effect_worker"
+    plan: starter
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: FLASK_APP
+        value: app.py
+      - key: ENV
+        value: production
+      - key: FLASK_ENV
+        value: production
+      - key: CHATBOC_PROCESS_ROLE
+        value: domain-effect-worker
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DATABASE_URL
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SECRET_KEY
+      - key: BACKEND_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: BACKEND_URL
+      - key: PANEL_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: PANEL_URL
+      - key: DOMAIN_EFFECT_OUTBOX_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_MODE
+      - key: DOMAIN_EFFECT_OUTBOX_SECRET
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_SECRET
+      - key: DOMAIN_EFFECT_OUTBOX_TENANT_IDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_TENANT_IDS
+      - key: DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES
+      - key: DOMAIN_EFFECT_OUTBOX_LEASE_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_LEASE_SECONDS
+      - key: DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS
+      - key: DOMAIN_EFFECT_OUTBOX_WORKER_BATCH_SIZE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_WORKER_BATCH_SIZE
+      - key: DOMAIN_EFFECT_OUTBOX_WORKER_POLL_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DOMAIN_EFFECT_OUTBOX_WORKER_POLL_SECONDS
+      - key: EMAIL_NOTIFICATIONS_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: EMAIL_NOTIFICATIONS_ENABLED
+      - key: SMTP_REQUIRE_AUTH
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SMTP_REQUIRE_AUTH
+      - key: ZOHO_SMTP_HOST
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: ZOHO_SMTP_HOST
+      - key: ZOHO_SMTP_PORT
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: ZOHO_SMTP_PORT
+      - key: ZOHO_SMTP_USER
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: ZOHO_SMTP_USER
+      - key: ZOHO_SMTP_PASSWORD
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: ZOHO_SMTP_PASSWORD
+      - key: AUTH_EMAIL_FROM
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: AUTH_EMAIL_FROM
+      - key: SIGEM_LIVE_ENABLED
+        value: "false"
+
+  # Dedicated poller for SurveyResponseEffect. It deliberately stays separate
+  # from chatboc-domain-effects because both outboxes have different schemas,
+  # handlers and reconciliation policies.
+  - type: worker
+    name: chatboc-survey-effects
+    runtime: python
+    buildCommand: "./build.sh"
+    startCommand: "python -m services.survey_response_effect_worker"
+    plan: starter
+    maxShutdownDelaySeconds: 180
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: FLASK_APP
+        value: app.py
+      - key: ENV
+        value: production
+      - key: FLASK_ENV
+        value: production
+      - key: CHATBOC_PROCESS_ROLE
+        value: survey-effect-worker
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DATABASE_URL
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SECRET_KEY
+      - key: SURVEY_RESPONSE_EFFECT_LEASE_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SURVEY_RESPONSE_EFFECT_LEASE_SECONDS
+      - key: SURVEY_RESPONSE_EFFECT_WORKER_BATCH_SIZE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SURVEY_RESPONSE_EFFECT_WORKER_BATCH_SIZE
+      - key: SURVEY_RESPONSE_EFFECT_WORKER_MAX_TENANTS_PER_CYCLE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SURVEY_RESPONSE_EFFECT_WORKER_MAX_TENANTS_PER_CYCLE
+      - key: SURVEY_RESPONSE_EFFECT_WORKER_POLL_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SURVEY_RESPONSE_EFFECT_WORKER_POLL_SECONDS
+      - key: SOCKETIO_MESSAGE_QUEUE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SOCKETIO_MESSAGE_QUEUE_URL
+      - key: SOCKETIO_MESSAGE_QUEUE_CHANNEL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SOCKETIO_MESSAGE_QUEUE_CHANNEL
+      - key: SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS
+
+  - type: cron
+    name: chatboc-survey-retention
+    runtime: python
+    schedule: "17 3 * * *"
+    buildCommand: "./build.sh"
+    startCommand: "python -m services.survey_privacy --batch-size 200 --max-batches 20"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: FLASK_APP
+        value: app.py
+      - key: ENV
+        value: production
+      - key: FLASK_ENV
+        value: production
+      - key: CHATBOC_PROCESS_ROLE
+        value: survey-retention-cron
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DATABASE_URL
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SECRET_KEY
+
   - type: cron
     name: weekly-analytics-report
-    env: python
+    runtime: python
     schedule: "0 0 * * 0" # Se ejecuta todos los domingos a las 00:00 UTC
     buildCommand: "./build.sh" # Usa las mismas dependencias
     startCommand: "flask generate-weekly-reports" # El comando que creamos en cli_commands.py

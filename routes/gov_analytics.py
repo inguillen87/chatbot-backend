@@ -81,7 +81,12 @@ def _load_records(current_user):
         return None, jsonify({"error": "El usuario no posee un municipio asociado."}), 404
 
     date_from, date_to = _resolve_dates(request.args)
-    records = load_incidents_for_municipio(municipio_id, date_from=date_from, date_to=date_to)
+    records = load_incidents_for_municipio(
+        municipio_id,
+        date_from=date_from,
+        date_to=date_to,
+        tenant_id=getattr(current_user, "tenant_id", None),
+    )
     return records, None, None
 
 

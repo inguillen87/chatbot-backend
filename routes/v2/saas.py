@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
 from html import escape
 from pathlib import Path
 from typing import Any, Mapping
@@ -17,6 +18,7 @@ from extensions import db
 from models import (
     ArchivoAdjunto,
     CatalogoItem,
+    DomainEffectOutbox,
     EncEncuesta,
     EncRespuesta,
     MarketOrder,
@@ -29,6 +31,7 @@ from models import (
     TenantProfile,
     TenantTicket,
     TicketComentario,
+    TicketDomainEffectReceipt,
     User,
 )
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
@@ -51,6 +54,7 @@ from services.operational_intelligence import build_operational_dashboard, build
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
 from services.plan_access import integration_access_payload, integration_frontend_contract, plan_allows_full_integrations
 from services.tenant_whatsapp_onboarding import refresh_tenant_whatsapp_onboarding
+from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.twilio_tech_provider import (
     STATE_KEY,
     build_twilio_tech_provider_contract,
@@ -3685,15 +3689,7 @@ def omnichannel_inbox_v2(current_user):
 
 
 def _legacy_claim_query_for_tenant(tenant: TenantProfile):
-    filters = [MunicipioTicket.tenant_id == tenant.id]
-    owner_ids = [
-        owner_id
-        for owner_id in (getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None))
-        if owner_id is not None
-    ]
-    if owner_ids:
-        filters.append((MunicipioTicket.tenant_id.is_(None)) & (MunicipioTicket.municipio_id.in_(owner_ids)))
-    return MunicipioTicket.query.filter(or_(*filters))
+    return scoped_municipio_ticket_query(tenant)
 
 
 def _legacy_claim_for_tenant(tenant: TenantProfile, ticket_id: int) -> MunicipioTicket | None:
@@ -4195,7 +4191,15 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "label": "Responder",
             "method": "POST",
             "endpoint": base_endpoint,
-            "requires": ["body"],
+            "requires": ["body", "client_message_id_or_idempotency_key"],
+            "idempotency": {
+                "contract_version": "inbox.reply_idempotency.v1",
+                "preferred_header": "Idempotency-Key",
+                "body_field": "client_message_id",
+                "retry_rule": "reuse_same_value",
+                "request_id_compatibility": True,
+            },
+            "delivery_contract_version": "inbox.action_delivery.v2",
             "payload_defaults": defaults,
         },
         {
@@ -4517,6 +4521,76 @@ def _coerce_inbox_ticket_id(raw_value: Any) -> int | None:
         return None
 
 
+def _omnichannel_reply_idempotency_identity(
+    payload: Mapping[str, Any],
+    *,
+    tenant_id: int,
+) -> tuple[str | None, str | None, Any | None]:
+    """Resolve a stable client identity without persisting the raw value."""
+
+    primary_header = str(request.headers.get("Idempotency-Key") or "").strip()
+    alternate_header = str(request.headers.get("X-Idempotency-Key") or "").strip()
+    if primary_header and alternate_header and primary_header != alternate_header:
+        return None, None, _error_response(
+            "Idempotency-Key y X-Idempotency-Key deben coincidir",
+            400,
+            "reply_idempotency_key_mismatch",
+            "send_one_stable_idempotency_key",
+        )
+    header_value = primary_header or alternate_header
+
+    client_message_id = str(payload.get("client_message_id") or "").strip()
+    body_idempotency_key = str(payload.get("idempotency_key") or "").strip()
+    if client_message_id and body_idempotency_key and client_message_id != body_idempotency_key:
+        return None, None, _error_response(
+            "client_message_id e idempotency_key deben coincidir",
+            400,
+            "reply_idempotency_key_mismatch",
+            "send_one_stable_idempotency_key",
+        )
+    body_value = client_message_id or body_idempotency_key
+    if header_value and body_value and header_value != body_value:
+        return None, None, _error_response(
+            "La identidad idempotente del header y del body debe coincidir",
+            400,
+            "reply_idempotency_key_mismatch",
+            "reuse_the_same_client_message_id",
+        )
+
+    explicit_request_id = str(request.headers.get("X-Request-Id") or "").strip()
+    raw_identity = header_value or body_value or explicit_request_id
+    source = (
+        "idempotency_key_header"
+        if header_value
+        else (
+            "client_message_id"
+            if client_message_id
+            else ("body_idempotency_key" if body_value else "x_request_id_compatibility")
+        )
+    )
+    if not raw_identity:
+        return None, None, _error_response(
+            "Idempotency-Key o client_message_id es obligatorio para responder",
+            400,
+            "reply_idempotency_key_required",
+            "send_stable_client_message_id",
+        )
+    if len(raw_identity) < 8 or len(raw_identity) > 256 or any(
+        ord(character) < 32 for character in raw_identity
+    ):
+        return None, None, _error_response(
+            "La identidad idempotente debe tener entre 8 y 256 caracteres validos",
+            400,
+            "reply_idempotency_key_invalid",
+            "send_stable_client_message_id",
+        )
+
+    digest = hashlib.sha256(
+        f"inbox.reply.v1:{int(tenant_id)}:{raw_identity}".encode("utf-8")
+    ).hexdigest()
+    return f"crm-reply:{digest}", source, None
+
+
 def _inbox_action_delivery_payload(
     *,
     action: str,
@@ -4529,41 +4603,80 @@ def _inbox_action_delivery_payload(
     delivery_results: Mapping[str, Any] | None = None,
     requested_channels: list[str] | None = None,
     delivery_skipped: Mapping[str, Any] | None = None,
+    durably_staged: bool = False,
+    idempotent_replay: bool = False,
 ) -> dict[str, Any]:
     normalized_action = str(action or "").strip().lower()
     normalized_channel = str(channel or "crm").strip().lower() or "crm"
     is_reply = normalized_action == "reply"
-    mode = "real_message" if is_reply and external_dispatch else ("timeline_only" if is_reply else "internal_event")
-    resolved_status = status or ("sent" if external_dispatch else ("saved_to_crm" if is_reply else "applied"))
-    resolved_reason = reason or (
-        "external_dispatch_confirmed"
-        if external_dispatch
-        else (
-            "external_dispatch_not_configured_for_omnichannel_action"
-            if is_reply
-            else "internal_crm_action"
-        )
+    if is_reply and durably_staged:
+        mode = "durable_queue"
+        resolved_status = status or "durably_staged"
+        resolved_reason = reason or "domain_effects_durably_staged"
+        fallback = "domain_effect_worker"
+        reply_status = "queued_for_delivery"
+        evidence_stage = "durably_staged"
+        operator_message = "Respuesta guardada y encolada de forma durable. La entrega final queda pendiente del callback del proveedor."
+    elif is_reply and external_dispatch:
+        mode = "real_message"
+        resolved_status = status or "provider_accepted"
+        resolved_reason = reason or "provider_accepted"
+        fallback = "none"
+        reply_status = "provider_accepted"
+        evidence_stage = "provider_accepted"
+        operator_message = "El proveedor acepto el envio y la respuesta quedo registrada en el CRM. La entrega final queda pendiente de callback."
+    elif is_reply and idempotent_replay:
+        mode = "idempotent_replay"
+        resolved_status = status or "already_recorded"
+        resolved_reason = reason or "idempotent_replay_no_redispatch"
+        fallback = "existing_effects_preserved"
+        reply_status = "already_recorded"
+        evidence_stage = "idempotent_replay"
+        operator_message = "La respuesta ya estaba registrada. No se genero otro mensaje ni un segundo envio."
+    elif is_reply:
+        mode = "timeline_only"
+        resolved_status = status or "saved_to_crm"
+        resolved_reason = reason or "external_dispatch_not_configured_for_omnichannel_action"
+        fallback = "saved_to_crm_no_external_dispatch"
+        reply_status = "saved_to_timeline"
+        evidence_stage = "crm_only"
+        operator_message = "Guardado en el CRM. No se envio por un canal externo desde esta accion."
+    else:
+        mode = "internal_event"
+        resolved_status = status or "applied"
+        resolved_reason = reason or "internal_crm_action"
+        fallback = "internal_crm_event"
+        reply_status = "not_a_reply"
+        evidence_stage = "internal_event"
+        operator_message = "Accion registrada en el CRM."
+
+    final_delivery_status = (
+        "pending_provider_callback"
+        if is_reply and (durably_staged or external_dispatch)
+        else ("preserved_from_original_attempt" if is_reply and idempotent_replay else "not_dispatched")
     )
-    operator_message = (
-        "Mensaje enviado al contacto y registrado en el CRM."
-        if external_dispatch
-        else (
-            "Guardado en el CRM. No se envio por WhatsApp ni por socket en tiempo real desde esta accion."
-            if is_reply
-            else "Accion registrada en el CRM."
-        )
+    final_delivery_source = (
+        "provider_status_callback"
+        if is_reply and (durably_staged or external_dispatch)
+        else ("original_attempt_evidence" if is_reply and idempotent_replay else "not_applicable")
     )
     payload = {
-        "contract_version": "inbox.action_delivery.v1",
+        "contract_version": "inbox.action_delivery.v2",
+        "legacy_contract_version": "inbox.action_delivery.v1",
         "mode": mode,
         "delivery_mode": mode,
         "channel": normalized_channel,
         "status": resolved_status,
         "reason": resolved_reason,
-        "fallback": "none" if external_dispatch else ("saved_to_crm_no_external_dispatch" if is_reply else "internal_crm_event"),
+        "fallback": fallback,
         "external_dispatch": external_dispatch,
         "timeline_updated": timeline_updated,
-        "reply_status": "sent_to_contact" if external_dispatch else ("saved_to_timeline" if is_reply else "not_a_reply"),
+        "reply_status": reply_status,
+        "evidence_stage": evidence_stage,
+        "final_delivery": {
+            "status": final_delivery_status,
+            "authoritative_source": final_delivery_source,
+        },
         "admin_surface": "tenant_claims_inbox" if source_model == "MunicipioTicket" else "omnichannel_inbox",
         "source_model": source_model,
         "operator_message": operator_message,
@@ -4574,6 +4687,7 @@ def _inbox_action_delivery_payload(
             "sms": bool(delivery_results.get("sms")),
             "whatsapp": bool(delivery_results.get("whatsapp")),
         }
+        payload["delivery_results_semantics"] = "provider_acceptance"
     if requested_channels is not None:
         payload["requested_channels"] = list(requested_channels)
     if delivery_skipped:
@@ -4768,6 +4882,8 @@ def _record_tenant_ticket_delivery(
             "status": delivery.get("status"),
             "reason": delivery.get("reason"),
             "channel": delivery.get("channel"),
+            "evidence_stage": delivery.get("evidence_stage"),
+            "final_delivery": delivery.get("final_delivery") or {},
             "external_dispatch": bool(delivery.get("external_dispatch")),
             "delivery_results": delivery.get("delivery_results") or {},
             "requested_channels": delivery.get("requested_channels") or [],
@@ -4929,6 +5045,10 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     realtime_state_events: list[str] = []
     previous_status = str(ticket.estado or "")
     handoff_event_body: str | None = None
+    reply_outbox_enabled = False
+    reply_outbox_effect_count = 0
+    reply_replayed = False
+    reply_idempotency_source: str | None = None
 
     if action == "assign":
         assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
@@ -4999,18 +5119,110 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         body = str(payload.get("body") or payload.get("message") or payload.get("comentario") or "").strip()
         if not body:
             return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
-        recent_comment = TicketComentario(
-            municipio_ticket_id=ticket.id,
-            comentario=body,
-            user_id=current_user.id,
-            es_admin=True,
-            origen="admin_panel",
-            estado_ticket=ticket.estado,
+        reply_idempotency_key, reply_idempotency_source, idempotency_error = (
+            _omnichannel_reply_idempotency_identity(payload, tenant_id=tenant.id)
         )
-        db.session.add(recent_comment)
-        timeline_updated = True
-        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
-            ticket.estado = "en_proceso"
+        if idempotency_error is not None:
+            return idempotency_error
+
+        from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+        from services.ticket_service import (
+            ServicioTickets,
+            TicketIdempotencyConflict,
+            TicketIdempotencyReplayUnavailable,
+            TicketIdempotencyValidationError,
+        )
+
+        outbox_policy = resolve_domain_effect_outbox_policy(
+            current_app.config,
+            tenant_id=tenant.id,
+        )
+        reply_outbox_enabled = outbox_policy.enabled
+        existing_receipt = TicketDomainEffectReceipt.query.filter_by(
+            tenant_id=tenant.id,
+            idempotency_key=reply_idempotency_key,
+        ).one_or_none()
+        existing_comment = None
+        if (
+            existing_receipt is not None
+            and existing_receipt.effect_kind == "ticket.comment.municipio"
+            and existing_receipt.resource_type == "ticket_comentario"
+        ):
+            existing_comment = db.session.get(
+                TicketComentario,
+                existing_receipt.resource_id,
+            )
+
+        target_status = (
+            "en_proceso"
+            if str(ticket.estado or "").lower() in {"nuevo", "open"}
+            else str(ticket.estado or "")
+        )
+        comment_status = (
+            str(existing_comment.estado_ticket or target_status)
+            if existing_comment is not None
+            else target_status
+        )
+        if existing_receipt is None:
+            ticket.estado = target_status
+
+        try:
+            recent_comment = ServicioTickets().crear_comentario(
+                ticket.id,
+                "municipio",
+                {
+                    "comentario": body,
+                    "user_id": current_user.id,
+                    "es_admin": True,
+                    "origen": "admin_panel",
+                    "estado_ticket": comment_status,
+                    "emit_notifications": True,
+                    "emit_socket": True,
+                },
+                idempotency_key=reply_idempotency_key,
+                idempotency_tenant_id=tenant.id,
+                legacy_effects_owned_by_caller=True,
+            )
+        except TicketIdempotencyConflict:
+            db.session.rollback()
+            return _error_response(
+                "La identidad idempotente ya fue usada con otra respuesta",
+                409,
+                "reply_idempotency_payload_conflict",
+                "reuse_key_only_for_identical_payload",
+            )
+        except TicketIdempotencyValidationError:
+            db.session.rollback()
+            return _error_response(
+                "La identidad idempotente o su alcance de tenant no es valido",
+                400,
+                "reply_idempotency_invalid",
+                "send_stable_client_message_id",
+            )
+        except TicketIdempotencyReplayUnavailable:
+            db.session.rollback()
+            return _error_response(
+                "La respuesta idempotente existe pero su comentario no esta disponible",
+                409,
+                "reply_idempotency_replay_unavailable",
+                "refresh_inbox",
+            )
+        if recent_comment is None:
+            db.session.rollback()
+            return _error_response(
+                "No se pudo guardar la respuesta",
+                500,
+                "reply_persistence_failed",
+                "retry_with_same_idempotency_key",
+            )
+        reply_replayed = existing_receipt is not None
+        timeline_updated = not reply_replayed
+        if reply_outbox_enabled:
+            reply_outbox_effect_count = DomainEffectOutbox.query.filter_by(
+                tenant_id=tenant.id,
+                aggregate_type="municipio_ticket_comment",
+                aggregate_ref=str(recent_comment.id),
+            ).count()
 
     elif action == "close":
         ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
@@ -5057,29 +5269,50 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         )
         timeline_updated = True
 
-    ticket.ultima_actividad = now
-    db.session.add(ticket)
-    db.session.commit()
+    if action != "reply":
+        ticket.ultima_actividad = now
+        db.session.add(ticket)
+        db.session.commit()
 
-    if action not in {"handoff", "accept_handoff", "resume_ai"}:
+    if action not in {"handoff", "accept_handoff", "resume_ai"} and not (
+        action == "reply" and (reply_outbox_enabled or reply_replayed)
+    ):
         realtime_state_events = _emit_legacy_claim_realtime_state(
             ticket,
             action=action,
             previous_status=previous_status,
         )
 
-    if action == "reply" and recent_comment is not None:
+    if (
+        action == "reply"
+        and recent_comment is not None
+        and not reply_outbox_enabled
+        and not reply_replayed
+    ):
         delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(ticket, body, recent_comment)
         realtime_emitted = _emit_legacy_claim_realtime_reply(ticket, recent_comment, current_user)
 
     external_dispatch = bool(delivery_results and any(delivery_results.values()))
     delivery_reason = None
     if action == "reply":
-        delivery_reason = (
-            "external_dispatch_confirmed"
-            if external_dispatch
-            else (dispatch_error_reason or "external_dispatch_no_channel_confirmed")
-        )
+        if reply_outbox_enabled:
+            delivery_reason = (
+                "idempotent_replay_domain_effects_preserved"
+                if reply_replayed and reply_outbox_effect_count
+                else (
+                    "idempotent_replay_no_redispatch"
+                    if reply_replayed
+                    else "domain_effects_durably_staged"
+                )
+            )
+        elif reply_replayed:
+            delivery_reason = "idempotent_replay_no_redispatch"
+        else:
+            delivery_reason = (
+                "provider_accepted"
+                if external_dispatch
+                else (dispatch_error_reason or "external_dispatch_no_channel_confirmed")
+            )
     delivery = _inbox_action_delivery_payload(
         action=action,
         channel=(
@@ -5089,10 +5322,18 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         ),
         timeline_updated=timeline_updated,
         source_model="MunicipioTicket",
-        status="sent" if external_dispatch else None,
         reason=delivery_reason,
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
+        requested_channels=(
+            ["email", "sms", "whatsapp", "realtime"]
+            if action == "reply" and reply_outbox_effect_count
+            else None
+        ),
+        durably_staged=(
+            action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
+        ),
+        idempotent_replay=action == "reply" and reply_replayed,
     )
     delivery["realtime"] = {
         "emitted": bool(realtime_emitted or realtime_state_events),
@@ -5101,6 +5342,20 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         "room": f"ticket_municipio_{ticket.id}",
         "fallback": "http_polling",
     }
+    if action == "reply":
+        delivery["idempotency"] = {
+            "contract_version": "inbox.reply_idempotency.v1",
+            "replayed": reply_replayed,
+            "source": reply_idempotency_source,
+            "raw_value_persisted": False,
+        }
+    if action == "reply" and reply_outbox_enabled:
+        delivery["outbox"] = {
+            "durably_staged": bool(reply_outbox_effect_count),
+            "effect_count": reply_outbox_effect_count,
+            "worker_authoritative": bool(reply_outbox_effect_count),
+            "direct_dispatch_performed": False,
+        }
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
     ticket_payload = _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status)
 
@@ -5295,8 +5550,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         ),
         timeline_updated=timeline_updated,
         source_model="TenantTicket",
-        status="sent" if external_dispatch else None,
-        reason=("external_dispatch_confirmed" if external_dispatch else dispatch_reason),
+        reason=("provider_accepted" if external_dispatch else dispatch_reason),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
         requested_channels=requested_channels,

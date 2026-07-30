@@ -10,6 +10,7 @@ from models import (
     SugerenciaCiudadano,
     TicketComentario,
     TicketSatisfaccion,
+    TenantProfile,
     User,
 )
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
@@ -32,6 +33,14 @@ class MunicipalStatsServiceTest(unittest.TestCase):
         )
         self.admin.set_password("secret")
         db.session.add(self.admin)
+        db.session.commit()
+        self.tenant = TenantProfile(
+            slug="municipal-stats-service",
+            nombre="Municipio stats",
+            tipo="municipio",
+            municipio_id=self.admin.id,
+        )
+        db.session.add(self.tenant)
         db.session.commit()
 
     def tearDown(self):

@@ -1,7 +1,8 @@
 from app import create_app, db
 from config import TestingConfig
-from routes.encuestas_public import _public_error_response, _rate_buckets, _rate_limit
+from routes.encuestas_public import _public_error_response
 from services.encuestas_service import EncuestaError
+from services.public_survey_intake import enforce_public_survey_intake
 
 
 def test_public_encuestas_defaults_to_config_owner(client):
@@ -75,16 +76,43 @@ def test_internal_error_returns_json():
     assert payload["request_id"]
 
 
-def test_public_encuestas_rate_limit_respects_config(app):
+def test_public_encuestas_rate_limit_respects_config(app, monkeypatch):
     ip = "203.0.113.10"
-    with app.app_context():
-        app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 2
-        app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
-        _rate_buckets.pop(ip, None)
+    with app.test_request_context(headers={"X-Forwarded-For": ip}):
+        monkeypatch.setitem(app.config, "PUBLIC_ENCUESTAS_RATE_LIMIT", 2)
+        monkeypatch.setitem(app.config, "PUBLIC_ENCUESTAS_RATE_PERIOD", 60)
+        monkeypatch.setitem(
+            app.config,
+            "CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE",
+            "false",
+        )
 
-        assert _rate_limit(ip) is True
-        assert _rate_limit(ip) is True
-        assert _rate_limit(ip) is False
+        first = enforce_public_survey_intake(
+            "unit-rate-survey",
+            {},
+            preferred_tenant_id=None,
+            request_id="unit-rate-1",
+            synthetic=True,
+        )
+        second = enforce_public_survey_intake(
+            "unit-rate-survey",
+            {},
+            preferred_tenant_id=None,
+            request_id="unit-rate-2",
+            synthetic=True,
+        )
+        blocked = enforce_public_survey_intake(
+            "unit-rate-survey",
+            {},
+            preferred_tenant_id=None,
+            request_id="unit-rate-3",
+            synthetic=True,
+        )
+
+        assert first.allowed is True
+        assert second.allowed is True
+        assert blocked.allowed is False
+        assert blocked.reason_code == "rate_limited"
 
 
 def test_public_survey_error_response_has_reason_and_request_id(app):

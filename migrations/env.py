@@ -24,6 +24,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from extensions import db
 import models  # Ensure all models are imported
 import models_memory # Ensure memory models are imported for Alembic
+import models_interviews  # Ensure assessment/interview models are imported
+import models_survey_governance  # Ensure survey release models are imported
+import models_voice_lifecycle  # Ensure voice consent/lifecycle models are imported
 
 target_metadata = db.metadata
 

@@ -30,6 +30,7 @@ from services.meta_flow_runtime import (
     ORDER_FLOW_ID,
     SURVEY_FLOW_ID,
     apply_whatsapp_flow_completion,
+    replay_whatsapp_flow_completion,
 )
 from services.survey_response_effects import dispatch_survey_response_effects
 from services.whatsapp_flow_security import consume_whatsapp_flow_interaction
@@ -354,14 +355,27 @@ def test_order_completion_is_idempotent_and_cannot_rewrite_applied_data(client):
             "confirm_order": True,
         },
     )
-    apply_whatsapp_flow_completion(
+    assert consume_whatsapp_flow_interaction(
+        interaction_id=interaction.id,
+        tenant_id=tenant.id,
+        inbound_message_sid="SM-FLOW-ORDER-REPLAY-1",
+        commit=False,
+    ) is True
+    first_response = apply_whatsapp_flow_completion(
         tenant_id=tenant.id,
         interaction_id=interaction.id,
         submission=first,
     )
     db.session.commit()
 
-    replay = _submission(
+    replay_response = replay_whatsapp_flow_completion(
+        tenant_id=tenant.id,
+        interaction_id=interaction.id,
+        submission=first,
+    )
+    assert replay_response == first_response
+
+    conflicting_replay = _submission(
         interaction,
         {
             "full_name": "Nombre alterado",
@@ -370,15 +384,15 @@ def test_order_completion_is_idempotent_and_cannot_rewrite_applied_data(client):
             "confirm_order": True,
         },
     )
-    replay_response = apply_whatsapp_flow_completion(
-        tenant_id=tenant.id,
-        interaction_id=interaction.id,
-        submission=replay,
-    )
-    db.session.commit()
+    with pytest.raises(MetaFlowActionError) as exc_info:
+        replay_whatsapp_flow_completion(
+            tenant_id=tenant.id,
+            interaction_id=interaction.id,
+            submission=conflicting_replay,
+        )
+    assert exc_info.value.code == "flow_completion_payload_conflict"
 
     db.session.refresh(order)
-    assert replay_response["fuente"] == "whatsapp_flow_order_completed"
     assert order.buyer_name == "Primer Cliente"
     assert order.buyer_phone == "+5491112345678"
     assert order.delivery_address["address"] == "Direccion valida 10"
@@ -470,15 +484,17 @@ def test_survey_completion_persists_one_canonical_vote_and_is_idempotent(client)
         resource_id=str(saved.id),
     ).count() == 1
 
-    replay = apply_whatsapp_flow_completion(
+    replay = replay_whatsapp_flow_completion(
         tenant_id=tenant.id,
         interaction_id=interaction.id,
         submission=submission,
-        anon_id="+5491112345678",
     )
     db.session.commit()
 
-    assert replay["entity"] == {"kind": "survey_response", "id": str(saved.id)}
+    assert replay == {
+        key: value for key, value in response.items() if key != "realtime_event"
+    }
+    assert "realtime_event" not in replay
     assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 1
     assert SurveyResponseEffect.query.filter_by(
         tenant_id=tenant.id,

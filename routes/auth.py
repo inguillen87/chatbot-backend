@@ -32,6 +32,7 @@ import base64
 from services.google_auth import login_o_crear_usuario
 from services.pymes import get_or_create_pyme_user_by_token
 from services.tenant_resolver import resolve_tenant_only
+from services.tenant_ticket_scope import resolve_unique_tenant_for_owner
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
 from services.auth_notification_service import send_verification_email
@@ -124,6 +125,7 @@ from utils.auth_helpers import (
     obtener_token,
     get_or_create_anon_id,
     generar_token,
+    admin_surface_access_allowed,
     is_user_auth_disabled,
     is_clerk_managed_user,
     is_demo_user_account,
@@ -266,16 +268,11 @@ def _tenant_for_owner(owner: Optional[User]) -> Optional[TenantProfile]:
     if owner is None:
         return None
 
-    return (
-        TenantProfile.query.filter(
-            or_(
-                TenantProfile.municipio_id == owner.id,
-                TenantProfile.pyme_id == owner.id,
-            )
-        )
-        .order_by(TenantProfile.id.desc())
-        .first()
-    )
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner.id)
+    except ValueError:
+        return None
+    return resolution.tenant if resolution.status == "unique" else None
 
 
 def _tenant_owner(tenant: Optional[TenantProfile]) -> Optional[User]:
@@ -1654,7 +1651,11 @@ def _run_post_login_migrations(*, app, user_id: int, tenant_id: Optional[int], a
         try:
             from services.ticket_service import servicio_tickets
 
-            servicio_tickets.migrar_tickets_de_anonimo(anon_id, user_id)
+            servicio_tickets.migrar_tickets_de_anonimo(
+                anon_id,
+                user_id,
+                tenant_id=tenant_id,
+            )
         except Exception as exc:  # pragma: no cover - defensive logging
             app.logger.warning(
                 "Failed to migrate anon tickets during deferred login flow; error_type=%s",
@@ -2149,10 +2150,10 @@ def login_demo():
     return response
 
 def solo_admin_requerido(f):
-    """Permite solo a usuarios administradores (empresa_id None)."""
+    """Allow tenant-bound admins or an explicitly authorized superadmin."""
     @wraps(f)
     def decorated(user: User, *args, **kwargs):
-        if user.empresa_id is not None:
+        if not admin_surface_access_allowed(user, allow_employee=False):
             return jsonify({"error": "Permisos insuficientes"}), 403
         return f(user, *args, **kwargs)
 
@@ -2731,7 +2732,11 @@ def register():
             if anon_id:
                 try:
                     from services.ticket_service import servicio_tickets
-                    servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+                    servicio_tickets.migrar_tickets_de_anonimo(
+                        anon_id,
+                        nuevo.id,
+                        tenant_id=getattr(tenant, "id", None),
+                    )
 
                     # Migrate cart
                     from routes.market import _get_or_create_cart_for_user
@@ -3043,7 +3048,11 @@ def register_from_widget(user):
         # --------- BLOQUE CRÍTICO --------------
         if anon_id:
             from services.ticket_service import servicio_tickets
-            servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+            servicio_tickets.migrar_tickets_de_anonimo(
+                anon_id,
+                nuevo.id,
+                tenant_id=getattr(owner_tenant, "id", None),
+            )
         # --------- FIN BLOQUE CRÍTICO ----------
 
         # Generar el token JWT
@@ -3127,7 +3136,11 @@ def login_from_widget(owner_user):
 
     if anon_id:
         from services.ticket_service import servicio_tickets
-        servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
+        servicio_tickets.migrar_tickets_de_anonimo(
+            anon_id,
+            user.id,
+            tenant_id=getattr(owner_tenant, "id", None),
+        )
 
     _attach_user_to_tenant(user, owner_tenant)
     db.session.add(user)
@@ -3238,76 +3251,21 @@ def chatuser_register_panel():
             400,
         )
 
-    # Check if user with this email already exists
-    existing_user = _user_query().filter(func.lower(User.email) == func.lower(email.strip())).first()
+    # Existing accounts must authenticate through the login endpoint.  Fetch
+    # only an opaque existence marker so this registration path can never be
+    # reused to mutate or issue a session for that account.
+    existing_account = _user_query().with_entities(User.id).filter(
+        func.lower(User.email) == func.lower(email.strip())
+    ).limit(1).first()
 
-    if existing_user:
-        current_app.logger.info(
-            "[chatuser_register_panel] Existing account found user_id=%s owner_id=%s",
-            existing_user.id,
-            owner_user.id,
+    if existing_account:
+        current_app.logger.warning(
+            "[chatuser_register_panel] Registration rejected because account already exists"
         )
-        # User exists. Check if they belong to the same 'empresa'
-        if existing_user.empresa_id == owner_user.id:
-            # Email exists and is associated with the same empresa_id. Simulate login.
-            current_app.logger.info(
-                "[chatuser_register_panel] Existing account already belongs to owner_id=%s",
-                owner_user.id,
-            )
-            if owner_municipio_id and existing_user.municipio_id != owner_municipio_id:
-                existing_user.municipio_id = owner_municipio_id
-            if not existing_user.tipo_chat:
-                existing_user.tipo_chat = owner_tipo_chat
-            if telefono and not existing_user.telefono:
-                existing_user.telefono = telefono
-            _attach_user_to_tenant(existing_user, owner_tenant)
-            db.session.add(existing_user)
-            db.session.commit()
-            # Migrate tickets if anon_id is present
-            if anon_id:
-                from services.ticket_service import servicio_tickets
-                servicio_tickets.migrar_tickets_de_anonimo(anon_id, existing_user.id)
-
-            # Generar el token JWT
-            jwt_payload = {
-                'user_id': existing_user.id,
-                'rol': existing_user.rol,
-                'tipo_chat': existing_user.tipo_chat,
-                'empresa_id': existing_user.empresa_id,
-                'municipio_id': existing_user.municipio_id,
-                'exp': datetime.utcnow() + timedelta(days=current_app.config.get("JWT_EXPIRATION_DAYS", 7))
-            }
-            jwt_token = jwt.encode(jwt_payload, current_app.config['SECRET_KEY'], algorithm="HS256")
-
-            resp = jsonify({
-                "id": existing_user.id,
-                "token": jwt_token,
-                "name": existing_user.name,
-                "email": existing_user.email,
-                "rol": existing_user.rol,
-                "tipo_chat": existing_user.tipo_chat or owner_tipo_chat,
-                "municipio_id": existing_user.municipio_id,
-                "empresa_id": existing_user.empresa_id,
-                "tenant_id": owner_tenant.id if owner_tenant else None,
-                "tenant_slug": owner_tenant.slug if owner_tenant else None,
-                "already_registered": True,
-                "message": "Usuario ya registrado con esta entidad.",
-                "marketplace": _tenant_market_payload(owner_tenant),
-            })
-            if anon_id:
-                resp.headers["X-Anon-Id"] = anon_id
-                resp.headers["Anon-Id"] = anon_id
-            return resp, 200
-        else:
-            # Email exists but is associated with a different empresa_id.
-            current_app.logger.warning(
-                "[chatuser_register_panel] Existing account belongs to a different tenant"
-            )
-            return jsonify({
-                "error": "El email ya está registrado en otra entidad.",
-                "already_registered": True, # From the perspective of the email, it is registered.
-                "conflicting_entity": True # More specific flag
-            }), 409
+        return jsonify({
+            "error": "No se pudo completar el registro. Iniciá sesión con tu cuenta existente.",
+            "already_registered": True,
+        }), 409
 
     # If user does not exist, proceed with creation
     current_app.logger.info(
@@ -3359,12 +3317,19 @@ def chatuser_register_panel():
 
         if anon_id:
             from services.ticket_service import servicio_tickets
-            servicio_tickets.migrar_tickets_de_anonimo(anon_id, nuevo.id)
+            servicio_tickets.migrar_tickets_de_anonimo(
+                anon_id,
+                nuevo.id,
+                tenant_id=getattr(owner_tenant, "id", None),
+            )
 
         # Update ChatSessionContext
         chat_session_id = request.headers.get("X-Chat-Session-Id")
-        if chat_session_id:
-            chat_context = ChatSessionContext.query.get(chat_session_id)
+        if chat_session_id and owner_tenant:
+            chat_context = ChatSessionContext.query.filter_by(
+                chat_session_id=chat_session_id,
+                tenant_id=owner_tenant.id,
+            ).one_or_none()
             if chat_context:
                 chat_context.user_id = nuevo.id
                 chat_context.anon_id = None
@@ -3453,7 +3418,18 @@ def chatuser_login_panel():
     if not email or not password:
         return jsonify({"error": "Email y contraseña requeridos."}), 400
 
-    user = _user_query().filter_by(email=email.strip().lower(), empresa_id=owner_user.id).first()
+    user_query = _user_query().filter_by(
+        email=email.strip().lower(),
+        empresa_id=owner_user.id,
+    )
+    if owner_tenant is not None:
+        user_query = user_query.filter(
+            or_(
+                User.tenant_id == owner_tenant.id,
+                User.tenant_id.is_(None),
+            )
+        )
+    user = user_query.one_or_none()
     if not user or is_user_auth_disabled(user) or not user.check_password(password):
         return jsonify({"error": "Credenciales inválidas."}), 401
     if not _tenant_allows_auth(user, owner_tenant):
@@ -3461,7 +3437,11 @@ def chatuser_login_panel():
 
     if anon_id:
         from services.ticket_service import servicio_tickets
-        servicio_tickets.migrar_tickets_de_anonimo(anon_id, user.id)
+        servicio_tickets.migrar_tickets_de_anonimo(
+            anon_id,
+            user.id,
+            tenant_id=getattr(owner_tenant, "id", None),
+        )
 
     _attach_user_to_tenant(user, owner_tenant)
     db.session.add(user)

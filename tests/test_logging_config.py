@@ -2,7 +2,12 @@ import io
 import logging
 import unittest
 
-from services.logging_config import TruncatingFormatter, log_text_block
+from services.logging_config import (
+    PrivacyRedactionFilter,
+    TruncatingFormatter,
+    log_text_block,
+    sanitize_log_message,
+)
 
 
 class LoggingConfigTest(unittest.TestCase):
@@ -38,7 +43,71 @@ class LoggingConfigTest(unittest.TestCase):
         self.assertEqual(lines[0], "data (length 50):")
         self.assertEqual(len(lines), 4)
 
+    def test_sanitizer_removes_customer_pii_and_provider_secrets(self) -> None:
+        original = (
+            "email=vecino@example.com telefono=+54 9 261 555 0101 "
+            "DNI: 32877851 direccion='San Martin 123' "
+            "Authorization: Bearer live-secret PIN=167779 "
+            "lat=-33.1234 lng=-68.5678"
+        )
+
+        sanitized = sanitize_log_message(original)
+
+        for private_value in (
+            "vecino@example.com",
+            "+54 9 261 555 0101",
+            "32877851",
+            "San Martin 123",
+            "live-secret",
+            "167779",
+            "-33.1234",
+            "-68.5678",
+        ):
+            self.assertNotIn(private_value, sanitized)
+        self.assertGreaterEqual(sanitized.count("[REDACTED]"), 6)
+
+    def test_filter_redacts_interpolated_arguments_before_plain_formatter(self) -> None:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.addFilter(PrivacyRedactionFilter())
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger = logging.getLogger("privacy-filter-test")
+        logger.handlers.clear()
+        logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+        logger.info("Mensaje=%s email=%s", "necesito ayuda", "persona@example.com")
+
+        output = stream.getvalue()
+        self.assertNotIn("necesito ayuda", output)
+        self.assertNotIn("persona@example.com", output)
+        self.assertIn("[REDACTED]", output)
+
+    def test_filter_redacts_provider_exception_details(self) -> None:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.addFilter(PrivacyRedactionFilter())
+        handler.setFormatter(logging.Formatter("%(message)s\n%(exc_text)s"))
+        logger = logging.getLogger("privacy-exception-test")
+        logger.handlers.clear()
+        logger.addHandler(handler)
+        logger.setLevel(logging.ERROR)
+        logger.propagate = False
+
+        try:
+            raise RuntimeError(
+                "request failed api_key=live-secret email=persona@example.com"
+            )
+        except RuntimeError:
+            logger.exception("Provider request failed")
+
+        output = stream.getvalue()
+        self.assertNotIn("live-secret", output)
+        self.assertNotIn("persona@example.com", output)
+        self.assertIn("RuntimeError", output)
+        self.assertIn("[REDACTED]", output)
+
 
 if __name__ == "__main__":
     unittest.main()
-

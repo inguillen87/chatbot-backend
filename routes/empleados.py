@@ -14,7 +14,7 @@ from routes.auth import token_requerido, solo_admin_requerido
 from services.logic import es_rubro_publico
 import uuid
 from datetime import datetime, timedelta
-from sqlalchemy import func, or_
+from sqlalchemy import and_, false, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from routes.ticket import TICKET_ALLOWED_STATES
 from services.categorias_municipio import CATEGORIAS_RECLAMO
@@ -24,6 +24,10 @@ from services.employee_routing import (
     normalize_scope_list,
     tenant_open_ticket_snapshots,
     tenant_operational_dimensions,
+)
+from services.tenant_ticket_scope import (
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
 )
 
 def _normalize_categorias_input(categorias_raw):
@@ -91,16 +95,34 @@ def _tenant_for_current_user(current_user: User) -> TenantProfile | None:
         tenant = db.session.get(TenantProfile, current_user.tenant_id)
         if tenant:
             return tenant
-    if getattr(current_user, "tipo_chat", None) == "municipio":
-        return TenantProfile.query.filter(
-            or_(
-                TenantProfile.municipio_id == current_user.id,
-                TenantProfile.id == getattr(current_user, "municipio_id", None),
-            )
-        ).first()
-    if getattr(current_user, "tipo_chat", None) in {"pyme", "empresa"}:
-        return TenantProfile.query.filter_by(pyme_id=current_user.id).first()
-    return TenantProfile.query.filter_by(slug=getattr(current_user, "tenant_slug", None)).first()
+    resolved: dict[int, TenantProfile] = {}
+    owner_ids = []
+    for raw_owner_id in (
+        getattr(current_user, "municipio_id", None),
+        getattr(current_user, "pyme_id", None),
+        getattr(current_user, "empresa_id", None),
+        getattr(current_user, "id", None) if getattr(current_user, "rol", None) == "admin" else None,
+    ):
+        try:
+            owner_id = int(raw_owner_id)
+        except (TypeError, ValueError):
+            continue
+        if owner_id > 0 and owner_id not in owner_ids:
+            owner_ids.append(owner_id)
+    for owner_id in owner_ids:
+        try:
+            resolution = resolve_unique_tenant_for_owner(owner_id)
+        except ValueError:
+            return None
+        if resolution.status != "unique" or resolution.tenant is None:
+            return None
+        resolved[int(resolution.tenant.id)] = resolution.tenant
+    if len(resolved) == 1:
+        return next(iter(resolved.values()))
+    tenant_slug = str(getattr(current_user, "tenant_slug", None) or "").strip()
+    if not tenant_slug:
+        return None
+    return TenantProfile.query.filter_by(slug=tenant_slug).one_or_none()
 
 
 def _config_category_values(config: dict | None) -> list[str]:
@@ -202,9 +224,21 @@ def _sync_employee_scope(user: User, categorias: list[str] | None, scope_raw: di
 
 def _empleados_query(current_user: User):
     tenant = _tenant_for_current_user(current_user)
-    ownership_filters = [User.empresa_id == current_user.id]
-    if tenant:
-        ownership_filters.append(User.tenant_id == tenant.id)
+    if tenant is None:
+        return User.query.filter(false())
+    legacy_owner_ids = [
+        value
+        for value in (tenant.municipio_id, tenant.pyme_id)
+        if value is not None
+    ]
+    ownership_filters = [User.tenant_id == tenant.id]
+    if legacy_owner_ids:
+        ownership_filters.append(
+            and_(
+                User.tenant_id.is_(None),
+                User.empresa_id.in_(legacy_owner_ids),
+            )
+        )
     return User.query.filter(
         or_(*ownership_filters),
         or_(User.rol == "empleado", User.es_empleado.is_(True)),
@@ -280,26 +314,40 @@ def _build_ticket_query_for_owner(current_user: User):
     tenant boundaries (municipio vs pyme).
     """
 
-    if current_user.tipo_chat == "municipio" and current_user.municipio_id:
+    tenant = _tenant_for_current_user(current_user)
+    if tenant is None:
+        return None, None
+    if tenant.municipio_id is not None:
         return (
-            MunicipioTicket.query.filter(
-                MunicipioTicket.municipio_id == current_user.municipio_id
-            ),
+            scoped_municipio_ticket_query(tenant),
             MunicipioTicket,
         )
-    if current_user.tipo_chat == "pyme":
-        tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
-        if tenant_pyme:
-            return (
-                PymeTicket.query.filter(PymeTicket.tenant_id == tenant_pyme.id),
-                PymeTicket,
-            )
-        elif current_user.rubro_id:
-            return (
-                PymeTicket.query.filter(PymeTicket.rubro_id == current_user.rubro_id),
-                PymeTicket,
-            )
+    if tenant.pyme_id is not None:
+        return (
+            PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id),
+            PymeTicket,
+        )
     return None, None
+
+
+def _employee_comment_query(current_user: User, employee_id: int):
+    """Scope employee activity to tickets owned by the actor's exact tenant."""
+
+    tenant = _tenant_for_current_user(current_user)
+    query = TicketComentario.query.filter_by(user_id=employee_id, es_admin=True)
+    if tenant is None:
+        return query.filter(false())
+    if tenant.municipio_id is not None:
+        municipal_ticket_ids = scoped_municipio_ticket_query(tenant).with_entities(
+            MunicipioTicket.id
+        )
+        return query.filter(TicketComentario.municipio_ticket_id.in_(municipal_ticket_ids))
+    if tenant.pyme_id is not None:
+        pyme_ticket_ids = PymeTicket.query.filter(
+            PymeTicket.tenant_id == tenant.id
+        ).with_entities(PymeTicket.id)
+        return query.filter(TicketComentario.pyme_ticket_id.in_(pyme_ticket_ids))
+    return query.filter(false())
 
 empleados_bp = Blueprint('empleados', __name__, url_prefix='/empleados')
 
@@ -315,11 +363,9 @@ def listar_empleados(current_user: User):
     open_statuses = [estado for estado in TICKET_ALLOWED_STATES if estado != "cerrado"]
 
     for e in empleados:
-        tickets_respondidos_mes = db.session.query(func.count(TicketComentario.id)).filter(
-            TicketComentario.user_id == e.id,
-            TicketComentario.es_admin == True, # Comentario hecho por un admin/empleado
+        tickets_respondidos_mes = _employee_comment_query(current_user, e.id).filter(
             TicketComentario.fecha >= fecha_inicio_mes
-        ).scalar() or 0
+        ).count()
 
         categorias_serializadas, categorias_nombres = _serialize_empleado_categorias(e)
         normalized_categories = [
@@ -466,7 +512,7 @@ def historial_empleado(current_user: User, emp_id: int):
     fecha_inicio_str = request.args.get('fecha_inicio')
     fecha_fin_str = request.args.get('fecha_fin')
 
-    query_comentarios = TicketComentario.query.filter_by(user_id=emp_id, es_admin=True)
+    query_comentarios = _employee_comment_query(current_user, emp_id)
 
     try:
         if fecha_inicio_str:
@@ -505,11 +551,9 @@ def obtener_empleado(current_user: User, emp_id: int):
         return jsonify({"error": "Empleado no encontrado"}), 404
 
     fecha_inicio_mes = datetime.utcnow() - timedelta(days=30)
-    tickets_respondidos_mes = db.session.query(func.count(TicketComentario.id)).filter(
-        TicketComentario.user_id == empleado.id,
-        TicketComentario.es_admin == True,
+    tickets_respondidos_mes = _employee_comment_query(current_user, empleado.id).filter(
         TicketComentario.fecha >= fecha_inicio_mes
-    ).scalar() or 0
+    ).count()
     ticket_query_base, TicketModel = _build_ticket_query_for_owner(current_user)
     categorias_serializadas, categorias_nombres = _serialize_empleado_categorias(empleado)
     normalized_categories = [

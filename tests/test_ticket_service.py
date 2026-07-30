@@ -25,6 +25,7 @@ class _DummySession:
 models_stub.MunicipioTicket = type('MunicipioTicket', (), {})
 models_stub.PymeTicket = type('PymeTicket', (), {})
 models_stub.TicketComentario = type('TicketComentario', (), {})
+models_stub.TicketDomainEffectReceipt = type('TicketDomainEffectReceipt', (), {})
 models_stub.Conversacion = type('Conversacion', (), {})
 class DummySurvey(SimpleNamespace):
     pass
@@ -53,8 +54,27 @@ class TicketServiceTests(unittest.TestCase):
         self.email_cliente_patch = patch("services.email_service.enviar_email_ticket_cliente", return_value=True)
         self.email_admin_patch.start()
         self.email_cliente_patch.start()
+        self.ticket_scope_resolution_patch = patch.object(
+            ts,
+            "resolve_unique_tenant_for_owner",
+            side_effect=lambda owner_id: SimpleNamespace(
+                status="unique",
+                tenant=SimpleNamespace(id=owner_id, municipio_id=owner_id, pyme_id=None),
+            ),
+        )
+        self.ticket_scope_query_patch = patch.object(
+            ts,
+            "scoped_municipio_ticket_query",
+            side_effect=lambda tenant, query=None: (
+                query or models_stub.MunicipioTicket.query
+            ).filter_by(municipio_id=tenant.municipio_id),
+        )
+        self.ticket_scope_resolution_patch.start()
+        self.ticket_scope_query_patch.start()
 
     def tearDown(self):
+        self.ticket_scope_query_patch.stop()
+        self.ticket_scope_resolution_patch.stop()
         self.email_admin_patch.stop()
         self.email_cliente_patch.stop()
         self.mod_patch.stop()
@@ -250,7 +270,14 @@ class TicketServiceTests(unittest.TestCase):
             'detalles': 'algo'
         }
 
-        service.crear_nuevo_ticket('municipio', ticket_data)
+        # This unit exercises phone preservation, while tenant ownership is
+        # covered by the dedicated tenant-scope tests.
+        with patch.object(
+            ts,
+            "normalize_municipio_ticket_write_scope",
+            side_effect=lambda data: {**data, "tenant_id": 9, "municipio_id": 9},
+        ):
+            service.crear_nuevo_ticket('municipio', ticket_data)
         self.assertEqual(dummy_creator.last_ticket_data['telefono_vecino'], '351122395')
 
     def test_ticket_creation_log_excludes_citizen_pii_and_tracking_pin(self):
@@ -288,7 +315,14 @@ class TicketServiceTests(unittest.TestCase):
             "consulta_pin": "654321",
         }
 
-        with patch.object(ts.logger, "info") as info_log:
+        with (
+            patch.object(
+                ts,
+                "normalize_municipio_ticket_write_scope",
+                side_effect=lambda data: {**data, "tenant_id": 9, "municipio_id": 9},
+            ),
+            patch.object(ts.logger, "info") as info_log,
+        ):
             service.crear_nuevo_ticket("municipio", ticket_data)
 
         rendered_logs = " ".join(

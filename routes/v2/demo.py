@@ -16,6 +16,7 @@ from routes.auth import (
     demo_catalog as legacy_demo_catalog,
 )
 from services.tenant_resolver import resolve_tenant_only
+from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.demo_experience_contract import build_demo_experience_contract
 from services.demo_registry import load_demo_rubros
 from services.demo_pillar_catalog import (
@@ -2200,15 +2201,16 @@ def _resolve_preview_tenant(tenant_slug: str) -> TenantProfile | None:
 
 def _recent_demo_municipio_tickets(tenant_slug: str, chat_session_id: str = "") -> list[MunicipioTicket]:
     tenant = _resolve_preview_tenant(tenant_slug)
+    if tenant is None:
+        return []
     session_filter = str(chat_session_id or "").strip()
-    query = MunicipioTicket.query.order_by(MunicipioTicket.fecha.desc()).limit(80)
+    query = (
+        scoped_municipio_ticket_query(tenant)
+        .order_by(MunicipioTicket.fecha.desc())
+        .limit(80)
+    )
     tickets: list[MunicipioTicket] = []
     for ticket in query.all():
-        if tenant:
-            same_tenant = bool(getattr(ticket, "tenant_id", None) and ticket.tenant_id == tenant.id)
-            same_owner = bool(getattr(tenant, "municipio_id", None) and ticket.municipio_id == tenant.municipio_id)
-            if not same_tenant and not same_owner:
-                continue
         if _is_runtime_demo_ticket(ticket):
             if session_filter:
                 details = _demo_ticket_details(ticket)

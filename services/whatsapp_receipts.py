@@ -9,6 +9,7 @@ CLAIM_CREATED_TEMPLATE_VARIABLES = {
     "1": "claim_code",
     "2": "tracking_path",
 }
+CLAIM_FOLLOWUP_WINDOW_SECONDS = 24 * 60 * 60
 
 
 def _normalize_ticket_code(ticket_nro: Any) -> tuple[str, str]:
@@ -19,7 +20,11 @@ def _normalize_ticket_code(ticket_nro: Any) -> tuple[str, str]:
     return ticket_code, ticket_numeric
 
 
-def build_claim_created_followup_text(consulta_pin: Optional[str]) -> str:
+def build_claim_created_followup_text(
+    consulta_pin: Optional[str],
+    *,
+    callback_requested: bool = False,
+) -> str:
     """Return the short, non-duplicative companion to the claim receipt.
 
     The template (or its plain-text fallback) owns the public claim code and
@@ -36,6 +41,11 @@ def build_claim_created_followup_text(consulta_pin: Optional[str]) -> str:
         "Respondé a este chat con una foto, un audio o un comentario y lo "
         "vamos a asociar al mismo reclamo."
     )
+    if callback_requested:
+        lines.append(
+            "📞 Tu solicitud de llamada quedó registrada como pendiente. "
+            "Esto no confirma que la llamada ya se haya realizado."
+        )
     return "\n".join(lines)
 
 

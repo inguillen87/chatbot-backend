@@ -1,9 +1,11 @@
+import json
 import unittest
 import time
+from unittest.mock import patch
 
 from app import create_app, db
 from config import TestingConfig
-from models import PymeTicket, TenantProfile, User
+from models import AuditEvent, PymeTicket, TenantProfile, User
 from models_education import (
     AcademicLevel,
     Campus,
@@ -16,6 +18,7 @@ from models_education import (
     CourseSection,
 )
 from services.education_case_service import create_school_case_alias_for_ticket
+from services.education_access_policy import EDUCATION_GUARDIANS_READ
 from utils.auth_helpers import generar_token
 
 
@@ -273,30 +276,45 @@ class TestEducationRoutes(unittest.TestCase):
     def test_guardian_lookup_verify_and_family_context(self):
         lookup_resp = self.client.post(
             "/api/v1/education/guardians/lookup",
+            headers=self.auth_header,
             json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
         )
         self.assertEqual(lookup_resp.status_code, 200)
         self.assertEqual(lookup_resp.get_json()["verification_status"], "pending")
+        self.assertEqual(lookup_resp.get_json()["lookup_scope"], "operator")
 
         legacy_lookup_resp = self.client.post(
             "/api/v1/education/guardian/lookup",
+            headers=self.auth_header,
             json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
         )
         self.assertEqual(legacy_lookup_resp.status_code, 200)
 
+        evidence_ref = "family-record-2026-001"
         verify_resp = self.client.post(
             "/api/v1/education/guardians/verify",
-            json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
+            headers=self.auth_header,
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "verification_method": "institutional_record",
+                "evidence_ref": evidence_ref,
+            },
         )
         self.assertEqual(verify_resp.status_code, 200)
         self.assertEqual(verify_resp.get_json()["verification_status"], "verified")
+        self.assertFalse(verify_resp.get_json()["verification"]["phone_ownership_verified"])
 
         attempts = FamilyVerificationAttempt.query.filter_by(tenant_id=self.tenant.id).all()
         self.assertEqual(len(attempts), 1)
         self.assertEqual(attempts[0].status, "verified")
+        self.assertNotIn(evidence_ref, attempts[0].verification_value)
+        self.assertNotIn(evidence_ref, json.dumps(self.guardian.verification_context))
+        self.assertFalse(self.guardian.verification_context["phone_ownership_verified"])
 
         link_resp = self.client.post(
             "/api/v1/education/guardians/link-student",
+            headers=self.auth_header,
             json={
                 "tenant_id": self.tenant.id,
                 "guardian_id": self.guardian.id,
@@ -309,6 +327,20 @@ class TestEducationRoutes(unittest.TestCase):
         link_payload = link_resp.get_json()
         self.assertEqual(link_payload["student"]["id"], self.student.id)
         self.assertTrue(link_payload["relationship"]["can_receive_sensitive_updates"])
+
+        audit_details = json.dumps(
+            [
+                event.details
+                for event in AuditEvent.query.filter(
+                    AuditEvent.tenant_id == self.tenant.id,
+                    AuditEvent.event_type.like("education.guardian.%"),
+                ).all()
+            ],
+            sort_keys=True,
+        )
+        self.assertNotIn(self.guardian.phone_number, audit_details)
+        self.assertNotIn(self.guardian.document_number, audit_details)
+        self.assertNotIn(evidence_ref, audit_details)
 
         family_resp = self.client.get(
             f"/api/v1/education/family/context?guardian_id={self.guardian.id}",
@@ -331,12 +363,447 @@ class TestEducationRoutes(unittest.TestCase):
         self.assertEqual(me_family_resp.get_json()["guardian"]["id"], self.guardian.id)
 
     def test_verify_guardian_rejects_unknown_tenant(self):
-        response = self.client.post(
-            "/api/v1/education/guardian/verify",
+        lookup_response = self.client.post(
+            "/api/v1/education/guardians/lookup",
+            headers=self.auth_header,
             json={"tenant_id": 999999, "phone_number": self.guardian.phone_number},
         )
-        self.assertEqual(response.status_code, 404)
-        self.assertEqual(response.get_json()["error"]["message"], "Tenant profile not found")
+        response = self.client.post(
+            "/api/v1/education/guardian/verify",
+            headers=self.auth_header,
+            json={
+                "tenant_id": 999999,
+                "guardian_id": self.guardian.id,
+                "verification_method": "institutional_record",
+                "evidence_ref": "family-record-2026-foreign",
+            },
+        )
+        self.assertEqual(lookup_response.status_code, 403)
+        self.assertEqual(
+            lookup_response.get_json()["reason_code"],
+            "education_cross_tenant_denied",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()["reason_code"], "education_cross_tenant_denied")
+        self.assertEqual(
+            AuditEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                event_type="education.guardian.lookup",
+            ).count(),
+            0,
+        )
+
+    def test_guardian_operations_reject_anonymous_requests_without_mutation(self):
+        lookup_response = self.client.post(
+            "/api/v1/education/guardians/lookup",
+            json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
+        )
+        verify_response = self.client.post(
+            "/api/v1/education/guardians/verify",
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "verification_method": "institutional_record",
+                "evidence_ref": "anonymous-proof-attempt",
+            },
+        )
+        link_response = self.client.post(
+            "/api/v1/education/guardians/link-student",
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "student_id": self.student.id,
+                "can_receive_sensitive_updates": False,
+            },
+        )
+
+        self.assertEqual(lookup_response.status_code, 401)
+        self.assertEqual(verify_response.status_code, 401)
+        self.assertEqual(link_response.status_code, 401)
+        db.session.refresh(self.guardian)
+        db.session.refresh(self.relation)
+        self.assertEqual(self.guardian.verification_status, "pending")
+        self.assertTrue(self.relation.can_receive_sensitive_updates)
+        self.assertEqual(
+            FamilyVerificationAttempt.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+
+    def test_guardian_phone_only_verification_fails_closed(self):
+        response = self.client.post(
+            "/api/v1/education/guardians/verify",
+            headers=self.auth_header,
+            json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json()["reason_code"], "education_guardian_proof_required")
+        db.session.refresh(self.guardian)
+        self.assertEqual(self.guardian.verification_status, "pending")
+        self.assertEqual(
+            FamilyVerificationAttempt.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+
+    def test_guardian_link_requires_verified_profile(self):
+        response = self.client.post(
+            "/api/v1/education/guardians/link-student",
+            headers=self.auth_header,
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "student_id": self.student.id,
+                "can_receive_sensitive_updates": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.get_json()["error"]["message"],
+            "Guardian must be verified before linking students",
+        )
+        db.session.refresh(self.relation)
+        self.assertTrue(self.relation.can_receive_sensitive_updates)
+
+    def test_guardian_verification_rolls_back_when_audit_commit_fails(self):
+        with patch.object(
+            db.session,
+            "commit",
+            side_effect=RuntimeError("simulated durable audit failure"),
+        ):
+            response = self.client.post(
+                "/api/v1/education/guardians/verify",
+                headers=self.auth_header,
+                json={
+                    "tenant_id": self.tenant.id,
+                    "guardian_id": self.guardian.id,
+                    "verification_method": "institutional_record",
+                    "evidence_ref": "audit-failure-proof",
+                },
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "education_guardian_audit_failed",
+        )
+        db.session.expire_all()
+        guardian = db.session.get(Guardian, self.guardian.id)
+        self.assertEqual(guardian.verification_status, "pending")
+        self.assertEqual(
+            FamilyVerificationAttempt.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+        self.assertEqual(
+            AuditEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                event_type="education.guardian.verified",
+            ).count(),
+            0,
+        )
+
+    def test_guardian_link_rolls_back_when_audit_commit_fails(self):
+        self.guardian.verification_status = "verified"
+        self.guardian.verification_context = {
+            "source": "institutional_attestation",
+            "phone_ownership_verified": False,
+        }
+        db.session.add(self.guardian)
+        db.session.commit()
+
+        with patch.object(
+            db.session,
+            "commit",
+            side_effect=RuntimeError("simulated durable audit failure"),
+        ):
+            response = self.client.post(
+                "/api/v1/education/guardians/link-student",
+                headers=self.auth_header,
+                json={
+                    "tenant_id": self.tenant.id,
+                    "guardian_id": self.guardian.id,
+                    "student_id": self.student.id,
+                    "can_receive_sensitive_updates": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "education_guardian_audit_failed",
+        )
+        db.session.expire_all()
+        relation = db.session.get(StudentGuardianRelation, self.relation.id)
+        guardian = db.session.get(Guardian, self.guardian.id)
+        self.assertTrue(relation.can_receive_sensitive_updates)
+        self.assertEqual(guardian.verification_status, "verified")
+        self.assertEqual(
+            AuditEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                event_type="education.guardian.student_linked",
+            ).count(),
+            0,
+        )
+
+    def test_guardian_employee_capabilities_are_operation_specific(self):
+        suffix = int(time.time() * 1000000)
+        employee = User(
+            email=f"edu-employee-{suffix}@chatboc.ar",
+            password_hash="hash",
+            name="Education Reader",
+            rol="empleado",
+            es_empleado=True,
+            tenant_id=self.tenant.id,
+            accesibilidad={},
+        )
+        db.session.add(employee)
+        db.session.commit()
+        token = generar_token(
+            employee.id,
+            "empleado",
+            "pyme",
+            municipio_id=None,
+            pyme_id=self.owner.id,
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+
+        denied_lookup_response = self.client.post(
+            "/api/v1/education/guardians/lookup",
+            headers=headers,
+            json={"tenant_id": self.tenant.id, "guardian_id": self.guardian.id},
+        )
+        self.assertEqual(denied_lookup_response.status_code, 403)
+        self.assertIn(
+            EDUCATION_GUARDIANS_READ,
+            denied_lookup_response.get_json()["missing_capabilities"],
+        )
+
+        employee.accesibilidad = {
+            "employee_scope": {"permissions": [EDUCATION_GUARDIANS_READ]}
+        }
+        db.session.add(employee)
+        db.session.commit()
+
+        lookup_response = self.client.post(
+            "/api/v1/education/guardians/lookup",
+            headers=headers,
+            json={"tenant_id": self.tenant.id, "guardian_id": self.guardian.id},
+        )
+        verify_response = self.client.post(
+            "/api/v1/education/guardians/verify",
+            headers=headers,
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "verification_method": "institutional_record",
+                "evidence_ref": "employee-proof-attempt",
+            },
+        )
+        link_response = self.client.post(
+            "/api/v1/education/guardians/link-student",
+            headers=headers,
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "student_id": self.student.id,
+            },
+        )
+
+        self.assertEqual(lookup_response.status_code, 200)
+        self.assertEqual(lookup_response.get_json()["lookup_scope"], "operator")
+        self.assertEqual(verify_response.status_code, 403)
+        self.assertIn(
+            "education.guardians.verify",
+            verify_response.get_json()["missing_capabilities"],
+        )
+        self.assertEqual(link_response.status_code, 403)
+        self.assertIn(
+            "education.guardians.link",
+            link_response.get_json()["missing_capabilities"],
+        )
+
+    def test_guardian_family_lookup_is_self_scoped_and_non_enumerable(self):
+        suffix = int(time.time() * 1000000)
+        family = User(
+            email=f"edu-family-{suffix}@chatboc.ar",
+            password_hash="hash",
+            name="Guardian Family",
+            rol="usuario",
+            es_empleado=False,
+            tenant_id=self.tenant.id,
+        )
+        unlinked_family = User(
+            email=f"edu-family-unlinked-{suffix}@chatboc.ar",
+            password_hash="hash",
+            name="Unlinked Family",
+            rol="usuario",
+            es_empleado=False,
+            tenant_id=self.tenant.id,
+        )
+        db.session.add_all([family, unlinked_family])
+        db.session.flush()
+        self.guardian.user_id = family.id
+        db.session.add(self.guardian)
+        db.session.commit()
+
+        family_token = generar_token(
+            family.id, "usuario", "pyme", municipio_id=None, pyme_id=self.owner.id
+        )
+        family_response = self.client.post(
+            "/api/v1/education/guardians/lookup",
+            headers={"Authorization": f"Bearer {family_token}"},
+            json={
+                "tenant_id": self.tenant.id,
+                "phone_number": "+5499999999999",
+                "document_number": "does-not-match",
+            },
+        )
+        self.assertEqual(family_response.status_code, 200)
+        self.assertEqual(family_response.get_json()["id"], self.guardian.id)
+        self.assertEqual(family_response.get_json()["lookup_scope"], "self")
+
+        unlinked_token = generar_token(
+            unlinked_family.id,
+            "usuario",
+            "pyme",
+            municipio_id=None,
+            pyme_id=self.owner.id,
+        )
+        unlinked_response = self.client.post(
+            "/api/v1/education/guardians/lookup",
+            headers={"Authorization": f"Bearer {unlinked_token}"},
+            json={
+                "tenant_id": self.tenant.id,
+                "phone_number": self.guardian.phone_number,
+            },
+        )
+        self.assertEqual(unlinked_response.status_code, 404)
+        self.assertEqual(
+            unlinked_response.get_json()["reason_code"],
+            "education_guardian_profile_unavailable",
+        )
+
+    def test_family_context_blocks_same_and_cross_tenant_idor_and_identity_fallback(self):
+        suffix = int(time.time() * 1000000)
+        family = User(
+            email=f"edu-context-family-{suffix}@chatboc.ar",
+            password_hash="hash",
+            name="Linked Family",
+            rol="usuario",
+            tenant_id=self.tenant.id,
+        )
+        # This email intentionally matches the guardian record. It must not
+        # become identity proof without an explicit Guardian.user_id link.
+        unlinked = User(
+            email=self.guardian.email,
+            password_hash="hash",
+            name="Unlinked Matching Email",
+            rol="usuario",
+            tenant_id=self.tenant.id,
+        )
+        same_tenant_guardian = Guardian(
+            tenant_id=self.tenant.id,
+            school_id=self.school.id,
+            first_name="Other",
+            last_name="Guardian",
+            phone_number="+5492615999991",
+            email=f"other-guardian-{suffix}@example.com",
+            verification_status="verified",
+        )
+        foreign_owner = User(
+            email=f"edu-context-owner-foreign-{suffix}@chatboc.ar",
+            password_hash="hash",
+            name="Foreign School Owner",
+            rol="admin",
+        )
+        db.session.add_all([family, unlinked, same_tenant_guardian, foreign_owner])
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug=f"edu-context-foreign-{suffix}",
+            nombre="Foreign School",
+            tipo="pyme",
+            pyme_id=foreign_owner.id,
+            plan="full",
+            vertical="educacion",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_school = School(
+            tenant_id=foreign_tenant.id,
+            name="Foreign School",
+            school_type="private",
+        )
+        db.session.add(foreign_school)
+        db.session.flush()
+        foreign_guardian = Guardian(
+            tenant_id=foreign_tenant.id,
+            school_id=foreign_school.id,
+            first_name="Foreign",
+            last_name="Guardian",
+            phone_number="+5492615999992",
+            verification_status="verified",
+        )
+        db.session.add(foreign_guardian)
+        self.guardian.user_id = family.id
+        db.session.add(self.guardian)
+        db.session.commit()
+
+        family_token = generar_token(
+            family.id, "usuario", "pyme", municipio_id=None, pyme_id=self.owner.id
+        )
+        family_headers = {"Authorization": f"Bearer {family_token}"}
+        same_tenant_response = self.client.get(
+            f"/api/v1/education/family/context?guardian_id={same_tenant_guardian.id}",
+            headers=family_headers,
+        )
+        cross_tenant_response = self.client.get(
+            f"/api/v1/education/family/context?guardian_id={foreign_guardian.id}",
+            headers=family_headers,
+        )
+
+        self.assertEqual(same_tenant_response.status_code, 200)
+        self.assertEqual(same_tenant_response.get_json()["access_scope"], "self")
+        self.assertEqual(same_tenant_response.get_json()["guardian"]["id"], self.guardian.id)
+        self.assertEqual(cross_tenant_response.status_code, 200)
+        self.assertEqual(cross_tenant_response.get_json()["guardian"]["id"], self.guardian.id)
+
+        unlinked_token = generar_token(
+            unlinked.id, "usuario", "pyme", municipio_id=None, pyme_id=self.owner.id
+        )
+        unlinked_headers = {"Authorization": f"Bearer {unlinked_token}"}
+        unlinked_by_id = self.client.get(
+            f"/api/v1/education/me/family-context?guardian_id={self.guardian.id}",
+            headers=unlinked_headers,
+        )
+        unlinked_by_email = self.client.get(
+            "/api/v1/education/me/family-context",
+            headers=unlinked_headers,
+        )
+        self.assertEqual(unlinked_by_id.status_code, 404)
+        self.assertEqual(unlinked_by_email.status_code, 404)
+        self.assertEqual(
+            unlinked_by_email.get_json()["reason_code"],
+            "education_guardian_profile_unavailable",
+        )
+
+        foreign_operator_response = self.client.get(
+            f"/api/v1/education/family/context?guardian_id={foreign_guardian.id}",
+            headers=self.auth_header,
+        )
+        self.assertEqual(foreign_operator_response.status_code, 404)
+        self.assertEqual(
+            foreign_operator_response.get_json()["reason_code"],
+            "education_guardian_profile_unavailable",
+        )
+        self.assertEqual(
+            AuditEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                event_type="education.guardian.family_context_read",
+                resource_id=str(foreign_guardian.id),
+            ).count(),
+            0,
+        )
 
     def test_free_plan_allows_education_operations_as_self_service_module(self):
         self.tenant.plan = "free"
@@ -362,7 +829,13 @@ class TestEducationRoutes(unittest.TestCase):
 
         verify_resp = self.client.post(
             "/api/v1/education/guardians/verify",
-            json={"tenant_id": self.tenant.id, "phone_number": self.guardian.phone_number},
+            headers=self.auth_header,
+            json={
+                "tenant_id": self.tenant.id,
+                "guardian_id": self.guardian.id,
+                "verification_method": "institutional_record",
+                "evidence_ref": "free-plan-family-record",
+            },
         )
         self.assertEqual(verify_resp.status_code, 200, verify_resp.get_json())
         self.assertEqual(verify_resp.get_json()["verification_status"], "verified")

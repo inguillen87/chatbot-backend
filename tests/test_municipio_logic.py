@@ -28,20 +28,10 @@ models_stub.User = MagicMock()
 models_stub.db = SimpleNamespace(session=_DummySession())
 # sys.modules['models'] = models_stub # Will be handled by setUpClass/tearDownClass or setUp/tearDown
 
-twilio_rest_stub = ModuleType('twilio.rest')
-class _DummyClient:
-    def __init__(self, *a, **k):
-        pass
-    class messages:
-        @staticmethod
-        def create(*a, **k):
-            return SimpleNamespace(sid='dummy')
-twilio_rest_stub.Client = _DummyClient
-sys.modules.setdefault('twilio.rest', twilio_rest_stub)
-sys.modules.setdefault('twilio', ModuleType('twilio'))
-twilio_validator_stub = ModuleType('twilio.request_validator')
-twilio_validator_stub.RequestValidator = MagicMock()
-sys.modules.setdefault('twilio.request_validator', twilio_validator_stub)
+# Twilio is an installed runtime dependency.  Do not inject process-global
+# stubs during collection: pytest imports all test modules before execution and
+# a fake RequestValidator would silently disable signature checks in unrelated
+# webhook tests. Individual outbound calls are patched at their call sites.
 sys.modules.setdefault('cohere', ModuleType('cohere'))
 # sqlalchemy_stub = ModuleType('sqlalchemy') # Removed stubbing of entire sqlalchemy module
 # sqlalchemy_exc_stub = ModuleType('sqlalchemy.exc')
@@ -193,8 +183,15 @@ class MunicipioLogicTests(unittest.TestCase):
         self.assertEqual(kwargs.get("categoria_inicial"), "Luminaria")
         self.assertEqual(resp["message_body"], "flujoiniciado")
 
+    @patch('services.municipio_responder.extract_complaint_details_llm', return_value={})
+    @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
     @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
-    def test_auto_description_and_address(self, mock_start_flow):
+    def test_auto_description_and_address(
+        self,
+        mock_start_flow,
+        _mock_contact_extraction,
+        _mock_complaint_extraction,
+    ):
         mock_start_flow.return_value = {"message_body": "flujoiniciado"}
 
         from models import ChatSessionContext, db

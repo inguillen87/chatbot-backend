@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import unicodedata
 from typing import Dict, List, Any, Optional  # Added Optional
 from utils.validators import (
     extract_email,
@@ -641,12 +642,19 @@ def llamar_llm_para_json_estructurado(
 
         return json.loads(cleaned_json_str)
 
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to decode JSON from LLM response: {e}", exc_info=True)
-        logger.debug(f"Raw response was: {response_text}")
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "Failed to decode JSON from LLM response "
+            "error_type=%s response_length=%s",
+            type(exc).__name__,
+            len(response_text or ""),
+        )
         return None
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during LLM JSON extraction: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "LLM JSON extraction failed error_type=%s",
+            type(exc).__name__,
+        )
         return None
 
 
@@ -745,16 +753,18 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
 
     except json.JSONDecodeError as exc:
         logger.error(
-            "[LLM_CONTACT_EXTRACT] JSONDecodeError parsing LLM response: %s. Response: '%s' for text: '%s'",
-            exc,
-            response_content,
-            text,
+            "[LLM_CONTACT_EXTRACT] Invalid JSON response "
+            "error_type=%s response_length=%s input_length=%s",
+            type(exc).__name__,
+            len(response_content or ""),
+            len(text or ""),
         )
     except Exception as exc:  # pragma: no cover - defensive
         logger.error(
-            "[LLM_CONTACT_EXTRACT] Error in extract_multiple_contact_details_llm: %s for text: '%s'",
-            exc,
-            text,
+            "[LLM_CONTACT_EXTRACT] Provider call failed "
+            "error_type=%s input_length=%s",
+            type(exc).__name__,
+            len(text or ""),
         )
 
     extracted_data: Dict[str, Any] = {}
@@ -845,11 +855,41 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
     final_data = {k: v for k, v in extracted_data.items() if k in filtered_fields and v}
     return final_data
 
+def _extract_explicit_callback_request(text: str) -> bool:
+    """Validate that the citizen explicitly asked to be called.
+
+    The LLM remains responsible for understanding the multi-intent turn and
+    writing the callback reason. This conservative guard only prevents an LLM
+    hallucination from turning an informational phone question into an
+    operational callback request.
+    """
+
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFD", str(text or "").lower())
+        if not unicodedata.combining(character)
+    )
+    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return False
+
+    callback_patterns = (
+        r"\b(?:llamame|contactame)\b",
+        r"\b(?:me\s+)?(?:puedes|podes|podrias|pueden|podrian)\s+"
+        r"(?:llamar|contactar)(?:me)?\b",
+        r"\b(?:quiero|necesito|prefiero)\s+que\s+(?:me\s+)?"
+        r"(?:llamen|contacten)\b",
+        r"\bpor\s+favor\b.{0,35}\b(?:llamame|contactame|me\s+llaman|me\s+contactan)\b",
+    )
+    return any(re.search(pattern, normalized) for pattern in callback_patterns)
+
+
 def extract_complaint_details_llm(
     text: str,
     default_localidad: str | None = None,
     default_provincia: str | None = None,
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Extract complaint details combining LLM output with deterministic heuristics."""
 
     if not text:
@@ -886,6 +926,8 @@ def extract_complaint_details_llm(
         "6. 'email_cliente': El email de la persona, si lo menciona. NOTA: A veces, la transcripción de audio confunde '@' con un punto ('.'). Si ves algo como 'usuario.dominio.com', es muy probable que sea 'usuario@dominio.com'. "
         "7. 'telefono_cliente': El teléfono de la persona, si lo menciona. "
         "8. 'dni_cliente': El DNI de la persona, si lo menciona. "
+        "9. 'solicita_llamada': true solamente si la persona pide explícitamente que la llamen o contacten por teléfono; en caso contrario false. "
+        "10. 'motivo_llamada': Un motivo breve y operativo para la llamada, solo cuando 'solicita_llamada' sea true. "
         f"{location_context_instruction} "
         "Devuelve la información SOLAMENTE como un objeto JSON válido con estas claves. "
         "Si no encuentras un detalle, puedes omitir la clave. "
@@ -905,6 +947,8 @@ def extract_complaint_details_llm(
         "email_cliente",
         "telefono_cliente",
         "dni_cliente",
+        "solicita_llamada",
+        "motivo_llamada",
     ]
 
     try:
@@ -918,6 +962,13 @@ def extract_complaint_details_llm(
                         if key not in parsed:
                             continue
                         value = parsed.get(key)
+                        if key == "solicita_llamada":
+                            if value is True or (
+                                isinstance(value, str)
+                                and value.strip().lower() in {"true", "1", "si", "sí"}
+                            ):
+                                llm_result[key] = True
+                            continue
                         if key == "descripcion_problema" and isinstance(value, (list, tuple)):
                             combined = " ".join(
                                 filter(None, (_ensure_string(item) for item in value))
@@ -945,30 +996,39 @@ def extract_complaint_details_llm(
 
     except json.JSONDecodeError as exc:
         logger.info(
-            "[LLM_COMPLAINT_EXTRACT] Unable to parse LLM response; using fallback. Response: '%s' for text: '%s'. Error: %s",
-            response_content,
-            text,
-            exc,
+            "[LLM_COMPLAINT_EXTRACT] Invalid JSON response; using fallback "
+            "error_type=%s response_length=%s input_length=%s",
+            type(exc).__name__,
+            len(response_content or ""),
+            len(text or ""),
         )
     except Exception as exc:  # pragma: no cover - defensive
-        if CohereAPIError and isinstance(exc, CohereAPIError):
-            logger.error(
-                "[LLM_COMPLAINT_EXTRACT] Cohere API Error in extract_complaint_details_llm: %s (Type: %s). Text: '%s'",
-                exc,
-                type(exc),
-                text,
-            )
-        else:
-            logger.error(
-                "[LLM_COMPLAINT_EXTRACT] Generic Error in extract_complaint_details_llm: %s (Type: %s). Text: '%s'",
-                exc,
-                type(exc),
-                text,
-                exc_info=True,
-            )
+        provider = "cohere" if CohereAPIError and isinstance(exc, CohereAPIError) else "llm"
+        logger.error(
+            "[LLM_COMPLAINT_EXTRACT] Provider call failed; using fallback "
+            "provider=%s error_type=%s input_length=%s",
+            provider,
+            type(exc).__name__,
+            len(text or ""),
+        )
 
     result: Dict[str, Any] = {k: v for k, v in llm_result.items() if v}
     normalized_text = text or ""
+
+    explicit_callback_request = _extract_explicit_callback_request(normalized_text)
+    if explicit_callback_request:
+        result["solicita_llamada"] = True
+        callback_reason = _ensure_string(result.get("motivo_llamada"))
+        result["motivo_llamada"] = (
+            callback_reason[:500]
+            if callback_reason
+            else "La persona solicitó ser contactada por teléfono por este reclamo."
+        )
+    else:
+        # Python validates the operational side effect: the model cannot invent
+        # a callback request that the citizen did not make.
+        result.pop("solicita_llamada", None)
+        result.pop("motivo_llamada", None)
 
     if "nombre_cliente" in result:
         cleaned_name = _cleanup_name_candidate(result.get("nombre_cliente"))
@@ -1133,8 +1193,12 @@ def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dic
             return updated_summary.strip()
         else: # Fallback if LLM returns empty
             logger.warning("[LLM_UPDATE_SUMMARY] LLM returned empty for summary update. Using basic append.")
-    except Exception as e:
-        logger.error(f"[LLM_UPDATE_SUMMARY] Error calling LLM for summary update: {e}. Using basic append.")
+    except Exception as exc:
+        logger.error(
+            "[LLM_UPDATE_SUMMARY] Provider call failed; using basic append "
+            "error_type=%s",
+            type(exc).__name__,
+        )
         # Fall through to basic append on error
 
     # Basic append logic (fallback or if mock is used)
@@ -1306,7 +1370,10 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
     user_prompt = f"TEXTO DE ENTRADA: \"{texto_usuario}\"\n\nCATEGORÍA:"
 
     try:
-        logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Clasificando texto: '{texto_usuario}'")
+        logger.info(
+            "[LLM_CLASIFICAR_ENTIDAD] Clasificando input_length=%s",
+            len(str(texto_usuario or "")),
+        )
         respuesta_raw = llamar_llm_para_generacion_texto(
             system_prompt_especifico=system_prompt,
             user_prompt=user_prompt,
@@ -1316,17 +1383,31 @@ def clasificar_entidad_con_llm(texto_usuario: str) -> str:
         if respuesta_raw:
             respuesta = respuesta_raw.strip().lower()
             if respuesta in ["municipio", "pyme", "id"]:
-                logger.info(f"[LLM_CLASIFICAR_ENTIDAD] Texto '{texto_usuario}' clasificado como: {respuesta}")
+                logger.info(
+                    "[LLM_CLASIFICAR_ENTIDAD] Clasificacion completada result=%s",
+                    respuesta,
+                )
                 return respuesta
             else:
-                logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] Respuesta inesperada del LLM: '{respuesta}'. Se devuelve 'desconocido'.")
+                logger.warning(
+                    "[LLM_CLASIFICAR_ENTIDAD] Respuesta inesperada; "
+                    "response_length=%s result=desconocido",
+                    len(respuesta),
+                )
                 return "desconocido"
         else:
-            logger.warning(f"[LLM_CLASIFICAR_ENTIDAD] LLM no devolvió respuesta para '{texto_usuario}'. Se devuelve 'desconocido'.")
+            logger.warning(
+                "[LLM_CLASIFICAR_ENTIDAD] Respuesta vacia; "
+                "input_length=%s result=desconocido",
+                len(str(texto_usuario or "")),
+            )
             return "desconocido"
 
-    except Exception as e:
-        logger.error(f"[LLM_CLASIFICAR_ENTIDAD] Error al clasificar entidad con LLM: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "[LLM_CLASIFICAR_ENTIDAD] Provider call failed error_type=%s",
+            type(exc).__name__,
+        )
         return "desconocido"
 
     # Test update_summary_with_llm_extraction with more complex existing summary

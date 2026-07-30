@@ -602,7 +602,9 @@ def test_respuesta_con_metadata_completa_geolocaliza(client):
             },
         }
 
+        server_before = datetime.now(timezone.utc)
         respuesta = save_respuesta(slug, payload, _request_ctx("meta-demo"))
+        server_after = datetime.now(timezone.utc)
 
         assert respuesta.canal == "qr"
         assert respuesta.genero == "femenino"
@@ -620,7 +622,15 @@ def test_respuesta_con_metadata_completa_geolocaliza(client):
             almacenada = almacenada.replace(tzinfo=timezone.utc)
         else:
             almacenada = almacenada.astimezone(timezone.utc)
-        assert almacenada == submitted_at
+        assert server_before <= almacenada <= server_after
+        assert almacenada != submitted_at
+        timing = respuesta.metadata_payload.get("_chatboc_submission_timing")
+        assert timing == {
+            "client_declared_at": submitted_at.isoformat(),
+            "authoritative": False,
+            "within_24h_of_server": False,
+        }
+        assert "submittedAt" not in respuesta.metadata_payload
 
         serializado = serialize_respuesta(respuesta)
         assert serializado.get("metadata", {}).get("demographics")
@@ -671,15 +681,15 @@ def test_serialize_public_encuesta_incluye_tags(client):
 
 def test_compute_content_hash_es_deterministico(client):
     with client.application.app_context():
-        encuesta, slug, _ = _create_active_encuesta()
+        encuesta, slug, user = _create_active_encuesta()
         payload = _respuesta_payload(encuesta, texto="Respuesta inicial")
         respuesta = save_respuesta(slug, payload, _request_ctx("anon-uniq"))
 
-        primer_hash = compute_content_hash(respuesta.id)
+        primer_hash = compute_content_hash(encuesta.id, respuesta.id, user)
         assert primer_hash
 
         db.session.expire_all()
-        segundo_hash = compute_content_hash(respuesta.id)
+        segundo_hash = compute_content_hash(encuesta.id, respuesta.id, user)
         assert segundo_hash == primer_hash
 
         almacenada = db.session.get(EncRespuesta, respuesta.id)

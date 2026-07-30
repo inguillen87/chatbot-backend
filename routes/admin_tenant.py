@@ -43,6 +43,10 @@ from services.pymes import tiene_archivo_catalogo
 from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
+from services.tenant_ticket_scope import (
+    municipio_ticket_belongs_to_tenant,
+    municipio_ticket_scope_filter,
+)
 from services.plan_access import (
     FULL_INTEGRATION_PLANS,
     integration_access_payload,
@@ -1915,16 +1919,13 @@ def _scope_match_score(*, categoria: str, zona: str, scope: dict) -> int:
 def _employee_open_workload(tenant_id: int, employee_id: int) -> int:
     active_states = {'nuevo', 'pendiente', 'en_proceso'}
     tenant = db.session.get(TenantProfile, tenant_id)
-    municipio_conditions = [MunicipioTicket.tenant_id == tenant_id]
     pyme_conditions = [PymeTicket.tenant_id == tenant_id]
-    if tenant and getattr(tenant, "municipio_id", None):
-        municipio_conditions.append(MunicipioTicket.municipio_id == tenant.municipio_id)
     if tenant and getattr(tenant, "pyme_id", None):
         owner = db.session.get(User, tenant.pyme_id)
         if getattr(owner, "rubro_id", None):
             pyme_conditions.append(PymeTicket.rubro_id == owner.rubro_id)
     m_count = MunicipioTicket.query.filter(
-        or_(*municipio_conditions),
+        municipio_ticket_scope_filter(tenant),
         MunicipioTicket.asignado_a_id == employee_id,
         MunicipioTicket.estado.in_(list(active_states)),
     ).count()
@@ -3908,6 +3909,8 @@ def tenant_order_detail(current_user, slug, order_id):
 def _ticket_belongs_to_tenant(ticket, tenant: TenantProfile) -> bool:
     if not ticket or not tenant:
         return False
+    if isinstance(ticket, MunicipioTicket):
+        return municipio_ticket_belongs_to_tenant(ticket, tenant)
     if getattr(ticket, 'tenant_id', None) and ticket.tenant_id == tenant.id:
         return True
     owner = tenant.municipio or tenant.pyme

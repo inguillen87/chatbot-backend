@@ -14,6 +14,7 @@ from config import Config
 from models import (
     AnalyticsEventV2,
     CatalogoItem,
+    DomainEffectOutbox,
     EncEncuesta,
     EncRespuesta,
     MunicipioTicket,
@@ -31,6 +32,7 @@ from models import (
     TenantProfile,
     TenantTicket,
     TicketComentario,
+    TicketDomainEffectReceipt,
     User,
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
@@ -230,6 +232,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 category="UTILITY",
                 status="approved",
                 content_sid="HXwelcomev2",
+                last_sync_at=datetime.now(timezone.utc),
                 body_preview="Hola {{1}}, soy {{2}}. Te ayudo por WhatsApp con reclamos, pedidos y pagos.",
                 components=[{"type": "quick_reply", "actions": ["Crear caso", "Pagar o pedir", "Hablar equipo"]}],
             )
@@ -244,6 +247,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 category="UTILITY",
                 status="approved",
                 content_sid="HXschoolpayv2",
+                last_sync_at=datetime.now(timezone.utc),
                 body_preview="Hola {{1}}, tenes una cuota pendiente de {{2}}.",
                 components=[{"type": "call_to_action", "title": "Pagar cuota"}],
             )
@@ -258,6 +262,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 category="UTILITY",
                 status="approved",
                 content_sid="HXgovsla",
+                last_sync_at=datetime.now(timezone.utc),
                 body_preview="Confirmamos tu reclamo municipal y te mostramos las acciones disponibles.",
                 components=[{"type": "quick_reply", "actions": ["Confirmar", "Editar", "Cancelar"]}],
             )
@@ -323,6 +328,20 @@ class V2SaasContractsTest(unittest.TestCase):
             algorithm="HS256",
         )
         return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": self.tenant.slug}
+
+    def _enable_municipal_domain_outbox(self):
+        self.tenant.tipo = "municipio"
+        self.tenant.municipio_id = self.owner.id
+        self.tenant.pyme_id = None
+        db.session.add(self.tenant)
+        db.session.commit()
+        self.app.config.update(
+            DOMAIN_EFFECT_OUTBOX_MODE="queue",
+            DOMAIN_EFFECT_OUTBOX_SECRET="v2-saas-domain-effect-secret-32-bytes-minimum",
+            DOMAIN_EFFECT_OUTBOX_TENANT_IDS=str(self.tenant.id),
+            DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES=4096,
+            DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS=8,
+        )
 
     def test_employee_coverage_contract(self):
         response = self.client.get(
@@ -1732,7 +1751,21 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(legacy_item["source_metadata"]["admin_surface"], "tenant_claims_inbox")
         self.assertEqual(legacy_item["source_metadata"]["read_model"], "TicketComentario")
         self.assertTrue(any("quiero hablar" in event["body"].lower() for event in legacy_item["timeline"]))
-        self.assertTrue(any(action["id"] == "reply" for action in legacy_item["allowed_actions"]))
+        legacy_reply_action = next(
+            action for action in legacy_item["allowed_actions"] if action["id"] == "reply"
+        )
+        self.assertIn(
+            "client_message_id_or_idempotency_key",
+            legacy_reply_action["requires"],
+        )
+        self.assertEqual(
+            legacy_reply_action["idempotency"]["preferred_header"],
+            "Idempotency-Key",
+        )
+        self.assertEqual(
+            legacy_reply_action["delivery_contract_version"],
+            "inbox.action_delivery.v2",
+        )
         tracking_action = next(action for action in legacy_item["allowed_actions"] if action["id"] == "open_tracking")
         self.assertEqual(
             tracking_action["endpoint"],
@@ -1773,13 +1806,14 @@ class V2SaasContractsTest(unittest.TestCase):
                     "action": "reply",
                     "body": "Te respondemos desde mesa de ayuda.",
                 },
-                headers=self._auth(self.owner),
+                headers={**self._auth(self.owner), "Idempotency-Key": "legacy-helpdesk-reply-1"},
             )
         self.assertEqual(reply.status_code, 200, reply.get_json())
         dispatch_update.assert_called_once()
         reply_payload = reply.get_json()
         delivery = reply_payload["delivery"]
-        self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v1")
+        self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v2")
+        self.assertEqual(delivery["legacy_contract_version"], "inbox.action_delivery.v1")
         self.assertEqual(delivery["mode"], "timeline_only")
         self.assertEqual(delivery["status"], "saved_to_crm")
         self.assertEqual(delivery["reason"], "external_dispatch_no_channel_confirmed")
@@ -1843,7 +1877,7 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertEqual(closed_public_status.args[1]["estado"], "cerrado")
 
-    def test_omnichannel_legacy_claim_reply_reports_real_whatsapp_delivery(self):
+    def test_omnichannel_legacy_claim_reply_reports_provider_acceptance_only(self):
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -1882,12 +1916,18 @@ class V2SaasContractsTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("request_id"), "legacy-whatsapp-delivery-1")
         delivery = payload["delivery"]
-        self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v1")
+        self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v2")
+        self.assertEqual(delivery["legacy_contract_version"], "inbox.action_delivery.v1")
         self.assertEqual(delivery["mode"], "real_message")
         self.assertEqual(delivery["channel"], "whatsapp")
-        self.assertEqual(delivery["status"], "sent")
-        self.assertEqual(delivery["reason"], "external_dispatch_confirmed")
-        self.assertEqual(delivery["reply_status"], "sent_to_contact")
+        self.assertEqual(delivery["status"], "provider_accepted")
+        self.assertEqual(delivery["reason"], "provider_accepted")
+        self.assertEqual(delivery["reply_status"], "provider_accepted")
+        self.assertEqual(delivery["evidence_stage"], "provider_accepted")
+        self.assertEqual(delivery["delivery_results_semantics"], "provider_acceptance")
+        self.assertEqual(delivery["final_delivery"]["status"], "pending_provider_callback")
+        self.assertEqual(delivery["final_delivery"]["authoritative_source"], "provider_status_callback")
+        self.assertNotEqual(delivery["final_delivery"]["status"], "delivered")
         self.assertEqual(delivery["admin_surface"], "tenant_claims_inbox")
         self.assertTrue(delivery["external_dispatch"])
         self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": True})
@@ -1924,7 +1964,7 @@ class V2SaasContractsTest(unittest.TestCase):
                     "action": "reply",
                     "body": "Guardamos tu mensaje y seguimos el caso.",
                 },
-                headers=self._auth(self.owner),
+                headers={**self._auth(self.owner), "Idempotency-Key": "legacy-dispatch-failure-1"},
             )
 
         self.assertEqual(response.status_code, 200, response.get_json())
@@ -1936,6 +1976,331 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(delivery["external_dispatch"])
         self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": False})
         self.assertTrue(any("seguimos el caso" in event["body"].lower() for event in payload["ticket"]["timeline"]))
+
+    def test_omnichannel_legacy_claim_reply_replays_once_without_second_dispatch(self):
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-777003",
+            consulta_pin="777003",
+            pregunta="Semaforo sin funcionar",
+            asunto="Semaforo",
+            categoria="semaforo",
+            detalles="Semaforo intermitente",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+        request_payload = {
+            "source_model": "MunicipioTicket",
+            "legacy_id": legacy.id,
+            "action": "reply",
+            "body": "La cuadrilla ya recibio el aviso.",
+            "client_message_id": "crm-client-message-777003",
+        }
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update",
+            return_value={"email": False, "sms": False, "whatsapp": True},
+        ) as dispatch_update, patch(
+            "services.email_service.enviar_email_ticket_novedad"
+        ) as service_email, patch(
+            "services.email_service.enviar_sms_ticket_novedad"
+        ) as service_sms, patch(
+            "services.email_service.enviar_whatsapp_ticket_novedad"
+        ) as service_whatsapp, patch(
+            "socket_service.emit_new_chat_message"
+        ) as service_socket, patch("socket_service.socketio.emit"):
+            first = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json=request_payload,
+                headers=self._auth(self.owner),
+            )
+            replay = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json=request_payload,
+                headers=self._auth(self.owner),
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        dispatch_update.assert_called_once()
+        service_email.assert_not_called()
+        service_sms.assert_not_called()
+        service_whatsapp.assert_not_called()
+        service_socket.assert_not_called()
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
+            1,
+        )
+        receipt = TicketDomainEffectReceipt.query.filter_by(tenant_id=self.tenant.id).one()
+        self.assertTrue(receipt.idempotency_key.startswith("crm-reply:"))
+        self.assertNotIn("crm-client-message-777003", receipt.idempotency_key)
+        self.assertEqual(DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(), 0)
+        self.assertEqual(first.get_json()["delivery"]["status"], "provider_accepted")
+        replay_delivery = replay.get_json()["delivery"]
+        self.assertEqual(replay_delivery["mode"], "idempotent_replay")
+        self.assertEqual(replay_delivery["status"], "already_recorded")
+        self.assertEqual(replay_delivery["reason"], "idempotent_replay_no_redispatch")
+        self.assertFalse(replay_delivery["external_dispatch"])
+        self.assertFalse(replay_delivery["timeline_updated"])
+        self.assertTrue(replay_delivery["idempotency"]["replayed"])
+        self.assertEqual(
+            replay_delivery["final_delivery"]["status"],
+            "preserved_from_original_attempt",
+        )
+
+    def test_omnichannel_legacy_claim_reply_rejects_same_key_with_different_payload(self):
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-777004",
+            consulta_pin="777004",
+            pregunta="Bache peligroso",
+            asunto="Bache",
+            categoria="arreglo_de_calle",
+            detalles="Bache frente a la escuela",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+        headers = {**self._auth(self.owner), "Idempotency-Key": "crm-reply-conflict-777004"}
+        base_payload = {
+            "source_model": "MunicipioTicket",
+            "legacy_id": legacy.id,
+            "action": "reply",
+        }
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update",
+            return_value={"email": False, "sms": False, "whatsapp": False},
+        ) as dispatch_update, patch("socket_service.socketio.emit"):
+            first = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={**base_payload, "body": "Primera respuesta."},
+                headers=headers,
+            )
+            conflict = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={**base_payload, "body": "Respuesta distinta."},
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(
+            conflict.get_json()["reason_code"],
+            "reply_idempotency_payload_conflict",
+        )
+        dispatch_update.assert_called_once()
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
+            1,
+        )
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(tenant_id=self.tenant.id).count(),
+            1,
+        )
+
+    def test_omnichannel_legacy_claim_reply_requires_stable_client_identity(self):
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-777007",
+            consulta_pin="777007",
+            pregunta="Luminaria apagada",
+            asunto="Luminaria",
+            categoria="luminaria",
+            detalles="Sin luz desde anoche",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "legacy_id": legacy.id,
+                "action": "reply",
+                "body": "Estamos revisando el reclamo.",
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "reply_idempotency_key_required",
+        )
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
+            0,
+        )
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+
+    def test_omnichannel_legacy_claim_canary_stages_effects_and_replays_without_direct_io(self):
+        self._enable_municipal_domain_outbox()
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-777005",
+            consulta_pin="777005",
+            pregunta="Arbol caido",
+            asunto="Arbolado",
+            categoria="arbolado",
+            detalles="Rama bloqueando la calle",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+            email_vecino="marcelo@example.com",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+        headers = {**self._auth(self.owner), "Idempotency-Key": "crm-canary-reply-777005"}
+        request_payload = {
+            "source_model": "MunicipioTicket",
+            "legacy_id": legacy.id,
+            "action": "reply",
+            "body": "El equipo de arbolado ya tiene el caso.",
+        }
+
+        with patch(
+            "routes.v2.saas._dispatch_legacy_claim_reply"
+        ) as direct_dispatch, patch(
+            "routes.v2.saas._emit_legacy_claim_realtime_reply"
+        ) as direct_reply_socket, patch(
+            "routes.v2.saas._emit_legacy_claim_realtime_state"
+        ) as direct_state_socket, patch(
+            "services.domain_effect_worker.enqueue_domain_effect_dispatch"
+        ) as enqueue_dispatch:
+            first = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json=request_payload,
+                headers=headers,
+            )
+            replay = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json=request_payload,
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        direct_dispatch.assert_not_called()
+        direct_reply_socket.assert_not_called()
+        direct_state_socket.assert_not_called()
+        enqueue_dispatch.assert_called_once_with(tenant_id=self.tenant.id)
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
+            1,
+        )
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(tenant_id=self.tenant.id).count(),
+            1,
+        )
+        effects = DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).all()
+        self.assertEqual(len(effects), 4)
+        self.assertEqual(
+            {row.channel for row in effects},
+            {"email", "sms", "whatsapp", "realtime"},
+        )
+        first_delivery = first.get_json()["delivery"]
+        self.assertEqual(first_delivery["mode"], "durable_queue")
+        self.assertEqual(first_delivery["status"], "durably_staged")
+        self.assertEqual(first_delivery["reason"], "domain_effects_durably_staged")
+        self.assertEqual(first_delivery["reply_status"], "queued_for_delivery")
+        self.assertFalse(first_delivery["external_dispatch"])
+        self.assertEqual(first_delivery["outbox"]["effect_count"], 4)
+        self.assertFalse(first_delivery["outbox"]["direct_dispatch_performed"])
+        self.assertEqual(
+            first_delivery["final_delivery"]["status"],
+            "pending_provider_callback",
+        )
+        replay_delivery = replay.get_json()["delivery"]
+        self.assertEqual(replay_delivery["mode"], "idempotent_replay")
+        self.assertEqual(replay_delivery["status"], "already_recorded")
+        self.assertEqual(
+            replay_delivery["reason"],
+            "idempotent_replay_domain_effects_preserved",
+        )
+        self.assertTrue(replay_delivery["idempotency"]["replayed"])
+
+    def test_omnichannel_legacy_claim_canary_rolls_back_comment_receipt_and_partial_effects(self):
+        self._enable_municipal_domain_outbox()
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-777006",
+            consulta_pin="777006",
+            pregunta="Perdida de agua",
+            asunto="Agua",
+            categoria="perdida_de_agua",
+            detalles="Canio roto en la vereda",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            nombre_vecino="Marcelo",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+        from services import ticket_domain_effects
+
+        original_stage = ticket_domain_effects.stage_domain_effect
+        stage_count = 0
+
+        def fail_after_partial_stage(**kwargs):
+            nonlocal stage_count
+            stage_count += 1
+            result = original_stage(**kwargs)
+            if stage_count == 2:
+                raise RuntimeError("simulated outbox staging crash")
+            return result
+
+        with patch.object(
+            ticket_domain_effects,
+            "stage_domain_effect",
+            side_effect=fail_after_partial_stage,
+        ), patch("routes.v2.saas._dispatch_legacy_claim_reply") as direct_dispatch:
+            with self.assertRaisesRegex(RuntimeError, "simulated outbox staging crash"):
+                self.client.post(
+                    "/api/v2/inbox/omnichannel/actions",
+                    json={
+                        "source_model": "MunicipioTicket",
+                        "legacy_id": legacy.id,
+                        "action": "reply",
+                        "body": "Recibimos el aviso.",
+                    },
+                    headers={
+                        **self._auth(self.owner),
+                        "Idempotency-Key": "crm-canary-crash-777006",
+                    },
+                )
+
+        direct_dispatch.assert_not_called()
+        self.assertEqual(stage_count, 2)
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
+            0,
+        )
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+        self.assertEqual(DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(), 0)
+        persisted = db.session.get(MunicipioTicket, legacy.id)
+        self.assertEqual(persisted.estado, "nuevo")
 
     def test_omnichannel_inbox_detail_contract_for_drawer_360(self):
         response = self.client.get(
@@ -2024,12 +2389,14 @@ class V2SaasContractsTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "inbox.omnichannel.action.v1")
         self.assertEqual(payload.get("request_id"), "inbox-action-1")
-        self.assertEqual(payload["delivery"]["contract_version"], "inbox.action_delivery.v1")
+        self.assertEqual(payload["delivery"]["contract_version"], "inbox.action_delivery.v2")
+        self.assertEqual(payload["delivery"]["legacy_contract_version"], "inbox.action_delivery.v1")
         self.assertEqual(payload["delivery"]["mode"], "real_message")
         self.assertEqual(payload["delivery"]["delivery_mode"], "real_message")
-        self.assertEqual(payload["delivery"]["status"], "sent")
+        self.assertEqual(payload["delivery"]["status"], "provider_accepted")
         self.assertEqual(payload["delivery"]["fallback"], "none")
-        self.assertEqual(payload["delivery"]["reply_status"], "sent_to_contact")
+        self.assertEqual(payload["delivery"]["reply_status"], "provider_accepted")
+        self.assertEqual(payload["delivery"]["final_delivery"]["status"], "pending_provider_callback")
         self.assertEqual(payload["delivery"]["admin_surface"], "omnichannel_inbox")
         self.assertTrue(payload["delivery"]["external_dispatch"])
         self.assertTrue(payload["delivery"]["timeline_updated"])
@@ -2038,12 +2405,17 @@ class V2SaasContractsTest(unittest.TestCase):
             payload["delivery"]["delivery_results"],
             {"email": False, "sms": False, "whatsapp": True},
         )
-        self.assertIn("enviado", payload["delivery"]["operator_message"].lower())
+        self.assertIn("acepto", payload["delivery"]["operator_message"].lower())
         self.assertTrue(payload["ticket"]["timeline"])
         self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
         db.session.refresh(self.ticket)
         delivery_history = self.ticket.datos_extra.get("reply_delivery_history") or []
         self.assertEqual(delivery_history[-1]["mode"], "real_message")
+        self.assertEqual(delivery_history[-1]["status"], "provider_accepted")
+        self.assertEqual(
+            delivery_history[-1]["final_delivery"]["status"],
+            "pending_provider_callback",
+        )
         self.assertTrue(delivery_history[-1]["external_dispatch"])
 
     def test_omnichannel_tenant_reply_can_remain_timeline_only(self):
@@ -2373,9 +2745,16 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertEqual(order_checkout_template["status"]["source"], "local_twilio_manifest")
         self.assertEqual(order_checkout_template["status"]["resolved_name"], "chatboc_order_checkout_v1")
-        self.assertTrue(order_checkout_template["status"]["approved"])
-        self.assertEqual(order_checkout_template["readiness"]["state"], "approved_requires_webview")
-        self.assertEqual(order_checkout_template["readiness"]["next_action"], "verify_signed_webview_and_server_webhook")
+        self.assertFalse(order_checkout_template["status"]["approved"])
+        self.assertFalse(order_checkout_template["status"]["configured"])
+        self.assertTrue(order_checkout_template["status"]["local_configured"])
+        self.assertIsNone(order_checkout_template["status"]["content_sid"])
+        self.assertEqual(order_checkout_template["status"]["status"], "stale")
+        self.assertEqual(order_checkout_template["readiness"]["state"], "stale")
+        self.assertEqual(
+            order_checkout_template["readiness"]["next_action"],
+            "refresh_provider_status_for_this_tenant",
+        )
         welcome_template = next(
             item for item in payload["template_blueprint"]["required_templates"] if item["id"] == "welcome_menu"
         )
@@ -2448,8 +2827,9 @@ class V2SaasContractsTest(unittest.TestCase):
             if item["id"] == "gov_survey_invite"
         )
         self.assertEqual(gov_survey_template["status"]["resolved_name"], "chatboc_gov_survey_invite_v2")
-        self.assertTrue(gov_survey_template["status"]["approved"])
-        self.assertEqual(gov_survey_template["readiness"]["state"], "approved_requires_webview")
+        self.assertFalse(gov_survey_template["status"]["approved"])
+        self.assertEqual(gov_survey_template["status"]["status"], "stale")
+        self.assertEqual(gov_survey_template["readiness"]["state"], "stale")
         commerce_group = payload["template_blueprint"]["operational_template_groups"]["commerce_and_payments"]
         pyme_order_ready = next(item for item in commerce_group["items"] if item["id"] == "pyme_order_ready")
         self.assertEqual(pyme_order_ready["variables"], ["order_code", "total", "checkout_url"])

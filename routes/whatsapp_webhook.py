@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify, abort, current_app, g, has_app_co
 from twilio.request_validator import RequestValidator  # For validating Twilio requests
 from twilio.rest import Client  # For sending messages via Twilio
 from copy import deepcopy
+from contextlib import nullcontext
 import hashlib
 import logging
 import os  # For accessing environment variables
@@ -47,6 +48,12 @@ from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from services.whatsapp_assisted_intake import create_whatsapp_assisted_intake
+from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
+from services.whatsapp_inbound_content import (
+    classify_twilio_whatsapp_payload,
+    honest_unprocessable_reply,
+    is_audio_media_type,
+)
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import CONTEXTO_MUNICIPIO
@@ -57,7 +64,18 @@ from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 from utils.roles import is_authorized_superadmin_email
 from services.contact_service import resolve_contact, sanitize_profile_name
-from services.ticket_service import servicio_tickets
+from services.ticket_service import build_whatsapp_ticket_effect_key, servicio_tickets
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+    tenant_owner_ids,
+)
+from services.reclamo_turn_semantics import (
+    ReclamoTurnIntent,
+    classify_reclamo_confirmation_turn,
+)
+from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_surveys import build_demo_survey_chat_menu
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
@@ -81,6 +99,7 @@ from services.meta_flow_runtime import (
     SURVEY_FLOW_ID,
     apply_whatsapp_flow_completion,
     record_whatsapp_flow_completion_rejection,
+    replay_whatsapp_flow_completion,
 )
 from services.twilio_tech_provider import (
     TwilioRuntimeCredentials,
@@ -113,6 +132,7 @@ logger = logging.getLogger(__name__)
 # chunks that comply with Twilio's limits and send them sequentially.
 
 MAX_TWILIO_BODY_LENGTH = 1600
+TWILIO_STATUS_CALLBACK_CONNECTION_OVERRIDES = "rc=2&rp=5xx,ct,rt"
 LIVE_CHAT_STATES = {"esperando_agente_en_vivo", "en_proceso", "en_vivo"}
 ALLOWED_MEDIA_EXTENSIONS = {
     ".png",
@@ -132,12 +152,50 @@ SENSITIVE_MENU_ACTIONS = {
 }
 ACTIVE_NATIVE_FLOW_STATUSES = {"approved", "active"}
 ACTIVE_META_FLOW_STATUSES = {"approved", "active", "published"}
+MUNICIPAL_TICKET_CLOSED_STATES = {
+    "anulado",
+    "archivado",
+    "archived",
+    "canceled",
+    "cancelada",
+    "cancelado",
+    "cancelled",
+    "cerrada",
+    "cerrado",
+    "closed",
+    "completada",
+    "completado",
+    "completed",
+    "finalizada",
+    "finalizado",
+    "resolved",
+    "resuelta",
+    "resuelto",
+}
 
 
 class WhatsAppOutboundPolicyError(RuntimeError):
+    whatsapp_outbound_permanent = True
+
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class WhatsAppDurableReplayError(RuntimeError):
+    """A swallowed legacy failure that must retry in durable replay mode."""
+
+
+def _durable_replay_failure_or_retry(
+    durable_replay: bool,
+    code: str,
+    exc: Exception,
+) -> Tuple[str, int]:
+    """Raise inside the queue worker; ask the provider to retry direct mode."""
+
+    if durable_replay:
+        raise WhatsAppDurableReplayError(code) from exc
+    return "RETRY", 503
 
 
 def _safe_session_context_metadata(value: Any) -> dict[str, Any]:
@@ -623,7 +681,7 @@ def _chatboc_demo_media_kind(uploaded_file_info: Optional[Dict[str, Any]]) -> Op
     if not uploaded_file_info:
         return None
     mime_type = str(uploaded_file_info.get("mime_type") or "").lower()
-    if mime_type.startswith("audio/"):
+    if is_audio_media_type(mime_type):
         return "audio"
     if mime_type.startswith("image/"):
         return "image"
@@ -2135,6 +2193,26 @@ def _extract_requested_contact_name(raw_text: str, extracted: Optional[dict[str,
     return None
 
 
+def _mark_welcome_outbound_submission(
+    state: dict[str, Any],
+    provider_message: Any,
+    *,
+    timestamp: float,
+) -> str:
+    """Record staging/acceptance without claiming final provider delivery."""
+
+    state["last_attempt_ts"] = timestamp
+    state["last_provider_message_ref"] = _safe_provider_reference(
+        getattr(provider_message, "sid", None)
+    )
+    provider_status = str(getattr(provider_message, "status", "") or "").lower()
+    if provider_status == "queued":
+        state["last_durably_staged_ts"] = timestamp
+        return "durably_staged"
+    state["last_provider_accepted_ts"] = timestamp
+    return "provider_accepted"
+
+
 def _send_welcome_sticker(
     *,
     client,
@@ -2153,17 +2231,26 @@ def _send_welcome_sticker(
     if sticker_state.get("disabled") or sticker_state.get(state_key):
         return False
     try:
-        _send_twilio_message(
+        provider_message = _send_twilio_message(
             client,
             from_=to_number_raw,
             to=from_number_raw,
             media_url=[resolved_sticker_url],
         )
-        sent_ts = time.time()
-        sticker_state[state_key] = sent_ts
-        sticker_state["last_sent_ts"] = sent_ts
+        accepted_ts = time.time()
+        sticker_state[state_key] = accepted_ts
+        submission_state = _mark_welcome_outbound_submission(
+            sticker_state,
+            provider_message,
+            timestamp=accepted_ts,
+        )
         safe_flag_modified(session_context, "context_data")
-        _log("info", "[WELCOME] Sticker sent state=%s", state_key)
+        _log(
+            "info",
+            "[WELCOME] Sticker submitted state=%s outcome=%s",
+            state_key,
+            submission_state,
+        )
         return True
     except Exception as exc:
         sticker_state["disabled"] = True
@@ -2258,6 +2345,7 @@ def _create_education_whatsapp_ticket(
     message_body: str,
     uploaded_file_info: dict[str, Any] | None,
     location_info: dict[str, Any] | None,
+    durable_claim: Any = None,
 ) -> dict[str, Any] | None:
     if not owner_user:
         return None
@@ -2293,7 +2381,15 @@ def _create_education_whatsapp_ticket(
     else:
         ticket_data["pyme_id"] = getattr(owner_user, "id", None)
 
-    ticket = servicio_tickets.crear_nuevo_ticket(tipo_ticket, ticket_data)
+    ticket = servicio_tickets.crear_nuevo_ticket(
+        tipo_ticket,
+        ticket_data,
+        **_durable_whatsapp_ticket_effect_kwargs(
+            durable_claim,
+            getattr(tenant_profile, "id", None),
+            "education_case_create",
+        ),
+    )
     if not ticket:
         return None
 
@@ -2330,6 +2426,12 @@ def _create_education_whatsapp_ticket(
                 "[EDUCATION_WHATSAPP] No se pudo asociar adjunto al ticket escolar error_type=%s",
                 type(exc).__name__,
             )
+            if has_app_context() and getattr(
+                g,
+                "whatsapp_outbound_collector",
+                None,
+            ) is not None:
+                raise
             db.session.rollback()
     return ticket
 
@@ -2346,6 +2448,7 @@ def _handle_education_whatsapp_turn(
     message_body: str,
     uploaded_file_info: dict[str, Any] | None,
     location_info: dict[str, Any] | None,
+    durable_claim: Any = None,
 ) -> dict[str, Any] | None:
     if not is_education_tenant(tenant_profile):
         return None
@@ -2399,6 +2502,7 @@ def _handle_education_whatsapp_turn(
             message_body=message_body,
             uploaded_file_info=uploaded_file_info,
             location_info=location_info,
+            durable_claim=durable_claim,
         )
         context_data.pop("education_pending_case", None)
         safe_flag_modified(session_context, "context_data")
@@ -2448,14 +2552,28 @@ def _find_live_chat_ticket(
 
     tipo_chat = getattr(owner_user, "tipo_chat", None)
     if tipo_chat == "municipio":
-        municipio_id = getattr(owner_user, "municipio_id", None) or getattr(owner_user, "id", None)
-        query = MunicipioTicket.query.filter(MunicipioTicket.estado.in_(LIVE_CHAT_STATES))
+        resolved_tenant = tenant_profile
+        if resolved_tenant is None:
+            owner_id = getattr(owner_user, "municipio_id", None) or getattr(owner_user, "id", None)
+            try:
+                resolution = resolve_unique_tenant_for_owner(owner_id)
+            except TicketTenantScopeError:
+                resolution = None
+            if resolution is not None and resolution.status == "unique":
+                resolved_tenant = resolution.tenant
+        if resolved_tenant is None:
+            current_app.logger.warning(
+                "[WHATSAPP_WEBHOOK] Live chat municipal lookup rejected without exact tenant owner=%s",
+                getattr(owner_user, "id", None),
+            )
+            return "municipio", None
+        query = scoped_municipio_ticket_query(resolved_tenant).filter(
+            MunicipioTicket.estado.in_(LIVE_CHAT_STATES)
+        )
         if end_user:
             query = query.filter(or_(MunicipioTicket.user_id == end_user.id, MunicipioTicket.anon_id == anon_id))
         elif anon_id:
             query = query.filter(MunicipioTicket.anon_id == anon_id)
-        if municipio_id:
-            query = query.filter(MunicipioTicket.municipio_id == municipio_id)
         return "municipio", query.order_by(MunicipioTicket.fecha.desc()).first()
 
     if tipo_chat == "pyme":
@@ -2534,22 +2652,36 @@ def _find_municipio_ticket_for_reference(
     if not candidates:
         return None
 
-    base_query = MunicipioTicket.query
+    tenant = None
+    if tenant_id:
+        try:
+            tenant = db.session.get(TenantProfile, int(tenant_id))
+        except (TypeError, ValueError):
+            return None
+    elif municipio_id:
+        try:
+            resolution = resolve_unique_tenant_for_owner(municipio_id)
+        except TicketTenantScopeError:
+            return None
+        tenant = resolution.tenant if resolution.status == "unique" else None
+    if tenant is None:
+        return None
     if municipio_id:
-        base_query = base_query.filter(MunicipioTicket.municipio_id == municipio_id)
-    elif tenant_id:
-        base_query = base_query.filter(MunicipioTicket.tenant_id == tenant_id)
+        try:
+            normalized_owner_id = int(municipio_id)
+        except (TypeError, ValueError):
+            return None
+        if normalized_owner_id not in tenant_owner_ids(tenant):
+            return None
+
+    base_query = scoped_municipio_ticket_query(tenant)
 
     ticket = base_query.filter(MunicipioTicket.nro_ticket.in_(candidates)).first()
     if ticket:
         return ticket
 
     if anon_id:
-        anon_query = MunicipioTicket.query.filter(MunicipioTicket.anon_id == anon_id)
-        if municipio_id:
-            anon_query = anon_query.filter(MunicipioTicket.municipio_id == municipio_id)
-        elif tenant_id:
-            anon_query = anon_query.filter(MunicipioTicket.tenant_id == tenant_id)
+        anon_query = base_query.filter(MunicipioTicket.anon_id == anon_id)
         ticket = anon_query.filter(MunicipioTicket.nro_ticket.in_(candidates)).first()
         if ticket:
             return ticket
@@ -2557,12 +2689,282 @@ def _find_municipio_ticket_for_reference(
     return None
 
 
+def _active_municipal_ticket_followup(
+    context_data: Any,
+    *,
+    now_ts: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Return a bounded, ticket-specific follow-up receipt from session state."""
+
+    if not isinstance(context_data, dict):
+        return None
+    now_value = time.time() if now_ts is None else float(now_ts)
+    raw_followup = context_data.get("active_ticket_followup")
+    followup = dict(raw_followup) if isinstance(raw_followup, dict) else {}
+
+    # Backwards compatibility for receipts created before the structured
+    # follow-up context existed.  The old photo window is already bounded and
+    # therefore safe to reuse; ``last_ticket_code`` alone is never enough.
+    if not followup:
+        legacy_until = context_data.get("awaiting_ticket_photo_until")
+        legacy_active = bool(context_data.get("awaiting_ticket_photo"))
+        if legacy_active and isinstance(legacy_until, (int, float)):
+            followup = {
+                "ticket_nro": (
+                    context_data.get("last_ticket_code")
+                    or context_data.get("awaiting_photo_for_ticket")
+                ),
+                "consulta_pin": context_data.get("latest_ticket_pin"),
+                "tracking_url": context_data.get("latest_tracking_url"),
+                "until": legacy_until,
+            }
+
+    ticket_nro = str(followup.get("ticket_nro") or "").strip()
+    until = followup.get("until")
+    if not ticket_nro or not isinstance(until, (int, float)) or now_value > float(until):
+        return None
+    followup["ticket_nro"] = ticket_nro
+    return followup
+
+
+def _clear_municipal_ticket_followup(context_data: Any) -> None:
+    if not isinstance(context_data, dict):
+        return
+    for key in (
+        "active_ticket_followup",
+        "awaiting_photo_for_ticket",
+        "awaiting_ticket_photo",
+        "awaiting_ticket_photo_until",
+        "pending_attachment_id",
+        "pending_ticket_code",
+        "pending_attachment_until",
+    ):
+        context_data.pop(key, None)
+
+
+def _municipal_ticket_is_open(ticket: Optional[MunicipioTicket]) -> bool:
+    if ticket is None:
+        return False
+    state = str(getattr(ticket, "estado", "") or "").strip().lower()
+    return state not in MUNICIPAL_TICKET_CLOSED_STATES
+
+
+def _build_municipal_followup_tracking_text(
+    followup: Dict[str, Any],
+    ticket: Optional[MunicipioTicket],
+) -> str:
+    ticket_nro = str(
+        followup.get("ticket_nro") or getattr(ticket, "nro_ticket", "") or ""
+    ).strip()
+    pin = str(
+        followup.get("consulta_pin") or getattr(ticket, "consulta_pin", "") or ""
+    ).strip()
+    tracking_url = str(followup.get("tracking_url") or "").strip()
+    lines = [f"🔎 *Reclamo {ticket_nro}*"]
+    if pin:
+        lines.append(f"*PIN:* {pin}")
+    if tracking_url:
+        lines.append(f"*Seguimiento:* {tracking_url}")
+    lines.append("Podés seguir respondiendo acá para sumar información al mismo reclamo.")
+    return "\n".join(lines)
+
+
+def _handle_recent_municipal_ticket_followup(
+    *,
+    session_context: ChatSessionContext,
+    client_user: Optional[User],
+    tenant_profile: Optional[TenantProfile],
+    end_user: Optional[User],
+    from_number_cleaned: str,
+    message_body: str,
+    action: Optional[str],
+    twilio_message_client: Any,
+    to_number_raw: str,
+    from_number_raw: str,
+    durable_claim: Any = None,
+    now_ts: Optional[float] = None,
+) -> Optional[Tuple[str, int]]:
+    """Handle one safe text turn against the newly-created open ticket.
+
+    The structured, expiring receipt is the only implicit binding.  A clear
+    new-claim/menu intent exits this mode and continues through the normal LLM
+    orchestrator.  Everything executed here is tenant-scoped and validated
+    against the persisted ticket before a comment is created.
+    """
+
+    if not session_context or not isinstance(session_context.context_data, dict):
+        return None
+    if not client_user or getattr(client_user, "tipo_chat", None) != "municipio":
+        return None
+
+    context_data = session_context.context_data
+    municipio_ctx = context_data.get(CONTEXTO_MUNICIPIO)
+    if isinstance(municipio_ctx, dict) and (
+        (municipio_ctx.get("reclamo_flow_v2") or {}).get("state")
+    ):
+        return None
+
+    followup = _active_municipal_ticket_followup(context_data, now_ts=now_ts)
+    if not followup:
+        # Expired structured windows must not linger and later bind evidence to
+        # an unrelated ticket.
+        if isinstance(context_data.get("active_ticket_followup"), dict):
+            _clear_municipal_ticket_followup(context_data)
+            safe_flag_modified(session_context, "context_data")
+            db.session.add(session_context)
+            db.session.commit()
+        return None
+
+    decision = classify_reclamo_confirmation_turn(message_body, action=action)
+    if decision.intent in {ReclamoTurnIntent.NEW_CLAIM, ReclamoTurnIntent.CANCEL}:
+        _clear_municipal_ticket_followup(context_data)
+        context_data.pop("last_options_sent", None)
+        context_data.pop("pending_sensitive_action", None)
+        safe_flag_modified(session_context, "context_data")
+        db.session.add(session_context)
+        db.session.commit()
+        return None
+
+    ticket_tenant_id = getattr(tenant_profile, "id", None) or session_context.tenant_id
+    municipio_owner_id = (
+        getattr(client_user, "municipio_id", None) or getattr(client_user, "id", None)
+    )
+    ticket = _find_municipio_ticket_for_reference(
+        followup["ticket_nro"],
+        tenant_id=ticket_tenant_id,
+        municipio_id=municipio_owner_id,
+        anon_id=from_number_cleaned,
+    )
+    if not _municipal_ticket_is_open(ticket):
+        _clear_municipal_ticket_followup(context_data)
+        context_data.pop("last_options_sent", None)
+        safe_flag_modified(session_context, "context_data")
+        db.session.add(session_context)
+        db.session.commit()
+        return None
+
+    context_data.pop("last_options_sent", None)
+    context_data.pop("pending_sensitive_action", None)
+    safe_flag_modified(session_context, "context_data")
+
+    if decision.intent is ReclamoTurnIntent.FOLLOW_UP_QUESTION:
+        db.session.add(session_context)
+        db.session.commit()
+        if twilio_message_client:
+            _send_twilio_message(
+                twilio_message_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=_build_municipal_followup_tracking_text(followup, ticket),
+            )
+        return "OK", 200
+
+    if decision.intent is ReclamoTurnIntent.ADD_PHOTO:
+        db.session.add(session_context)
+        db.session.commit()
+        if twilio_message_client:
+            _send_twilio_message(
+                twilio_message_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=(
+                    f"Enviá la foto o el audio y lo voy a sumar al reclamo "
+                    f"*{followup['ticket_nro']}*."
+                ),
+            )
+        return "OK", 200
+
+    if decision.intent is ReclamoTurnIntent.EDIT and not decision.corrections:
+        db.session.add(session_context)
+        db.session.commit()
+        if twilio_message_client:
+            _send_twilio_message(
+                twilio_message_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=(
+                    "Decime qué dato querés corregir. Lo voy a registrar como "
+                    f"actualización del reclamo *{followup['ticket_nro']}*."
+                ),
+            )
+        return "OK", 200
+
+    clean_message = re.sub(r"\s+", " ", str(message_body or "")).strip()
+    if not clean_message:
+        return None
+
+    if decision.reason == "isolated_emoji" or decision.intent is ReclamoTurnIntent.CONFIRM:
+        db.session.add(session_context)
+        db.session.commit()
+        if twilio_message_client:
+            _send_twilio_message(
+                twilio_message_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=(
+                    f"Recibí tu mensaje. El reclamo *{followup['ticket_nro']}* "
+                    "sigue abierto."
+                ),
+            )
+        return "OK", 200
+
+    comment = servicio_tickets.crear_comentario(
+        ticket_id=ticket.id,
+        tipo_ticket="municipio",
+        comentario_data={
+            "comentario": clean_message[:4000],
+            "user_id": getattr(end_user, "id", None),
+            "anon_id": None if end_user else from_number_cleaned,
+            "es_admin": False,
+            "origen": "whatsapp",
+            "estado_ticket": ticket.estado,
+            "emit_notifications": False,
+            "emit_socket": False,
+        },
+        **_durable_whatsapp_ticket_effect_kwargs(
+            durable_claim,
+            ticket_tenant_id,
+            f"ticket_followup_comment:{ticket.id}",
+        ),
+    )
+    if comment is None:
+        raise RuntimeError("municipal_ticket_followup_comment_not_persisted")
+    db.session.add(session_context)
+    db.session.commit()
+    if twilio_message_client:
+        _send_twilio_message(
+            twilio_message_client,
+            from_=to_number_raw,
+            to=from_number_raw,
+            body=f"✅ Sumé tu mensaje al reclamo *{followup['ticket_nro']}*.",
+        )
+    return "OK", 200
+
+
+def _durable_whatsapp_ticket_effect_kwargs(
+    durable_claim: Any,
+    tenant_id: Any,
+    effect: str,
+) -> dict[str, Any]:
+    if durable_claim is None:
+        return {}
+    durable_turn_id = getattr(durable_claim, "turn_id", None)
+    key = build_whatsapp_ticket_effect_key(tenant_id, durable_turn_id, effect)
+    return {
+        "idempotency_key": key,
+        "idempotency_tenant_id": int(tenant_id),
+    }
+
+
 def _attach_whatsapp_adjunto_to_ticket(
     adjunto: ArchivoAdjunto,
     ticket: MunicipioTicket,
     end_user: Optional[User],
     comentario_text: str,
-) -> None:
+    *,
+    idempotency_key: Optional[str] = None,
+    idempotency_tenant_id: Optional[int] = None,
+) -> Optional[TicketComentario]:
     adjunto.municipio_ticket_id = ticket.id
     if hasattr(ticket, "foto_principal"):
         if not ticket.foto_principal:
@@ -2573,17 +2975,22 @@ def _attach_whatsapp_adjunto_to_ticket(
     db.session.add(adjunto)
     db.session.add(ticket)
 
-    comentario = TicketComentario(
-        municipio_ticket_id=ticket.id,
-        comentario=comentario_text,
-        user_id=end_user.id if end_user else None,
-        es_admin=False,
-        origen="chat",
-        estado_ticket=ticket.estado,
-        archivo_adjunto_id=adjunto.id,
+    return servicio_tickets.crear_comentario(
+        ticket_id=ticket.id,
+        tipo_ticket="municipio",
+        comentario_data={
+            "comentario": comentario_text,
+            "user_id": end_user.id if end_user else None,
+            "es_admin": False,
+            "origen": "whatsapp",
+            "estado_ticket": ticket.estado,
+            "archivo_adjunto_id": adjunto.id,
+            "emit_notifications": False,
+            "emit_socket": False,
+        },
+        idempotency_key=idempotency_key,
+        idempotency_tenant_id=idempotency_tenant_id,
     )
-    db.session.add(comentario)
-    db.session.commit()
 
 
 def _looks_like_ticket_reference(text: str) -> bool:
@@ -3309,7 +3716,14 @@ def _resolve_approved_whatsapp_template_sid(
         if row:
             status = (row.status or "").strip().lower()
             content_sid = (row.content_sid or "").strip()
-            if status == "approved" and content_sid.startswith("HX"):
+            if (
+                status == "approved"
+                and content_sid.startswith("HX")
+                and _twilio_template_registry_row_is_fresh(
+                    row,
+                    template_name=normalized_name,
+                )
+            ):
                 return content_sid
             return None
 
@@ -3317,6 +3731,87 @@ def _resolve_approved_whatsapp_template_sid(
         normalized_name,
         language=language,
     )
+
+
+def _twilio_template_registry_row_is_fresh(
+    row: MessageTemplateRegistry,
+    *,
+    template_name: str,
+) -> bool:
+    """Require recent provider-sync evidence for an approved DB template."""
+
+    try:
+        max_age_hours = float(
+            current_app.config.get("TWILIO_TEMPLATE_MANIFEST_MAX_AGE_HOURS", 168)
+        )
+    except (TypeError, ValueError, OverflowError):
+        max_age_hours = 0.0
+    if max_age_hours <= 0:
+        _log(
+            "warning",
+            "[whatsapp] Template registry rejected name=%s reason=invalid_max_age",
+            template_name,
+        )
+        return False
+
+    synced_at = getattr(row, "last_sync_at", None)
+    if not isinstance(synced_at, datetime):
+        _log(
+            "warning",
+            "[whatsapp] Template registry rejected name=%s reason=missing_sync_timestamp",
+            template_name,
+        )
+        return False
+    if synced_at.tzinfo is None:
+        synced_at = synced_at.replace(tzinfo=timezone.utc)
+    else:
+        synced_at = synced_at.astimezone(timezone.utc)
+    age = datetime.now(timezone.utc) - synced_at
+    if age < -timedelta(minutes=5) or age > timedelta(hours=max_age_hours):
+        _log(
+            "warning",
+            "[whatsapp] Template registry rejected name=%s reason=stale_sync",
+            template_name,
+        )
+        return False
+    return True
+
+
+def _resolve_welcome_template_sid(
+    *,
+    tenant_profile: Optional[TenantProfile],
+) -> Optional[str]:
+    resolved = _resolve_approved_whatsapp_template_sid(
+        "chatboc_welcome_menu_v2",
+        tenant_profile=tenant_profile,
+    )
+    if resolved:
+        return resolved
+
+    override = str(current_app.config.get("WELCOME_TEMPLATE_SID") or "").strip()
+    if not override:
+        return None
+    if not _as_bool(
+        current_app.config.get("WELCOME_TEMPLATE_OVERRIDE_ENABLED"),
+        default=False,
+    ):
+        _log(
+            "warning",
+            "[WELCOME] Unattested template override ignored",
+        )
+        return None
+    if not override.startswith("HX") and not current_app.testing:
+        _log(
+            "warning",
+            "[WELCOME] Invalid template override ignored",
+        )
+        return None
+    _log(
+        "warning",
+        "[WELCOME] Emergency template override enabled template_ref=%s",
+        _safe_provider_reference(override),
+    )
+    return override
 
 
 @lru_cache(maxsize=1)
@@ -3606,6 +4101,24 @@ def _clean_status_callback_url(value: Any) -> Optional[str]:
     return cleaned
 
 
+def _with_twilio_status_retry_overrides(value: Any) -> Optional[str]:
+    """Opt a callback into bounded retries without changing its signed URL.
+
+    Twilio consumes the URL fragment as connection overrides; browsers and our
+    Flask endpoint never receive it. Existing explicit overrides win.
+    """
+
+    callback = _clean_status_callback_url(value)
+    if not callback:
+        return None
+    parsed = urlsplit(callback)
+    if parsed.fragment:
+        return callback
+    return urlunsplit(
+        parsed._replace(fragment=TWILIO_STATUS_CALLBACK_CONNECTION_OVERRIDES)
+    )
+
+
 def _twilio_whatsapp_status_callback_url(params: Dict[str, Any]) -> Optional[str]:
     if has_app_context():
         configured = (
@@ -3712,13 +4225,36 @@ def _can_send_whatsapp_freeform_pre_message(
 
 
 def _send_twilio_message(client, **params):
+    provider_call_hook = params.pop("_chatboc_provider_call_hook", None)
     sanitized = _sanitize_twilio_message_params(params)
     policy_metadata = sanitized.pop("_chatboc_policy_metadata", None)
     policy_metadata = dict(policy_metadata) if isinstance(policy_metadata, dict) else {}
+    durable_collector = (
+        getattr(g, "whatsapp_outbound_collector", None)
+        if has_app_context()
+        else None
+    )
+    if durable_collector is not None:
+        # Queue workers render the exact legacy response path, but provider I/O
+        # happens only after the inbound transaction stages its ordered outbox.
+        # Capture before policy reservation and before ``messages.create`` so a
+        # replay cannot consume quota or contact Twilio twice.
+        # Never persist a point-in-time policy decision.  A delayed outbox row
+        # can cross the customer-service window before dispatch; the worker
+        # must re-evaluate the current contact state immediately before send.
+        policy_metadata.pop("within_24h_window", None)
+        sanitized["_chatboc_policy_metadata"] = policy_metadata
+        return durable_collector.capture(sanitized)
     if has_request_context() and request.path == "/webhook/whatsapp":
         policy_metadata.setdefault("within_24h_window", True)
     if _is_whatsapp_twilio_message(sanitized) and not sanitized.get("status_callback"):
         callback = _twilio_whatsapp_status_callback_url(sanitized)
+        if callback:
+            sanitized["status_callback"] = callback
+    if _is_whatsapp_twilio_message(sanitized) and sanitized.get("status_callback"):
+        callback = _with_twilio_status_retry_overrides(
+            sanitized.get("status_callback")
+        )
         if callback:
             sanitized["status_callback"] = callback
     if _is_whatsapp_twilio_message(sanitized) and has_app_context():
@@ -3749,6 +4285,8 @@ def _send_twilio_message(client, **params):
             )
             if not allowed:
                 raise WhatsAppOutboundPolicyError(reason or "enterprise_policy_blocked")
+    if callable(provider_call_hook):
+        provider_call_hook()
     return client.messages.create(**sanitized)
 
 
@@ -3889,6 +4427,12 @@ def _dispatch_twilio_pre_messages(
                 "[whatsapp] Failed to send pre-message via Twilio error_type=%s",
                 type(exc).__name__,
             )
+            if has_app_context() and getattr(
+                g,
+                "whatsapp_outbound_collector",
+                None,
+            ) is not None:
+                raise
 
 
 def _normalize_whatsapp_address(value: Optional[str]) -> Optional[str]:
@@ -4743,6 +5287,17 @@ def _apply_completed_reclamo_context(context_data: dict, completion: dict) -> di
         }.items()
         if value is not None
     }
+    followup_started_at = time.time()
+    context_data["active_ticket_followup"] = {
+        "ticket_id": completion.get("ticket_id"),
+        "ticket_nro": ticket_nro,
+        "consulta_pin": completion.get("consulta_pin"),
+        "tracking_url": completion.get("tracking_url"),
+        "started_at": followup_started_at,
+        "until": followup_started_at + CLAIM_FOLLOWUP_WINDOW_SECONDS,
+    }
+    context_data.pop("last_options_sent", None)
+    context_data.pop("pending_sensitive_action", None)
     context_data.pop("foto_url", None)
     context_data.pop("es_foto", None)
     return context_data
@@ -4751,8 +5306,16 @@ def _apply_completed_reclamo_context(context_data: dict, completion: dict) -> di
 def _send_delayed_payload(client, to_number: str, from_number: str, payload: dict, delay: int, app):
     """Send a payload via WhatsApp after a delay using a background thread."""
 
+    durable_collector = (
+        getattr(g, "whatsapp_outbound_collector", None)
+        if has_app_context()
+        else None
+    )
+
     def _send():
         with app.app_context():
+            if durable_collector is not None:
+                g.whatsapp_outbound_collector = durable_collector
             from services.response_formatter import build_interactive_response
 
             delayed_base_url = (
@@ -4901,42 +5464,57 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                         params["media_url"] = [resolved_image_url]
 
             try:
-                message = _send_twilio_message(client, **params)
+                delay_context = (
+                    durable_collector.delay(delay)
+                    if durable_collector is not None
+                    else nullcontext()
+                )
+                with delay_context:
+                    message = _send_twilio_message(client, **params)
 
-                if audio_url:
-                    absolute_audio_url = audio_url
-                    if absolute_audio_url.startswith('/'):
-                        base_url = (app.config.get("APP_BASE_URL") or "").rstrip('/')
-                        if base_url:
-                            absolute_audio_url = f"{base_url}{audio_url}"
-                        else:
-                            app.logger.warning(
-                                "[DELAYED_AUDIO] APP_BASE_URL no configurada; audio relativo omitido"
+                    if audio_url:
+                        absolute_audio_url = audio_url
+                        if absolute_audio_url.startswith('/'):
+                            base_url = (app.config.get("APP_BASE_URL") or "").rstrip('/')
+                            if base_url:
+                                absolute_audio_url = f"{base_url}{audio_url}"
+                            else:
+                                app.logger.warning(
+                                    "[DELAYED_AUDIO] APP_BASE_URL no configurada; audio relativo omitido"
+                                )
+                                absolute_audio_url = None
+
+                        if absolute_audio_url:
+                            if _is_welcome_sticker(absolute_audio_url):
+                                absolute_audio_url = None
+
+                        if absolute_audio_url:
+                            audio_params = {
+                                'from_': to_number,
+                                'to': from_number,
+                                'media_url': [absolute_audio_url]
+                            }
+                            app.logger.debug(
+                                "[DELAYED_AUDIO] Enviando audio adicional message_ref=%s",
+                                _safe_provider_reference(getattr(message, 'sid', None)),
                             )
-                            absolute_audio_url = None
-
-                    if absolute_audio_url:
-                        if _is_welcome_sticker(absolute_audio_url):
-                            absolute_audio_url = None
-
-                    if absolute_audio_url:
-                        audio_params = {
-                            'from_': to_number,
-                            'to': from_number,
-                            'media_url': [absolute_audio_url]
-                        }
-                        app.logger.debug(
-                            "[DELAYED_AUDIO] Enviando audio adicional message_ref=%s",
-                            _safe_provider_reference(getattr(message, 'sid', None)),
-                        )
-                        _send_twilio_message(client, **audio_params)
+                            _send_twilio_message(client, **audio_params)
             except Exception as exc:
                 app.logger.error(
                     "[WHATSAPP_WEBHOOK] Delayed message failed error_type=%s",
                     type(exc).__name__,
                 )
+                if durable_collector is not None:
+                    raise
 
-    if client:
+    if durable_collector is not None:
+        # Render synchronously while request/app context and tenant assets are
+        # available; the collector persists the requested delay in the outbox.
+        # The outer delay also covers auxiliary pre-messages rendered by the
+        # delayed payload, not only its main body/audio sends.
+        with durable_collector.delay(delay):
+            _send()
+    elif client:
         timer = threading.Timer(delay, _send)
         timer.daemon = True
         timer.start()
@@ -4972,17 +5550,300 @@ else:
     twilio_client = None
     validator = None
 
+
+def _whatsapp_inbound_durability_mode() -> str:
+    return str(
+        current_app.config.get("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy")
+        or "legacy"
+    ).strip().lower()
+
+
+def _durable_whatsapp_claim() -> Any:
+    if not has_app_context():
+        return None
+    return getattr(g, "whatsapp_inbound_turn_claim", None)
+
+
+def _assert_durable_replay_sender_scope(
+    claim: Any,
+    *,
+    provider_sender: Optional[ProviderSender],
+) -> None:
+    if str(getattr(claim, "provider", "") or "").strip().lower() != "twilio":
+        abort(403, "Invalid durable provider scope")
+
+    expected_sender_id = getattr(claim, "provider_sender_id", None)
+    actual_sender_id = getattr(provider_sender, "id", None)
+    if expected_sender_id != actual_sender_id:
+        abort(403, "Invalid durable sender scope")
+
+    expected_connection_id = getattr(claim, "provider_connection_id", None)
+    actual_connection_id = getattr(provider_sender, "provider_connection_id", None)
+    if expected_connection_id != actual_connection_id:
+        abort(403, "Invalid durable connection scope")
+
+
+def _assert_durable_replay_tenant_scope(claim: Any, tenant_id: Any) -> None:
+    try:
+        expected_tenant_id = int(getattr(claim, "tenant_id", 0) or 0)
+        actual_tenant_id = int(tenant_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        abort(403, "Invalid durable tenant scope")
+    if not expected_tenant_id or expected_tenant_id != actual_tenant_id:
+        abort(403, "Invalid durable tenant scope")
+
+
+def _resolve_whatsapp_session_identity(
+    *,
+    tenant_id: Any,
+    empresa_id: Any,
+    from_number_cleaned: str,
+    durable_claim: Any = None,
+):
+    """Resolve or verify the non-PII canonical session for this inbound turn."""
+
+    from services.channel_session_identity import (
+        MODE_ENFORCE,
+        MODE_LEGACY,
+        ChannelSessionIdentityConflict,
+        channel_session_identity_mode,
+        resolve_channel_session_identity,
+        verify_channel_session_identity_binding,
+    )
+
+    mode = channel_session_identity_mode(current_app.config)
+    if mode == MODE_LEGACY:
+        return None
+    if durable_claim is not None:
+        binding_id = getattr(durable_claim, "session_identity_binding_id", None)
+        if binding_id is not None:
+            return verify_channel_session_identity_binding(
+                tenant_id=tenant_id,
+                binding_id=binding_id,
+                channel="whatsapp",
+                provider=getattr(durable_claim, "provider", None),
+                identity_version=getattr(
+                    durable_claim,
+                    "session_identity_version",
+                    None,
+                ),
+                identity_hmac=getattr(
+                    durable_claim,
+                    "session_identity_hmac",
+                    None,
+                ),
+                chat_session_id=getattr(durable_claim, "chat_session_id", None),
+            )
+        if mode == MODE_ENFORCE:
+            raise ChannelSessionIdentityConflict("session_identity_replay_incomplete")
+
+    return resolve_channel_session_identity(
+        config=current_app.config,
+        tenant_id=tenant_id,
+        channel="whatsapp",
+        provider="twilio",
+        provider_identity=from_number_cleaned,
+        owner_user_id=empresa_id,
+    )
+
+
+def _persist_validated_whatsapp_inbound_turn(
+    *,
+    post_vars: Dict[str, Any],
+    safe_flow_submission: Optional[Dict[str, Any]],
+    tenant_id: Any,
+    provider_sender: Optional[ProviderSender],
+    from_number_cleaned: str,
+    to_number_cleaned: str,
+    empresa_id: Any,
+    session_identity: Any = None,
+) -> Tuple[str, int]:
+    """Persist the signed/scoped webhook before acknowledging queue mode."""
+
+    from services.whatsapp_inbound_turns import (
+        WhatsAppInboundDigestConflict,
+        WhatsAppTurnValidationError,
+        derive_whatsapp_stream_key,
+        ingest_whatsapp_inbound_turn,
+        normalize_whatsapp_inbound_payload,
+    )
+
+    provider_message_sid = str(
+        post_vars.get("MessageSid") or post_vars.get("SmsMessageSid") or ""
+    ).strip()
+    if not provider_message_sid:
+        return "Missing provider message id", 422
+
+    try:
+        resolved_tenant_id = int(tenant_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        resolved_tenant_id = 0
+    if resolved_tenant_id < 1:
+        current_app.logger.error(
+            "[WHATSAPP_QUEUE] Refused inbound without canonical tenant owner_user_id=%s",
+            empresa_id,
+        )
+        return "WhatsApp tenant scope unavailable", 503
+
+    # Never trust an internal-looking form field. Only the contract produced by
+    # the synchronous signed Flow validator may cross the durable boundary.
+    payload_source = dict(post_vars)
+    payload_source.pop("safe_flow_submission", None)
+    if isinstance(safe_flow_submission, dict):
+        durable_flow_submission = deepcopy(safe_flow_submission)
+        # These fields describe local validation time/state rather than the
+        # immutable provider event. Keeping them would turn a byte-identical
+        # Twilio retry into a false digest conflict.
+        durable_flow_submission.pop("received_at", None)
+        durable_correlation = durable_flow_submission.get("correlation")
+        if isinstance(durable_correlation, dict):
+            durable_correlation.pop("already_consumed", None)
+        payload_source["safe_flow_submission"] = durable_flow_submission
+
+    try:
+        normalized_payload = normalize_whatsapp_inbound_payload(payload_source)
+        stream_key = derive_whatsapp_stream_key(
+            secret=current_app.config.get("WHATSAPP_INBOUND_HASH_SECRET") or "",
+            tenant_id=resolved_tenant_id,
+            sender=from_number_cleaned,
+            destination=to_number_cleaned,
+        )
+        receipt = ingest_whatsapp_inbound_turn(
+            tenant_id=resolved_tenant_id,
+            provider="twilio",
+            provider_message_sid=provider_message_sid,
+            stream_key=stream_key,
+            payload=normalized_payload,
+            provider_connection_id=getattr(
+                provider_sender,
+                "provider_connection_id",
+                None,
+            ),
+            provider_sender_id=getattr(provider_sender, "id", None),
+            chat_session_id=(
+                getattr(session_identity, "chat_session_id", None)
+                if session_identity is not None
+                else f"whatsapp_{empresa_id}_{from_number_cleaned}"
+            ),
+            session_identity_binding_id=getattr(
+                session_identity,
+                "binding_id",
+                None,
+            ),
+            session_identity_version=getattr(
+                session_identity,
+                "identity_version",
+                None,
+            ),
+            session_identity_hmac=getattr(
+                session_identity,
+                "identity_hmac",
+                None,
+            ),
+            max_attempts=current_app.config.get(
+                "WHATSAPP_INBOUND_MAX_ATTEMPTS",
+                8,
+            ),
+        )
+    except WhatsAppInboundDigestConflict as exc:
+        current_app.logger.error(
+            "[WHATSAPP_QUEUE] Replayed provider id changed immutable payload "
+            "tenant_id=%s sender_id=%s code=%s",
+            resolved_tenant_id,
+            getattr(provider_sender, "id", None),
+            exc.code,
+        )
+        return "Conflicting provider replay", 409
+    except WhatsAppTurnValidationError as exc:
+        current_app.logger.warning(
+            "[WHATSAPP_QUEUE] Rejected invalid durable payload tenant_id=%s code=%s",
+            resolved_tenant_id,
+            exc.code,
+        )
+        return "Invalid WhatsApp payload", 422
+    except Exception as exc:
+        current_app.logger.error(
+            "[WHATSAPP_QUEUE] Persistence failed before acknowledgement "
+            "tenant_id=%s error_type=%s",
+            resolved_tenant_id,
+            type(exc).__name__,
+        )
+        return "WhatsApp queue unavailable", 503
+
+    if receipt.created:
+        try:
+            from services.whatsapp_inbound_worker import (
+                enqueue_whatsapp_inbound_stream,
+            )
+
+            enqueue_whatsapp_inbound_stream(
+                tenant_id=receipt.tenant_id,
+                stream_key=receipt.stream_key,
+            )
+        except Exception as exc:
+            # The committed database row remains the source of truth and is
+            # recoverable by the poller even when the broker is unavailable.
+            current_app.logger.warning(
+                "[WHATSAPP_QUEUE] Best-effort wakeup failed turn_id=%s error_type=%s",
+                receipt.turn_id,
+                type(exc).__name__,
+            )
+
+    current_app.logger.info(
+        "[WHATSAPP_QUEUE] Inbound persisted outcome=%s turn_id=%s tenant_id=%s",
+        receipt.outcome,
+        receipt.turn_id,
+        receipt.tenant_id,
+    )
+    return "OK", 200
+
 @webhook_bp.route("/webhook/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     _log("info", "Whatsapp webhook called.")
+    durable_claim = _durable_whatsapp_claim()
+    durable_replay = durable_claim is not None
+    durability_mode = _whatsapp_inbound_durability_mode()
+    if durability_mode not in {"legacy", "queue"}:
+        current_app.logger.error(
+            "[WHATSAPP_QUEUE] Invalid durability mode configured"
+        )
+        return "WhatsApp durability mode unavailable", 503
+    if durable_replay and durability_mode != "queue":
+        abort(503, "Durable WhatsApp replay is disabled")
+    if durable_replay and getattr(g, "whatsapp_outbound_collector", None) is None:
+        # A replay without capture would execute the legacy provider sends
+        # inline and reopen the duplicate-send window this mode is designed to
+        # close. Only the internal worker is allowed to construct both values.
+        abort(503, "Durable WhatsApp outbox capture unavailable")
+
     signature = request.headers.get("X-Twilio-Signature", "")
     url = request.url
-    post_vars = request.form.to_dict()
+    if durable_replay:
+        post_vars = dict(getattr(durable_claim, "payload", None) or {})
+    else:
+        post_vars = request.form.to_dict()
+        # This key is internal-only. A provider form field with the same name
+        # must never become a trusted Flow contract, even though the request is
+        # otherwise signed.
+        post_vars.pop("safe_flow_submission", None)
+    inbound_content = classify_twilio_whatsapp_payload(post_vars)
     request_metadata = safe_twilio_form_metadata(post_vars)
     _log("debug", "Request form metadata: %s", request_metadata)
-    flow_submission_present = has_whatsapp_flow_submission(post_vars)
-    flow_submission = None
-    safe_flow_submission = None
+    persisted_flow_submission = post_vars.get("safe_flow_submission")
+    flow_submission_present = bool(
+        isinstance(persisted_flow_submission, dict)
+        or has_whatsapp_flow_submission(post_vars)
+    )
+    flow_submission = (
+        deepcopy(persisted_flow_submission)
+        if durable_replay and isinstance(persisted_flow_submission, dict)
+        else None
+    )
+    safe_flow_submission = (
+        deepcopy(persisted_flow_submission)
+        if durable_replay and isinstance(persisted_flow_submission, dict)
+        else None
+    )
     flow_completion_payload = None
     to_number_raw = post_vars.get("To", "")
     from_number_raw = post_vars.get("From", "")
@@ -4994,6 +5855,18 @@ def whatsapp_webhook():
         normalized_to=to_number_normalized,
         messaging_service_sid=service_sid,
     )
+    if inbound_content.is_event_only and not provider_sender and not sender_resolution_error:
+        # Status callbacks use the business sender in ``From`` rather than
+        # ``To``.  Resolve that reverse direction only for a content-free
+        # control event; normal inbound messages remain strictly To-bound.
+        event_sender_raw = from_number_raw
+        event_sender_normalized = _normalize_whatsapp_address(event_sender_raw)
+        if event_sender_normalized and event_sender_normalized != to_number_normalized:
+            provider_sender, sender_resolution_error = _resolve_provider_sender_for_twilio_request(
+                to_number_raw=event_sender_raw,
+                normalized_to=event_sender_normalized,
+                messaging_service_sid=service_sid,
+            )
     if sender_resolution_error:
         _log(
             "warning",
@@ -5003,11 +5876,21 @@ def whatsapp_webhook():
         )
         abort(403, "Invalid Twilio sender scope")
 
+    if durable_replay:
+        _assert_durable_replay_sender_scope(
+            durable_claim,
+            provider_sender=provider_sender,
+        )
+
     whatsapp_mapping = None
     to_number_cleaned = (to_number_raw or "").replace("whatsapp:", "").strip()
     credential_tenant = getattr(provider_sender, "tenant", None)
     if not provider_sender:
         whatsapp_mapping, to_number_cleaned, to_number_normalized = _lookup_whatsapp_mapping(to_number_raw)
+        if inbound_content.is_event_only and not whatsapp_mapping:
+            event_mapping, _, _ = _lookup_whatsapp_mapping(from_number_raw)
+            if event_mapping:
+                whatsapp_mapping = event_mapping
         if whatsapp_mapping and whatsapp_mapping.user:
             credential_tenant = _tenant_profile_for_user(whatsapp_mapping.user)
 
@@ -5040,10 +5923,27 @@ def whatsapp_webhook():
         )
         abort(403, "Invalid Twilio sender scope")
 
-    if not request_validator.validate(url, request.form, signature):
+    if not durable_replay and not request_validator.validate(url, request.form, signature):
         abort(403, "Invalid Twilio signature")
 
-    if flow_submission_present:
+    if inbound_content.is_event_only:
+        event_tenant_id = getattr(credential_tenant, "id", None)
+        if durable_replay:
+            _assert_durable_replay_tenant_scope(durable_claim, event_tenant_id)
+        if not event_tenant_id:
+            current_app.logger.warning(
+                "[WHATSAPP_WEBHOOK] Content-free control event rejected without tenant scope kind=%s",
+                inbound_content.kind,
+            )
+            return "WhatsApp tenant scope unavailable", 404
+        current_app.logger.info(
+            "[WHATSAPP_WEBHOOK] Content-free control event acknowledged before conversation kind=%s tenant_id=%s",
+            inbound_content.kind,
+            event_tenant_id,
+        )
+        return "OK", 200
+
+    if flow_submission_present and not durable_replay:
         try:
             if not credential_tenant or not provider_sender:
                 raise WhatsAppFlowTokenError("flow_sender_not_registered")
@@ -5164,11 +6064,66 @@ def whatsapp_webhook():
                 credential_tenant_id,
                 tenant_id,
             )
+            if durability_mode == "queue":
+                abort(403, "Invalid WhatsApp Flow tenant scope")
             return "OK", 200
+
+    from services.channel_session_identity import (
+        ChannelSessionIdentityConflict,
+        ChannelSessionIdentityError,
+    )
+
+    session_identity = None
+    try:
+        session_identity = _resolve_whatsapp_session_identity(
+            tenant_id=tenant_id,
+            empresa_id=empresa_id,
+            from_number_cleaned=from_number_cleaned,
+            durable_claim=durable_claim,
+        )
+    except ChannelSessionIdentityError as exc:
+        current_app.logger.error(
+            "[WHATSAPP_SESSION_IDENTITY] Resolution refused tenant_id=%s "
+            "durable_replay=%s code=%s",
+            tenant_id,
+            durable_replay,
+            exc.code,
+        )
+        if durable_replay and isinstance(exc, ChannelSessionIdentityConflict):
+            abort(403, "Invalid durable session identity scope")
+        return "WhatsApp session identity unavailable", 503
+
+    if session_identity is not None:
+        current_app.logger.info(
+            "[WHATSAPP_SESSION_IDENTITY] tenant_id=%s outcome=%s "
+            "continuity_preserved=%s",
+            tenant_id,
+            session_identity.outcome,
+            session_identity.continuity_preserved,
+        )
+
+    if durable_replay:
+        _assert_durable_replay_tenant_scope(durable_claim, tenant_id)
+    elif durability_mode == "queue":
+        return _persist_validated_whatsapp_inbound_turn(
+            post_vars=post_vars,
+            safe_flow_submission=safe_flow_submission,
+            tenant_id=tenant_id,
+            provider_sender=provider_sender,
+            from_number_cleaned=from_number_cleaned,
+            to_number_cleaned=to_number_cleaned,
+            empresa_id=empresa_id,
+            session_identity=session_identity,
+        )
+
     from services.pymes import get_or_create_user_by_phone
     end_user = get_or_create_user_by_phone(from_number_cleaned, client_user)
 
-    chat_session_id_internal = f"whatsapp_{empresa_id}_{from_number_cleaned}"
+    chat_session_id_internal = (
+        session_identity.chat_session_id
+        if session_identity is not None
+        else f"whatsapp_{empresa_id}_{from_number_cleaned}"
+    )
 
     ensure_chat_session_context_schema(db.session)
     try:
@@ -5252,6 +6207,26 @@ def whatsapp_webhook():
     # Ensure context_data is a dict
     if not isinstance(session_context_db_entry.context_data, dict):
         session_context_db_entry.context_data = {}
+    base_session_data = {
+        "historial_chat": [],
+        "estado_conversacion": "inicio",
+        "user_id_empresa": empresa_id,
+        "telefono_usuario": from_number_cleaned,
+        "canal_origen": "whatsapp",
+        "mensajes_previos_llm_formato": [],
+    }
+    context_changed = False
+    for key, value in base_session_data.items():
+        if key not in session_context_db_entry.context_data:
+            session_context_db_entry.context_data[key] = value
+            context_changed = True
+    if not session_context_db_entry.anon_id:
+        session_context_db_entry.anon_id = from_number_cleaned
+        context_changed = True
+    if context_changed:
+        safe_flag_modified(session_context_db_entry, "context_data")
+        db.session.add(session_context_db_entry)
+        db.session.commit()
     if force_chatboc_demo_hub and not session_context_db_entry.context_data.get("chatboc_demo_context_ready"):
         for legacy_key in (
             CONTEXTO_MUNICIPIO,
@@ -5277,27 +6252,54 @@ def whatsapp_webhook():
 
     message_sid = post_vars.get("MessageSid") or post_vars.get("SmsMessageSid")
     media_message_sid = post_vars.get("MediaMessageSid") or post_vars.get("MediaSid0")
-    processed_message_sids = session_context_db_entry.context_data.setdefault("processed_message_sids", [])
-    processed_media_sids = session_context_db_entry.context_data.setdefault("processed_media_sids", [])
-    processed_flow_tokens = session_context_db_entry.context_data.setdefault(
-        "processed_whatsapp_flow_token_digests",
-        [],
-    )
+    processed_message_sids: List[str] = []
+    processed_media_sids: List[str] = []
+    processed_flow_tokens: List[str] = []
+    completed_flow_id = str(
+        (((safe_flow_submission or {}).get("flow") or {}).get("id")) or ""
+    ).strip()
+    replayable_flow_completion = completed_flow_id in {
+        CLAIM_EVIDENCE_FLOW_ID,
+        CLAIM_FLOW_ID,
+        ORDER_FLOW_ID,
+        SURVEY_FLOW_ID,
+    }
+    if not durable_replay:
+        processed_message_sids = session_context_db_entry.context_data.setdefault(
+            "processed_message_sids",
+            [],
+        )
+        processed_media_sids = session_context_db_entry.context_data.setdefault(
+            "processed_media_sids",
+            [],
+        )
+        processed_flow_tokens = session_context_db_entry.context_data.setdefault(
+            "processed_whatsapp_flow_token_digests",
+            [],
+        )
 
-    if message_sid and message_sid in processed_message_sids:
-        _log(
-            "info",
-            "[WHATSAPP_WEBHOOK] Duplicate MessageSid ignored message_ref=%s",
-            _safe_provider_reference(message_sid),
-        )
-        return "OK", 200
-    if media_message_sid and media_message_sid in processed_media_sids:
-        _log(
-            "info",
-            "[WHATSAPP_WEBHOOK] Duplicate MediaMessageSid ignored message_ref=%s",
-            _safe_provider_reference(media_message_sid),
-        )
-        return "OK", 200
+        if (
+            message_sid
+            and message_sid in processed_message_sids
+            and not replayable_flow_completion
+        ):
+            _log(
+                "info",
+                "[WHATSAPP_WEBHOOK] Duplicate MessageSid ignored message_ref=%s",
+                _safe_provider_reference(message_sid),
+            )
+            return "OK", 200
+        if (
+            media_message_sid
+            and media_message_sid in processed_media_sids
+            and not replayable_flow_completion
+        ):
+            _log(
+                "info",
+                "[WHATSAPP_WEBHOOK] Duplicate MediaMessageSid ignored message_ref=%s",
+                _safe_provider_reference(media_message_sid),
+            )
+            return "OK", 200
 
     flow_correlation = (safe_flow_submission or {}).get("correlation") or {}
     flow_token_digest = str(flow_correlation.get("token_digest") or "").strip()
@@ -5313,25 +6315,33 @@ def whatsapp_webhook():
             )
         )
         if not consumed:
-            current_app.logger.info(
-                "[WHATSAPP_FLOW] Duplicate, expired or inactive Flow invocation ignored before orchestration"
-            )
-            if message_sid:
-                processed_message_sids.append(message_sid)
-                session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
-                safe_flag_modified(session_context_db_entry, "context_data")
-                db.session.add(session_context_db_entry)
-                db.session.commit()
-            return "OK", 200
-        completed_flow_id = str(
-            ((safe_flow_submission.get("flow") or {}).get("id")) or ""
-        ).strip()
-        if completed_flow_id in {
-            CLAIM_EVIDENCE_FLOW_ID,
-            CLAIM_FLOW_ID,
-            ORDER_FLOW_ID,
-            SURVEY_FLOW_ID,
-        }:
+            if replayable_flow_completion and flow_interaction_id:
+                try:
+                    flow_completion_payload = replay_whatsapp_flow_completion(
+                        tenant_id=int(tenant_id),
+                        interaction_id=int(flow_interaction_id),
+                        submission=safe_flow_submission,
+                    )
+                except MetaFlowActionError as exc:
+                    current_app.logger.info(
+                        "[WHATSAPP_FLOW] Completion replay ignored code=%s flow_id=%s interaction_id=%s",
+                        exc.code,
+                        completed_flow_id,
+                        flow_interaction_id,
+                    )
+            if not flow_completion_payload:
+                current_app.logger.info(
+                    "[WHATSAPP_FLOW] Duplicate, expired or inactive Flow invocation ignored before orchestration"
+                )
+                if message_sid and not durable_replay:
+                    if message_sid not in processed_message_sids:
+                        processed_message_sids.append(message_sid)
+                    session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
+                    safe_flag_modified(session_context_db_entry, "context_data")
+                    db.session.add(session_context_db_entry)
+                    db.session.commit()
+                return "OK", 200
+        elif replayable_flow_completion:
             try:
                 flow_completion_payload = apply_whatsapp_flow_completion(
                     tenant_id=int(tenant_id),
@@ -5352,8 +6362,14 @@ def whatsapp_webhook():
                     interaction_id=int(flow_interaction_id),
                     code=exc.code,
                     actor_user_id=getattr(end_user, "id", None),
+                    submission=safe_flow_submission,
                 )
-    if flow_token_digest and flow_token_digest in processed_flow_tokens:
+    if (
+        not durable_replay
+        and flow_token_digest
+        and flow_token_digest in processed_flow_tokens
+        and not flow_completion_payload
+    ):
         current_app.logger.info("[WHATSAPP_FLOW] Replayed Flow token ignored before orchestration")
         if message_sid:
             processed_message_sids.append(message_sid)
@@ -5363,17 +6379,20 @@ def whatsapp_webhook():
         db.session.commit()
         return "OK", 200
 
-    if message_sid:
-        processed_message_sids.append(message_sid)
-        session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
-    if media_message_sid:
-        processed_media_sids.append(media_message_sid)
-        session_context_db_entry.context_data["processed_media_sids"] = processed_media_sids[-50:]
+    if not durable_replay:
+        if message_sid and message_sid not in processed_message_sids:
+            processed_message_sids.append(message_sid)
+            session_context_db_entry.context_data["processed_message_sids"] = processed_message_sids[-50:]
+        if media_message_sid and media_message_sid not in processed_media_sids:
+            processed_media_sids.append(media_message_sid)
+            session_context_db_entry.context_data["processed_media_sids"] = processed_media_sids[-50:]
     if safe_flow_submission:
-        processed_flow_tokens.append(flow_token_digest)
-        session_context_db_entry.context_data["processed_whatsapp_flow_token_digests"] = (
-            processed_flow_tokens[-50:]
-        )
+        if not durable_replay:
+            if flow_token_digest not in processed_flow_tokens:
+                processed_flow_tokens.append(flow_token_digest)
+            session_context_db_entry.context_data["processed_whatsapp_flow_token_digests"] = (
+                processed_flow_tokens[-50:]
+            )
         session_context_db_entry.context_data["last_whatsapp_flow_submission"] = deepcopy(
             safe_flow_submission
         )
@@ -5455,6 +6474,20 @@ def whatsapp_webhook():
                     "No pudimos validar el formulario de WhatsApp. "
                     "Volvelo a abrir y envialo nuevamente."
                 ),
+            )
+        return "OK", 200
+
+    if inbound_content.kind == "unsupported":
+        # A signed provider message can legitimately be blank (for example an
+        # unsupported disappearing-message payload).  It is still distinct
+        # from a status/call callback, but must not be handed to the LLM as an
+        # empty instruction or create a speculative ticket.
+        if twilio_client:
+            _send_twilio_message(
+                twilio_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=honest_unprocessable_reply("unsupported"),
             )
         return "OK", 200
 
@@ -5542,14 +6575,20 @@ def whatsapp_webhook():
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.commit()
 
+        # SQLAlchemy expires JSON attributes on commit. Rebind the nested state
+        # dictionaries so subsequent submission metadata is written into the
+        # current persisted context instead of stale pre-commit references.
+        welcome_state = session_context_db_entry.context_data.setdefault(
+            "_welcome_state", {}
+        )
+        template_state = welcome_state.setdefault("template", {})
+        sticker_state = welcome_state.setdefault("sticker", {})
+        safe_flag_modified(session_context_db_entry, "context_data")
+
         if twilio_client:
             try:
-                template_sid = (
-                    _resolve_approved_whatsapp_template_sid(
-                        "chatboc_welcome_menu_v2",
-                        tenant_profile=tenant_profile,
-                    )
-                    or current_app.config.get("WELCOME_TEMPLATE_SID")
+                template_sid = _resolve_welcome_template_sid(
+                    tenant_profile=tenant_profile,
                 )
                 sticker_cooldown = current_app.config.get("WELCOME_STICKER_COOLDOWN_SECONDS", 300)
                 profile_name_from_request = _clean_contact_name(post_vars.get("ProfileName"))
@@ -5685,14 +6724,18 @@ def whatsapp_webhook():
                     should_send_sticker = False
                     sticker_metadata_allowed = False
 
-                last_sticker_ts = sticker_state.get("last_sent_ts")
+                last_sticker_ts = (
+                    sticker_state.get("last_attempt_ts")
+                    or sticker_state.get("last_provider_accepted_ts")
+                    or sticker_state.get("last_sent_ts")  # legacy state
+                )
                 if should_send_sticker and last_sticker_ts:
                     if (now - last_sticker_ts) < max(0, sticker_cooldown):
                         should_send_sticker = False
                         _log("info", "[WELCOME] Sticker skipped due to cooldown")
 
-                template_sent = False
-                sticker_sent = False
+                template_submitted = False
+                sticker_submitted = False
 
                 if should_send_template and template_sid:
                     params = {
@@ -5705,15 +6748,20 @@ def whatsapp_webhook():
                         "content_variables": json.dumps(template_variables_payload or {}),
                     }
                     try:
-                        _send_twilio_message(twilio_client, **params)
-                        template_state["last_sent_ts"] = now
+                        provider_message = _send_twilio_message(twilio_client, **params)
+                        submission_state = _mark_welcome_outbound_submission(
+                            template_state,
+                            provider_message,
+                            timestamp=now,
+                        )
                         safe_flag_modified(session_context_db_entry, "context_data")
-                        template_sent = True
+                        template_submitted = True
                         _log(
                             "info",
-                            "[WELCOME] Template sent template_ref=%s variable_count=%s",
+                            "[WELCOME] Template submitted template_ref=%s variable_count=%s outcome=%s",
                             _safe_provider_reference(template_sid),
                             len(template_variables_payload),
+                            submission_state,
                         )
                     except Exception as exc:
                         _log(
@@ -5727,16 +6775,24 @@ def whatsapp_webhook():
 
                 if should_send_sticker and not is_override:
                     try:
-                        _send_twilio_message(
+                        provider_message = _send_twilio_message(
                             twilio_client,
                             from_=to_number_raw,
                             to=from_number_raw,
                             media_url=[resolved_sticker_url],
                         )
-                        sticker_state["last_sent_ts"] = now
+                        submission_state = _mark_welcome_outbound_submission(
+                            sticker_state,
+                            provider_message,
+                            timestamp=now,
+                        )
                         safe_flag_modified(session_context_db_entry, "context_data")
-                        sticker_sent = True
-                        _log("info", "[WELCOME] Sticker sent")
+                        sticker_submitted = True
+                        _log(
+                            "info",
+                            "[WELCOME] Sticker submitted outcome=%s",
+                            submission_state,
+                        )
                         # Avoid re-attaching the same sticker through the delayed payload.
                         sticker_metadata_allowed = False
                     except Exception as exc:
@@ -5748,7 +6804,7 @@ def whatsapp_webhook():
                         sticker_state["disabled"] = True
                         safe_flag_modified(session_context_db_entry, "context_data")
 
-                greeting_sent = False
+                greeting_submitted = False
 
                 tenant_name = municipio_name or "Tu Municipio"
                 assistant_name = assistant_name or None
@@ -5792,16 +6848,16 @@ def whatsapp_webhook():
                             twilio_client,
                             from_=to_number_raw, to=from_number_raw, body=greeting
                         )
-                        greeting_sent = True
+                        greeting_submitted = True
                     except Exception as exc:
-                        greeting_sent = False
+                        greeting_submitted = False
                         _log(
                             "error",
                             "[WELCOME] Failed to send welcome greeting error_type=%s",
                             type(exc).__name__,
                         )
 
-                if not user_name and greeting_sent:
+                if not user_name and greeting_submitted:
                     session_context_db_entry.context_data["awaiting_user_name"] = True
                     safe_flag_modified(session_context_db_entry, "context_data")
                     db.session.commit()
@@ -5844,7 +6900,11 @@ def whatsapp_webhook():
                     "profile_name": profile_name or None,
                     "resolved_contact": resolved_contact or None,
                 }
-                reduced_menu = template_sent or greeting_sent or sticker_sent
+                reduced_menu = (
+                    template_submitted
+                    or greeting_submitted
+                    or sticker_submitted
+                )
                 welcome_message_override = None
                 if is_education_tenant(tenant_profile):
                     welcome_response_payload = build_education_whatsapp_menu_payload(
@@ -5974,13 +7034,13 @@ def whatsapp_webhook():
                 update_user_profile(end_user, {"name": new_name})
             _remember_contact_name(session_context_db_entry, new_name)
             session_context_db_entry.context_data.pop("awaiting_user_name", None)
-            personalized_sticker_sent = _send_welcome_sticker(
+            personalized_sticker_submitted = _send_welcome_sticker(
                 client=twilio_client,
                 to_number_raw=to_number_raw,
                 from_number_raw=from_number_raw,
                 resolved_sticker_url=resolved_sticker_url,
                 session_context=session_context_db_entry,
-                state_key="personalized_name_sent_ts",
+                state_key="personalized_name_provider_accepted_ts",
             )
             safe_flag_modified(session_context_db_entry, "context_data")
             db.session.add(session_context_db_entry)
@@ -6036,7 +7096,7 @@ def whatsapp_webhook():
                     )
                     if (
                         sticker_payload
-                        and not personalized_sticker_sent
+                        and not personalized_sticker_submitted
                         and not sticker_state.get("disabled", False)
                     ):
                         welcome_response_payload["_welcome_sticker_urls"] = sticker_payload
@@ -6145,20 +7205,43 @@ def whatsapp_webhook():
     media_content_type = post_vars.get("MediaContentType0")
     uploaded_file_info = None
     media_content = None
+    media_processing_error_code = None
+    media_understanding_error_code = None
     skip_media_analysis = False
     message_body = incoming_text
 
     if media_url and media_content_type:
         try:
             # Download the file from Twilio's URL first
-            auth = (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            # Media belongs to the account that received the message.  A
+            # tenant connected through a Twilio subaccount cannot download
+            # that media with the platform parent's credentials.
+            auth = (credentials.account_sid, credentials.auth_token)
             try:
                 media_timeout = float(current_app.config.get("WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_SECONDS", 12))
             except (TypeError, ValueError):
                 media_timeout = 12.0
-            r = requests.get(media_url, auth=auth, timeout=max(1.0, media_timeout))
-            r.raise_for_status()
-            media_content = r.content
+            try:
+                media_max_bytes = int(
+                    current_app.config.get("WHATSAPP_MEDIA_MAX_BYTES", 25 * 1024 * 1024)
+                )
+            except (TypeError, ValueError, OverflowError):
+                media_max_bytes = 25 * 1024 * 1024
+            media_max_bytes = min(100 * 1024 * 1024, max(1024, media_max_bytes))
+            r = requests.get(
+                media_url,
+                auth=auth,
+                stream=True,
+                timeout=max(1.0, media_timeout),
+            )
+            try:
+                r.raise_for_status()
+                media_content = read_bounded_response_body(
+                    r,
+                    max_bytes=media_max_bytes,
+                )
+            finally:
+                r.close()
 
             # Create a FileStorage object to be compatible with our services
             file_stream = io.BytesIO(media_content)
@@ -6199,8 +7282,9 @@ def whatsapp_webhook():
                 )
             else:
                 current_app.logger.error("create_attachment_with_thumbnail failed to process the WhatsApp media")
+                media_processing_error_code = "attachment_storage_failed"
 
-            if media_content_type.startswith("audio/"):
+            if is_audio_media_type(media_content_type):
                 session_context_db_entry.context_data['source_is_audio'] = True
                 from services.audio_transcription_service import transcribe_audio_bytes
 
@@ -6221,6 +7305,7 @@ def whatsapp_webhook():
                     uploaded_file_info['transcribed_text'] = transcribed_text
                 else:
                     current_app.logger.warning("Audio transcription failed or returned empty.")
+                    media_understanding_error_code = "audio_transcription_unavailable"
 
             # --- Voice Bot / WhatsApp Media Bridge ---
             # If we were waiting for media for a specific ticket, link it now.
@@ -6232,11 +7317,15 @@ def whatsapp_webhook():
             last_ticket_code = session_context_db_entry.context_data.get("last_ticket_code")
             is_ticket_media = bool(media_content_type)
 
-            if not media_content_type.startswith("audio/"):
+            if not is_audio_media_type(media_content_type):
                 session_context_db_entry.context_data.pop('source_is_audio', None)
 
             if adjunto and is_ticket_media:
                 now_ts = time.time()
+                active_followup = _active_municipal_ticket_followup(
+                    session_context_db_entry.context_data,
+                    now_ts=now_ts,
+                )
                 within_photo_window = (
                     awaiting_ticket_photo
                     and isinstance(awaiting_ticket_photo_until, (int, float))
@@ -6256,7 +7345,9 @@ def whatsapp_webhook():
                     within_photo_window = False
 
                 target_ticket_ref = None
-                if within_photo_window:
+                if active_followup:
+                    target_ticket_ref = active_followup.get("ticket_nro")
+                elif within_photo_window:
                     target_ticket_ref = last_ticket_code or awaiting_ticket_nro
 
                 if target_ticket_ref:
@@ -6282,12 +7373,59 @@ def whatsapp_webhook():
                             target_ticket_ref,
                             getattr(ticket, "nro_ticket", None),
                         )
-                        if ticket:
+                        if ticket and not _municipal_ticket_is_open(ticket):
+                            _clear_municipal_ticket_followup(
+                                session_context_db_entry.context_data
+                            )
+                            session_context_db_entry.context_data.pop(
+                                "last_options_sent", None
+                            )
+                            safe_flag_modified(
+                                session_context_db_entry, "context_data"
+                            )
+                            db.session.add(session_context_db_entry)
+                            db.session.commit()
+                            if twilio_client:
+                                _send_twilio_message(
+                                    twilio_client,
+                                    from_=to_number_raw,
+                                    to=from_number_raw,
+                                    body=(
+                                        f"El reclamo *{target_ticket_ref}* ya está cerrado. "
+                                        "No adjunté el archivo; si es otro problema, "
+                                        "iniciá un reclamo nuevo."
+                                    ),
+                                )
+                            return "OK", 200
+
+                        if _municipal_ticket_is_open(ticket):
+                            if is_audio_media_type(media_content_type):
+                                transcript = str(
+                                    (uploaded_file_info or {}).get("transcribed_text") or ""
+                                ).strip()
+                                evidence_comment = (
+                                    f"Nota de voz del vecino: {transcript[:3500]}"
+                                    if transcript
+                                    else "[SISTEMA] Vecino adjuntó una nota de voz por WhatsApp."
+                                )
+                            elif media_content_type.startswith("image/"):
+                                evidence_comment = (
+                                    "[SISTEMA] Vecino adjuntó una imagen como evidencia por WhatsApp."
+                                )
+                            else:
+                                evidence_comment = (
+                                    "[SISTEMA] Vecino adjuntó un archivo como evidencia por WhatsApp."
+                                )
                             _attach_whatsapp_adjunto_to_ticket(
                                 adjunto=adjunto,
                                 ticket=ticket,
                                 end_user=end_user,
-                                comentario_text="[SISTEMA] Vecino adjuntó archivo solicitado por llamada o WhatsApp.",
+                                comentario_text=evidence_comment,
+                                **_durable_whatsapp_ticket_effect_kwargs(
+                                    durable_claim,
+                                    ticket_tenant_id,
+                                    f"ticket_attachment_comment:{ticket.id}:{adjunto.id}",
+                                ),
                             )
                             if twilio_client:
                                 _send_twilio_message(
@@ -6295,10 +7433,14 @@ def whatsapp_webhook():
                                     from_=to_number_raw,
                                     to=from_number_raw,
                                     body=(
-                                        "✅ Archivo recibido y adjuntado al reclamo "
-                                        f"*{ticket.nro_ticket}*. ¡Muchas gracias!"
+                                        "✅ Archivo recibido y asociado al reclamo "
+                                        f"*{ticket.nro_ticket}*."
                                     ),
                                 )
+                            # The optional-photo prompt is one-shot, but the
+                            # structured ticket follow-up window remains open
+                            # so a second photo, audio or comment is not routed
+                            # back into a completed claim draft.
                             session_context_db_entry.context_data.pop("awaiting_photo_for_ticket", None)
                             session_context_db_entry.context_data.pop("awaiting_ticket_photo", None)
                             session_context_db_entry.context_data.pop("awaiting_ticket_photo_until", None)
@@ -6321,24 +7463,39 @@ def whatsapp_webhook():
                                 to=from_number_raw,
                                 body=(
                                     "⚠️ Todavía no encuentro el ticket en sistema. "
-                                    "Respondé con el número del ticket para adjuntar la foto."
+                                    "Respondé con el número del ticket para adjuntar el archivo."
                                 ),
                             )
                         return "OK", 200
                     except Exception as e_bridge:
+                        db.session.rollback()
                         _log(
                             "error",
                             "[VOICE_BRIDGE] Error attaching media error_type=%s",
                             type(e_bridge).__name__,
                         )
+                        return _durable_replay_failure_or_retry(
+                            durable_replay,
+                            "municipal_ticket_media_followup_failed",
+                            e_bridge,
+                        )
 
+        except MediaDownloadTooLarge:
+            media_processing_error_code = "media_too_large"
+            _log(
+                "warning",
+                "WhatsApp media rejected before buffering reason=media_too_large media_type=%s",
+                inbound_content.kind,
+            )
         except requests.exceptions.RequestException as exc:
+            media_processing_error_code = "media_download_failed"
             _log(
                 "error",
                 "Error downloading WhatsApp media error_type=%s",
                 type(exc).__name__,
             )
         except Exception as exc:
+            media_processing_error_code = "media_processing_failed"
             _log(
                 "error",
                 "Error processing WhatsApp media file error_type=%s",
@@ -6349,6 +7506,22 @@ def whatsapp_webhook():
     else:
         # If no media, ensure the flag is not present
         session_context_db_entry.context_data.pop('source_is_audio', None)
+
+    if inbound_content.has_media and not uploaded_file_info:
+        # Do not let a missing/failed media fetch degrade into an empty LLM turn.
+        # The already-recorded provider MessageSid keeps this response
+        # idempotent in legacy mode, while queue mode stages it in the outbox.
+        if twilio_client:
+            _send_twilio_message(
+                twilio_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=honest_unprocessable_reply(
+                    inbound_content.kind,
+                    reason=media_processing_error_code or inbound_content.reason,
+                ),
+            )
+        return "OK", 200
 
     # --- Location Handling ---
     latitud = post_vars.get("Latitude")
@@ -6435,6 +7608,11 @@ def whatsapp_webhook():
                         ticket=ticket,
                         end_user=end_user,
                         comentario_text="[SISTEMA] Vecino adjuntó foto pendiente por WhatsApp.",
+                        **_durable_whatsapp_ticket_effect_kwargs(
+                            durable_claim,
+                            ticket_tenant_id,
+                            f"pending_attachment_comment:{ticket.id}:{adjunto.id}",
+                        ),
                     )
                 session_context_db_entry.context_data.pop("pending_attachment_id", None)
                 session_context_db_entry.context_data.pop("pending_ticket_code", None)
@@ -6451,6 +7629,31 @@ def whatsapp_webhook():
                         body=f"✅ Listo. Adjunté la foto al ticket *{ticket.nro_ticket}*.",
                     )
                 return "OK", 200
+
+    human_chat_pending = bool(
+        session_context_db_entry.context_data.get("human_chat_in_progress")
+        or session_context_db_entry.context_data.get("room")
+    )
+    requires_honest_media_fallback = bool(
+        media_understanding_error_code == "audio_transcription_unavailable"
+        or inbound_content.kind in {"video", "sticker", "contact", "unsupported_media"}
+    )
+    if uploaded_file_info and requires_honest_media_fallback and not human_chat_pending:
+        # An open municipal ticket was handled inside the media bridge above.
+        # Outside exact human/ticket routing, preserve the current dialog state
+        # and ask for usable context instead of treating a filename, vCard or
+        # unanalysed video as understood language.
+        if twilio_client:
+            _send_twilio_message(
+                twilio_client,
+                from_=to_number_raw,
+                to=from_number_raw,
+                body=honest_unprocessable_reply(
+                    inbound_content.kind,
+                    reason=media_understanding_error_code,
+                ),
+            )
+        return "OK", 200
 
     if (
         uploaded_file_info
@@ -6506,6 +7709,39 @@ def whatsapp_webhook():
                     body=ack_text[:MAX_TWILIO_BODY_LENGTH],
                 )
             return "OK", 200
+
+    # --- Recently-created municipal ticket follow-up ---
+    # This runs before numeric-menu translation so options from the completed
+    # confirmation card can never reinterpret a PIN question, comment or emoji
+    # as a second confirmation/cancellation.
+    try:
+        followup_result = _handle_recent_municipal_ticket_followup(
+            session_context=session_context_db_entry,
+            client_user=client_user,
+            tenant_profile=tenant_profile,
+            end_user=end_user,
+            from_number_cleaned=from_number_cleaned,
+            message_body=message_body,
+            action=button_payload or list_id,
+            twilio_message_client=twilio_client,
+            to_number_raw=to_number_raw,
+            from_number_raw=from_number_raw,
+            durable_claim=durable_claim,
+        )
+    except Exception as followup_exc:
+        db.session.rollback()
+        _log(
+            "error",
+            "[WHATSAPP_FOLLOWUP] Failed to persist municipal ticket follow-up error_type=%s",
+            type(followup_exc).__name__,
+        )
+        return _durable_replay_failure_or_retry(
+            durable_replay,
+            "municipal_ticket_followup_failed",
+            followup_exc,
+        )
+    if followup_result is not None:
+        return followup_result
 
     # --- Numeric Menu Handling ---
     last_options = session_context_db_entry.context_data.get("last_options_sent")
@@ -6630,6 +7866,49 @@ def whatsapp_webhook():
                     else:
                         comentario_text = f"[Archivo adjunto: {attachment_name}]"
 
+                    candidate_attachment = db.session.get(
+                        ArchivoAdjunto,
+                        uploaded_file_info.get("id"),
+                    )
+                    expected_user_id = getattr(end_user, "id", None)
+                    identity_matches = bool(
+                        candidate_attachment
+                        and (
+                            expected_user_id is None
+                            or candidate_attachment.user_id == expected_user_id
+                        )
+                        and (
+                            candidate_attachment.session_id is None
+                            or candidate_attachment.session_id == chat_session_id_internal
+                        )
+                    )
+                    if tipo_ticket == "municipio":
+                        target_matches = bool(
+                            candidate_attachment
+                            and candidate_attachment.pyme_ticket_id is None
+                            and candidate_attachment.municipio_ticket_id in {None, live_ticket.id}
+                        )
+                    else:
+                        target_matches = bool(
+                            candidate_attachment
+                            and candidate_attachment.municipio_ticket_id is None
+                            and candidate_attachment.pyme_ticket_id in {None, live_ticket.id}
+                        )
+                    if not identity_matches or not target_matches:
+                        _log(
+                            "warning",
+                            "Rejected unsafe live-chat attachment binding ticket_type=%s ticket_id=%s",
+                            tipo_ticket,
+                            live_ticket.id,
+                        )
+                        uploaded_file_info = None
+                    elif tipo_ticket == "municipio":
+                        candidate_attachment.municipio_ticket_id = live_ticket.id
+                        db.session.add(candidate_attachment)
+                    else:
+                        candidate_attachment.pyme_ticket_id = live_ticket.id
+                        db.session.add(candidate_attachment)
+
                 comentario_data = {
                     "comentario": comentario_text or "[Mensaje sin texto]",
                     "user_id": getattr(end_user, "id", None),
@@ -6644,16 +7923,14 @@ def whatsapp_webhook():
                     ticket_id=live_ticket.id,
                     tipo_ticket=tipo_ticket,
                     comentario_data=comentario_data,
+                    **_durable_whatsapp_ticket_effect_kwargs(
+                        durable_claim,
+                        getattr(live_ticket, "tenant_id", None)
+                        or getattr(tenant_profile, "id", None)
+                        or session_context_db_entry.tenant_id,
+                        f"live_chat_comment:{tipo_ticket}:{live_ticket.id}",
+                    ),
                 )
-
-                if uploaded_file_info:
-                    adjunto = db.session.get(ArchivoAdjunto, uploaded_file_info.get("id"))
-                    if adjunto:
-                        if tipo_ticket == "municipio":
-                            adjunto.municipio_ticket_id = live_ticket.id
-                        else:
-                            adjunto.pyme_ticket_id = live_ticket.id
-                        db.session.add(adjunto)
 
                 try:
                     db.session.commit()
@@ -6839,6 +8116,7 @@ def whatsapp_webhook():
             message_body=message_body,
             uploaded_file_info=uploaded_file_info,
             location_info=location_info,
+            durable_claim=durable_claim,
         )
     if education_direct_payload:
         bot_response_dict = education_direct_payload
@@ -6887,7 +8165,7 @@ def whatsapp_webhook():
             interpretacion_media_data = None
             if uploaded_file_info:
                 mime_type = uploaded_file_info.get("mime_type", "")
-                if not skip_media_analysis and not mime_type.startswith("audio/"):
+                if not skip_media_analysis and not is_audio_media_type(mime_type):
                     interpretacion_media_data = clasificar_adjunto_whatsapp(uploaded_file_info, client_user)
             # Location info should not be treated as interpreted media.
             # It should be passed directly as location data.
@@ -6897,6 +8175,17 @@ def whatsapp_webhook():
                 "tenant_profile": tenant_profile,
                 "tenant_id": tenant_id,
             }
+            if durable_replay:
+                kwargs_for_bot.update(
+                    {
+                        "source_event_id": message_sid,
+                        "durable_turn_id": getattr(durable_claim, "turn_id", None),
+                        "idempotency_key": (
+                            f"whatsapp:{tenant_id}:"
+                            f"{getattr(durable_claim, 'turn_id', '')}"
+                        ),
+                    }
+                )
             if safe_flow_submission:
                 kwargs_for_bot["whatsapp_flow_submission"] = deepcopy(safe_flow_submission)
             education_context = (
@@ -7026,7 +8315,11 @@ def whatsapp_webhook():
                     "responder_chatboc returned an invalid response type=%s",
                     type(bot_response_dict).__name__,
                 )
-                # Keep the default error response initialized earlier
+                if durable_replay:
+                    raise WhatsAppDurableReplayError(
+                        "responder_chatboc_invalid_response"
+                    )
+                # Keep the default error response initialized earlier.
                 bot_response_dict = {
                     'message_body': "Lo siento, hubo un error interno al procesar tu mensaje.",
                     'options_list': [], 'message_type': 'text', 'fuente': 'error_handler_non_dict_response'
@@ -7049,7 +8342,9 @@ def whatsapp_webhook():
             "Error calling real chatbot logic (responder_chatboc) error_type=%s",
             type(exc).__name__,
         )
-        # bot_response_dict is already set to a default error message, so we just log and continue
+        if durable_replay:
+            raise WhatsAppDurableReplayError("responder_chatboc_failed") from exc
+        # Legacy mode keeps its user-facing fallback response.
 
     # Update respuesta_del_bot_text for logging from the final bot_response_dict
     respuesta_del_bot_text = bot_response_dict.get("message_body", "")
@@ -7184,6 +8479,15 @@ def whatsapp_webhook():
             "Error formatting response or saving session session_id=%s error_type=%s",
             chat_session_id_internal,
             type(exc).__name__,
+        )
+        # A 200 here permanently acknowledges an event that we did not store.
+        # The queue worker must observe an exception and transition its durable
+        # turn to retry_wait; the direct webhook asks Twilio for a bounded 5xx
+        # retry instead.
+        return _durable_replay_failure_or_retry(
+            durable_replay,
+            "response_format_or_session_commit_failed",
+            exc,
         )
 
     # --- Send Response via Twilio ---
@@ -7416,8 +8720,12 @@ def whatsapp_webhook():
                 "Error al enviar mensaje de Twilio error_type=%s",
                 type(exc).__name__,
             )
+            if durable_replay:
+                raise WhatsAppDurableReplayError("outbound_capture_failed") from exc
     else:
         _log("warning", "Twilio client no inicializado. No se puede enviar respuesta por WhatsApp.")
+        if durable_replay:
+            raise WhatsAppDurableReplayError("twilio_client_unavailable")
 
     # Schedule delayed menu or follow-up payload if requested
     if (
@@ -7529,4 +8837,47 @@ def twilio_whatsapp_status():
             message_status,
             type(exc).__name__,
         )
+        # The callback is the authoritative asynchronous delivery signal. A
+        # successful HTTP response here would acknowledge and permanently lose
+        # an event that we failed to persist. Direct and durable callback URLs
+        # opt into bounded 5xx retries through Twilio connection overrides.
+        return "RETRY", 503
+
+    outbound_attempt_id = str(
+        request.args.get("outbound_attempt_id") or ""
+    ).strip()
+    if outbound_attempt_id and tenant and getattr(tenant, "id", None):
+        try:
+            from services.whatsapp_inbound_turns import (
+                reconcile_whatsapp_outbound_status,
+            )
+
+            reconciled = reconcile_whatsapp_outbound_status(
+                tenant_id=int(tenant.id),
+                attempt_id=outbound_attempt_id,
+                provider_message_sid=message_sid,
+                provider_status=message_status,
+                provider_sender_id=getattr(provider_sender, "id", None),
+                error=error_code or message_status,
+            )
+            if not reconciled:
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] Durable attempt did not match "
+                    "signed callback tenant_id=%s sender_id=%s",
+                    tenant.id,
+                    getattr(provider_sender, "id", None),
+                )
+        except Exception as exc:
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] Durable reconciliation failed "
+                "tenant_id=%s sender_id=%s error_type=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+                type(exc).__name__,
+            )
+            # Durable status callback URLs explicitly opt into bounded 5xx
+            # retries using Twilio connection overrides. Returning 200 here
+            # would permanently discard the only automatic reconciliation of
+            # a send whose API outcome may be unknown.
+            return "RETRY", 503
     return "OK", 200

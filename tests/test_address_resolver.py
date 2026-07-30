@@ -46,6 +46,31 @@ def test_intersection_with_e_connector():
     assert result["entre_calles"] == ["Don Bosco", "Sarmiento"]
 
 
+def test_intersection_preserves_number_and_landmark_from_real_whatsapp_turn():
+    resolver = AddressResolver(JUNIN_CONFIG)
+    generic_provider_result = _fake_gmaps_resp(
+        -33.0,
+        -68.5,
+        display="San Martín, Mendoza, Argentina",
+    )
+    with patch(
+        "services.address_resolver.geocode_address",
+        return_value=generic_provider_result,
+    ):
+        result = resolver.resolve(
+            "Dirección Don Bosco 56 esquina Sarmiento. Plaza Junín"
+        )
+
+    assert result["precision"] == "intersection"
+    assert result["numero"] == "56"
+    assert result["entre_calles"] == ["Don Bosco", "Sarmiento"]
+    assert result["referencia"] == "Plaza Junin"
+    assert "Don Bosco 56" in result["formatted"]
+    assert "Sarmiento" in result["formatted"]
+    assert "Plaza Junin" in result["formatted"]
+    assert result["formatted"] != generic_provider_result["formatted_address"]
+
+
 def test_dynamic_municipio_config():
     config = {
         "ciudad": "Ciudad X",

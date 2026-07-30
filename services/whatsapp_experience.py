@@ -51,6 +51,7 @@ from services.meta_flow_management import (
     build_meta_flow_publication_readiness,
     resolve_meta_graph_credentials,
 )
+from services.message_templates import whatsapp_template_lifecycle
 from services.plan_access import integration_access_payload
 from services.provider_platform import is_sender_ready_status
 from services.twilio_tech_provider import is_meta_embedded_signup_complete
@@ -62,9 +63,17 @@ from services.tts_orchestrator import get_tts_audio_cache_public_config, get_tts
 
 WHATSAPP_EXPERIENCE_CONTRACT_VERSION = "whatsapp.experience.v1"
 
-APPROVED_TEMPLATE_STATUSES = {"approved", "active", "ready", "published", "online"}
+APPROVED_TEMPLATE_STATUSES = {"approved"}
 ACTIVE_META_FLOW_STATUSES = {"approved", "active", "published"}
-PENDING_TEMPLATE_STATUSES = {"draft", "pending", "submitted", "in_review", "review", "twilio_review"}
+PENDING_TEMPLATE_STATUSES = {
+    "pending",
+    "submitted",
+    "in_review",
+    "review",
+    "twilio_review",
+    "pending_approval",
+    "approval_pending",
+}
 REJECTED_TEMPLATE_STATUSES = {"rejected", "failed", "disabled", "paused"}
 LOCAL_TWILIO_MANIFEST_PATH = Path(__file__).resolve().parents[1] / "scripts" / "twilio_content_templates.local.json"
 _FALSEY_CONFIG_VALUES = {"0", "false", "no", "off"}
@@ -914,7 +923,7 @@ def _iso(value: Any) -> str | None:
 
 @lru_cache(maxsize=1)
 def _local_twilio_manifest_template_map() -> dict[str, dict[str, Any]]:
-    """Best-effort local fallback that mirrors the sender resolver manifest."""
+    """Expose local references as unverified snapshots, never approval evidence."""
     try:
         raw = json.loads(LOCAL_TWILIO_MANIFEST_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
@@ -928,22 +937,32 @@ def _local_twilio_manifest_template_map() -> dict[str, dict[str, Any]]:
     for name, entry in templates.items():
         if not isinstance(entry, dict):
             continue
-        status = _lower(entry.get("approvalStatus") or entry.get("approval_status"))
-        if not status:
-            status = "approved" if entry.get("approved") is True else "draft"
+        reported_status = _lower(entry.get("approvalStatus") or entry.get("approval_status"))
+        if not reported_status:
+            reported_status = "approved" if entry.get("approved") is True else "draft"
+        snapshot_at = entry.get("lastStatusAt") or entry.get("updatedAt")
         payload[_lower(name)] = {
             "source": "local_twilio_manifest",
+            "provider": "twilio",
             "id": None,
             "name": name,
             "language": str(entry.get("language") or "es"),
             "category": entry.get("category"),
-            "status": status,
-            "content_sid": entry.get("sid") or entry.get("content_sid"),
-            "external_template_id": entry.get("external_template_id"),
+            "status": "stale",
+            # The manifest is global and cannot prove tenant/provider ownership.
+            # Do not expose or reuse its ContentSid as a send capability.
+            "content_sid": None,
+            "external_template_id": None,
             "body_preview": None,
             "components": [],
-            "metadata": {"manifest_version": raw.get("version")},
-            "last_sync_at": entry.get("lastStatusAt") or entry.get("updatedAt"),
+            "metadata": {
+                "manifest_version": raw.get("version"),
+                "unverified_global_reference": True,
+                "provider_status_reported_by_snapshot": reported_status or None,
+                "provider_reference_redacted": bool(entry.get("sid") or entry.get("content_sid")),
+                "snapshot_observed_at": snapshot_at,
+            },
+            "last_sync_at": None,
         }
     return payload
 
@@ -1300,8 +1319,14 @@ def _registered_template_map(tenant: TenantProfile) -> dict[str, dict[str, Any]]
     )
     for row in registry_rows:
         metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
+        provider = _lower(row.provider)
         templates[_lower(row.name)] = {
-            "source": "message_template_registry",
+            "source": (
+                "chatboc_versioned_pack"
+                if provider in {"chatboc", "local"}
+                else "message_template_registry"
+            ),
+            "provider": provider,
             "id": row.id,
             "name": row.name,
             "language": row.language,
@@ -1328,13 +1353,15 @@ def _registered_template_map(tenant: TenantProfile) -> dict[str, dict[str, Any]]
             key,
             {
                 "source": "notification_template",
+                "provider": "chatboc",
                 "id": row.id,
                 "name": row.key,
                 "language": str(metadata.get("language") or "es"),
                 "category": metadata.get("category"),
-                "status": _lower(metadata.get("status") or ("active" if row.is_active else "inactive")),
-                "content_sid": metadata.get("content_sid"),
-                "external_template_id": metadata.get("external_template_id"),
+                # Internal notification templates are local copy, not Meta approval.
+                "status": "local_draft",
+                "content_sid": None,
+                "external_template_id": None,
                 "body_preview": row.body_template,
                 "components": metadata.get("components") if isinstance(metadata.get("components"), list) else [],
                 "metadata": metadata,
@@ -1382,17 +1409,44 @@ def _pick_registered_template(
     ]
     if not matches:
         return None, None
-    approved = [
-        (name, template)
-        for name, template in matches
-        if _lower(template.get("status")) in APPROVED_TEMPLATE_STATUSES
-    ]
-    pending = [
-        (name, template)
-        for name, template in matches
-        if _lower(template.get("status")) in PENDING_TEMPLATE_STATUSES
-    ]
-    return sorted(approved or pending or matches, key=lambda item: item[0], reverse=True)[0]
+
+    state_priority = {
+        "approved": 6,
+        "approval_pending": 5,
+        "content_created": 4,
+        "rejected": 3,
+        "stale": 2,
+        "local_draft": 1,
+    }
+
+    def effective_score(match: tuple[str, dict[str, Any]]) -> tuple[int, float, str]:
+        name, template = match
+        source = _lower(template.get("source"))
+        provider = _lower(template.get("provider"))
+        if provider in {"chatboc", "local"}:
+            source = "chatboc_versioned_pack"
+        lifecycle = whatsapp_template_lifecycle(
+            template.get("status"),
+            source=source,
+            provider_reference=template.get("content_sid") or template.get("external_template_id"),
+            observed_at=template.get("last_sync_at"),
+        )
+        observed = _normalized_datetime(_coerce_template_datetime(template.get("last_sync_at")))
+        observed_score = observed.timestamp() if observed else 0.0
+        return state_priority.get(str(lifecycle["state"]), 0), observed_score, name
+
+    return max(matches, key=effective_score)
+
+
+def _coerce_template_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) -> dict[str, Any]:
@@ -1400,6 +1454,9 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
     if not template:
         return {
             "configured": False,
+            "local_configured": False,
+            "remote_configured": False,
+            "reference_found": False,
             "approved": False,
             "pending": False,
             "rejected": False,
@@ -1411,13 +1468,40 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
             "external_template_id": None,
         }
 
-    status = _lower(template.get("status"))
+    raw_status = _lower(template.get("status"))
+    source = _lower(template.get("source"))
+    provider = _lower(template.get("provider"))
+    if provider in {"chatboc", "local"}:
+        source = "chatboc_versioned_pack"
+    provider_reference = template.get("content_sid") or template.get("external_template_id")
+    lifecycle = whatsapp_template_lifecycle(
+        raw_status,
+        source=source,
+        provider_reference=provider_reference,
+        observed_at=template.get("last_sync_at"),
+    )
+    status = str(lifecycle["state"])
+    local_configured = source in {"local_twilio_manifest", "notification_template"} or provider in {
+        "chatboc",
+        "local",
+    }
+    remote_configured = bool(
+        source == "message_template_registry"
+        and provider not in {"chatboc", "local"}
+        and provider_reference
+    )
     return {
-        "configured": True,
-        "approved": status in APPROVED_TEMPLATE_STATUSES,
-        "pending": status in PENDING_TEMPLATE_STATUSES,
-        "rejected": status in REJECTED_TEMPLATE_STATUSES,
-        "status": status or "unknown",
+        "configured": remote_configured,
+        "local_configured": local_configured,
+        "remote_configured": remote_configured,
+        "reference_found": True,
+        "approved": status == "approved",
+        "pending": status == "approval_pending",
+        "rejected": status == "rejected",
+        "stale": status == "stale",
+        "status": status,
+        "provider_status": raw_status or None,
+        "lifecycle": lifecycle,
         "source": template.get("source"),
         "resolved_name": resolved_name or template.get("name"),
         "expected_friendly_name": CHATBOC_TEMPLATE_FRIENDLY_NAMES.get(_lower(template_id)),
@@ -1436,22 +1520,31 @@ def _template_readiness_payload(
     automation = execution.get("automation") if isinstance(execution.get("automation"), Mapping) else {}
     twilio_type = str(execution.get("twilio_type") or "twilio/text")
 
-    if not status_payload.get("configured"):
-        state = "missing"
+    lifecycle_state = str(status_payload.get("status") or "")
+    if lifecycle_state == "stale":
+        state = "stale"
         severity = "blocking"
-        next_action = "create_template_with_twilio_content_api"
-    elif status_payload.get("rejected"):
+        next_action = "refresh_provider_status_for_this_tenant"
+    elif lifecycle_state == "local_draft":
+        state = "local_draft"
+        severity = "warning"
+        next_action = "validate_and_create_provider_content"
+    elif lifecycle_state == "content_created":
+        state = "content_created"
+        severity = "warning"
+        next_action = "submit_template_for_meta_approval"
+    elif lifecycle_state == "approval_pending":
+        state = "approval_pending"
+        severity = "warning"
+        next_action = "refresh_twilio_status_or_wait_for_meta_approval"
+    elif lifecycle_state == "rejected":
         state = "rejected"
         severity = "blocking"
         next_action = "revise_copy_category_or_variables_and_resubmit"
-    elif status_payload.get("pending"):
-        state = "pending_approval"
-        severity = "warning"
-        next_action = "refresh_twilio_status_or_wait_for_meta_approval"
-    elif not status_payload.get("approved"):
-        state = "not_approved"
-        severity = "warning"
-        next_action = "submit_template_for_meta_approval"
+    elif not status_payload.get("reference_found"):
+        state = "missing"
+        severity = "blocking"
+        next_action = "create_template_with_twilio_content_api"
     elif webview.get("required"):
         state = "approved_requires_webview"
         severity = "ready_with_dependency"
@@ -1465,8 +1558,8 @@ def _template_readiness_payload(
         "state": state,
         "severity": severity,
         "next_action": next_action,
-        "production_send_allowed": bool(status_payload.get("approved")),
-        "fallback_to_text": not bool(status_payload.get("approved")),
+        "production_send_allowed": lifecycle_state == "approved",
+        "fallback_to_text": lifecycle_state != "approved",
         "twilio_type": twilio_type,
         "content_sid": status_payload.get("content_sid"),
         "source": status_payload.get("source"),
@@ -2103,6 +2196,27 @@ def _template_blueprint_payload(
     integration_access: Mapping[str, Any],
 ) -> dict[str, Any]:
     templates = _registered_template_map(tenant)
+    remote_registered_total = sum(
+        1
+        for template in templates.values()
+        if _lower(template.get("source")) == "message_template_registry"
+        and _lower(template.get("provider")) not in {"chatboc", "local"}
+        and bool(template.get("content_sid") or template.get("external_template_id"))
+    )
+    unverified_local_reference_total = sum(
+        1
+        for template in templates.values()
+        if _lower(template.get("source")) == "local_twilio_manifest"
+    )
+    local_draft_total = sum(
+        1
+        for template in templates.values()
+        if _lower(template.get("source")) in {
+            "notification_template",
+            "chatboc_versioned_pack",
+        }
+        or _lower(template.get("provider")) in {"chatboc", "local"}
+    )
     required_templates = [
         {
             "id": "welcome_menu",
@@ -2401,7 +2515,11 @@ def _template_blueprint_payload(
         "operational_template_groups": operational_catalog["groups"],
         "recommended_verticals": recommended_verticals,
         "registry_summary": {
-            "total_registered": len(templates),
+            "registry_entries_total": len(templates),
+            "total_registered": remote_registered_total,
+            "remote_registered": remote_registered_total,
+            "local_drafts": local_draft_total,
+            "unverified_local_references": unverified_local_reference_total,
             "required": len(required_templates),
             "configured": configured,
             "approved": approved,

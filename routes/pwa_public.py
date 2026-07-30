@@ -16,6 +16,7 @@ from services.encuestas_service import (
     find_survey_response_replay,
     get_public_encuesta,
     list_public_encuestas_for_tenant,
+    resolve_optional_survey_bearer_user,
     resolve_survey_submission_id,
     save_respuesta,
     serialize_public_encuesta,
@@ -26,6 +27,12 @@ from services.common_utils import parse_precio_flexible
 from services.marketplace_analytics import track_marketplace_event
 from routes.catalogo import _formatear_producto
 from services.rewards_demo import reward_profile_for_tenant
+from services.public_survey_intake import (
+    attach_public_survey_rate_limit_headers,
+    enforce_public_survey_intake,
+    enforce_public_survey_replay_scope,
+    public_survey_client_ip,
+)
 from services.tenant_resolver import (
     TenantResolutionError,
     resolve_tenant_only,
@@ -41,11 +48,21 @@ from routes.carrito import (
     _cors_kwargs
 )
 from database import db
+from utils.turnstile import TURNSTILE_TOKEN_HEADER
 
 
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
 public_api_bp = Blueprint("public_api", __name__, url_prefix="/api/public")
 pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
+
+
+def _survey_response_cors_kwargs() -> dict:
+    kwargs = _cors_kwargs(["POST"])
+    allowed_headers = list(kwargs.get("allow_headers") or [])
+    if TURNSTILE_TOKEN_HEADER not in allowed_headers:
+        allowed_headers.append(TURNSTILE_TOKEN_HEADER)
+    kwargs["allow_headers"] = allowed_headers
+    return kwargs
 
 RESERVED_PUBLIC_SLUGS = {
     "media",
@@ -757,11 +774,12 @@ def get_survey(slug: str):
 
 
 @pwa_public_bp.post("/surveys/<slug>/respond")
-@cross_origin(**_cors_kwargs(["POST"]))
+@cross_origin(**_survey_response_cors_kwargs())
 def respond_survey(slug: str):
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
     payload = request.get_json(silent=True) or {}
+    request_id = _request_id()
     try:
         submission_id = resolve_survey_submission_id(
             payload,
@@ -771,7 +789,7 @@ def respond_survey(slug: str):
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
     request_ctx = {
-        "ip": request.headers.get("X-Forwarded-For") or request.remote_addr,
+        "ip": public_survey_client_ip(),
         "user_agent": request.headers.get("User-Agent"),
         "referer": request.headers.get("Referer"),
         "anon_id": (
@@ -786,6 +804,13 @@ def respond_survey(slug: str):
     }
 
     respuesta = None
+    try:
+        authenticated_user = resolve_optional_survey_bearer_user(
+            request.headers.get("Authorization"),
+            contract_version="surveys.public_response.v2",
+        )
+    except EncuestaError as exc:
+        return jsonify(exc.to_dict()), exc.status_code
     if submission_id is not None:
         try:
             respuesta = find_survey_response_replay(
@@ -794,13 +819,42 @@ def respond_survey(slug: str):
                 request_ctx,
                 submission_id=submission_id,
                 preferred_tenant_id=tenant_id,
+                authenticated_user=authenticated_user,
             )
         except EncuestaError as exc:
             return jsonify(exc.to_dict()), exc.status_code
-        if respuesta is not None and tenant_id and respuesta.tenant_id != tenant_id:
-            abort(404, description="Encuesta no encontrada")
+        if respuesta is not None:
+            replay_scope = enforce_public_survey_replay_scope(
+                respuesta,
+                preferred_tenant_id=tenant_id,
+            )
+            if replay_scope is not None:
+                error_payload = replay_scope.error_payload()
+                error_payload["request_id"] = request_id
+                response = jsonify(error_payload)
+                response.headers.setdefault("X-Request-Id", request_id)
+                response.status_code = replay_scope.status_code or 404
+                return response
 
     if respuesta is None:
+        intake_decision = enforce_public_survey_intake(
+            slug,
+            payload,
+            preferred_tenant_id=tenant_id,
+            request_id=request_id,
+        )
+        if not intake_decision.allowed:
+            error_payload = intake_decision.error_payload()
+            error_payload["request_id"] = request_id
+            response = jsonify(error_payload)
+            response.headers.setdefault("X-Request-Id", request_id)
+            attach_public_survey_rate_limit_headers(
+                response,
+                intake_decision.rate_limit,
+            )
+            response.status_code = intake_decision.status_code or 503
+            return response
+
         try:
             encuesta = get_public_encuesta(slug, preferred_tenant_id=tenant_id)
         except EncuestaError as exc:
@@ -815,6 +869,7 @@ def respond_survey(slug: str):
                 payload,
                 request_ctx,
                 preferred_tenant_id=tenant_id,
+                authenticated_user=authenticated_user,
                 submission_id=submission_id,
             )
         except EncuestaError as exc:
@@ -887,6 +942,9 @@ def respond_survey(slug: str):
             "callback_expected": False,
         },
     }
+    from services.survey_governance import response_governance_contract
+
+    response_payload["governance"] = response_governance_contract(respuesta)
     receipt_contract = survey_response_receipt_contract(respuesta)
     if receipt_contract is not None:
         response_payload["idempotency"] = receipt_contract
@@ -909,6 +967,12 @@ def respond_survey(slug: str):
     )
     response = jsonify(response_payload)
     response.status_code = 200 if response_payload["replayed"] else 201
+    response.headers.setdefault("X-Request-Id", request_id)
+    if respuesta is not None and not response_payload["replayed"]:
+        attach_public_survey_rate_limit_headers(
+            response,
+            intake_decision.rate_limit,
+        )
     return response
 
 

@@ -21,6 +21,11 @@ from routes.ticket import TICKET_ALLOWED_STATES
 from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
+from services.tenant_ticket_scope import (
+    municipio_ticket_scope_filter,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+)
 from socket_service import emit_tenant_update
 
 municipal_bp = Blueprint('municipal_legacy', __name__, url_prefix='/municipal')
@@ -202,6 +207,27 @@ def _resolve_current_municipio_id(user) -> Any:
             return fallback_id
 
     return None
+
+
+def _resolve_current_municipio_tenant(user) -> TenantProfile | None:
+    request_tenant = getattr(g, "tenant_profile", None)
+    if request_tenant is not None:
+        return request_tenant
+
+    user_tenant_id = getattr(user, "tenant_id", None)
+    if user_tenant_id:
+        tenant = db.session.get(TenantProfile, user_tenant_id)
+        if tenant is not None:
+            return tenant
+
+    owner_id = _resolve_current_municipio_id(user)
+    if owner_id is None:
+        return None
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+    except ValueError:
+        return None
+    return resolution.tenant if resolution.status == "unique" else None
 
 
 _STATS_RANGE_OPTIONS = [
@@ -981,7 +1007,7 @@ def municipal_encuestas_list(current_user):
     if municipio_id is None:
         return jsonify([])
 
-    tenant = TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+    tenant = _resolve_current_municipio_tenant(current_user)
     if not tenant:
         return jsonify([])
 
@@ -1076,6 +1102,7 @@ def municipal_stats_export(current_user, formato: str):
 @admin_o_empleado_requerido
 def municipal_stats_filters(current_user):
     municipio_id = _resolve_current_municipio_id(current_user)
+    tenant = _resolve_current_municipio_tenant(current_user)
 
     if municipio_id is None:
         return jsonify(
@@ -1089,10 +1116,11 @@ def municipal_stats_filters(current_user):
             }
         )
 
+    ticket_scope = municipio_ticket_scope_filter(tenant)
     categorias_query = (
         db.session.query(MunicipioTicket.categoria)
         .filter(
-            MunicipioTicket.municipio_id == municipio_id,
+            ticket_scope,
             MunicipioTicket.categoria.isnot(None),
             MunicipioTicket.categoria != "",
         )
@@ -1103,7 +1131,7 @@ def municipal_stats_filters(current_user):
     distritos_query = (
         db.session.query(MunicipioTicket.distrito)
         .filter(
-            MunicipioTicket.municipio_id == municipio_id,
+            ticket_scope,
             MunicipioTicket.distrito.isnot(None),
             MunicipioTicket.distrito != "",
         )
@@ -1114,7 +1142,7 @@ def municipal_stats_filters(current_user):
     canales_query = (
         db.session.query(MunicipioTicket.canal_ingreso)
         .filter(
-            MunicipioTicket.municipio_id == municipio_id,
+            ticket_scope,
             MunicipioTicket.canal_ingreso.isnot(None),
             MunicipioTicket.canal_ingreso != "",
         )
@@ -1247,9 +1275,9 @@ def municipal_incidents(current_user):
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
     try:
+        tenant = _resolve_current_municipio_tenant(current_user)
         tickets = (
-            MunicipioTicket.query
-            .filter_by(municipio_id=municipio_id)
+            scoped_municipio_ticket_query(tenant)
             .filter(MunicipioTicket.estado != 'cerrado') # Podríamos querer ver todos en el admin, no solo los no cerrados
             .order_by(MunicipioTicket.fecha.desc())
             .all()

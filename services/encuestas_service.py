@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -15,7 +16,7 @@ from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit
 
 from flask import current_app, g, has_request_context, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
@@ -63,6 +64,28 @@ _BOOTSTRAP_TENANT_ID: Optional[int] = None
 _ENC_COMENTARIO_HAS_REPORT_COUNT: Optional[bool] = None
 SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION = "surveys.response_receipt.v1"
 SURVEY_RESPONSE_CANONICAL_VERSION = "survey-response.v1"
+SURVEY_PRIVACY_CONTRACT_VERSION = "surveys.privacy.v1"
+SURVEY_PRIVACY_MODE_LEGACY = "legacy"
+SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS = "source_anonymous"
+SURVEY_IDENTITY_FINGERPRINT_VERSION = "hmac-sha256-v1"
+_SURVEY_PRIVACY_MODES = {
+    SURVEY_PRIVACY_MODE_LEGACY,
+    SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS,
+}
+_SURVEY_SOURCE_ANONYMOUS_DISCARDED_FIELDS = (
+    "user_id",
+    "dni",
+    "phone",
+    "ip",
+    "user_agent",
+    "lat",
+    "lng",
+    "utm_source",
+    "utm_campaign",
+    "metadata",
+    "edad",
+    "anio_nacimiento",
+)
 _SURVEY_SUBMISSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 _SURVEY_SUBMISSION_ID_FIELDS = (
     "submission_id",
@@ -2316,10 +2339,270 @@ def _normalize_identity_aliases(data: Mapping[str, Any]) -> Dict[str, Any]:
         normalized["anonimo_permitido"] = normalized["anonimato"]
     if "requiere_identidad" not in normalized and "requiere_datos_contacto" in normalized:
         normalized["requiere_identidad"] = normalized["requiere_datos_contacto"]
+    privacy = normalized.get("privacy")
+    if isinstance(privacy, Mapping):
+        aliases = {
+            "privacy_mode": ("mode", "privacy_mode"),
+            "privacy_policy_version": ("policy_version", "privacy_policy_version"),
+            "privacy_policy_url": ("policy_url", "privacy_policy_url"),
+            "privacy_consent_required": ("consent_required", "privacy_consent_required"),
+            "response_retention_days": ("retention_days", "response_retention_days"),
+        }
+        for target, candidates in aliases.items():
+            if target in normalized:
+                continue
+            for candidate in candidates:
+                if candidate in privacy:
+                    normalized[target] = privacy[candidate]
+                    break
     return normalized
 
 
+def _privacy_bool(value: Any, *, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "si", "sÃ­", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise EncuestaError(
+        f"{field} debe ser booleano",
+        status_code=400,
+        payload={
+            "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+            "reason_code": "survey_privacy_invalid",
+            "field": field,
+        },
+    )
+
+
+def _privacy_text(value: Any, *, field: str, max_length: int) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > max_length:
+        raise EncuestaError(
+            f"{field} supera el largo permitido",
+            status_code=400,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_invalid",
+                "field": field,
+                "max_length": max_length,
+            },
+        )
+    return cleaned
+
+
+def _privacy_retention_days(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        parsed = None
+    else:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError, OverflowError):
+            parsed = None
+    if parsed is None or parsed < 1 or parsed > 3650:
+        raise EncuestaError(
+            "response_retention_days debe estar entre 1 y 3650",
+            status_code=400,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_invalid",
+                "field": "response_retention_days",
+                "minimum": 1,
+                "maximum": 3650,
+            },
+        )
+    return parsed
+
+
+def _validated_privacy_settings(
+    data: Mapping[str, Any],
+    *,
+    encuesta: Optional[EncEncuesta] = None,
+) -> Dict[str, Any]:
+    current_mode = str(
+        getattr(encuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
+        or SURVEY_PRIVACY_MODE_LEGACY
+    ).strip().lower()
+    mode = str(data.get("privacy_mode", current_mode) or current_mode).strip().lower()
+    mode = mode.replace("-", "_")
+    if mode not in _SURVEY_PRIVACY_MODES:
+        raise EncuestaError(
+            "privacy_mode no es valido",
+            status_code=400,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_invalid",
+                "field": "privacy_mode",
+                "allowed": sorted(_SURVEY_PRIVACY_MODES),
+            },
+        )
+
+    current_policy_version = getattr(encuesta, "privacy_policy_version", None)
+    policy_version = _privacy_text(
+        data.get("privacy_policy_version", current_policy_version),
+        field="privacy_policy_version",
+        max_length=64,
+    )
+    current_policy_url = getattr(encuesta, "privacy_policy_url", None)
+    policy_url = _privacy_text(
+        data.get("privacy_policy_url", current_policy_url),
+        field="privacy_policy_url",
+        max_length=500,
+    )
+    if policy_url:
+        parsed_policy_url = urlsplit(policy_url)
+        if parsed_policy_url.scheme.lower() != "https" or not parsed_policy_url.netloc:
+            raise EncuestaError(
+                "privacy_policy_url debe ser una URL HTTPS absoluta",
+                status_code=400,
+                payload={
+                    "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                    "reason_code": "survey_privacy_invalid",
+                    "field": "privacy_policy_url",
+                },
+            )
+
+    current_consent_required = bool(
+        getattr(encuesta, "privacy_consent_required", False)
+    )
+    consent_required = current_consent_required
+    if "privacy_consent_required" in data:
+        consent_required = _privacy_bool(
+            data.get("privacy_consent_required"),
+            field="privacy_consent_required",
+        )
+
+    current_retention = getattr(encuesta, "response_retention_days", None)
+    retention_days = _privacy_retention_days(
+        data.get("response_retention_days", current_retention)
+    )
+
+    points_raw = data.get(
+        "puntos_recompensa",
+        getattr(encuesta, "puntos_recompensa", 0),
+    )
+    try:
+        reward_points = int(points_raw or 0)
+    except (TypeError, ValueError, OverflowError):
+        reward_points = 0
+
+    if mode == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS:
+        if not policy_version:
+            raise EncuestaError(
+                "El anonimato de origen requiere una version de politica visible.",
+                status_code=400,
+                payload={
+                    "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                    "reason_code": "survey_privacy_policy_version_required",
+                    "field": "privacy_policy_version",
+                },
+            )
+        if not policy_url:
+            raise EncuestaError(
+                "El anonimato de origen requiere una politica de privacidad accesible.",
+                status_code=400,
+                payload={
+                    "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                    "reason_code": "survey_privacy_policy_url_required",
+                    "field": "privacy_policy_url",
+                },
+            )
+        if "privacy_consent_required" in data and not consent_required:
+            raise EncuestaError(
+                "El anonimato de origen requiere consentimiento explicito.",
+                status_code=400,
+                payload={
+                    "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                    "reason_code": "survey_privacy_consent_cannot_be_disabled",
+                    "field": "privacy_consent_required",
+                },
+            )
+        consent_required = True
+        retention_days = retention_days or 365
+        if reward_points > 0:
+            raise EncuestaError(
+                "Una respuesta anonima de origen no puede vincularse a una recompensa personal.",
+                status_code=409,
+                payload={
+                    "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                    "reason_code": "source_anonymous_reward_not_supported",
+                    "action_hint": "disable_reward_or_use_identified_mode",
+                },
+            )
+
+    if consent_required and not policy_version:
+        raise EncuestaError(
+            "El consentimiento requiere una version de politica visible.",
+            status_code=400,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_policy_version_required",
+                "field": "privacy_policy_version",
+            },
+        )
+    if consent_required and not policy_url:
+        raise EncuestaError(
+            "El consentimiento requiere una politica de privacidad accesible.",
+            status_code=400,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_policy_url_required",
+                "field": "privacy_policy_url",
+            },
+        )
+
+    return {
+        "privacy_mode": mode,
+        "privacy_policy_version": policy_version,
+        "privacy_policy_url": policy_url,
+        "privacy_consent_required": consent_required,
+        "response_retention_days": retention_days,
+    }
+
+
+def _privacy_settings_changed(
+    encuesta: EncEncuesta,
+    settings: Mapping[str, Any],
+) -> bool:
+    return any(
+        getattr(encuesta, field, None) != settings.get(field)
+        for field in (
+            "privacy_mode",
+            "privacy_policy_version",
+            "privacy_policy_url",
+            "privacy_consent_required",
+            "response_retention_days",
+        )
+    )
+
+
 def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
+    privacy_settings = _validated_privacy_settings(data, encuesta=encuesta)
+    if (
+        _privacy_settings_changed(encuesta, privacy_settings)
+        and encuesta.id is not None
+        and encuesta.respuestas.count() > 0
+    ):
+        raise EncuestaError(
+            "La politica de privacidad no puede cambiar despues de recibir respuestas.",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_policy_locked",
+                "action_hint": "duplicate_survey_as_new_version",
+            },
+        )
     if "document_ref" in data:
         incoming_document_ref = _normalize_logical_ref(
             data.get("document_ref"),
@@ -2353,6 +2636,11 @@ def _apply_common_updates(encuesta: EncEncuesta, data: Dict[str, Any]) -> None:
         encuesta.politica_unicidad = data["politica_unicidad"]
     if "anonimo_permitido" in data:
         encuesta.anonimo_permitido = bool(data["anonimo_permitido"])
+    encuesta.privacy_mode = privacy_settings["privacy_mode"]
+    encuesta.privacy_policy_version = privacy_settings["privacy_policy_version"]
+    encuesta.privacy_policy_url = privacy_settings["privacy_policy_url"]
+    encuesta.privacy_consent_required = privacy_settings["privacy_consent_required"]
+    encuesta.response_retention_days = privacy_settings["response_retention_days"]
     if "es_votacion_envivo" in data:
         encuesta.es_votacion_envivo = bool(data["es_votacion_envivo"])
     if "mostrar_resultados_envivo" in data:
@@ -2912,6 +3200,21 @@ def create_encuesta(
         slug_hint=slug_seed,
         tenant_id=tenant_id,
     )
+    privacy_settings = _validated_privacy_settings(payload)
+    if (
+        auto_seed_cfg
+        and privacy_settings["privacy_mode"]
+        == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+    ):
+        raise EncuestaError(
+            "El seed demo no esta habilitado para encuestas anonimas de origen.",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "source_anonymous_demo_seed_not_supported",
+                "action_hint": "remove_auto_seed_demo",
+            },
+        )
     if auto_seed_cfg and not commit:
         raise EncuestaError(
             "auto_seed_demo no es compatible con una creacion transaccional diferida",
@@ -2938,6 +3241,11 @@ def create_encuesta(
         requiere_identidad=bool(payload.get("requiere_identidad", False)),
         politica_unicidad=payload.get("politica_unicidad", "libre"),
         anonimo_permitido=bool(payload.get("anonimo_permitido", True)),
+        privacy_mode=privacy_settings["privacy_mode"],
+        privacy_policy_version=privacy_settings["privacy_policy_version"],
+        privacy_policy_url=privacy_settings["privacy_policy_url"],
+        privacy_consent_required=privacy_settings["privacy_consent_required"],
+        response_retention_days=privacy_settings["response_retention_days"],
         es_votacion_envivo=bool(payload.get("es_votacion_envivo", False)),
         mostrar_resultados_envivo=bool(payload.get("mostrar_resultados_envivo", False)),
         permitir_comentarios=bool(payload.get("permitir_comentarios", False)),
@@ -2994,6 +3302,20 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
 
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
+
+    from services.survey_governance import has_governance_release
+
+    if has_governance_release(encuesta):
+        raise EncuestaError(
+            "La encuesta tiene un release de gobernanza inmutable",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.governance_release.v1",
+                "reason_code": "survey_governance_release_immutable",
+                "retryable": False,
+                "action_hint": "duplicate_as_new_draft",
+            },
+        )
 
     expected_revision = _expected_structure_revision(data)
     if (
@@ -3133,6 +3455,11 @@ def duplicate_encuesta(encuesta_id: int, data: Optional[Dict[str, Any]], user: A
         requiere_identidad=source.requiere_identidad,
         politica_unicidad=source.politica_unicidad,
         anonimo_permitido=source.anonimo_permitido,
+        privacy_mode=source.privacy_mode,
+        privacy_policy_version=source.privacy_policy_version,
+        privacy_policy_url=source.privacy_policy_url,
+        privacy_consent_required=source.privacy_consent_required,
+        response_retention_days=source.response_retention_days,
         es_votacion_envivo=source.es_votacion_envivo,
         mostrar_resultados_envivo=source.mostrar_resultados_envivo,
         permitir_comentarios=source.permitir_comentarios,
@@ -3184,6 +3511,31 @@ def _ensure_publication_window(encuesta: EncEncuesta) -> None:
         raise EncuestaError("La fecha de inicio no puede ser posterior a la de cierre")
 
 
+def _ensure_privacy_publication_ready(encuesta: EncEncuesta) -> None:
+    settings = _validated_privacy_settings({}, encuesta=encuesta)
+    if settings["privacy_mode"] != SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS:
+        return
+    uniqueness_policy = str(encuesta.politica_unicidad or "libre").strip().lower()
+    if uniqueness_policy == "libre":
+        return
+    raw_secret = current_app.config.get("SURVEY_IDENTITY_HMAC_SECRET_V1", "")
+    if isinstance(raw_secret, bytes):
+        secret_length = len(raw_secret)
+    else:
+        secret_length = len(str(raw_secret or "").encode("utf-8"))
+    if secret_length < 32:
+        raise EncuestaError(
+            "No se puede publicar: falta el secreto HMAC dedicado de encuestas.",
+            status_code=503,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_identity_hmac_secret_unavailable",
+                "retryable": False,
+                "action_hint": "configure_survey_identity_hmac_secret_v1",
+            },
+        )
+
+
 def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink]:
     encuesta = db.session.get(EncEncuesta, encuesta_id)
     if not encuesta:
@@ -3191,6 +3543,19 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
     _ensure_tenant_access(encuesta, user)
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
+    from services.survey_governance import has_governance_release
+
+    if has_governance_release(encuesta):
+        raise EncuestaError(
+            "La encuesta gobernada debe publicarse desde su release",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.governance_release.v1",
+                "reason_code": "survey_governance_publish_endpoint_required",
+                "retryable": False,
+                "action_hint": "publish_governance_release",
+            },
+        )
     if encuesta.estado not in {"borrador", "publicada"}:
         raise EncuestaError("La encuesta no se puede publicar", status_code=409)
     if not encuesta.preguntas:
@@ -3198,6 +3563,7 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
 
     _validate_persisted_instrument(encuesta)
     _ensure_publication_window(encuesta)
+    _ensure_privacy_publication_ready(encuesta)
 
     encuesta.estado = "publicada"
     if not encuesta.inicio_at:
@@ -3274,6 +3640,19 @@ def cerrar_encuesta(encuesta_id: int, user: Any) -> EncEncuesta:
     _ensure_tenant_access(encuesta, user)
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
+    from services.survey_governance import has_governance_release
+
+    if has_governance_release(encuesta):
+        raise EncuestaError(
+            "La encuesta gobernada debe cerrarse desde su release",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.governance_release.v1",
+                "reason_code": "survey_governance_close_endpoint_required",
+                "retryable": False,
+                "action_hint": "close_governance_release",
+            },
+        )
     encuesta.estado = "cerrada"
     encuesta.fin_at = encuesta.fin_at or _public_schedule_now()
     db.session.commit()
@@ -3290,6 +3669,20 @@ def delete_encuesta(encuesta_id: int, user: Any) -> None:
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
     tenant_id = encuesta.tenant_id
+
+    from services.survey_governance import has_governance_release
+
+    if has_governance_release(encuesta):
+        raise EncuestaError(
+            "Una encuesta con release gobernado no puede eliminarse",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.governance_release.v1",
+                "reason_code": "survey_governance_delete_blocked",
+                "retryable": False,
+                "action_hint": "close_release_or_duplicate_survey",
+            },
+        )
 
     materialization = SurveyDraftMaterialization.query.filter_by(
         tenant_id=tenant_id,
@@ -3973,20 +4366,35 @@ def build_unique_fingerprint(
     if policy == "libre":
         return None
 
-    def _clean_identifier(value: Optional[Any]) -> Optional[str]:
+    source_anonymous = (
+        str(
+            getattr(encuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
+            or SURVEY_PRIVACY_MODE_LEGACY
+        ).strip().lower()
+        == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+    )
+
+    def _clean_identifier(value: Optional[Any], *, kind: str) -> Optional[str]:
         if value is None:
             return None
         if isinstance(value, str):
             cleaned = value.strip()
         else:
             cleaned = str(value).strip()
+        if source_anonymous and cleaned:
+            if kind == "dni":
+                cleaned = re.sub(r"[^0-9A-Za-z]", "", cleaned).lower()
+            elif kind == "phone":
+                cleaned = re.sub(r"[^0-9]", "", cleaned)
+            elif kind in {"ip", "user_id"}:
+                cleaned = cleaned.lower()
         return cleaned or None
 
-    dni_clean = _clean_identifier(dni)
-    phone_clean = _clean_identifier(phone)
-    user_id_clean = _clean_identifier(user_id)
-    cookie_clean = _clean_identifier(anon_cookie)
-    ip_clean = _clean_identifier(ip)
+    dni_clean = _clean_identifier(dni, kind="dni")
+    phone_clean = _clean_identifier(phone, kind="phone")
+    user_id_clean = _clean_identifier(user_id, kind="user_id")
+    cookie_clean = _clean_identifier(anon_cookie, kind="cookie")
+    ip_clean = _clean_identifier(ip, kind="ip")
 
     source_parts: List[str] = [
         f"encuesta:{encuesta.id}",
@@ -4029,7 +4437,132 @@ def build_unique_fingerprint(
         return None
 
     canonical = "|".join(source_parts)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if not source_anonymous:
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    raw_secret = current_app.config.get("SURVEY_IDENTITY_HMAC_SECRET_V1", "")
+    if isinstance(raw_secret, bytes):
+        secret = raw_secret
+    else:
+        secret = str(raw_secret or "").encode("utf-8")
+    if len(secret) < 32:
+        raise EncuestaError(
+            "El servicio de anonimato no esta configurado de forma segura.",
+            status_code=503,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_identity_hmac_secret_unavailable",
+                "retryable": False,
+                "action_hint": "configure_survey_identity_hmac_secret_v1",
+            },
+        )
+    domain_separated = (
+        f"chatboc:{SURVEY_PRIVACY_CONTRACT_VERSION}:identity:{canonical}"
+    ).encode("utf-8")
+    digest = hmac.new(secret, domain_separated, hashlib.sha256).hexdigest()
+    return f"{SURVEY_IDENTITY_FINGERPRINT_VERSION}:{digest}"
+
+
+def _privacy_submission_value(payload: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload.get(key)
+    privacy = payload.get("privacy")
+    if isinstance(privacy, Mapping):
+        for key in keys:
+            if key in privacy:
+                return privacy.get(key)
+    return None
+
+
+def _validate_privacy_submission(
+    encuesta: EncEncuesta,
+    payload: Mapping[str, Any],
+) -> Dict[str, Any]:
+    mode = str(
+        getattr(encuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
+        or SURVEY_PRIVACY_MODE_LEGACY
+    ).strip().lower()
+    policy_version = _privacy_text(
+        getattr(encuesta, "privacy_policy_version", None),
+        field="privacy_policy_version",
+        max_length=64,
+    )
+    consent_required = bool(
+        getattr(encuesta, "privacy_consent_required", False)
+    )
+    consent_raw = _privacy_submission_value(
+        payload,
+        "privacy_consent",
+        "consent",
+        "consent_accepted",
+    )
+    consented = False
+    if consent_raw is not None:
+        try:
+            consented = _privacy_bool(consent_raw, field="privacy_consent")
+        except EncuestaError as exc:
+            exc.payload.update({"action_hint": "review_privacy_consent"})
+            raise
+
+    submitted_policy_version = _privacy_text(
+        _privacy_submission_value(
+            payload,
+            "privacy_policy_version",
+            "policy_version",
+        ),
+        field="privacy_policy_version",
+        max_length=64,
+    )
+
+    if consent_required and not consented:
+        raise EncuestaError(
+            "Debes aceptar la politica de privacidad antes de participar.",
+            status_code=400,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_consent_required",
+                "action_hint": "accept_privacy_policy",
+                "privacy_policy_version": policy_version,
+            },
+        )
+    if consent_required and submitted_policy_version != policy_version:
+        raise EncuestaError(
+            "La politica de privacidad cambio; revisala antes de continuar.",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "survey_privacy_policy_version_mismatch",
+                "action_hint": "reload_survey_privacy_policy",
+                "privacy_policy_version": policy_version,
+            },
+        )
+
+    retention_days = _privacy_retention_days(
+        getattr(encuesta, "response_retention_days", None)
+    )
+    if mode == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS:
+        retention_days = retention_days or 365
+
+    return {
+        "mode": mode,
+        "policy_version": policy_version,
+        "consented": consented,
+        "retention_days": retention_days,
+    }
+
+
+def _privacy_retention_expiry(
+    submitted_at: datetime,
+    retention_days: Optional[int],
+) -> Optional[datetime]:
+    if retention_days is None:
+        return None
+    if submitted_at.tzinfo is None:
+        reference = submitted_at.replace(tzinfo=timezone.utc)
+    else:
+        reference = submitted_at.astimezone(timezone.utc)
+    return reference + timedelta(days=retention_days)
 
 
 _AUTHENTICATED_USER_POLICIES = {"por_usuario", "usuario", "user_id", "por_user_id"}
@@ -5175,6 +5708,8 @@ def survey_response_receipt_contract(respuesta: EncRespuesta) -> Optional[Dict[s
     if not submission_id or receipt_id is None:
         return None
     replayed = bool(getattr(respuesta, "submission_replayed", False))
+    from services.survey_governance import response_governance_contract
+
     return {
         "contract_version": getattr(
             respuesta,
@@ -5190,6 +5725,7 @@ def survey_response_receipt_contract(respuesta: EncRespuesta) -> Optional[Dict[s
         "disposition": "replayed" if replayed else "accepted",
         "persisted": True,
         "replayed": replayed,
+        "governance": response_governance_contract(respuesta),
     }
 
 
@@ -5282,6 +5818,12 @@ def _build_survey_response_analytics_event(
         if getattr(detalle, "texto_libre", None):
             open_answers += 1
 
+    source_anonymous = (
+        str(getattr(respuesta, "privacy_mode", "legacy") or "legacy")
+        .strip()
+        .lower()
+        == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+    )
     payload = {
         "contract_version": "analytics.survey_response_event.v1",
         "encuesta_id": encuesta.id,
@@ -5311,10 +5853,10 @@ def _build_survey_response_analytics_event(
         "tenant_id": encuesta.tenant_id,
         "event_name": event_name,
         "payload": payload,
-        "user_id": _coerce_int(respuesta.user_id),
-        "anon_id": respuesta.huella_unica or None,
+        "user_id": None if source_anonymous else _coerce_int(respuesta.user_id),
+        "anon_id": None if source_anonymous else respuesta.huella_unica or None,
         "channel": respuesta.canal or "public_survey",
-        "session_id": respuesta.huella_unica or None,
+        "session_id": None if source_anonymous else respuesta.huella_unica or None,
         "lat": respuesta.lat,
         "lng": respuesta.lng,
         "entity_ref": f"survey:{encuesta.id}:response:{respuesta.id}",
@@ -5523,6 +6065,20 @@ def save_respuesta(
     _ensure_locked_public_encuesta(encuesta)
     expected_structure_revision = int(encuesta.structure_revision or 1)
 
+    from services.survey_governance import (
+        SurveyGovernanceError,
+        governed_response_context,
+    )
+
+    try:
+        governance_release = governed_response_context(encuesta, payload)
+    except SurveyGovernanceError as exc:
+        raise EncuestaError(
+            exc.message,
+            status_code=exc.status_code,
+            payload=exc.to_dict(),
+        ) from exc
+
     submitted_instrument_revision = _submitted_instrument_revision(payload)
     if (
         submitted_instrument_revision is not None
@@ -5575,6 +6131,7 @@ def save_respuesta(
         payload,
         authenticated_user_id=authenticated_user_id,
     )
+    privacy_submission = _validate_privacy_submission(encuesta, payload)
 
     dni = payload.get("dni") or payload.get("documento") or payload.get("document")
     phone = payload.get("phone") or payload.get("telefono") or payload.get("tel") or payload.get("whatsapp")
@@ -5641,7 +6198,8 @@ def save_respuesta(
     request_canal = _clean_str(request_ctx.get("canal"), max_length=64)
     canal = canal or request_canal or "web"
 
-    submitted_override = None
+    server_received_at = datetime.now(timezone.utc)
+    client_submitted_at = None
     metadata_rango = None
 
     if metadata_dict:
@@ -5651,7 +6209,21 @@ def save_respuesta(
 
         submitted_raw = metadata_dict.get("submittedAt") or metadata_dict.get("submitted_at")
         if submitted_raw:
-            submitted_override = _parse_datetime(str(submitted_raw))
+            client_submitted_at = _parse_datetime(str(submitted_raw))
+            # The browser clock is useful diagnostic context, but it is never
+            # authoritative for legal acknowledgement, retention, ordering or
+            # analytics.  Keep it explicitly namespaced and labelled instead
+            # of letting a public caller forge server-controlled timestamps.
+            metadata_dict.pop("submittedAt", None)
+            metadata_dict.pop("submitted_at", None)
+            metadata_dict["_chatboc_submission_timing"] = {
+                "client_declared_at": client_submitted_at.isoformat(),
+                "authoritative": False,
+                "within_24h_of_server": abs(
+                    (client_submitted_at - server_received_at).total_seconds()
+                )
+                <= 86400,
+            }
 
         demographics = metadata_dict.get("demographics")
         if isinstance(demographics, dict):
@@ -5694,33 +6266,54 @@ def save_respuesta(
         anio_nacimiento = _infer_birth_year_from_age(edad)
     rango_etario = rango_etario or metadata_rango or _compute_age_group(edad)
 
-    submitted_at = submitted_override or datetime.now(timezone.utc)
+    submitted_at = server_received_at
+    source_anonymous = (
+        privacy_submission["mode"] == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+    )
+    retention_expires_at = _privacy_retention_expiry(
+        submitted_at,
+        privacy_submission["retention_days"],
+    )
 
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
         tenant_id=tenant_id,
         huella_unica=fingerprint,
-        user_id=user_id,
-        dni=dni,
-        phone=phone,
-        ip=ip,
-        ua=request_ctx.get("user_agent"),
-        lat=lat,
-        lng=lng,
-        utm_source=payload.get("utm_source"),
-        utm_campaign=payload.get("utm_campaign"),
+        user_id=None if source_anonymous else user_id,
+        dni=None if source_anonymous else dni,
+        phone=None if source_anonymous else phone,
+        ip=None if source_anonymous else ip,
+        ua=None if source_anonymous else request_ctx.get("user_agent"),
+        lat=None if source_anonymous else lat,
+        lng=None if source_anonymous else lng,
+        utm_source=None if source_anonymous else payload.get("utm_source"),
+        utm_campaign=None if source_anonymous else payload.get("utm_campaign"),
         canal=canal,
         genero=genero,
-        edad=edad,
-        anio_nacimiento=anio_nacimiento,
+        edad=None if source_anonymous else edad,
+        anio_nacimiento=None if source_anonymous else anio_nacimiento,
         rango_etario=rango_etario,
         barrio=barrio,
         ciudad=ciudad,
         provincia=provincia,
         pais=pais,
-        metadata_payload=metadata_payload,
+        metadata_payload=None if source_anonymous else metadata_payload,
         submitted_at=submitted_at,
         content_hash=None,
+        privacy_mode=privacy_submission["mode"],
+        privacy_policy_version=privacy_submission["policy_version"],
+        privacy_consent_recorded_at=(
+            submitted_at if privacy_submission["consented"] else None
+        ),
+        retention_expires_at=retention_expires_at,
+    )
+
+    from services.survey_governance import bind_governed_response
+
+    bind_governed_response(
+        respuesta,
+        governance_release,
+        acknowledged_at=submitted_at,
     )
 
     try:
@@ -5770,8 +6363,10 @@ def save_respuesta(
             respuesta,
             slug_publico=slug_publico,
             respuestas_payload=respuestas_payload,
-            authenticated_user=authenticated_response_user,
-            grant_reward=grant_reward,
+            authenticated_user=(
+                None if source_anonymous else authenticated_response_user
+            ),
+            grant_reward=grant_reward and not source_anonymous,
             emit_realtime_update=emit_realtime_update,
             stage_analytics=True,
         )
@@ -5822,10 +6417,11 @@ def save_respuesta(
     respuesta.instrument_revision = expected_structure_revision
 
     current_app.logger.info(
-        "[encuestas] Nueva respuesta %s para encuesta %s desde %s",
+        "[encuestas] Nueva respuesta %s para encuesta %s canal=%s privacy_mode=%s",
         respuesta.id,
         encuesta.id,
-        ip,
+        canal,
+        privacy_submission["mode"],
     )
 
     if commit:
@@ -5965,6 +6561,21 @@ def seed_encuesta_respuestas_demo(
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
     _validate_persisted_instrument(encuesta)
+    if (
+        str(
+            getattr(encuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
+            or SURVEY_PRIVACY_MODE_LEGACY
+        ).strip().lower()
+        == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+    ):
+        raise EncuestaError(
+            "El seed demo no esta habilitado para encuestas anonimas de origen.",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+                "reason_code": "source_anonymous_demo_seed_not_supported",
+            },
+        )
     tenant_id = encuesta.tenant_id
     geo_metadata = _resolve_geo_metadata_for_tenant(tenant_id)
     if not geo_metadata and geo_profile_key:
@@ -6677,28 +7288,50 @@ def serialize_respuesta(respuesta: EncRespuesta) -> Dict[str, Any]:
             }
         )
 
+    privacy_mode = str(
+        getattr(respuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
+        or SURVEY_PRIVACY_MODE_LEGACY
+    ).strip().lower()
+    source_anonymous = privacy_mode == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+
     return {
         "id": respuesta.id,
         "encuesta_id": respuesta.encuesta_id,
         "submitted_at": respuesta.submitted_at.isoformat() if respuesta.submitted_at else None,
         "canal": respuesta.canal,
-        "utm_source": respuesta.utm_source,
-        "utm_campaign": respuesta.utm_campaign,
-        "dni": respuesta.dni,
-        "phone": respuesta.phone,
-        "ip": respuesta.ip,
-        "lat": respuesta.lat,
-        "lng": respuesta.lng,
-        "user_id": respuesta.user_id,
+        "utm_source": None if source_anonymous else respuesta.utm_source,
+        "utm_campaign": None if source_anonymous else respuesta.utm_campaign,
+        "dni": None if source_anonymous else respuesta.dni,
+        "phone": None if source_anonymous else respuesta.phone,
+        "ip": None if source_anonymous else respuesta.ip,
+        "lat": None if source_anonymous else respuesta.lat,
+        "lng": None if source_anonymous else respuesta.lng,
+        "user_id": None if source_anonymous else respuesta.user_id,
         "genero": respuesta.genero,
-        "edad": respuesta.edad,
-        "anio_nacimiento": respuesta.anio_nacimiento,
+        "edad": None if source_anonymous else respuesta.edad,
+        "anio_nacimiento": None if source_anonymous else respuesta.anio_nacimiento,
         "rango_etario": respuesta.rango_etario,
         "barrio": respuesta.barrio,
         "ciudad": respuesta.ciudad,
         "provincia": respuesta.provincia,
         "pais": respuesta.pais,
-        "metadata": respuesta.metadata_payload,
+        "metadata": None if source_anonymous else respuesta.metadata_payload,
+        "privacy": {
+            "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+            "mode": privacy_mode,
+            "policy_version": getattr(respuesta, "privacy_policy_version", None),
+            "consent_recorded_at": (
+                respuesta.privacy_consent_recorded_at.isoformat()
+                if getattr(respuesta, "privacy_consent_recorded_at", None)
+                else None
+            ),
+            "retention_expires_at": (
+                respuesta.retention_expires_at.isoformat()
+                if getattr(respuesta, "retention_expires_at", None)
+                else None
+            ),
+            "source_identifiers_persisted": not source_anonymous,
+        },
         "detalles": detalles_serializados,
     }
 
@@ -6795,6 +7428,10 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
     slug_publico = _resolve_public_slug(encuesta)
     url_publica = _public_url_for_slug(slug_publico)
 
+    from services.survey_governance import survey_governance_contract
+
+    governance = survey_governance_contract(encuesta, validate_integrity=True)
+
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
@@ -6817,6 +7454,35 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "politica_unicidad": encuesta.politica_unicidad,
         "anonimo_permitido": encuesta.anonimo_permitido,
         "anonimato": encuesta.anonimo_permitido,
+        "privacy_mode": (
+            encuesta.privacy_mode or SURVEY_PRIVACY_MODE_LEGACY
+        ),
+        "privacy_policy_version": encuesta.privacy_policy_version,
+        "privacy_policy_url": encuesta.privacy_policy_url,
+        "privacy_consent_required": bool(encuesta.privacy_consent_required),
+        "response_retention_days": encuesta.response_retention_days,
+        "privacy": {
+            "contract_version": SURVEY_PRIVACY_CONTRACT_VERSION,
+            "mode": encuesta.privacy_mode or SURVEY_PRIVACY_MODE_LEGACY,
+            "policy_version": encuesta.privacy_policy_version,
+            "policy_url": encuesta.privacy_policy_url,
+            "consent_required": bool(encuesta.privacy_consent_required),
+            "consent_body_field": "privacy_consent",
+            "policy_version_body_field": "privacy_policy_version",
+            "retention_days": encuesta.response_retention_days,
+            "source_identifiers_persisted": (
+                (encuesta.privacy_mode or SURVEY_PRIVACY_MODE_LEGACY)
+                != SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+            ),
+            "discarded_before_persist": (
+                list(_SURVEY_SOURCE_ANONYMOUS_DISCARDED_FIELDS)
+                if (
+                    (encuesta.privacy_mode or SURVEY_PRIVACY_MODE_LEGACY)
+                    == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+                )
+                else []
+            ),
+        },
         "es_votacion_envivo": encuesta.es_votacion_envivo,
         "mostrar_resultados_envivo": encuesta.mostrar_resultados_envivo,
         "permitir_comentarios": encuesta.permitir_comentarios,
@@ -6830,6 +7496,7 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
                 else None
             ),
         },
+        "governance": governance,
         "tags": _collect_encuesta_tags(encuesta),
         "preguntas": [_serialize_question(pregunta) for pregunta in encuesta.preguntas],
     }
@@ -6861,6 +7528,7 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
             "mode": data["auth_mode"],
             "provider": "chatboc_session",
         },
+        "privacy": data["privacy"],
         "idempotency": {
             "contract_version": SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
             "supported": True,

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
+import re
 from datetime import datetime, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import func
 
 from extensions import db
-from models import MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, User
+from models import AuditEvent, MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, User
 from models_education import (
     AcademicLevel,
     Campus,
@@ -33,11 +36,25 @@ from services.education_case_service import (
     build_education_operations_heatmap,
     build_education_operations_summary,
 )
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    normalize_municipio_ticket_write_scope,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+)
+from services.education_access_policy import (
+    EDUCATION_GUARDIANS_LINK,
+    EDUCATION_GUARDIANS_READ,
+    EDUCATION_GUARDIANS_VERIFY,
+    missing_education_capabilities,
+)
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
     plan_allows_integration_feature,
 )
+from utils.auth_decorators import _is_authorized_for_tenant
+from utils.roles import ROLE_CLIENTE, ROLE_LEAD, ROLE_SUPERADMIN, canonical_role
 
 education_bp = Blueprint("education", __name__)
 
@@ -51,6 +68,11 @@ SCHOOL_CASE_TAXONOMY = {
     "admisiones": "Admisiones",
 }
 SCHOOL_CASE_TAXONOMY.update(education_taxonomy_dict())
+
+_GUARDIAN_VERIFICATION_METHODS = frozenset(
+    {"in_person", "institutional_record", "external_identity_provider"}
+)
+_OPAQUE_EVIDENCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,119}$")
 
 
 def _utc_now():
@@ -120,31 +142,212 @@ def _tenant_write_access_response(
     return tenant, None
 
 
+def _education_access_error(
+    message: str,
+    status_code: int,
+    reason_code: str,
+    *,
+    action_hint: str | None = None,
+    missing_capabilities: list[str] | None = None,
+):
+    payload = {
+        "contract_version": "education.access_error.v1",
+        "status_code": status_code,
+        "reason_code": reason_code,
+        "retryable": False,
+        "error": {"code": status_code, "message": message},
+    }
+    if action_hint:
+        payload["action_hint"] = action_hint
+    if missing_capabilities:
+        payload["missing_capabilities"] = missing_capabilities
+    return jsonify(payload), status_code
+
+
+def _guardian_operation_tenant(current_user, actor_principal, data: dict):
+    actor = actor_principal or current_user
+    actor_tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    declared_tenant_id = _resolve_school_tenant_id(data.get("tenant_id"))
+    actor_role = canonical_role(getattr(actor, "rol", None))
+
+    # A platform admin may select an explicit tenant. All other identities are
+    # bound to the tenant resolved from their authenticated principal.
+    if actor_role == ROLE_SUPERADMIN and declared_tenant_id is not None:
+        actor_tenant_id = declared_tenant_id
+    if not actor_tenant_id:
+        return None, _education_access_error(
+            "Tenant context required",
+            400,
+            "education_tenant_context_required",
+            action_hint="select_tenant",
+        )
+    if declared_tenant_id is not None and declared_tenant_id != actor_tenant_id:
+        return None, _education_access_error(
+            "Acceso denegado para el tenant solicitado",
+            403,
+            "education_cross_tenant_denied",
+            action_hint="use_authenticated_tenant",
+        )
+
+    tenant = TenantProfile.query.filter_by(id=actor_tenant_id).first()
+    if not tenant:
+        return None, _education_access_error(
+            "Tenant profile not found",
+            404,
+            "education_tenant_not_found",
+        )
+    if not _is_authorized_for_tenant(actor, tenant_id=tenant.id, tenant_slug=tenant.slug):
+        return None, _education_access_error(
+            "Acceso denegado para este tenant",
+            403,
+            "education_cross_tenant_denied",
+            action_hint="use_authenticated_tenant",
+        )
+    if not plan_allows_integration_feature(tenant, "education_management"):
+        return None, _education_plan_required_response(
+            tenant,
+            feature_id="education_management",
+            contract_version="education.guardian_access.v2",
+        )
+    return tenant, None
+
+
+def _is_guardian_tenant_owner(actor, tenant: TenantProfile) -> bool:
+    actor_id = getattr(actor, "id", None)
+    return bool(
+        actor_id
+        and actor_id in {getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None)}
+    )
+
+
+def _guardian_capability_response(actor, tenant: TenantProfile, *required: str):
+    # Some legacy tenant owners were provisioned before role normalization and
+    # still carry rol=usuario. Ownership is server-side and already tenant-bound,
+    # so preserve their administrative access without trusting token claims.
+    if _is_guardian_tenant_owner(actor, tenant):
+        return None
+    missing = missing_education_capabilities(actor, *required)
+    if not missing:
+        return None
+    return _education_access_error(
+        "Permisos insuficientes para operar perfiles familiares",
+        403,
+        "education_guardian_capability_required",
+        action_hint="ask_tenant_admin",
+        missing_capabilities=missing,
+    )
+
+
+def _guardian_evidence_digest(
+    *, tenant_id: int, guardian_id: int, verification_method: str, evidence_ref: str
+) -> str:
+    secret_value = str(current_app.config.get("SECRET_KEY") or "")
+    if not secret_value:
+        raise RuntimeError("SECRET_KEY is required for guardian verification evidence")
+    secret = secret_value.encode("utf-8")
+    material = (
+        f"education.guardian-proof.v1:{tenant_id}:{guardian_id}:"
+        f"{verification_method}:{evidence_ref}"
+    ).encode("utf-8")
+    return hmac.new(secret, material, hashlib.sha256).hexdigest()
+
+
+def _guardian_audit_event(
+    *,
+    tenant_id: int,
+    actor_user_id: int | None,
+    event_type: str,
+    guardian_id: int | None,
+    details: dict,
+) -> AuditEvent:
+    return AuditEvent(
+        tenant_id=tenant_id,
+        actor_user_id=actor_user_id,
+        event_type=event_type,
+        resource_type="education_guardian",
+        resource_id=str(guardian_id) if guardian_id is not None else None,
+        details=details,
+        # IP addresses are personal data and are not required to prove this
+        # institutional action. Request correlation belongs in observability.
+        ip_address=None,
+    )
+
+
+def _commit_guardian_operation():
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Education guardian operation rolled back because its durable audit commit failed"
+        )
+        return _education_access_error(
+            "No se pudo registrar la operacion familiar de forma segura",
+            503,
+            "education_guardian_audit_failed",
+            action_hint="retry_later",
+        )
+    return None
+
+
 def _resolve_actor_tenant_id(current_user=None, actor_principal=None):
     actor = actor_principal or current_user
+    if actor is None:
+        return None
+
     tenant_id = getattr(actor, "tenant_id", None)
     if tenant_id:
-        return tenant_id
+        try:
+            tenant = db.session.get(TenantProfile, int(tenant_id))
+        except (TypeError, ValueError):
+            return None
+        return int(tenant.id) if tenant is not None else None
 
-    municipio_owner_id = getattr(actor, "municipio_id", None)
-    if municipio_owner_id:
-        tenant = TenantProfile.query.filter_by(municipio_id=municipio_owner_id).first()
-        if tenant:
-            return tenant.id
+    # A platform superadmin without an explicit tenant intentionally keeps the
+    # existing global read surface; do not bind it through a coincidental user
+    # id. Mutations already require an explicit declared tenant downstream.
+    if canonical_role(getattr(actor, "rol", None)) == ROLE_SUPERADMIN:
+        return None
 
-    actor_user_id = getattr(actor, "id", None)
-    if actor_user_id:
-        tenant = TenantProfile.query.filter((TenantProfile.pyme_id == actor_user_id) | (TenantProfile.municipio_id == actor_user_id)).first()
-        if tenant:
-            return tenant.id
+    owner_ids = []
+    for raw_owner_id in (
+        getattr(actor, "municipio_id", None),
+        getattr(actor, "pyme_id", None),
+        getattr(actor, "empresa_id", None),
+    ):
+        if raw_owner_id in (None, ""):
+            continue
+        try:
+            normalized_owner_id = int(raw_owner_id)
+        except (TypeError, ValueError):
+            return None
+        if normalized_owner_id > 0 and normalized_owner_id not in owner_ids:
+            owner_ids.append(normalized_owner_id)
 
-    pyme_owner_id = getattr(actor, "pyme_id", None)
-    if pyme_owner_id:
-        tenant = TenantProfile.query.filter_by(pyme_id=pyme_owner_id).first()
-        if tenant:
-            return tenant.id
+    if not owner_ids and str(getattr(actor, "tipo_chat", "") or "").lower() in {
+        "municipio",
+        "pyme",
+        "colegio",
+        "educacion",
+    }:
+        try:
+            actor_user_id = int(getattr(actor, "id", None))
+        except (TypeError, ValueError):
+            actor_user_id = None
+        if actor_user_id and actor_user_id > 0:
+            owner_ids.append(actor_user_id)
 
-    return None
+    resolved_tenant_ids = set()
+    for owner_id in owner_ids:
+        try:
+            resolution = resolve_unique_tenant_for_owner(owner_id)
+        except TicketTenantScopeError:
+            return None
+        if resolution.status != "unique" or resolution.tenant is None:
+            return None
+        resolved_tenant_ids.add(int(resolution.tenant.id))
+
+    return resolved_tenant_ids.pop() if len(resolved_tenant_ids) == 1 else None
 
 
 def _resolve_school_tenant_id(raw_tenant_id):
@@ -255,8 +458,18 @@ def _get_case_alias_for_tenant(case_id: int, tenant_id: int) -> SchoolCaseAlias 
 
 def _ticket_for_case(alias: SchoolCaseAlias):
     if alias.ticket_type == "pyme":
-        return PymeTicket.query.get(alias.ticket_id)
-    return MunicipioTicket.query.get(alias.ticket_id)
+        return PymeTicket.query.filter_by(
+            id=alias.ticket_id,
+            tenant_id=alias.tenant_id,
+        ).first()
+    if alias.ticket_type != "municipio":
+        return None
+    tenant = db.session.get(TenantProfile, alias.tenant_id)
+    if tenant is None:
+        return None
+    return scoped_municipio_ticket_query(tenant).filter(
+        MunicipioTicket.id == alias.ticket_id
+    ).first()
 
 
 def _case_payload(alias: SchoolCaseAlias, *, include_comments: bool = False) -> dict:
@@ -795,98 +1008,214 @@ def create_section(current_user, actor_principal=None):
 
 @education_bp.route("/api/v1/education/guardians/lookup", methods=["POST"])
 @education_bp.route("/api/v1/education/guardian/lookup", methods=["POST"])
-def lookup_guardian():
+@token_requerido
+def lookup_guardian(current_user, actor_principal=None):
     data = request.json or {}
-    tenant_id = _resolve_school_tenant_id(data.get("tenant_id"))
-    phone = (data.get("phone_number") or "").strip()
-    email = (data.get("email") or "").strip()
-    document = (data.get("document_number") or "").strip()
-
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "tenant_id required"}}), 400
-    tenant, access_response = _tenant_write_access_response(
-        tenant_id,
-        contract_version="education.guardian_lookup_access.v1",
-    )
+    actor = actor_principal or current_user
+    tenant, access_response = _guardian_operation_tenant(current_user, actor_principal, data)
     if access_response:
         return access_response
-    if not any([phone, email, document]):
-        return jsonify({"error": {"code": 400, "message": "phone_number, email or document_number required"}}), 400
 
-    query = Guardian.query.filter(Guardian.tenant_id == tenant_id)
-    if phone:
-        query = query.filter(Guardian.phone_number == phone)
-    elif email:
-        query = query.filter(func.lower(Guardian.email) == email.lower())
+    role = canonical_role(getattr(actor, "rol", None))
+    query = Guardian.query.filter(Guardian.tenant_id == tenant.id)
+    lookup_scope = "self"
+    query_field = "authenticated_user"
+
+    if role in {ROLE_CLIENTE, ROLE_LEAD} and not _is_guardian_tenant_owner(actor, tenant):
+        # Families can only resolve a pre-provisioned guardian profile linked
+        # to their authenticated user. Supplied phone/email/document values are
+        # deliberately ignored so this endpoint cannot be used as an oracle.
+        query = query.filter(Guardian.user_id == getattr(actor, "id", None))
     else:
-        query = query.filter(Guardian.document_number == document)
+        capability_response = _guardian_capability_response(
+            actor, tenant, EDUCATION_GUARDIANS_READ
+        )
+        if capability_response:
+            return capability_response
+        lookup_scope = "operator"
+        guardian_id = _resolve_school_tenant_id(data.get("guardian_id"))
+        phone = (data.get("phone_number") or "").strip()
+        email = (data.get("email") or "").strip()
+        document = (data.get("document_number") or "").strip()
+        supplied = [
+            ("guardian_id", guardian_id),
+            ("phone_number", phone),
+            ("email", email),
+            ("document_number", document),
+        ]
+        supplied = [(field, value) for field, value in supplied if value not in (None, "")]
+        if len(supplied) != 1:
+            return _education_access_error(
+                "Provide exactly one guardian lookup field",
+                400,
+                "education_guardian_lookup_invalid",
+                action_hint="provide_one_lookup_field",
+            )
+        query_field, value = supplied[0]
+        if query_field == "guardian_id":
+            query = query.filter(Guardian.id == value)
+        elif query_field == "phone_number":
+            query = query.filter(Guardian.phone_number == value)
+        elif query_field == "email":
+            query = query.filter(func.lower(Guardian.email) == str(value).lower())
+        else:
+            query = query.filter(Guardian.document_number == value)
 
     guardian = query.first()
-    if not guardian:
-        return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
+    db.session.add(
+        _guardian_audit_event(
+            tenant_id=tenant.id,
+            actor_user_id=getattr(actor, "id", None),
+            event_type="education.guardian.lookup",
+            guardian_id=guardian.id if guardian else None,
+            details={
+                "contract_version": "education.guardian_lookup.v2",
+                "lookup_scope": lookup_scope,
+                "query_field": query_field,
+                "matched": guardian is not None,
+                "query_value_persisted": False,
+            },
+        )
+    )
+    commit_response = _commit_guardian_operation()
+    if commit_response:
+        return commit_response
 
-    return jsonify(_guardian_payload(guardian))
+    if not guardian:
+        # The public route is no longer anonymous. This generic response also
+        # avoids disclosing which selector matched to authenticated families.
+        return _education_access_error(
+            "No hay un perfil familiar disponible para esta identidad",
+            404,
+            "education_guardian_profile_unavailable",
+            action_hint="contact_school_staff",
+        )
+
+    payload = _guardian_payload(guardian)
+    payload["contract_version"] = "education.guardian_lookup.v2"
+    payload["lookup_scope"] = lookup_scope
+    return jsonify(payload)
 
 
 @education_bp.route("/api/v1/education/guardians/verify", methods=["POST"])
 @education_bp.route("/api/v1/education/guardian/verify", methods=["POST"])
-def verify_guardian():
+@token_requerido
+def verify_guardian(current_user, actor_principal=None):
     data = request.json or {}
-    tenant_id = _resolve_school_tenant_id(data.get("tenant_id"))
-    phone = (data.get("phone_number") or "").strip()
-
-    if not tenant_id or not phone:
-        return jsonify({"error": {"code": 400, "message": "tenant_id and phone_number required"}}), 400
-    tenant, access_response = _tenant_write_access_response(
-        tenant_id,
-        contract_version="education.guardian_verify_access.v1",
-    )
+    actor = actor_principal or current_user
+    tenant, access_response = _guardian_operation_tenant(current_user, actor_principal, data)
     if access_response:
         return access_response
+    capability_response = _guardian_capability_response(
+        actor, tenant, EDUCATION_GUARDIANS_VERIFY
+    )
+    if capability_response:
+        return capability_response
 
-    guardian = Guardian.query.filter_by(tenant_id=tenant_id, phone_number=phone).first()
-    status = "verified" if guardian else "failed"
+    guardian_id = _resolve_school_tenant_id(data.get("guardian_id"))
+    verification_method = str(data.get("verification_method") or "").strip().lower()
+    evidence_ref = str(data.get("evidence_ref") or "").strip()
+    if (
+        not guardian_id
+        or verification_method not in _GUARDIAN_VERIFICATION_METHODS
+        or not _OPAQUE_EVIDENCE_REF.fullmatch(evidence_ref)
+    ):
+        return _education_access_error(
+            "guardian_id, a supported verification_method and an opaque evidence_ref are required",
+            400,
+            "education_guardian_proof_required",
+            action_hint="record_institutional_verification",
+        )
 
-    if guardian:
-        guardian.verification_status = "verified"
-        guardian.verification_context = {
-            "source": "education.guardian.verify",
-            "verified_with": "phone_number",
-        }
+    guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant.id).first()
+    if not guardian:
+        return _education_access_error(
+            "Guardian not found",
+            404,
+            "education_guardian_not_found",
+        )
+
+    evidence_digest = _guardian_evidence_digest(
+        tenant_id=tenant.id,
+        guardian_id=guardian.id,
+        verification_method=verification_method,
+        evidence_ref=evidence_ref,
+    )
+    previous_status = guardian.verification_status
+    guardian.verification_status = "verified"
+    guardian.verification_context = {
+        "contract_version": "education.guardian_verification.v2",
+        "source": "institutional_attestation",
+        "verification_method": verification_method,
+        "evidence_ref_hmac_sha256": evidence_digest,
+        "verified_by_user_id": getattr(actor, "id", None),
+        "phone_ownership_verified": False,
+    }
 
     attempt = FamilyVerificationAttempt(
-        tenant_id=tenant_id,
-        guardian_id=guardian.id if guardian else None,
-        verification_method="phone",
-        verification_value=phone,
-        status=status,
-        context_json={"endpoint": request.path},
+        tenant_id=tenant.id,
+        guardian_id=guardian.id,
+        verification_method=verification_method,
+        verification_value=f"hmac-sha256:{evidence_digest}",
+        status="verified",
+        context_json={
+            "contract_version": "education.guardian_verification.v2",
+            "source": "institutional_attestation",
+            "verified_by_user_id": getattr(actor, "id", None),
+            "phone_ownership_verified": False,
+        },
     )
+    db.session.add(guardian)
     db.session.add(attempt)
-    db.session.commit()
+    db.session.add(
+        _guardian_audit_event(
+            tenant_id=tenant.id,
+            actor_user_id=getattr(actor, "id", None),
+            event_type="education.guardian.verified",
+            guardian_id=guardian.id,
+            details={
+                "contract_version": "education.guardian_verification.v2",
+                "previous_status": previous_status,
+                "new_status": "verified",
+                "verification_method": verification_method,
+                "evidence_ref_hmac_sha256": evidence_digest,
+                "raw_evidence_persisted": False,
+                "phone_ownership_verified": False,
+            },
+        )
+    )
+    commit_response = _commit_guardian_operation()
+    if commit_response:
+        return commit_response
 
-    if not guardian:
-        return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
-
-    return jsonify(_guardian_payload(guardian))
+    payload = _guardian_payload(guardian)
+    payload["contract_version"] = "education.guardian_verification.v2"
+    payload["verification"] = {
+        "method": verification_method,
+        "proof_kind": "institutional_attestation",
+        "phone_ownership_verified": False,
+    }
+    return jsonify(payload)
 
 
 @education_bp.route("/api/v1/education/guardians/link-student", methods=["POST"])
-def link_guardian_student():
+@token_requerido
+def link_guardian_student(current_user, actor_principal=None):
     data = request.json or {}
-    tenant_id = _resolve_school_tenant_id(data.get("tenant_id"))
-    guardian_id = _resolve_school_tenant_id(data.get("guardian_id"))
-    student_id = _resolve_school_tenant_id(data.get("student_id"))
-    if not tenant_id or not guardian_id or not student_id:
-        return jsonify({"error": {"code": 400, "message": "tenant_id, guardian_id and student_id required"}}), 400
-    tenant, access_response = _tenant_write_access_response(
-        tenant_id,
-        contract_version="education.guardian_link_access.v1",
-    )
+    actor = actor_principal or current_user
+    tenant, access_response = _guardian_operation_tenant(current_user, actor_principal, data)
     if access_response:
         return access_response
+    capability_response = _guardian_capability_response(actor, tenant, EDUCATION_GUARDIANS_LINK)
+    if capability_response:
+        return capability_response
 
-    guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant_id).first()
+    guardian_id = _resolve_school_tenant_id(data.get("guardian_id"))
+    student_id = _resolve_school_tenant_id(data.get("student_id"))
+    if not guardian_id or not student_id:
+        return jsonify({"error": {"code": 400, "message": "guardian_id and student_id required"}}), 400
+
+    guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant.id).first()
     if not guardian:
         return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
     if guardian.verification_status != "verified":
@@ -895,7 +1224,7 @@ def link_guardian_student():
     student = Student.query.filter_by(id=student_id).first()
     if not student:
         return jsonify({"error": {"code": 404, "message": "Student not found"}}), 404
-    school = School.query.filter_by(id=student.school_id, tenant_id=tenant_id).first()
+    school = School.query.filter_by(id=student.school_id, tenant_id=tenant.id).first()
     if not school:
         return jsonify({"error": {"code": 403, "message": "Student not available for tenant"}}), 403
     if guardian.school_id and guardian.school_id != school.id:
@@ -922,14 +1251,37 @@ def link_guardian_student():
 
     db.session.add(relation)
     db.session.add(guardian)
-    db.session.commit()
+    db.session.flush()
+    db.session.add(
+        _guardian_audit_event(
+            tenant_id=tenant.id,
+            actor_user_id=getattr(actor, "id", None),
+            event_type="education.guardian.student_linked",
+            guardian_id=guardian.id,
+            details={
+                "contract_version": "education.guardian_student_link.v2",
+                "student_id": student.id,
+                "relation_id": relation.id,
+                "created": created,
+                "permissions_updated": {
+                    "can_pickup": relation.can_pickup,
+                    "can_receive_billing": relation.can_receive_billing,
+                    "can_receive_sensitive_updates": relation.can_receive_sensitive_updates,
+                },
+                "pii_persisted_in_audit": False,
+            },
+        )
+    )
+    commit_response = _commit_guardian_operation()
+    if commit_response:
+        return commit_response
 
     return (
         jsonify(
             {
                 "id": relation.id,
                 "created": created,
-                "tenant_id": tenant_id,
+                "tenant_id": tenant.id,
                 "guardian": _guardian_payload(guardian),
                 "student": {
                     "id": student.id,
@@ -957,38 +1309,73 @@ def link_guardian_student():
 @education_bp.route("/api/v1/education/family/context", methods=["GET"])
 @token_requerido
 def get_family_context(current_user, actor_principal=None):
-    guardian_id = request.args.get("guardian_id", type=int)
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    actor = actor_principal or current_user
+    tenant, access_response = _guardian_operation_tenant(
+        current_user,
+        actor_principal,
+        {"tenant_id": request.args.get("tenant_id")},
+    )
+    if access_response:
+        return access_response
 
-    if not guardian_id and request.path.endswith("/me/family-context"):
-        guardian_query = Guardian.query.filter_by(user_id=getattr(current_user, "id", None))
-        if tenant_id:
-            guardian_query = guardian_query.filter_by(tenant_id=tenant_id)
-        guardian = guardian_query.order_by(Guardian.id.asc()).first()
-        if not guardian:
-            email = (getattr(current_user, "email", None) or "").strip().lower()
-            phone = (getattr(current_user, "telefono", None) or "").strip()
-            if email or phone:
-                guardian_query = Guardian.query
-                if tenant_id:
-                    guardian_query = guardian_query.filter_by(tenant_id=tenant_id)
-                if email:
-                    guardian_query = guardian_query.filter(func.lower(Guardian.email) == email)
-                elif phone:
-                    guardian_query = guardian_query.filter(Guardian.phone_number == phone)
-                guardian = guardian_query.order_by(Guardian.id.asc()).first()
-        guardian_id = guardian.id if guardian else None
+    role = canonical_role(getattr(actor, "rol", None))
+    is_me_route = request.path.endswith("/me/family-context")
+    self_scoped = is_me_route or (
+        role in {ROLE_CLIENTE, ROLE_LEAD}
+        and not _is_guardian_tenant_owner(actor, tenant)
+    )
 
-    if not guardian_id:
-        return jsonify({"error": {"code": 400, "message": "guardian_id required"}}), 400
+    if self_scoped:
+        # The authenticated user/guardian link is the only family identity
+        # proof. Never infer or create that link from mutable email/phone data.
+        guardian = (
+            Guardian.query.filter_by(
+                tenant_id=tenant.id,
+                user_id=getattr(actor, "id", None),
+            )
+            .order_by(Guardian.id.asc())
+            .first()
+        )
+        access_scope = "self"
+    else:
+        capability_response = _guardian_capability_response(
+            actor, tenant, EDUCATION_GUARDIANS_READ
+        )
+        if capability_response:
+            return capability_response
+        guardian_id = request.args.get("guardian_id", type=int)
+        if not guardian_id:
+            return _education_access_error(
+                "guardian_id required",
+                400,
+                "education_guardian_id_required",
+                action_hint="provide_guardian_id",
+            )
+        # Bind id and tenant in the same query so a foreign id is never loaded
+        # into the ORM session before the authorization boundary is applied.
+        guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant.id).first()
+        access_scope = "operator"
 
-    guardian = Guardian.query.get(guardian_id)
     if not guardian:
-        return jsonify({"error": {"code": 404, "message": "Guardian not found"}}), 404
-    if tenant_id and guardian.tenant_id != tenant_id:
-        return jsonify({"error": {"code": 403, "message": "Guardian not available for tenant"}}), 403
+        return _education_access_error(
+            "No hay un perfil familiar disponible para esta identidad",
+            404,
+            "education_guardian_profile_unavailable",
+            action_hint="contact_school_staff",
+        )
 
-    relations = StudentGuardianRelation.query.filter_by(guardian_id=guardian_id, status="active").all()
+    relations = (
+        StudentGuardianRelation.query.join(
+            Student, StudentGuardianRelation.student_id == Student.id
+        )
+        .join(School, Student.school_id == School.id)
+        .filter(
+            StudentGuardianRelation.guardian_id == guardian.id,
+            StudentGuardianRelation.status == "active",
+            School.tenant_id == tenant.id,
+        )
+        .all()
+    )
     students = []
     for relation in relations:
         student = relation.student
@@ -1004,8 +1391,28 @@ def get_family_context(current_user, actor_principal=None):
             }
         )
 
+    db.session.add(
+        _guardian_audit_event(
+            tenant_id=tenant.id,
+            actor_user_id=getattr(actor, "id", None),
+            event_type="education.guardian.family_context_read",
+            guardian_id=guardian.id,
+            details={
+                "contract_version": "education.family_context.v2",
+                "access_scope": access_scope,
+                "student_count": len(students),
+                "pii_persisted_in_audit": False,
+            },
+        )
+    )
+    commit_response = _commit_guardian_operation()
+    if commit_response:
+        return commit_response
+
     return jsonify(
         {
+            "contract_version": "education.family_context.v2",
+            "access_scope": access_scope,
             "guardian": {
                 "id": guardian.id,
                 "first_name": guardian.first_name,
@@ -1100,9 +1507,15 @@ def create_school_case(current_user, actor_principal=None):
             user_id=getattr(current_user, "id", None),
         )
     else:
+        municipal_scope = normalize_municipio_ticket_write_scope(
+            {
+                "tenant_id": tenant_id,
+                "municipio_id": tenant_profile.municipio_id,
+            }
+        )
         ticket = MunicipioTicket(
-            tenant_id=tenant_id,
-            municipio_id=tenant_profile.municipio_id,
+            tenant_id=municipal_scope["tenant_id"],
+            municipio_id=municipal_scope["municipio_id"],
             pregunta=pregunta,
             asunto=asunto,
             categoria=f"educacion:{case_type}",

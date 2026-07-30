@@ -25,6 +25,11 @@ from models import (
     db,
 )
 from services.ticket_service import servicio_tickets
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    municipio_ticket_scope_filter,
+    normalize_municipio_ticket_write_scope,
+)
 from utils.time_utils import get_local_now
 
 logger = logging.getLogger(__name__)
@@ -39,9 +44,6 @@ OPEN_STATES = {
     "esperando_agente_en_vivo",
     "waiting_customer",
 }
-PYME_TENANT_TYPES = {"pyme", "commerce"}
-
-
 def _normalize_channel(raw: Optional[str]) -> str:
     if not raw:
         return "omnichannel"
@@ -211,7 +213,7 @@ def _resolve_tenant_profile(payload: Dict[str, Any]) -> Optional[TenantProfile]:
 def _buscar_ticket_abierto(
     tipo_ticket: str,
     user: User,
-    tenant_id: Optional[int],
+    tenant: Optional[TenantProfile],
     rubro_id: Optional[int] = None,
 ) -> Optional[MunicipioTicket | PymeTicket]:
     if tipo_ticket == "pyme":
@@ -219,8 +221,8 @@ def _buscar_ticket_abierto(
         if user.anon_id:
             filters.append(PymeTicket.anon_id == user.anon_id)
         query = PymeTicket.query.filter(or_(*filters))
-        if tenant_id:
-            query = query.filter(PymeTicket.tenant_id == tenant_id)
+        if tenant:
+            query = query.filter(PymeTicket.tenant_id == tenant.id)
         elif rubro_id:
             query = query.filter(PymeTicket.rubro_id == rubro_id)
         return (
@@ -233,8 +235,8 @@ def _buscar_ticket_abierto(
     if user.anon_id:
         filters.append(MunicipioTicket.anon_id == user.anon_id)
     query = MunicipioTicket.query.filter(or_(*filters))
-    if tenant_id:
-        query = query.filter(MunicipioTicket.municipio_id == tenant_id)
+    if tenant:
+        query = query.filter(municipio_ticket_scope_filter(tenant))
     return (
         query.filter(MunicipioTicket.estado.in_(OPEN_STATES))
         .order_by(MunicipioTicket.fecha.desc())
@@ -526,11 +528,19 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
     if tipo_ticket not in {"municipio", "pyme"}:
         return {"exito": False, "motivo": "tipo_ticket_invalido"}
 
-    tenant = _resolve_tenant_profile(payload) if tipo_ticket in PYME_TENANT_TYPES else None
+    tenant = _resolve_tenant_profile(payload)
+    municipio_scope: dict[str, Any] | None = None
     if tipo_ticket == "municipio":
-        tenant_id = _as_int(payload.get("tenant_id") or payload.get("municipio_id"))
-    else:
-        tenant_id = tenant.id if tenant else None
+        try:
+            municipio_scope = normalize_municipio_ticket_write_scope(
+                {
+                    "tenant_id": payload.get("tenant_id"),
+                    "municipio_id": payload.get("municipio_id") or payload.get("owner_id"),
+                }
+            )
+        except TicketTenantScopeError as exc:
+            return {"exito": False, "motivo": exc.code}
+        tenant = db.session.get(TenantProfile, municipio_scope["tenant_id"])
     rubro_id = _as_int(payload.get("rubro_id"))
     contacto = _contact_from_payload(payload)
     mensaje = (payload.get("mensaje") or payload.get("transcripcion") or "").strip()
@@ -550,7 +560,7 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
             mensaje=mensaje,
         )
 
-    ticket_existente = _buscar_ticket_abierto(tipo_ticket, user, tenant_id, rubro_id)
+    ticket_existente = _buscar_ticket_abierto(tipo_ticket, user, tenant, rubro_id)
     nuevo_ticket = False
 
     if not ticket_existente:
@@ -565,8 +575,12 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
             "telefono_vecino": contacto.get("telefono") or contacto.get("phone"),
             "email_vecino": contacto.get("email"),
             "nombre_vecino": contacto.get("nombre") or contacto.get("name"),
-            "municipio_id": tenant_id if tipo_ticket == "municipio" else None,
-            "tenant_id": tenant_id if tipo_ticket == "pyme" else None,
+            "municipio_id": municipio_scope["municipio_id"] if municipio_scope else None,
+            "tenant_id": (
+                municipio_scope["tenant_id"]
+                if municipio_scope
+                else (tenant.id if tenant else None)
+            ),
             "rubro_id": rubro_id if tipo_ticket == "pyme" else None,
             "pyme_id": payload.get("pyme_id"),
         }

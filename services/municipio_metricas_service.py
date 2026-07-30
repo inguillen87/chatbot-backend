@@ -1,31 +1,53 @@
-from models import db, MunicipioTicket
+from models import db, MunicipioTicket, TenantProfile
+from services.tenant_ticket_scope import (
+    municipio_ticket_scope_filter,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+    tenant_owner_ids,
+)
 
 class MunicipioMetricasService:
-    def __init__(self, municipio_id: int):
+    def __init__(self, municipio_id: int, *, tenant_id: int | None = None):
         self.municipio_id = municipio_id
+        self.tenant = self._resolve_tenant(tenant_id)
+
+    def _resolve_tenant(self, tenant_id: int | None) -> TenantProfile | None:
+        try:
+            owner_id = int(self.municipio_id)
+        except (TypeError, ValueError):
+            return None
+        if tenant_id is not None:
+            try:
+                tenant = db.session.get(TenantProfile, int(tenant_id))
+            except (TypeError, ValueError):
+                return None
+            return tenant if tenant is not None and owner_id in tenant_owner_ids(tenant) else None
+        try:
+            resolution = resolve_unique_tenant_for_owner(owner_id)
+        except ValueError:
+            return None
+        return resolution.tenant if resolution.status == "unique" else None
+
+    def _ticket_query(self):
+        return scoped_municipio_ticket_query(self.tenant)
 
     def get_total_tickets(self) -> int:
         """Número total de tickets para el municipio."""
-        return (
-            MunicipioTicket.query.filter_by(municipio_id=self.municipio_id).count()
-        )
+        return self._ticket_query().count()
 
     def get_open_tickets(self) -> int:
         """Tickets que no están cerrados."""
         return (
-            MunicipioTicket.query
-            .filter(
-                MunicipioTicket.municipio_id == self.municipio_id,
-                MunicipioTicket.estado != 'cerrado'
-            )
+            self._ticket_query()
+            .filter(MunicipioTicket.estado != 'cerrado')
             .count()
         )
 
     def get_closed_tickets(self) -> int:
         """Tickets cerrados."""
         return (
-            MunicipioTicket.query
-            .filter_by(municipio_id=self.municipio_id, estado='cerrado')
+            self._ticket_query()
+            .filter(MunicipioTicket.estado == 'cerrado')
             .count()
         )
 
@@ -34,7 +56,7 @@ class MunicipioMetricasService:
         return (
             db.session.query(db.func.count(db.func.distinct(MunicipioTicket.user_id)))
             .filter(
-                MunicipioTicket.municipio_id == self.municipio_id,
+                municipio_ticket_scope_filter(self.tenant),
                 MunicipioTicket.user_id.isnot(None)
             )
             .scalar()

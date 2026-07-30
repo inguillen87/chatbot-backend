@@ -77,6 +77,322 @@ SURVEY_AI_ADVISORY_POLICY = {
     "python_handlers_remain_authority": True,
     "requires_operator_confirmation": True,
 }
+PUBLIC_SMALL_CELL_CONTRACT_VERSION = "surveys.public_small_cell.v1"
+PUBLIC_SMALL_CELL_DEFAULT_MINIMUM = 5
+
+
+def _public_small_cell_minimum() -> int:
+    """Return a bounded k-anonymity floor for public source-anonymous results."""
+
+    raw = os.environ.get("SURVEY_PUBLIC_MIN_CELL_SIZE")
+    try:
+        value = int(raw or PUBLIC_SMALL_CELL_DEFAULT_MINIMUM)
+    except (TypeError, ValueError):
+        value = PUBLIC_SMALL_CELL_DEFAULT_MINIMUM
+    return max(3, min(value, 50))
+
+
+def _bounded_public_small_cell_minimum(raw: Any = None) -> int:
+    try:
+        value = int(raw if raw is not None else _public_small_cell_minimum())
+    except (TypeError, ValueError, OverflowError):
+        value = _public_small_cell_minimum()
+    return max(3, min(value, 50))
+
+
+def _has_positive_small_cell(values: Iterable[Any], minimum: int) -> bool:
+    for raw in values:
+        try:
+            value = int(raw or 0)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 0 < value < minimum:
+            return True
+    return False
+
+
+def _public_small_cell_ai_requires_suppression(
+    *,
+    privacy_mode: str,
+    total_responses: Any,
+    questions: Any,
+    timeline: Any,
+    heatmap_cells: Any,
+    minimum_cell_size: Optional[int] = None,
+) -> bool:
+    """Decide before any AI call whether exact public aggregates are private."""
+
+    if str(privacy_mode or "legacy").strip().lower() != "source_anonymous":
+        return False
+    minimum = _bounded_public_small_cell_minimum(minimum_cell_size)
+    if _has_positive_small_cell([total_responses], minimum):
+        return True
+    if isinstance(questions, list):
+        for question in questions:
+            if not isinstance(question, Mapping):
+                continue
+            options = question.get("opciones")
+            if isinstance(options, list) and _has_positive_small_cell(
+                (
+                    option.get("votos", option.get("value"))
+                    for option in options
+                    if isinstance(option, Mapping)
+                ),
+                minimum,
+            ):
+                return True
+    if isinstance(timeline, list) and _has_positive_small_cell(
+        (
+            item.get("total", item.get("respuestas", item.get("value")))
+            for item in timeline
+            if isinstance(item, Mapping)
+        ),
+        minimum,
+    ):
+        return True
+    return isinstance(heatmap_cells, list) and _has_positive_small_cell(
+        (
+            cell.get("count", cell.get("weight", cell.get("w")))
+            for cell in heatmap_cells
+            if isinstance(cell, Mapping)
+        ),
+        minimum,
+    )
+
+
+def _apply_public_small_cell_policy(
+    payload: Dict[str, Any],
+    *,
+    privacy_mode: str,
+    minimum_cell_size: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Redact public aggregates that could isolate source-anonymous people.
+
+    The policy is deliberately conservative. If one option, minute bucket or
+    map cell is below ``k``, the whole corresponding surface is hidden so the
+    omitted value cannot be reconstructed by subtraction. Administrative PII
+    exports remain governed separately by RBAC and audit.
+    """
+
+    normalized_mode = str(privacy_mode or "legacy").strip().lower()
+    enabled = normalized_mode == "source_anonymous"
+    minimum = _bounded_public_small_cell_minimum(minimum_cell_size)
+    privacy_contract: Dict[str, Any] = {
+        "contract_version": PUBLIC_SMALL_CELL_CONTRACT_VERSION,
+        "privacy_mode": normalized_mode,
+        "enabled": enabled,
+        "minimum_cell_size": minimum if enabled else None,
+        "suppressed_surfaces": [],
+        "reason_code": None,
+    }
+    payload["privacy"] = privacy_contract
+    if not enabled:
+        return payload
+
+    try:
+        exact_total = int(payload.get("total_respuestas") or 0)
+    except (TypeError, ValueError, OverflowError):
+        exact_total = 0
+    cohort_suppressed = 0 < exact_total < minimum
+    suppressed_surfaces: list[str] = []
+
+    if cohort_suppressed:
+        original_snapshot = str(payload.get("snapshot_version") or "")
+        original_result_version = str(payload.get("result_version") or "")
+        opaque_seed = (
+            f"{payload.get('encuesta_id')}:{exact_total}:"
+            f"{original_result_version}:{original_snapshot}"
+        )
+        payload["result_version"] = None
+        payload["snapshot_version"] = (
+            "private:" + hashlib.sha256(opaque_seed.encode("utf-8")).hexdigest()[:16]
+        )
+        payload["total_respuestas"] = None
+        payload["total_respuestas_bucket"] = f"<{minimum}"
+        suppressed_surfaces.append("cohort_total")
+
+        empty_state = payload.get("empty_state")
+        if isinstance(empty_state, dict):
+            empty_state.update(
+                {
+                    "is_empty": False,
+                    "title": "Resultados protegidos",
+                    "message": (
+                        "Los resultados detallados se habilitan cuando hay "
+                        f"al menos {minimum} respuestas."
+                    ),
+                    "action_hint": "wait_for_minimum_cell_size",
+                }
+            )
+
+    questions = payload.get("preguntas")
+    any_question_suppressed = False
+    if isinstance(questions, list):
+        for question in questions:
+            if not isinstance(question, dict):
+                continue
+            options = question.get("opciones")
+            options = options if isinstance(options, list) else []
+            question_has_small_cell = cohort_suppressed or _has_positive_small_cell(
+                (
+                    option.get("votos", option.get("value"))
+                    for option in options
+                    if isinstance(option, Mapping)
+                ),
+                minimum,
+            )
+            if not question_has_small_cell:
+                continue
+            any_question_suppressed = True
+            question["total_votos"] = None
+            question["suppressed"] = True
+            question["suppression_reason"] = "minimum_cell_size_not_met"
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                option["value"] = None
+                option["votos"] = None
+                option["porcentaje"] = None
+                option["suppressed"] = True
+        if any_question_suppressed:
+            suppressed_surfaces.append("question_results")
+
+    timeline = payload.get("timeline_minute")
+    timeline_has_small_cell = cohort_suppressed or (
+        isinstance(timeline, list)
+        and _has_positive_small_cell(
+            (
+                item.get("total", item.get("respuestas", item.get("value")))
+                for item in timeline
+                if isinstance(item, Mapping)
+            ),
+            minimum,
+        )
+    )
+    if timeline_has_small_cell:
+        payload["timeline_minute"] = []
+        momentum = payload.get("momentum")
+        if isinstance(momentum, dict):
+            for key in (
+                "last_window",
+                "previous_window",
+                "delta",
+                "last_10m",
+                "previous_10m",
+            ):
+                momentum[key] = None
+            momentum["trend"] = "suppressed"
+            momentum["suppressed"] = True
+        suppressed_surfaces.append("timeline")
+
+    heatmap = payload.get("heatmap")
+    if isinstance(heatmap, dict):
+        cells = heatmap.get("cells")
+        heatmap_has_small_cell = cohort_suppressed or (
+            isinstance(cells, list)
+            and _has_positive_small_cell(
+                (
+                    cell.get("count", cell.get("weight", cell.get("w")))
+                    for cell in cells
+                    if isinstance(cell, Mapping)
+                ),
+                minimum,
+            )
+        )
+        if heatmap_has_small_cell:
+            heatmap["points"] = []
+            heatmap["cells"] = []
+            metadata = heatmap.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+                heatmap["metadata"] = metadata
+            metadata.update(
+                {
+                    "points_count": None,
+                    "cells_count": None,
+                    "raw_points_count": None,
+                    "suppressed": True,
+                    "suppression_reason": "minimum_cell_size_not_met",
+                    "minimum_cell_size": minimum,
+                }
+            )
+            suppressed_surfaces.append("heatmap")
+
+    telemetry = payload.get("live_telemetry")
+    if isinstance(telemetry, dict):
+        recent = telemetry.get("responses_last_hour")
+        recent_is_small = _has_positive_small_cell([recent], minimum)
+        if cohort_suppressed:
+            telemetry["responses_total"] = None
+            telemetry["responses_bucket"] = f"<{minimum}"
+        if timeline_has_small_cell or recent_is_small:
+            telemetry["responses_last_hour"] = None
+            telemetry["participation_per_minute"] = None
+            telemetry["trend"] = "suppressed"
+
+    kpis = payload.get("kpis")
+    if isinstance(kpis, dict):
+        if timeline_has_small_cell or _has_positive_small_cell(
+            [kpis.get("responses_last_hour")], minimum
+        ):
+            kpis["responses_last_hour"] = None
+            kpis["participation_per_minute"] = None
+        if any_question_suppressed:
+            kpis["leader"] = None
+            kpis["leader_label"] = None
+        if "heatmap" in suppressed_surfaces:
+            kpis["heatmap_coverage_cells"] = None
+
+    if suppressed_surfaces:
+        payload["ai_summary"] = (
+            "Los resultados detallados estan protegidos por el umbral minimo "
+            f"de {minimum} participantes por celda."
+        )
+        payload["ai_insights"] = []
+        payload["ai_layers"] = {}
+        payload["operator_recommendations"] = []
+        ai_signal = payload.get("ai_signal")
+        if isinstance(ai_signal, dict):
+            ai_signal.update(
+                {
+                    "mode": "privacy_suppressed",
+                    "summary": {
+                        "text": payload["ai_summary"],
+                        "contains_exact_counts": False,
+                    },
+                    "collection": {"item_count": 0},
+                    "recommended_actions": [],
+                }
+            )
+
+        render_contract = payload.get("render_contract")
+        if isinstance(render_contract, dict):
+            render_contract["privacy_state"] = "minimum_cell_size_not_met"
+            supports = render_contract.get("supports")
+            if isinstance(supports, list):
+                render_contract["supports"] = [
+                    item for item in supports if item != "csv_export"
+                ]
+        ui_actions = payload.get("ui_actions")
+        if isinstance(ui_actions, list):
+            payload["ui_actions"] = [
+                action
+                for action in ui_actions
+                if not (
+                    isinstance(action, Mapping)
+                    and action.get("id") == "export_live_csv"
+                )
+            ]
+
+    privacy_contract["suppressed_surfaces"] = list(
+        dict.fromkeys(suppressed_surfaces)
+    )
+    privacy_contract["reason_code"] = (
+        "minimum_cell_size_not_met" if suppressed_surfaces else None
+    )
+    privacy_contract["detailed_results_suppressed"] = bool(suppressed_surfaces)
+    privacy_contract["cohort_size_disclosed"] = not cohort_suppressed
+    return payload
 
 
 def _survey_analytics_model() -> str:
@@ -3354,82 +3670,108 @@ def calculate_live_results(
         "active_filters": requested_filters,
         "analytics_range": analytics_range,
     }
-    live_ai_items: List[Dict[str, Any]] = []
-    for pregunta in preguntas:
-        if not isinstance(pregunta, dict):
-            continue
-        opciones = pregunta.get("opciones") if isinstance(pregunta.get("opciones"), list) else []
-        for opcion in opciones[:4]:
-            if not isinstance(opcion, dict):
+    privacy_mode = getattr(encuesta, "privacy_mode", "legacy")
+    suppress_ai_for_privacy = _public_small_cell_ai_requires_suppression(
+        privacy_mode=privacy_mode,
+        total_responses=responses_count,
+        questions=preguntas,
+        timeline=timeline,
+        heatmap_cells=heatmap_cells,
+    )
+    if suppress_ai_for_privacy:
+        # Exact small-cell aggregates must never cross the provider boundary.
+        live_ai_insights = {
+            "provider_family": "none",
+            "mode": "privacy_suppressed",
+            "hf_status": {
+                "enabled": False,
+                "reason_code": "minimum_cell_size_not_met",
+            },
+            "summary": {
+                "text": "Resultados protegidos por el umbral minimo de privacidad.",
+                "contains_exact_counts": False,
+            },
+            "collection": {"item_count": 0},
+            "recommended_actions": [],
+        }
+        live_ai_layers = {}
+    else:
+        live_ai_items: List[Dict[str, Any]] = []
+        for pregunta in preguntas:
+            if not isinstance(pregunta, dict):
                 continue
+            opciones = pregunta.get("opciones") if isinstance(pregunta.get("opciones"), list) else []
+            for opcion in opciones[:4]:
+                if not isinstance(opcion, dict):
+                    continue
+                live_ai_items.append(
+                    {
+                        "source": "live_vote",
+                        "text": (
+                            f"{pregunta.get('titulo') or ''} "
+                            f"{opcion.get('label') or opcion.get('texto') or ''} "
+                            f"{opcion.get('votos') or 0} votos {opcion.get('porcentaje') or 0}%"
+                        ),
+                        "category": "encuesta o votacion",
+                        "channel": "public_live_results",
+                        "status": trend,
+                    }
+                )
+        for point in heatmap_points[:120]:
+            if not isinstance(point, Mapping):
+                continue
+            weight = point.get("weight") or point.get("w") or point.get("count") or 1
             live_ai_items.append(
                 {
-                    "source": "live_vote",
-                    "text": (
-                        f"{pregunta.get('titulo') or ''} "
-                        f"{opcion.get('label') or opcion.get('texto') or ''} "
-                        f"{opcion.get('votos') or 0} votos {opcion.get('porcentaje') or 0}%"
+                    "source": "survey",
+                    "text": " ".join(
+                        str(value)
+                        for value in (
+                            "encuesta",
+                            point.get("categoria"),
+                            point.get("barrio"),
+                            point.get("ciudad"),
+                            point.get("provincia"),
+                            point.get("canal"),
+                            weight,
+                        )
+                        if value is not None and value != ""
                     ),
-                    "category": "encuesta o votacion",
-                    "channel": "public_live_results",
-                    "status": trend,
+                    "category": point.get("categoria") or "encuesta o votacion",
+                    "channel": point.get("canal"),
+                    "lat": point.get("lat"),
+                    "lng": point.get("lng"),
+                    "weight": weight,
+                    "status": "active" if responses_count > 0 else "empty",
                 }
             )
-    for point in heatmap_points[:120]:
-        if not isinstance(point, Mapping):
-            continue
-        weight = point.get("weight") or point.get("w") or point.get("count") or 1
-        live_ai_items.append(
-            {
-                "source": "survey",
-                "text": " ".join(
-                    str(value)
-                    for value in (
-                        "encuesta",
-                        point.get("categoria"),
-                        point.get("barrio"),
-                        point.get("ciudad"),
-                        point.get("provincia"),
-                        point.get("canal"),
-                        weight,
-                    )
-                    if value is not None and value != ""
-                ),
-                "category": point.get("categoria") or "encuesta o votacion",
-                "channel": point.get("canal"),
-                "lat": point.get("lat"),
-                "lng": point.get("lng"),
-                "weight": weight,
-                "status": "active" if responses_count > 0 else "empty",
-            }
+        if not live_ai_items:
+            live_ai_items.append(
+                {
+                    "source": "survey_empty_state",
+                    "text": "Encuesta o votacion sin respuestas. Revisar difusion, QR, WhatsApp y canales activos.",
+                    "category": "encuesta o votacion",
+                    "channel": "public_link",
+                    "status": "empty",
+                }
+            )
+        live_ai_insights = build_collection_ai_insights(
+            live_ai_items,
+            domain="survey_live_results",
         )
-    if not live_ai_items:
-        live_ai_items.append(
-            {
-                "source": "survey_empty_state",
-                "text": "Encuesta o votacion sin respuestas. Revisar difusion, QR, WhatsApp y canales activos.",
-                "category": "encuesta o votacion",
-                "channel": "public_link",
-                "status": "empty",
-            }
+        live_ai_layers = build_map_ai_layers(
+            [
+                {
+                    **dict(point),
+                    "source": "survey",
+                    "channel": point.get("canal"),
+                    "weight": point.get("weight") or point.get("w") or point.get("count") or 1,
+                }
+                for point in heatmap_points[:max_points]
+                if isinstance(point, Mapping)
+            ],
+            insights=live_ai_insights,
         )
-    live_ai_insights = build_collection_ai_insights(
-        live_ai_items,
-        domain="survey_live_results",
-    )
-    live_ai_layers = build_map_ai_layers(
-        [
-            {
-                **dict(point),
-                "source": "survey",
-                "channel": point.get("canal"),
-                "weight": point.get("weight") or point.get("w") or point.get("count") or 1,
-            }
-            for point in heatmap_points[:max_points]
-            if isinstance(point, Mapping)
-        ],
-        insights=live_ai_insights,
-    )
     raw_recommendations = live_ai_insights.get("recommended_actions")
     operator_recommendations = [
         {
@@ -3477,7 +3819,7 @@ def calculate_live_results(
         },
     }
 
-    return {
+    payload = {
         "contract_version": "surveys.live_results.v2",
         "result_version": result_version,
         "snapshot_version": snapshot_version,
@@ -3559,3 +3901,7 @@ def calculate_live_results(
         },
         "updated_at": now.isoformat(),
     }
+    return _apply_public_small_cell_policy(
+        payload,
+        privacy_mode=privacy_mode,
+    )

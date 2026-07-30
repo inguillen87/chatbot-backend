@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class NoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing NoActionHandler with data: {action_data}")
+        logger.info("Executing NoActionHandler supplied_fields=%s", sorted(map(str, action_data)))
         # This handler typically does nothing on the backend but acknowledges the LLM's decision.
         # The LLM should have already provided a suitable "message_body".
         return {
@@ -25,7 +25,7 @@ class NoActionHandler(BaseActionHandler):
 
 class SmallTalkActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing SmallTalkActionHandler with data: {action_data}")
+        logger.info("Executing SmallTalkActionHandler supplied_fields=%s", sorted(map(str, action_data)))
         # Similar to NoActionHandler, the primary response comes from the LLM.
         # This handler might log the small talk or perform other minor backend tasks if needed.
         return {
@@ -37,7 +37,7 @@ class SmallTalkActionHandler(BaseActionHandler):
 class ErrorActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Handle error actions returned by the LLM."""
-        logger.error(f"Executing ErrorActionHandler with data: {action_data}")
+        logger.error("Executing ErrorActionHandler supplied_fields=%s", sorted(map(str, action_data)))
         message = action_data.get(
             "message_body_original_llm",
             "No pude procesar tu solicitud"
@@ -50,7 +50,7 @@ class ErrorActionHandler(BaseActionHandler):
 
 class DerivarHumanoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing DerivarHumanoAction with data: {action_data}")
+        logger.info("Executing DerivarHumanoAction supplied_fields=%s", sorted(map(str, action_data)))
 
         reason = action_data.get("razon_derivacion", "El usuario solicitó hablar con un humano.")
         target_entity_type = self.context.get("target_entity_type", "general") # 'municipio' or 'pyme'
@@ -70,7 +70,7 @@ class DerivarHumanoAction(BaseActionHandler):
 
 class ProcesarAdjuntoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ProcesarAdjuntoAction with data: {action_data}")
+        logger.info("Executing ProcesarAdjuntoAction supplied_fields=%s", sorted(map(str, action_data)))
         # This is a generic placeholder. Specific logic would be in municipio/pyme versions
         # or this would call a more detailed document processing service.
 
@@ -86,7 +86,7 @@ class ProcesarAdjuntoAction(BaseActionHandler):
 
 class InformarUsuarioAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing InformarUsuarioAction with data: {action_data}")
+        logger.info("Executing InformarUsuarioAction supplied_fields=%s", sorted(map(str, action_data)))
         message = action_data.get("mensaje_para_mostrar", "Información procesada.")
 
         return {
@@ -98,7 +98,7 @@ class InformarUsuarioAction(BaseActionHandler):
 
 class RegistrarUsuarioActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing RegistrarUsuarioActionHandler with data: {action_data}")
+        logger.info("Executing RegistrarUsuarioActionHandler supplied_fields=%s", sorted(map(str, action_data)))
 
         name = action_data.get("name")
         email = action_data.get("email")
@@ -173,7 +173,7 @@ class RegistrarUsuarioActionHandler(BaseActionHandler):
 
 class FinalizarTramiteActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing FinalizarTramiteActionHandler with data: {action_data}")
+        logger.info("Executing FinalizarTramiteActionHandler supplied_fields=%s", sorted(map(str, action_data)))
 
         CONTEXTO_MUNICIPIO = 'contexto_municipio_v2'
 
@@ -206,7 +206,7 @@ class FinalizarTramiteActionHandler(BaseActionHandler):
 
 class MenuPrincipalActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing MenuPrincipalActionHandler with data: {action_data}")
+        logger.info("Executing MenuPrincipalActionHandler supplied_fields=%s", sorted(map(str, action_data)))
 
         if self.context.get("target_entity_type") == "pyme":
             channel = self.context.get("channel", "web")

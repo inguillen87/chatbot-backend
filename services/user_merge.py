@@ -15,12 +15,17 @@ from models import (
     MarketOrder,
     MunicipioTicket,
     PymeTicket,
+    PublicSurvey,
     PublicSurveyResponse,
     SugerenciaCiudadano,
     TicketComentario,
+    TenantProfile,
     User,
 )
-from services.ticket_service import servicio_tickets
+from services.tenant_ticket_scope import (
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+)
 
 
 def _clean_identity_values(values: Iterable[object]) -> list[str]:
@@ -30,6 +35,43 @@ def _clean_identity_values(values: Iterable[object]) -> list[str]:
         if text and text not in cleaned:
             cleaned.append(text)
     return cleaned
+
+
+def _resolve_merge_tenant(
+    user_obj: User | None,
+    tenant_id: Optional[int],
+) -> TenantProfile | None:
+    if tenant_id is not None:
+        try:
+            return db.session.get(TenantProfile, int(tenant_id))
+        except (TypeError, ValueError):
+            return None
+    explicit_tenant_id = getattr(user_obj, "tenant_id", None) if user_obj is not None else None
+    if explicit_tenant_id:
+        return db.session.get(TenantProfile, explicit_tenant_id)
+    if user_obj is None:
+        return None
+
+    owner_ids = []
+    for raw_owner_id in (
+        getattr(user_obj, "municipio_id", None),
+        getattr(user_obj, "pyme_id", None),
+        getattr(user_obj, "empresa_id", None),
+    ):
+        try:
+            owner_id = int(raw_owner_id)
+        except (TypeError, ValueError):
+            continue
+        if owner_id > 0 and owner_id not in owner_ids:
+            owner_ids.append(owner_id)
+
+    tenant_ids = set()
+    for owner_id in owner_ids:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+        if resolution.status != "unique" or resolution.tenant is None:
+            return None
+        tenant_ids.add(int(resolution.tenant.id))
+    return db.session.get(TenantProfile, tenant_ids.pop()) if len(tenant_ids) == 1 else None
 
 
 def merge_anon_into_user(
@@ -70,6 +112,7 @@ def merge_anon_into_user(
         return stats
 
     user_id: Optional[int]
+    user_obj = user if isinstance(user, User) else None
     if isinstance(user, User):
         user_id = user.id
     elif isinstance(user, int):
@@ -83,39 +126,83 @@ def merge_anon_into_user(
         )
         return stats
 
+    if user_obj is None:
+        user_obj = db.session.get(User, user_id)
+    tenant = _resolve_merge_tenant(user_obj, tenant_id)
+    if tenant is None:
+        current_app.logger.warning(
+            "[merge_anon_into_user] Skipped merge: tenant scope unavailable for user %s",
+            user_id,
+        )
+        return stats
+
     try:
         identity_values = _clean_identity_values([anon_id, *(session_ids or [])])
         contact_keys = _clean_identity_values([f"session:{value}" for value in identity_values])
 
-        stats["tickets"] = servicio_tickets.migrar_tickets_de_anonimo(anon_id, user_id)
+        municipio_ids = [
+            row[0]
+            for row in scoped_municipio_ticket_query(tenant)
+            .filter(MunicipioTicket.anon_id == anon_id)
+            .with_entities(MunicipioTicket.id)
+            .all()
+        ]
+        pyme_ids = [
+            row[0]
+            for row in PymeTicket.query.filter(
+                PymeTicket.tenant_id == tenant.id,
+                PymeTicket.anon_id == anon_id,
+            )
+            .with_entities(PymeTicket.id)
+            .all()
+        ]
 
         stats["municipio_tickets"] = (
-            MunicipioTicket.query.filter_by(anon_id=anon_id)
+            MunicipioTicket.query.filter(MunicipioTicket.id.in_(municipio_ids))
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
         stats["pyme_tickets"] = (
-            PymeTicket.query.filter_by(anon_id=anon_id)
+            PymeTicket.query.filter(PymeTicket.id.in_(pyme_ids))
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
+        stats["tickets"] = stats["municipio_tickets"] + stats["pyme_tickets"]
         stats["ticket_comentarios"] = (
-            TicketComentario.query.filter_by(anon_id=anon_id)
+            TicketComentario.query.filter(
+                TicketComentario.anon_id == anon_id,
+                or_(
+                    TicketComentario.municipio_ticket_id.in_(municipio_ids),
+                    TicketComentario.pyme_ticket_id.in_(pyme_ids),
+                ),
+            )
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
         chat_query = ChatSessionContext.query.filter(
             or_(
                 ChatSessionContext.anon_id == anon_id,
                 ChatSessionContext.chat_session_id.in_(identity_values),
-            )
+            ),
+            ChatSessionContext.tenant_id == tenant.id,
         )
         stats["chat_contexts"] = (
             chat_query.update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
-        stats["sugerencias"] = (
-            SugerenciaCiudadano.query.filter_by(anon_id=anon_id)
-            .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
-        ) or 0
+        stats["sugerencias"] = 0
+        if tenant.municipio_id is not None:
+            stats["sugerencias"] = (
+                SugerenciaCiudadano.query.filter_by(
+                    anon_id=anon_id,
+                    municipio_id=tenant.municipio_id,
+                )
+                .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
+            ) or 0
+        survey_ids = PublicSurvey.query.filter(
+            PublicSurvey.tenant_id == tenant.id
+        ).with_entities(PublicSurvey.id)
         stats["encuestas"] = (
-            PublicSurveyResponse.query.filter_by(anon_id=anon_id)
+            PublicSurveyResponse.query.filter(
+                PublicSurveyResponse.anon_id == anon_id,
+                PublicSurveyResponse.survey_id.in_(survey_ids),
+            )
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
 
@@ -125,8 +212,7 @@ def merge_anon_into_user(
                 MarketCart.contact_key.in_(contact_keys),
             )
         )
-        if tenant_id:
-            cart_query = cart_query.filter(MarketCart.tenant_id == tenant_id)
+        cart_query = cart_query.filter(MarketCart.tenant_id == tenant.id)
         stats["market_carts"] = (
             cart_query.update({"user_id": user_id}, synchronize_session=False)
         ) or 0
@@ -137,8 +223,7 @@ def merge_anon_into_user(
                 MarketOrder.contact_key.in_(contact_keys),
             )
         )
-        if tenant_id:
-            order_query = order_query.filter(MarketOrder.tenant_id == tenant_id)
+        order_query = order_query.filter(MarketOrder.tenant_id == tenant.id)
         stats["market_orders"] = (
             order_query.update({"user_id": user_id}, synchronize_session=False)
         ) or 0

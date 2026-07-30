@@ -42,6 +42,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
         mock_requests_get.assert_called_once_with(
             "http://example.com/audio.ogg",
             auth=("fake_sid", "fake_token"),
+            stream=True,
             timeout=12.0,
         )
         mock_create.assert_called_once()
@@ -210,6 +211,31 @@ class TestAudioTranscriptionService(unittest.TestCase):
         self.assertIsNone(result)
         mock_openai_client.audio.transcriptions.create.assert_not_called()
 
+    @patch("services.audio_transcription_service.requests.get")
+    @patch("services.audio_transcription_service.openai_client")
+    def test_chunked_audio_limit_stops_stream_before_provider_call(
+        self,
+        mock_openai_client,
+        mock_requests_get,
+    ):
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.headers = {}
+        mock_response.iter_content.return_value = [b"123", b"45", b"never-read"]
+        mock_requests_get.return_value = mock_response
+
+        with patch.dict(os.environ, {"STT_MAX_AUDIO_BYTES": "4"}, clear=False):
+            result = transcribe_audio_from_url(
+                "https://media.example.test/private",
+                "audio/webm",
+                "fake_sid",
+                "fake_token",
+            )
+
+        self.assertIsNone(result)
+        mock_response.close.assert_called_once_with()
+        mock_openai_client.audio.transcriptions.create.assert_not_called()
+
     @patch("services.audio_transcription_service.openai_client")
     def test_provider_error_log_does_not_include_exception_body_or_pii(self, mock_openai_client):
         sensitive = "https://media.example.test?token=secret DNI=32877851"
@@ -243,7 +269,7 @@ class TestAudioTranscriptionService(unittest.TestCase):
 
         self.assertEqual(result, "hello world")
         create_kwargs = mock_openai_client.audio.transcriptions.create.call_args.kwargs
-        self.assertEqual(create_kwargs["model"], "gpt-transcribe")
+        self.assertEqual(create_kwargs["model"], "gpt-4o-transcribe")
         self.assertNotIn("language", create_kwargs)
 
     @patch("services.audio_transcription_service.requests.get")

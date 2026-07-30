@@ -7,7 +7,7 @@ import jwt
 
 from app import create_app, db
 from config import TestConfig
-from models import ChatSessionContext, EncEncuesta, EncLink, MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
+from models import ChatSessionContext, DomainEffectOutbox, EncEncuesta, EncLink, MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
 from services.live_chat_access import (
     LIVE_CHAT_TOKEN_AUDIENCE,
     LIVE_CHAT_TOKEN_ISSUER,
@@ -24,6 +24,10 @@ from services.pymes import (
     _resolve_pyme_chat_persistence_ticket_id,
 )
 from services.ticket_service import servicio_tickets
+from services.ticket_domain_effects import (
+    COMMENT_REQUESTER_WHATSAPP_HANDLER,
+    PYME_COMMENT_AGGREGATE,
+)
 from socket_service import (
     disconnect_clerk_session_sockets,
     emit_ticket_assignment_changed,
@@ -495,9 +499,11 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             return_value=stored_comment,
         ), patch("socket_service.socketio.emit") as socket_emit, patch(
             "services.email_service.enviar_email_ticket_novedad"
-        ), patch("services.email_service.enviar_sms_ticket_novedad"), patch(
+        ) as direct_email, patch(
+            "services.email_service.enviar_sms_ticket_novedad"
+        ) as direct_sms, patch(
             "services.email_service.enviar_whatsapp_ticket_novedad"
-        ):
+        ) as direct_whatsapp:
             handle_send_chat_message(
                 {
                     "token": token,
@@ -507,6 +513,10 @@ class LiveChatRoomAccessTest(unittest.TestCase):
                     "message": "Respuesta segura",
                 }
             )
+
+        direct_email.assert_not_called()
+        direct_sms.assert_not_called()
+        direct_whatsapp.assert_not_called()
 
         public_room = build_ticket_room("municipio", self.ticket.id)
         public_events = [
@@ -525,6 +535,94 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         public_chat = next(item for item in public_events if item.args[0] == "new_chat_message")
         self.assertNotIn("user_id", public_chat.args[1]["message"])
         self.assertNotIn("anon_id", public_chat.args[1]["message"])
+
+    def test_pyme_socket_reply_stages_whatsapp_without_direct_provider_send(self):
+        rubro = Rubro(clave="socket-pyme-outbox", nombre="Socket PyME Outbox")
+        pyme_admin = User(
+            name="PyME Socket Admin",
+            email="pyme-socket-admin@example.com",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        pyme_admin.set_password("pass")
+        db.session.add_all([rubro, pyme_admin])
+        db.session.flush()
+        pyme_admin.rubro_id = rubro.id
+        tenant = TenantProfile(
+            slug="socket-pyme-outbox",
+            nombre="Socket PyME Outbox",
+            tipo="pyme",
+            pyme_id=pyme_admin.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        pyme_admin.tenant_id = tenant.id
+        ticket = PymeTicket(
+            tenant_id=tenant.id,
+            pregunta="Consulta por entrega",
+            estado="esperando_agente_en_vivo",
+            nro_ticket=919191,
+            rubro_id=rubro.id,
+            email="pyme-socket-requester@example.com",
+            telefono="+5492613555555",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        self.app.config.update(
+            DOMAIN_EFFECT_OUTBOX_MODE="queue",
+            DOMAIN_EFFECT_OUTBOX_SECRET="socket-comment-outbox-" + ("x" * 32),
+            DOMAIN_EFFECT_OUTBOX_TENANT_IDS=str(tenant.id),
+            DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES=4096,
+            DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS=8,
+            ENABLE_PYME_WHATSAPP_CHAT=True,
+        )
+        token = jwt.encode(
+            {"user_id": pyme_admin.id},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+
+        with patch(
+            "services.email_service.enviar_email_ticket_novedad"
+        ) as direct_email, patch(
+            "services.email_service.enviar_sms_ticket_novedad"
+        ) as direct_sms, patch(
+            "services.email_service.enviar_whatsapp_ticket_novedad"
+        ) as direct_whatsapp, patch(
+            "services.domain_effect_worker.enqueue_domain_effect_dispatch",
+            return_value=True,
+        ) as enqueue_dispatch, patch(
+            "socket_service.socketio.emit"
+        ):
+            handle_send_chat_message(
+                {
+                    "token": token,
+                    "room": build_ticket_room("pyme", ticket.id),
+                    "ticket_id": ticket.id,
+                    "ticket_type": "pyme",
+                    "message": "Tu pedido sale hoy",
+                }
+            )
+
+        direct_email.assert_not_called()
+        direct_sms.assert_not_called()
+        direct_whatsapp.assert_not_called()
+        enqueue_dispatch.assert_called_once_with(tenant_id=tenant.id)
+        rows = DomainEffectOutbox.query.filter_by(
+            tenant_id=tenant.id,
+            aggregate_type=PYME_COMMENT_AGGREGATE,
+        ).all()
+        self.assertEqual(
+            [row.handler_name for row in rows],
+            [
+                "ticket.comment.email.requester.v1",
+                "ticket.comment.sms.requester.v1",
+                COMMENT_REQUESTER_WHATSAPP_HANDLER,
+            ],
+        )
+        self.assertEqual(rows[-1].status, DomainEffectOutbox.STATUS_PENDING)
 
     def test_ticket_status_event_reaches_signed_room_with_sanitized_payload(self):
         room = build_ticket_room("municipio", self.ticket.id)

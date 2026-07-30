@@ -880,14 +880,10 @@ def _set_anon_cookie(resp, anon_id: Optional[str]):
 
 
 def admin_o_empleado_requerido(f):
-    """Permite solo a admins (empresa_id None) o empleados."""
-    @wraps(f)
-    def decorated(user: User, *args, **kwargs):
-        if user.empresa_id is not None and user.rol != "empleado":
-            return jsonify({"error": "Permisos insuficientes"}), 403
-        return f(user, *args, **kwargs)
+    """Compatibility alias for the authoritative authorization decorator."""
+    from utils.auth_helpers import admin_o_empleado_requerido as central_decorator
 
-    return decorated
+    return central_decorator(f)
 
 def anon_o_token_requerido(f):
     """

@@ -131,6 +131,36 @@ def _env_flag(default: bool, *names: str) -> bool:
     return raw_value.strip().lower() in {"1", "true", "t", "yes", "y"}
 
 
+def _env_strict_opt_in(name: str) -> bool:
+    """Parse an explicit rollout opt-in; missing or invalid values stay off."""
+
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return False
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off", ""}:
+        return False
+    _logger.error("[config] Invalid %s; feature remains disabled fail-closed.", name)
+    return False
+
+
+def _env_fail_closed_hold(default: bool, name: str) -> bool:
+    """Parse a deletion hold; invalid values preserve data."""
+
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    _logger.error("[config] Invalid %s; legal hold enabled fail-closed.", name)
+    return True
+
+
 # Backend/Frontend version identifiers exposed through /api/version so admins can
 # double check deployed revisions from the UI without forcing a cache reset.
 DEFAULT_FRONTEND_VERSION = _coalesce_version(
@@ -636,6 +666,16 @@ class Config:
         "ENABLE_DEMO_MODE",
         "FLASK_ENABLE_DEMO_MODE",
     )
+    # Governance-sensitive interview/admission APIs require a deliberate
+    # deployment opt-in after migrations, tenant policy and staging evidence.
+    ENABLE_ASSESSMENT_INTERVIEWS_V1 = _env_strict_opt_in(
+        "ENABLE_ASSESSMENT_INTERVIEWS_V1"
+    )
+    # PSTN Media Streams remain unavailable until the consent/lifecycle
+    # migration and tenant policy have been explicitly enabled.
+    ENABLE_VOICE_CONSENT_LIFECYCLE_V1 = _env_strict_opt_in(
+        "ENABLE_VOICE_CONSENT_LIFECYCLE_V1"
+    )
     # Cookie aislada para los tokens emitidos al widget embebido.  Evita que
     # los tokens de corta duración del widget reemplacen la sesión del panel.
     WIDGET_TOKEN_COOKIE_NAME = os.getenv("WIDGET_TOKEN_COOKIE_NAME", "widget_token")
@@ -681,11 +721,33 @@ class Config:
 
     CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
     CELERY_RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/0")
+    # Socket.IO pub/sub is intentionally configured independently from Celery.
+    # A background process must never assume that a broker used for task
+    # wakeups is also the transport consumed by every web Socket.IO process.
+    CHATBOC_PROCESS_ROLE = os.getenv("CHATBOC_PROCESS_ROLE", "").strip().lower()
+    SOCKETIO_MESSAGE_QUEUE_URL = _env_first(
+        "SOCKETIO_MESSAGE_QUEUE_URL",
+        "SOCKETIO_REDIS_URL",
+        default="",
+    )
+    SOCKETIO_MESSAGE_QUEUE_CHANNEL = os.getenv(
+        "SOCKETIO_MESSAGE_QUEUE_CHANNEL",
+        "chatboc-realtime-v1",
+    ).strip()
+    SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS = float(
+        os.getenv("SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS", "2")
+    )
 
     # Valores por defecto orientados a Zoho; pueden sobrescribirse mediante múltiples alias
-    SMTP_HOST = _env_first("SMTP_HOST", "MAIL_SERVER", "MAIL_HOST", default="smtp.zoho.com")
+    SMTP_HOST = _env_first(
+        "SMTP_HOST",
+        "MAIL_SERVER",
+        "MAIL_HOST",
+        "ZOHO_SMTP_HOST",
+        default="smtp.zoho.com",
+    )
     SMTP_PORT = int(
-        _env_first("SMTP_PORT", "MAIL_PORT", default=str(587))
+        _env_first("SMTP_PORT", "MAIL_PORT", "ZOHO_SMTP_PORT", default=str(587))
     )
     SMTP_USER = _env_first(
         "SMTP_USER",
@@ -693,6 +755,7 @@ class Config:
         "MAIL_USERNAME",
         "MAIL_USER",
         "MAIL_FROM_ADDRESS",
+        "ZOHO_SMTP_USER",
         default="info@chatboc.ar",
     )
     # No se proporciona contraseña por defecto para evitar uso accidental de credenciales personales
@@ -700,15 +763,23 @@ class Config:
         "SMTP_PASSWORD",
         "SMTP_PASS",
         "MAIL_PASSWORD",
+        "ZOHO_SMTP_PASSWORD",
         default="",
     )
     SMTP_USE_TLS = _env_flag(True, "SMTP_USE_TLS", "MAIL_USE_TLS", "SMTP_TLS")
     SMTP_USE_SSL = _env_flag(False, "SMTP_USE_SSL", "MAIL_USE_SSL", "SMTP_SSL")
+    SMTP_REQUIRE_AUTH = _env_flag(True, "SMTP_REQUIRE_AUTH")
+    EMAIL_NOTIFICATIONS_ENABLED = _env_flag(
+        False,
+        "EMAIL_NOTIFICATIONS_ENABLED",
+        "ENABLE_EMAIL_NOTIFICATIONS",
+    )
 
     MAIL_FROM_ADDRESS = _env_first(
         "MAIL_FROM_ADDRESS",
         "MAIL_DEFAULT_SENDER",
         "MAIL_SENDER",
+        "AUTH_EMAIL_FROM",
         default=SMTP_USER if SMTP_USER else "noreply@example.com",
     )
     MAIL_FROM_NAME = _env_first(
@@ -774,6 +845,122 @@ class Config:
     # sender when initiating callbacks.
     TWILIO_VOICE_PHONE_NUMBER = os.getenv("TWILIO_VOICE_PHONE_NUMBER")
     TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
+    # Durable inbound processing is opt-in until the database migration and a
+    # dedicated worker are live.  ``queue`` acknowledges the signed webhook
+    # after the turn is persisted; ``legacy`` keeps the synchronous path.
+    WHATSAPP_INBOUND_DURABILITY_MODE = os.getenv(
+        "WHATSAPP_INBOUND_DURABILITY_MODE",
+        "legacy",
+    ).strip().lower()
+    WHATSAPP_INBOUND_HASH_SECRET = os.getenv("WHATSAPP_INBOUND_HASH_SECRET")
+    # Canonical, tenant-scoped channel identity rollout. ``legacy`` is the
+    # rollback default; deployment manifests opt into ``shadow`` explicitly
+    # and durable queue/voice production modes require ``enforce`` below.
+    CHANNEL_SESSION_IDENTITY_MODE = os.getenv(
+        "CHANNEL_SESSION_IDENTITY_MODE",
+        "legacy",
+    ).strip().lower()
+    CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1 = os.getenv(
+        "CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1"
+    )
+    CHANNEL_SESSION_IDENTITY_VERSION_V1 = os.getenv(
+        "CHANNEL_SESSION_IDENTITY_VERSION_V1",
+        "v1",
+    ).strip().lower()
+    WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES = int(
+        os.getenv("WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES", "65536")
+    )
+    WHATSAPP_INBOUND_LEASE_SECONDS = int(
+        os.getenv("WHATSAPP_INBOUND_LEASE_SECONDS", "180")
+    )
+    WHATSAPP_INBOUND_MAX_ATTEMPTS = int(
+        os.getenv("WHATSAPP_INBOUND_MAX_ATTEMPTS", "8")
+    )
+    WHATSAPP_INBOUND_WORKER_BATCH_SIZE = int(
+        os.getenv("WHATSAPP_INBOUND_WORKER_BATCH_SIZE", "8")
+    )
+    WHATSAPP_INBOUND_WORKER_POLL_SECONDS = float(
+        os.getenv("WHATSAPP_INBOUND_WORKER_POLL_SECONDS", "0.5")
+    )
+    # The database poller is authoritative. Celery may only be used as an
+    # optional low-latency wakeup after the durable commit.
+    WHATSAPP_INBOUND_CELERY_WAKEUP_ENABLED = os.getenv(
+        "WHATSAPP_INBOUND_CELERY_WAKEUP_ENABLED",
+        "false",
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS = int(
+        os.getenv("WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS", "72")
+    )
+    WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE = int(
+        os.getenv("WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE", "200")
+    )
+    WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD = _env_fail_closed_hold(
+        False,
+        "WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD",
+    )
+    # Domain mutations (tickets, comments and orders) must stage every external
+    # effect in the same transaction before this mode can replace legacy direct
+    # sends. Rollout is tenant-canary only until staging evidence proves the
+    # worker, provider credentials and operational reconciliation path.
+    DOMAIN_EFFECT_OUTBOX_MODE = os.getenv(
+        "DOMAIN_EFFECT_OUTBOX_MODE",
+        "legacy",
+    ).strip().lower()
+    DOMAIN_EFFECT_OUTBOX_SECRET = os.getenv("DOMAIN_EFFECT_OUTBOX_SECRET")
+    DOMAIN_EFFECT_OUTBOX_TENANT_IDS = os.getenv(
+        "DOMAIN_EFFECT_OUTBOX_TENANT_IDS",
+        "",
+    ).strip()
+    DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES = int(
+        os.getenv("DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES", "4096")
+    )
+    DOMAIN_EFFECT_OUTBOX_LEASE_SECONDS = int(
+        os.getenv("DOMAIN_EFFECT_OUTBOX_LEASE_SECONDS", "180")
+    )
+    DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS = int(
+        os.getenv("DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS", "8")
+    )
+    DOMAIN_EFFECT_OUTBOX_WORKER_BATCH_SIZE = int(
+        os.getenv("DOMAIN_EFFECT_OUTBOX_WORKER_BATCH_SIZE", "20")
+    )
+    DOMAIN_EFFECT_OUTBOX_WORKER_POLL_SECONDS = float(
+        os.getenv("DOMAIN_EFFECT_OUTBOX_WORKER_POLL_SECONDS", "0.5")
+    )
+    DOMAIN_EFFECT_OUTBOX_CELERY_WAKEUP_ENABLED = _env_flag(
+        False,
+        "DOMAIN_EFFECT_OUTBOX_CELERY_WAKEUP_ENABLED",
+    )
+    # The survey-response outbox is always database-authoritative. These
+    # settings bound the dedicated multi-tenant poller; they do not merge it
+    # with the generic ticket/order effect table.
+    SURVEY_RESPONSE_EFFECT_LEASE_SECONDS = int(
+        os.getenv("SURVEY_RESPONSE_EFFECT_LEASE_SECONDS", "120")
+    )
+    SURVEY_RESPONSE_EFFECT_WORKER_BATCH_SIZE = int(
+        os.getenv("SURVEY_RESPONSE_EFFECT_WORKER_BATCH_SIZE", "50")
+    )
+    SURVEY_RESPONSE_EFFECT_WORKER_MAX_TENANTS_PER_CYCLE = int(
+        os.getenv("SURVEY_RESPONSE_EFFECT_WORKER_MAX_TENANTS_PER_CYCLE", "50")
+    )
+    SURVEY_RESPONSE_EFFECT_WORKER_POLL_SECONDS = float(
+        os.getenv("SURVEY_RESPONSE_EFFECT_WORKER_POLL_SECONDS", "0.5")
+    )
+    # Stable, dedicated key for source-anonymous uniqueness fingerprints.
+    # The version suffix is part of the storage contract; do not silently
+    # rotate this value for an already-published survey generation.
+    SURVEY_IDENTITY_HMAC_SECRET_V1 = os.getenv(
+        "SURVEY_IDENTITY_HMAC_SECRET_V1",
+        "",
+    )
+    # The current SIGEM adapter is a placeholder, not a production transport.
+    # Keep this false until a tenant-bound authenticated integration is added.
+    SIGEM_LIVE_ENABLED = _env_flag(False, "SIGEM_LIVE_ENABLED")
+    WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_SECONDS = float(
+        os.getenv("WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_SECONDS", "12")
+    )
+    WHATSAPP_MEDIA_MAX_BYTES = int(
+        os.getenv("WHATSAPP_MEDIA_MAX_BYTES", str(25 * 1024 * 1024))
+    )
     TWILIO_FALLBACK_VOICE = os.getenv("TWILIO_FALLBACK_VOICE", "Polly.Lupe-Neural")
     TWILIO_FALLBACK_SAY_LANGUAGE = os.getenv("TWILIO_FALLBACK_SAY_LANGUAGE", "es-US")
     TWILIO_GATHER_LANGUAGE = os.getenv("TWILIO_GATHER_LANGUAGE", "es-AR")
@@ -939,6 +1126,10 @@ class Config:
 
     PYME_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("PYME_UMBRAL_SUGERENCIA_REGISTRO", "3"))
     MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO = int(os.getenv("MUNICIPIO_UMBRAL_SUGERENCIA_REGISTRO", "3"))
+    ENABLE_PYME_WHATSAPP_CHAT = _env_flag(
+        True,
+        "ENABLE_PYME_WHATSAPP_CHAT",
+    )
 
     # 5. PUSHER CONFIGURATION
     PUSHER_APP_ID = os.getenv("PUSHER_APP_ID")
@@ -954,6 +1145,12 @@ class Config:
     # resolves an approved tenant/manifest template and only uses this value as
     # an explicit deployment override.
     WELCOME_TEMPLATE_SID = os.getenv("WELCOME_TEMPLATE_SID")
+    # Emergency-only escape hatch. Production stays fail-closed by default;
+    # the tenant registry/manifest is the normal approval authority.
+    WELCOME_TEMPLATE_OVERRIDE_ENABLED = os.getenv(
+        "WELCOME_TEMPLATE_OVERRIDE_ENABLED",
+        "false",
+    ).lower() in ("true", "1", "t", "yes")
     # A checked-in approval snapshot is only a short-lived fallback when the
     # tenant registry is unavailable.  Old snapshots fail closed instead of
     # being treated as permanent proof of provider deliverability.
@@ -1003,6 +1200,292 @@ def validate_runtime_security(config: Any) -> list[str]:
     debug_enabled = bool(getattr(config, "get", lambda *_: None)("DEBUG", False))
     if debug_enabled:
         errors.append("DEBUG=True no está permitido en producción.")
+
+    survey_identity_secret = str(
+        getattr(config, "get", lambda *_: None)(
+            "SURVEY_IDENTITY_HMAC_SECRET_V1",
+            "",
+        )
+        or ""
+    )
+    if survey_identity_secret and len(survey_identity_secret.encode("utf-8")) < 32:
+        errors.append(
+            "SURVEY_IDENTITY_HMAC_SECRET_V1 debe tener al menos 32 bytes cuando se configura."
+        )
+
+    sigem_live_enabled = getattr(config, "get", lambda *_: None)(
+        "SIGEM_LIVE_ENABLED",
+        False,
+    )
+    if sigem_live_enabled is True:
+        errors.append(
+            "SIGEM_LIVE_ENABLED no puede habilitarse hasta instalar un transporte autenticado."
+        )
+    elif sigem_live_enabled is not False and sigem_live_enabled is not None:
+        errors.append("SIGEM_LIVE_ENABLED inválido.")
+
+    durability_mode = str(
+        getattr(config, "get", lambda *_: None)(
+            "WHATSAPP_INBOUND_DURABILITY_MODE",
+            "legacy",
+        )
+        or "legacy"
+    ).strip().lower()
+    if durability_mode not in {"legacy", "queue"}:
+        errors.append("WHATSAPP_INBOUND_DURABILITY_MODE inválido.")
+    session_identity_mode = str(
+        getattr(config, "get", lambda *_: None)(
+            "CHANNEL_SESSION_IDENTITY_MODE",
+            "legacy",
+        )
+        or "legacy"
+    ).strip().lower()
+    if session_identity_mode not in {"legacy", "shadow", "enforce"}:
+        errors.append("CHANNEL_SESSION_IDENTITY_MODE invalido.")
+    session_identity_version = str(
+        getattr(config, "get", lambda *_: None)(
+            "CHANNEL_SESSION_IDENTITY_VERSION_V1",
+            "v1",
+        )
+        or ""
+    ).strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9_.:-]{0,31}", session_identity_version):
+        errors.append("CHANNEL_SESSION_IDENTITY_VERSION_V1 invalida.")
+    dedicated_identity_secret = str(
+        getattr(config, "get", lambda *_: None)(
+            "CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1",
+            "",
+        )
+        or ""
+    )
+    if session_identity_mode == "enforce" and len(
+        dedicated_identity_secret.encode("utf-8")
+    ) < 32:
+        errors.append(
+            "CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1 debe tener al menos 32 bytes en modo enforce."
+        )
+    if session_identity_mode == "shadow":
+        shadow_fallbacks = (
+            dedicated_identity_secret,
+            str(
+                getattr(config, "get", lambda *_: None)(
+                    "WHATSAPP_INBOUND_HASH_SECRET",
+                    "",
+                )
+                or ""
+            ),
+            str(
+                getattr(config, "get", lambda *_: None)("SECRET_KEY", "")
+                or ""
+            ),
+        )
+        if not any(len(value.encode("utf-8")) >= 32 for value in shadow_fallbacks):
+            errors.append(
+                "CHANNEL_SESSION_IDENTITY_MODE=shadow requiere material HMAC durable de al menos 32 bytes."
+            )
+    if durability_mode == "queue" and session_identity_mode != "enforce":
+        errors.append(
+            "WHATSAPP_INBOUND_DURABILITY_MODE=queue requiere CHANNEL_SESSION_IDENTITY_MODE=enforce."
+        )
+    voice_lifecycle_enabled = getattr(config, "get", lambda *_: None)(
+        "ENABLE_VOICE_CONSENT_LIFECYCLE_V1",
+        False,
+    )
+    testing_runtime = bool(
+        getattr(config, "get", lambda *_: None)("TESTING", False)
+    )
+    if (
+        voice_lifecycle_enabled is True
+        and not testing_runtime
+        and session_identity_mode != "enforce"
+    ):
+        errors.append(
+            "ENABLE_VOICE_CONSENT_LIFECYCLE_V1 requiere CHANNEL_SESSION_IDENTITY_MODE=enforce en produccion."
+        )
+
+    if durability_mode == "queue":
+        stream_secret = str(
+            getattr(config, "get", lambda *_: None)(
+                "WHATSAPP_INBOUND_HASH_SECRET",
+                "",
+            )
+            or ""
+        )
+        if len(stream_secret.encode("utf-8")) < 32:
+            errors.append(
+                "WHATSAPP_INBOUND_HASH_SECRET debe tener al menos 32 bytes en modo queue."
+            )
+        queue_bounds = (
+            ("WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES", 1024, 65536, int),
+            ("WHATSAPP_INBOUND_LEASE_SECONDS", 30, 3600, int),
+            ("WHATSAPP_INBOUND_MAX_ATTEMPTS", 1, 32, int),
+            ("WHATSAPP_INBOUND_WORKER_BATCH_SIZE", 1, 100, int),
+            ("WHATSAPP_INBOUND_WORKER_POLL_SECONDS", 0.05, 60.0, float),
+            ("WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS", 0, 720, int),
+            ("WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE", 1, 500, int),
+        )
+        queue_defaults = {
+            "WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS": 72,
+            "WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE": 200,
+        }
+        for key, minimum, maximum, cast in queue_bounds:
+            raw_value = getattr(config, "get", lambda *_: None)(
+                key,
+                queue_defaults.get(key),
+            )
+            try:
+                value = cast(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                errors.append(f"{key} invalido para modo queue.")
+                continue
+            if value < minimum or value > maximum:
+                errors.append(f"{key} fuera de rango para modo queue.")
+        legal_hold = getattr(config, "get", lambda *_: None)(
+            "WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD",
+            False,
+        )
+        if not isinstance(legal_hold, bool):
+            errors.append("WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD invalido para modo queue.")
+
+    domain_effect_mode = str(
+        getattr(config, "get", lambda *_: None)(
+            "DOMAIN_EFFECT_OUTBOX_MODE",
+            "legacy",
+        )
+        or "legacy"
+    ).strip().lower()
+    if domain_effect_mode not in {"legacy", "queue"}:
+        errors.append("DOMAIN_EFFECT_OUTBOX_MODE inválido.")
+    if domain_effect_mode == "queue":
+        domain_effect_secret = str(
+            getattr(config, "get", lambda *_: None)(
+                "DOMAIN_EFFECT_OUTBOX_SECRET",
+                "",
+            )
+            or ""
+        )
+        if len(domain_effect_secret.encode("utf-8")) < 32:
+            errors.append(
+                "DOMAIN_EFFECT_OUTBOX_SECRET debe tener al menos 32 bytes en modo queue."
+            )
+
+        tenant_scope = str(
+            getattr(config, "get", lambda *_: None)(
+                "DOMAIN_EFFECT_OUTBOX_TENANT_IDS",
+                "",
+            )
+            or ""
+        ).strip()
+        tenant_tokens = [token.strip() for token in tenant_scope.split(",") if token.strip()]
+        if not tenant_tokens:
+            errors.append(
+                "DOMAIN_EFFECT_OUTBOX_TENANT_IDS requiere una lista canaria explícita en modo queue."
+            )
+        else:
+            for token in tenant_tokens:
+                try:
+                    tenant_id = int(token)
+                except (TypeError, ValueError):
+                    errors.append("DOMAIN_EFFECT_OUTBOX_TENANT_IDS contiene un tenant inválido.")
+                    break
+                if tenant_id <= 0:
+                    errors.append("DOMAIN_EFFECT_OUTBOX_TENANT_IDS contiene un tenant inválido.")
+                    break
+
+        domain_effect_bounds = (
+            ("DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES", 256, 8192, int, 4096),
+            ("DOMAIN_EFFECT_OUTBOX_LEASE_SECONDS", 30, 3600, int, 180),
+            ("DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS", 1, 32, int, 8),
+            ("DOMAIN_EFFECT_OUTBOX_WORKER_BATCH_SIZE", 1, 100, int, 20),
+            ("DOMAIN_EFFECT_OUTBOX_WORKER_POLL_SECONDS", 0.05, 60.0, float, 0.5),
+        )
+        for key, minimum, maximum, cast, default_value in domain_effect_bounds:
+            raw_value = getattr(config, "get", lambda *_: None)(key, default_value)
+            try:
+                value = cast(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                errors.append(f"{key} invalido para modo queue.")
+                continue
+            if value < minimum or value > maximum:
+                errors.append(f"{key} fuera de rango para modo queue.")
+
+    survey_effect_worker_bounds = (
+        ("SURVEY_RESPONSE_EFFECT_LEASE_SECONDS", 30, 3600, int, 120),
+        ("SURVEY_RESPONSE_EFFECT_WORKER_BATCH_SIZE", 1, 500, int, 50),
+        (
+            "SURVEY_RESPONSE_EFFECT_WORKER_MAX_TENANTS_PER_CYCLE",
+            1,
+            500,
+            int,
+            50,
+        ),
+        (
+            "SURVEY_RESPONSE_EFFECT_WORKER_POLL_SECONDS",
+            0.05,
+            60.0,
+            float,
+            0.5,
+        ),
+    )
+    for key, minimum, maximum, cast, default_value in survey_effect_worker_bounds:
+        raw_value = getattr(config, "get", lambda *_: None)(key, default_value)
+        try:
+            value = cast(raw_value)
+        except (TypeError, ValueError, OverflowError):
+            errors.append(f"{key} invalido para worker de encuestas.")
+            continue
+        if value < minimum or value > maximum:
+            errors.append(f"{key} fuera de rango para worker de encuestas.")
+
+    process_role = str(
+        getattr(config, "get", lambda *_: None)("CHATBOC_PROCESS_ROLE", "")
+        or ""
+    ).strip().lower()
+    socket_queue_url = str(
+        getattr(config, "get", lambda *_: None)(
+            "SOCKETIO_MESSAGE_QUEUE_URL",
+            "",
+        )
+        or ""
+    ).strip()
+    if process_role == "survey-effect-worker" and not socket_queue_url:
+        errors.append(
+            "SOCKETIO_MESSAGE_QUEUE_URL es obligatoria para survey-effect-worker."
+        )
+    if socket_queue_url:
+        parsed_socket_queue = urlparse(socket_queue_url)
+        if parsed_socket_queue.scheme.lower() not in {"redis", "rediss"}:
+            errors.append(
+                "SOCKETIO_MESSAGE_QUEUE_URL debe usar redis:// o rediss://."
+            )
+        if not parsed_socket_queue.hostname:
+            errors.append("SOCKETIO_MESSAGE_QUEUE_URL no contiene un host válido.")
+
+    socket_queue_channel = str(
+        getattr(config, "get", lambda *_: None)(
+            "SOCKETIO_MESSAGE_QUEUE_CHANNEL",
+            "chatboc-realtime-v1",
+        )
+        or ""
+    ).strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}", socket_queue_channel):
+        errors.append("SOCKETIO_MESSAGE_QUEUE_CHANNEL inválido.")
+
+    raw_socket_timeout = getattr(config, "get", lambda *_: None)(
+        "SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS",
+        2,
+    )
+    try:
+        socket_timeout = float(raw_socket_timeout)
+    except (TypeError, ValueError, OverflowError):
+        errors.append(
+            "SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS inválido."
+        )
+    else:
+        if socket_timeout < 0.1 or socket_timeout > 10:
+            errors.append(
+                "SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS fuera de rango."
+            )
 
     return errors
 

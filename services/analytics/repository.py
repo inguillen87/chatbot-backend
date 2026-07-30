@@ -18,6 +18,12 @@ from models import (
     TicketComentario,
     TicketSatisfaccion,
     User,
+    TenantProfile,
+)
+from services.tenant_ticket_scope import (
+    municipio_ticket_scope_filter,
+    resolve_unique_tenant_for_owner,
+    tenant_owner_ids,
 )
 
 from .filters import AnalyticsFilters
@@ -51,13 +57,55 @@ def _apply_bbox(query: Query, model, filters: AnalyticsFilters) -> Query:
     )
 
 
+def _municipio_tenant_for_filters(filters: AnalyticsFilters) -> TenantProfile | None:
+    tenant = None
+    owner_id = tenant_as_int(filters.tenant_id)
+    exact_tenant_id = getattr(filters, "tenant_profile_id", None)
+    if exact_tenant_id is not None:
+        tenant = db.session.get(TenantProfile, exact_tenant_id)
+        if tenant is None or owner_id not in tenant_owner_ids(tenant):
+            tenant = None
+    elif owner_id is not None:
+        try:
+            resolution = resolve_unique_tenant_for_owner(owner_id)
+        except ValueError:
+            resolution = None
+        if resolution is not None and resolution.status == "unique":
+            tenant = resolution.tenant
+    return tenant
+
+
+def _analytics_snapshot_tenant_key(filters: AnalyticsFilters) -> str | None:
+    """Return a legacy snapshot key only when it cannot mix municipal tenants."""
+
+    if filters.scope != "municipio":
+        return filters.tenant_id
+    tenant = _municipio_tenant_for_filters(filters)
+    if tenant is None:
+        return None
+    owners = tenant_owner_ids(tenant)
+    if len(owners) != 1:
+        return None
+    try:
+        resolution = resolve_unique_tenant_for_owner(owners[0])
+    except ValueError:
+        return None
+    if (
+        resolution.status != "unique"
+        or resolution.tenant is None
+        or int(resolution.tenant.id) != int(tenant.id)
+    ):
+        return None
+    return str(owners[0])
+
+
 def municipio_ticket_query(filters: AnalyticsFilters) -> Query:
-    tenant_id = tenant_as_int(filters.tenant_id)
     query = db.session.query(MunicipioTicket)
-    if tenant_id is not None:
-        query = query.filter(MunicipioTicket.municipio_id == tenant_id)
-    else:
-        query = query.filter(MunicipioTicket.municipio_id == filters.tenant_id)
+    tenant = _municipio_tenant_for_filters(filters)
+
+    # ``municipio_ticket_scope_filter(None)`` is deliberately false: invalid,
+    # orphaned and ambiguous legacy owner identifiers never become broad reads.
+    query = query.filter(municipio_ticket_scope_filter(tenant))
 
     query = _apply_date_range(query, MunicipioTicket.fecha, filters)
     query = _apply_bbox(query, MunicipioTicket, filters)
@@ -187,8 +235,11 @@ def load_users(user_ids: Sequence[int]) -> dict[int, User]:
 
 
 def fetch_daily_metrics(filters: AnalyticsFilters, metric: str) -> List[AnalyticsDailyMetric]:
+    tenant_key = _analytics_snapshot_tenant_key(filters)
+    if tenant_key is None:
+        return []
     query = db.session.query(AnalyticsDailyMetric).filter(
-        AnalyticsDailyMetric.tenant_id == filters.tenant_id,
+        AnalyticsDailyMetric.tenant_id == tenant_key,
         AnalyticsDailyMetric.scope == filters.scope,
         AnalyticsDailyMetric.metric == metric,
     )
@@ -200,8 +251,11 @@ def fetch_daily_metrics(filters: AnalyticsFilters, metric: str) -> List[Analytic
 
 
 def fetch_geo_cells(filters: AnalyticsFilters) -> List[AnalyticsGeoCell]:
+    tenant_key = _analytics_snapshot_tenant_key(filters)
+    if tenant_key is None:
+        return []
     query = db.session.query(AnalyticsGeoCell).filter(
-        AnalyticsGeoCell.tenant_id == filters.tenant_id,
+        AnalyticsGeoCell.tenant_id == tenant_key,
         AnalyticsGeoCell.scope == filters.scope,
     )
     if filters.date_from:
@@ -212,8 +266,11 @@ def fetch_geo_cells(filters: AnalyticsFilters) -> List[AnalyticsGeoCell]:
 
 
 def fetch_top_metrics(filters: AnalyticsFilters, category: str) -> List[AnalyticsTopMetric]:
+    tenant_key = _analytics_snapshot_tenant_key(filters)
+    if tenant_key is None:
+        return []
     query = db.session.query(AnalyticsTopMetric).filter(
-        AnalyticsTopMetric.tenant_id == filters.tenant_id,
+        AnalyticsTopMetric.tenant_id == tenant_key,
         AnalyticsTopMetric.scope == filters.scope,
         AnalyticsTopMetric.category == category,
     )
@@ -225,15 +282,21 @@ def fetch_top_metrics(filters: AnalyticsFilters, category: str) -> List[Analytic
 
 
 def fetch_cohorts(filters: AnalyticsFilters) -> List[AnalyticsCohortMetric]:
+    tenant_key = _analytics_snapshot_tenant_key(filters)
+    if tenant_key is None:
+        return []
     query = db.session.query(AnalyticsCohortMetric).filter(
-        AnalyticsCohortMetric.tenant_id == filters.tenant_id
+        AnalyticsCohortMetric.tenant_id == tenant_key
     )
     return query.order_by(AnalyticsCohortMetric.cohort_key.asc()).all()
 
 
 def fetch_whatsapp_templates(filters: AnalyticsFilters) -> List[AnalyticsWhatsappTemplate]:
+    tenant_key = _analytics_snapshot_tenant_key(filters)
+    if tenant_key is None:
+        return []
     query = db.session.query(AnalyticsWhatsappTemplate).filter(
-        AnalyticsWhatsappTemplate.tenant_id == filters.tenant_id
+        AnalyticsWhatsappTemplate.tenant_id == tenant_key
     )
     if filters.date_from:
         query = query.filter(AnalyticsWhatsappTemplate.metric_date >= filters.date_from.date())

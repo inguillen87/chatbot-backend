@@ -21,6 +21,10 @@ from .notifications import (
     enviar_notificacion_whatsapp_con_plantilla,
 )
 from services.notification_dispatcher import notification_dispatcher
+from services.order_idempotency import (
+    existing_order_payload_matches,
+    order_payload_hash,
+)
 from utils.validators import (
     validate_name,
     validate_email_address,
@@ -30,6 +34,10 @@ from utils.validators import (
 from services.pedido_pdf import generar_pdf_nota_pedido
 
 logger = logging.getLogger(__name__)
+
+
+class PedidoIdempotencyConflictError(RuntimeError):
+    """The tenant-scoped key was already bound to another order payload."""
 
 
 class PedidoService:
@@ -63,6 +71,33 @@ class PedidoService:
 
     def _pedido_currency(self, pedido: PymePedido, items: Any = None) -> Optional[str]:
         return self._normalize_currency(getattr(pedido, "moneda", None)) or self._currency_from_items(items)
+
+    @staticmethod
+    def _accept_idempotent_replay(
+        existing: PymePedido,
+        expected_payload_hash: str,
+    ) -> PymePedido:
+        matches, legacy_contract = existing_order_payload_matches(
+            existing,
+            expected_payload_hash,
+        )
+        if not matches:
+            logger.warning(
+                "order_idempotency_payload_conflict tenant_id=%s pedido_id=%s legacy_contract=%s",
+                existing.tenant_id,
+                existing.id,
+                legacy_contract,
+            )
+            raise PedidoIdempotencyConflictError(
+                "The idempotency key is already bound to a different order payload."
+            )
+        logger.info(
+            "order_idempotent_replay tenant_id=%s pedido_id=%s legacy_contract=%s",
+            existing.tenant_id,
+            existing.id,
+            legacy_contract,
+        )
+        return existing
 
     @staticmethod
     def _resolve_pedido_tenant(pedido: PymePedido) -> Optional[TenantProfile]:
@@ -117,7 +152,7 @@ class PedidoService:
             existing.contact_name = pedido.nombre_cliente
             existing.contact_phone = pedido.telefono_cliente
             existing.contact_email = pedido.email_cliente
-            existing.channel = channel or existing.channel or "chat"
+            existing.channel = channel or pedido.channel or existing.channel or "chat"
             existing.total_monetary = pedido.monto_total
             existing.currency = existing_currency
             for index, item in enumerate(existing.items):
@@ -145,7 +180,7 @@ class PedidoService:
             contact_name=pedido.nombre_cliente,
             contact_phone=pedido.telefono_cliente,
             contact_email=pedido.email_cliente,
-            channel=channel or "chat",
+            channel=channel or pedido.channel or "chat",
             total_monetary=pedido.monto_total,
             currency=order_currency,
             external_provider="pyme_pedido",
@@ -201,13 +236,21 @@ class PedidoService:
         self,
         pedido: PymePedido,
         channel: Optional[str] = None,
+        *,
+        commit: bool = True,
     ) -> Optional[MarketOrder]:
         order = self._crear_market_order_desde_pyme(pedido, channel=channel)
-        if order:
+        if order and commit:
             db.session.commit()
         return order
 
-    def sync_order_model_from_pyme(self, pedido: PymePedido, channel: Optional[str] = None):
+    def sync_order_model_from_pyme(
+        self,
+        pedido: PymePedido,
+        channel: Optional[str] = None,
+        *,
+        commit: bool = True,
+    ):
         """
         Creates or updates an Order record (new model) from a PymePedido (legacy model).
         This ensures orders appear in the new Admin Panel.
@@ -234,6 +277,10 @@ class PedidoService:
         if existing_order:
             if source_currency and existing_order.currency != source_currency:
                 existing_order.currency = source_currency
+            persisted_channel = channel or pedido.channel
+            if persisted_channel and existing_order.channel != persisted_channel:
+                existing_order.channel = persisted_channel
+            if commit:
                 db.session.commit()
             return existing_order
 
@@ -246,7 +293,7 @@ class PedidoService:
             buyer_email=pedido.email_cliente,
             buyer_phone=pedido.telefono_cliente,
             status=pedido.estado or 'created',
-            channel=channel or 'whatsapp', # Default to whatsapp/chat as PymePedido usually comes from there
+            channel=channel or pedido.channel or 'whatsapp',
             currency=source_currency or "ARS",
             total=pedido.monto_total or 0,
             subtotal=pedido.monto_total or 0, # Assuming no separate tax/shipping yet in legacy
@@ -281,13 +328,16 @@ class PedidoService:
             new_order.items.append(order_item)
 
         db.session.add(new_order)
-        db.session.commit()
-        logger.info(f"Synced PymePedido {pedido.nro_pedido} to Order model.")
+        if commit:
+            db.session.commit()
+        logger.info("Order projection synchronized pedido_id=%s", pedido.id)
         return new_order
 
     def crear_nuevo_pedido(self, pedido_data: dict) -> PymePedido | None:
         tenant_id = None
         idempotency_key = None
+        expected_payload_hash = None
+        effects_queued = False
         try:
             pyme_id = pedido_data.get("pyme_id")
             if not pyme_id:
@@ -313,19 +363,22 @@ class PedidoService:
                 if not tenant_id:
                     logger.error("tenant_id es requerido para aplicar idempotencia a pedidos")
                     return None
-                existing = PymePedido.query.filter_by(
-                    tenant_id=tenant_id,
-                    idempotency_key=idempotency_key,
-                ).first()
-                if existing:
-                    logger.info(f"Pedido idempotente encontrado: {existing.nro_pedido}")
-                    return existing
+
+            rubro = str(pedido_data.get("rubro") or "").strip()
+            if not rubro or len(rubro) > 100:
+                logger.error("Rubro de pedido ausente o inválido")
+                return None
+            raw_channel = pedido_data.get("channel")
+            channel = str(raw_channel or "").strip() or None
+            if channel and len(channel) > 50:
+                logger.error("Canal de pedido excede 50 caracteres")
+                return None
 
             # Validar datos básicos
             if (
                 not pedido_data.get("asunto")
                 or not pedido_data.get("detalles")
-                or not pedido_data.get("rubro")
+                or not rubro
             ):
                 logger.error(
                     "Datos mínimos faltantes para crear pedido: asunto, detalles o rubro."
@@ -365,6 +418,25 @@ class PedidoService:
                     currency_items = []
                 currency = self._currency_from_items(currency_items)
 
+            if idempotency_key:
+                expected_payload_hash = order_payload_hash(
+                    {
+                        **pedido_data,
+                        "tenant_id": tenant_id,
+                        "pyme_id": pyme_id,
+                        "moneda": currency,
+                    }
+                )
+                existing = PymePedido.query.filter_by(
+                    tenant_id=tenant_id,
+                    idempotency_key=idempotency_key,
+                ).first()
+                if existing:
+                    return self._accept_idempotent_replay(
+                        existing,
+                        expected_payload_hash,
+                    )
+
             nuevo_pedido = PymePedido(
                 pyme_id=pyme_id,
                 tenant_id=tenant_id,
@@ -380,17 +452,67 @@ class PedidoService:
                 latitud=pedido_data.get("latitud"),
                 longitud=pedido_data.get("longitud"),
                 idempotency_key=idempotency_key,
-                channel=pedido_data.get("channel"), # Optional, ignored by current __init__ if not added, but safe if added to __init__
+                idempotency_payload_hash=expected_payload_hash,
+                channel=channel,
+                rubro=rubro,
             )
-            if pedido_data.get("rubro"):
-                nuevo_pedido.rubro = pedido_data.get("rubro")
             if pedido_data.get("estado"):
                 nuevo_pedido.estado = str(pedido_data.get("estado")).strip()
             db.session.add(nuevo_pedido)
+            db.session.flush()
+
+            # A canary tenant persists every external notification intent in
+            # the same transaction as the order.  Any staging/configuration
+            # failure rolls the order back instead of falling through to the
+            # direct sender and creating an unaudited dual-delivery path.
+            try:
+                from flask import has_app_context
+
+                if has_app_context():
+                    from services.order_domain_effects import (
+                        stage_order_created_effects,
+                    )
+
+                    effects_queued = stage_order_created_effects(
+                        nuevo_pedido,
+                        expected_owner_id=pyme_id,
+                        session=db.session,
+                    )
+            except Exception:
+                db.session.rollback()
+                logger.exception(
+                    "Order effect staging failed tenant_id=%s pyme_id=%s",
+                    tenant_id,
+                    pyme_id,
+                )
+                raise
+
+            # Queue-canary orders materialize both internal CRM projections in
+            # the same database transaction as PymePedido and its outbox
+            # intents.  These helpers must not commit independently here: a
+            # projection failure rolls the complete unit back.
+            if effects_queued:
+                canonical_projection = self.sync_order_model_from_pyme(
+                    nuevo_pedido,
+                    channel=channel,
+                    commit=False,
+                )
+                market_projection = self.sync_market_order_from_pyme(
+                    nuevo_pedido,
+                    channel=channel,
+                    commit=False,
+                )
+                if canonical_projection is None or market_projection is None:
+                    raise RuntimeError("order_projection_staging_failed")
+                db.session.flush()
+
             db.session.commit()
-            rubro_log = pedido_data.get("rubro") or getattr(nuevo_pedido, "rubro", None)
             logger.info(
-                f"Nuevo pedido '{nuevo_pedido.nro_pedido}' creado para rubro '{rubro_log}' por cliente '{nuevo_pedido.nombre_cliente}'"
+                "order_created pedido_id=%s tenant_id=%s pyme_id=%s idempotency_bound=%s",
+                nuevo_pedido.id,
+                nuevo_pedido.tenant_id,
+                nuevo_pedido.pyme_id,
+                bool(nuevo_pedido.idempotency_payload_hash),
             )
             pyme_owner: Optional[User] = None
             empresa_info = None
@@ -419,56 +541,117 @@ class PedidoService:
             nuevo_pedido._nota_pedido_pdf_bytes = pdf_bytes  # type: ignore[attr-defined]
             nuevo_pedido._empresa_info_pdf = empresa_info  # type: ignore[attr-defined]
 
-            # Dispatch all notifications via hardened service
-            try:
-                notification_dispatcher.dispatch_order_created(nuevo_pedido, pdf_bytes=pdf_bytes)
-            except Exception as e:
-                logger.error(f"Error dispatching notifications for order {nuevo_pedido.nro_pedido}: {e}", exc_info=True)
-
-            # Sync to new Order model (for Admin Panel compatibility)
-            try:
-                self.sync_order_model_from_pyme(nuevo_pedido, channel=pedido_data.get("channel"))
-            except Exception as e:
-                logger.error(f"Error syncing to Order model for {nuevo_pedido.nro_pedido}: {e}", exc_info=True)
-                # Non-blocking, proceed
-
-            try:
-                self.sync_market_order_from_pyme(
-                    nuevo_pedido,
-                    channel=pedido_data.get("channel"),
+            if effects_queued:
+                logger.info(
+                    "Order external effects queued pedido_id=%s tenant_id=%s",
+                    nuevo_pedido.id,
+                    nuevo_pedido.tenant_id,
                 )
-            except Exception as e:
-                # Do NOT rollback here just for market sync failure, as PymePedido is already committed?
-                # Actually, logic above does commit. But if this block fails, we shouldn't rollback the PymePedido
-                # unless we want all-or-nothing. Given PymePedido is committed lines above, we can't easily rollback
-                # without a nested transaction or manual deletion.
-                # However, the original code had a rollback here which might be risky if already committed.
-                # 'db.session.commit()' was called at line 147. So 'db.session.rollback()' here does nothing
-                # to the committed transaction, it only rolls back the *current* flushing of MarketOrder if it failed.
-                logger.error(
-                    "Error creando MarketOrder para pedido %s: %s",
-                    nuevo_pedido.nro_pedido,
-                    e,
-                    exc_info=True,
-                )
+                # The database poller remains authoritative.  Celery only
+                # wakes it after commit; broker failure cannot authorize a
+                # fallback to direct sends or duplicate a provider call.
+                try:
+                    from services.domain_effect_worker import (
+                        enqueue_domain_effect_dispatch,
+                    )
+
+                    enqueue_domain_effect_dispatch(
+                        tenant_id=int(nuevo_pedido.tenant_id),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Order effect wakeup failed pedido_id=%s tenant_id=%s error_type=%s",
+                        nuevo_pedido.id,
+                        nuevo_pedido.tenant_id,
+                        type(exc).__name__,
+                    )
+            else:
+                # Preserve the direct legacy dispatcher exactly for tenants
+                # outside the explicit queue canary.
+                try:
+                    notification_dispatcher.dispatch_order_created(
+                        nuevo_pedido,
+                        pdf_bytes=pdf_bytes,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Error dispatching notifications for order %s error_type=%s",
+                        nuevo_pedido.nro_pedido,
+                        type(e).__name__,
+                        exc_info=True,
+                    )
+
+            # Legacy tenants keep the existing best-effort, post-commit CRM
+            # projection behavior. Canary projections were already committed
+            # atomically above and must not be materialized a second time.
+            if not effects_queued:
+                try:
+                    self.sync_order_model_from_pyme(
+                        nuevo_pedido,
+                        channel=channel,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Error syncing Order projection pedido_id=%s error_type=%s",
+                        nuevo_pedido.id,
+                        type(e).__name__,
+                        exc_info=True,
+                    )
+
+                try:
+                    self.sync_market_order_from_pyme(
+                        nuevo_pedido,
+                        channel=channel,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "Error syncing MarketOrder projection pedido_id=%s error_type=%s",
+                        nuevo_pedido.id,
+                        type(e).__name__,
+                        exc_info=True,
+                    )
             return nuevo_pedido
         except IntegrityError as e:
             db.session.rollback()
-            if tenant_id and idempotency_key:
+            if tenant_id and idempotency_key and expected_payload_hash:
                 existing = PymePedido.query.filter_by(
                     tenant_id=tenant_id,
                     idempotency_key=idempotency_key,
                 ).first()
                 if existing:
-                    logger.info("Pedido idempotente recuperado tras carrera: %s", existing.nro_pedido)
-                    return existing
-            logger.error("Conflicto de integridad creando pedido: %s", e, exc_info=True)
+                    try:
+                        replay = self._accept_idempotent_replay(
+                            existing,
+                            expected_payload_hash,
+                        )
+                    except PedidoIdempotencyConflictError:
+                        logger.warning(
+                            "order_idempotency_race_conflict tenant_id=%s pedido_id=%s",
+                            tenant_id,
+                            existing.id,
+                        )
+                        return None
+                    logger.info(
+                        "order_idempotent_race_replay tenant_id=%s pedido_id=%s",
+                        tenant_id,
+                        existing.id,
+                    )
+                    return replay
+            logger.error(
+                "order_creation_integrity_conflict error_type=%s",
+                type(e).__name__,
+            )
+            return None
+        except PedidoIdempotencyConflictError:
+            db.session.rollback()
             return None
         except Exception as e:
             db.session.rollback()
             logger.error(
-                f"Error al crear nuevo pedido: {e}", exc_info=True
-            )  # exc_info=True para ver el traceback
+                "Error al crear nuevo pedido error_type=%s",
+                type(e).__name__,
+                exc_info=True,
+            )
             return None
 
     def obtener_pedido_por_nro(
@@ -896,28 +1079,29 @@ class PedidoService:
         # (reutilizando lógica de crear_nuevo_pedido si es aplicable o añadiendo aquí)
         nombre = pedido_data.get("nombre_cliente")
         if nombre and not validate_name(nombre):
-            logger.error(f"Nombre de cliente inválido para pedido desde carrito: {nombre}")
+            logger.error("Nombre de cliente inválido para pedido desde carrito")
             return None
 
         email = pedido_data.get("email_cliente")
         if email and not validate_email_address(email):
-            logger.error(f"Email de cliente inválido para pedido desde carrito: {email}")
+            logger.error("Email de cliente inválido para pedido desde carrito")
             return None
 
         telefono = pedido_data.get("telefono_cliente")
         if telefono:
             telefono_normalizado = normalize_phone(telefono)
             if not telefono_normalizado:
-                logger.error(f"Teléfono de cliente inválido para pedido desde carrito: {telefono}")
+                logger.error("Teléfono de cliente inválido para pedido desde carrito")
                 return None
             pedido_data["telefono_cliente"] = telefono_normalizado
 
         direccion = pedido_data.get("direccion")
         if direccion and not validate_address(direccion):
-            logger.error(f"Dirección inválida para pedido desde carrito: {direccion}")
+            logger.error("Dirección inválida para pedido desde carrito")
             return None
 
         try:
+            effects_queued = False
             # Crear el objeto PymePedido
             # El constructor de PymePedido ya maneja _generate_nro_pedido
             pyme_id = pedido_data.get("pyme_id") or pyme_id
@@ -954,20 +1138,69 @@ class PedidoService:
                 nuevo_pedido_obj.rubro = pedido_data.get("rubro")
 
             db.session.add(nuevo_pedido_obj)
+            db.session.flush()
+            try:
+                from flask import has_app_context
+
+                if has_app_context():
+                    from services.order_domain_effects import (
+                        stage_order_created_effects,
+                    )
+
+                    effects_queued = stage_order_created_effects(
+                        nuevo_pedido_obj,
+                        expected_owner_id=pyme_id,
+                        session=db.session,
+                    )
+            except Exception:
+                db.session.rollback()
+                logger.exception(
+                    "Cart order effect staging failed tenant_id=%s pyme_id=%s",
+                    tenant_id,
+                    pyme_id,
+                )
+                raise
             db.session.commit()
 
             logger.info(
-                "Nuevo pedido '%s' creado desde carrito para cliente '%s'. Monto: %s",
-                nuevo_pedido_obj.nro_pedido,
-                cliente_user_id or "anonimo",
-                monto_total_calculado,
+                "order_created_from_cart pedido_id=%s tenant_id=%s authenticated_customer=%s item_count=%s",
+                nuevo_pedido_obj.id,
+                nuevo_pedido_obj.tenant_id,
+                bool(cliente_user_id),
+                len(detalles_pedido_items),
             )
 
-            # Enviar notificaciones (reutilizando la lógica centralizada)
-            try:
-                notification_dispatcher.dispatch_order_created(nuevo_pedido_obj)
-            except Exception as e:
-                logger.error(f"Error dispatching notifications for cart order {nuevo_pedido_obj.nro_pedido}: {e}")
+            if effects_queued:
+                logger.info(
+                    "Cart order external effects queued pedido_id=%s tenant_id=%s",
+                    nuevo_pedido_obj.id,
+                    nuevo_pedido_obj.tenant_id,
+                )
+                try:
+                    from services.domain_effect_worker import (
+                        enqueue_domain_effect_dispatch,
+                    )
+
+                    enqueue_domain_effect_dispatch(
+                        tenant_id=int(nuevo_pedido_obj.tenant_id),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Cart order effect wakeup failed pedido_id=%s tenant_id=%s error_type=%s",
+                        nuevo_pedido_obj.id,
+                        nuevo_pedido_obj.tenant_id,
+                        type(exc).__name__,
+                    )
+            else:
+                # Preserve direct delivery only for non-canary tenants.
+                try:
+                    notification_dispatcher.dispatch_order_created(nuevo_pedido_obj)
+                except Exception as e:
+                    logger.error(
+                        "Error dispatching notifications for cart order %s error_type=%s",
+                        nuevo_pedido_obj.nro_pedido,
+                        type(e).__name__,
+                    )
 
             # Sync to new Order model (for Admin Panel compatibility)
             try:
@@ -980,7 +1213,9 @@ class PedidoService:
         except Exception as e:
             db.session.rollback()
             logger.error(
-                f"Error al crear nuevo pedido desde carrito: {e}", exc_info=True
+                "Error al crear nuevo pedido desde carrito error_type=%s",
+                type(e).__name__,
+                exc_info=True,
             )
             return None
 

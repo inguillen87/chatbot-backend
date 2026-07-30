@@ -395,8 +395,8 @@ def test_outbox_migration_compiles_offline_for_sqlite_and_postgresql(url):
     assert "ALTER TABLE points_transaction DROP COLUMN idempotency_key" in downgrade_sql
 
 
-def test_survey_response_effect_outbox_is_the_single_alembic_head():
+def test_domain_effect_outbox_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["20260728_survey_effect_outbox"]
+    assert heads == ["20260730_voice_consent_v1"]

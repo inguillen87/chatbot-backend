@@ -98,6 +98,25 @@ def test_chatboc_schema_is_strict_at_every_object_boundary():
     _assert_strict(openai_bridge.CHATBOC_RESPONSE_SCHEMA)
 
 
+def test_chatboc_schema_exposes_agent_metadata_requested_by_the_prompt():
+    variants = openai_bridge.CHATBOC_RESPONSE_SCHEMA["properties"][
+        "datos_estructura"
+    ]["anyOf"]
+    expected = {
+        "channel",
+        "intent",
+        "confidence",
+        "missing_fields",
+        "template_intent",
+        "handoff_reason",
+        "priority",
+        "summary",
+    }
+
+    for variant in variants:
+        assert expected <= set(variant["properties"])
+
+
 def test_llamar_openai_uses_responses_strict_contract_and_safe_defaults(monkeypatch):
     fake_client = _inject_client(monkeypatch)
 

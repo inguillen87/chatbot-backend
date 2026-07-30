@@ -1111,7 +1111,8 @@ def test_native_flow_sync_creates_registry_audit_and_is_idempotent(client, app):
     assert response.status_code == 201
     payload = response.get_json()
     assert payload["content_sid"] == "HXnativeflow"
-    assert payload["registry"]["status"] == "pending_approval"
+    assert payload["registry"]["status"] == "approval_pending"
+    assert payload["registry"]["provider_status"] == "pending_approval"
     client_factory.assert_called_once_with("ACmetaops", "tenant-secret")
 
     row = MessageTemplateRegistry.query.filter_by(

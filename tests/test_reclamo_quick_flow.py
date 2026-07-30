@@ -81,6 +81,27 @@ def test_hueco_en_vereda_maps_to_arreglo(owner_user):
     assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
 
 
+def test_free_form_water_outage_bypasses_admin_fuzzy_menu(owner_user):
+    for phrase in ("no tengo agua en mi casa", "sin agua en casa"):
+        result = run_turn(phrase, owner_user=owner_user)
+
+        assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+        flow = result.ctx["reclamo_flow_v2"]
+        assert flow["datos_reclamo"]["categoria"] == "Pérdida de agua"
+        assert "direcci" in result.response["message_body"].lower()
+
+
+def test_water_leak_on_sidewalk_prefers_problem_over_location_word(owner_user):
+    result = run_turn(
+        "hay una perdida de agua en mi vereda",
+        owner_user=owner_user,
+    )
+
+    assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
+    flow = result.ctx["reclamo_flow_v2"]
+    assert flow["datos_reclamo"]["categoria"] == "Pérdida de agua"
+
+
 def test_emoji_shortcut_from_main_menu(owner_user):
     result = run_turn("\U0001F4A1", owner_user=owner_user)
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"

@@ -27,13 +27,23 @@ class TicketPublicEndpointTest(unittest.TestCase):
         user = User(name='Admin', email='admin@example.com', rol='admin', tipo_chat='municipio')
         user.set_password('pass')
         db.session.add(user)
-        db.session.commit()
+        db.session.flush()
         self.user = user
+        self.tenant = TenantProfile(
+            slug='municipio-principal',
+            nombre='Municipio principal',
+            tipo='municipio',
+            municipio_id=user.id,
+        )
+        db.session.add(self.tenant)
+        db.session.flush()
+        user.tenant_id = self.tenant.id
 
         # create sample ticket linked to the user
         ticket = MunicipioTicket(
             nro_ticket='123456',
             municipio_id=user.id,
+            tenant_id=self.tenant.id,
             pregunta='p',
             consulta_pin='654321',
             canal_ingreso='web',
@@ -210,25 +220,18 @@ class TicketPublicEndpointTest(unittest.TestCase):
         db.session.add(other_admin)
         db.session.flush()
 
-        tenant_a = TenantProfile(
-            slug='municipio-a',
-            nombre='Municipio A',
-            tipo='municipio',
-            municipio_id=self.user.id,
-        )
         tenant_b = TenantProfile(
             slug='municipio-b',
             nombre='Municipio B',
             tipo='municipio',
             municipio_id=other_admin.id,
         )
-        db.session.add_all([tenant_a, tenant_b])
+        db.session.add(tenant_b)
         db.session.flush()
-        self.user.tenant_id = tenant_a.id
         other_admin.tenant_id = tenant_b.id
 
         ticket = db.session.get(MunicipioTicket, self.ticket_id)
-        ticket.tenant_id = tenant_a.id
+        ticket.tenant_id = self.tenant.id
         # Conflicting legacy owner data must never override authoritative tenant_id.
         ticket.municipio_id = other_admin.id
         ticket.nombre_vecino = 'Vecina Privada'
@@ -329,6 +332,7 @@ class TicketPublicEndpointTest(unittest.TestCase):
             empresa_id=self.user.id,
             municipio_id=self.user.id,
             es_empleado=True,
+            tenant_id=self.tenant.id,
         )
         employee.set_password('pass')
         db.session.add(employee)

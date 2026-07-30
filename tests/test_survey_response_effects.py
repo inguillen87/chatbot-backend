@@ -287,6 +287,38 @@ class SurveyResponseEffectsTest(unittest.TestCase):
             ),
         )
 
+    def test_worker_realtime_effect_cannot_succeed_without_shared_transport(self):
+        now = datetime(2026, 7, 30, 3, 0, tzinfo=timezone.utc)
+        self.app.config.update(
+            CHATBOC_PROCESS_ROLE="survey-effect-worker",
+            SOCKETIO_MESSAGE_QUEUE_URL="",
+        )
+        self._stage(
+            stage_analytics=False,
+            grant_reward=False,
+            emit_realtime_update=True,
+            now=now,
+        )
+        db.session.commit()
+
+        with patch(
+            "services.encuestas_service.emit_survey_response_update",
+            return_value=True,
+        ) as realtime:
+            result = dispatch_survey_response_effects(now=now)
+
+        effect = SurveyResponseEffect.query.one()
+        self.assertEqual(result["claimed"], 1)
+        self.assertEqual(result["succeeded"], 0)
+        self.assertEqual(result["retry_wait"], 1)
+        self.assertEqual(effect.status, STATUS_RETRY_WAIT)
+        self.assertEqual(
+            effect.last_error,
+            "survey_realtime_shared_transport_not_configured",
+        )
+        self.assertIsNone(effect.result_json)
+        realtime.assert_not_called()
+
     def test_failure_is_sanitized_retried_and_then_succeeds(self):
         first_now = datetime(2026, 7, 28, 16, 0, tzinfo=timezone.utc)
         self._stage(

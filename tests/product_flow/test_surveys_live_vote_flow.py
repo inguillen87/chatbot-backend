@@ -11,7 +11,6 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 from app import create_app, db
 from config import Config
 from models import AnalyticsEventV2, EncRespuesta, TenantProfile, User
-from routes.v2.surveys import _public_response_rate_buckets
 
 
 class ProductFlowSurveyConfig(Config):
@@ -29,7 +28,6 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.ctx = self.app.app_context()
         self.ctx.push()
         db.create_all()
-        _public_response_rate_buckets.clear()
         self.client = self.app.test_client()
 
         self.admin = User(
@@ -56,7 +54,6 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         db.session.commit()
 
     def tearDown(self):
-        _public_response_rate_buckets.clear()
         db.session.remove()
         db.drop_all()
         self.ctx.pop()

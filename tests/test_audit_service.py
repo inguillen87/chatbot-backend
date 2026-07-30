@@ -1,3 +1,4 @@
+import json
 import unittest
 import uuid
 from app import create_app, db
@@ -67,6 +68,14 @@ class TestAuditService(unittest.TestCase):
         self.assertEqual(len(tool_logs), 1)
         self.assertEqual(tool_logs[0].tool_name, "get_weather")
         self.assertEqual(tool_logs[0].is_error, False)
+        self.assertNotIn("Buenos Aires", tool_logs[0].arguments)
+        self.assertNotIn('"temp": 25', tool_logs[0].result)
+        arguments_receipt = json.loads(tool_logs[0].arguments)
+        result_receipt = json.loads(tool_logs[0].result)
+        self.assertTrue(arguments_receipt["redacted"])
+        self.assertTrue(result_receipt["redacted"])
+        self.assertEqual(len(arguments_receipt["sha256"]), 64)
+        self.assertEqual(len(result_receipt["sha256"]), 64)
 
 if __name__ == "__main__":
     unittest.main()

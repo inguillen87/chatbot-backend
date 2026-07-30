@@ -30,6 +30,7 @@ from services.tenant_resolver import (
     apply_tenant_alias,
     resolve_tenant_only,
 )
+from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from socket_service import emit_tenant_update
 from services.plan_access import (
     integration_access_payload,
@@ -452,12 +453,7 @@ def heatmap_tickets(current_user: User, tenant_slug: str):
     start_dt = _parse_date(start)
     end_dt = _parse_date(end)
 
-    query = MunicipioTicket.query.filter(
-        or_(
-            MunicipioTicket.tenant_id == tenant.id,
-            MunicipioTicket.municipio_id == tenant.municipio_id,
-        )
-    )
+    query = scoped_municipio_ticket_query(tenant)
 
     if start_dt:
         query = query.filter(MunicipioTicket.fecha >= start_dt)

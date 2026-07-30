@@ -78,6 +78,7 @@ from services.demo_response_engine import maybe_handle_demo_interaction
 from services.llm_utils import clasificar_entidad_con_llm
 from services.response_formatter import render_audio_text
 from services.constants import CONTEXTO_MUNICIPIO
+from services.source_event_context import bind_source_event_context
 
 # PROMPT_CLASIFICACION_INTENCION y _clasificar_intencion_con_llm han sido eliminados.
 # La clasificación de intención ahora es responsabilidad de llamar_llm_con_fallback con JULES_SYSTEM_PROMPT.
@@ -220,6 +221,22 @@ def responder_chatboc(
         raise ValueError(f"Tipo de chat inválido: {tipo_chat}")
 
     # --- INICIO: Manejo de confusión Pyme/Municipio ---
+    source_context_key = (
+        CONTEXTO_MUNICIPIO if tipo_chat == "municipio" else "contexto_pyme_v2"
+    )
+    source_event_context, source_context_changed = bind_source_event_context(
+        getattr(chat_db_context, "context_data", None),
+        source_context_key,
+        kwargs,
+    )
+    if source_event_context:
+        kwargs.update(source_event_context)
+    if source_context_changed:
+        try:
+            safe_flag_modified(chat_db_context, "context_data")
+        except Exception:  # pragma: no cover - permite contextos livianos en integraciones/tests
+            logger.debug("No se pudo marcar context_data como modificado", exc_info=True)
+
     pregunta_text_check = pregunta if isinstance(pregunta, str) else pregunta.get("pregunta", "")
     pregunta_norm_check = normalizar_texto(pregunta_text_check)
     skip_confusion_check = any(k in pregunta_norm_check for k in ["catalogo", "catálogo", "carrito", "comprar", "pedido", "producto", "precio"])
@@ -254,31 +271,52 @@ def responder_chatboc(
             f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}"
         )
         if uploaded_file_info.get("id"):
-            archivo_id = uploaded_file_info.get("id")
+            try:
+                archivo_id = int(uploaded_file_info.get("id"))
+            except (TypeError, ValueError):
+                archivo_id = None
             current_app.logger.info(
                 f"[LOGIC] Procesando uploaded_file_info para ArchivoAdjunto ID: {archivo_id}"
             )
-            archivo_id_para_asociar_al_ticket = archivo_id
-
-            mime_type = uploaded_file_info.get("mime_type") or uploaded_file_info.get(
-                "mimeType"
-            )
-            mime_type = str(mime_type) if mime_type else ""
-            file_url = uploaded_file_info.get("url")
-
-            archivo_obj = None
-            if archivo_id:
-                archivo_obj = db.session.get(ArchivoAdjunto, archivo_id)
-                if not archivo_obj:
-                    current_app.logger.warning(
-                        "[LOGIC] ArchivoAdjunto ID %s no encontrado en la base de datos.",
-                        archivo_id,
+            archivo_obj = db.session.get(ArchivoAdjunto, archivo_id) if archivo_id else None
+            expected_session_ids = {
+                str(value).strip()
+                for value in (
+                    chat_session_uuid,
+                    getattr(chat_db_context, "chat_session_id", None),
+                    anon_id,
+                )
+                if str(value or "").strip()
+            }
+            current_user_id = getattr(current_user, "id", None)
+            attachment_identity_matches = bool(
+                archivo_obj
+                and (
+                    (current_user_id is not None and archivo_obj.user_id == current_user_id)
+                    or (
+                        current_user_id is None
+                        and archivo_obj.user_id is None
+                        and str(archivo_obj.session_id or "").strip()
+                        in expected_session_ids
                     )
-                else:
-                    if not file_url:
-                        file_url = archivo_obj.url
-                    if not mime_type and archivo_obj.mime:
-                        mime_type = str(archivo_obj.mime)
+                )
+            )
+            if not attachment_identity_matches:
+                current_app.logger.warning(
+                    "[LOGIC] Rejected attachment without matching user/session identity id=%s",
+                    archivo_id,
+                )
+                return {
+                    "message_body": "No pude validar ese archivo de forma segura. Volvé a adjuntarlo en este chat.",
+                    "fuente": "attachment_identity_rejected",
+                }
+
+            archivo_id_para_asociar_al_ticket = archivo_id
+            mime_type = str(archivo_obj.mime or "")
+            file_url = archivo_obj.url
+            uploaded_file_info["url"] = file_url
+            uploaded_file_info["mime_type"] = mime_type
+            uploaded_file_info["name"] = archivo_obj.nombre_original or archivo_obj.filename
 
             if file_url:
                 kwargs.setdefault("es_archivo", True)

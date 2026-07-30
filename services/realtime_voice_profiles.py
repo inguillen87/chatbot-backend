@@ -10,7 +10,7 @@ REALTIME_VOICE_CONTRACT_VERSION = "realtime.voice_capabilities.v1"
 CHATBOC_BOT_AVATAR_CONTRACT_VERSION = "chatboc.avatar.v1"
 DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime-2.1"
 FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime-2.1"
-DEFAULT_REALTIME_TRANSCRIPTION_MODEL = "gpt-live-transcribe"
+DEFAULT_REALTIME_TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
 DEFAULT_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 DEFAULT_REALTIME_TRANSLATION_MODEL = "gpt-realtime-translate"
 DEFAULT_REALTIME_VOICE = "marin"
@@ -90,7 +90,7 @@ def resolve_realtime_input_transcription_model(
 ) -> str:
     """Resolve caption guidance for a speech-to-speech Realtime session.
 
-    This is separate from ``gpt-live-transcribe``, whose GA contract is a
+    This is separate from ``gpt-realtime-whisper``, whose contract is a
     dedicated ``type=transcription`` session.
     """
 
@@ -632,6 +632,28 @@ def build_realtime_voice_capabilities(
     voice = resolve_realtime_voice(cfg, app_config)
     translation_policy = build_multilingual_translation_policy(cfg, app_config)
     avatar_contract = build_chatboc_bot_avatar_contract(cfg, app_config)
+    phone_consent_rollout_enabled = _bool_config(
+        None,
+        app_config,
+        "voice_consent_lifecycle_enabled",
+        "ENABLE_VOICE_CONSENT_LIFECYCLE_V1",
+        default=False,
+    )
+    raw_phone_consent_policy = _get(cfg, "voice_consent_policy")
+    phone_consent_policy_ready = bool(
+        isinstance(raw_phone_consent_policy, Mapping)
+        and str(raw_phone_consent_policy.get("version") or "").strip()
+        and str(raw_phone_consent_policy.get("ai_processing") or "").strip().lower()
+        == "explicit_per_call"
+        and (
+            raw_phone_consent_policy.get("recording") is False
+            or str(raw_phone_consent_policy.get("recording") or "").strip().lower()
+            in {"disabled", "false", "off", "0"}
+        )
+    )
+    phone_consent_gate_enabled = bool(
+        phone_consent_rollout_enabled and phone_consent_policy_ready
+    )
 
     return {
         "contract_version": REALTIME_VOICE_CONTRACT_VERSION,
@@ -671,9 +693,9 @@ def build_realtime_voice_capabilities(
                 or os.environ.get("OPENAI_REALTIME_PHONE_BRIDGE_TRANSPORT")
                 or DEFAULT_PHONE_BRIDGE_TRANSPORT
             ),
-            "legacy_phone_fallback": "twilio_gather_tts",
+            "legacy_phone_fallback": "disabled_until_consent_contract",
             "sip_ready": True,
-            "media_streams_ready": True,
+            "media_streams_ready": phone_consent_gate_enabled,
         },
         "cost_latency_policy": {
             "primary_voice_runtime": "openai_realtime_native_audio",
@@ -695,6 +717,18 @@ def build_realtime_voice_capabilities(
             "whatsapp_followup": True,
             "post_call_receipt": True,
             "human_handoff": True,
+            "phone_ai_audio_consent_required": True,
+            "phone_recording": False,
+        },
+        "phone_consent": {
+            "contract_version": "voice.consent.v1",
+            "rollout_enabled": phone_consent_gate_enabled,
+            "deployment_flag_enabled": phone_consent_rollout_enabled,
+            "tenant_policy_ready": phone_consent_policy_ready,
+            "decision": "explicit_per_call_dtmf",
+            "recording_allowed": False,
+            "recording_enabled": False,
+            "provider_acceptance_is_connection_proof": False,
         },
         "verticals": {
             "municipio": {
@@ -727,7 +761,7 @@ def build_realtime_voice_capabilities(
             "capabilities_endpoint": "/api/public/realtime/voice-capabilities",
             "phone_webhook": "/twilio/voice/inbound",
             "legacy_phone_webhook": "/voice/welcome",
-            "show_call_cta": True,
+            "show_call_cta": phone_consent_gate_enabled,
             "show_captions": True,
             "show_handoff_state": True,
             "show_whatsapp_receipt_state": True,

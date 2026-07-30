@@ -10,11 +10,16 @@ TESTING_MODE = (
     or "pytest" in sys.modules
     or "unittest" in sys.modules
 )
+NON_WEB_PROCESS = os.getenv("CHATBOC_PROCESS_ROLE", "").strip().lower() in {
+    "whatsapp-durable-worker",
+    "domain-effect-worker",
+    "survey-effect-worker",
+}
 os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 
 # Monkey patch must happen before importing any other modules that might use threads/sockets
 # Solo en runtime normal (no migraciones, no testing)
-if not MIGRATIONS_ONLY and not TESTING_MODE:
+if not MIGRATIONS_ONLY and not TESTING_MODE and not NON_WEB_PROCESS:
     import eventlet
     eventlet.monkey_patch()
 import logging
@@ -34,7 +39,11 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.exceptions import HTTPException
 
 # Logging básico del proyecto
-from services.logging_config import setup_logging
+from services.logging_config import (
+    PrivacyRedactionFilter,
+    TruncatingFormatter,
+    setup_logging,
+)
 setup_logging()
 
 
@@ -123,9 +132,13 @@ def _is_public_cross_origin_path(path: str) -> bool:
 # En migraciones NO importamos socket_service ni blueprints
 if not MIGRATIONS_ONLY:
     # SocketIO real
-    from socket_service import socketio  # usa eventlet
+    from socket_service import (  # usa eventlet
+        build_fail_closed_socketio_redis_manager,
+        socketio,
+    )
 else:
     socketio = None  # marcador para evitar usarlo
+    build_fail_closed_socketio_redis_manager = None
 
 # Solo en desarrollo local seteamos credenciales de Google (y no en migraciones)
 if os.environ.get("FLASK_ENV") != "production" and not MIGRATIONS_ONLY:
@@ -430,7 +443,8 @@ def create_app(config_class=Config):
     # Logging de app
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter(
+    handler.addFilter(PrivacyRedactionFilter())
+    handler.setFormatter(TruncatingFormatter(
         "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
         "%Y-%m-%d %H:%M:%S"
     ))
@@ -996,13 +1010,54 @@ def create_app(config_class=Config):
                 "Apply migrations explicitly (e.g. 'flask db upgrade')."
             )
 
-    # Inicializar SocketIO solo en runtime normal
+    # Inicializar SocketIO solo en runtime normal. Web processes subscribe to
+    # the shared Redis channel; the durable survey worker is an external,
+    # write-only publisher so it cannot mistake its own process for a client
+    # delivery boundary.
     if socketio is not None:
-        socketio.init_app(
-            app,
-            cookie={"name": "io", "path": "/", "httponly": True},
-            path="/api/socket.io",
+        socket_queue_url = str(
+            app.config.get("SOCKETIO_MESSAGE_QUEUE_URL") or ""
+        ).strip()
+        socket_channel = str(
+            app.config.get(
+                "SOCKETIO_MESSAGE_QUEUE_CHANNEL",
+                "chatboc-realtime-v1",
+            )
+            or ""
+        ).strip()
+        socket_healthcheck_timeout = float(
+            app.config.get(
+                "SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS",
+                2,
+            )
         )
+        socket_init_kwargs = {
+            "cookie": {"name": "io", "path": "/", "httponly": True},
+            "path": "/api/socket.io",
+        }
+        process_role = str(
+            app.config.get("CHATBOC_PROCESS_ROLE")
+            or os.getenv("CHATBOC_PROCESS_ROLE", "")
+        ).strip().lower()
+        if socket_queue_url and process_role == "survey-effect-worker":
+            socket_init_kwargs["client_manager"] = (
+                build_fail_closed_socketio_redis_manager(
+                    socket_queue_url,
+                    channel=socket_channel,
+                    timeout_seconds=socket_healthcheck_timeout,
+                )
+            )
+        elif socket_queue_url:
+            socket_init_kwargs.update(
+                message_queue=socket_queue_url,
+                channel=socket_channel,
+            )
+        socketio.init_app(
+            None if process_role == "survey-effect-worker" else app,
+            **socket_init_kwargs,
+        )
+        if process_role == "survey-effect-worker":
+            app.extensions["socketio_external_emitter"] = socketio
 
     # Inicializar Flask-Sock
     sock.init_app(app)

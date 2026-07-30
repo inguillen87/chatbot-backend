@@ -381,7 +381,12 @@ class UnclearHandler(BasePymeHandler):
 class FallbackHandler(BasePymeHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         pregunta = action_data.get("pregunta", "")
-        logger.warning(f"[PYME_FALLBACK_HANDLER] Pregunta no manejada: '{pregunta}', Intención: {self.context.get('intencion')}, Estado: {self.pyme_ctx.get('estado_conversacion')}")
+        logger.warning(
+            "[PYME_FALLBACK_HANDLER] Unhandled input length=%s intent=%s state=%s",
+            len(str(pregunta or "")),
+            self.context.get("intencion"),
+            self.pyme_ctx.get("estado_conversacion"),
+        )
 
         search_results = google_search(pregunta)
 
@@ -402,7 +407,10 @@ class FallbackHandler(BasePymeHandler):
 class DerivarHumanoActionHandlerPyme(BasePymeHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Crea un ticket real de chat en vivo y devuelve su identificador."""
-        logger.info(f"Executing DerivarHumanoActionHandlerPyme with data: {action_data}")
+        logger.info(
+            "Executing DerivarHumanoActionHandlerPyme supplied_fields=%s",
+            sorted(map(str, action_data)),
+        )
 
         try:
             viewer_user = self.context.get("viewer_user_obj")

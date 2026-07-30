@@ -9,11 +9,21 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from models import ChatSessionContext, MunicipioTicket, TenantProfile, TicketComentario, User, db
 from services.demo_surveys import build_demo_survey_chat_menu
+from services.tenant_ticket_scope import (
+    municipio_ticket_belongs_to_tenant,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+    tenant_owner_ids,
+)
 from services.ticket_utils import build_claim_tracking_url
 
 
 DEMO_MUNICIPIO_SOURCE = "demo_municipio_runtime"
 DEMO_MUNICIPIO_CHANNEL = "web_demo_widget"
+
+
+class DemoMunicipioTenantScopeError(RuntimeError):
+    pass
 
 
 def _fold(value: Any) -> str:
@@ -32,19 +42,38 @@ def _compact(text: str, *, max_len: int = 240) -> str:
 def _tenant_for_owner(owner_user: User | None) -> TenantProfile | None:
     if not owner_user:
         return None
-    tenant = (
-        getattr(owner_user, "tenant_profile_municipio", None)
-        or getattr(owner_user, "tenant_profile_pyme", None)
-        or getattr(owner_user, "tenant", None)
-    )
-    if tenant:
-        return tenant
+    try:
+        owner_id = int(owner_user.id)
+    except (TypeError, ValueError):
+        return None
+
+    declared = []
+    for candidate in (
+        getattr(owner_user, "tenant_profile_municipio", None),
+        getattr(owner_user, "tenant_profile_pyme", None),
+        getattr(owner_user, "tenant", None),
+    ):
+        candidate_id = getattr(candidate, "id", None)
+        if candidate_id and candidate_id not in {getattr(item, "id", None) for item in declared}:
+            declared.append(candidate)
+    if len(declared) > 1:
+        return None
+
     tenant_id = getattr(owner_user, "tenant_id", None)
     if tenant_id:
-        found = db.session.get(TenantProfile, tenant_id)
-        if found:
-            return found
-    return TenantProfile.query.filter_by(municipio_id=owner_user.id).first()
+        try:
+            found = db.session.get(TenantProfile, int(tenant_id))
+        except (TypeError, ValueError):
+            return None
+        return found if found is not None and owner_id in tenant_owner_ids(found) else None
+    if declared:
+        candidate = declared[0]
+        return candidate if owner_id in tenant_owner_ids(candidate) else None
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+    except ValueError:
+        return None
+    return resolution.tenant if resolution.status == "unique" else None
 
 
 def _location_data(location: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -189,13 +218,20 @@ def _details(ticket: MunicipioTicket) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _last_ticket(runtime: dict[str, Any]) -> MunicipioTicket | None:
+def _last_ticket(
+    runtime: dict[str, Any],
+    tenant: TenantProfile | None,
+) -> MunicipioTicket | None:
     ticket_id = runtime.get("last_ticket_id")
     if not ticket_id:
         ids = runtime.get("ticket_ids") or []
         ticket_id = ids[-1] if ids else None
     try:
-        return db.session.get(MunicipioTicket, int(ticket_id)) if ticket_id else None
+        if not ticket_id or tenant is None:
+            return None
+        return scoped_municipio_ticket_query(tenant).filter(
+            MunicipioTicket.id == int(ticket_id)
+        ).one_or_none()
     except Exception:
         return None
 
@@ -234,13 +270,15 @@ def _upsert_ticket(
     demo_session_payload: dict[str, Any] | None,
 ) -> tuple[MunicipioTicket, bool, dict[str, Any], dict[str, Any] | None]:
     tenant = _tenant_for_owner(owner_user)
+    if tenant is None or getattr(tenant, "municipio_id", None) is None:
+        raise DemoMunicipioTenantScopeError("municipio_tenant_scope_unavailable")
     runtime = _context_runtime(chat_db_context)
     media = _media_data(attachment_info)
     loc = _location_data(location)
     category = str(intent.get("category") or "Reclamo ciudadano")
     priority = str(intent.get("priority") or "Media")
 
-    ticket = _last_ticket(runtime)
+    ticket = _last_ticket(runtime, tenant)
     should_update_last = bool(
         ticket
         and (media or loc)
@@ -256,7 +294,7 @@ def _upsert_ticket(
             estado="nuevo" if loc or media else "pendiente_datos",
             canal_ingreso=DEMO_MUNICIPIO_CHANNEL,
             anon_id=anon_id,
-            municipio_id=getattr(owner_user, "id", None),
+            municipio_id=tenant.municipio_id,
             user_id=getattr(owner_user, "id", None),
             tenant_id=getattr(tenant, "id", None),
         )
@@ -379,9 +417,12 @@ def _response_for_info(question: str) -> dict[str, Any]:
     }
 
 
-def _response_for_status(chat_db_context: ChatSessionContext | None) -> dict[str, Any]:
+def _response_for_status(
+    chat_db_context: ChatSessionContext | None,
+    owner_user: User | None,
+) -> dict[str, Any]:
     runtime = _context_runtime(chat_db_context)
-    ticket = _last_ticket(runtime)
+    ticket = _last_ticket(runtime, _tenant_for_owner(owner_user))
     if not ticket:
         message = "Todavia no tengo un ticket creado en esta demo. Enviame el reclamo, foto o ubicacion y lo creo para seguimiento."
         return {"message_body": message, "respuesta": message, "fuente": DEMO_MUNICIPIO_SOURCE, "actions": []}
@@ -715,7 +756,7 @@ def handle_demo_municipio_message(
     if kind == "info":
         return _response_for_info(question)
     if kind == "status_lookup":
-        return _response_for_status(chat_db_context)
+        return _response_for_status(chat_db_context, owner_user)
     if kind == "tool_lookup":
         return _response_for_tool_lookup(question, chat_db_context)
     if kind == "human_handoff":
@@ -730,15 +771,25 @@ def handle_demo_municipio_message(
     if kind != "claim":
         return None
 
-    ticket, created, details, media = _upsert_ticket(
-        question=question,
-        intent=intent,
-        owner_user=owner_user,
-        anon_id=anon_id,
-        chat_session_id=chat_session_id,
-        chat_db_context=chat_db_context,
-        attachment_info=attachment_info,
-        location=location,
-        demo_session_payload=demo_session_payload,
-    )
+    try:
+        ticket, created, details, media = _upsert_ticket(
+            question=question,
+            intent=intent,
+            owner_user=owner_user,
+            anon_id=anon_id,
+            chat_session_id=chat_session_id,
+            chat_db_context=chat_db_context,
+            attachment_info=attachment_info,
+            location=location,
+            demo_session_payload=demo_session_payload,
+        )
+    except DemoMunicipioTenantScopeError:
+        message = "No pude validar la organizacion de esta demo. Volve a iniciar la sesion."
+        return {
+            "message_body": message,
+            "respuesta": message,
+            "fuente": DEMO_MUNICIPIO_SOURCE,
+            "accion_backend": "demo_tenant_scope_unavailable",
+            "success": False,
+        }
     return _response_for_ticket(ticket, created, details, media)

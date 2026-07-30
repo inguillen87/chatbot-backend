@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class DerivarHumanoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Crea un ticket real de chat en vivo y devuelve su identificador."""
-        logger.info(f"Executing DerivarHumanoAction with data: {action_data}")
+        logger.info("Executing DerivarHumanoAction supplied_fields=%s", sorted(map(str, action_data)))
 
         try:
             viewer_user = self.context.get("viewer_user_obj")
@@ -134,7 +134,7 @@ from services.document_processing_service import DocumentProcessingService
 
 class ProcesarAdjuntoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ProcesarAdjuntoAction with data: {action_data}")
+        logger.info("Executing ProcesarAdjuntoAction supplied_fields=%s", sorted(map(str, action_data)))
 
         archivo_id = self.context.get("archivo_id_para_asociar")
         if not archivo_id:
@@ -176,7 +176,7 @@ class InformarUsuarioAction(BaseActionHandler):
         A simple action that just passes a message through, possibly after some formatting or logging.
         The LLM would use this if it wants to convey information without a specific backend DB change.
         """
-        logger.info(f"Executing InformarUsuarioAction with data: {action_data}")
+        logger.info("Executing InformarUsuarioAction supplied_fields=%s", sorted(map(str, action_data)))
 
         message = action_data.get("mensaje_para_mostrar")
         if not message:
@@ -190,7 +190,10 @@ class InformarUsuarioAction(BaseActionHandler):
 
 class DescargarArchivoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing DescargarArchivoActionHandler with data: {action_data}")
+        logger.info(
+            "Executing DescargarArchivoActionHandler supplied_fields=%s",
+            sorted(map(str, action_data)),
+        )
         nombre_archivo = action_data.get("nombre_archivo")
         if not nombre_archivo:
             return {"success": False, "message_to_user": "No se especificó qué archivo descargar."}

@@ -29,6 +29,12 @@ from models import (
     TenantProfile,
 )
 from services.ticket_service import servicio_tickets
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+)
+from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
 from utils.db_utils import safe_flag_modified
 from utils.response_utils import normalize_response_payload
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
@@ -91,6 +97,7 @@ from services.ticket_utils import (
 )
 from services.vocabulary_loader import get_name_prefix_stopwords
 from .constants import ConversationState, CONTEXTO_MUNICIPIO
+from services.source_event_context import bind_source_event_context
 from config import (
     BACKEND_URL as DEFAULT_BACKEND_URL,
     ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH,
@@ -1286,9 +1293,24 @@ class ReclamoFlowHandler:
             if not isinstance(owner_user_id, (int, str)):
                 owner_user_id = None
 
-            query = MunicipioTicket.query
-            if municipio_id:
-                query = query.filter_by(municipio_id=municipio_id)
+            resolved_tenant = self.context.get("tenant_profile")
+            if resolved_tenant is None and self.context.get("tenant_id"):
+                try:
+                    resolved_tenant = db.session.get(
+                        TenantProfile,
+                        int(self.context.get("tenant_id")),
+                    )
+                except (TypeError, ValueError):
+                    resolved_tenant = None
+            if resolved_tenant is None and owner_user_id:
+                try:
+                    owner_resolution = resolve_unique_tenant_for_owner(owner_user_id)
+                except TicketTenantScopeError:
+                    owner_resolution = None
+                if owner_resolution is not None and owner_resolution.status == "unique":
+                    resolved_tenant = owner_resolution.tenant
+
+            query = scoped_municipio_ticket_query(resolved_tenant)
 
             # Find the last ticket using the anonymous ID to identify the user
             # across requests in the same session.
@@ -1311,13 +1333,6 @@ class ReclamoFlowHandler:
                             .order_by(MunicipioTicket.fecha.desc())
                             .first()
                         )
-                        if not ticket_by_phone and owner_user_id and owner_user_id != municipio_id:
-                            ticket_by_phone = (
-                                MunicipioTicket.query.filter_by(municipio_id=owner_user_id)
-                                .filter(MunicipioTicket.telefono_vecino.in_(phone_candidates))
-                                .order_by(MunicipioTicket.fecha.desc())
-                                .first()
-                            )
                         if ticket_by_phone:
                             last_ticket = ticket_by_phone
                             logger.info(
@@ -1906,6 +1921,8 @@ class ReclamoFlowHandler:
         mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
         mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
         mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        if datos.get("solicita_llamada"):
+            mensaje += "- Contacto solicitado: llamada telefónica pendiente\n"
         maps_link = datos.get('maps_link') or datos.get('maps_search_url')
         static_map_url = datos.get('static_map_url')
         if maps_link:
@@ -2030,6 +2047,8 @@ class ReclamoFlowHandler:
         ):
             municipal_ctx.pop(stale_key, None)
         municipal_ctx["estado_conversacion"] = ConversationState.CONVERSACION_GENERAL_LLM.name
+        fresh_context.pop("last_options_sent", None)
+        fresh_context.pop("pending_sensitive_action", None)
 
         contacto = municipal_ctx.setdefault("contacto_usuario", {})
         if not isinstance(contacto, dict):
@@ -2055,6 +2074,15 @@ class ReclamoFlowHandler:
         }
         municipal_ctx["last_created_reclamo"] = {
             key: value for key, value in completion_record.items() if value is not None
+        }
+        followup_started_at = time.time()
+        fresh_context["active_ticket_followup"] = {
+            "ticket_id": completion.get("ticket_id"),
+            "ticket_nro": completion.get("ticket_nro"),
+            "consulta_pin": completion.get("consulta_pin"),
+            "tracking_url": completion.get("tracking_url"),
+            "started_at": followup_started_at,
+            "until": followup_started_at + CLAIM_FOLLOWUP_WINDOW_SECONDS,
         }
         fresh_context.pop("foto_url", None)
         fresh_context.pop("es_foto", None)
@@ -2156,6 +2184,8 @@ class ReclamoFlowHandler:
                 "descripcion_resumida": datos.get("descripcion_resumida"),
                 "foto_url_adjunta": datos.get("foto_url"),
                 "archivo_id_para_asociar": datos.get("archivo_id_para_asociar") or self.context.get("archivo_id_para_asociar"),
+                "solicita_llamada": datos.get("solicita_llamada"),
+                "motivo_llamada": datos.get("motivo_llamada"),
                 "claim_confirmation_id": confirmation_id,
             }
             handler = CrearReclamoActionHandler(self.context)
@@ -2205,6 +2235,10 @@ class ReclamoFlowHandler:
                     "webview_url",
                     "whatsapp_flow",
                     "cta_label",
+                    "_context_keys_to_delete",
+                    "_suppress_whatsapp_navigation",
+                    "generar_audio",
+                    "skip_audio_generation",
                 ):
                     if key in result:
                         extra_payload[key] = result[key]
@@ -2248,9 +2282,8 @@ class ReclamoFlowHandler:
             self.flow_context["state"] = ReclamoState.ESPERANDO_CONFIRMACION.name
             body = str(confirmation.get("message_body") or "").strip()
             confirmation["message_body"] = (
-                "No cancele el reclamo. Para crearlo, responde 1 o 'confirmar'. "
-                "Para corregir datos, responde 2 o 'editar'. "
-                "Para cancelarlo, responde 3 o 'cancelar'.\n\n"
+                "No pude interpretar esa respuesta. Elegí *Confirmar*, "
+                "*Editar datos* o *Cancelar*.\n\n"
                 f"{body}"
             ).strip()
             return confirmation
@@ -2438,7 +2471,12 @@ def _looks_like_free_form_input(text: str | None) -> bool:
     normalized = normalizar_texto(stripped)
     word_count = len(normalized.split())
 
-    if word_count >= 6:
+    # Three or more words are already enough to express an intent that should
+    # be interpreted as language, not compared fuzzily with a menu label.
+    # Explicit buttons/action ids/numbers are resolved before this helper is
+    # consulted, so lowering the threshold does not weaken deterministic UI
+    # controls.
+    if word_count >= 3:
         return True
 
     if len(stripped) >= 40:
@@ -4718,11 +4756,19 @@ def _create_legacy_reclamo_from_confirmation(contexto_municipio_actual: dict, co
         "email_vecino": datos.get("email") or datos.get("email_detectado"),
         "dni_vecino": datos.get("dni"),
         "municipio_id": getattr(owner_user, "municipio_id", None) or getattr(owner_user, "id", None),
-        "tenant_id": getattr(owner_user, "tenant_id", None),
+        "tenant_id": context.get("tenant_id") or getattr(owner_user, "tenant_id", None),
         "anon_id": context.get("anon_id"),
         "estado": "nuevo",
         "canal_ingreso": context.get("channel"),
     }
+    from services.actions.municipio_actions import (
+        _build_reclamo_callback_request_metadata,
+        _durable_ticket_effect_kwargs,
+    )
+
+    callback_request = _build_reclamo_callback_request_metadata({}, datos)
+    if callback_request:
+        ticket_data["datos_extra"] = {"callback_request": callback_request}
     if isinstance(coordenadas, dict):
         ticket_data["latitud"] = coordenadas.get("lat") or coordenadas.get("latitude")
         ticket_data["longitud"] = (
@@ -4732,7 +4778,11 @@ def _create_legacy_reclamo_from_confirmation(contexto_municipio_actual: dict, co
         )
 
     ticket_data = {key: value for key, value in ticket_data.items() if value is not None}
-    ticket_creado = servicio_tickets.crear_nuevo_ticket("municipio", ticket_data)
+    ticket_creado = servicio_tickets.crear_nuevo_ticket(
+        "municipio",
+        ticket_data,
+        **_durable_ticket_effect_kwargs(context, "municipio_claim_create"),
+    )
     nro_ticket = (
         ticket_creado.get("nro_ticket")
         if isinstance(ticket_creado, dict)
@@ -6084,7 +6134,7 @@ MENU_KEYWORDS = {
     ],
 
     # Tasas y Servicios
-    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuestos", "municipal", "tributo", "tributos", "arancel", "aranceles", "impuesto municipal", "impuestos municipales"],
+    "pago_de_tasas_vigentes": ["pagar", "pago", "tasas", "tasa", "boleta", "impuesto", "impuestos", "municipal", "tributo", "tributos", "arancel", "aranceles", "impuesto municipal", "impuestos municipales"],
     "buscar_estacionamiento": ["estacionamiento", "estacionar", "aparcamiento", "parking", "estacionar auto", "donde estacionar", "lugar para estacionar"],
     "mostrar_menu_ayuda": ["ayuda", "como usar", "uso", "emojis", "help"],
     "recoleccion_residuos": ["recoleccion", "residuos", "basura", "basurero", "cuando pasa el camion", "recolector", "recogida", "recoleccion de basura"]
@@ -6134,6 +6184,159 @@ DEMO_ACTION_ALIASES = {
     "sector público": "mostrar_menu",
     "soluciones para empresas": "mostrar_menu_catalogo",
 }
+
+
+# Natural-language shortcuts remain deterministic only when every meaningful
+# token belongs to the declared vocabulary of one menu action.  These are
+# deliberately discourse/filler words, not problem-domain words such as
+# ``agua``, ``calle``, ``poste`` or ``direccion``.  That keeps detailed citizen
+# reports on the LLM-first path while accepting controls such as "hacer un
+# reclamo" or "quiero ver encuestas" without fuzzy multi-word matching.
+_NATURAL_MENU_STOPWORDS = {
+    "a",
+    "al",
+    "como",
+    "cual",
+    "de",
+    "del",
+    "donde",
+    "el",
+    "en",
+    "esta",
+    "estan",
+    "hacer",
+    "haciendo",
+    "hay",
+    "informacion",
+    "la",
+    "las",
+    "lo",
+    "los",
+    "me",
+    "mi",
+    "necesito",
+    "para",
+    "podria",
+    "por",
+    "que",
+    "queria",
+    "quiero",
+    "quisiera",
+    "saber",
+    "sobre",
+    "un",
+    "una",
+    "unos",
+    "unas",
+    "ver",
+}
+
+# These declared words are too broad to prove an intent by themselves.  They
+# may accompany stronger evidence for the same action, but never consume an
+# otherwise free-form message on their own.
+_NATURAL_MENU_WEAK_TOKENS = {
+    "ayuda",
+    "comentario",
+    "consulta",
+    "consultas",
+    "feedback",
+    "municipal",
+    "opinion",
+    "pedido",
+    "pregunta",
+    "preguntas",
+    "problema",
+    "productos",
+    "puntos",
+    "trabajos",
+    "uso",
+}
+
+_NATURAL_MENU_PHRASE_GLUE = {
+    "a",
+    "al",
+    "de",
+    "del",
+    "el",
+    "la",
+    "las",
+    "lo",
+    "los",
+    "un",
+    "una",
+    "unos",
+    "unas",
+}
+
+
+def _tokenize_declared_menu_phrase(value: str) -> list[str]:
+    """Return normalized word tokens; punctuation cannot create substrings."""
+
+    return re.findall(r"(?u)\b\w+\b", normalizar_texto(value or ""))
+
+
+def _find_declared_natural_menu_action(
+    normalized_input: str,
+    keywords_by_action: dict[str, set[str]],
+) -> str | None:
+    """Resolve a natural control using only one action's declared vocabulary.
+
+    This is intentionally stricter than keyword containment: after removing a
+    small, reviewed set of filler words, *all* remaining tokens must be declared
+    for the same action and at least one must be non-generic.  Ambiguity returns
+    ``None`` for the LLM to interpret.
+    """
+
+    meaningful_tokens = [
+        token
+        for token in _tokenize_declared_menu_phrase(normalized_input)
+        if token not in _NATURAL_MENU_STOPWORDS
+    ]
+    if not meaningful_tokens:
+        return None
+
+    # Prefer a whole declared phrase after removing articles/prepositions only.
+    # This distinguishes "hacer un reclamo" from the different declared
+    # control "consultar estado de reclamo" even though both contain the token
+    # ``reclamo``.
+    compact_input = tuple(
+        token
+        for token in _tokenize_declared_menu_phrase(normalized_input)
+        if token not in _NATURAL_MENU_PHRASE_GLUE
+    )
+    exact_phrase_actions = {
+        action_id
+        for action_id, keywords in keywords_by_action.items()
+        for keyword in keywords
+        if tuple(
+            token
+            for token in _tokenize_declared_menu_phrase(keyword)
+            if token not in _NATURAL_MENU_PHRASE_GLUE
+        )
+        == compact_input
+    }
+    if len(exact_phrase_actions) == 1:
+        return next(iter(exact_phrase_actions))
+
+    input_token_set = set(meaningful_tokens)
+    candidates: list[str] = []
+    for action_id, keywords in keywords_by_action.items():
+        declared_tokens = {
+            token
+            for keyword in keywords
+            for token in _tokenize_declared_menu_phrase(keyword)
+            if token not in _NATURAL_MENU_STOPWORDS
+        }
+        if not declared_tokens or not input_token_set.issubset(declared_tokens):
+            continue
+        if not any(
+            token in declared_tokens and token not in _NATURAL_MENU_WEAK_TOKENS
+            for token in input_token_set
+        ):
+            continue
+        candidates.append(action_id)
+
+    return candidates[0] if len(candidates) == 1 else None
 
 def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None:
     """
@@ -6198,24 +6401,41 @@ def find_menu_action_by_input(user_input: str, menu_buttons: list) -> str | None
             if button_text_norm.startswith(normalized_input):
                 return button.get("action_id")
 
-    # 4. For longer free-form phrases, skip fuzzy matching to avoid
-    # misclassifying natural sentences as menu keywords. Let higher-level
-    # NLU or LLM logic handle these cases instead.
-    if len(normalized_input.split()) > 7:
-        logger.info(
-            "DEBUG: Skipping fuzzy match for long input (input_length=%s)",
-            len(user_input or ""),
-        )
-        logger.warning("DEBUG: No menu action found for long input.")
-        return None
-
-    # 5. Check for keyword match (fuzzy matching for natural language)
+    # 4. Resolve only declared keyword phrases before considering fuzzy typo
+    # recovery. This preserves explicit multi-word commands while preventing
+    # arbitrary sentences from being forced into a nearby menu action.
     local_keywords = {}
+    keywords_by_action: dict[str, set[str]] = {}
     for button in menu_buttons:
         action_id = button.get('action_id')
         if action_id in MENU_KEYWORDS:
             for keyword in MENU_KEYWORDS[action_id]:
-                local_keywords[keyword] = action_id
+                normalized_keyword = normalizar_texto(keyword or "").strip()
+                if normalized_keyword:
+                    local_keywords[normalized_keyword] = action_id
+                    keywords_by_action.setdefault(action_id, set()).add(
+                        normalized_keyword
+                    )
+
+    # Known phrases remain deterministic. Fuzzy matching is reserved for a
+    # short typo such as "bromatolojia"; it is never used to infer the intent
+    # of a multi-word citizen message.
+    exact_keyword_action = local_keywords.get(normalized_input)
+    if exact_keyword_action:
+        return exact_keyword_action
+
+    if len(normalized_input.split()) > 1:
+        declared_natural_action = _find_declared_natural_menu_action(
+            normalized_input,
+            keywords_by_action,
+        )
+        if declared_natural_action:
+            return declared_natural_action
+        logger.info(
+            "Skipping fuzzy menu match for unmatched multi-word input (input_length=%s)",
+            len(user_input or ""),
+        )
+        return None
 
     if local_keywords:
         best_match, score = process.extractOne(
@@ -6420,17 +6640,66 @@ def find_reclamo_category_by_input(user_input: str, reclamo_options: list) -> st
             if normalizar_texto(option.get("texto", "")).startswith(normalized_input):
                 return option.get("texto")
 
-    # 3. Check for keyword match within the input
+    # 3. Rank bounded keyword evidence instead of returning the first match.
+    # Words such as "calle", "vereda", "perdida" or "rotura" provide useful
+    # context but are not enough to overrule a more specific signal from
+    # another category.  If two categories remain equally plausible, return
+    # ``None`` so the LLM can disambiguate rather than silently guessing.
+    weak_context_keywords = {
+        "calle",
+        "vereda",
+        "perdida",
+        "rotura",
+    }
+    category_evidence: dict[str, tuple[int, int, int]] = {}
     for category, keywords in RECLAMO_KEYWORDS.items():
+        matched: set[str] = set()
         for keyword in keywords:
-            if keyword in normalized_input:
-                return category
+            normalized_keyword = normalizar_texto(keyword or "").strip()
+            if not normalized_keyword or normalized_keyword in matched:
+                continue
+            if re.search(
+                rf"(?<!\w){re.escape(normalized_keyword)}(?!\w)",
+                normalized_input,
+            ):
+                matched.add(normalized_keyword)
 
-    # 4. Fallback to fuzzy matching if no direct keyword was found
+        if matched:
+            strong_count = sum(
+                1 for keyword in matched if keyword not in weak_context_keywords
+            )
+            phrase_weight = sum(len(keyword.split()) for keyword in matched)
+            category_evidence[category] = (
+                strong_count,
+                len(matched),
+                phrase_weight,
+            )
+
+    if category_evidence:
+        ranked = sorted(
+            category_evidence.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        if len(ranked) == 1 or ranked[0][1] > ranked[1][1]:
+            return ranked[0][0]
+        logger.info(
+            "Ambiguous deterministic claim category; delegating disambiguation categories=%s",
+            sorted(category_evidence),
+        )
+        return None
+
+    # 4. Fuzzy recovery is only for a one-word typo in a category/menu choice.
+    # A multi-word problem description belongs to the LLM when deterministic
+    # evidence above is absent or ambiguous.
+    if len(normalized_input.split()) > 1:
+        return None
+
     all_keywords = {
-        keyword: category
+        normalizar_texto(keyword): category
         for category, keywords in RECLAMO_KEYWORDS.items()
         for keyword in keywords
+        if normalizar_texto(keyword)
     }
     best_match, score = process.extractOne(normalized_input, all_keywords.keys())
     if score > 80:
@@ -6632,7 +6901,7 @@ def _strip_category_from_reclamo_description(
         return description
 
     match = re.match(
-        rf"^\s*{re.escape(str(category).strip())}\b(?P<remainder>.*)$",
+        rf"^\s*(?:(?:de|del|sobre)\s+)?{re.escape(str(category).strip())}\b(?P<remainder>.*)$",
         str(description).strip(),
         flags=re.IGNORECASE,
     )
@@ -6822,7 +7091,7 @@ def extract_reclamo_details_from_text(
     o una transcripción de audio sin depender siempre del modelo.
     """
 
-    details: dict[str, str | None] = {}
+    details: dict[str, Any] = {}
     if not user_input:
         return details
 
@@ -6963,10 +7232,19 @@ def extract_reclamo_details_from_text(
     if direccion_candidate and not _looks_like_address(direccion_candidate):
         details.pop("direccion_sugerida", None)
 
-    # Determine if the LLM extractor is still required.
-    needs_llm = False
-    if not details.get("categoria_sugerida") or not details.get("descripcion_sugerida"):
-        needs_llm = True
+    # Clear, short claims can use the deterministic fast path. Longer or
+    # multi-sentence turns may contain a second operational request (for
+    # example, asking for a callback) and must be interpreted by the LLM even
+    # when category and description were already obvious.
+    normalized_words = normalizar_texto(user_input).split()
+    is_complex_freeform_turn = len(normalized_words) >= 12 or len(
+        re.findall(r"[.!?]+", user_input)
+    ) >= 2
+    needs_llm = (
+        not details.get("categoria_sugerida")
+        or not details.get("descripcion_sugerida")
+        or is_complex_freeform_turn
+    )
 
     llm_details = {}
     if needs_llm:
@@ -6995,6 +7273,8 @@ def extract_reclamo_details_from_text(
             "email_cliente": "email_sugerido",
             "telefono_cliente": "telefono_sugerido",
             "dni_cliente": "dni_sugerido",
+            "solicita_llamada": "solicita_llamada",
+            "motivo_llamada": "motivo_llamada",
         }
         for llm_key, target_key in llm_mapping.items():
             value = llm_details.get(llm_key)
@@ -7508,6 +7788,11 @@ def _try_start_reclamo_from_text(
         value = details.get(suggested_key) or details.get(field)
         if value:
             datos_iniciales[field] = value
+
+    if details.get("solicita_llamada") is True:
+        datos_iniciales["solicita_llamada"] = True
+        if details.get("motivo_llamada"):
+            datos_iniciales["motivo_llamada"] = details["motivo_llamada"]
 
     if details.get("barrio_sugerido"):
         datos_iniciales.setdefault("barrio", details["barrio_sugerido"])
@@ -9896,12 +10181,18 @@ def _resolve_authoritative_municipio_tenant(
     if owner_id is None:
         return None
 
-    candidates = TenantProfile.query.filter_by(municipio_id=owner_id).all()
-    active_candidates = [candidate for candidate in candidates if candidate.is_active]
-    unambiguous_candidates = active_candidates or candidates
-    if len(unambiguous_candidates) == 1:
-        return unambiguous_candidates[0]
-    if len(unambiguous_candidates) > 1:
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+    except TicketTenantScopeError:
+        return None
+    if (
+        resolution.status == "unique"
+        and resolution.tenant is not None
+        and getattr(resolution.tenant, "municipio_id", None) == owner_id
+        and getattr(resolution.tenant, "is_active", True)
+    ):
+        return resolution.tenant
+    if resolution.status == "ambiguous":
         logger.error(
             "Multiple municipal tenants found for owner_id=%s without an authoritative "
             "tenant context; refusing arbitrary selection.",
@@ -10095,6 +10386,20 @@ def responder_municipio(
         )
         pregunta_str = ""
         received_payload["pregunta"] = ""
+
+    source_event_context, source_context_changed = bind_source_event_context(
+        getattr(chat_db_context, "context_data", None),
+        CONTEXTO_MUNICIPIO,
+        {**received_payload, **kwargs},
+    )
+    if source_event_context:
+        received_payload.update(source_event_context)
+        kwargs.update(source_event_context)
+    if source_context_changed and chat_db_context:
+        try:
+            flag_modified(chat_db_context, "context_data")
+        except Exception:  # pragma: no cover - admite contextos livianos en integraciones/tests
+            logger.debug("No se pudo marcar context_data como modificado", exc_info=True)
 
     live_chat_cta_action = _resolve_live_chat_cta_action(
         {**received_payload, **kwargs},
@@ -10331,6 +10636,9 @@ def responder_municipio(
         "tenant_profile": tenant_profile,
         "tenant_id": getattr(tenant_profile, "id", None),
         "target_entity_type": "municipio",
+        "source_event_id": kwargs.get("source_event_id"),
+        "durable_turn_id": kwargs.get("durable_turn_id"),
+        "idempotency_key": kwargs.get("idempotency_key"),
     }
     # --- FIN REFACTOR ---
 
@@ -11290,6 +11598,9 @@ def responder_municipio(
         "chat_db_context_obj": chat_db_context,
         "tenant_profile": tenant_profile,
         "tenant_id": getattr(tenant_profile, "id", None),
+        "source_event_id": kwargs.get("source_event_id"),
+        "durable_turn_id": kwargs.get("durable_turn_id"),
+        "idempotency_key": kwargs.get("idempotency_key"),
     })
     # --- END CONTEXT INITIALIZATION ---
 
@@ -11863,12 +12174,17 @@ def responder_municipio(
                 })
 
             municipio_id = context.get("municipio_id", MUNICIPIO_ID)
-            ticket_query = MunicipioTicket.query.filter_by(nro_ticket=numero_guardado, consulta_pin=pin)
-            try:
-                ticket_query = ticket_query.filter_by(municipio_id=int(municipio_id))
-            except (TypeError, ValueError):
-                pass
-            ticket = ticket_query.first()
+            tenant_profile = context.get("tenant_profile")
+            ticket = None
+            if tenant_profile is not None:
+                matches = (
+                    scoped_municipio_ticket_query(tenant_profile)
+                    .filter_by(nro_ticket=numero_guardado, consulta_pin=pin)
+                    .order_by(MunicipioTicket.id.asc())
+                    .limit(2)
+                    .all()
+                )
+                ticket = matches[0] if len(matches) == 1 else None
 
             contexto_municipio_actual.pop('numero_ticket_consulta', None)
 
@@ -13049,6 +13365,7 @@ def responder_municipio(
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "location_link_info": location_link_info,
         "demo_metadata": demo_metadata if isinstance(demo_metadata, dict) else None,
+        **source_event_context,
     })
     if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
         logger_actual.critical("chat_db_context.context_data no disponible al inicializar 'context'. Usando dict vacío. Esto es problemático.")

@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify, current_app, send_from_directory, make_response
 from extensions import db
-from models import ArchivoAdjunto, User, AnalisisArchivo
+from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, TenantProfile, User, AnalisisArchivo
 import os
 import uuid
 from werkzeug.utils import secure_filename
@@ -17,7 +17,12 @@ from services.attachment_delivery import serialize_attachment_for_delivery
 from services.attachment_service import create_attachment_with_thumbnail
 from services.archivo_service import guardar_archivo_adjunto_ticket
 from services.ticket_service import servicio_tickets
+from services.tenant_ticket_scope import (
+    municipio_ticket_belongs_to_tenant,
+    resolve_unique_tenant_for_owner,
+)
 from utils.permissions import require_role
+from utils.roles import is_authorized_superadmin_user
 from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 from google.cloud import storage
 from services.google_vision_service import analyze_image_from_content
@@ -85,8 +90,86 @@ def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def _municipio_tenant_for_actor(user: User) -> TenantProfile | None:
+    tenant_id = getattr(user, "tenant_id", None)
+    if tenant_id:
+        tenant = db.session.get(TenantProfile, tenant_id)
+        if tenant is not None:
+            return tenant
+
+    owner_ids = [
+        getattr(user, "municipio_id", None),
+        getattr(user, "empresa_id", None),
+    ]
+    if getattr(user, "tipo_chat", None) == "municipio":
+        owner_ids.append(getattr(user, "id", None))
+    resolved_tenants: dict[int, TenantProfile] = {}
+    for owner_id in dict.fromkeys(value for value in owner_ids if value):
+        try:
+            resolution = resolve_unique_tenant_for_owner(owner_id)
+        except ValueError:
+            return None
+        if resolution.status != "unique" or resolution.tenant is None:
+            return None
+        resolved_tenants[int(resolution.tenant.id)] = resolution.tenant
+    if len(resolved_tenants) != 1:
+        return None
+    return next(iter(resolved_tenants.values()))
+
+
+def _municipio_ticket_access_allowed(user: User, ticket: MunicipioTicket | None) -> bool:
+    tenant = _municipio_tenant_for_actor(user)
+    return municipio_ticket_belongs_to_tenant(ticket, tenant)
+
+
+def _ticket_for_actor(
+    user: User,
+    ticket_id: object,
+    tipo_ticket: str,
+) -> MunicipioTicket | PymeTicket | None:
+    """Return a ticket only when its exact tenant scope authorizes the actor."""
+
+    if tipo_ticket not in {"municipio", "pyme"}:
+        return None
+    try:
+        normalized_ticket_id = int(ticket_id)
+    except (TypeError, ValueError):
+        return None
+    if normalized_ticket_id <= 0:
+        return None
+
+    TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
+    ticket = db.session.get(TicketModel, normalized_ticket_id)
+    if ticket is None:
+        return None
+    if is_authorized_superadmin_user(user):
+        return ticket
+
+    tenant = _municipio_tenant_for_actor(user)
+    if tenant is None:
+        return None
+    if tipo_ticket == "municipio":
+        allowed = municipio_ticket_belongs_to_tenant(ticket, tenant)
+    else:
+        allowed = getattr(ticket, "tenant_id", None) == tenant.id
+    if not allowed:
+        return None
+
+    if getattr(user, "rol", None) == "usuario" and ticket.user_id != user.id:
+        return None
+    return ticket
+
+
 def _tiene_permiso(user: User, adj: ArchivoAdjunto) -> bool:
     """Replica las verificaciones de obtener_archivo para chequear acceso."""
+    if adj.pyme_ticket_id:
+        if _ticket_for_actor(user, adj.pyme_ticket_id, "pyme") is None:
+            return False
+    if adj.municipio_ticket_id:
+        if _ticket_for_actor(user, adj.municipio_ticket_id, "municipio") is None:
+            return False
+    if is_authorized_superadmin_user(user):
+        return True
     if user.rol == 'admin':
         if hasattr(user, 'empresa_id') and adj.user_id != user.id:
             from models import User as UserModel
@@ -96,16 +179,7 @@ def _tiene_permiso(user: User, adj: ArchivoAdjunto) -> bool:
         return True
     elif user.rol == 'empleado':
         from models import PymeTicket, MunicipioTicket, User as UserModel
-        if adj.pyme_ticket_id:
-            ticket = PymeTicket.query.filter_by(id=adj.pyme_ticket_id).first()
-            if not ticket or ticket.empresa_id != user.empresa_id:
-                return False
-        elif adj.municipio_ticket_id:
-            from models import MunicipioTicket
-            ticket = MunicipioTicket.query.filter_by(id=adj.municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != user.municipio_id:
-                return False
-        elif adj.user_id != user.id:
+        if not adj.pyme_ticket_id and not adj.municipio_ticket_id and adj.user_id != user.id:
             owner = UserModel.query.filter_by(id=adj.user_id).first()
             if not owner or (
                 owner.empresa_id != user.empresa_id
@@ -184,18 +258,18 @@ def subir_archivo(current_user):
     session_id = request.form.get("session_id") or request.headers.get("X-Session-Id")
     tipo_adjunto = request.form.get("tipo", "chat") # tipo de archivo (ej. chat, ticket_adjunto, etc.)
 
-    # Permisos: empleados solo pueden asociar archivos a tickets de su empresa/municipio
-    if current_user.rol == 'empleado':
-        from models import PymeTicket, MunicipioTicket
-        if pyme_ticket_id:
-            ticket = PymeTicket.query.filter_by(id=pyme_ticket_id).first()
-            if not ticket or ticket.empresa_id != current_user.empresa_id:
-                return jsonify({'error': 'No puede asociar archivos a tickets de otra empresa.'}), 403
-        if municipio_ticket_id:
-            from models import MunicipioTicket
-            ticket = MunicipioTicket.query.filter_by(id=municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != current_user.municipio_id:
-                return jsonify({'error': 'No puede asociar archivos a tickets de otro municipio.'}), 403
+    if pyme_ticket_id and municipio_ticket_id:
+        return jsonify({'error': 'Solo puede asociarse un ticket por archivo.'}), 400
+    if pyme_ticket_id:
+        ticket = _ticket_for_actor(current_user, pyme_ticket_id, "pyme")
+        if ticket is None:
+            return jsonify({'error': 'Ticket no encontrado.'}), 404
+        pyme_ticket_id = ticket.id
+    if municipio_ticket_id:
+        ticket = _ticket_for_actor(current_user, municipio_ticket_id, "municipio")
+        if ticket is None:
+            return jsonify({'error': 'Ticket no encontrado.'}), 404
+        municipio_ticket_id = ticket.id
 
     resultados_subida = []
     archivos_guardados_info = [] # Para rollback en caso de error parcial
@@ -391,6 +465,14 @@ def subir_archivo_admin(current_user: User):
     if not all([file, ticket_id, tipo_ticket]):
         return jsonify({'error': 'Faltan datos: se requiere archivo, ticket_id y tipo_ticket.'}), 400
 
+    if tipo_ticket not in {'municipio', 'pyme'}:
+        return jsonify({'error': 'Tipo de ticket no válido.'}), 400
+
+    ticket = _ticket_for_actor(current_user, ticket_id, tipo_ticket)
+    if ticket is None:
+        return jsonify({'error': 'Ticket no encontrado.'}), 404
+    ticket_id = ticket.id
+
     if not allowed_file(file.filename) or not allowed_mime(file.mimetype):
         return jsonify({'error': 'Tipo de archivo no permitido.'}), 400
 
@@ -438,8 +520,18 @@ def obtener_archivo(current_user: User, filename):
     if not adj:
         return jsonify({'error': 'Archivo no encontrado'}), 404
 
+    if adj.pyme_ticket_id:
+        if _ticket_for_actor(current_user, adj.pyme_ticket_id, "pyme") is None:
+            return jsonify({'error': 'Archivo no encontrado'}), 404
+    if adj.municipio_ticket_id:
+        if _ticket_for_actor(current_user, adj.municipio_ticket_id, "municipio") is None:
+            return jsonify({'error': 'Archivo no encontrado'}), 404
+
+    # Superadmin autorizado conserva acceso global.
+    if is_authorized_superadmin_user(current_user):
+        pass
     # Admin puede ver archivos de su empresa
-    if current_user.rol == 'admin':
+    elif current_user.rol == 'admin':
         if hasattr(current_user, 'empresa_id') and adj.user_id != current_user.id:
             # Si el archivo fue subido por otro usuario, verificar que sea de la misma empresa
             from models import User as UserModel
@@ -449,20 +541,9 @@ def obtener_archivo(current_user: User, filename):
 
     # Empleado de empresa: solo archivos de tickets de su empresa o propios
     elif current_user.rol == 'empleado':
-        from models import PymeTicket, MunicipioTicket, User as UserModel
-        # Si es archivo de ticket pyme
-        if adj.pyme_ticket_id:
-            ticket = PymeTicket.query.filter_by(id=adj.pyme_ticket_id).first()
-            if not ticket or ticket.empresa_id != current_user.empresa_id:
-                return jsonify({'error': 'Acceso denegado'}), 403
-        # Si es archivo de ticket municipio
-        elif adj.municipio_ticket_id:
-            from models import MunicipioTicket
-            ticket = MunicipioTicket.query.filter_by(id=adj.municipio_ticket_id).first()
-            if not ticket or ticket.municipio_id != current_user.municipio_id:
-                return jsonify({'error': 'Acceso denegado'}), 403
-        # Si es archivo propio
-        elif adj.user_id != current_user.id:
+        from models import User as UserModel
+        # Si es archivo propio y no está asociado a un ticket
+        if not adj.pyme_ticket_id and not adj.municipio_ticket_id and adj.user_id != current_user.id:
             # Solo puede ver archivos propios o de tickets de su empresa/municipio
             from models import User as UserModel
             owner = UserModel.query.filter_by(id=adj.user_id).first()

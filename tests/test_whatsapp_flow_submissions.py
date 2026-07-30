@@ -755,9 +755,15 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
                 data={**payload, "MessageSid": "SM_FLOW_SURVEY_COMPLETE_2"},
                 headers={"X-Twilio-Signature": "valid-test-signature"},
             )
+            same_sid_retry = self.client.post(
+                "/webhook/whatsapp",
+                data={**payload, "MessageSid": "SM_FLOW_SURVEY_COMPLETE_1"},
+                headers={"X-Twilio-Signature": "valid-test-signature"},
+            )
 
         assert first.status_code == 200
         assert second.status_code == 200
+        assert same_sid_retry.status_code == 200
         responder_chatboc.assert_not_called()
         saved = EncRespuesta.query.filter_by(encuesta_id=survey.id).one()
         db.session.refresh(interaction)
@@ -768,6 +774,13 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
         assert interaction.metadata_json["completion"]["field_names"] == [
             "confirm_vote"
         ]
+        session_context = ChatSessionContext.query.filter_by(
+            tenant_id=self.tenant.id,
+            anon_id=self.from_number,
+        ).one()
+        assert len(
+            session_context.context_data["processed_whatsapp_flow_token_digests"]
+        ) == 1
         assert "attacker-survey" not in json.dumps(interaction.metadata_json)
         assert "attacker-option" not in json.dumps(interaction.metadata_json)
         assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 1
@@ -778,7 +791,11 @@ class WhatsAppFlowWebhookIntegrationTest(unittest.TestCase):
             call.kwargs.get("body", "")
             for call in self.twilio_client.messages.create.call_args_list
         ]
-        assert sum("Participacion registrada" in body for body in sent_bodies) == 1
+        confirmation_bodies = [
+            body for body in sent_bodies if "Participacion registrada" in body
+        ]
+        assert len(confirmation_bodies) == 3
+        assert len(set(confirmation_bodies)) == 1
 
     @patch("routes.whatsapp_webhook.responder_chatboc")
     def test_malformed_flow_is_stopped_before_the_orchestrator(self, responder_chatboc):

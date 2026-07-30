@@ -33,6 +33,13 @@ from models import (
 )
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    municipio_ticket_belongs_to_tenant,
+    resolve_municipio_ticket_access_tenant,
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+)
 from services.user_service import build_identity_subject
 from services.ticket_realtime_state import (
     build_ticket_collaboration_state,
@@ -1033,13 +1040,7 @@ def _resolver_acceso_chat_ticket(ticket_obj, current_user: User, anon_id: str = 
     tenant_scope_allows = _ticket_scope_access_allows("municipio", ticket_obj, current_user)
     es_agente_municipal = bool(
         current_user
-        and (
-            tenant_scope_allows
-            or (
-                current_user.tipo_chat == "municipio"
-                and getattr(ticket_obj, "municipio_id", None) in _get_allowed_municipio_ids(current_user)
-            )
-        )
+        and tenant_scope_allows
     )
     es_agente = es_agente_municipal
     es_dueno = bool(current_user and getattr(ticket_obj, "user_id", None) == current_user.id)
@@ -1314,13 +1315,15 @@ def _build_realtime_actor_context(*, current_user: User, anon_id: str = None, ac
 
 
 def _ticket_admin_socket_scope(ticket_obj, ticket_type: str) -> tuple[Optional[int], Optional[int], Optional[str]]:
+    if ticket_type == "municipio":
+        try:
+            tenant = resolve_municipio_ticket_access_tenant(ticket_obj)
+        except TicketTenantScopeError:
+            return None, None, None
+        return tenant.id, tenant.id, f"tenant_{tenant.id}"
     tenant_profile_id = getattr(ticket_obj, "tenant_id", None)
     if tenant_profile_id:
         return tenant_profile_id, tenant_profile_id, f"tenant_{tenant_profile_id}"
-    if ticket_type == "municipio":
-        municipio_id = getattr(ticket_obj, "municipio_id", None)
-        if municipio_id:
-            return municipio_id, None, f"municipio_{municipio_id}"
     return None, None, None
 
 
@@ -1349,16 +1352,26 @@ def _resolve_ticket_tenant_profile(ticket_obj, ticket_type: str) -> Optional[Ten
             return tenant
 
     if ticket_type == "municipio":
-        municipio_id = getattr(ticket_obj, "municipio_id", None)
-        if municipio_id:
-            return TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+        try:
+            return resolve_municipio_ticket_access_tenant(ticket_obj)
+        except TicketTenantScopeError:
+            return None
     if ticket_type == "pyme":
         pyme_id = (
             getattr(ticket_obj, "pyme_id", None)
             or getattr(ticket_obj, "user_id", None)
         )
         if pyme_id:
-            return TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+            try:
+                resolution = resolve_unique_tenant_for_owner(pyme_id)
+            except TicketTenantScopeError:
+                return None
+            if (
+                resolution.status == "unique"
+                and resolution.tenant is not None
+                and getattr(resolution.tenant, "pyme_id", None) == pyme_id
+            ):
+                return resolution.tenant
     return None
 
 
@@ -1612,6 +1625,8 @@ def _ticket_matches_tenant_scope(
 ) -> bool:
     if not tenant:
         return False
+    if isinstance(ticket_obj, MunicipioTicket):
+        return municipio_ticket_belongs_to_tenant(ticket_obj, tenant)
     ticket_tenant_id = getattr(ticket_obj, "tenant_id", None)
     if ticket_tenant_id is not None:
         return ticket_tenant_id == getattr(tenant, "id", None)
@@ -1630,6 +1645,8 @@ def _ticket_scope_access_allows(ticket_type: str, ticket_obj, current_user: Opti
     tenant, tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
     if not _authorized_for_tenant_scope(current_user, tenant):
         return False
+    if ticket_type == "municipio":
+        return municipio_ticket_belongs_to_tenant(ticket_obj, tenant)
     return _ticket_matches_tenant_scope(
         ticket_obj,
         tenant,
@@ -1663,20 +1680,43 @@ def _authenticated_municipio_lookup_allows(
             and getattr(ticket_obj, "user_id", None) == getattr(actor_user, "id", None)
         )
 
-    municipio_id = getattr(ticket_obj, "municipio_id", None)
     tenant_allows = _ticket_scope_access_allows("municipio", ticket_obj, actor_user)
-    legacy_scope_allows = bool(
-        getattr(ticket_obj, "tenant_id", None) is None
-        and municipio_id
-        and municipio_id in _get_allowed_municipio_ids(actor_user)
-    )
-    if not (tenant_allows or legacy_scope_allows):
+    if not tenant_allows:
         return False
 
     if is_employee:
         return getattr(ticket_obj, "asignado_a_id", None) == getattr(actor_user, "id", None)
 
     return True
+
+
+def _unique_municipio_ticket_from_query(query) -> Optional[MunicipioTicket]:
+    matches = query.limit(2).all()
+    return matches[0] if len(matches) == 1 else None
+
+
+def _authenticated_municipio_number_query(
+    ticket_number: str,
+    actor_user: Optional[User],
+):
+    if not actor_user:
+        return None
+    query = MunicipioTicket.query.filter_by(nro_ticket=ticket_number)
+    role = canonical_role(getattr(actor_user, "rol", None))
+    if role == ROLE_SUPERADMIN:
+        return query if is_authorized_superadmin_user(actor_user) else None
+
+    is_employee = _is_employee_user(actor_user)
+    if is_employee or role in TICKET_BACKOFFICE_ROLES:
+        tenant, _municipio_id, _pyme_id = _resolve_tenant_scope(actor_user)
+        if not _authorized_for_tenant_scope(actor_user, tenant):
+            return None
+        query = scoped_municipio_ticket_query(tenant, query=query)
+        if is_employee:
+            query = query.filter(MunicipioTicket.asignado_a_id == actor_user.id)
+        return query
+
+    return query.filter(MunicipioTicket.user_id == actor_user.id)
 
 
 def _ticket_public_lookup_is_authenticated() -> bool:
@@ -1815,6 +1855,49 @@ def guardar_archivo_adjunto_ticket(file_storage, user_id, ticket_id, tipo_ticket
         # (Requires a delete function in gcs_service, for now we log)
         current_app.logger.error(f"Orphaned GCS object may exist: {upload_result.get('unique_name')}")
         return None
+
+
+def _claim_existing_attachment_for_ticket(
+    attachment_info,
+    *,
+    current_user: User,
+    ticket_id: int,
+    tipo_ticket: str,
+) -> ArchivoAdjunto | None:
+    """Bind JSON attachment metadata only to its authorized target ticket."""
+
+    if not isinstance(attachment_info, dict) or tipo_ticket not in {"municipio", "pyme"}:
+        return None
+    try:
+        attachment_id = int(attachment_info.get("id"))
+    except (TypeError, ValueError):
+        return None
+    if attachment_id <= 0:
+        return None
+    attachment = db.session.get(ArchivoAdjunto, attachment_id)
+    if attachment is None:
+        return None
+
+    if tipo_ticket == "municipio":
+        if attachment.pyme_ticket_id is not None:
+            return None
+        if attachment.municipio_ticket_id not in {None, ticket_id}:
+            return None
+        already_bound = attachment.municipio_ticket_id == ticket_id
+    else:
+        if attachment.municipio_ticket_id is not None:
+            return None
+        if attachment.pyme_ticket_id not in {None, ticket_id}:
+            return None
+        already_bound = attachment.pyme_ticket_id == ticket_id
+
+    if not already_bound and attachment.user_id != current_user.id:
+        return None
+    if tipo_ticket == "municipio":
+        attachment.municipio_ticket_id = ticket_id
+    else:
+        attachment.pyme_ticket_id = ticket_id
+    return attachment
 
 def log_ticket_debug(action: str, ticket_id: int, header_anon_id: str | None, ticket_obj) -> None:
     """Registro unificado de acciones sobre tickets."""
@@ -2317,8 +2400,6 @@ def get_tickets_del_usuario_logic(current_user: User):
         ):
             TicketModel = MunicipioTicket
             municipio_ids_for_query = _get_allowed_municipio_ids(current_user)
-            if not municipio_ids_for_query and tenant_owner_municipio_id and _authorized_for_tenant():
-                municipio_ids_for_query = [tenant_owner_municipio_id]
             current_app.logger.info(
                 "[DEBUG] Usuario municipal: id=%s, municipio_id=%s, rol=%s, tipo_chat=%s, tenant_slug=%s, municipio_query_ids=%s",
                 current_user.id,
@@ -2328,17 +2409,23 @@ def get_tickets_del_usuario_logic(current_user: User):
                 tenant_slug,
                 municipio_ids_for_query,
             )
-            if not municipio_ids_for_query:
-                current_app.logger.error(f"[DEBUG] Usuario {current_user.id} no tiene municipio_id.")
+            if not tenant_for_query or not _authorized_for_tenant():
+                current_app.logger.error(
+                    "[DEBUG] Usuario %s no tiene un tenant municipal verificable.",
+                    current_user.id,
+                )
                 return _ticket_access_contract_response(
                     current_user,
                     reason_code="missing_municipal_scope",
-                    message="El usuario municipal no tiene municipio_id valido para operar la bandeja de reclamos.",
+                    message="El usuario municipal no tiene un tenant verificable para operar la bandeja de reclamos.",
                     tenant=tenant_for_query,
                 )
 
-            query_base = TicketModel.query.filter(TicketModel.municipio_id.in_(municipio_ids_for_query))
-            current_app.logger.info(f"[DEBUG] Querying for municipio_ids: {municipio_ids_for_query}")
+            query_base = scoped_municipio_ticket_query(tenant_for_query)
+            current_app.logger.info(
+                "[DEBUG] Querying municipal tickets for tenant_id=%s",
+                tenant_for_query.id,
+            )
             tipo_ticket_str = 'municipio'
         elif tenant_owner_pyme_id or (
             current_user.tipo_chat == "pyme" or (
@@ -3098,7 +3185,12 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
     )
     if authenticated_lookup:
         # A JWT may skip the public PIN only inside its own tenant scope.
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado).first()
+        scoped_query = _authenticated_municipio_number_query(normalizado, actor_user)
+        ticket = (
+            _unique_municipio_ticket_from_query(scoped_query)
+            if scoped_query is not None
+            else None
+        )
         if ticket and not _authenticated_municipio_lookup_allows(ticket, actor_user):
             current_app.logger.warning(
                 "Cross-tenant ticket lookup denied actor_user_id=%s ticket_id=%s request_id=%s",
@@ -3121,7 +3213,12 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
                     (jsonify({"error": "Verificación reCAPTCHA fallida."}), 400)
                 )
 
-        ticket = MunicipioTicket.query.filter_by(nro_ticket=normalizado, consulta_pin=pin).first()
+        ticket = _unique_municipio_ticket_from_query(
+            MunicipioTicket.query.filter_by(
+                nro_ticket=normalizado,
+                consulta_pin=pin,
+            )
+        )
 
     if not ticket:
         return _ticket_private_no_store_response(
@@ -3225,7 +3322,12 @@ def get_public_ticket_status():
                 request_id,
             )
 
-    ticket = MunicipioTicket.query.filter_by(nro_ticket=normalized, consulta_pin=pin).first()
+    ticket = _unique_municipio_ticket_from_query(
+        MunicipioTicket.query.filter_by(
+            nro_ticket=normalized,
+            consulta_pin=pin,
+        )
+    )
     if not ticket:
         return _ticket_contract_response(
             {
@@ -3271,14 +3373,8 @@ def get_ticket_details(current_user: User, ticket_id: int):
     if not ticket:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
-    if current_user.tipo_chat != "municipio" or not current_user.municipio_id:
-        if not (_authorized_for_tenant_scope(current_user, tenant) and tenant_municipio_id):
-            return jsonify({"error": "Acceso denegado. Se requiere un usuario municipal."}), 403
-
-    allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
-    if not allowed_municipio_ids or ticket.municipio_id not in allowed_municipio_ids:
-        return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
+    if not _ticket_scope_access_allows("municipio", ticket, current_user):
+        return jsonify({"error": "Ticket no encontrado."}), 404
 
     error_response = _validar_asignacion_empleado(ticket, current_user)
     if error_response:
@@ -3306,13 +3402,12 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
     tenant, tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
 
     if tipo == "municipio":
-        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
         tenant_scope_allows = (
             _authorized_for_tenant_scope(current_user, tenant)
             and _ticket_matches_tenant_scope(ticket_obj, tenant, tenant_municipio_id, None)
         )
-        if ticket_obj.municipio_id not in allowed_municipio_ids and not tenant_scope_allows:
-            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+        if not tenant_scope_allows:
+            return jsonify({"error": "Ticket no encontrado."}), 404
     else:
         tenant_scope_allows = (
             _authorized_for_tenant_scope(current_user, tenant)
@@ -3458,8 +3553,11 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
 @token_requerido
 @admin_o_empleado_requerido
 def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no válido."}), 400
     comentario_texto = None
     archivos_subidos = []
+    attachment_info = None
 
     if request.content_type.startswith('application/json'):
         data = request.get_json()
@@ -3482,7 +3580,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         comentario_texto = ""
 
     # Now check if there's actual content (non-whitespace text or any files)
-    if not comentario_texto.strip() and not archivos_subidos:
+    if not comentario_texto.strip() and not archivos_subidos and not attachment_info:
         return jsonify({"error": "El comentario o al menos un archivo son requeridos."}), 400
     
     # comentario_texto is now guaranteed to be a string (potentially empty or whitespace only if not stripped yet for saving)
@@ -3498,11 +3596,8 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
-        if not _is_municipio_agent(current_user) or not allowed_municipio_ids:
-            return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
-        if ticket_obj.municipio_id not in allowed_municipio_ids:
-            return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
+        if not _ticket_scope_access_allows("municipio", ticket_obj, current_user):
+            return jsonify({"error": "Ticket no encontrado."}), 404
     elif tipo == 'pyme':
         tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket_obj, current_user)
         if not tenant_scope_allows:
@@ -3511,6 +3606,17 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     error_response = _validar_asignacion_empleado(ticket_obj, current_user)
     if error_response:
         return error_response
+
+    json_attachment = None
+    if attachment_info:
+        json_attachment = _claim_existing_attachment_for_ticket(
+            attachment_info,
+            current_user=current_user,
+            ticket_id=ticket_id,
+            tipo_ticket=tipo,
+        )
+        if json_attachment is None:
+            return jsonify({"error": "Archivo adjunto no encontrado."}), 404
 
     log_ticket_debug(
         "responder_agente_con_archivos", # Acción actualizada
@@ -3552,8 +3658,9 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
             current_app.logger.error(f"No se pudo guardar el comentario de texto para el ticket {ticket_id}.")
 
     # If the request was JSON and had attachmentInfo, create a comment for it
-    if 'attachment_info' in locals() and attachment_info:
-        file_comment_text = f"[Archivo adjunto: {attachment_info.get('name', 'archivo')}]"
+    if json_attachment is not None:
+        attachment_name = json_attachment.nombre_original or json_attachment.filename or "archivo"
+        file_comment_text = f"[Archivo adjunto: {attachment_name}]"
         file_comment_obj = servicio_tickets.crear_comentario(
             ticket_id=ticket_id,
             tipo_ticket=tipo,
@@ -3561,7 +3668,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
                 "comentario": file_comment_text,
                 "user_id": current_user.id,
                 "es_admin": True,
-                "archivo_adjunto_id": attachment_info.get('id'),
+                "archivo_adjunto_id": json_attachment.id,
                 "emit_notifications": False,
                 "emit_socket": False,
             },
@@ -3569,7 +3676,7 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         if file_comment_obj:
             comentarios_creados.append(file_comment_obj)
         else:
-            current_app.logger.error(f"No se pudo crear el comentario para el archivo adjunto ID: {attachment_info.get('id')}.")
+            current_app.logger.error(f"No se pudo crear el comentario para el archivo adjunto ID: {json_attachment.id}.")
 
     # Create a separate comment for each physically attached file (from multipart)
     for adjunto in archivos_adjuntados_db:
@@ -3793,6 +3900,8 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 @token_requerido
 @admin_o_empleado_requerido
 def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no válido."}), 400
     data = request.get_json()
     nuevo_estado = data.get("estado")
     if not nuevo_estado:
@@ -3817,11 +3926,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
 
     # Refuerzo de permisos:
     if tipo == 'municipio':
-        allowed_municipio_ids = _get_allowed_municipio_ids(current_user)
-        if not _is_municipio_agent(current_user) or not allowed_municipio_ids:
-            return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
-        if ticket_obj.municipio_id not in allowed_municipio_ids:
-            return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
+        if not _ticket_scope_access_allows("municipio", ticket_obj, current_user):
+            return jsonify({"error": "Ticket no encontrado."}), 404
     elif tipo == 'pyme':
         if not _ticket_scope_access_allows("pyme", ticket_obj, current_user):
             return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
@@ -4342,7 +4448,9 @@ def get_ticket_knowledge_base_suggestions(current_user: User, owner_user: User, 
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     if ticket_tipo == "municipio":
-        es_agente = current_user and current_user.tipo_chat == "municipio"
+        es_agente = current_user and _ticket_scope_access_allows(
+            "municipio", ticket_obj, current_user
+        )
         es_dueno = current_user and ticket_obj.user_id == current_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
     else:  # pyme
@@ -4599,10 +4707,11 @@ def get_panel_por_categoria(current_user: User):
                 "resolved_tickets_count": len(resolution_times)
             }
 
-        if current_user.tipo_chat != "municipio":
+        tenant, _tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(current_user)
+        if not _authorized_for_tenant_scope(current_user, tenant):
             return jsonify({"error": "Acceso denegado."}), 403
 
-        query = MunicipioTicket.query.filter(MunicipioTicket.municipio_id == current_user.municipio_id)
+        query = scoped_municipio_ticket_query(tenant)
 
         all_tickets_for_user_municipio = query.order_by(MunicipioTicket.fecha.desc()).all()
 
@@ -4795,6 +4904,8 @@ def get_ticket_panel(current_user: User):
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/ubicacion', methods=['PUT', 'POST'])
 @token_requerido
 def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no válido."}), 400
     """Actualiza la ubicación geográfica asociada a un ticket."""
     data = request.get_json() or {}
     lat = (
@@ -4841,7 +4952,7 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
         and ticket_obj.anon_id == anon_id_header
     ):
         pass
-    elif tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
+    elif tipo == 'municipio' and _ticket_scope_access_allows("municipio", ticket_obj, current_user):
         pass
     elif tipo == 'pyme' and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
         pass
@@ -4881,6 +4992,8 @@ def actualizar_ubicacion_ticket(current_user: User, tipo: str, ticket_id: int):
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['POST'])
 @token_requerido
 def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no válido."}), 400
     data = request.get_json(silent=True) or {}
     puntuacion = data.get('puntuacion')
     comentario = data.get('comentario')
@@ -4894,7 +5007,7 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
 
     es_dueño = ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
+    if tipo == 'municipio' and _ticket_scope_access_allows("municipio", ticket_obj, current_user):
         es_admin = True
     if tipo == 'pyme' and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
         es_admin = True
@@ -4910,6 +5023,8 @@ def enviar_encuesta(current_user: User, tipo: str, ticket_id: int):
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/encuesta', methods=['GET'])
 @token_requerido
 def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no válido."}), 400
     encuesta = TicketSatisfaccion.query.filter_by(ticket_id=ticket_id, tipo=tipo).first()
     if not encuesta:
         return jsonify({})
@@ -4918,7 +5033,7 @@ def obtener_encuesta(current_user: User, tipo: str, ticket_id: int):
     ticket_obj = db.session.get(TicketModel, ticket_id)
     es_dueño = ticket_obj and ticket_obj.user_id == current_user.id
     es_admin = False
-    if tipo == 'municipio' and current_user.tipo_chat == "municipio" and ticket_obj.municipio_id == current_user.municipio_id:
+    if tipo == 'municipio' and ticket_obj and _ticket_scope_access_allows("municipio", ticket_obj, current_user):
         es_admin = True
     if tipo == 'pyme' and ticket_obj and _ticket_scope_access_allows("pyme", ticket_obj, current_user):
         es_admin = True
@@ -4962,10 +5077,15 @@ def mapa_de_tickets(current_user: User, tipo: str):
         if not (current_user.tipo_chat == "municipio"):
             return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
 
+        tenant, _municipio_id, _pyme_id = _resolve_tenant_scope(current_user)
+        if not _authorized_for_tenant_scope(current_user, tenant):
+            return jsonify({"error": "No tienes permiso para ver este mapa."}), 403
+
         # Consider renaming 'obtener_tickets_abiertos_con_ubicacion' if it now handles various states
         datos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa( # Asumiendo que se renombra/modifica el servicio
             tipo_ticket=tipo,
-            municipio_id=current_user.municipio_id,
+            municipio_id=getattr(tenant, "municipio_id", None),
+            tenant_id=tenant.id,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
@@ -5035,6 +5155,8 @@ def _format_datetime_safe(value) -> str:
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/send-history', methods=['POST'])
 @anon_o_token_requerido
 def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: str = None, owner_user: User = None):
+    if tipo not in {"municipio", "pyme"}:
+        return jsonify({"error": "Tipo de ticket no válido."}), 400
     """
     Recupera el historial completo de un ticket y lo envía por correo electrónico
     al cliente y al correo de contacto del agente/municipio.
@@ -5050,19 +5172,9 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
     pin = request.args.get("pin")
 
     if tipo == 'municipio':
-        allowed_municipio_ids = _get_allowed_municipio_ids(actor_user) if actor_user else []
-        tenant, tenant_municipio_id, _tenant_pyme_id = _resolve_tenant_scope(actor_user) if actor_user else (None, None, None)
-        tenant_scope_allows = (
+        es_agente = bool(
             actor_user
-            and _authorized_for_tenant_scope(actor_user, tenant)
-            and _ticket_matches_tenant_scope(ticket_obj, tenant, tenant_municipio_id, None)
-        )
-        es_agente = (
-            actor_user
-            and (
-                ticket_obj.municipio_id in allowed_municipio_ids
-                or tenant_scope_allows
-            )
+            and _ticket_scope_access_allows("municipio", ticket_obj, actor_user)
         )
         es_dueno = actor_user and ticket_obj.user_id == actor_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id

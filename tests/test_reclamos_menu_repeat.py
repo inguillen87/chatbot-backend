@@ -1,12 +1,20 @@
 import unittest
-from app import create_app, db
-from models import User, Rubro, ChatSessionContext
-from services.municipio_responder import responder_municipio
 from unittest.mock import patch
+
+from app import create_app, db
+from models import ChatSessionContext, Rubro, User
+from services.municipio_responder import responder_municipio
+
+
+def _unexpected_provider_call(*_args, **_kwargs):
+    raise AssertionError(
+        "The deterministic reclamo menu control attempted an LLM/provider call"
+    )
+
 
 class ReclamoMenuRepeatTestCase(unittest.TestCase):
     def setUp(self):
-        self.app = create_app('config.TestingConfig')
+        self.app = create_app("config.TestingConfig")
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
@@ -20,11 +28,14 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
             password_hash="test",
             rubro=rubro,
             tipo_chat="municipio",
-            municipio_id=1
+            municipio_id=1,
         )
         db.session.add(self.owner_user)
         db.session.commit()
-        self.chat_context = ChatSessionContext(chat_session_id="menu_repeat", user_id=self.owner_user.id)
+        self.chat_context = ChatSessionContext(
+            chat_session_id="menu_repeat",
+            user_id=self.owner_user.id,
+        )
         db.session.add(self.chat_context)
         db.session.commit()
 
@@ -33,34 +44,38 @@ class ReclamoMenuRepeatTestCase(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    @patch('services.llm_orchestrator.llamar_llm_con_fallback')
-    def test_repeating_reclamo_command_returns_menu(self, mock_llamar_gemini):
-        # Mock the LLM to return an action that shows the menu
-        mock_llamar_gemini.return_value = (
-            {
-                "accion_backend": "mostrar_menu_reclamos",
-                "message_body": "Aquí tienes el menú de reclamos."
-            },
-            {}
-        )
+    @patch.multiple(
+        "services.municipio_responder",
+        llamar_gemini=_unexpected_provider_call,
+        extract_multiple_contact_details_llm=_unexpected_provider_call,
+        extract_complaint_details_llm=_unexpected_provider_call,
+    )
+    def test_repeating_reclamo_command_returns_menu(self):
         response1 = responder_municipio(
             "iniciar reclamo",
             self.owner_user,
             self.owner_user.rubro,
             chat_db_context=self.chat_context,
-            anon_id="123"
+            anon_id="123",
         )
-        self.assertIn("Iniciar un Reclamo", " ".join(opt["texto"] for opt in response1.get("options_list", [])))
+        self.assertIn(
+            "Iniciar un Reclamo",
+            " ".join(opt["texto"] for opt in response1.get("options_list", [])),
+        )
 
         response2 = responder_municipio(
             "Hacer un Reclamo",
             self.owner_user,
             self.owner_user.rubro,
             chat_db_context=self.chat_context,
-            anon_id="123"
+            anon_id="123",
         )
-        self.assertIn("Iniciar un Reclamo", " ".join(opt["texto"] for opt in response2.get("options_list", [])))
+        self.assertIn(
+            "Iniciar un Reclamo",
+            " ".join(opt["texto"] for opt in response2.get("options_list", [])),
+        )
         self.assertGreater(len(response2.get("options_list", [])), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

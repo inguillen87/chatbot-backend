@@ -7,17 +7,137 @@ from models import (
     MunicipioTicket,
     TicketComentario,
     ArchivoAdjunto,
+    ChatSessionContext,
     ClienteNota, # Nueva importación
     LlmInteractionLog,
     TenantProfile,
 )
 from extensions import db
-from sqlalchemy import or_
-from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
-from sqlalchemy import or_
+from sqlalchemy import and_, false, or_
+from utils.auth_helpers import (
+    admin_o_empleado_requerido,
+    auth_tenant_for_user,
+    token_requerido,
+)
 from datetime import datetime, timedelta # Añadido timedelta
 
+from services.tenant_ticket_scope import scoped_municipio_ticket_query, tenant_owner_ids
+from utils.roles import is_authorized_superadmin_user
+
+
 crm_bp = Blueprint('crm', __name__, url_prefix='/crm')
+
+
+def _crm_tenant_for_actor(actor: User) -> TenantProfile | None:
+    """Resolve one exact CRM tenant, never an arbitrary legacy owner match."""
+    tenant = auth_tenant_for_user(actor)
+    if tenant is None or getattr(tenant, "is_active", True) is False:
+        return None
+    return tenant
+
+
+def _crm_pyme_ticket_query(actor: User, *, cliente_id: int | None = None):
+    query = PymeTicket.query
+    if cliente_id is not None:
+        query = query.filter(PymeTicket.user_id == cliente_id)
+    if is_authorized_superadmin_user(actor):
+        return query
+    tenant = _crm_tenant_for_actor(actor)
+    if tenant is None:
+        return query.filter(false())
+    return query.filter(PymeTicket.tenant_id == tenant.id)
+
+
+def _crm_municipio_ticket_query(actor: User, *, cliente_id: int | None = None):
+    query = MunicipioTicket.query
+    if cliente_id is not None:
+        query = query.filter(MunicipioTicket.user_id == cliente_id)
+    if is_authorized_superadmin_user(actor):
+        return query
+    tenant = _crm_tenant_for_actor(actor)
+    if tenant is None:
+        return query.filter(false())
+    return scoped_municipio_ticket_query(tenant, query)
+
+
+def _crm_conversation_query(actor: User, *, cliente_id: int):
+    query = Conversacion.query.filter(Conversacion.user_id == cliente_id)
+    if is_authorized_superadmin_user(actor):
+        return query
+    tenant = _crm_tenant_for_actor(actor)
+    if tenant is None or tenant.pyme_id is None:
+        return query.filter(false())
+    return query.filter(Conversacion.pyme_id == tenant.pyme_id)
+
+
+def _crm_client_query(actor: User):
+    query = User.query
+    if is_authorized_superadmin_user(actor):
+        return query
+    tenant = _crm_tenant_for_actor(actor)
+    owners = tenant_owner_ids(tenant)
+    if tenant is None or len(owners) != 1:
+        return query.filter(false())
+    return query.filter(
+        or_(
+            User.tenant_id == tenant.id,
+            and_(
+                User.tenant_id.is_(None),
+                User.empresa_id == owners[0],
+            ),
+        )
+    )
+
+
+def _crm_note_query(actor: User, *, cliente_id: int | None = None):
+    query = ClienteNota.query
+    if cliente_id is not None:
+        query = query.filter(ClienteNota.cliente_user_id == cliente_id)
+    if is_authorized_superadmin_user(actor):
+        return query
+    tenant = _crm_tenant_for_actor(actor)
+    owners = tenant_owner_ids(tenant)
+    if tenant is None or len(owners) != 1:
+        return query.filter(false())
+    creator_ids = User.query.filter(
+        or_(
+            User.tenant_id == tenant.id,
+            User.id == owners[0],
+            and_(
+                User.tenant_id.is_(None),
+                User.empresa_id == owners[0],
+            ),
+        )
+    ).with_entities(User.id)
+    return query.filter(ClienteNota.creada_por_user_id.in_(creator_ids))
+
+
+def _crm_last_interaction_date(actor: User, cliente_id: int):
+    candidates = []
+    last_convo = _crm_conversation_query(actor, cliente_id=cliente_id).order_by(
+        Conversacion.timestamp.desc()
+    ).first()
+    if last_convo and last_convo.timestamp:
+        candidates.append(last_convo.timestamp)
+
+    last_pyme = _crm_pyme_ticket_query(actor, cliente_id=cliente_id).order_by(
+        PymeTicket.ultima_actividad.desc()
+    ).first()
+    if last_pyme and last_pyme.ultima_actividad:
+        candidates.append(last_pyme.ultima_actividad)
+
+    last_municipio = _crm_municipio_ticket_query(actor, cliente_id=cliente_id).order_by(
+        MunicipioTicket.ultima_actividad.desc()
+    ).first()
+    if last_municipio and last_municipio.ultima_actividad:
+        candidates.append(last_municipio.ultima_actividad)
+
+    last_note = _crm_note_query(actor, cliente_id=cliente_id).order_by(
+        ClienteNota.fecha_actualizacion.desc()
+    ).first()
+    if last_note and last_note.fecha_actualizacion:
+        candidates.append(last_note.fecha_actualizacion)
+    return max(candidates) if candidates else None
 
 @crm_bp.route('/')
 @token_requerido
@@ -59,7 +179,7 @@ def _obtener_clientes(
         page: Número de página (1-indexado) para paginación.
         page_size: Cantidad de registros por página.
     """
-    query = User.query.filter_by(empresa_id=current_user.id)
+    query = _crm_client_query(current_user)
     if tag:
         like = f"%{tag}%"
         query = query.filter(User.tags.ilike(like))
@@ -222,7 +342,7 @@ def actualizar_usuario(current_user: User, usuario_id: int):
     """Permite actualizar datos básicos y el rol de un usuario del tenant."""
 
     payload = request.get_json(silent=True) or {}
-    usuario = User.query.filter_by(id=usuario_id, empresa_id=current_user.id).first()
+    usuario = _crm_client_query(current_user).filter(User.id == usuario_id).one_or_none()
     if not usuario:
         return jsonify({"error": "Usuario no encontrado"}), 404
 
@@ -273,7 +393,7 @@ def actualizar_usuario(current_user: User, usuario_id: int):
 @token_requerido
 @admin_o_empleado_requerido
 def actualizar_tags(current_user: User, cliente_id: int):
-    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    cliente = _crm_client_query(current_user).filter(User.id == cliente_id).one_or_none()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
     data = request.get_json(silent=True) or {}
@@ -295,55 +415,24 @@ def actualizar_tags(current_user: User, cliente_id: int):
 def analytics(current_user: User):
     """Devuelve métricas básicas de usuarios y tickets."""
 
-    total = User.query.filter_by(empresa_id=current_user.id).count()
-    marketing = User.query.filter_by(empresa_id=current_user.id, acepta_marketing=True).count()
+    client_query = _crm_client_query(current_user)
+    total = client_query.count()
+    marketing = client_query.filter(User.acepta_marketing.is_(True)).count()
 
-    abiertos_muni = db.session.execute(
-        db.text(
-            "SELECT COUNT(*) FROM municipio_ticket mt JOIN user u ON mt.user_id = u.id "
-            "WHERE u.empresa_id = :eid AND mt.estado != 'cerrado'"
-        ),
-        {"eid": current_user.id},
-    ).scalar() or 0
+    client_ids = client_query.with_entities(User.id)
+    muni_tickets = _crm_municipio_ticket_query(current_user).filter(
+        MunicipioTicket.user_id.in_(client_ids)
+    )
+    pyme_tickets = _crm_pyme_ticket_query(current_user).filter(
+        PymeTicket.user_id.in_(client_ids)
+    )
 
-    abiertos_pyme = db.session.execute(
-        db.text(
-            "SELECT COUNT(*) FROM pyme_ticket pt JOIN user u ON pt.user_id = u.id "
-            "WHERE u.empresa_id = :eid AND pt.estado != 'cerrado'"
-        ),
-        {"eid": current_user.id},
-    ).scalar() or 0
-
-    cerrados_muni = db.session.execute(
-        db.text(
-            "SELECT COUNT(*) FROM municipio_ticket mt JOIN user u ON mt.user_id = u.id "
-            "WHERE u.empresa_id = :eid AND mt.estado = 'cerrado'"
-        ),
-        {"eid": current_user.id},
-    ).scalar() or 0
-
-    cerrados_pyme = db.session.execute(
-        db.text(
-            "SELECT COUNT(*) FROM pyme_ticket pt JOIN user u ON pt.user_id = u.id "
-            "WHERE u.empresa_id = :eid AND pt.estado = 'cerrado'"
-        ),
-        {"eid": current_user.id},
-    ).scalar() or 0
-    en_proceso_muni = db.session.execute(
-        db.text(
-            "SELECT COUNT(*) FROM municipio_ticket mt JOIN user u ON mt.user_id = u.id "
-            "WHERE u.empresa_id = :eid AND mt.estado = 'en_proceso'"
-        ),
-        {"eid": current_user.id},
-    ).scalar() or 0
-
-    en_proceso_pyme = db.session.execute(
-        db.text(
-            "SELECT COUNT(*) FROM pyme_ticket pt JOIN user u ON pt.user_id = u.id "
-            "WHERE u.empresa_id = :eid AND pt.estado = 'en_proceso'"
-        ),
-        {"eid": current_user.id},
-    ).scalar() or 0
+    abiertos_muni = muni_tickets.filter(MunicipioTicket.estado != 'cerrado').count()
+    abiertos_pyme = pyme_tickets.filter(PymeTicket.estado != 'cerrado').count()
+    cerrados_muni = muni_tickets.filter(MunicipioTicket.estado == 'cerrado').count()
+    cerrados_pyme = pyme_tickets.filter(PymeTicket.estado == 'cerrado').count()
+    en_proceso_muni = muni_tickets.filter(MunicipioTicket.estado == 'en_proceso').count()
+    en_proceso_pyme = pyme_tickets.filter(PymeTicket.estado == 'en_proceso').count()
 
     tasa_conversion_marketing = (marketing / total) * 100 if total > 0 else 0
 
@@ -353,13 +442,11 @@ def analytics(current_user: User):
     fin_periodo_anterior = inicio_periodo_actual
     inicio_periodo_anterior = fin_periodo_anterior - timedelta(days=30)
 
-    nuevos_clientes_actual = User.query.filter(
-        User.empresa_id == current_user.id,
+    nuevos_clientes_actual = _crm_client_query(current_user).filter(
         User.fecha_creacion >= inicio_periodo_actual
     ).count() # Asume que fecha_creacion no puede ser en el futuro
 
-    nuevos_clientes_anterior = User.query.filter(
-        User.empresa_id == current_user.id,
+    nuevos_clientes_anterior = _crm_client_query(current_user).filter(
         User.fecha_creacion >= inicio_periodo_anterior,
         User.fecha_creacion < fin_periodo_anterior
     ).count()
@@ -387,13 +474,8 @@ def analytics(current_user: User):
 def _obtener_interacciones(cliente: User, viewer_user: User):
     """Compila el historial de chats y tickets de un cliente, filtrado por el tenant del viewer."""
 
-    # Determinar contexto del viewer
-    viewer_empresa_id = viewer_user.empresa_id or viewer_user.id # Si es admin, es su propio ID
-
     # Filtrar conversaciones
-    chats_query = Conversacion.query.filter_by(user_id=cliente.id)
-    if viewer_user.tipo_chat == "pyme":
-        chats_query = chats_query.filter_by(pyme_id=viewer_empresa_id)
+    chats_query = _crm_conversation_query(viewer_user, cliente_id=cliente.id)
     # Para municipio, Conversacion no tiene municipio_id directo siempre?
     # Conversacion tiene user_id (cliente) y pyme_id.
     # Si es municipio, Conversacion podría no estar linkeada directamente por ID, o usa lógica distinta.
@@ -404,23 +486,12 @@ def _obtener_interacciones(cliente: User, viewer_user: User):
     chats = chats_query.all()
 
     # Filtrar PymeTickets
-    pymes_query = PymeTicket.query.filter_by(user_id=cliente.id)
-    if viewer_user.tipo_chat == "pyme":
-        tenant_pyme = getattr(viewer_user, "tenant_profile_pyme", None)
-        if tenant_pyme:
-             pymes_query = pymes_query.filter(PymeTicket.tenant_id == tenant_pyme.id)
-        else:
-             # Fallback inseguro o vacio? Mejor vacio para seguridad.
-             # O intentar filtrar por rubro si era la logica vieja, pero es insegura.
-             # Si no hay tenant_id, no mostramos nada para evitar leak.
-             pymes_query = pymes_query.filter(PymeTicket.tenant_id != None)
+    pymes_query = _crm_pyme_ticket_query(viewer_user, cliente_id=cliente.id)
 
     pymes = pymes_query.all()
 
     # Filtrar MunicipioTickets
-    munis_query = MunicipioTicket.query.filter_by(user_id=cliente.id)
-    if viewer_user.tipo_chat == "municipio":
-        munis_query = munis_query.filter_by(municipio_id=viewer_empresa_id)
+    munis_query = _crm_municipio_ticket_query(viewer_user, cliente_id=cliente.id)
 
     munis = munis_query.all()
 
@@ -461,7 +532,7 @@ def _obtener_interacciones(cliente: User, viewer_user: User):
 @admin_o_empleado_requerido
 def interacciones_cliente(current_user: User, cliente_id: int):
     """Devuelve consultas previas y tickets de un cliente."""
-    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    cliente = _crm_client_query(current_user).filter(User.id == cliente_id).one_or_none()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
     historial = _obtener_interacciones(cliente, current_user)
@@ -483,9 +554,8 @@ def enviar_campana(current_user: User):
         return jsonify({"error": "Datos inválidos. Se requiere 'asunto', 'mensaje_html' y una lista de 'usuarios'."}), 400
 
     # Validar que los usuarios pertenezcan a la empresa del current_user
-    clientes_destinatarios = User.query.filter(
+    clientes_destinatarios = _crm_client_query(current_user).filter(
         User.id.in_(lista_ids_usuarios),
-        User.empresa_id == current_user.id,
         User.email.isnot(None), # Solo usuarios con email
         User.acepta_marketing == True # Solo usuarios que aceptan marketing
     ).all()
@@ -531,20 +601,20 @@ def _detalles_archivo(adjunto: ArchivoAdjunto, relacion: dict) -> dict:
     }
 
 
-def _obtener_historial_cliente(cliente_id: int) -> dict:
+def _obtener_historial_cliente(cliente_id: int, viewer_user: User) -> dict:
     """Compila interacciones previas del cliente con mayor detalle."""
     convs = (
-        Conversacion.query.filter_by(user_id=cliente_id)
+        _crm_conversation_query(viewer_user, cliente_id=cliente_id)
         .order_by(Conversacion.timestamp.desc())
         .all()
     )
     tickets_pyme = (
-        PymeTicket.query.filter_by(user_id=cliente_id)
+        _crm_pyme_ticket_query(viewer_user, cliente_id=cliente_id)
         .order_by(PymeTicket.fecha.desc())
         .all()
     )
     tickets_muni = (
-        MunicipioTicket.query.filter_by(user_id=cliente_id)
+        _crm_municipio_ticket_query(viewer_user, cliente_id=cliente_id)
         .order_by(MunicipioTicket.fecha.desc())
         .all()
     )
@@ -554,11 +624,16 @@ def _obtener_historial_cliente(cliente_id: int) -> dict:
     archivos = []
     timeline = []
 
-    adjuntos_chat = (
-        ArchivoAdjunto.query.filter_by(user_id=cliente_id, tipo="chat")
-        .order_by(ArchivoAdjunto.fecha.desc())
-        .all()
-    )
+    chat_session_ids = [c.session_id for c in convs if c.session_id]
+    adjuntos_chat_query = ArchivoAdjunto.query.filter_by(user_id=cliente_id, tipo="chat")
+    if not is_authorized_superadmin_user(viewer_user):
+        if chat_session_ids:
+            adjuntos_chat_query = adjuntos_chat_query.filter(
+                ArchivoAdjunto.session_id.in_(chat_session_ids)
+            )
+        else:
+            adjuntos_chat_query = adjuntos_chat_query.filter(false())
+    adjuntos_chat = adjuntos_chat_query.order_by(ArchivoAdjunto.fecha.desc()).all()
 
     for c in convs:
         consulta = {
@@ -627,7 +702,7 @@ def _obtener_historial_cliente(cliente_id: int) -> dict:
 
     # Obtener y añadir notas del cliente
     notas_cliente = (
-        ClienteNota.query.filter_by(cliente_user_id=cliente_id)
+        _crm_note_query(viewer_user, cliente_id=cliente_id)
         .order_by(ClienteNota.fecha_creacion.desc()) # o fecha_actualizacion
         .all()
     )
@@ -679,10 +754,10 @@ def _obtener_historial_cliente(cliente_id: int) -> dict:
 @token_requerido
 @admin_o_empleado_requerido
 def historial_cliente(current_user: User, cliente_id: int):
-    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    cliente = _crm_client_query(current_user).filter(User.id == cliente_id).one_or_none()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado"}), 404
-    datos = _obtener_historial_cliente(cliente.id)
+    datos = _obtener_historial_cliente(cliente.id, current_user)
     return jsonify(datos)
 
 
@@ -704,7 +779,7 @@ def _serialize_nota(nota: ClienteNota, creador_email: str = "N/A"):
 @admin_o_empleado_requerido
 def crear_nota_cliente(current_user: User, cliente_id: int):
     """Crea una nueva nota para un cliente específico."""
-    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    cliente = _crm_client_query(current_user).filter(User.id == cliente_id).one_or_none()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado o no pertenece a esta empresa."}), 404
 
@@ -733,11 +808,11 @@ def crear_nota_cliente(current_user: User, cliente_id: int):
 @admin_o_empleado_requerido
 def listar_notas_cliente(current_user: User, cliente_id: int):
     """Lista todas las notas de un cliente específico."""
-    cliente = User.query.filter_by(id=cliente_id, empresa_id=current_user.id).first()
+    cliente = _crm_client_query(current_user).filter(User.id == cliente_id).one_or_none()
     if not cliente:
         return jsonify({"error": "Cliente no encontrado o no pertenece a esta empresa."}), 404
 
-    notas = ClienteNota.query.filter_by(cliente_user_id=cliente_id)\
+    notas = _crm_note_query(current_user, cliente_id=cliente_id)\
                              .order_by(ClienteNota.fecha_creacion.desc())\
                              .all()
 
@@ -753,14 +828,9 @@ def listar_notas_cliente(current_user: User, cliente_id: int):
 @admin_o_empleado_requerido
 def actualizar_nota_cliente(current_user: User, nota_id: int):
     """Actualiza una nota existente."""
-    nota = ClienteNota.query.get(nota_id)
+    nota = _crm_note_query(current_user).filter(ClienteNota.id == nota_id).one_or_none()
     if not nota:
         return jsonify({"error": "Nota no encontrada."}), 404
-
-    # Verificar que el cliente de la nota pertenezca a la empresa del current_user (admin/empleado)
-    cliente_de_nota = User.query.get(nota.cliente_user_id)
-    if not cliente_de_nota or cliente_de_nota.empresa_id != current_user.id:
-        return jsonify({"error": "No tiene permiso para modificar esta nota (cliente no asociado)."}), 403
 
     # Opcional: permitir solo al creador de la nota modificarla, o a cualquier admin/empleado de la empresa.
     # if nota.creada_por_user_id != current_user.id:
@@ -786,13 +856,9 @@ def actualizar_nota_cliente(current_user: User, nota_id: int):
 @admin_o_empleado_requerido
 def eliminar_nota_cliente(current_user: User, nota_id: int):
     """Elimina una nota."""
-    nota = ClienteNota.query.get(nota_id)
+    nota = _crm_note_query(current_user).filter(ClienteNota.id == nota_id).one_or_none()
     if not nota:
         return jsonify({"error": "Nota no encontrada."}), 404
-
-    cliente_de_nota = User.query.get(nota.cliente_user_id)
-    if not cliente_de_nota or cliente_de_nota.empresa_id != current_user.id:
-        return jsonify({"error": "No tiene permiso para eliminar esta nota (cliente no asociado)."}), 403
 
     # Opcional: permitir solo al creador de la nota eliminarla.
     # if nota.creada_por_user_id != current_user.id:
@@ -817,47 +883,11 @@ def get_recent_clients(current_user: User):
     cutoff_date = datetime.utcnow() - timedelta(days=days_threshold)
 
     # Solo clientes de la empresa del admin/empleado actual
-    clients = User.query.filter_by(empresa_id=current_user.id).all()
+    clients = _crm_client_query(current_user).all()
     recent_clients_data = []
 
     for client in clients:
-        last_interaction_date = None
-
-        # Check Conversaciones
-        last_convo = Conversacion.query.filter_by(user_id=client.id).order_by(Conversacion.timestamp.desc()).first()
-        if last_convo:
-            # Asegurar que last_convo.timestamp es offset-naive si se compara con datetime.utcnow()
-            # Asumiendo que todos los timestamps son UTC.
-            if not last_interaction_date or last_convo.timestamp > last_interaction_date:
-                last_interaction_date = last_convo.timestamp
-
-        # Check PymeTickets (usar ultima_actividad que se actualiza)
-        pyme_q = PymeTicket.query.filter_by(user_id=client.id)
-        if current_user.tipo_chat == "pyme":
-             tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
-             if tenant_pyme:
-                 pyme_q = pyme_q.filter(PymeTicket.tenant_id == tenant_pyme.id)
-
-        last_pyme_ticket = pyme_q.order_by(PymeTicket.ultima_actividad.desc()).first()
-        if last_pyme_ticket:
-            if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
-                last_interaction_date = last_pyme_ticket.ultima_actividad
-
-        # Check MunicipioTickets (usar ultima_actividad)
-        muni_q = MunicipioTicket.query.filter_by(user_id=client.id)
-        if current_user.tipo_chat == "municipio":
-             muni_q = muni_q.filter_by(municipio_id=current_user.empresa_id or current_user.id)
-
-        last_muni_ticket = muni_q.order_by(MunicipioTicket.ultima_actividad.desc()).first()
-        if last_muni_ticket:
-            if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
-                last_interaction_date = last_muni_ticket.ultima_actividad
-
-        # Check ClienteNota (usar fecha_actualizacion)
-        last_nota = ClienteNota.query.filter_by(cliente_user_id=client.id).order_by(ClienteNota.fecha_actualizacion.desc()).first()
-        if last_nota:
-            if not last_interaction_date or last_nota.fecha_actualizacion > last_interaction_date:
-                last_interaction_date = last_nota.fecha_actualizacion
+        last_interaction_date = _crm_last_interaction_date(current_user, client.id)
 
         if last_interaction_date and last_interaction_date >= cutoff_date:
             recent_clients_data.append({
@@ -874,7 +904,17 @@ def get_recent_clients(current_user: User):
 @admin_o_empleado_requerido
 def llm_review(current_user: User):
     """Muestra las interacciones del LLM que están pendientes de revisión."""
-    logs = LlmInteractionLog.query.filter_by(status='pending_review').order_by(LlmInteractionLog.created_at.desc()).all()
+    query = LlmInteractionLog.query.filter_by(status='pending_review')
+    if not is_authorized_superadmin_user(current_user):
+        tenant = _crm_tenant_for_actor(current_user)
+        if tenant is None:
+            query = query.filter(false())
+        else:
+            query = query.join(
+                ChatSessionContext,
+                ChatSessionContext.chat_session_id == LlmInteractionLog.chat_session_id,
+            ).filter(ChatSessionContext.tenant_id == tenant.id)
+    logs = query.order_by(LlmInteractionLog.created_at.desc()).all()
     return render_template('admin/llm_review.html', logs=logs)
 
 @crm_bp.route('/clientes/insights/needs_followup', methods=['GET'])
@@ -885,41 +925,11 @@ def get_needs_followup_clients(current_user: User):
     # Clients whose last interaction was BEFORE this cutoff date, or never interacted
     cutoff_date = datetime.utcnow() - timedelta(days=days_threshold)
 
-    clients = User.query.filter_by(empresa_id=current_user.id).all()
+    clients = _crm_client_query(current_user).all()
     needs_followup_clients_data = []
 
     for client in clients:
-        last_interaction_date = None
-
-        last_convo = Conversacion.query.filter_by(user_id=client.id).order_by(Conversacion.timestamp.desc()).first()
-        if last_convo:
-            if not last_interaction_date or last_convo.timestamp > last_interaction_date:
-                last_interaction_date = last_convo.timestamp
-
-        pyme_q = PymeTicket.query.filter_by(user_id=client.id)
-        if current_user.tipo_chat == "pyme":
-             tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
-             if tenant_pyme:
-                 pyme_q = pyme_q.filter(PymeTicket.tenant_id == tenant_pyme.id)
-
-        last_pyme_ticket = pyme_q.order_by(PymeTicket.ultima_actividad.desc()).first()
-        if last_pyme_ticket:
-            if not last_interaction_date or last_pyme_ticket.ultima_actividad > last_interaction_date:
-                last_interaction_date = last_pyme_ticket.ultima_actividad
-
-        muni_q = MunicipioTicket.query.filter_by(user_id=client.id)
-        if current_user.tipo_chat == "municipio":
-             muni_q = muni_q.filter_by(municipio_id=current_user.empresa_id or current_user.id)
-
-        last_muni_ticket = muni_q.order_by(MunicipioTicket.ultima_actividad.desc()).first()
-        if last_muni_ticket:
-            if not last_interaction_date or last_muni_ticket.ultima_actividad > last_interaction_date:
-                last_interaction_date = last_muni_ticket.ultima_actividad
-
-        last_nota = ClienteNota.query.filter_by(cliente_user_id=client.id).order_by(ClienteNota.fecha_actualizacion.desc()).first()
-        if last_nota:
-            if not last_interaction_date or last_nota.fecha_actualizacion > last_interaction_date:
-                last_interaction_date = last_nota.fecha_actualizacion
+        last_interaction_date = _crm_last_interaction_date(current_user, client.id)
 
         if not last_interaction_date or last_interaction_date < cutoff_date:
             needs_followup_clients_data.append({

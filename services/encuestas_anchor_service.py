@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Sequence
@@ -12,6 +13,10 @@ from sqlalchemy.orm import joinedload
 from database import db
 from models import EncAnchorSnapshot, EncRespuesta
 from services.encuestas_service import EncuestaError, get_encuesta, _parse_datetime
+
+
+ANCHOR_CONTRACT_VERSION = "surveys.anchor.v2"
+LOCAL_INTEGRITY_SCOPE = "local_merkle_snapshot"
 
 
 def _canonical_response_payload(respuesta: EncRespuesta) -> Dict[str, object]:
@@ -43,9 +48,112 @@ def _hash_payload(payload: Dict[str, object]) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def compute_content_hash(respuesta_id: int) -> str:
+def _normalize_requested_chain(value: object) -> str:
+    normalized = re.sub(r"[^a-z0-9_-]+", "-", str(value or "polygon").strip().lower())
+    return (normalized.strip("-") or "polygon")[:24]
+
+
+def _anchor_truth(snapshot: EncAnchorSnapshot) -> Dict[str, object]:
+    """Describe only assurance that this backend can prove locally.
+
+    Historical versions labelled generated ``SIM-*`` references as published.
+    They never represented a provider receipt, so every such record is exposed as
+    simulated and unverified even if the stored status still says ``published``.
+    Other legacy publication claims are also downgraded to unverified until a
+    future provider verifier can validate them.
+    """
+
+    stored_status = str(snapshot.anchor_status or "draft").strip().lower()
+    tx_id = str(snapshot.tx_id or "").strip()
+    chain = str(snapshot.chain or "").strip()
+    simulated = (
+        stored_status == "simulated"
+        or tx_id.upper().startswith("SIM-")
+        or chain.lower().startswith("simulation:")
+    )
+    if simulated:
+        effective_status = "simulated"
+    elif stored_status in {"draft", "failed"}:
+        effective_status = stored_status
+    else:
+        # There is no blockchain/provider verification implementation in this
+        # service. Never promote a stored claim to a verified/public status.
+        effective_status = "unverified"
+
+    return {
+        "anchor_status": effective_status,
+        "stored_anchor_status": stored_status,
+        "is_simulated": simulated,
+        "published": False,
+        "externally_anchored": False,
+        "externally_verified": False,
+        "verification_status": "unverified",
+        "integrity_scope": LOCAL_INTEGRITY_SCOPE,
+        "assurance_notice": (
+            "Prueba Merkle local. No acredita publicacion ni verificacion en una red externa."
+        ),
+    }
+
+
+def serialize_anchor_snapshot(snapshot: EncAnchorSnapshot) -> Dict[str, object]:
+    truth = _anchor_truth(snapshot)
+    return {
+        "contract_version": ANCHOR_CONTRACT_VERSION,
+        "id": snapshot.id,
+        # Compatibility alias used by the original creation endpoint.
+        "snapshot_id": snapshot.id,
+        "encuesta_id": snapshot.encuesta_id,
+        "tenant_id": snapshot.tenant_id,
+        "algo": snapshot.algo,
+        "root_hash": snapshot.root_hash,
+        "total_respuestas": snapshot.total_respuestas,
+        "desde_at": snapshot.desde_at.isoformat(),
+        "hasta_at": snapshot.hasta_at.isoformat(),
+        "anchor_at": snapshot.anchor_at.isoformat() if snapshot.anchor_at else None,
+        "tx_id": snapshot.tx_id,
+        "chain": snapshot.chain,
+        "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
+        "created_by": snapshot.created_by,
+        **truth,
+    }
+
+
+def _get_scoped_snapshot(
+    *,
+    encuesta_id: int,
+    snapshot_id: int,
+    user: object,
+) -> tuple[object, EncAnchorSnapshot]:
+    """Resolve tenant first, then snapshot by tenant + survey + id.
+
+    Keeping this lookup centralized prevents callers from accidentally using a
+    globally enumerable ``snapshot_id`` as authorization.
+    """
+
+    encuesta = get_encuesta(encuesta_id, user=user)
+    snapshot = (
+        EncAnchorSnapshot.query.filter_by(
+            id=snapshot_id,
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+        )
+        .one_or_none()
+    )
+    if snapshot is None:
+        raise EncuestaError("Snapshot no encontrado", status_code=404)
+    return encuesta, snapshot
+
+
+def compute_content_hash(encuesta_id: int, respuesta_id: int, user: object) -> str:
+    encuesta = get_encuesta(encuesta_id, user=user)
     respuesta: EncRespuesta | None = (
-        EncRespuesta.query.options(joinedload(EncRespuesta.detalles)).filter_by(id=respuesta_id).one_or_none()
+        EncRespuesta.query.options(joinedload(EncRespuesta.detalles))
+        .filter_by(
+            id=respuesta_id,
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+        )
+        .one_or_none()
     )
     if not respuesta:
         raise EncuestaError("Respuesta no encontrada", status_code=404)
@@ -103,9 +211,12 @@ def build_snapshot(encuesta_id: int, desde: str, hasta: str, user: object) -> En
     if not desde_dt or not hasta_dt:
         raise EncuestaError("Debe indicar rango completo de fechas")
 
-    query = EncRespuesta.query.options(joinedload(EncRespuesta.detalles)).filter_by(encuesta_id=encuesta.id)
+    query = EncRespuesta.query.options(joinedload(EncRespuesta.detalles)).filter_by(
+        encuesta_id=encuesta.id,
+        tenant_id=tenant_id,
+    )
     query = query.filter(EncRespuesta.submitted_at >= desde_dt, EncRespuesta.submitted_at <= hasta_dt)
-    respuestas = query.order_by(EncRespuesta.submitted_at.asc()).all()
+    respuestas = query.order_by(EncRespuesta.submitted_at.asc(), EncRespuesta.id.asc()).all()
     if not respuestas:
         raise EncuestaError("No hay respuestas en el rango indicado", status_code=404)
 
@@ -140,28 +251,89 @@ def build_snapshot(encuesta_id: int, desde: str, hasta: str, user: object) -> En
     return snapshot
 
 
-def publish_snapshot(snapshot_id: int, chain: str = "polygon") -> EncAnchorSnapshot:
-    snapshot = db.session.get(EncAnchorSnapshot, snapshot_id)
-    if not snapshot:
-        raise EncuestaError("Snapshot no encontrado", status_code=404)
-    snapshot.chain = chain
-    snapshot.anchor_status = "published"
-    snapshot.anchor_at = datetime.now(timezone.utc)
-    snapshot.tx_id = snapshot.tx_id or f"SIM-{uuid.uuid4()}"
+def simulate_snapshot_anchor(
+    *,
+    encuesta_id: int,
+    snapshot_id: int,
+    user: object,
+    requested_chain: str = "polygon",
+) -> EncAnchorSnapshot:
+    """Record a local simulation without claiming external publication."""
+
+    _, snapshot = _get_scoped_snapshot(
+        encuesta_id=encuesta_id,
+        snapshot_id=snapshot_id,
+        user=user,
+    )
+    existing_tx_id = str(snapshot.tx_id or "").strip()
+    if existing_tx_id and not existing_tx_id.upper().startswith("SIM-"):
+        raise EncuestaError(
+            "El snapshot contiene una referencia externa que requiere revision manual",
+            status_code=409,
+            payload={
+                "contract_version": ANCHOR_CONTRACT_VERSION,
+                "reason_code": "anchor_external_state_requires_review",
+            },
+        )
+
+    chain = _normalize_requested_chain(requested_chain)
+    snapshot.chain = f"simulation:{chain}"
+    snapshot.anchor_status = "simulated"
+    snapshot.anchor_at = snapshot.anchor_at or datetime.now(timezone.utc)
+    snapshot.tx_id = existing_tx_id or f"SIM-{uuid.uuid4()}"
     db.session.commit()
     return snapshot
 
 
-def generate_merkle_proof(snapshot_id: int, respuesta_id: int) -> Dict[str, object]:
-    snapshot: EncAnchorSnapshot | None = (
-        EncAnchorSnapshot.query.options(joinedload(EncAnchorSnapshot.respuestas).joinedload(EncRespuesta.detalles))
-        .filter_by(id=snapshot_id)
-        .one_or_none()
-    )
-    if not snapshot:
-        raise EncuestaError("Snapshot no encontrado", status_code=404)
+def publish_snapshot(
+    encuesta_id: int,
+    snapshot_id: int,
+    user: object,
+    chain: str = "polygon",
+) -> EncAnchorSnapshot:
+    """Compatibility wrapper; this operation is a local simulation only."""
 
-    respuestas = sorted(snapshot.respuestas, key=lambda r: r.submitted_at or datetime.now(timezone.utc))
+    return simulate_snapshot_anchor(
+        encuesta_id=encuesta_id,
+        snapshot_id=snapshot_id,
+        user=user,
+        requested_chain=chain,
+    )
+
+
+def _verify_merkle_proof(content_hash: str, proof: Sequence[str], root_hash: str) -> bool:
+    current_hash = content_hash
+    for step in proof:
+        side, separator, sibling_hash = str(step).partition(":")
+        if not separator or side not in {"L", "R"} or not sibling_hash:
+            return False
+        combined = sibling_hash + current_hash if side == "L" else current_hash + sibling_hash
+        current_hash = hashlib.sha256(combined.encode("utf-8")).hexdigest()
+    return current_hash == root_hash
+
+
+def generate_merkle_proof(
+    encuesta_id: int,
+    snapshot_id: int,
+    respuesta_id: int,
+    user: object,
+) -> Dict[str, object]:
+    encuesta, snapshot = _get_scoped_snapshot(
+        encuesta_id=encuesta_id,
+        snapshot_id=snapshot_id,
+        user=user,
+    )
+
+    respuestas = (
+        EncRespuesta.query.options(joinedload(EncRespuesta.detalles))
+        .filter_by(
+            snapshot_id=snapshot.id,
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+        )
+        .order_by(EncRespuesta.submitted_at.asc(), EncRespuesta.id.asc())
+        .all()
+    )
     hashes = []
     target_index = None
     for idx, respuesta in enumerate(respuestas):
@@ -176,13 +348,32 @@ def generate_merkle_proof(snapshot_id: int, respuesta_id: int) -> Dict[str, obje
         raise EncuestaError("La respuesta no pertenece al snapshot", status_code=404)
 
     proof = _merkle_proof(hashes, target_index)
+    local_proof_valid = _verify_merkle_proof(
+        hashes[target_index],
+        proof,
+        snapshot.root_hash,
+    )
     db.session.commit()
     return {
+        "contract_version": ANCHOR_CONTRACT_VERSION,
         "respuesta_id": respuesta_id,
         "snapshot_id": snapshot_id,
+        "encuesta_id": encuesta.id,
         "root_hash": snapshot.root_hash,
         "content_hash": hashes[target_index],
         "proof": proof,
+        "included": True,
+        "local_proof_valid": local_proof_valid,
+        # Compatibility key deliberately remains false: local inclusion is not
+        # external publication/verification.
+        "valido": False,
+        "verified": False,
+        "externally_verified": False,
+        "verification_status": "local_only" if local_proof_valid else "invalid",
+        "integrity_scope": LOCAL_INTEGRITY_SCOPE,
+        "assurance_notice": (
+            "La respuesta esta incluida en este corte local; no se verifico una publicacion externa."
+        ),
     }
 
 
@@ -191,30 +382,16 @@ def list_snapshots(encuesta_id: int, user: object) -> Dict[str, object]:
 
     encuesta = get_encuesta(encuesta_id, user=user)
     snapshots = (
-        EncAnchorSnapshot.query.filter_by(encuesta_id=encuesta.id)
+        EncAnchorSnapshot.query.filter_by(
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+        )
         .order_by(EncAnchorSnapshot.created_at.desc())
         .all()
     )
 
-    payload: List[Dict[str, object]] = []
-    for snapshot in snapshots:
-        payload.append(
-            {
-                "id": snapshot.id,
-                "encuesta_id": snapshot.encuesta_id,
-                "tenant_id": snapshot.tenant_id,
-                "algo": snapshot.algo,
-                "root_hash": snapshot.root_hash,
-                "total_respuestas": snapshot.total_respuestas,
-                "desde_at": snapshot.desde_at.isoformat(),
-                "hasta_at": snapshot.hasta_at.isoformat(),
-                "anchor_status": snapshot.anchor_status,
-                "anchor_at": snapshot.anchor_at.isoformat() if snapshot.anchor_at else None,
-                "tx_id": snapshot.tx_id,
-                "chain": snapshot.chain,
-                "created_at": snapshot.created_at.isoformat() if snapshot.created_at else None,
-                "created_by": snapshot.created_by,
-            }
-        )
-
-    return {"encuesta_id": encuesta.id, "snapshots": payload}
+    return {
+        "contract_version": ANCHOR_CONTRACT_VERSION,
+        "encuesta_id": encuesta.id,
+        "snapshots": [serialize_anchor_snapshot(snapshot) for snapshot in snapshots],
+    }

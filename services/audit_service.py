@@ -10,6 +10,36 @@ from schemas.ai_contracts import GatewayRequest, GatewayResponse
 
 logger = logging.getLogger(__name__)
 
+
+def _redacted_tool_payload(value: Any) -> str | None:
+    """Return useful audit metadata without persisting tool PII."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        serialized = value
+    else:
+        try:
+            serialized = json.dumps(
+                value,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+        except (TypeError, ValueError, OverflowError):
+            serialized = f"<{type(value).__name__}>"
+    encoded = serialized.encode("utf-8", errors="replace")
+    return json.dumps(
+        {
+            "redacted": True,
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "byte_length": len(encoded),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
 class AuditService:
     """Handles logging AI requests, tool execution, and maintaining hash chains for auditability."""
 
@@ -66,7 +96,11 @@ class AuditService:
 
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Failed to audit log request {response.request_id}: {e}")
+            logger.error(
+                "Failed to audit request request_ref=%s error_type=%s",
+                hashlib.sha256(str(response.request_id).encode("utf-8")).hexdigest()[:12],
+                type(e).__name__,
+            )
             return None
 
     def log_tool_calls(self, request_log_id: int, tool_calls_data: list[Dict[str, Any]]):
@@ -80,14 +114,18 @@ class AuditService:
                     request_log_id=request_log_id,
                     tool_call_id=tc.get("id"),
                     tool_name=tc.get("name"),
-                    arguments=tc.get("arguments"),
-                    result=tc.get("result"),
+                    arguments=_redacted_tool_payload(tc.get("arguments")),
+                    result=_redacted_tool_payload(tc.get("result")),
                     is_error=tc.get("is_error", False)
                 )
                 db.session.add(tool_log)
             db.session.commit()
         except Exception as e:
             db.session.rollback()
-            logger.error(f"Failed to audit log tool calls for req log {request_log_id}: {e}")
+            logger.error(
+                "Failed to audit tool calls request_log_id=%s error_type=%s",
+                request_log_id,
+                type(e).__name__,
+            )
 
 audit_service = AuditService()

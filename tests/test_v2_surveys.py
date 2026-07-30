@@ -21,7 +21,6 @@ from models import (
     TenantProfile,
     User,
 )
-from routes.v2.surveys import _public_response_rate_buckets
 from socket_service import _is_authorized_survey_room, emit_survey_update
 from services.demo_surveys import (
     build_demo_public_survey_payload,
@@ -187,6 +186,22 @@ class V2SurveysApiTest(unittest.TestCase):
         option_id = public_payload["preguntas"][0]["opciones"][0]["id"]
         answer = {"respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}]}
         return headers, survey_id, token, public_payload, answer
+
+    def _public_response_alias_paths(self, token, *, tenant_slug=None):
+        tenant_slug = tenant_slug or self.tenant_1.slug
+        tenant_query = f"tenant_slug={tenant_slug}"
+        return (
+            f"/api/v2/public/surveys/{token}/respond?{tenant_query}",
+            f"/api/public/encuestas/{token}/responder?{tenant_query}",
+            f"/api/public/encuestas/v1/{token}/responder?{tenant_query}",
+            f"/api/public/encuestas/{token}/respuestas?{tenant_query}",
+            f"/api/public/encuestas/v1/{token}/respuestas?{tenant_query}",
+            f"/public/encuestas/{token}/responder?{tenant_query}",
+            f"/public/encuestas/v1/{token}/responder?{tenant_query}",
+            f"/public/encuestas/{token}/respuestas?{tenant_query}",
+            f"/public/encuestas/v1/{token}/respuestas?{tenant_query}",
+            f"/api/pwa/public/surveys/{token}/respond?tenant={tenant_slug}",
+        )
 
     def test_legacy_entity_id_collision_cannot_cross_tenant_boundary(self):
         # These legacy IDs inhabit the User table namespace and must never be
@@ -833,7 +848,6 @@ class V2SurveysApiTest(unittest.TestCase):
     def test_v2_public_response_rate_limit_returns_contract_and_headers(self):
         self.app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 1
         self.app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
-        _public_response_rate_buckets.clear()
 
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
@@ -878,7 +892,6 @@ class V2SurveysApiTest(unittest.TestCase):
     def test_v2_public_response_rejects_invalid_turnstile_when_enforced(self):
         self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
         self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
-        _public_response_rate_buckets.clear()
 
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
@@ -913,7 +926,6 @@ class V2SurveysApiTest(unittest.TestCase):
         self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
         self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = ""
         self.app.config["TURNSTILE_SECRET_KEY"] = ""
-        _public_response_rate_buckets.clear()
 
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
@@ -945,7 +957,6 @@ class V2SurveysApiTest(unittest.TestCase):
     def test_v2_public_response_accepts_valid_turnstile_token_when_enforced(self):
         self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
         self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
-        _public_response_rate_buckets.clear()
 
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
         survey_id = self.client.post("/api/v2/surveys", json=self._create_payload(), headers=headers).get_json()["id"]
@@ -994,7 +1005,6 @@ class V2SurveysApiTest(unittest.TestCase):
     def test_v2_demo_public_response_uses_turnstile_before_ack(self):
         self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
         self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
-        _public_response_rate_buckets.clear()
         token = "demo-gobierno-junin-prioridades-barriales"
         public_get = self.client.get(f"/api/v2/public/surveys/{token}").get_json()
         question_id = public_get.get("preguntas", [])[0].get("id")
@@ -1413,7 +1423,6 @@ class V2SurveysApiTest(unittest.TestCase):
         self.app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
         self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
         self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
-        _public_response_rate_buckets.clear()
         _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
         submission_id = "survey-submit-turnstile-0001"
         payload = {
@@ -1518,6 +1527,270 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertTrue(pwa.get_json()["idempotency"]["replayed"])
         self.assertEqual(EncRespuesta.query.count(), 1)
         self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_every_public_survey_alias_rejects_missing_turnstile_before_write(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+
+        expected_error = None
+        for index, path in enumerate(self._public_response_alias_paths(token), start=1):
+            submission_id = f"survey-alias-turnstile-{index:02d}"
+            with self.subTest(path=path):
+                response = self.client.post(
+                    path,
+                    json={
+                        **answer,
+                        "submission_id": submission_id,
+                        "anon_id": f"anon-alias-turnstile-{index:02d}",
+                    },
+                    headers={
+                        "Idempotency-Key": submission_id,
+                        "X-Forwarded-For": "198.51.100.151",
+                    },
+                )
+                self.assertEqual(response.status_code, 400, response.get_json())
+                payload = response.get_json()
+                comparable = {
+                    key: payload.get(key)
+                    for key in (
+                        "contract_version",
+                        "status_code",
+                        "reason_code",
+                        "retryable",
+                        "action_hint",
+                    )
+                }
+                comparable["security_status"] = payload.get("security", {}).get("status")
+                comparable["turnstile_required"] = payload.get("frontend_contract", {}).get(
+                    "turnstile", {}
+                ).get("required")
+                if expected_error is None:
+                    expected_error = comparable
+                self.assertEqual(comparable, expected_error)
+                self.assertEqual(EncRespuesta.query.count(), 0)
+                self.assertEqual(SurveyResponseReceipt.query.count(), 0)
+
+        self.assertEqual(
+            expected_error,
+            {
+                "contract_version": "surveys.public_response.v2",
+                "status_code": 400,
+                "reason_code": "turnstile_verificacion_fallida",
+                "retryable": True,
+                "action_hint": "retry_security_challenge",
+                "security_status": "verification_failed",
+                "turnstile_required": True,
+            },
+        )
+
+    def test_public_survey_aliases_share_one_tenant_scoped_rate_limit(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "false"
+        self.app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 1
+        self.app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        common_headers = {"X-Forwarded-For": "198.51.100.152"}
+
+        first_id = "survey-shared-limit-legacy-01"
+        first = self.client.post(
+            f"/api/public/encuestas/v1/{token}/responder?tenant_slug={self.tenant_1.slug}",
+            json={**answer, "submission_id": first_id, "anon_id": "anon-shared-limit-1"},
+            headers={**common_headers, "Idempotency-Key": first_id},
+        )
+        self.assertEqual(first.status_code, 201, first.get_json())
+
+        blocked_paths = (
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+            f"/api/v2/public/surveys/{token}/respond",
+        )
+        for index, path in enumerate(blocked_paths, start=2):
+            submission_id = f"survey-shared-limit-{index:02d}"
+            with self.subTest(path=path):
+                blocked = self.client.post(
+                    path,
+                    json={
+                        **answer,
+                        "submission_id": submission_id,
+                        "anon_id": f"anon-shared-limit-{index}",
+                    },
+                    headers={**common_headers, "Idempotency-Key": submission_id},
+                )
+                self.assertEqual(blocked.status_code, 429, blocked.get_json())
+                self.assertEqual(blocked.get_json().get("reason_code"), "rate_limited")
+                self.assertEqual(
+                    blocked.get_json().get("contract_version"),
+                    "surveys.public_response.v2",
+                )
+                self.assertEqual(blocked.headers.get("X-RateLimit-Remaining"), "0")
+
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_public_survey_alias_security_remains_optional_when_explicitly_disabled(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "false"
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        paths = (
+            f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_1.slug}",
+            f"/api/public/encuestas/v1/{token}/responder?tenant_slug={self.tenant_1.slug}",
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+        )
+
+        for index, path in enumerate(paths, start=1):
+            submission_id = f"survey-security-disabled-{index:02d}"
+            with self.subTest(path=path):
+                response = self.client.post(
+                    path,
+                    json={
+                        **answer,
+                        "submission_id": submission_id,
+                        "anon_id": f"anon-security-disabled-{index}",
+                    },
+                    headers={"Idempotency-Key": submission_id},
+                )
+                self.assertEqual(response.status_code, 201, response.get_json())
+
+        self.assertEqual(EncRespuesta.query.count(), 3)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 3)
+
+    def test_legacy_and_pwa_accept_verified_turnstile_before_persisting(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "true"
+        self.app.config["CLOUDFLARE_TURNSTILE_SECRET_KEY"] = "test-turnstile-secret"
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        paths = (
+            f"/api/public/encuestas/v1/{token}/responder?tenant_slug={self.tenant_1.slug}",
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+        )
+
+        with patch(
+            "services.public_survey_intake.verify_turnstile",
+            return_value=True,
+        ) as verify_turnstile_mock:
+            for index, path in enumerate(paths, start=1):
+                submission_id = f"survey-alias-turnstile-valid-{index:02d}"
+                with self.subTest(path=path):
+                    response = self.client.post(
+                        path,
+                        json={
+                            **answer,
+                            "submission_id": submission_id,
+                            "anon_id": f"anon-alias-turnstile-valid-{index}",
+                        },
+                        headers={
+                            "Idempotency-Key": submission_id,
+                            "X-Turnstile-Token": f"valid-turnstile-{index}",
+                        },
+                    )
+                    self.assertEqual(response.status_code, 201, response.get_json())
+
+        self.assertEqual(verify_turnstile_mock.call_count, 2)
+        self.assertEqual(EncRespuesta.query.count(), 2)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 2)
+
+    def test_public_survey_aliases_reject_wrong_tenant_without_write(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "false"
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        wrong_tenant_paths = (
+            f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_2.slug}",
+            f"/api/public/encuestas/v1/{token}/responder?tenant_slug={self.tenant_2.slug}",
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_2.slug}",
+        )
+
+        for index, path in enumerate(wrong_tenant_paths, start=1):
+            submission_id = f"survey-wrong-tenant-{index:02d}"
+            with self.subTest(path=path):
+                response = self.client.post(
+                    path,
+                    json={
+                        **answer,
+                        "submission_id": submission_id,
+                        "anon_id": f"anon-wrong-tenant-{index}",
+                    },
+                    headers={"Idempotency-Key": submission_id},
+                )
+                self.assertEqual(response.status_code, 404, response.get_json())
+
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 0)
+
+    def test_public_survey_replay_cannot_cross_tenant_or_disclose_receipt(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "false"
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        submission_id = "survey-replay-tenant-scope-01"
+        payload = {
+            **answer,
+            "submission_id": submission_id,
+            "anon_id": "anon-replay-tenant-scope",
+        }
+        headers = {"Idempotency-Key": submission_id}
+        accepted = self.client.post(
+            f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_1.slug}",
+            json=payload,
+            headers=headers,
+        )
+        self.assertEqual(accepted.status_code, 201, accepted.get_json())
+
+        wrong_tenant_paths = (
+            f"/api/v2/public/surveys/{token}/respond?tenant_slug={self.tenant_2.slug}",
+            f"/api/public/encuestas/v1/{token}/responder?tenant_slug={self.tenant_2.slug}",
+            f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_2.slug}",
+        )
+        for path in wrong_tenant_paths:
+            with self.subTest(path=path):
+                denied = self.client.post(path, json=payload, headers=headers)
+                self.assertEqual(denied.status_code, 404, denied.get_json())
+                self.assertEqual(denied.get_json().get("reason_code"), "survey_not_found")
+                self.assertNotIn("response_id", denied.get_json())
+                self.assertNotIn("idempotency", denied.get_json())
+
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 1)
+
+    def test_public_survey_rate_limiter_failure_fails_closed_without_write(self):
+        self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "false"
+        _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
+        submission_id = "survey-rate-storage-failure-01"
+
+        with patch(
+            "services.public_survey_intake.limiter.limiter.hit",
+            side_effect=RuntimeError("rate storage unavailable"),
+        ):
+            response = self.client.post(
+                f"/api/pwa/public/surveys/{token}/respond?tenant={self.tenant_1.slug}",
+                json={**answer, "submission_id": submission_id},
+                headers={"Idempotency-Key": submission_id},
+            )
+
+        self.assertEqual(response.status_code, 503, response.get_json())
+        self.assertEqual(
+            response.get_json().get("reason_code"),
+            "survey_rate_limit_unavailable",
+        )
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 0)
+
+    def test_public_survey_alias_preflights_allow_turnstile_and_idempotency_headers(self):
+        paths = (
+            "/api/v2/public/surveys/example/respond",
+            "/api/public/encuestas/v1/example/responder",
+            "/public/encuestas/v1/example/respuestas",
+            f"/api/pwa/public/surveys/example/respond?tenant={self.tenant_1.slug}",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                response = self.client.options(
+                    path,
+                    headers={
+                        "Origin": "http://localhost:8080",
+                        "Access-Control-Request-Method": "POST",
+                        "Access-Control-Request-Headers": (
+                            "X-Turnstile-Token, Idempotency-Key, Content-Type"
+                        ),
+                    },
+                )
+                self.assertIn(response.status_code, {200, 204}, response.get_data(as_text=True))
+                allowed = response.headers.get("Access-Control-Allow-Headers", "").lower()
+                self.assertIn("x-turnstile-token", allowed)
+                self.assertIn("idempotency-key", allowed)
 
     def test_committed_receipt_replays_after_close_without_reopening_intake(self):
         headers, survey_id, token, public_payload, answer = (

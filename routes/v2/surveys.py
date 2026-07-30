@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from collections import defaultdict, deque
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 import re
-from threading import Lock
-import time
 from typing import Any, Mapping
 from urllib.parse import quote_plus, urlencode
 import uuid
@@ -48,6 +45,14 @@ from services.plan_access import (
     integration_plan_required_payload,
     plan_allows_integration_feature,
 )
+from services.public_survey_intake import (
+    attach_public_survey_rate_limit_headers,
+    enforce_public_survey_intake,
+    enforce_public_survey_replay_scope,
+    public_survey_client_ip,
+    survey_frontend_security_contract,
+    survey_security_contract,
+)
 from services.survey_draft_materialization import (
     SurveyDraftMaterializationError,
     materialize_survey_draft,
@@ -57,25 +62,22 @@ from services.survey_response_effects import (
     dispatch_survey_response_effects,
     summarize_survey_response_effects,
 )
+from services.survey_access_policy import (
+    SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+    SURVEY_PII_READ_CAPABILITY,
+    missing_survey_capabilities,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
 from utils.turnstile import (
-    TURNSTILE_TOKEN_FIELDS,
-    TURNSTILE_TOKEN_HEADER,
     turnstile_enforce_public_intake,
-    turnstile_is_configured,
-    turnstile_public_intake_contract,
     verify_turnstile,
 )
 
 v2_surveys_bp = Blueprint("v2_surveys", __name__, url_prefix="/api/v2")
 v2_public_surveys_bp = Blueprint("v2_public_surveys", __name__, url_prefix="/api/v2/public/surveys")
 
-_DEFAULT_PUBLIC_RESPONSE_RATE_LIMIT = 150
-_DEFAULT_PUBLIC_RESPONSE_RATE_PERIOD = 60
-_public_response_rate_buckets: defaultdict[str, deque[float]] = defaultdict(deque)
-_public_response_rate_lock = Lock()
 _RESPONSE_EFFECT_SUMMARY_CONTRACT = "surveys.response_effects.admin_summary.v1"
 _RESPONSE_EFFECT_RECONCILE_CONTRACT = "surveys.response_effects.reconcile.v1"
 _DEFAULT_RESPONSE_EFFECT_RECONCILE_LIMIT = 50
@@ -192,10 +194,7 @@ def _coerce_positive_int(value: Any, default: int) -> int:
 
 
 def _public_client_ip() -> str:
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip() or "0.0.0.0"
-    return request.remote_addr or "0.0.0.0"
+    return public_survey_client_ip()
 
 
 def _public_anon_id(payload: dict[str, Any]) -> Any:
@@ -210,70 +209,44 @@ def _public_anon_id(payload: dict[str, Any]) -> Any:
     )
 
 
-def _public_response_rate_settings() -> tuple[int, int]:
-    limit = current_app.config.get("PUBLIC_ENCUESTAS_RATE_LIMIT")
-    period = current_app.config.get("PUBLIC_ENCUESTAS_RATE_PERIOD")
-    if limit is None:
-        limit = os.getenv("PUBLIC_ENCUESTAS_RATE_LIMIT")
-    if period is None:
-        period = os.getenv("PUBLIC_ENCUESTAS_RATE_PERIOD")
-    return (
-        _coerce_positive_int(limit, _DEFAULT_PUBLIC_RESPONSE_RATE_LIMIT),
-        _coerce_positive_int(period, _DEFAULT_PUBLIC_RESPONSE_RATE_PERIOD),
+def _survey_capability_error(required: list[str], missing: list[str]):
+    message = "No tenes permisos para acceder a datos sensibles de la encuesta."
+    return _json_response(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": 403,
+            "reason_code": "survey_pii_read_capability_required",
+            "retryable": False,
+            "action_hint": "request_capability_from_tenant_admin",
+            "required_capabilities": list(required),
+            "missing_capabilities": list(missing),
+            "error": {"code": 403, "message": message},
+            "message": message,
+        },
+        403,
     )
 
 
-def _public_response_rate_limit(token: str) -> dict[str, Any]:
-    limit, period = _public_response_rate_settings()
-    now = time.time()
-    key = f"{token}:{_public_client_ip()}"
-    with _public_response_rate_lock:
-        bucket = _public_response_rate_buckets[key]
-        while bucket and now - bucket[0] > period:
-            bucket.popleft()
-
-        if len(bucket) >= limit:
-            retry_after = max(1, int(period - (now - bucket[0]) + 0.999))
-            return {
-                "allowed": False,
-                "limit": limit,
-                "remaining": 0,
-                "window_seconds": period,
-                "retry_after_seconds": retry_after,
-                "reset_after_seconds": retry_after,
-            }
-
-        bucket.append(now)
-        reset_after = max(1, int(period - (now - bucket[0]) + 0.999))
-        return {
-            "allowed": True,
-            "limit": limit,
-            "remaining": max(0, limit - len(bucket)),
-            "window_seconds": period,
-            "retry_after_seconds": 0,
-            "reset_after_seconds": reset_after,
-        }
+def _survey_governance_capability_error(missing: list[str]):
+    message = "No tenes permisos para administrar releases de gobernanza."
+    return _json_response(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": 403,
+            "reason_code": "survey_governance_manage_capability_required",
+            "retryable": False,
+            "action_hint": "request_capability_from_tenant_admin",
+            "required_capabilities": [SURVEY_GOVERNANCE_MANAGE_CAPABILITY],
+            "missing_capabilities": list(missing),
+            "error": {"code": 403, "message": message},
+            "message": message,
+        },
+        403,
+    )
 
 
 def _attach_rate_limit_headers(response, telemetry: dict[str, Any]):
-    response.headers["X-RateLimit-Limit"] = str(telemetry.get("limit", ""))
-    response.headers["X-RateLimit-Remaining"] = str(telemetry.get("remaining", ""))
-    response.headers["X-RateLimit-Window"] = str(telemetry.get("window_seconds", ""))
-    if not telemetry.get("allowed", True):
-        response.headers["Retry-After"] = str(telemetry.get("retry_after_seconds", 1))
-    return response
-
-
-def _survey_turnstile_token(payload: dict[str, Any] | None) -> str | None:
-    header_value = request.headers.get(TURNSTILE_TOKEN_HEADER)
-    if header_value:
-        return header_value
-    if isinstance(payload, dict):
-        for field in TURNSTILE_TOKEN_FIELDS:
-            value = payload.get(field)
-            if value:
-                return str(value)
-    return request.args.get("turnstile_token")
+    return attach_public_survey_rate_limit_headers(response, telemetry)
 
 
 def _survey_security_contract(
@@ -283,8 +256,7 @@ def _survey_security_contract(
     retryable: bool | None = None,
     reset_required: bool | None = None,
 ) -> dict[str, Any]:
-    return turnstile_public_intake_contract(
-        surface="survey_public_response",
+    return survey_security_contract(
         status=status,
         reason=reason,
         retryable=retryable,
@@ -299,62 +271,12 @@ def _survey_frontend_security_contract(
     can_retry: bool | None = None,
     reset_turnstile: bool | None = None,
 ) -> dict[str, Any]:
-    if can_retry is None:
-        can_retry = bool(security.get("retryable"))
-    if reset_turnstile is None:
-        reset_turnstile = bool(security.get("reset_required"))
-    return {
-        "contract_version": "surveys.public_frontend.v2",
-        "render_as": render_as,
-        "security_provider": security.get("provider"),
-        "turnstile": {
-            "enabled": bool(security.get("configured") or security.get("enforced")),
-            "required": bool(security.get("required")),
-            "status": security.get("status"),
-            "surface": security.get("surface"),
-            "token_header": security.get("token_header"),
-            "token_fields": security.get("token_fields") or [],
-            "can_retry": bool(can_retry),
-            "reset_required": bool(reset_turnstile),
-        },
-        "can_retry": bool(can_retry),
-        "reset_turnstile": bool(reset_turnstile),
-    }
-
-
-def _survey_security_error_response(
-    *,
-    status_code: int,
-    reason_code: str,
-    message: str,
-    security: dict[str, Any],
-    action_hint: str = "retry_security_challenge",
-    rate_limit: dict[str, Any] | None = None,
-):
-    payload = {
-        "contract_version": "surveys.public_response.v2",
-        "ok": False,
-        "status_code": status_code,
-        "reason_code": reason_code,
-        "retryable": bool(security.get("retryable")),
-        "action_hint": action_hint,
-        "message": message,
-        "error": {"code": status_code, "message": message},
-        "security": security,
-        "frontend_contract": _survey_frontend_security_contract(
-            security,
-            render_as="public_survey_security_error",
-        ),
-    }
-    if rate_limit:
-        payload["rate_limit"] = {
-            "limit": rate_limit.get("limit"),
-            "remaining": rate_limit.get("remaining"),
-            "window_seconds": rate_limit.get("window_seconds"),
-            "reset_after_seconds": rate_limit.get("reset_after_seconds"),
-            "retry_after_seconds": rate_limit.get("retry_after_seconds"),
-        }
-    return _json_response(payload, status_code)
+    security_payload = dict(security)
+    if can_retry is not None:
+        security_payload["retryable"] = bool(can_retry)
+    if reset_turnstile is not None:
+        security_payload["reset_required"] = bool(reset_turnstile)
+    return survey_frontend_security_contract(security_payload, render_as=render_as)
 
 
 def _survey_plan_required_response(tenant):
@@ -2118,6 +2040,250 @@ def survey_detail_v2(current_user, survey_id: int):
     return jsonify(serialize_encuesta(encuesta))
 
 
+def _governance_error_response(exc):
+    return _json_response(exc.to_dict(), exc.status_code)
+
+
+@v2_surveys_bp.route("/surveys/<int:survey_id>/releases", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def list_survey_governance_releases_v2(current_user, survey_id: int):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return denied
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_GOVERNANCE_MANAGE_CAPABILITY
+    )
+    if missing:
+        return _survey_governance_capability_error(missing)
+    from models import EncEncuesta
+    from models_survey_governance import SurveyGovernanceRelease
+    from services.survey_governance import (
+        release_public_consent_status,
+        serialize_release,
+    )
+
+    # The parent lookup is tenant-scoped before any release identifier is
+    # disclosed, preventing cross-tenant enumeration.
+    encuesta = EncEncuesta.query.filter_by(
+        id=survey_id, tenant_id=tenant.id
+    ).first()
+    if encuesta is None:
+        return _error_response(
+            "Encuesta no encontrada", 404, "survey_not_found", "check_survey_id"
+        )
+    releases = (
+        SurveyGovernanceRelease.query.filter_by(
+            tenant_id=tenant.id, survey_id=survey_id
+        )
+        .order_by(SurveyGovernanceRelease.version_number.desc())
+        .all()
+    )
+    response_count = encuesta.respuestas.count()
+    writes_allowed = _survey_writes_allowed(tenant)
+    active_release = next(
+        (item for item in releases if item.status == "published"), None
+    )
+    latest_release = releases[0] if releases else None
+    serialized_releases = []
+    for item in releases:
+        serialized = serialize_release(item)
+        # These booleans are an explicit UI authority hint only. The mutation
+        # endpoints repeat the tenant, capability, state and integrity checks.
+        serialized["capabilities"] = {
+            "can_publish": bool(
+                item.status == "draft"
+                and release_public_consent_status(item)["complete"] is True
+                and writes_allowed
+                and encuesta.estado == "borrador"
+                and response_count == 0
+            ),
+            "can_close": bool(
+                item.status == "published" and encuesta.estado == "publicada"
+            ),
+        }
+        serialized_releases.append(serialized)
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "surveys.governance_releases.v1",
+            "survey_id": survey_id,
+            "survey_state": encuesta.estado,
+            "active_release_id": active_release.id if active_release else None,
+            "latest_release_id": latest_release.id if latest_release else None,
+            "capabilities": {
+                "read": True,
+                "manage": True,
+                "plan_allows_write": bool(writes_allowed),
+                "create_release": bool(
+                    writes_allowed
+                    and encuesta.estado == "borrador"
+                    and response_count == 0
+                    and not releases
+                ),
+                "required_for_mutation": SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+            },
+            "items": serialized_releases,
+            "total": len(releases),
+        }
+    )
+
+
+@v2_surveys_bp.route("/surveys/<int:survey_id>/releases", methods=["POST"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def create_survey_governance_release_v2(current_user, survey_id: int):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return denied
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_GOVERNANCE_MANAGE_CAPABILITY
+    )
+    if missing:
+        return _survey_governance_capability_error(missing)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _error_response(
+            "El release debe ser un objeto JSON",
+            400,
+            "survey_governance_payload_invalid",
+            "send_json_object",
+        )
+    from services.survey_governance import (
+        SurveyGovernanceError,
+        create_release,
+        serialize_release,
+    )
+
+    try:
+        release, replayed = create_release(
+            tenant_id=tenant.id,
+            survey_id=survey_id,
+            actor_user_id=current_user.id,
+            payload=payload,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            ip_address=request.remote_addr,
+        )
+    except SurveyGovernanceError as exc:
+        db.session.rollback()
+        return _governance_error_response(exc)
+    return _json_response(
+        serialize_release(release, replayed=replayed), 200 if replayed else 201
+    )
+
+
+@v2_surveys_bp.route(
+    "/surveys/<int:survey_id>/releases/<int:release_id>/publish",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def publish_survey_governance_release_v2(
+    current_user, survey_id: int, release_id: int
+):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return denied
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_GOVERNANCE_MANAGE_CAPABILITY
+    )
+    if missing:
+        return _survey_governance_capability_error(missing)
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict) or set(payload) - {"expected_snapshot_sha256"}:
+        return _error_response(
+            "La publicación sólo admite expected_snapshot_sha256",
+            400,
+            "survey_governance_publish_payload_invalid",
+            "send_expected_snapshot_only",
+        )
+    from services.survey_governance import (
+        SurveyGovernanceError,
+        publish_release,
+        serialize_release,
+    )
+
+    try:
+        release, replayed = publish_release(
+            tenant_id=tenant.id,
+            survey_id=survey_id,
+            release_id=release_id,
+            actor_user_id=current_user.id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            expected_snapshot_sha256=payload.get("expected_snapshot_sha256"),
+            ip_address=request.remote_addr,
+        )
+    except SurveyGovernanceError as exc:
+        db.session.rollback()
+        return _governance_error_response(exc)
+    return _json_response(serialize_release(release, replayed=replayed), 200)
+
+
+@v2_surveys_bp.route(
+    "/surveys/<int:survey_id>/releases/<int:release_id>/close",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def close_survey_governance_release_v2(
+    current_user, survey_id: int, release_id: int
+):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return denied
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_GOVERNANCE_MANAGE_CAPABILITY
+    )
+    if missing:
+        return _survey_governance_capability_error(missing)
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) - {"human_review_reference"}:
+        return _error_response(
+            "El cierre requiere human_review_reference",
+            400,
+            "survey_governance_close_payload_invalid",
+            "provide_human_review_reference",
+        )
+    from services.survey_governance import (
+        SurveyGovernanceError,
+        close_release,
+        serialize_release,
+    )
+
+    try:
+        release, replayed = close_release(
+            tenant_id=tenant.id,
+            survey_id=survey_id,
+            release_id=release_id,
+            actor_user_id=current_user.id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            human_review_reference=payload.get("human_review_reference"),
+            ip_address=request.remote_addr,
+        )
+    except SurveyGovernanceError as exc:
+        db.session.rollback()
+        return _governance_error_response(exc)
+    return _json_response(serialize_release(release, replayed=replayed), 200)
+
+
 @v2_surveys_bp.route("/surveys/<int:survey_id>", methods=["PATCH"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
@@ -2209,6 +2375,9 @@ def survey_analytics_v2(current_user, survey_id: int):
     allowed, denied = _enforce_tenant_access(current_user, tenant)
     if not allowed:
         return denied
+    missing = missing_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+    if missing:
+        return _survey_capability_error([SURVEY_PII_READ_CAPABILITY], missing)
 
     try:
         encuesta = get_encuesta(survey_id, tenant_id=tenant.id)
@@ -2324,6 +2493,9 @@ def _build_public_survey_response_ack(
         "security": resolved_security,
         "ui_actions": [],
     }
+    from services.survey_governance import response_governance_contract
+
+    response_payload["governance"] = response_governance_contract(respuesta)
     if rate_limit is not None:
         response_payload["rate_limit"] = {
             "limit": rate_limit["limit"],
@@ -2391,6 +2563,9 @@ def _safe_public_survey_response_ack(
                 "message": "La respuesta fue guardada; algunos enlaces no estan disponibles temporalmente.",
             },
         }
+        from services.survey_governance import response_governance_contract
+
+        fallback["governance"] = response_governance_contract(respuesta)
         receipt_contract = survey_response_receipt_contract(respuesta)
         if receipt_contract is not None:
             fallback["idempotency"] = receipt_contract
@@ -2415,7 +2590,6 @@ def respond_public_survey_v2(token: str):
         )
     except EncuestaError as exc:
         return _encuesta_error_response(exc)
-    turnstile_token = _survey_turnstile_token(payload)
     client_ip = _public_client_ip()
     request_ctx = {
         "ip": client_ip,
@@ -2445,6 +2619,15 @@ def respond_public_survey_v2(token: str):
             db.session.rollback()
             return _encuesta_error_response(exc)
         if replay is not None:
+            replay_scope = enforce_public_survey_replay_scope(
+                replay,
+                preferred_tenant_id=preferred_tenant_id,
+            )
+            if replay_scope is not None:
+                return _json_response(
+                    replay_scope.error_payload(),
+                    replay_scope.status_code or 404,
+                )
             replay_security = _survey_security_contract(
                 status="receipt_replay",
                 reason="durable_submission_receipt",
@@ -2460,67 +2643,27 @@ def respond_public_survey_v2(token: str):
                 200,
             )
 
-    rate_limit = _public_response_rate_limit(token)
-    if not rate_limit["allowed"]:
+    intake_decision = enforce_public_survey_intake(
+        token,
+        payload,
+        preferred_tenant_id=preferred_tenant_id,
+        request_id=_request_id(),
+        synthetic=is_demo_survey_slug(token),
+        verifier=verify_turnstile,
+    )
+    rate_limit = intake_decision.rate_limit
+    if not intake_decision.allowed:
         response = _json_response(
-            {
-                "contract_version": "surveys.public_response.v2",
-                "ok": False,
-                "status_code": 429,
-                "reason_code": "rate_limited",
-                "retryable": False,
-                "action_hint": "retry_later",
-                "message": "Demasiadas respuestas desde esta IP. Intenta mas tarde.",
-                "error": {"code": 429, "message": "Demasiadas respuestas desde esta IP. Intenta mas tarde."},
-                "rate_limit": {
-                    "limit": rate_limit["limit"],
-                    "remaining": rate_limit["remaining"],
-                    "window_seconds": rate_limit["window_seconds"],
-                    "retry_after_seconds": rate_limit["retry_after_seconds"],
-                },
-            },
-            429,
+            intake_decision.error_payload(),
+            intake_decision.status_code or 503,
         )
         return _attach_rate_limit_headers(response, rate_limit)
-
-    enforce_turnstile = turnstile_enforce_public_intake()
-    if enforce_turnstile and not turnstile_is_configured():
-        security = _survey_security_contract(
-            status="misconfigured",
-            reason="missing_secret",
-            retryable=False,
-            reset_required=False,
-        )
-        response = _survey_security_error_response(
-            status_code=503,
-            reason_code="turnstile_no_configurado",
-            message="La verificacion de seguridad no esta disponible. Intenta nuevamente mas tarde.",
-            security=security,
-            action_hint="retry_later",
-            rate_limit=rate_limit,
-        )
-        return _attach_rate_limit_headers(response, rate_limit)
-
-    if turnstile_token or enforce_turnstile:
-        if not verify_turnstile(
-            turnstile_token,
-            remote_ip=request.headers.get("CF-Connecting-IP") or client_ip,
-            idempotency_key=_request_id(),
-        ):
-            security = _survey_security_contract(
-                status="verification_failed",
-                reason="invalid_or_expired_token",
-                retryable=True,
-                reset_required=True,
-            )
-            response = _survey_security_error_response(
-                status_code=400,
-                reason_code="turnstile_verificacion_fallida",
-                message="No pudimos validar la verificacion de seguridad. Intenta nuevamente.",
-                security=security,
-                rate_limit=rate_limit,
-            )
-            return _attach_rate_limit_headers(response, rate_limit)
+    security = intake_decision.security or _survey_security_contract(
+        status="not_required",
+        reason="anonymous_public_survey",
+        retryable=False,
+        reset_required=False,
+    )
 
     demo_ack = build_demo_survey_response_ack(
         token,
@@ -2528,12 +2671,6 @@ def respond_public_survey_v2(token: str):
         public_base_url=_public_frontend_base_url(),
     )
     if demo_ack:
-        security = _survey_security_contract(
-            status="verified" if (turnstile_token or enforce_turnstile) else "not_required",
-            reason="anonymous_demo_public_survey",
-            retryable=False,
-            reset_required=False,
-        )
         response = _json_response(
             _attach_demo_response_contract(demo_ack, token, security=security),
             201,
@@ -2564,12 +2701,7 @@ def respond_public_survey_v2(token: str):
         token,
         respuesta,
         rate_limit=rate_limit,
-        security=_survey_security_contract(
-            status="verified" if (turnstile_token or enforce_turnstile) else "not_required",
-            reason="anonymous_public_survey",
-            retryable=False,
-            reset_required=False,
-        ),
+        security=security,
     )
 
     response_status = 200 if response_payload["replayed"] else 201

@@ -14,6 +14,8 @@ from openai import OpenAI
 
 from collections import OrderedDict
 
+from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
+
 logger = logging.getLogger(__name__)
 
 # Keep these module-level names for backwards-compatible test injection, but build
@@ -23,9 +25,9 @@ http_client: httpx.Client | None = None
 openai_client: OpenAI | None = None
 _OPENAI_CLIENT_LOCK = Lock()
 
-# Current OpenAI guidance recommends gpt-transcribe for completed recordings.
+# Current OpenAI guidance recommends gpt-4o-transcribe for completed recordings.
 # Keep OPENAI_STT_MODEL as an explicit rollout/rollback boundary per deployment.
-DEFAULT_STT_MODEL = "gpt-transcribe"
+DEFAULT_STT_MODEL = "gpt-4o-transcribe"
 DEFAULT_AUDIO_DOWNLOAD_TIMEOUT_SECONDS = 12
 # OpenAI's file-transcription API documents a 25 MB upload ceiling. Deployments may
 # choose a lower operational limit, but never raise it above the provider contract.
@@ -447,29 +449,33 @@ def transcribe_audio_from_url(url: str, mime_type: str, account_sid: str = None,
             return cached_text
 
         auth = (account_sid, auth_token) if account_sid and auth_token else None
-        audio_response = requests.get(url, auth=auth, timeout=_audio_download_timeout_seconds())
-        audio_response.raise_for_status()
-
-        content_length = None
-        headers = getattr(audio_response, "headers", None)
-        if headers is not None:
-            raw_content_length = headers.get("Content-Length")
-            if isinstance(raw_content_length, (str, int)):
-                try:
-                    content_length = int(raw_content_length)
-                except (TypeError, ValueError):
-                    content_length = None
-
         max_audio_bytes = _stt_max_audio_bytes()
-        if content_length is not None and content_length > max_audio_bytes:
+        audio_response = requests.get(
+            url,
+            auth=auth,
+            stream=True,
+            timeout=_audio_download_timeout_seconds(),
+        )
+        try:
+            audio_response.raise_for_status()
+            try:
+                audio_bytes = read_bounded_response_body(
+                    audio_response,
+                    max_bytes=max_audio_bytes,
+                )
+            except MediaDownloadTooLarge:
+                audio_bytes = None
+        finally:
+            audio_response.close()
+
+        if audio_bytes is None:
             logger.warning(
-                "Audio transcription rejected reason=file_too_large size_bytes=%s max_bytes=%s",
-                content_length,
+                "Audio transcription rejected reason=file_too_large max_bytes=%s",
                 max_audio_bytes,
             )
             return None
 
-        return transcribe_audio_bytes(audio_response.content, mime_type, cache_url=url)
+        return transcribe_audio_bytes(audio_bytes, mime_type, cache_url=url)
 
     except requests.exceptions.RequestException as exc:
         logger.warning(

@@ -33,8 +33,14 @@ from services.promocion_service import promocion_service
 from services.rewards_demo import reward_profile_for_tenant
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from services.notification_dispatcher import dispatch_order_update
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import auth_tenant_for_user, token_requerido
 from utils.permissions import require_role
+from utils.roles import (
+    ROLE_SUPERADMIN,
+    ROLE_TENANT_ADMIN,
+    canonical_role,
+    is_authorized_superadmin_user,
+)
 from socket_service import emit_tenant_update
 from services.gcs_service import upload_to_gcs
 
@@ -1295,14 +1301,40 @@ def public_cart_url(slug: str):
 
 
 def _resolve_admin_tenant(user, payload):
-    # Fallback implementation inferred from context
-    if user.tenant_id:
-        return TenantProfile.query.get(user.tenant_id)
-    # If superadmin, maybe payload has tenant_id
-    tid = payload.get('tenant_id')
-    if tid:
-        return TenantProfile.query.get(tid)
-    abort(400, "Tenant required")
+    """Resolve market admin scope without trusting a caller-selected tenant."""
+
+    payload = payload if isinstance(payload, dict) else {}
+    role = canonical_role(getattr(user, "rol", None))
+    requested_tenant_id = payload.get("tenant_id")
+
+    if role == ROLE_SUPERADMIN:
+        if not is_authorized_superadmin_user(user):
+            abort(make_response(jsonify({"error": "Permisos insuficientes"}), 403))
+        if requested_tenant_id in (None, ""):
+            abort(make_response(jsonify({"error": "tenant_id requerido"}), 400))
+        try:
+            tenant = db.session.get(TenantProfile, int(requested_tenant_id))
+        except (TypeError, ValueError):
+            tenant = None
+        if tenant is None or getattr(tenant, "is_active", True) is False:
+            abort(make_response(jsonify({"error": "Tenant no encontrado"}), 404))
+        return tenant
+
+    if role != ROLE_TENANT_ADMIN:
+        abort(make_response(jsonify({"error": "Permisos insuficientes"}), 403))
+
+    tenant = auth_tenant_for_user(user)
+    if tenant is None or getattr(tenant, "is_active", True) is False:
+        abort(make_response(jsonify({"error": "Permisos insuficientes"}), 403))
+
+    if requested_tenant_id not in (None, ""):
+        try:
+            requested_id = int(requested_tenant_id)
+        except (TypeError, ValueError):
+            abort(make_response(jsonify({"error": "Permisos insuficientes"}), 403))
+        if requested_id != int(tenant.id):
+            abort(make_response(jsonify({"error": "Permisos insuficientes"}), 403))
+    return tenant
 
 def _serialize_catalog_item(item):
     metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}

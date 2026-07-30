@@ -34,6 +34,7 @@ from routes.pedidos_from_file import (
 from services.commerce_unified import _build_assisted_operator_pack
 from services.marketplace_analytics import track_marketplace_event
 from services.order_attachment_preview import build_crm_order_draft
+from services.whatsapp_inbound_content import is_audio_media_type
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +220,7 @@ def create_whatsapp_assisted_intake(
         return None
 
     mime_type = str((uploaded_file_info or {}).get("mime_type") or "").lower()
-    if mime_type.startswith("audio/"):
+    if is_audio_media_type(mime_type):
         return None
 
     text_payload = (message_body or "").strip() or None

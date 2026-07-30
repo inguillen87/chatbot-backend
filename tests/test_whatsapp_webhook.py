@@ -27,6 +27,8 @@ from models import (
     WhatsappNumero,
     ChatSessionContext,
     PymeTicket,
+    MunicipioTicket,
+    TenantTicket,
     TenantProfile,
     Notification,
     ProviderSender,
@@ -59,6 +61,8 @@ from routes.whatsapp_webhook import (
     _safe_outbound_log_metadata,
     _safe_provider_reference,
     _safe_session_context_metadata,
+    _resolve_approved_whatsapp_template_sid,
+    _resolve_welcome_template_sid,
 )
 from services.whatsapp_enterprise_rules import (
     RATE_LIMIT_RESERVATION_EVENT,
@@ -215,6 +219,7 @@ class TestConfig(Config):
     ENABLE_RUNTIME_SCHEMA_SYNC = False
     ENABLE_RUNTIME_TENANT_INIT = False
     SKIP_INIT_TENANTS = True
+    WELCOME_TEMPLATE_OVERRIDE_ENABLED = True
     WELCOME_MEDIA_URL = "https://api.chatboc.ar/static/welcome/juni-saludo-sticker.webp"
     CHATBOC_DEMO_WELCOME_MEDIA_URL = "https://api.chatboc.ar/static/welcome/chatboc-saludo-sticker.webp"
     CHATBOC_DEMO_WHATSAPP_NUMBERS = "+19999999999"
@@ -336,7 +341,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         kwargs = client.messages.create.call_args.kwargs
         self.assertEqual(
             kwargs.get("status_callback"),
-            "https://api.chatboc.test/twilio/whatsapp/status",
+            "https://api.chatboc.test/twilio/whatsapp/status#rc=2&rp=5xx,ct,rt",
         )
 
     def test_send_twilio_message_respects_explicit_callback_and_skips_sms(self):
@@ -352,12 +357,65 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         )
         self.assertEqual(
             client.messages.create.call_args.kwargs.get("status_callback"),
-            "https://callbacks.example.com/custom",
+            "https://callbacks.example.com/custom#rc=2&rp=5xx,ct,rt",
+        )
+
+        client.messages.create.reset_mock()
+        _send_twilio_message(
+            client,
+            from_="whatsapp:+15551234567",
+            to="whatsapp:+15557654321",
+            body="Hola",
+            status_callback="https://callbacks.example.com/custom#rc=1&rp=ct",
+        )
+        self.assertEqual(
+            client.messages.create.call_args.kwargs.get("status_callback"),
+            "https://callbacks.example.com/custom#rc=1&rp=ct",
         )
 
         client.messages.create.reset_mock()
         _send_twilio_message(client, from_="+15551234567", to="+15557654321", body="SMS")
         self.assertNotIn("status_callback", client.messages.create.call_args.kwargs)
+
+    def test_template_registry_requires_recent_provider_sync(self):
+        tenant = self._attach_tenant_to_owner(
+            slug="template-freshness-contract",
+            tipo="municipio",
+        )
+        row = self._register_whatsapp_template(
+            tenant,
+            "freshness-contract",
+            content_sid="HXfreshnesstest",
+        )
+        row.last_sync_at = datetime.now(timezone.utc) - timedelta(days=8)
+        db.session.commit()
+
+        self.assertIsNone(
+            _resolve_approved_whatsapp_template_sid(
+                "freshness-contract",
+                tenant_profile=tenant,
+            )
+        )
+
+        row.last_sync_at = datetime.now(timezone.utc)
+        db.session.commit()
+        self.assertEqual(
+            _resolve_approved_whatsapp_template_sid(
+                "freshness-contract",
+                tenant_profile=tenant,
+            ),
+            "HXfreshnesstest",
+        )
+
+    def test_welcome_template_override_is_fail_closed_by_default(self):
+        self.app.config["WELCOME_TEMPLATE_SID"] = "HXemergencyoverride"
+        self.app.config["WELCOME_TEMPLATE_OVERRIDE_ENABLED"] = False
+
+        with patch(
+            "routes.whatsapp_webhook._resolve_approved_whatsapp_template_sid",
+            return_value=None,
+        ):
+            self.assertIsNone(_resolve_welcome_template_sid(tenant_profile=None))
 
     def test_twilio_helper_shares_atomic_hourly_reservation_with_flow_sender(self):
         tenant = self._attach_tenant_to_owner(slug="shared-rate-limit", tipo="municipio")
@@ -585,6 +643,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             status=status,
             content_sid=content_sid,
             body_preview="Template de prueba",
+            last_sync_at=datetime.now(timezone.utc),
         )
         db.session.add(row)
         db.session.commit()
@@ -1827,6 +1886,40 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         ):
             self.assertNotIn(sensitive_value, rendered_logs)
 
+    def test_twilio_whatsapp_status_returns_503_when_ledger_persistence_fails(self):
+        tenant = self._attach_tenant_to_owner(
+            slug="junin-status-persistence-failure",
+            tipo="municipio",
+        )
+        sender = ProviderSender(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+            phone_number=self.test_whatsapp_number_str,
+            sender_id=f"whatsapp:{self.test_whatsapp_number_str}",
+            messaging_service_sid="MG_STATUS_PERSISTENCE_FAILURE",
+            status="active",
+        )
+        db.session.add(sender)
+        db.session.commit()
+        payload = {
+            "AccountSid": TestConfig.TWILIO_ACCOUNT_SID,
+            "MessagingServiceSid": "MG_STATUS_PERSISTENCE_FAILURE",
+            "MessageSid": "SM_STATUS_PERSISTENCE_FAILURE",
+            "MessageStatus": "failed",
+            "ErrorCode": "63019",
+            "To": f"whatsapp:{self.test_user_number_str}",
+            "From": f"whatsapp:{self.test_whatsapp_number_str}",
+        }
+
+        with patch(
+            "routes.whatsapp_webhook._persist_twilio_whatsapp_status_event",
+            side_effect=RuntimeError("database unavailable"),
+        ):
+            response = self.client.post("/twilio/whatsapp/status", data=payload)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.get_data(as_text=True), "RETRY")
+
     def test_twilio_whatsapp_failed_status_reconciles_native_flow_without_pii(self):
         tenant = self._attach_tenant_to_owner(slug="junin-flow-status", tipo="municipio")
         sender = ProviderSender(
@@ -2489,6 +2582,18 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         greeting_kwargs = self.mock_twilio_create.call_args_list[2].kwargs
         self.assertIn("body", greeting_kwargs)
 
+        session_id = f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ctx = ChatSessionContext.query.filter_by(chat_session_id=session_id).first()
+        welcome_state = ctx.context_data.get("_welcome_state", {})
+        self.assertTrue(
+            welcome_state.get("template", {}).get("last_provider_accepted_ts")
+        )
+        self.assertTrue(
+            welcome_state.get("sticker", {}).get("last_provider_accepted_ts")
+        )
+        self.assertNotIn("last_sent_ts", welcome_state.get("template", {}))
+        self.assertNotIn("last_sent_ts", welcome_state.get("sticker", {}))
+
     def test_welcome_payload_resolves_audio_and_existing_image(self):
         self.mock_validator.validate.return_value = True
         self.app.config["WELCOME_TEMPLATE_SID"] = "fake_template_sid"
@@ -3130,7 +3235,7 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertTrue(
             ctx.context_data.get("_welcome_state", {})
             .get("sticker", {})
-            .get("personalized_name_sent_ts")
+            .get("personalized_name_provider_accepted_ts")
         )
 
     def test_whatsapp_webhook_invalid_signature(self):
@@ -3656,18 +3761,20 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.data.decode(), "OK")
 
-            mock_bot.assert_called_once()
-            _, kwargs = mock_bot.call_args
-            self.assertIn("uploaded_file_info", kwargs)
-            self.assertEqual(kwargs["uploaded_file_info"]["mime_type"], "audio/ogg")
-            self.assertNotIn("datos_interpretados_archivo", kwargs)
+            # A failed transcription must not hand the filename/body placeholder
+            # to the LLM as if it represented the audio content.
+            mock_bot.assert_not_called()
             mock_classifier.assert_not_called()
 
             self.mock_twilio_create.assert_called_once()
             _, kwargs_twilio = self.mock_twilio_create.call_args
             self.assertEqual(kwargs_twilio["from_"], f"whatsapp:{self.test_whatsapp_number_str}")
             self.assertEqual(kwargs_twilio["to"], f"whatsapp:{self.test_user_number_str}")
-            self.assertTrue(kwargs_twilio["body"].startswith("Ok"))
+            self.assertIn("no pude transcribirlo", kwargs_twilio["body"].lower())
+            self.assertIn("no voy a adivinar", kwargs_twilio["body"].lower())
+            self.assertEqual(PymeTicket.query.count(), 0)
+            self.assertEqual(MunicipioTicket.query.count(), 0)
+            self.assertEqual(TenantTicket.query.count(), 0)
             self.mock_welcome.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')

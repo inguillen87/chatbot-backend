@@ -191,6 +191,21 @@ def _strict_object(properties: dict[str, Any], description: str = "") -> dict[st
     return schema
 
 
+_COMMON_AGENT_DATA_PROPERTIES: dict[str, Any] = {
+    "channel": _nullable_string(),
+    "intent": _nullable_string(),
+    "confidence": {
+        "type": ["string", "null"],
+        "enum": ["alta", "media", "baja", "high", "medium", "low", None],
+    },
+    "missing_fields": _nullable_string_or_list(),
+    "template_intent": _nullable_string(),
+    "handoff_reason": _nullable_string(),
+    "priority": _nullable_string(),
+    "summary": _nullable_string(),
+}
+
+
 _COORDINATES_SCHEMA = {
     "anyOf": [
         _strict_object(
@@ -239,6 +254,7 @@ _TOOL_PARAMETERS_SCHEMA = {
 
 _MUNICIPIO_DATA_SCHEMA = _strict_object(
     {
+        **_COMMON_AGENT_DATA_PROPERTIES,
         "_contract_kind": {"type": "string", "enum": ["municipio"]},
         "target": {"type": ["string", "null"], "enum": ["municipio", None]},
         "categoria": _nullable_string(),
@@ -270,6 +286,7 @@ _MUNICIPIO_DATA_SCHEMA = _strict_object(
 
 _PYME_DATA_SCHEMA = _strict_object(
     {
+        **_COMMON_AGENT_DATA_PROPERTIES,
         "_contract_kind": {"type": "string", "enum": ["pyme"]},
         "target": {"type": ["string", "null"], "enum": ["pyme", None]},
         "categoria": _nullable_string(),
@@ -307,6 +324,7 @@ _PYME_DATA_SCHEMA = _strict_object(
 
 _CORRECTION_DATA_SCHEMA = _strict_object(
     {
+        **_COMMON_AGENT_DATA_PROPERTIES,
         "_contract_kind": {"type": "string", "enum": ["correccion"]},
         "target": {
             "type": ["string", "null"],
@@ -323,6 +341,7 @@ _CORRECTION_DATA_SCHEMA = _strict_object(
 
 _TOOL_DATA_SCHEMA = _strict_object(
     {
+        **_COMMON_AGENT_DATA_PROPERTIES,
         "_contract_kind": {"type": "string", "enum": ["herramienta"]},
         "target": {
             "type": ["string", "null"],
@@ -340,6 +359,7 @@ _TOOL_DATA_SCHEMA = _strict_object(
 
 _GENERIC_DATA_SCHEMA = _strict_object(
     {
+        **_COMMON_AGENT_DATA_PROPERTIES,
         "_contract_kind": {"type": "string", "enum": ["generico"]},
         "target": {
             "type": ["string", "null"],
@@ -362,7 +382,10 @@ _GENERIC_DATA_SCHEMA = _strict_object(
 )
 
 _EMPTY_DATA_SCHEMA = _strict_object(
-    {"_contract_kind": {"type": "string", "enum": ["vacio"]}},
+    {
+        **_COMMON_AGENT_DATA_PROPERTIES,
+        "_contract_kind": {"type": "string", "enum": ["vacio"]},
+    },
     "Accion que no necesita datos estructurados.",
 )
 

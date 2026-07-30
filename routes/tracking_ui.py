@@ -28,6 +28,10 @@ from services.tenant_claim_receipts import (
     TenantClaimReceiptSecretUnavailable,
     validate_tenant_claim_pin,
 )
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    resolve_municipio_ticket_access_tenant,
+)
 
 tracking_ui_bp = Blueprint('tracking_ui_bp', __name__)
 
@@ -276,10 +280,10 @@ def _build_public_claim_unread_payload(
 
 
 def _resolve_claim_tenant(ticket: MunicipioTicket) -> TenantProfile | None:
-    tenant = db.session.get(TenantProfile, ticket.tenant_id) if ticket.tenant_id else None
-    if not tenant and ticket.municipio_id:
-        tenant = TenantProfile.query.filter_by(municipio_id=ticket.municipio_id).first()
-    return tenant
+    try:
+        return resolve_municipio_ticket_access_tenant(ticket)
+    except TicketTenantScopeError:
+        return None
 
 
 def _normalize_claim_code(code: str | None) -> str:
@@ -313,14 +317,16 @@ def _find_claim_by_public_code(code: str | None, pin: str | None = None) -> Muni
     if pin is not None:
         base_query = base_query.filter(MunicipioTicket.consulta_pin == str(pin))
 
-    ticket = base_query.filter(MunicipioTicket.nro_ticket.in_(candidates)).first()
-    if ticket:
-        return ticket
-
     lower_candidates = list({candidate.lower() for candidate in candidates if candidate})
     if not lower_candidates:
         return None
-    return base_query.filter(func.lower(MunicipioTicket.nro_ticket).in_(lower_candidates)).first()
+    matches = (
+        base_query.filter(func.lower(MunicipioTicket.nro_ticket).in_(lower_candidates))
+        .order_by(MunicipioTicket.id.asc())
+        .limit(2)
+        .all()
+    )
+    return matches[0] if len(matches) == 1 else None
 
 
 def _find_tenant_claim_by_public_code(code: str | None) -> TenantTicket | None:
@@ -721,26 +727,17 @@ def _order_chat_history(order, tenant: TenantProfile | None) -> list[dict]:
 )
 def tracking_claim(nro_ticket):
     # 1. Fetch Ticket
-    ticket = _find_claim_by_public_code(nro_ticket)
+    pin = (request.args.get('pin') or '').strip()
+    ticket = _find_claim_by_public_code(nro_ticket, pin or None)
     if not ticket:
         abort(404, "Reclamo no encontrado")
-    pin = (request.args.get('pin') or '').strip()
     if getattr(ticket, 'consulta_pin', None) and str(ticket.consulta_pin) != str(pin):
         abort(403, "PIN requerido para consultar este reclamo")
 
     # 2. Fetch Tenant
-    tenant = None
-    if ticket.tenant_id:
-        tenant = TenantProfile.query.get(ticket.tenant_id)
-
-    if not tenant and ticket.municipio_id:
-        tenant = TenantProfile.query.filter_by(municipio_id=ticket.municipio_id).first()
-        if tenant and not ticket.tenant_id:
-            ticket.tenant_id = tenant.id
-            db.session.commit()
-
+    tenant = _resolve_claim_tenant(ticket)
     if not tenant:
-        abort(404, "Municipio no encontrado")
+        abort(404, "Reclamo no encontrado")
 
     # 3. Widget Token (Optional, for context)
     widget_token = None
@@ -935,7 +932,7 @@ def send_claim_message():
     if len(mensaje) > 2000:
         return jsonify({'error': 'Mensaje demasiado largo'}), 400
 
-    ticket = _find_claim_by_public_code(raw_ticket)
+    ticket = _find_claim_by_public_code(raw_ticket, pin or None)
     if not ticket:
         return jsonify({'error': 'Ticket no encontrado'}), 404
     if getattr(ticket, 'consulta_pin', None) and str(ticket.consulta_pin) != str(pin):

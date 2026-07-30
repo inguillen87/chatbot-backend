@@ -177,7 +177,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
         return candidates[0]
 
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing AgregarItemCarritoAction with data: {action_data}")
+        logger.info("Executing AgregarItemCarritoAction supplied_fields=%s", sorted(map(str, action_data)))
         pyme_id = self.context.get("user_id")
         if not pyme_id:
             return {"success": False, "message_to_user": "Error: Tienda no identificada."}
@@ -260,7 +260,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
 
 class CrearPedidoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing CrearPedidoAction with data: {action_data}")
+        logger.info("Executing CrearPedidoAction supplied_fields=%s", sorted(map(str, action_data)))
         pyme_id = self.context.get("user_id")
         if not pyme_id:
             return {"success": False, "message_to_user": "Error: Tienda no identificada."}
@@ -325,6 +325,12 @@ class CrearPedidoAction(BaseActionHandler):
             "pyme_id": pyme_id,
             "channel": self.context.get("channel"),
         }
+        tenant_id = self.context.get("tenant_id")
+        idempotency_key = self.context.get("idempotency_key")
+        if tenant_id is not None:
+            pedido_payload_for_model["tenant_id"] = tenant_id
+        if idempotency_key:
+            pedido_payload_for_model["idempotency_key"] = idempotency_key
 
         try:
             nuevo_pedido = servicio_pedidos.crear_nuevo_pedido(pedido_payload_for_model)
@@ -383,7 +389,7 @@ class CrearPedidoAction(BaseActionHandler):
 
 class ConsultarProductoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ConsultarProductoAction with data: {action_data}")
+        logger.info("Executing ConsultarProductoAction supplied_fields=%s", sorted(map(str, action_data)))
         pyme_id = self.context.get("user_id")
         if not pyme_id:
              return {"success": False, "message_to_user": "Error: Tienda no identificada."}
@@ -425,7 +431,7 @@ class ConsultarProductoAction(BaseActionHandler):
 
 class VerCarritoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing VerCarritoAction for PYME with data: {action_data}")
+        logger.info("Executing VerCarritoAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
         pyme_id = self.context.get("user_id")
         if not pyme_id: return {"success": False, "message_to_user": "Error: Tienda no identificada."}
 
@@ -444,7 +450,7 @@ class VerCarritoAction(BaseActionHandler):
 
 class ModificarCarritoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ModificarCarritoAction for PYME with data: {action_data}")
+        logger.info("Executing ModificarCarritoAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
         pyme_id = self.context.get("user_id")
         if not pyme_id: return {"success": False, "message_to_user": "Error: Tienda no identificada."}
 
@@ -509,14 +515,14 @@ class ModificarCarritoAction(BaseActionHandler):
 
 class FinalizarCompraAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing FinalizarCompraAction for PYME with data: {action_data}")
+        logger.info("Executing FinalizarCompraAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
         # This is essentially the same as CrearPedidoAction if all data is confirmed.
         # It might be triggered after user confirms the cart and contact details.
         return CrearPedidoAction(self.context).execute(action_data) # Reuse logic
 
 class ConsultarOfertasAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ConsultarOfertasAction for PYME with data: {action_data}")
+        logger.info("Executing ConsultarOfertasAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
         # from services.promocion_service import promocion_service # Idealmente inyectado o accesible
         # pyme_id = self.context.get("user_id")
         # promos_activas = promocion_service.get_promociones_for_pyme(pyme_id, activas_unicamente=True)
@@ -529,7 +535,7 @@ class ConsultarOfertasAction(BaseActionHandler):
 
 class SolicitarUbicacionTiendaAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing SolicitarUbicacionTiendaAction for PYME with data: {action_data}")
+        logger.info("Executing SolicitarUbicacionTiendaAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
         # pyme_user = self.context.get("user_obj")
         # direccion_tienda = getattr(pyme_user, "direccion_fisica", "Nuestra dirección principal es...")
         # horarios = getattr(pyme_user, "horarios_atencion", "")
@@ -557,7 +563,7 @@ class ConsultarEstadoPedidoAction(BaseActionHandler):
         return PedidoConversacional.query.filter_by(id=pedido_id, tenant_id=tenant_id).first()
 
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ConsultarEstadoPedidoAction for PYME with data: {action_data}")
+        logger.info("Executing ConsultarEstadoPedidoAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
         nro_pedido_llm = action_data.get("id_pedido_mencionado")
         if not nro_pedido_llm:
             return {
@@ -620,7 +626,7 @@ class ConsultarEstadoPedidoAction(BaseActionHandler):
 
 class CorregirDatosPedidoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing CorregirDatosPedidoAction for PYME with data: {action_data}")
+        logger.info("Executing CorregirDatosPedidoAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
         campo_a_corregir = action_data.get("campo_a_corregir") # e.g., "direccion_entrega", "telefono_cliente"
         nuevo_valor = action_data.get("nuevo_valor")
         # id_pedido_contexto = action_data.get("id_pedido_contexto")
@@ -635,7 +641,7 @@ class CorregirDatosPedidoAction(BaseActionHandler):
 
 class ProcesarAdjuntoPedidoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ProcesarAdjuntoPedidoAction for PYME with data: {action_data}")
+        logger.info("Executing ProcesarAdjuntoPedidoAction for PYME supplied_fields=%s", sorted(map(str, action_data)))
 
         archivo_id = self.context.get("archivo_id_para_asociar")
         if not archivo_id:

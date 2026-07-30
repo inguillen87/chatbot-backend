@@ -13,7 +13,11 @@ from sqlalchemy import func, text
 from .base_action_handler import BaseActionHandler
 from typing import Dict, Any, Optional
 import random
-from services.ticket_service import servicio_tickets
+from services.ticket_service import (
+    TicketIdempotencyValidationError,
+    build_whatsapp_ticket_effect_key,
+    servicio_tickets,
+)
 from services.notifications import enviar_notificacion_whatsapp_con_plantilla, enviar_notificacion_sms
 from services import herramientas_municipio
 from services.herramientas_municipio import (
@@ -29,6 +33,7 @@ from services.categorias_municipio import (
 )
 from services.ticket_utils import build_claim_tracking_url, formatear_ticket_respuesta, remove_buttons_with_urls_in_message
 from services.whatsapp_receipts import (
+    CLAIM_FOLLOWUP_WINDOW_SECONDS,
     build_claim_created_template_pre_message,
     build_claim_created_followup_text,
     build_claim_replay_text,
@@ -44,11 +49,66 @@ from services.common_utils import _get_main_menu_payload
 from services import promo_service
 from services.voice_handler import initiate_outbound_call
 from services.conversation_summaries import build_claim_confirmation_payload
+from services.tenant_ticket_scope import (
+    resolve_unique_tenant_for_owner,
+    scoped_municipio_ticket_query,
+)
 from utils.db_utils import safe_flag_modified
 
 logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
+
+
+def _durable_ticket_effect_kwargs(
+    context: Dict[str, Any],
+    effect: str,
+) -> Dict[str, Any]:
+    """Return a validated source-scoped identity for one ticket effect."""
+
+    channel = str(context.get("channel") or "").strip().lower()
+    if channel == "voice":
+        # VoiceStreamService supplies one provider/call-scoped digest for the
+        # claim creation effect.  Never reuse that base key for later comments.
+        if effect != "municipio_claim_create":
+            return {}
+        voice_key = str(context.get("idempotency_key") or "").strip().lower()
+        if not voice_key:
+            return {}
+        if not re.fullmatch(r"voice:[0-9a-f]{64}", voice_key):
+            raise TicketIdempotencyValidationError(
+                "Invalid realtime voice ticket idempotency key."
+            )
+        try:
+            voice_tenant_id = int(context.get("tenant_id"))
+        except (TypeError, ValueError) as exc:
+            raise TicketIdempotencyValidationError(
+                "Realtime voice ticket idempotency requires a tenant_id."
+            ) from exc
+        if voice_tenant_id <= 0:
+            raise TicketIdempotencyValidationError(
+                "Realtime voice ticket idempotency requires a tenant_id."
+            )
+        return {
+            "idempotency_key": voice_key,
+            "idempotency_tenant_id": voice_tenant_id,
+        }
+
+    durable_turn_id = context.get("durable_turn_id")
+    if not durable_turn_id:
+        return {}
+    if not channel.startswith("whatsapp"):
+        logger.warning(
+            "Ignoring durable WhatsApp turn identity outside WhatsApp channel."
+        )
+        return {}
+
+    tenant_id = context.get("tenant_id")
+    key = build_whatsapp_ticket_effect_key(tenant_id, durable_turn_id, effect)
+    return {
+        "idempotency_key": key,
+        "idempotency_tenant_id": int(tenant_id),
+    }
 
 
 def parse_direccion(*args, **kwargs):
@@ -64,6 +124,36 @@ def _parse_int_env(var_name: str, default: int) -> int:
     except (TypeError, ValueError):
         logger.warning("Valor inválido para %s=%r; usando %s.", var_name, raw_value, default)
         return default
+
+
+def _build_reclamo_callback_request_metadata(
+    action_data: Dict[str, Any],
+    partial_data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Build durable CRM metadata for an explicit, still-pending callback."""
+
+    partial_data = partial_data if isinstance(partial_data, dict) else {}
+    raw_requested = action_data.get("solicita_llamada")
+    if raw_requested is None:
+        raw_requested = partial_data.get("solicita_llamada")
+
+    requested = raw_requested is True
+    if isinstance(raw_requested, str):
+        requested = raw_requested.strip().lower() in {"true", "1", "si", "sí"}
+    if not requested:
+        return None
+
+    raw_reason = action_data.get("motivo_llamada") or partial_data.get("motivo_llamada")
+    reason = re.sub(r"\s+", " ", str(raw_reason or "")).strip()
+    if not reason:
+        reason = "La persona solicitó ser contactada por teléfono por este reclamo."
+
+    return {
+        "requested": True,
+        "channel": "phone",
+        "status": "pending",
+        "reason": reason[:500],
+    }
 
 
 def _format_ticket_code(prefix: str, raw_ticket_number: Any) -> str:
@@ -567,38 +657,42 @@ def _resolve_municipio_tenant_ids(owner_user, context: Dict[str, Any]) -> tuple[
                 owner_user_id,
             )
             return None, None
+        resolved_tenant_id = _normalize_positive_scope_id(getattr(tenant, "id", None))
+        resolved_owner_id = _normalize_positive_scope_id(getattr(tenant, "municipio_id", None))
         return (
-            _normalize_positive_scope_id(getattr(tenant, "id", None)),
-            _normalize_positive_scope_id(getattr(tenant, "municipio_id", None))
-            or legacy_municipio_id,
+            (resolved_tenant_id, resolved_owner_id)
+            if resolved_tenant_id and resolved_owner_id
+            else (None, None)
         )
 
     if explicit_profile is not None:
         if not _valid_tenant(explicit_profile):
             logger.error("Explicit tenant profile does not belong to municipal owner.")
             return None, None
+        resolved_tenant_id = _normalize_positive_scope_id(getattr(explicit_profile, "id", None))
+        resolved_owner_id = _normalize_positive_scope_id(getattr(explicit_profile, "municipio_id", None))
         return (
-            _normalize_positive_scope_id(getattr(explicit_profile, "id", None)),
-            _normalize_positive_scope_id(getattr(explicit_profile, "municipio_id", None))
-            or legacy_municipio_id,
+            (resolved_tenant_id, resolved_owner_id)
+            if resolved_tenant_id and resolved_owner_id
+            else (None, None)
         )
 
     tenant = None
     if tenant_slug:
         tenant = TenantProfile.query.filter_by(slug=str(tenant_slug).strip()).one_or_none()
+        if tenant is None:
+            logger.error("Tenant slug does not resolve uniquely; refusing ticket action.")
+            return None, None
         if tenant is not None and not _valid_tenant(tenant):
             logger.error("Tenant slug does not belong to municipal owner; refusing ticket action.")
             return None, None
     if not tenant and owner_user_id:
-        candidates = TenantProfile.query.filter_by(municipio_id=owner_user_id).all()
-        active_candidates = [candidate for candidate in candidates if candidate.is_active]
-        unambiguous_candidates = active_candidates or candidates
-        if len(unambiguous_candidates) == 1:
-            tenant = unambiguous_candidates[0]
-        elif len(unambiguous_candidates) > 1:
+        owner_resolution = resolve_unique_tenant_for_owner(owner_user_id)
+        if owner_resolution.status == "unique" and _valid_tenant(owner_resolution.tenant):
+            tenant = owner_resolution.tenant
+        elif owner_resolution.status != "unique":
             logger.error(
-                "Multiple municipal tenants found for owner_id=%s without explicit scope; "
-                "refusing ticket action.",
+                "Municipal tenant is not uniquely resolvable for owner_id=%s; refusing ticket action.",
                 owner_user_id,
             )
             return None, None
@@ -606,15 +700,15 @@ def _resolve_municipio_tenant_ids(owner_user, context: Dict[str, Any]) -> tuple[
     tenant_id = _normalize_positive_scope_id(getattr(tenant, "id", None))
     municipio_id = (
         _normalize_positive_scope_id(getattr(tenant, "municipio_id", None))
-        or legacy_municipio_id
     )
 
-    if not municipio_id:
+    if not tenant_id or not municipio_id:
         logger.warning(
-            "[tickets] municipio_id missing while resolving tenant. tenant_slug=%s owner_id=%s",
+            "[tickets] tenant scope missing while resolving municipality. tenant_slug=%s owner_id=%s",
             tenant_slug,
             owner_user_id,
         )
+        return None, None
 
     return tenant_id, municipio_id
 
@@ -760,6 +854,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
         # Fusionar datos: action_data tiene prioridad, luego el contexto del reclamo, luego el perfil del usuario
         datos_parciales = contexto_reclamo.get("datos_parciales_llm_reclamo", {})
+        callback_request = _build_reclamo_callback_request_metadata(
+            action_data,
+            datos_parciales_llm,
+        )
         categoria = action_data.get("categoria") or datos_parciales.get("categoria")
         if categoria:
             categoria = re.sub(r"^[^\w]+", "", str(categoria)).strip()
@@ -1163,7 +1261,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
         contacto_especializado = dict(contactos.get(categoria_lookup, contactos.get("default", {})))
 
         tenant_id, municipio_id = _resolve_municipio_tenant_ids(owner_user, self.context)
-        if not tenant_id and not municipio_id:
+        if not tenant_id:
             logger.error("Municipal claim creation refused because tenant scope is unresolved.")
             return {
                 "success": False,
@@ -1226,10 +1324,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
         )
         if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", confirmation_id):
             confirmation_id = ""
+        ticket_extra: Dict[str, Any] = {}
         if confirmation_id:
-            ticket_data["datos_extra"] = {
-                "whatsapp_claim_confirmation_id": confirmation_id,
-            }
+            ticket_extra["whatsapp_claim_confirmation_id"] = confirmation_id
+        if callback_request:
+            ticket_extra["callback_request"] = callback_request
+        if ticket_extra:
+            ticket_data["datos_extra"] = ticket_extra
 
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
         logger.info(
@@ -1246,23 +1347,23 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     and ticket_data_cleaned.get("longitud") is not None
                 ),
                 "has_confirmation_id": bool(confirmation_id),
+                "has_callback_request": bool(callback_request),
             },
         )
 
         def _find_confirmation_replay() -> MunicipioTicket | None:
             if not confirmation_id:
                 return None
-            if not tenant_id and not municipio_id:
+            if not tenant_id:
                 return None
-            query = MunicipioTicket.query
-            if tenant_id:
-                query = query.filter(MunicipioTicket.tenant_id == tenant_id)
-            elif municipio_id:
-                query = query.filter(MunicipioTicket.municipio_id == municipio_id)
+            tenant = db.session.get(TenantProfile, tenant_id)
+            if tenant is None:
+                return None
+            query = scoped_municipio_ticket_query(tenant)
             anon_value = ticket_data_cleaned.get("anon_id")
             if anon_value:
                 query = query.filter(MunicipioTicket.anon_id == anon_value)
-            return (
+            matches = (
                 query.filter(
                     MunicipioTicket.datos_extra[
                         "whatsapp_claim_confirmation_id"
@@ -1270,8 +1371,10 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     == confirmation_id
                 )
                 .order_by(MunicipioTicket.id.desc())
-                .first()
+                .limit(2)
+                .all()
             )
+            return matches[0] if len(matches) == 1 else None
 
         def _confirmation_replay_response(ticket: MunicipioTicket) -> Dict[str, Any]:
             ticket_code = _format_ticket_code("M", ticket.nro_ticket)
@@ -1399,7 +1502,14 @@ class CrearReclamoActionHandler(BaseActionHandler):
             return dedupe_payload
 
         try:
-            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="municipio",
+                ticket_data=ticket_data_cleaned,
+                **_durable_ticket_effect_kwargs(
+                    self.context,
+                    "municipio_claim_create",
+                ),
+            )
             if not ticket_creado:
                 # A concurrent confirmation can lose the create race.  The
                 # ticket service rolls the failed transaction back, so query
@@ -1418,7 +1528,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
             logger.info(f"Ticket {nro_ticket_str} creado exitosamente.")
 
             try:
-                from models import ArchivoAdjunto, TicketComentario
+                from models import ArchivoAdjunto
                 from routes.ticket import serialize_ticket_to_json
                 from socket_service import emit_new_ticket
 
@@ -1436,24 +1546,61 @@ class CrearReclamoActionHandler(BaseActionHandler):
                             archivo_id_int = None
                         if archivo_id_int:
                             adjunto = db.session.get(ArchivoAdjunto, archivo_id_int)
-                            if adjunto:
+                            attachment_session_ids = {
+                                str(value).strip()
+                                for value in (
+                                    self.context.get("chat_session_uuid"),
+                                    self.context.get("chat_session_id"),
+                                    self.context.get("anon_id"),
+                                )
+                                if str(value or "").strip()
+                            }
+                            viewer_id = getattr(viewer_user, "id", None)
+                            identity_matches = bool(
+                                adjunto
+                                and (
+                                    (viewer_id is not None and adjunto.user_id == viewer_id)
+                                    or (
+                                        viewer_id is None
+                                        and adjunto.user_id is None
+                                        and str(adjunto.session_id or "").strip()
+                                        in attachment_session_ids
+                                    )
+                                )
+                            )
+                            target_available = bool(
+                                adjunto
+                                and adjunto.municipio_ticket_id is None
+                                and adjunto.pyme_ticket_id is None
+                            )
+                            if identity_matches and target_available:
                                 adjunto.municipio_ticket_id = ticket_obj.id
                                 if not getattr(ticket_obj, "foto_url_directa", None):
                                     ticket_obj.foto_url_directa = adjunto.url
                                 db.session.add(adjunto)
                                 db.session.add(ticket_obj)
-                                db.session.add(
-                                    TicketComentario(
-                                        municipio_ticket_id=ticket_obj.id,
-                                        comentario="[SISTEMA] Vecino adjuntó evidencia al crear el reclamo por WhatsApp.",
-                                        user_id=getattr(viewer_user, "id", None),
-                                        es_admin=False,
-                                        origen="whatsapp",
-                                        estado_ticket=ticket_obj.estado,
-                                        archivo_adjunto_id=adjunto.id,
-                                    )
+                                comentario_adjunto = servicio_tickets.crear_comentario(
+                                    ticket_id=ticket_obj.id,
+                                    tipo_ticket="municipio",
+                                    comentario_data={
+                                        "comentario": "[SISTEMA] Vecino adjuntó evidencia al crear el reclamo por WhatsApp.",
+                                        "user_id": getattr(viewer_user, "id", None),
+                                        "es_admin": False,
+                                        "origen": "whatsapp",
+                                        "estado_ticket": ticket_obj.estado,
+                                        "archivo_adjunto_id": adjunto.id,
+                                        "emit_notifications": False,
+                                        "emit_socket": False,
+                                    },
+                                    **_durable_ticket_effect_kwargs(
+                                        self.context,
+                                        f"municipio_claim_evidence_comment:{adjunto.id}",
+                                    ),
                                 )
-                                db.session.commit()
+                                if comentario_adjunto is None:
+                                    raise RuntimeError(
+                                        "No se pudo registrar el comentario de evidencia del reclamo."
+                                    )
                             else:
                                 logger.warning(
                                     "No se encontró ArchivoAdjunto %s para asociar al ticket %s.",
@@ -1714,6 +1861,8 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     "confirmation_card": claim_confirmation,
                 }
             }
+            if callback_request:
+                response_payload["data"]["callback_request"] = callback_request
             if not is_whatsapp_channel:
                 response_payload.update(
                     {
@@ -1739,6 +1888,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
                         "webview_url": tracking_url,
                     }
                 )
+            followup_started_at = time.time()
             response_payload["contexto_actualizado"] = {
                 "latest_ticket_id": ticket_creado.get("id"),
                 "latest_ticket_nro": nro_ticket_str,
@@ -1747,8 +1897,26 @@ class CrearReclamoActionHandler(BaseActionHandler):
                 "awaiting_photo_for_ticket": nro_ticket_str,
                 "last_ticket_code": nro_ticket_str,
                 "awaiting_ticket_photo": True,
-                "awaiting_ticket_photo_until": time.time() + 600,
+                "awaiting_ticket_photo_until": followup_started_at + 600,
+                "active_ticket_followup": {
+                    "ticket_id": ticket_creado.get("id"),
+                    "ticket_nro": nro_ticket_str,
+                    "consulta_pin": pin_final,
+                    "tracking_url": tracking_url,
+                    "started_at": followup_started_at,
+                    "until": followup_started_at + CLAIM_FOLLOWUP_WINDOW_SECONDS,
+                },
             }
+            response_payload["_context_keys_to_delete"] = [
+                "last_options_sent",
+                "pending_sensitive_action",
+            ]
+            if callback_request:
+                response_payload["contexto_actualizado"]["pending_callback_request"] = {
+                    **callback_request,
+                    "ticket_id": ticket_creado.get("id"),
+                    "ticket_nro": nro_ticket_str,
+                }
             if not is_whatsapp_channel:
                 response_payload["whatsapp_receipt"] = render_ticket_whatsapp(
                     kind="reclamo",
@@ -1778,9 +1946,13 @@ class CrearReclamoActionHandler(BaseActionHandler):
                     )
                 )
                 response_payload["_twilio_pre_messages"] = pre_messages
-                response_payload["message_body"] = build_claim_created_followup_text(pin_final)
+                response_payload["message_body"] = build_claim_created_followup_text(
+                    pin_final,
+                    callback_requested=bool(callback_request),
+                )
                 response_payload["options_list"] = []
                 response_payload["message_type"] = "text"
+                response_payload["_suppress_whatsapp_navigation"] = True
                 response_payload["generar_audio"] = False
                 response_payload["skip_audio_generation"] = True
                 response_payload.setdefault("data", {})["receipt_delivery"] = {
@@ -1877,15 +2049,20 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
                 "message_type": "text",
             }
 
-        ticket_query = MunicipioTicket.query.filter_by(
+        tenant = db.session.get(TenantProfile, tenant_id)
+        if tenant is None:
+            return {
+                "success": False,
+                "message_to_user": "No pude validar el municipio asociado a esta consulta. VolvÃ© a iniciar el seguimiento desde el enlace del ticket.",
+                "message_type": "text",
+            }
+
+        ticket_query = scoped_municipio_ticket_query(tenant).filter_by(
             nro_ticket=ticket_id_str,
             consulta_pin=pin,
         )
-        if tenant_id:
-            ticket_query = ticket_query.filter(MunicipioTicket.tenant_id == tenant_id)
-        if municipio_id:
-            ticket_query = ticket_query.filter(MunicipioTicket.municipio_id == municipio_id)
-        ticket = ticket_query.first()
+        matches = ticket_query.order_by(MunicipioTicket.id.asc()).limit(2).all()
+        ticket = matches[0] if len(matches) == 1 else None
         if not ticket:
             return {
                 "success": False,
@@ -2075,7 +2252,14 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
         ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
 
         try:
-            ticket_creado = servicio_tickets.crear_nuevo_ticket(tipo_ticket="municipio", ticket_data=ticket_data_cleaned)
+            ticket_creado = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket="municipio",
+                ticket_data=ticket_data_cleaned,
+                **_durable_ticket_effect_kwargs(
+                    self.context,
+                    "municipio_suggestion_create",
+                ),
+            )
             if not ticket_creado:
                 raise Exception("servicio_tickets.crear_nuevo_ticket returned None")
 
@@ -2303,7 +2487,14 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
             ticket_data_cleaned = {k: v for k, v in ticket_data.items() if v is not None}
             ticket_data_cleaned['tipo_ticket'] = ticket_type
-            sala_dict = servicio_tickets.crear_nuevo_ticket(tipo_ticket=ticket_type, ticket_data=ticket_data_cleaned)
+            sala_dict = servicio_tickets.crear_nuevo_ticket(
+                tipo_ticket=ticket_type,
+                ticket_data=ticket_data_cleaned,
+                **_durable_ticket_effect_kwargs(
+                    self.context,
+                    "municipio_live_chat_create",
+                ),
+            )
             if not sala_dict:
                 raise Exception("crear_nuevo_ticket devolvió None")
 
@@ -2328,6 +2519,10 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                     "anon_id": self.context.get("anon_id"),
                     "es_admin": False,
                 },
+                **_durable_ticket_effect_kwargs(
+                    self.context,
+                    "municipio_live_chat_initial_comment",
+                ),
             )
 
             # Emitir evento de socket para notificar al panel de administración

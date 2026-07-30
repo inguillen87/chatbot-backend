@@ -40,6 +40,17 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         self.assertEqual(capabilities["transports"]["phone_primary"], "openai_realtime_sip")
         self.assertEqual(capabilities["transports"]["phone_bridge"], "twilio_media_streams")
         self.assertEqual(capabilities["cost_latency_policy"]["external_tts"], "fallback_only")
+        self.assertFalse(capabilities["transports"]["media_streams_ready"])
+        self.assertTrue(capabilities["features"]["phone_ai_audio_consent_required"])
+        self.assertFalse(capabilities["features"]["phone_recording"])
+        self.assertEqual(
+            capabilities["phone_consent"]["decision"],
+            "explicit_per_call_dtmf",
+        )
+        self.assertFalse(capabilities["phone_consent"]["recording_enabled"])
+        self.assertFalse(
+            capabilities["phone_consent"]["provider_acceptance_is_connection_proof"]
+        )
         translation = capabilities["translation"]
         self.assertTrue(translation["enabled"])
         self.assertEqual(translation["target_language"], "es")
@@ -63,6 +74,31 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
         self.assertFalse(policy["enabled"])
         self.assertEqual(policy["target_language"], "pt")
         self.assertEqual([language["code"] for language in policy["supported_languages"]], ["es", "pt"])
+
+    def test_phone_media_stream_readiness_requires_explicit_rollout_flag(self):
+        capabilities = build_realtime_voice_capabilities(
+            cfg={
+                "voice_consent_policy": {
+                    "version": "voice.consent.v1",
+                    "ai_processing": "explicit_per_call",
+                    "recording": "disabled",
+                }
+            },
+            app_config={"ENABLE_VOICE_CONSENT_LIFECYCLE_V1": True}
+        )
+
+        self.assertTrue(capabilities["transports"]["media_streams_ready"])
+        self.assertTrue(capabilities["phone_consent"]["rollout_enabled"])
+        self.assertTrue(capabilities["frontend"]["show_call_cta"])
+
+    def test_phone_media_stream_flag_without_tenant_policy_stays_closed(self):
+        capabilities = build_realtime_voice_capabilities(
+            app_config={"ENABLE_VOICE_CONSENT_LIFECYCLE_V1": True}
+        )
+
+        self.assertFalse(capabilities["transports"]["media_streams_ready"])
+        self.assertTrue(capabilities["phone_consent"]["deployment_flag_enabled"])
+        self.assertFalse(capabilities["phone_consent"]["tenant_policy_ready"])
 
     def test_realtime_instructions_include_multilingual_rules(self):
         instructions = build_realtime_voice_instructions(

@@ -13,11 +13,16 @@ def init_celery(app: Flask):
     # Celery usará prefijo 'CELERY_' para sus variables de configuración en Flask.
     # Ej: app.config['CELERY_BROKER_URL'], app.config['CELERY_RESULT_BACKEND']
     celery_config = app.config.get('CELERY_CONFIG', {})
-    if 'imports' not in celery_config:
-        celery_config['imports'] = ('services.tasks',)
-    else:
-        if 'services.tasks' not in celery_config['imports']:
-            celery_config['imports'] = celery_config['imports'] + ('services.tasks',)
+    required_imports = (
+        'services.tasks',
+        'services.whatsapp_inbound_worker',
+        'services.domain_effect_worker',
+        'services.survey_response_effect_worker',
+    )
+    configured_imports = tuple(celery_config.get('imports') or ())
+    celery_config['imports'] = configured_imports + tuple(
+        module for module in required_imports if module not in configured_imports
+    )
 
     celery_app.conf.update(celery_config)
     

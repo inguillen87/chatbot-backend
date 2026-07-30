@@ -3,7 +3,7 @@ import hashlib
 import re
 import os
 from flask import current_app, has_app_context, url_for
-from models import WhatsappNumero, User, ChatSessionContext
+from models import WhatsappNumero, User, ChatSessionContext, TenantProfile
 from extensions import db
 from utils.db_utils import safe_flag_modified
 from sqlalchemy.orm import joinedload
@@ -13,6 +13,15 @@ from services.whatsapp_receipts import render_ticket_whatsapp
 from services import promo_service
 from services.config_loader import cargar_configuracion_municipio
 from services.voice_session_service import resolve_voice_chat_session_id
+from services.voice_consent_lifecycle import voice_phone_candidates
+from services.tenant_ticket_scope import (
+    resolve_unique_tenant_for_owner,
+    tenant_owner_ids,
+)
+from services.channel_session_identity import (
+    channel_session_identity_enabled,
+    resolve_channel_session_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +44,156 @@ def _runtime_config_value(name: str, legacy_value: str | None = None) -> str | N
 def _safe_reference(value: object) -> str:
     raw = str(value or "").strip()
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12] if raw else "missing"
+
+
+def _voice_tenant_for_owner(owner_user: User | None) -> TenantProfile | None:
+    if owner_user is None:
+        return None
+    try:
+        owner_id = int(owner_user.id)
+    except (TypeError, ValueError):
+        return None
+    tenant_id = getattr(owner_user, "tenant_id", None)
+    if tenant_id:
+        try:
+            tenant = db.session.get(TenantProfile, int(tenant_id))
+        except (TypeError, ValueError):
+            return None
+        return tenant if tenant is not None and owner_id in tenant_owner_ids(tenant) else None
+
+    declared = [
+        tenant
+        for tenant in (
+            getattr(owner_user, "tenant", None),
+            getattr(owner_user, "tenant_profile", None),
+            getattr(owner_user, "tenant_profile_municipio", None),
+            getattr(owner_user, "tenant_profile_pyme", None),
+        )
+        if getattr(tenant, "id", None) is not None
+    ]
+    declared_ids = {int(tenant.id) for tenant in declared}
+    if len(declared_ids) == 1:
+        tenant = declared[0]
+        return tenant if owner_id in tenant_owner_ids(tenant) else None
+    if declared_ids:
+        return None
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+    except ValueError:
+        return None
+    return resolution.tenant if resolution.status == "unique" else None
+
+
+def _resolve_unique_voice_whatsapp_mapping(bot_phone: str) -> WhatsappNumero | None:
+    """Resolve one sender binding without selecting an arbitrary tenant row."""
+
+    mappings = (
+        WhatsappNumero.query.options(joinedload(WhatsappNumero.user))
+        .filter(
+            WhatsappNumero.numero_whatsapp.in_(voice_phone_candidates(bot_phone)),
+            WhatsappNumero.is_active.is_(True),
+        )
+        .order_by(WhatsappNumero.id.asc())
+        .all()
+    )
+    if not mappings:
+        return None
+
+    bindings = set()
+    for mapping in mappings:
+        tenant = _voice_tenant_for_owner(getattr(mapping, "user", None))
+        tenant_id = getattr(tenant, "id", None)
+        user_id = getattr(getattr(mapping, "user", None), "id", None)
+        if tenant_id is None or user_id is None:
+            return None
+        bindings.add((int(tenant_id), int(user_id)))
+    return mappings[0] if len(bindings) == 1 else None
+
+
+def _resolve_voice_session_context(
+    *,
+    owner_user: User,
+    user_phone_clean: str,
+    bot_phone_clean: str,
+    call_sid: str,
+    create_if_missing: bool,
+) -> tuple[ChatSessionContext | None, ChatSessionContext | None]:
+    """Resolve voice and WhatsApp contexts without phone-derived global IDs."""
+
+    tenant = _voice_tenant_for_owner(owner_user)
+    tenant_id = getattr(tenant, "id", None)
+    source_session = None
+    if tenant_id and channel_session_identity_enabled(current_app.config):
+        voice_identity = resolve_channel_session_identity(
+            config=current_app.config,
+            tenant_id=tenant_id,
+            channel="voice",
+            provider="twilio",
+            provider_identity=user_phone_clean,
+            owner_user_id=owner_user.id,
+            create_if_missing=create_if_missing,
+        )
+        if voice_identity is None:
+            return None, None
+        session_context = ChatSessionContext.query.filter_by(
+            chat_session_id=voice_identity.chat_session_id,
+            tenant_id=tenant_id,
+        ).first()
+        whatsapp_identity = resolve_channel_session_identity(
+            config=current_app.config,
+            tenant_id=tenant_id,
+            channel="whatsapp",
+            provider="twilio",
+            provider_identity=user_phone_clean,
+            owner_user_id=owner_user.id,
+            create_if_missing=False,
+        )
+        if whatsapp_identity is not None:
+            source_session = ChatSessionContext.query.filter_by(
+                chat_session_id=whatsapp_identity.chat_session_id,
+                tenant_id=tenant_id,
+            ).first()
+    else:
+        chat_session_id = resolve_voice_chat_session_id(
+            call_sid=call_sid,
+            from_number=user_phone_clean,
+            to_number=bot_phone_clean,
+        )
+        session_context = ChatSessionContext.query.filter_by(
+            chat_session_id=chat_session_id
+        ).first()
+        if session_context is None and create_if_missing:
+            session_context = ChatSessionContext(
+                chat_session_id=chat_session_id,
+                user_id=owner_user.id,
+                tenant_id=tenant_id,
+                anon_id=user_phone_clean,
+                context_data={},
+            )
+            db.session.add(session_context)
+            db.session.commit()
+
+    if session_context is None:
+        return None, source_session
+    if not isinstance(session_context.context_data, dict):
+        session_context.context_data = {}
+    if source_session and isinstance(source_session.context_data, dict):
+        merged_context = dict(source_session.context_data)
+        merged_context.update(session_context.context_data or {})
+        merged_context["source_chat_session_id"] = source_session.chat_session_id
+        session_context.context_data = merged_context
+        safe_flag_modified(session_context, "context_data")
+    changed = False
+    if tenant_id and session_context.tenant_id is None:
+        session_context.tenant_id = tenant_id
+        changed = True
+    if not session_context.anon_id:
+        session_context.anon_id = user_phone_clean
+        changed = True
+    if changed or source_session is not None:
+        db.session.add(session_context)
+        db.session.commit()
+    return session_context, source_session
 
 def initiate_outbound_call(to_number, from_number, chat_session_id=None):
     """
@@ -109,9 +268,7 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         bot_phone_clean = bot_phone.replace("whatsapp:", "").strip()
 
         # Find the Tenant (Owner) via the Bot's phone number
-        whatsapp_mapping = WhatsappNumero.query.options(
-             joinedload(WhatsappNumero.user).joinedload(User.rubro)
-        ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%")).first()
+        whatsapp_mapping = _resolve_unique_voice_whatsapp_mapping(bot_phone_clean)
 
         if not whatsapp_mapping:
              logger.warning("Voice tenant resolution failed reason=sender_not_registered")
@@ -124,38 +281,22 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
         from services.pymes import get_or_create_user_by_phone
         end_user = get_or_create_user_by_phone(user_phone_clean, client_user)
 
-        # 2. Load/Create Chat Session
-        # Use a distinct session ID for voice to avoid state conflicts with WhatsApp
-        empresa_id = client_user.id
-        chat_session_id = resolve_voice_chat_session_id(
+        # 2. Load/Create a tenant-scoped voice context and link WhatsApp only
+        # through its verified identity binding.
+        session_context, _source_session = _resolve_voice_session_context(
+            owner_user=client_user,
+            user_phone_clean=user_phone_clean,
+            bot_phone_clean=bot_phone_clean,
             call_sid=call_sid,
-            from_number=user_phone_clean,
-            to_number=bot_phone_clean,
+            create_if_missing=True,
         )
-
-        session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
-        if not session_context:
-            session_context = ChatSessionContext(
-                chat_session_id=chat_session_id,
-                user_id=empresa_id,
-                context_data={}
-            )
-            db.session.add(session_context)
-            db.session.commit()
-        else:
-            if not isinstance(session_context.context_data, dict):
-                session_context.context_data = {}
-
-        # Merge data from existing WhatsApp session if available
-        source_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
-        source_session = ChatSessionContext.query.filter_by(chat_session_id=source_session_id).first()
-        if source_session and isinstance(source_session.context_data, dict):
-            merged_context = dict(source_session.context_data)
-            merged_context.update(session_context.context_data or {})
-            merged_context["source_chat_session_id"] = source_session_id
-            session_context.context_data = merged_context
-            safe_flag_modified(session_context, "context_data")
-            db.session.commit()
+        if session_context is None:
+            logger.error("Voice session identity unavailable")
+            return {
+                "text": "No pude validar la sesion de esta organizacion.",
+                "audio_url": None,
+            }
+        chat_session_id = session_context.chat_session_id
 
         # 3. Call Responder Logic
         from services.logic import responder_chatboc
@@ -298,7 +439,14 @@ def handle_voice_interaction(user_speech, user_phone, bot_phone, call_sid):
                      agent_number = client_user.telefono # Fallback to owner phone
 
                  if agent_number:
-                     return {"type": "handoff", "target": agent_number, "text": "Te estoy transfiriendo con un representante. Aguarda un momento."}
+                    return {
+                        "type": "handoff",
+                        "target": agent_number,
+                        "text": (
+                            "Voy a intentar comunicarte con un representante. "
+                            "Aguarda un momento."
+                        ),
+                    }
 
              # If plan not allowed or no number found, fall through to standard response
              message_body = "Lo siento, la transferencia a humanos no está disponible en este momento. Por favor deja tu mensaje."
@@ -382,9 +530,7 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
         bot_phone_clean = bot_phone.replace("whatsapp:", "").strip()
 
         # Identify Tenant
-        whatsapp_mapping = WhatsappNumero.query.options(
-             joinedload(WhatsappNumero.user)
-        ).filter(WhatsappNumero.numero_whatsapp.ilike(f"%{bot_phone_clean.replace('+','').replace(' ','')}%")).first()
+        whatsapp_mapping = _resolve_unique_voice_whatsapp_mapping(bot_phone_clean)
 
         if not whatsapp_mapping:
             logger.warning("Voice status tenant resolution failed reason=sender_not_registered")
@@ -392,27 +538,18 @@ def handle_call_status(call_sid, call_status, to_number, from_number, direction)
 
         client_user = whatsapp_mapping.user
         whatsapp_sender = whatsapp_mapping.numero_whatsapp
-        empresa_id = client_user.id
-
-        chat_session_id = resolve_voice_chat_session_id(
+        # Retrieve only contexts proven for this tenant/provider identity. A
+        # completion callback must never recover state by reconstructing a
+        # phone-derived global WhatsApp session id.
+        session_context, source_session = _resolve_voice_session_context(
+            owner_user=client_user,
+            user_phone_clean=user_phone_clean,
+            bot_phone_clean=bot_phone_clean,
             call_sid=call_sid,
-            from_number=user_phone_clean,
-            to_number=bot_phone_clean,
+            create_if_missing=False,
         )
 
-        # Retrieve the session context to find created ticket info
-        session_context = ChatSessionContext.query.filter_by(chat_session_id=chat_session_id).first()
-
         context_data = {}
-        source_session = None
-        if session_context and isinstance(session_context.context_data, dict):
-            source_session_id = session_context.context_data.get("source_chat_session_id")
-            if source_session_id:
-                source_session = ChatSessionContext.query.filter_by(chat_session_id=source_session_id).first()
-
-        if not session_context and empresa_id and user_phone_clean:
-            source_session_id = f"whatsapp_{empresa_id}_{user_phone_clean}"
-            source_session = ChatSessionContext.query.filter_by(chat_session_id=source_session_id).first()
 
         if source_session and isinstance(source_session.context_data, dict):
             context_data.update(source_session.context_data)

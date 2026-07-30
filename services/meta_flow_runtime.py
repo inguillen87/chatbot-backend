@@ -14,7 +14,6 @@ import re
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 
 from flask import current_app
-from sqlalchemy import and_, or_
 from sqlalchemy.orm import joinedload
 from werkzeug.datastructures import FileStorage
 
@@ -51,6 +50,7 @@ from services.meta_flow_media import (
     download_claim_evidence_media,
     normalize_claim_evidence,
 )
+from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.whatsapp_flow_security import (
     verify_whatsapp_flow_endpoint_token,
     whatsapp_flow_token_key_ready,
@@ -721,21 +721,13 @@ def authorize_survey_context(tenant_id: int, raw_context: Any) -> dict[str, Any]
     return context
 
 
-def apply_whatsapp_flow_completion(
+def _validated_whatsapp_flow_completion(
     *,
     tenant_id: int,
     interaction_id: int,
     submission: Mapping[str, Any],
-    actor_user_id: int | None = None,
-    anon_id: str | None = None,
-) -> dict[str, Any]:
-    """Apply one verified terminal Flow submission without committing it.
-
-    The caller consumes the one-time invocation and commits both operations in
-    the same transaction. Client answers can update contact/delivery fields,
-    but record identity, totals and payment state always come from the durable
-    interaction created by the admin send endpoint.
-    """
+) -> tuple[int, WhatsAppFlowInteraction, Mapping[str, Any], str]:
+    """Return the durable interaction and a canonical digest for one submission."""
 
     if not isinstance(submission, Mapping):
         raise _action_error("flow_completion_invalid", "Flow completion is invalid.", 400)
@@ -787,10 +779,90 @@ def apply_whatsapp_flow_completion(
     if not isinstance(answers, Mapping):
         raise _action_error("flow_completion_answers_missing", "Flow completion is invalid.", 400)
 
+    try:
+        canonical_payload = json.dumps(
+            {
+                "version": "whatsapp.flow_completion.v1",
+                "interaction_id": interaction.id,
+                "flow_id": interaction.flow_id,
+                "answers": answers,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise _action_error("flow_completion_invalid", "Flow completion is invalid.", 400) from exc
+    payload_hash = hashlib.sha256(canonical_payload).hexdigest()
+    return normalized_tenant_id, interaction, answers, payload_hash
+
+
+def replay_whatsapp_flow_completion(
+    *,
+    tenant_id: int,
+    interaction_id: int,
+    submission: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Replay a final receipt without re-running any completion side effect.
+
+    A consumed interaction without a final receipt is deliberately ambiguous
+    and fails closed.  The caller must never infer that it is safe to apply the
+    business action again merely because the provider redelivered a message.
+    """
+
+    _, interaction, _, payload_hash = _validated_whatsapp_flow_completion(
+        tenant_id=tenant_id,
+        interaction_id=interaction_id,
+        submission=submission,
+    )
+    completion = dict(interaction.metadata_json or {}).get("completion")
+    if (
+        interaction.status != "consumed"
+        or not isinstance(completion, Mapping)
+        or completion.get("status") not in {"applied", "rejected"}
+    ):
+        raise _action_error(
+            "flow_completion_replay_unavailable",
+            "Flow completion replay is unavailable.",
+            409,
+        )
+    return _completion_response_from_metadata(completion, payload_hash=payload_hash)
+
+
+def apply_whatsapp_flow_completion(
+    *,
+    tenant_id: int,
+    interaction_id: int,
+    submission: Mapping[str, Any],
+    actor_user_id: int | None = None,
+    anon_id: str | None = None,
+) -> dict[str, Any]:
+    """Apply one verified terminal Flow submission without committing it.
+
+    The caller consumes the one-time invocation and commits both operations in
+    the same transaction. Client answers can update contact/delivery fields,
+    but record identity, totals and payment state always come from the durable
+    interaction created by the admin send endpoint.
+    """
+
+    normalized_tenant_id, interaction, answers, payload_hash = (
+        _validated_whatsapp_flow_completion(
+            tenant_id=tenant_id,
+            interaction_id=interaction_id,
+            submission=submission,
+        )
+    )
+
     initial_metadata = dict(interaction.metadata_json or {})
     previous_completion = initial_metadata.get("completion")
-    if isinstance(previous_completion, Mapping) and previous_completion.get("status") == "applied":
-        return _completion_response_from_metadata(previous_completion)
+    if (
+        isinstance(previous_completion, Mapping)
+        and previous_completion.get("status") in {"applied", "rejected"}
+    ):
+        return _completion_response_from_metadata(
+            previous_completion,
+            payload_hash=payload_hash,
+        )
 
     if interaction.flow_id == CLAIM_FLOW_ID:
         result = _apply_claim_completion(
@@ -833,6 +905,8 @@ def apply_whatsapp_flow_completion(
         "applied_at": datetime.now(timezone.utc).isoformat(),
         "message_body": result["message_body"],
         "source": result["fuente"],
+        "payload_hash": payload_hash,
+        "response": _completion_response_snapshot(result),
     }
     if result.get("attachment_count") is not None:
         completion_metadata["attachment_count"] = int(result["attachment_count"])
@@ -868,6 +942,7 @@ def record_whatsapp_flow_completion_rejection(
     interaction_id: int,
     code: str,
     actor_user_id: int | None = None,
+    submission: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Persist a bounded rejection after an invocation was consumed."""
 
@@ -878,13 +953,51 @@ def record_whatsapp_flow_completion_rejection(
     if interaction is None:
         raise _action_error("flow_completion_unavailable", "Flow completion is unavailable.", 409)
     safe_code = str(code or "flow_completion_invalid")[:80]
+    response = {
+        "message_body": (
+            "No pudimos aplicar los datos del formulario de forma segura. "
+            "Abrilo nuevamente desde el mensaje original o contacta a la mesa de ayuda."
+        ),
+        "options_list": [{"texto": "Menu", "action_id": "menu_principal"}],
+        "message_type": "interactive_buttons",
+        "fuente": "whatsapp_flow_completion_rejected",
+        "generar_audio": True,
+    }
+    payload_hash = None
+    if isinstance(submission, Mapping):
+        try:
+            _, validated_interaction, _, payload_hash = _validated_whatsapp_flow_completion(
+                tenant_id=tenant_id,
+                interaction_id=interaction_id,
+                submission=submission,
+            )
+        except MetaFlowActionError:
+            payload_hash = None
+        else:
+            if validated_interaction.id != interaction.id:
+                payload_hash = None
     metadata = dict(interaction.metadata_json or {})
-    metadata["completion"] = {
+    previous_completion = metadata.get("completion")
+    if (
+        isinstance(previous_completion, Mapping)
+        and previous_completion.get("status") in {"applied", "rejected"}
+    ):
+        return _completion_response_from_metadata(
+            previous_completion,
+            payload_hash=payload_hash,
+        )
+    completion = {
         "status": "rejected",
         "flow_id": interaction.flow_id,
         "code": safe_code,
         "rejected_at": datetime.now(timezone.utc).isoformat(),
+        "message_body": response["message_body"],
+        "source": response["fuente"],
+        "response": _completion_response_snapshot(response),
     }
+    if payload_hash:
+        completion["payload_hash"] = payload_hash
+    metadata["completion"] = completion
     interaction.metadata_json = metadata
     db.session.add(interaction)
     db.session.add(
@@ -897,16 +1010,7 @@ def record_whatsapp_flow_completion_rejection(
             details={"flow_id": interaction.flow_id, "code": safe_code},
         )
     )
-    return {
-        "message_body": (
-            "No pudimos aplicar los datos del formulario de forma segura. "
-            "Abrilo nuevamente desde el mensaje original o contacta a la mesa de ayuda."
-        ),
-        "options_list": [{"texto": "Menu", "action_id": "menu_principal"}],
-        "message_type": "interactive_buttons",
-        "fuente": "whatsapp_flow_completion_rejected",
-        "generar_audio": True,
-    }
+    return response
 
 
 def _apply_claim_completion(
@@ -1551,16 +1655,11 @@ def _load_claim_context(
     ticket_id = int(raw_id)
     if kind == "municipio":
         tenant = db.session.get(TenantProfile, int(tenant_id))
-        scope = MunicipioTicket.tenant_id == int(tenant_id)
-        if tenant is not None and tenant.municipio_id:
-            scope = or_(
-                scope,
-                and_(
-                    MunicipioTicket.tenant_id.is_(None),
-                    MunicipioTicket.municipio_id == int(tenant.municipio_id),
-                ),
-            )
-        ticket = MunicipioTicket.query.filter(scope, MunicipioTicket.id == ticket_id).first()
+        ticket = (
+            scoped_municipio_ticket_query(tenant)
+            .filter(MunicipioTicket.id == ticket_id)
+            .first()
+        )
     elif kind == "pyme":
         ticket = PymeTicket.query.filter_by(id=ticket_id, tenant_id=int(tenant_id)).first()
     elif kind == "tenant":
@@ -1578,7 +1677,68 @@ def _optional_completion_text(value: Any, *, code: str, max_length: int) -> str 
     return _required_string(value, code, max_length)
 
 
-def _completion_response_from_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
+_COMPLETION_RESPONSE_KEYS = frozenset(
+    {
+        "message_body",
+        "options_list",
+        "message_type",
+        "fuente",
+        "generar_audio",
+        "skip_audio_generation",
+        "instrument_revision",
+        "attachment_count",
+        "entity",
+    }
+)
+
+
+def _completion_response_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Persist only response fields that are safe to replay after commit.
+
+    ``realtime_event`` is intentionally absent: replaying a confirmation must
+    never re-emit a vote, CRM event, attachment notification or ticket update.
+    """
+
+    snapshot: dict[str, Any] = {}
+    for key in _COMPLETION_RESPONSE_KEYS:
+        if key not in value:
+            continue
+        try:
+            snapshot[key] = json.loads(
+                json.dumps(value[key], ensure_ascii=False, separators=(",", ":"))
+            )
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return snapshot
+
+
+def _completion_response_from_metadata(
+    value: Mapping[str, Any],
+    *,
+    payload_hash: str | None = None,
+) -> dict[str, Any]:
+    stored_payload_hash = str(value.get("payload_hash") or "").strip()
+    if (
+        payload_hash
+        and stored_payload_hash
+        and not hmac.compare_digest(stored_payload_hash, payload_hash)
+    ):
+        raise _action_error(
+            "flow_completion_payload_conflict",
+            "Flow completion payload conflicts with the applied receipt.",
+            409,
+        )
+
+    stored_response = value.get("response")
+    if isinstance(stored_response, Mapping):
+        response = _completion_response_snapshot(stored_response)
+        if str(response.get("message_body") or "").strip():
+            response.setdefault("options_list", [{"texto": "Menu", "action_id": "menu_principal"}])
+            response.setdefault("message_type", "interactive_buttons")
+            response.setdefault("fuente", "whatsapp_flow_completion_replay")
+            response.setdefault("generar_audio", True)
+            return response
+
     response = {
         "message_body": str(value.get("message_body") or "Formulario aplicado correctamente."),
         "options_list": [{"texto": "Menu", "action_id": "menu_principal"}],
@@ -2142,19 +2302,11 @@ def _lookup_claim(tenant: TenantProfile, ticket_number: str, pin: str) -> Any | 
     matches: list[Any] = []
 
     if prefix in (None, "M-"):
-        municipal_scope = MunicipioTicket.tenant_id == int(tenant.id)
-        if tenant.municipio_id:
-            municipal_scope = or_(
-                municipal_scope,
-                and_(
-                    MunicipioTicket.tenant_id.is_(None),
-                    MunicipioTicket.municipio_id == int(tenant.municipio_id),
-                ),
-            )
-        municipal = MunicipioTicket.query.filter(
-            municipal_scope,
-            MunicipioTicket.nro_ticket == stripped,
-        ).first()
+        municipal = (
+            scoped_municipio_ticket_query(tenant)
+            .filter(MunicipioTicket.nro_ticket == stripped)
+            .first()
+        )
         if municipal is not None and _pin_matches(
             getattr(municipal, "consulta_pin", None),
             pin,
@@ -2415,4 +2567,5 @@ __all__ = [
     "authorize_survey_context",
     "create_meta_flow_runtime_resolver",
     "record_whatsapp_flow_completion_rejection",
+    "replay_whatsapp_flow_completion",
 ]

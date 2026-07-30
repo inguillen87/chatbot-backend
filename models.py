@@ -15,6 +15,7 @@ from sqlalchemy import (
     Index,
     Numeric,
     UniqueConstraint,
+    ForeignKeyConstraint,
 )
 from sqlalchemy.orm import defer, deferred, validates
 from sqlalchemy.dialects.sqlite import JSON as SQLITE_JSON
@@ -410,6 +411,9 @@ class User(db.Model, UserMixin):
 
 class MunicipioTicket(db.Model):
     __tablename__ = "municipio_ticket"
+    __table_args__ = (
+        db.Index("ix_municipio_ticket_owner_tenant", "municipio_id", "tenant_id"),
+    )
     id = db.Column(db.Integer, primary_key=True)
     pregunta = db.Column(db.Text, nullable=False, default='')
     asunto = db.Column(db.String(200), nullable=True)
@@ -837,6 +841,10 @@ class PymePedido(db.Model):
 
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=True, index=True)
     idempotency_key = db.Column(db.String(128), nullable=True, index=True)
+    # Nullable only for orders created before the payload-binding contract.
+    # New idempotent orders always persist a SHA-256 digest so the same key
+    # cannot silently authorize a materially different order.
+    idempotency_payload_hash = db.Column(db.String(64), nullable=True)
     tenant = db.relationship("TenantProfile")
 
     nro_pedido = db.Column(db.String(50), unique=True, nullable=False)
@@ -845,6 +853,11 @@ class PymePedido(db.Model):
     detalles = db.Column(db.Text, nullable=True) # JSON string
     monto_total = db.Column(db.Float, nullable=True)
     moneda = db.Column(db.String(10), nullable=True)
+    # Persist the business context used by delayed workers and CRM
+    # projections.  These values used to be attached as transient Python
+    # attributes and disappeared as soon as the ORM row was reloaded.
+    rubro = db.Column(db.String(100), nullable=True)
+    channel = db.Column(db.String(50), nullable=True)
     fecha = db.Column(db.DateTime(timezone=True), default=get_local_now)
     nombre_cliente = db.Column(db.String(100), nullable=True)
     email_cliente = db.Column(db.String(100), nullable=True)
@@ -858,6 +871,14 @@ class PymePedido(db.Model):
             "tenant_id",
             "idempotency_key",
             name="uq_pyme_pedido_tenant_idempotency",
+        ),
+        db.CheckConstraint(
+            "idempotency_payload_hash IS NULL OR length(idempotency_payload_hash) = 64",
+            name="ck_pyme_pedido_idempotency_payload_hash",
+        ),
+        db.CheckConstraint(
+            "idempotency_payload_hash IS NULL OR idempotency_key IS NOT NULL",
+            name="ck_pyme_pedido_payload_hash_requires_key",
         ),
     )
 
@@ -876,8 +897,10 @@ class PymePedido(db.Model):
         longitud=None,
         tenant_id=None,
         idempotency_key=None,
+        idempotency_payload_hash=None,
         channel=None,
         moneda=None,
+        rubro=None,
     ):
         self.pyme_id = pyme_id
         self.tenant_id = tenant_id
@@ -885,6 +908,8 @@ class PymePedido(db.Model):
         self.detalles = detalles
         self.monto_total = monto_total
         self.moneda = moneda
+        self.rubro = rubro
+        self.channel = channel
         self.nombre_cliente = nombre_cliente
         self.email_cliente = email_cliente
         self.telefono_cliente = telefono_cliente
@@ -893,6 +918,7 @@ class PymePedido(db.Model):
         self.latitud = latitud
         self.longitud = longitud
         self.idempotency_key = idempotency_key
+        self.idempotency_payload_hash = idempotency_payload_hash
         self.nro_pedido = self._generate_nro_pedido()
 
     def _generate_nro_pedido(self):
@@ -948,6 +974,8 @@ class PymePedido(db.Model):
             "detalles": detalles_json,
             "monto_total": self.monto_total,
             "moneda": self.moneda,
+            "rubro": self.rubro,
+            "channel": self.channel,
             "fecha_creacion": self.fecha.isoformat() if self.fecha else None,
             "nombre_cliente": self.nombre_cliente,
             "email_cliente": self.email_cliente,
@@ -1161,6 +1189,451 @@ class TicketComentario(db.Model):
             }
 
         return data
+
+
+class TicketDomainEffectReceipt(db.Model):
+    """Tenant-scoped receipt for a durable ticket-domain side effect.
+
+    The receipt and the referenced ticket/comment are committed in the same
+    transaction.  Only a canonical digest and a minimal operational result are
+    stored here; citizen text and contact details stay in their domain tables.
+    """
+
+    __tablename__ = "ticket_domain_effect_receipt"
+
+    CONTRACT_VERSION = "ticket.domain_effect.v1"
+    EFFECT_KINDS = (
+        "ticket.create.municipio",
+        "ticket.create.pyme",
+        "ticket.comment.municipio",
+        "ticket.comment.pyme",
+    )
+    RESOURCE_TYPES = (
+        "municipio_ticket",
+        "pyme_ticket",
+        "ticket_comentario",
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key = db.Column(db.String(191), nullable=False)
+    effect_kind = db.Column(db.String(48), nullable=False)
+    payload_hash = db.Column(db.String(64), nullable=False)
+    resource_type = db.Column(db.String(32), nullable=False)
+    resource_id = db.Column(db.Integer, nullable=False)
+    result_json = db.Column(JSONType, nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_ticket_domain_effect_tenant_idempotency",
+        ),
+        db.CheckConstraint(
+            "effect_kind IN ('ticket.create.municipio', 'ticket.create.pyme', "
+            "'ticket.comment.municipio', 'ticket.comment.pyme')",
+            name="ck_ticket_domain_effect_kind",
+        ),
+        db.CheckConstraint(
+            "resource_type IN ('municipio_ticket', 'pyme_ticket', 'ticket_comentario')",
+            name="ck_ticket_domain_effect_resource_type",
+        ),
+        db.CheckConstraint(
+            "length(payload_hash) = 64",
+            name="ck_ticket_domain_effect_payload_hash",
+        ),
+        db.CheckConstraint(
+            "resource_id > 0",
+            name="ck_ticket_domain_effect_resource_id_positive",
+        ),
+        db.Index(
+            "ix_ticket_domain_effect_tenant_kind",
+            "tenant_id",
+            "effect_kind",
+            "created_at",
+        ),
+        db.Index(
+            "ix_ticket_domain_effect_resource",
+            "resource_type",
+            "resource_id",
+        ),
+    )
+
+
+class RealtimeToolCallReceipt(db.Model):
+    """Durable reservation and replay record for one Realtime tool call.
+
+    Session and provider call identifiers are stored only as SHA-256 digests.
+    Tool arguments are never persisted: ``arguments_hash`` binds a reservation
+    to the canonical payload without retaining citizen data.
+    """
+
+    __tablename__ = "realtime_tool_call_receipt"
+
+    CONTRACT_VERSION = "realtime.tool_call.v1"
+    STATUS_RESERVED = "reserved"
+    STATUS_COMPLETED = "completed"
+    STATUS_UNKNOWN = "unknown"
+    STATUSES = (STATUS_RESERVED, STATUS_COMPLETED, STATUS_UNKNOWN)
+    OUTPUT_MAX_CHARS = 4096
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    session_id_hash = db.Column(db.String(64), nullable=False)
+    call_id_hash = db.Column(db.String(64), nullable=False)
+    tool_name = db.Column(db.String(80), nullable=False)
+    arguments_hash = db.Column(db.String(64), nullable=False)
+    effect_idempotency_key = db.Column(db.String(191), nullable=False)
+    status = db.Column(
+        db.String(16),
+        nullable=False,
+        default=STATUS_RESERVED,
+        server_default=STATUS_RESERVED,
+    )
+    output_text = db.Column(db.Text, nullable=True)
+    last_error_code = db.Column(db.String(64), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    reserved_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "session_id_hash",
+            "call_id_hash",
+            name="uq_realtime_tool_receipt_scope_call",
+        ),
+        db.CheckConstraint(
+            "status IN ('reserved', 'completed', 'unknown')",
+            name="ck_realtime_tool_receipt_status",
+        ),
+        db.CheckConstraint(
+            "length(session_id_hash) = 64",
+            name="ck_realtime_tool_receipt_session_hash",
+        ),
+        db.CheckConstraint(
+            "length(call_id_hash) = 64",
+            name="ck_realtime_tool_receipt_call_hash",
+        ),
+        db.CheckConstraint(
+            "length(arguments_hash) = 64",
+            name="ck_realtime_tool_receipt_args_hash",
+        ),
+        db.CheckConstraint(
+            "output_text IS NULL OR length(output_text) <= 4096",
+            name="ck_realtime_tool_receipt_output_size",
+        ),
+        db.CheckConstraint(
+            "((status = 'reserved' AND output_text IS NULL AND completed_at IS NULL) "
+            "OR (status IN ('completed', 'unknown') AND output_text IS NOT NULL "
+            "AND completed_at IS NOT NULL))",
+            name="ck_realtime_tool_receipt_terminal_state",
+        ),
+        db.CheckConstraint(
+            "(status <> 'unknown' OR last_error_code IS NOT NULL)",
+            name="ck_realtime_tool_receipt_unknown_error",
+        ),
+        db.Index(
+            "ix_realtime_tool_receipt_status_updated",
+            "status",
+            "updated_at",
+            "id",
+        ),
+        db.Index(
+            "ix_realtime_tool_receipt_tenant_tool",
+            "tenant_id",
+            "tool_name",
+            "created_at",
+        ),
+    )
+
+
+def _domain_effect_lower_hex64_check(column_name: str) -> str:
+    """Return a portable SQL check for one lowercase SHA-256/HMAC digest."""
+
+    remainder = column_name
+    for character in "0123456789abcdef":
+        remainder = f"replace({remainder}, '{character}', '')"
+    return f"length({column_name}) = 64 AND length({remainder}) = 0"
+
+
+class DomainEffectOutbox(db.Model):
+    """Durable intent for exactly one external effect recipient and channel.
+
+    ``recipient_ref`` must be an opaque tenant-scoped reference; raw email
+    addresses, phone numbers, names, or other citizen PII do not belong in this
+    operational table.  ``intent_hmac`` binds the immutable canonical intent
+    without retaining that sensitive source payload.
+    """
+
+    __tablename__ = "domain_effect_outbox"
+
+    CONTRACT_VERSION = "domain.effect_outbox.v1"
+
+    CHANNELS = ("sigem", "email", "sms", "whatsapp", "realtime", "internal")
+
+    STATUS_PENDING = "pending"
+    STATUS_PROCESSING = "processing"
+    STATUS_RETRY_WAIT = "retry_wait"
+    STATUS_SUCCEEDED = "succeeded"
+    STATUS_SKIPPED = "skipped"
+    STATUS_UNKNOWN = "unknown"
+    STATUS_DEAD = "dead"
+    STATUSES = (
+        STATUS_PENDING,
+        STATUS_PROCESSING,
+        STATUS_RETRY_WAIT,
+        STATUS_SUCCEEDED,
+        STATUS_SKIPPED,
+        STATUS_UNKNOWN,
+        STATUS_DEAD,
+    )
+    TERMINAL_STATUSES = (
+        STATUS_SUCCEEDED,
+        STATUS_SKIPPED,
+        STATUS_UNKNOWN,
+        STATUS_DEAD,
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    aggregate_type = db.Column(db.String(48), nullable=False)
+    aggregate_ref = db.Column(db.String(191), nullable=False)
+    effect_type = db.Column(db.String(96), nullable=False)
+    handler_name = db.Column(db.String(96), nullable=False)
+    channel = db.Column(db.String(16), nullable=False)
+    recipient_ref = db.Column(db.String(191), nullable=False)
+    effect_key = db.Column(db.String(191), nullable=False)
+    intent_hmac = db.Column(db.String(64), nullable=False)
+    payload_json = db.Column(
+        JSONType,
+        nullable=False,
+        default=dict,
+        server_default=db.text("'{}'"),
+    )
+    status = db.Column(
+        db.String(16),
+        nullable=False,
+        default=STATUS_PENDING,
+        server_default=STATUS_PENDING,
+    )
+    attempt_count = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    max_attempts = db.Column(
+        db.Integer,
+        nullable=False,
+        default=8,
+        server_default="8",
+    )
+    available_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    lease_token = db.Column(db.String(64), nullable=True)
+    leased_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    io_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    provider_ref_hash = db.Column(db.String(64), nullable=True)
+    processed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    result_json = db.Column(JSONType, nullable=True)
+    last_error_code = db.Column(db.String(64), nullable=True)
+    last_error_digest = db.Column(db.String(64), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "effect_key",
+            name="uq_domain_effect_tenant_key",
+        ),
+        db.CheckConstraint(
+            "length(aggregate_type) BETWEEN 1 AND 48 "
+            "AND trim(aggregate_type) = aggregate_type",
+            name="ck_domain_effect_aggregate_type",
+        ),
+        db.CheckConstraint(
+            "length(aggregate_ref) BETWEEN 1 AND 191 "
+            "AND trim(aggregate_ref) = aggregate_ref",
+            name="ck_domain_effect_aggregate_ref",
+        ),
+        db.CheckConstraint(
+            "length(effect_type) BETWEEN 1 AND 96 AND trim(effect_type) = effect_type",
+            name="ck_domain_effect_effect_type",
+        ),
+        db.CheckConstraint(
+            "length(handler_name) BETWEEN 1 AND 96 AND trim(handler_name) = handler_name",
+            name="ck_domain_effect_handler_name",
+        ),
+        db.CheckConstraint(
+            "channel IN ('sigem', 'email', 'sms', 'whatsapp', 'realtime', 'internal')",
+            name="ck_domain_effect_channel",
+        ),
+        db.CheckConstraint(
+            "length(recipient_ref) BETWEEN 1 AND 191 "
+            "AND trim(recipient_ref) = recipient_ref",
+            name="ck_domain_effect_recipient_ref",
+        ),
+        db.CheckConstraint(
+            "length(effect_key) BETWEEN 1 AND 191 AND trim(effect_key) = effect_key",
+            name="ck_domain_effect_effect_key",
+        ),
+        db.CheckConstraint(
+            _domain_effect_lower_hex64_check("intent_hmac"),
+            name="ck_domain_effect_intent_hmac",
+        ),
+        db.CheckConstraint(
+            "status IN ('pending', 'processing', 'retry_wait', 'succeeded', "
+            "'skipped', 'unknown', 'dead')",
+            name="ck_domain_effect_status",
+        ),
+        db.CheckConstraint(
+            "attempt_count >= 0 AND max_attempts >= 1 AND attempt_count <= max_attempts",
+            name="ck_domain_effect_attempts",
+        ),
+        db.CheckConstraint(
+            "lease_token IS NULL OR (length(lease_token) BETWEEN 1 AND 64 "
+            "AND trim(lease_token) = lease_token)",
+            name="ck_domain_effect_lease_token",
+        ),
+        db.CheckConstraint(
+            "((status = 'processing' AND lease_token IS NOT NULL AND leased_until IS NOT NULL) "
+            "OR (status <> 'processing' AND lease_token IS NULL AND leased_until IS NULL))",
+            name="ck_domain_effect_lease_state",
+        ),
+        db.CheckConstraint(
+            "((status IN ('succeeded', 'skipped', 'unknown', 'dead') "
+            "AND processed_at IS NOT NULL) OR "
+            "(status NOT IN ('succeeded', 'skipped', 'unknown', 'dead') "
+            "AND processed_at IS NULL))",
+            name="ck_domain_effect_terminal_time",
+        ),
+        db.CheckConstraint(
+            "io_started_at IS NULL OR status IN ('processing', 'succeeded', "
+            "'skipped', 'unknown', 'dead')",
+            name="ck_domain_effect_io_state",
+        ),
+        db.CheckConstraint(
+            "provider_ref_hash IS NULL OR ("
+            + _domain_effect_lower_hex64_check("provider_ref_hash")
+            + ")",
+            name="ck_domain_effect_provider_ref_hash",
+        ),
+        db.CheckConstraint(
+            "last_error_code IS NULL OR (length(last_error_code) BETWEEN 1 AND 64 "
+            "AND trim(last_error_code) = last_error_code)",
+            name="ck_domain_effect_error_code",
+        ),
+        db.CheckConstraint(
+            "last_error_digest IS NULL OR ("
+            + _domain_effect_lower_hex64_check("last_error_digest")
+            + ")",
+            name="ck_domain_effect_error_digest",
+        ),
+        db.Index(
+            "ix_domain_effect_due",
+            "status",
+            "available_at",
+            "id",
+        ),
+        db.Index(
+            "ix_domain_effect_stale",
+            "status",
+            "leased_until",
+            "id",
+        ),
+        db.Index(
+            "ix_domain_effect_aggregate",
+            "tenant_id",
+            "aggregate_type",
+            "aggregate_ref",
+            "id",
+        ),
+        db.Index(
+            "ix_domain_effect_tenant_status",
+            "tenant_id",
+            "status",
+            "updated_at",
+            "id",
+        ),
+    )
+
 
 class CatalogoItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1979,6 +2452,148 @@ class ChannelSession(db.Model):
     )
 
 
+class ChannelSessionIdentityBinding(db.Model):
+    """Non-PII, tenant-scoped binding from provider identity to chat context.
+
+    ``identity_hmac`` is derived by the identity service.  Raw phone numbers,
+    provider addresses and legacy session identifiers never belong in this
+    table.  A binding can be re-pointed only by the service's quarantine path;
+    ``generation`` and the non-PII previous-session digest make that loss of
+    continuity explicit and auditable.
+    """
+
+    __tablename__ = "channel_session_identity_binding"
+
+    CONTRACT_VERSION = "channel.session_identity.v1"
+    STATUS_ACTIVE = "active"
+    STATUS_QUARANTINED = "quarantined"
+    STATUSES = (STATUS_ACTIVE, STATUS_QUARANTINED)
+    CONTINUITY_NEW = "new"
+    CONTINUITY_ADOPTED = "adopted"
+    CONTINUITY_ISOLATED = "isolated"
+    CONTINUITY_STATES = (
+        CONTINUITY_NEW,
+        CONTINUITY_ADOPTED,
+        CONTINUITY_ISOLATED,
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    channel = db.Column(db.String(24), nullable=False)
+    provider = db.Column(db.String(32), nullable=False)
+    identity_version = db.Column(db.String(32), nullable=False)
+    identity_hmac = db.Column(db.String(64), nullable=False)
+    chat_session_id = db.Column(
+        db.String(36),
+        db.ForeignKey("chat_session_context.chat_session_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    status = db.Column(
+        db.String(20),
+        nullable=False,
+        default=STATUS_ACTIVE,
+        server_default=STATUS_ACTIVE,
+    )
+    continuity_status = db.Column(
+        db.String(20),
+        nullable=False,
+        default=CONTINUITY_NEW,
+        server_default=CONTINUITY_NEW,
+    )
+    generation = db.Column(
+        db.Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    last_conflict_code = db.Column(db.String(64), nullable=True)
+    previous_session_digest = db.Column(db.String(64), nullable=True)
+    quarantined_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_verified_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    tenant = db.relationship(
+        "TenantProfile",
+        backref=db.backref("channel_identity_bindings", lazy="dynamic"),
+    )
+    chat_session = db.relationship(
+        "ChatSessionContext",
+        backref=db.backref("channel_identity_bindings", lazy="dynamic"),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "id",
+            "tenant_id",
+            name="uq_channel_session_identity_binding_id_tenant",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "channel",
+            "provider",
+            "identity_version",
+            "identity_hmac",
+            name="uq_channel_session_identity_scope",
+        ),
+        db.CheckConstraint(
+            "status IN ('active','quarantined')",
+            name="ck_channel_session_identity_status",
+        ),
+        db.CheckConstraint(
+            "continuity_status IN ('new','adopted','isolated')",
+            name="ck_channel_session_identity_continuity",
+        ),
+        db.CheckConstraint(
+            "generation >= 1",
+            name="ck_channel_session_identity_generation",
+        ),
+        db.CheckConstraint(
+            "length(identity_hmac) = 64",
+            name="ck_channel_session_identity_hmac_length",
+        ),
+        db.CheckConstraint(
+            "previous_session_digest IS NULL OR length(previous_session_digest) = 64",
+            name="ck_channel_session_identity_previous_digest",
+        ),
+        db.Index(
+            "ix_channel_session_identity_lookup",
+            "tenant_id",
+            "channel",
+            "provider",
+            "identity_hmac",
+        ),
+    )
+
+
 class Message(db.Model):
     __tablename__ = "message"
 
@@ -2264,6 +2879,28 @@ class SurveyDraftMaterializationAlias(db.Model):
 
 class EncEncuesta(db.Model, TimestampMixin):
     __tablename__ = "enc_encuesta"
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id", "id", name="uq_enc_encuesta_tenant_id"
+        ),
+        db.CheckConstraint(
+            "privacy_mode IN ('legacy', 'source_anonymous')",
+            name="ck_enc_encuesta_privacy_mode",
+        ),
+        db.CheckConstraint(
+            "response_retention_days IS NULL OR "
+            "(response_retention_days >= 1 AND response_retention_days <= 3650)",
+            name="ck_enc_encuesta_response_retention_days",
+        ),
+        db.CheckConstraint(
+            "privacy_mode <> 'source_anonymous' OR "
+            "(privacy_policy_version IS NOT NULL AND privacy_policy_url IS NOT NULL "
+            "AND privacy_consent_required = true "
+            "AND response_retention_days IS NOT NULL "
+            "AND coalesce(puntos_recompensa, 0) = 0)",
+            name="ck_enc_encuesta_source_anonymous_policy",
+        ),
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(db.Integer, nullable=False, index=True)
@@ -2279,6 +2916,24 @@ class EncEncuesta(db.Model, TimestampMixin):
     requiere_identidad = db.Column(db.Boolean, default=False, nullable=False)
     politica_unicidad = db.Column(db.String(30), nullable=False, default="libre")
     anonimo_permitido = db.Column(db.Boolean, default=True, nullable=False)
+    # Privacy is versioned independently from the questionnaire.  ``legacy``
+    # preserves historical rows; ``source_anonymous`` guarantees that direct
+    # identifiers and precise request metadata are discarded before insert.
+    privacy_mode = db.Column(
+        db.String(32),
+        nullable=False,
+        default="legacy",
+        server_default="legacy",
+    )
+    privacy_policy_version = db.Column(db.String(64), nullable=True)
+    privacy_policy_url = db.Column(db.String(500), nullable=True)
+    privacy_consent_required = db.Column(
+        db.Boolean,
+        nullable=False,
+        default=False,
+        server_default=db.false(),
+    )
+    response_retention_days = db.Column(db.Integer, nullable=True)
     es_votacion_envivo = db.Column(db.Boolean, default=False, nullable=False)
     mostrar_resultados_envivo = db.Column(db.Boolean, default=False, nullable=False)
     permitir_comentarios = db.Column(db.Boolean, default=False, nullable=False)
@@ -2390,6 +3045,38 @@ class EncRespuesta(db.Model, TimestampMixin):
     __tablename__ = "enc_respuesta"
     __table_args__ = (
         UniqueConstraint("encuesta_id", "huella_unica", name="uq_enc_respuesta_huella"),
+        db.CheckConstraint(
+            "privacy_mode IN ('legacy', 'source_anonymous')",
+            name="ck_enc_respuesta_privacy_mode",
+        ),
+        db.CheckConstraint(
+            "privacy_mode <> 'source_anonymous' OR "
+            "(user_id IS NULL AND dni IS NULL AND phone IS NULL AND ip IS NULL "
+            "AND ua IS NULL AND lat IS NULL AND lng IS NULL "
+            "AND utm_source IS NULL AND utm_campaign IS NULL "
+            "AND edad IS NULL AND anio_nacimiento IS NULL "
+            "AND (metadata_payload IS NULL OR CAST(metadata_payload AS TEXT) = 'null') "
+            "AND privacy_policy_version IS NOT NULL "
+            "AND privacy_consent_recorded_at IS NOT NULL "
+            "AND retention_expires_at IS NOT NULL)",
+            name="ck_enc_respuesta_source_anonymous_minimization",
+        ),
+        db.CheckConstraint(
+            "governance_release_id IS NULL OR "
+            "(governance_eligibility_policy_version IS NOT NULL "
+            "AND governance_consent_policy_version IS NOT NULL "
+            "AND governance_acknowledged_at IS NOT NULL)",
+            name="ck_enc_respuesta_governance_ack",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "governance_release_id"],
+            [
+                "survey_governance_release.tenant_id",
+                "survey_governance_release.id",
+            ],
+            ondelete="RESTRICT",
+            name="fk_enc_respuesta_governance_release_tenant",
+        ),
         Index("ix_enc_respuesta_encuesta_submitted", "encuesta_id", "submitted_at"),
     )
 
@@ -2419,6 +3106,24 @@ class EncRespuesta(db.Model, TimestampMixin):
     submitted_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     content_hash = db.Column(db.String(128), nullable=True)
     snapshot_id = db.Column(db.Integer, db.ForeignKey("enc_anchor_snapshot.id"), nullable=True)
+    # Snapshot the policy in force when the response was accepted.  This keeps
+    # retention and disclosure decisions stable even if a draft is duplicated
+    # or an administrator later changes another survey version.
+    privacy_mode = db.Column(
+        db.String(32),
+        nullable=False,
+        default="legacy",
+        server_default="legacy",
+    )
+    privacy_policy_version = db.Column(db.String(64), nullable=True)
+    privacy_consent_recorded_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    retention_expires_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+    # Governed surveys pin every accepted response to the exact immutable
+    # release and policy versions. Legacy rows intentionally keep these null.
+    governance_release_id = db.Column(db.Integer, nullable=True, index=True)
+    governance_eligibility_policy_version = db.Column(db.String(64), nullable=True)
+    governance_consent_policy_version = db.Column(db.String(64), nullable=True)
+    governance_acknowledged_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     encuesta = db.relationship("EncEncuesta", back_populates="respuestas")
     detalles = db.relationship(
@@ -2428,6 +3133,11 @@ class EncRespuesta(db.Model, TimestampMixin):
         order_by="EncRespuestaDetalle.id",
     )
     snapshot = db.relationship("EncAnchorSnapshot", back_populates="respuestas")
+    governance_release = db.relationship(
+        "SurveyGovernanceRelease",
+        foreign_keys=[governance_release_id],
+        primaryjoin="EncRespuesta.governance_release_id == SurveyGovernanceRelease.id",
+    )
 
 
 class SurveyResponseReceipt(db.Model):
@@ -3066,6 +3776,440 @@ class WhatsAppFlowInteraction(db.Model):
     )
 
 
+class WhatsAppInboundTurn(db.Model):
+    """Durable, tenant-scoped receipt for one inbound WhatsApp provider event."""
+
+    __tablename__ = "whatsapp_inbound_turn"
+
+    CONTRACT_VERSION = "whatsapp.inbound_turn.v1"
+
+    STATUS_RECEIVED = "received"
+    STATUS_PROCESSING = "processing"
+    STATUS_RETRY_WAIT = "retry_wait"
+    STATUS_COMPLETED = "completed"
+    STATUS_DEAD = "dead"
+    STATUSES = (
+        STATUS_RECEIVED,
+        STATUS_PROCESSING,
+        STATUS_RETRY_WAIT,
+        STATUS_COMPLETED,
+        STATUS_DEAD,
+    )
+
+    MESSAGE_KINDS = (
+        "text",
+        "audio",
+        "image",
+        "video",
+        "document",
+        "location",
+        "contact",
+        "interactive",
+        "flow",
+        "unknown",
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    turn_id = db.Column(
+        db.String(36),
+        nullable=False,
+        unique=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_connection_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_connection.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    provider = db.Column(db.String(32), nullable=False, default="twilio")
+    provider_message_sid = db.Column(db.String(180), nullable=False)
+    stream_key = db.Column(db.String(128), nullable=False)
+    conversation_id = db.Column(db.String(36), nullable=True)
+    channel_session_id = db.Column(db.Integer, nullable=True)
+    chat_session_id = db.Column(db.String(64), nullable=True)
+    session_identity_binding_id = db.Column(db.Integer, nullable=True)
+    session_identity_version = db.Column(db.String(32), nullable=True)
+    session_identity_hmac = db.Column(db.String(64), nullable=True)
+    message_kind = db.Column(db.String(24), nullable=False, default="unknown")
+    payload_digest = db.Column(db.String(64), nullable=False)
+    payload_json = db.Column(JSONType, nullable=False, default=dict)
+    status = db.Column(
+        db.String(20),
+        nullable=False,
+        default=STATUS_RECEIVED,
+        server_default=STATUS_RECEIVED,
+    )
+    attempt_count = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    max_attempts = db.Column(
+        db.Integer,
+        nullable=False,
+        default=8,
+        server_default="8",
+    )
+    available_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    lease_token = db.Column(db.String(64), nullable=True)
+    leased_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    received_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    processing_started_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_error_code = db.Column(db.String(96), nullable=True)
+    result_json = db.Column(JSONType, nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.ForeignKeyConstraint(
+            ["session_identity_binding_id", "tenant_id"],
+            [
+                "channel_session_identity_binding.id",
+                "channel_session_identity_binding.tenant_id",
+            ],
+            name="fk_whatsapp_inbound_turn_session_identity_tenant",
+            ondelete="RESTRICT",
+        ),
+        # The pair is referenced by the outbound outbox so a row can never
+        # point at an inbound turn owned by another tenant.
+        db.UniqueConstraint(
+            "id",
+            "tenant_id",
+            name="uq_whatsapp_inbound_turn_id_tenant",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "provider",
+            "provider_message_sid",
+            name="uq_whatsapp_inbound_turn_tenant_provider_message",
+        ),
+        db.CheckConstraint(
+            "status IN ('received', 'processing', 'retry_wait', 'completed', 'dead')",
+            name="ck_whatsapp_inbound_turn_status",
+        ),
+        db.CheckConstraint(
+            "message_kind IN ('text', 'audio', 'image', 'video', 'document', "
+            "'location', 'contact', 'interactive', 'flow', 'unknown')",
+            name="ck_whatsapp_inbound_turn_message_kind",
+        ),
+        db.CheckConstraint(
+            "attempt_count >= 0 AND max_attempts >= 1 AND attempt_count <= max_attempts",
+            name="ck_whatsapp_inbound_turn_attempts",
+        ),
+        db.CheckConstraint(
+            "length(payload_digest) = 64",
+            name="ck_whatsapp_inbound_turn_payload_digest",
+        ),
+        db.CheckConstraint(
+            "((session_identity_binding_id IS NULL "
+            "AND session_identity_version IS NULL "
+            "AND session_identity_hmac IS NULL) OR "
+            "(session_identity_binding_id IS NOT NULL "
+            "AND session_identity_version IS NOT NULL "
+            "AND session_identity_hmac IS NOT NULL "
+            "AND length(session_identity_hmac) = 64))",
+            name="ck_whatsapp_inbound_turn_session_identity_complete",
+        ),
+        db.CheckConstraint(
+            "((status = 'processing' AND lease_token IS NOT NULL AND leased_until IS NOT NULL) "
+            "OR (status <> 'processing' AND lease_token IS NULL AND leased_until IS NULL))",
+            name="ck_whatsapp_inbound_turn_lease_state",
+        ),
+        db.CheckConstraint(
+            "(status NOT IN ('completed', 'dead') OR completed_at IS NOT NULL)",
+            name="ck_whatsapp_inbound_turn_completion_time",
+        ),
+        db.Index(
+            "ix_whatsapp_inbound_turn_due",
+            "status",
+            "available_at",
+            "id",
+        ),
+        db.Index(
+            "ix_whatsapp_inbound_turn_stream_fifo",
+            "tenant_id",
+            "stream_key",
+            "id",
+        ),
+        db.Index(
+            "ix_whatsapp_inbound_turn_session_identity",
+            "tenant_id",
+            "session_identity_binding_id",
+        ),
+        db.Index(
+            "ix_whatsapp_inbound_turn_stale",
+            "status",
+            "leased_until",
+        ),
+        db.Index(
+            "uq_whatsapp_inbound_turn_stream_processing",
+            "tenant_id",
+            "stream_key",
+            unique=True,
+            postgresql_where=db.text("status = 'processing'"),
+            sqlite_where=db.text("status = 'processing'"),
+        ),
+    )
+
+
+class WhatsAppOutboundAttempt(db.Model):
+    """Durable outbox row for one ordered WhatsApp provider send."""
+
+    __tablename__ = "whatsapp_outbound_attempt"
+
+    CONTRACT_VERSION = "whatsapp.outbound_attempt.v1"
+
+    STATUS_PENDING = "pending"
+    STATUS_SENDING = "sending"
+    STATUS_RETRY_WAIT = "retry_wait"
+    STATUS_SEND_UNCERTAIN = "send_uncertain"
+    STATUS_ACCEPTED = "accepted"
+    STATUS_FAILED = "failed"
+    STATUS_DEAD = "dead"
+    STATUS_CANCELLED = "cancelled"
+    STATUSES = (
+        STATUS_PENDING,
+        STATUS_SENDING,
+        STATUS_RETRY_WAIT,
+        STATUS_SEND_UNCERTAIN,
+        STATUS_ACCEPTED,
+        STATUS_FAILED,
+        STATUS_DEAD,
+        STATUS_CANCELLED,
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    attempt_id = db.Column(
+        db.String(36),
+        nullable=False,
+        unique=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    inbound_turn_id = db.Column(
+        db.Integer,
+        nullable=False,
+    )
+    provider_connection_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_connection.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    provider = db.Column(db.String(32), nullable=False, default="twilio")
+    stream_key = db.Column(db.String(128), nullable=False)
+    sequence_no = db.Column(db.Integer, nullable=False)
+    message_kind = db.Column(db.String(24), nullable=False)
+    idempotency_key = db.Column(db.String(191), nullable=False)
+    payload_digest = db.Column(db.String(64), nullable=False)
+    payload_json = db.Column(JSONType, nullable=False, default=dict)
+    status = db.Column(
+        db.String(20),
+        nullable=False,
+        default=STATUS_PENDING,
+        server_default=STATUS_PENDING,
+    )
+    provider_message_sid = db.Column(db.String(180), nullable=True)
+    provider_status = db.Column(
+        db.String(32),
+        nullable=False,
+        default="unknown",
+        server_default="unknown",
+    )
+    attempt_count = db.Column(
+        db.Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    max_attempts = db.Column(
+        db.Integer,
+        nullable=False,
+        default=5,
+        server_default="5",
+    )
+    available_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    lease_token = db.Column(db.String(64), nullable=True)
+    leased_until = db.Column(db.DateTime(timezone=True), nullable=True)
+    accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    last_error_code = db.Column(db.String(96), nullable=True)
+    last_error_digest = db.Column(db.String(64), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    inbound_turn = db.relationship(
+        "WhatsAppInboundTurn",
+        backref=db.backref("outbound_attempts", lazy="dynamic", cascade="all, delete-orphan"),
+    )
+
+    __table_args__ = (
+        db.ForeignKeyConstraint(
+            ["inbound_turn_id", "tenant_id"],
+            ["whatsapp_inbound_turn.id", "whatsapp_inbound_turn.tenant_id"],
+            name="fk_whatsapp_outbound_attempt_turn_tenant",
+            ondelete="CASCADE",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_whatsapp_outbound_attempt_tenant_idempotency",
+        ),
+        db.UniqueConstraint(
+            "inbound_turn_id",
+            "sequence_no",
+            name="uq_whatsapp_outbound_attempt_turn_sequence",
+        ),
+        db.CheckConstraint(
+            "status IN ('pending', 'sending', 'retry_wait', 'send_uncertain', "
+            "'accepted', 'failed', 'dead', 'cancelled')",
+            name="ck_whatsapp_outbound_attempt_status",
+        ),
+        db.CheckConstraint(
+            "provider_status IN ('unknown', 'accepted', 'scheduled', 'queued', "
+            "'sending', 'sent', 'delivered', 'read', 'failed', 'undelivered', "
+            "'canceled', 'cancelled')",
+            name="ck_whatsapp_outbound_attempt_provider_status",
+        ),
+        db.CheckConstraint(
+            "message_kind IN ('text', 'media', 'audio', 'template', 'interactive')",
+            name="ck_whatsapp_outbound_attempt_message_kind",
+        ),
+        db.CheckConstraint(
+            "sequence_no >= 1",
+            name="ck_whatsapp_outbound_attempt_sequence_positive",
+        ),
+        db.CheckConstraint(
+            "attempt_count >= 0 AND max_attempts >= 1 AND attempt_count <= max_attempts",
+            name="ck_whatsapp_outbound_attempt_attempts",
+        ),
+        db.CheckConstraint(
+            "length(payload_digest) = 64",
+            name="ck_whatsapp_outbound_attempt_payload_digest",
+        ),
+        db.CheckConstraint(
+            "((status = 'sending' AND lease_token IS NOT NULL AND leased_until IS NOT NULL) "
+            "OR (status <> 'sending' AND lease_token IS NULL AND leased_until IS NULL))",
+            name="ck_whatsapp_outbound_attempt_lease_state",
+        ),
+        db.CheckConstraint(
+            "(status <> 'accepted' OR provider_message_sid IS NOT NULL)",
+            name="ck_whatsapp_outbound_attempt_accepted_sid",
+        ),
+        db.Index(
+            "ix_whatsapp_outbound_attempt_due",
+            "status",
+            "available_at",
+            "id",
+        ),
+        db.Index(
+            "ix_whatsapp_outbound_attempt_stream_fifo",
+            "tenant_id",
+            "stream_key",
+            "inbound_turn_id",
+            "sequence_no",
+        ),
+        db.Index(
+            "ix_whatsapp_outbound_attempt_callback",
+            "tenant_id",
+            "provider_sender_id",
+            "provider_message_sid",
+        ),
+        db.Index(
+            "ix_whatsapp_outbound_attempt_uncertain",
+            "tenant_id",
+            "status",
+            "updated_at",
+        ),
+        db.Index(
+            "uq_whatsapp_outbound_attempt_provider_message",
+            "tenant_id",
+            "provider",
+            "provider_message_sid",
+            unique=True,
+            postgresql_where=db.text("provider_message_sid IS NOT NULL"),
+            sqlite_where=db.text("provider_message_sid IS NOT NULL"),
+        ),
+        db.Index(
+            "uq_whatsapp_outbound_attempt_stream_sending",
+            "tenant_id",
+            "stream_key",
+            unique=True,
+            postgresql_where=db.text("status = 'sending'"),
+            sqlite_where=db.text("status = 'sending'"),
+        ),
+    )
+
+
 class TenantConfig(db.Model):
     __tablename__ = "tenant_config"
 
@@ -3568,3 +4712,4 @@ from models_education import (
     FamilyVerificationAttempt,
     SchoolCaseAlias,
 )
+from models_survey_governance import SurveyGovernanceRelease

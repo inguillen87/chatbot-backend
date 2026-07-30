@@ -24,6 +24,12 @@ class _DummyQuery:
     def filter_by(self, **kwargs):
         return self
 
+    def limit(self, _value):
+        return self
+
+    def all(self):
+        return [self._ticket] if self._ticket is not None else []
+
     def first(self):
         return self._ticket
 

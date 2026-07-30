@@ -515,15 +515,25 @@ def _analytics_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
 
     event_name = "vote_submitted" if is_live_vote else "survey_answer_submitted"
     entity_ref = f"survey:{encuesta.id}:response:{respuesta.id}"
+    source_anonymous = (
+        str(getattr(respuesta, "privacy_mode", "legacy") or "legacy")
+        .strip()
+        .lower()
+        == "source_anonymous"
+    )
     event = analytics_ingestor.track(
         tenant_id=int(effect.tenant_id),
         event_name=event_name,
         payload=analytics_payload,
         event_id=event_id,
-        user_id=int(respuesta.user_id) if respuesta.user_id else None,
-        anon_id=respuesta.huella_unica or None,
+        user_id=(
+            None
+            if source_anonymous
+            else int(respuesta.user_id) if respuesta.user_id else None
+        ),
+        anon_id=None if source_anonymous else respuesta.huella_unica or None,
         channel=respuesta.canal or "public_survey",
-        session_id=respuesta.huella_unica or None,
+        session_id=None if source_anonymous else respuesta.huella_unica or None,
         lat=respuesta.lat,
         lng=respuesta.lng,
         entity_ref=entity_ref,
@@ -614,6 +624,14 @@ def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
         "slug": str(payload.get("slug") or getattr(encuesta, "slug", "") or ""),
     }
 
+    # A web request can emit through its in-process Socket.IO manager. The
+    # permanent survey worker cannot: before it publishes, prove that the
+    # global Socket.IO instance is a write-only Redis publisher on the exact
+    # configured channel and that Redis is reachable. Any failure bubbles into
+    # retry_wait/dead instead of recording a false ``emitted`` success.
+    from socket_service import ensure_survey_realtime_transport_ready
+
+    transport = ensure_survey_realtime_transport_ready()
     from services.encuestas_service import emit_survey_response_update
 
     emitted = emit_survey_response_update(
@@ -625,7 +643,11 @@ def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
         raise RuntimeError("realtime_emit_not_confirmed")
     return _EffectOutcome(
         status=STATUS_SUCCEEDED,
-        result={"delivery": "emitted", "envelope": envelope},
+        result={
+            "delivery": "publish_accepted",
+            "transport": transport,
+            "envelope": envelope,
+        },
     )
 
 
@@ -654,7 +676,12 @@ def _due_filter(now: datetime):
     )
 
 
-def _claim_effect(effect_id: int, *, now: datetime) -> Optional[str]:
+def _claim_effect(
+    effect_id: int,
+    *,
+    now: datetime,
+    lease_seconds: int = LEASE_SECONDS,
+) -> Optional[str]:
     token = secrets.token_hex(24)
     statement = (
         update(SurveyResponseEffect)
@@ -673,7 +700,7 @@ def _claim_effect(effect_id: int, *, now: datetime) -> Optional[str]:
                 else_=SurveyResponseEffect.attempt_count + 1,
             ),
             lease_token=token,
-            leased_until=now + timedelta(seconds=LEASE_SECONDS),
+            leased_until=now + timedelta(seconds=lease_seconds),
             processed_at=None,
             last_error=None,
             updated_at=now,
@@ -786,6 +813,7 @@ def dispatch_survey_response_effects(
     response_id: Optional[int] = None,
     limit: int = 50,
     now: Optional[datetime] = None,
+    lease_seconds: int = LEASE_SECONDS,
 ) -> dict[str, Any]:
     """Claim and process due effects with lease fencing and bounded retries.
 
@@ -795,6 +823,12 @@ def dispatch_survey_response_effects(
 
     operation_now = _coerce_utc(now)
     bounded_limit = _bounded_limit(limit)
+    bounded_lease_seconds = _positive_int(
+        lease_seconds,
+        field="lease_seconds",
+    )
+    if bounded_lease_seconds < 30 or bounded_lease_seconds > 3600:
+        raise ValueError("lease_seconds must be between 30 and 3600")
     query = db.session.query(SurveyResponseEffect.id).filter(
         _due_filter(operation_now)
     )
@@ -834,7 +868,11 @@ def dispatch_survey_response_effects(
     for effect_id in candidate_ids:
         if stats["claimed"] >= bounded_limit:
             break
-        lease_token = _claim_effect(effect_id, now=operation_now)
+        lease_token = _claim_effect(
+            effect_id,
+            now=operation_now,
+            lease_seconds=bounded_lease_seconds,
+        )
         if lease_token is None:
             continue
         stats["claimed"] += 1
@@ -886,6 +924,30 @@ def dispatch_survey_response_effects(
             stats[target_status] += 1
 
     return stats
+
+
+def list_due_survey_response_effect_tenant_ids(
+    *,
+    now: Optional[datetime] = None,
+) -> tuple[int, ...]:
+    """Return the sorted tenants that currently have claimable effects.
+
+    This is intentionally only a discovery primitive for the dedicated poller.
+    Claiming and lease recovery remain owned by
+    :func:`dispatch_survey_response_effects`.  Terminal states such as
+    ``dead`` are not part of ``_due_filter`` and therefore can never be
+    selected for an automatic retry.
+    """
+
+    operation_now = _coerce_utc(now)
+    rows = (
+        db.session.query(SurveyResponseEffect.tenant_id)
+        .filter(_due_filter(operation_now))
+        .distinct()
+        .order_by(SurveyResponseEffect.tenant_id.asc())
+        .all()
+    )
+    return tuple(int(row[0]) for row in rows)
 
 
 def summarize_survey_response_effects(tenant_id: int) -> dict[str, Any]:
@@ -964,5 +1026,6 @@ __all__ = [
     "STATUS_DEAD",
     "stage_survey_response_effects",
     "dispatch_survey_response_effects",
+    "list_due_survey_response_effect_tenant_ids",
     "summarize_survey_response_effects",
 ]
