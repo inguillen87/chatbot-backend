@@ -2,7 +2,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 from app import create_app, db
 from config import TestingConfig
-from models import User, Rubro, ChatSessionContext
+from models import ChatSessionContext, Rubro, TenantProfile, User
 from services.municipio_responder import responder_municipio
 
 @pytest.fixture(scope='module')
@@ -20,6 +20,7 @@ def test_client():
     with app.app_context():
         db.create_all()
         db.session.query(ChatSessionContext).delete()
+        db.session.query(TenantProfile).delete()
         db.session.query(User).delete()
         db.session.query(Rubro).delete()
         db.session.commit()
@@ -33,9 +34,21 @@ def test_client():
             nombre_empresa="Municipalidad de Test",
             tipo_chat="municipio",
             rubro=rubro,
-            municipio_id=1
+            tenant_slug="municipalidad-test",
         )
         db.session.add(user)
+        db.session.flush()
+        user.municipio_id = user.id
+        tenant = TenantProfile(
+            slug="municipalidad-test",
+            nombre="Municipalidad de Test",
+            tipo="municipio",
+            municipio_id=user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        user.tenant_id = tenant.id
         db.session.commit()
 
     with app.test_client() as testing_client:
@@ -95,6 +108,8 @@ def test_full_claim_in_one_go(test_client, mock_llm):
         args, kwargs = mock_crear_ticket.call_args
         assert kwargs['ticket_data']['categoria'] == "Semáforos"
         assert kwargs['ticket_data']['nombre_vecino'] == "Marcelo Guillen"
+        assert kwargs['ticket_data']['tenant_id'] == owner_user.tenant_id
+        assert kwargs['ticket_data']['municipio_id'] == owner_user.id
 
 def test_claim_in_multiple_steps(test_client, mock_llm):
     """Prueba la creación de un reclamo en múltiples interacciones."""

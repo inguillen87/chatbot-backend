@@ -52,10 +52,11 @@ from services.meta_flow_management import (
     resolve_meta_graph_credentials,
 )
 from services.message_templates import whatsapp_template_lifecycle
-from services.plan_access import integration_access_payload
+from services.plan_access import integration_access_payload, plan_allows_full_integrations
 from services.provider_platform import is_sender_ready_status
 from services.twilio_tech_provider import is_meta_embedded_signup_complete
 from services.whatsapp_flow_security import whatsapp_flow_token_key_ready
+from services.whatsapp_workflow_studio import build_workflow_studio_contract
 from services.realtime_voice_profiles import build_realtime_voice_capabilities
 from services.audio_transcription_service import audio_translation_capabilities
 from services.tts_orchestrator import get_tts_audio_cache_public_config, get_tts_cache_metrics
@@ -1511,6 +1512,16 @@ def _template_status(templates: Mapping[str, dict[str, Any]], template_id: str) 
     }
 
 
+def _template_notification_transport_ready() -> bool:
+    """Report the real legacy template transport capability, not config alone."""
+
+    from services import notifications
+
+    return bool(
+        getattr(notifications, "WHATSAPP_TEMPLATE_TRANSPORT_IMPLEMENTED", False)
+    )
+
+
 def _template_readiness_payload(
     status_payload: Mapping[str, Any],
     execution: Mapping[str, Any],
@@ -1519,6 +1530,7 @@ def _template_readiness_payload(
     meta_surface = execution.get("meta_surface") if isinstance(execution.get("meta_surface"), Mapping) else {}
     automation = execution.get("automation") if isinstance(execution.get("automation"), Mapping) else {}
     twilio_type = str(execution.get("twilio_type") or "twilio/text")
+    transport_ready = _template_notification_transport_ready()
 
     lifecycle_state = str(status_payload.get("status") or "")
     if lifecycle_state == "stale":
@@ -1545,6 +1557,10 @@ def _template_readiness_payload(
         state = "missing"
         severity = "blocking"
         next_action = "create_template_with_twilio_content_api"
+    elif lifecycle_state == "approved" and not transport_ready:
+        state = "approved_transport_unavailable"
+        severity = "blocking"
+        next_action = "implement_durable_tenant_scoped_template_transport"
     elif webview.get("required"):
         state = "approved_requires_webview"
         severity = "ready_with_dependency"
@@ -1558,7 +1574,10 @@ def _template_readiness_payload(
         "state": state,
         "severity": severity,
         "next_action": next_action,
-        "production_send_allowed": lifecycle_state == "approved",
+        "production_send_allowed": lifecycle_state == "approved" and transport_ready,
+        "template_approved": lifecycle_state == "approved",
+        "transport_ready": transport_ready,
+        "transport_contract": "tenant_scoped_registry_sender_idempotency_required",
         "fallback_to_text": lifecycle_state != "approved",
         "twilio_type": twilio_type,
         "content_sid": status_payload.get("content_sid"),
@@ -2196,6 +2215,7 @@ def _template_blueprint_payload(
     integration_access: Mapping[str, Any],
 ) -> dict[str, Any]:
     templates = _registered_template_map(tenant)
+    transport_ready = _template_notification_transport_ready()
     remote_registered_total = sum(
         1
         for template in templates.values()
@@ -2510,6 +2530,12 @@ def _template_blueprint_payload(
         "provider": "twilio_content_api",
         "channel": "whatsapp",
         "enabled": bool(channel_ready),
+        "send_ready": bool(channel_ready and transport_ready and approved > 0),
+        "template_transport": {
+            "ready": transport_ready,
+            "contract": "tenant_scoped_registry_sender_idempotency_required",
+            "reason_code": None if transport_ready else "whatsapp_template_transport_unavailable",
+        },
         "required_templates": required_templates,
         "vertical_templates": vertical_templates,
         "operational_template_groups": operational_catalog["groups"],
@@ -2585,8 +2611,12 @@ def _template_blueprint_payload(
             "use_marketing_for_promotions": True,
             "buttons_use_cta_webview_or_quick_reply": True,
             "freeform_allowed_inside_24h": True,
-            "outside_24h_allowed": bool(channel_ready and approved > 0),
-            "production_send_allowed": bool(channel_ready),
+            "outside_24h_allowed": bool(
+                channel_ready and transport_ready and approved > 0
+            ),
+            "production_send_allowed": bool(
+                channel_ready and transport_ready and approved > 0
+            ),
             "respect_integration_access_lock": True,
             "access_enabled": bool(integration_access.get("enabled")),
         },
@@ -5131,6 +5161,12 @@ def build_whatsapp_experience(
         "tenant": _tenant_ref(tenant),
         "channel": channel,
         "enterprise_rules": _enterprise_rule_payload(tenant),
+        "workflow_studio": build_workflow_studio_contract(
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            app_config=app_config,
+            plan_allowed=plan_allows_full_integrations(tenant),
+        ),
         "contact_window": _contact_window_payload(tenant),
         "conversation_intelligence": _conversation_intelligence_payload(
             tenant,
@@ -5186,6 +5222,7 @@ def build_whatsapp_experience(
                 "voice_realtime",
                 "huggingface_ai",
                 "enterprise_rules",
+                "workflow_studio",
             ],
             "empty_state_behavior": "show_setup_checklist_and_safe_degradation",
         },

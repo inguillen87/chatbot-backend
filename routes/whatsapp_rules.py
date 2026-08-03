@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -24,6 +25,10 @@ from models import (
     db,
 )
 from services.provider_platform import is_sender_ready_status
+from services.llm_provider_network_policy import (
+    ProviderNetworkDisabledError,
+    require_provider_network,
+)
 from services.meta_flow_json import canonical_flow_json
 from services.meta_flow_management import (
     MetaFlowGraphClient,
@@ -66,6 +71,7 @@ from utils.roles import ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role
 from utils.tenant import require_tenant
 
 whatsapp_rules_bp = Blueprint("whatsapp_rules_bp", __name__)
+logger = logging.getLogger(__name__)
 TWILIO_CONTENT_API_URL = "https://content.twilio.com/v1/Content"
 TWILIO_CONFIRMATION_TTL_SECONDS = 15 * 60
 META_FLOW_PUBLICATION_ATTESTATION_TTL_SECONDS = 60 * 60
@@ -79,6 +85,26 @@ class TwilioContentApiError(RuntimeError):
         self.status_code = status_code
         self.code = code
         super().__init__(code)
+
+
+def _require_twilio_provider_network(operation: str) -> None:
+    try:
+        require_provider_network("twilio")
+    except ProviderNetworkDisabledError:
+        logger.info(
+            "Twilio rules request blocked operation=%s reason=test_network_disabled",
+            operation,
+        )
+        raise
+
+
+def _twilio_client_from_credentials(
+    credentials: TwilioRuntimeCredentials,
+    *,
+    operation: str,
+) -> Client:
+    _require_twilio_provider_network(operation)
+    return Client(credentials.account_sid, credentials.auth_token)
 
 
 def _guard(user: User, tenant):
@@ -595,7 +621,10 @@ def _twilio_client(tenant) -> tuple[Client, TwilioRuntimeCredentials]:
         if credentials.scope == "conflict":
             abort(409, description="La cuenta Twilio del tenant no coincide con su conexion registrada")
         abort(503, description="Las credenciales Twilio del tenant no estan configuradas para esta cuenta")
-    return Client(credentials.account_sid, credentials.auth_token), credentials
+    return (
+        _twilio_client_from_credentials(credentials, operation="client"),
+        credentials,
+    )
 
 
 def _twilio_client_for_sender(tenant, sender: ProviderSender) -> tuple[Client, TwilioRuntimeCredentials]:
@@ -608,7 +637,10 @@ def _twilio_client_for_sender(tenant, sender: ProviderSender) -> tuple[Client, T
         if credentials.scope == "conflict":
             abort(409, description="La cuenta Twilio del sender no coincide con el tenant")
         abort(503, description="Las credenciales Twilio del sender no estan configuradas")
-    return Client(credentials.account_sid, credentials.auth_token), credentials
+    return (
+        _twilio_client_from_credentials(credentials, operation="sender_client"),
+        credentials,
+    )
 
 
 def _flow_interaction_payload(row: WhatsAppFlowInteraction) -> dict:
@@ -802,6 +834,7 @@ def _verify_meta_publication_attestation(
 
 
 def _twilio_json_request(client: Client, method: str, url: str, *, payload: dict | None = None) -> dict:
+    _require_twilio_provider_network("content_api")
     response = client.request(
         method,
         url,
@@ -1589,7 +1622,6 @@ def sync_twilio_content_template(user: User):
         user=user,
         fields=confirmation_fields,
     )
-
     client, credentials = _twilio_client(tenant)
     row, operation_id = _claim_registry_sync(
         existing,
@@ -2693,6 +2725,9 @@ def send_twilio_native_flow(user: User):
         user=user,
         fields=confirmation_fields,
     )
+    # Fail before issuing a token, reserving quota, or persisting a claimed
+    # interaction when this test process is intentionally offline.
+    _require_twilio_provider_network("native_flow_send")
 
     issued = issue_whatsapp_flow_token(
         secret=token_secret,
@@ -2787,8 +2822,12 @@ def send_twilio_native_flow(user: User):
             interaction.id,
         )
 
-    client = Client(credentials.account_sid, credentials.auth_token)
+    client = _twilio_client_from_credentials(
+        credentials,
+        operation="native_flow_client",
+    )
     try:
+        _require_twilio_provider_network("native_flow_message")
         message = client.messages.create(**message_params)
         message_sid = str(getattr(message, "sid", "") or "").strip()
         if not message_sid:

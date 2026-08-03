@@ -133,7 +133,7 @@ def test_create_municipal_post_unauthorized(client):
     }
     response_pyme = client.post('/municipal/posts', data={'titulo': 't', 'descripcion': 'd'}, headers=headers_pyme)
     assert response_pyme.status_code == 403
-    assert "Se requiere un usuario municipal" in response_pyme.get_json()['error']
+    assert response_pyme.get_json()['error'] == "Permisos insuficientes"
 
 
 def test_get_municipal_posts(client):

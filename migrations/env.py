@@ -26,7 +26,9 @@ import models  # Ensure all models are imported
 import models_memory # Ensure memory models are imported for Alembic
 import models_interviews  # Ensure assessment/interview models are imported
 import models_survey_governance  # Ensure survey release models are imported
+import models_survey_eligibility  # Ensure opaque survey eligibility models are imported
 import models_voice_lifecycle  # Ensure voice consent/lifecycle models are imported
+import models_whatsapp_workflows  # Ensure immutable Workflow Studio ledgers are imported
 
 target_metadata = db.metadata
 

@@ -111,6 +111,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertTrue(filters_meta.get("rangos_tiempo"))
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
+            actor=None,
             municipio_id=None,
             rubro_id=None,
             tenant_id=None,
@@ -133,6 +134,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
+            actor=None,
             municipio_id=None,
             rubro_id=None,
             tenant_id=None,
@@ -155,6 +157,7 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
+            actor=None,
             municipio_id=None,
             rubro_id=None,
             tenant_id=None,

@@ -3,7 +3,7 @@ import sys
 import os
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
-from models import db, User, MunicipioTicket, Rubro
+from models import db, User, MunicipioTicket, Rubro, TenantProfile
 
 # Añadir el directorio raíz del proyecto al sys.path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -40,11 +40,23 @@ class TicketsEndpointTest(unittest.TestCase):
                 email='test@example.com',
                 password_hash='test',
                 rol='admin',
-                municipio_id=10,
                 rubro_id=rubro.id
             )
             user.tipo_chat = 'municipio'
             db.session.add(user)
+            db.session.flush()
+            tenant = TenantProfile(
+                slug='tickets-endpoint-municipio',
+                nombre='Tickets Endpoint Municipio',
+                tipo='municipio',
+                municipio_id=user.id,
+                is_active=True,
+            )
+            db.session.add(tenant)
+            db.session.flush()
+            user.municipio_id = user.id
+            user.tenant_id = tenant.id
+            user.tenant_slug = tenant.slug
             db.session.commit()
 
             ticket = MunicipioTicket(
@@ -56,7 +68,8 @@ class TicketsEndpointTest(unittest.TestCase):
                 categoria='Plazas y parques',
                 direccion='Calle Falsa 123',
                 pregunta='test',
-                municipio_id=10
+                municipio_id=user.id,
+                tenant_id=tenant.id,
             )
             db.session.add(ticket)
             db.session.commit()
@@ -84,11 +97,23 @@ class TicketsEndpointTest(unittest.TestCase):
                 email='paginate@example.com',
                 password_hash='test',
                 rol='admin',
-                municipio_id=20,
                 rubro_id=rubro.id
             )
             user.tipo_chat = 'municipio'
             db.session.add(user)
+            db.session.flush()
+            tenant = TenantProfile(
+                slug='tickets-endpoint-pagination',
+                nombre='Tickets Endpoint Pagination',
+                tipo='municipio',
+                municipio_id=user.id,
+                is_active=True,
+            )
+            db.session.add(tenant)
+            db.session.flush()
+            user.municipio_id = user.id
+            user.tenant_id = tenant.id
+            user.tenant_slug = tenant.slug
             db.session.commit()
 
             tickets = [
@@ -101,7 +126,8 @@ class TicketsEndpointTest(unittest.TestCase):
                     categoria='General',
                     direccion='Calle 1',
                     pregunta='test',
-                    municipio_id=20
+                    municipio_id=user.id,
+                    tenant_id=tenant.id,
                 )
                 for index in range(1, 4)
             ]

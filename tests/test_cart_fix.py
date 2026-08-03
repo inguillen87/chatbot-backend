@@ -1,8 +1,10 @@
+import logging
+
 import pytest
 from flask import json
 from models import CatalogoItem, TenantProfile, User, db
 
-def test_add_to_cart_form_data(client):
+def test_add_to_cart_form_data(client, caplog):
     # Skip init_database fixture to avoid conflicts with app startup seeding
     cart_headers = {
         'X-Tenant': 'test-cart-fix',
@@ -69,8 +71,36 @@ def test_add_to_cart_form_data(client):
     assert resp.status_code == 200, f"DELETE clear failed: {resp.data}"
     assert resp.json['items_count'] == 0
 
-    # Case 6: Missing ID - should fail 400
+    # Case 6: Missing ID - should fail 400.  Extra legacy fields must never be
+    # serialised into the cart diagnostic log, including an arbitrary key.
+    caplog.clear()
+    caplog.set_level(logging.DEBUG, logger="routes.carrito")
+    log_canaries = {
+        "direccion": "CALLE_CANARY_742",
+        "email": "cart-canary@example.invalid",
+        "mensaje": "MENSAJE_CIUDADANO_CANARY",
+        "token": "tok_cart_CANARY_secret",
+        "https://canary.invalid/private?sig=SECRET": "ignored",
+    }
+    canary_headers = {
+        **cart_headers,
+        "X-Chat-Session-Id": "session_cart_CANARY_secret",
+    }
     resp = client.post('/carrito/agregar',
-                       json={'cantidad': 1},
-                       headers=cart_headers)
+                       json={'cantidad': 1, **log_canaries},
+                       headers=canary_headers)
     assert resp.status_code == 400
+
+    cart_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "routes.carrito" and "Cart add request" in record.getMessage()
+    ]
+    assert cart_messages
+    safe_log = "\n".join(cart_messages)
+    assert "supplied_fields=['cantidad']" in safe_log
+    assert "other_field_count=5" in safe_log
+    assert "has_item_id=False" in safe_log
+    assert "has_quantity=True" in safe_log
+    for canary in [*log_canaries.values(), *log_canaries.keys(), canary_headers["X-Chat-Session-Id"]]:
+        assert canary not in safe_log

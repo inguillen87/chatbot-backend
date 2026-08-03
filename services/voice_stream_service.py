@@ -37,6 +37,7 @@ from services.contact_service import resolve_contact, sanitize_profile_name
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services.whatsapp_sender import send_whatsapp_message
 from services.config_loader import cargar_configuracion_municipio
+from services.llm_provider_network_policy import provider_network_allowed
 from services.tenant_ticket_scope import (
     normalize_municipio_ticket_write_scope,
     resolve_unique_tenant_for_owner,
@@ -517,6 +518,11 @@ class VoiceStreamService:
         account_sid = _runtime_config_value("TWILIO_ACCOUNT_SID")
         auth_token = _runtime_config_value("TWILIO_AUTH_TOKEN")
         if not (account_sid and auth_token and self.call_sid):
+            return
+        if not provider_network_allowed("twilio", self.app):
+            logger.info(
+                "[VOICE] End call blocked provider=twilio reason=test_network_disabled"
+            )
             return
         try:
             client = TwilioClient(account_sid, auth_token)
@@ -2121,6 +2127,15 @@ class VoiceStreamService:
                     self._mark_authorized_lifecycle_failed("openai_api_key_missing")
                     self._reject_twilio_preflight("openai_api_key_missing")
                     return
+                if not provider_network_allowed("openai", self.app):
+                    logger.info(
+                        "[VOICE] Realtime connection blocked provider=openai reason=test_network_disabled"
+                    )
+                    self._mark_authorized_lifecycle_failed(
+                        "openai_test_network_disabled"
+                    )
+                    self._reject_twilio_preflight("openai_test_network_disabled")
+                    return
 
                 try:
                     self.openai_ws = ws_connect(
@@ -3124,32 +3139,41 @@ class VoiceStreamService:
                     account_sid = _runtime_config_value("TWILIO_ACCOUNT_SID")
                     auth_token = _runtime_config_value("TWILIO_AUTH_TOKEN")
                     if target_number and account_sid and auth_token and self.call_sid:
-                        try:
-                            client = TwilioClient(account_sid, auth_token)
-                            transfer_twiml = VoiceResponse()
-                            transfer_twiml.say(
-                                "Te comunico con un representante. Aguarda un momento, por favor.",
-                                language="es-AR",
-                            )
-                            transfer_twiml.dial(target_number)
-                            client.calls(self.call_sid).update(twiml=str(transfer_twiml))
-                            result = (
-                                "La solicitud de transferencia fue aceptada. "
-                                "Aguarda mientras el proveedor intenta conectarte con un agente."
-                            )
+                        if not provider_network_allowed("twilio", self.app):
                             logger.info(
-                                "[VOICE] Transfer accepted call_ref=%s",
-                                _safe_reference(self.call_sid),
-                            )
-                        except Exception as exc:
-                            logger.error(
-                                "[VOICE] Transfer outcome unknown error_type=%s",
-                                type(exc).__name__,
+                                "[VOICE] Transfer blocked provider=twilio reason=test_network_disabled"
                             )
                             result = (
-                                "No pude confirmar la transferencia. Para evitar duplicarla, "
-                                "dejo tu solicitud registrada para seguimiento."
+                                "La transferencia no estÃ¡ disponible en este momento. "
+                                "Dejo tu solicitud registrada para seguimiento."
                             )
+                        else:
+                            try:
+                                client = TwilioClient(account_sid, auth_token)
+                                transfer_twiml = VoiceResponse()
+                                transfer_twiml.say(
+                                    "Te comunico con un representante. Aguarda un momento, por favor.",
+                                    language="es-AR",
+                                )
+                                transfer_twiml.dial(target_number)
+                                client.calls(self.call_sid).update(twiml=str(transfer_twiml))
+                                result = (
+                                    "La solicitud de transferencia fue aceptada. "
+                                    "Aguarda mientras el proveedor intenta conectarte con un agente."
+                                )
+                                logger.info(
+                                    "[VOICE] Transfer accepted call_ref=%s",
+                                    _safe_reference(self.call_sid),
+                                )
+                            except Exception as exc:
+                                logger.error(
+                                    "[VOICE] Transfer outcome unknown error_type=%s",
+                                    type(exc).__name__,
+                                )
+                                result = (
+                                    "No pude confirmar la transferencia. Para evitar duplicarla, "
+                                    "dejo tu solicitud registrada para seguimiento."
+                                )
                     elif target_number:
                         logger.error("[VOICE] Transfer refused reason=provider_not_configured")
                         result = (

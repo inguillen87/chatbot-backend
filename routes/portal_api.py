@@ -21,6 +21,7 @@ from services.encuestas_service import (
     serialize_public_encuesta,
     survey_response_receipt_contract,
 )
+from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
 
 portal_api_bp = Blueprint('portal_api', __name__)
 
@@ -1957,8 +1958,13 @@ def submit_portal_survey_response(tenant_slug, slug):
             data,
             request_ctx,
             preferred_tenant_id=preferred_tenant_id,
+            require_tenant_match=True,
             authenticated_user=viewer,
             submission_id=submission_id,
+            eligibility_credential=request.headers.get(
+                SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
+            ),
+            eligibility_transport="http",
         )
         response_payload = {
             "contract_version": "surveys.public_response.v2",
@@ -1973,6 +1979,9 @@ def submit_portal_survey_response(tenant_slug, slug):
         receipt_contract = survey_response_receipt_contract(respuesta)
         if receipt_contract is not None:
             response_payload["idempotency"] = receipt_contract
+        from services.survey_governance import response_governance_contract
+
+        response_payload["governance"] = response_governance_contract(respuesta)
         return (
             jsonify(response_payload),
             200 if response_payload["replayed"] else 201,

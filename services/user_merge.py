@@ -19,6 +19,7 @@ from models import (
     PublicSurveyResponse,
     SugerenciaCiudadano,
     TicketComentario,
+    TenantFollower,
     TenantProfile,
     User,
 )
@@ -43,9 +44,23 @@ def _resolve_merge_tenant(
 ) -> TenantProfile | None:
     if tenant_id is not None:
         try:
-            return db.session.get(TenantProfile, int(tenant_id))
+            tenant = db.session.get(TenantProfile, int(tenant_id))
         except (TypeError, ValueError):
             return None
+        if tenant is None or user_obj is None:
+            return None
+        if getattr(user_obj, "tenant_id", None) == tenant.id:
+            return tenant
+        if getattr(tenant, "municipio_id", None) == user_obj.id:
+            return tenant
+        if getattr(tenant, "pyme_id", None) == user_obj.id:
+            return tenant
+        if TenantFollower.query.filter_by(
+            tenant_id=tenant.id,
+            user_id=user_obj.id,
+        ).one_or_none() is not None:
+            return tenant
+        return None
     explicit_tenant_id = getattr(user_obj, "tenant_id", None) if user_obj is not None else None
     if explicit_tenant_id:
         return db.session.get(TenantProfile, explicit_tenant_id)
@@ -143,7 +158,13 @@ def merge_anon_into_user(
         municipio_ids = [
             row[0]
             for row in scoped_municipio_ticket_query(tenant)
-            .filter(MunicipioTicket.anon_id == anon_id)
+            .filter(
+                MunicipioTicket.anon_id == anon_id,
+                or_(
+                    MunicipioTicket.user_id.is_(None),
+                    MunicipioTicket.user_id == user_id,
+                ),
+            )
             .with_entities(MunicipioTicket.id)
             .all()
         ]
@@ -152,23 +173,39 @@ def merge_anon_into_user(
             for row in PymeTicket.query.filter(
                 PymeTicket.tenant_id == tenant.id,
                 PymeTicket.anon_id == anon_id,
+                or_(PymeTicket.user_id.is_(None), PymeTicket.user_id == user_id),
             )
             .with_entities(PymeTicket.id)
             .all()
         ]
 
         stats["municipio_tickets"] = (
-            MunicipioTicket.query.filter(MunicipioTicket.id.in_(municipio_ids))
+            MunicipioTicket.query.filter(
+                MunicipioTicket.id.in_(municipio_ids),
+                MunicipioTicket.anon_id == anon_id,
+                or_(
+                    MunicipioTicket.user_id.is_(None),
+                    MunicipioTicket.user_id == user_id,
+                ),
+            )
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
         stats["pyme_tickets"] = (
-            PymeTicket.query.filter(PymeTicket.id.in_(pyme_ids))
+            PymeTicket.query.filter(
+                PymeTicket.id.in_(pyme_ids),
+                PymeTicket.anon_id == anon_id,
+                or_(PymeTicket.user_id.is_(None), PymeTicket.user_id == user_id),
+            )
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
         stats["tickets"] = stats["municipio_tickets"] + stats["pyme_tickets"]
         stats["ticket_comentarios"] = (
             TicketComentario.query.filter(
                 TicketComentario.anon_id == anon_id,
+                or_(
+                    TicketComentario.user_id.is_(None),
+                    TicketComentario.user_id == user_id,
+                ),
                 or_(
                     TicketComentario.municipio_ticket_id.in_(municipio_ids),
                     TicketComentario.pyme_ticket_id.in_(pyme_ids),
@@ -177,11 +214,13 @@ def merge_anon_into_user(
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
         chat_query = ChatSessionContext.query.filter(
-            or_(
-                ChatSessionContext.anon_id == anon_id,
-                ChatSessionContext.chat_session_id.in_(identity_values),
-            ),
+            ChatSessionContext.anon_id == anon_id,
+            ChatSessionContext.chat_session_id.in_(identity_values),
             ChatSessionContext.tenant_id == tenant.id,
+            or_(
+                ChatSessionContext.user_id.is_(None),
+                ChatSessionContext.user_id == user_id,
+            ),
         )
         stats["chat_contexts"] = (
             chat_query.update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
@@ -193,6 +232,12 @@ def merge_anon_into_user(
                     anon_id=anon_id,
                     municipio_id=tenant.municipio_id,
                 )
+                .filter(
+                    or_(
+                        SugerenciaCiudadano.user_id.is_(None),
+                        SugerenciaCiudadano.user_id == user_id,
+                    )
+                )
                 .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
             ) or 0
         survey_ids = PublicSurvey.query.filter(
@@ -202,6 +247,10 @@ def merge_anon_into_user(
             PublicSurveyResponse.query.filter(
                 PublicSurveyResponse.anon_id == anon_id,
                 PublicSurveyResponse.survey_id.in_(survey_ids),
+                or_(
+                    PublicSurveyResponse.user_id.is_(None),
+                    PublicSurveyResponse.user_id == user_id,
+                ),
             )
             .update({"user_id": user_id, "anon_id": None}, synchronize_session=False)
         ) or 0
@@ -212,7 +261,10 @@ def merge_anon_into_user(
                 MarketCart.contact_key.in_(contact_keys),
             )
         )
-        cart_query = cart_query.filter(MarketCart.tenant_id == tenant.id)
+        cart_query = cart_query.filter(
+            MarketCart.tenant_id == tenant.id,
+            or_(MarketCart.user_id.is_(None), MarketCart.user_id == user_id),
+        )
         stats["market_carts"] = (
             cart_query.update({"user_id": user_id}, synchronize_session=False)
         ) or 0
@@ -223,7 +275,10 @@ def merge_anon_into_user(
                 MarketOrder.contact_key.in_(contact_keys),
             )
         )
-        order_query = order_query.filter(MarketOrder.tenant_id == tenant.id)
+        order_query = order_query.filter(
+            MarketOrder.tenant_id == tenant.id,
+            or_(MarketOrder.user_id.is_(None), MarketOrder.user_id == user_id),
+        )
         stats["market_orders"] = (
             order_query.update({"user_id": user_id}, synchronize_session=False)
         ) or 0

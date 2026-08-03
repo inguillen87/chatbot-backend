@@ -29,6 +29,10 @@ class RealtimeVoiceProfilesTestCase(unittest.TestCase):
             DEFAULT_REALTIME_TRANSCRIPTION_MODEL,
         )
         self.assertEqual(
+            capabilities["live_transcription"]["model"],
+            "gpt-live-transcribe",
+        )
+        self.assertEqual(
             capabilities["live_transcription"]["session_type"],
             "transcription",
         )

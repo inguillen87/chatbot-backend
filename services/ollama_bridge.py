@@ -7,6 +7,7 @@ import httpx
 from openai import OpenAI
 
 from services.chatbot_prompts import get_system_prompt
+from services.llm_provider_network_policy import require_llm_provider_network
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,7 @@ def llamar_ollama(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     if not is_ollama_llm_configured():
         raise ConnectionError("OLLAMA_ENABLED is not enabled.")
+    require_llm_provider_network("ollama", app)
 
     resolved_model = model if model and model != "gpt-4o-mini" else _ollama_chat_model()
     message, channel_instruction = _extract_message_payload(mensaje_usuario)
@@ -134,7 +136,7 @@ def llamar_ollama(
 
     timeout = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "45"))
     base_url = _ollama_base_url()
-    logger.info("Sending to Ollama-compatible provider. Model: %s Base URL: %s", resolved_model, base_url)
+    logger.info("LLM provider request started provider=ollama")
 
     try:
         http_client = httpx.Client(proxy=None, trust_env=False, timeout=timeout)
@@ -147,7 +149,7 @@ def llamar_ollama(
         )
 
         raw_response_text = (response.choices[0].message.content or "").strip()
-        logger.info("Response from Ollama-compatible provider (raw): %s", raw_response_text[:1000])
+        logger.info("LLM provider response received provider=ollama")
         parsed_response = _parse_llm_json(raw_response_text, usuario=usuario)
         return parsed_response, {
             "model_used": resolved_model,
@@ -155,5 +157,8 @@ def llamar_ollama(
             "base_url": base_url,
         }
     except Exception as exc:
-        logger.error("Error calling Ollama-compatible provider: %s", exc, exc_info=True)
+        logger.error(
+            "LLM provider request failed provider=ollama error_type=%s",
+            type(exc).__name__,
+        )
         raise

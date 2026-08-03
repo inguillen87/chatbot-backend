@@ -371,7 +371,7 @@ def test_responder_flattens_bracketed_form_fields(client, monkeypatch):
     assert payload["metadata"]["demographics"]["genero"] == "femenino"
 
 
-def test_responder_duplicate_conflict_is_idempotent_success(client, monkeypatch):
+def test_responder_duplicate_conflict_never_fabricates_a_durable_ack(client, monkeypatch):
     def fake_save(_slug, _payload, _ctx, **kwargs):
         raise EncuestaError(
             "Ya registramos tu participación",
@@ -396,16 +396,12 @@ def test_responder_duplicate_conflict_is_idempotent_success(client, monkeypatch)
         headers=idempotency_headers,
     )
 
-    assert response.status_code == 200
-    assert response.get_json() == {
-        "contract_version": "encuestas.public_response.v1",
-        "ok": True,
-        "duplicate": True,
-        "reason_code": "survey_response_duplicate",
-        "retryable": False,
-        "message": "Ya registramos tu participación",
-        "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
-    }
+    assert response.status_code == 409
+    response_payload = response.get_json()
+    assert response_payload["reason_code"] == "survey_response_duplicate"
+    assert response_payload["retryable"] is False
+    assert "response_id" not in response_payload
+    assert response_payload.get("persisted") is not True
 
 
 def test_responder_non_duplicate_conflict_remains_conflict(client, monkeypatch):

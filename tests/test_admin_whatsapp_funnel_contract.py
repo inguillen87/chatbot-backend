@@ -57,7 +57,9 @@ class AdminWhatsappFunnelContractTestCase(unittest.TestCase):
             resolution="",
         )
 
-        with patch("routes.admin_analytics.AnalyticsEventV2", _DummyAnalyticsEventV2):
+        with patch("routes.admin_analytics._analytics_event_tenant_id", return_value=12), patch(
+            "routes.admin_analytics.AnalyticsEventV2", _DummyAnalyticsEventV2
+        ):
             payload = _build_whatsapp_funnel_payload(filters)
 
         self.assertEqual(payload["contract_version"], WHATSAPP_FUNNEL_CONTRACT_VERSION)

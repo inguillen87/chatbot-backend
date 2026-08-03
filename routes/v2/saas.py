@@ -12,6 +12,7 @@ import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import func, or_
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 
 from extensions import db
@@ -36,6 +37,11 @@ from models import (
 )
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.education_contracts import build_education_admin_menu, build_education_profile, is_education_tenant
+from services.employee_ticket_access import (
+    apply_employee_ticket_category_scope,
+    employee_ticket_category_access_allows,
+    ticket_assignee_is_compatible,
+)
 from services.employee_routing import (
     build_employee_routing_payload,
     employee_ref,
@@ -48,6 +54,16 @@ from services.employee_routing import (
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.channel_activation import build_channel_activation_payload
 from services.attachment_delivery import serialize_attachment_for_delivery
+from services.crm_operational_queue import (
+    OperationalQueueError,
+    build_operational_queue,
+    parse_queue_request,
+)
+from services.crm_operational_queue_guard import (
+    OperationalQueueGuardError,
+    attach_operational_queue_rate_limit_headers,
+    enforce_operational_queue_rate_limit,
+)
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.live_chat_schedule import build_tenant_live_chat_status
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
@@ -67,6 +83,24 @@ from services.twilio_tech_provider import (
 )
 from services.v2.sla_service import is_ticket_overdue
 from services.whatsapp_experience import _template_creation_manifest_payload, build_whatsapp_experience
+from services.whatsapp_workflow_studio import (
+    MAX_DRAFT_BYTES,
+    MAX_EVENT_BYTES,
+    build_workflow_studio_contract,
+    simulate_workflow_draft,
+    validate_workflow_draft,
+)
+from services.whatsapp_workflow_versioning import (
+    WorkflowStudioError,
+    get_workflow_ledger,
+    list_workflow_ledgers,
+    publish_workflow,
+    require_workflow_durable_control_plane,
+    review_workflow_subject,
+    rollback_workflow,
+    save_workflow_draft,
+    workflow_durable_control_plane_gate,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 from utils.roles import first_specific_tenant_slug, is_authorized_superadmin_user
@@ -1753,13 +1787,29 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
         source_model = str(ticket_ref.get("source_model") or "")
         applied = False
         assignment = None
+        assignment_reason = None
         if assignee_id and ticket_id and not dry_run:
             assignee = User.query.filter_by(id=int(assignee_id), tenant_id=tenant.id, es_empleado=True).first()
             ticket = find_ticket_for_assignment(tenant, source_model, int(ticket_id))
-            if assignee and ticket:
+            if assignee and ticket and ticket_assignee_is_compatible(assignee, ticket):
                 assignment = _apply_employee_assignment(ticket, assignee, current_user)
                 applied = True
-        results.append({**item, "applied": applied, "assignment": assignment})
+            elif assignee and ticket:
+                assignment_reason = "assignee_category_scope_mismatch"
+            elif not assignee:
+                assignment_reason = "assignee_not_found"
+            else:
+                assignment_reason = "ticket_not_found"
+        elif not assignee_id:
+            assignment_reason = "no_compatible_assignee"
+        results.append(
+            {
+                **item,
+                "applied": applied,
+                "assignment": assignment,
+                "assignment_reason": assignment_reason,
+            }
+        )
 
     if not dry_run:
         db.session.commit()
@@ -1965,6 +2015,506 @@ def whatsapp_experience_v2(current_user, tenant_slug: str | None = None):
     if error:
         return error
     return _json_response(build_whatsapp_experience(tenant, app_config=current_app.config))
+
+
+@v2_saas_bp.route("/whatsapp/workflow-studio", methods=["GET"])
+@v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/workflow-studio", methods=["GET"])
+@token_requerido
+@require_role("admin", "super_admin")
+def whatsapp_workflow_studio_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    return _json_response(
+        build_workflow_studio_contract(
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            app_config=current_app.config,
+            plan_allowed=plan_allows_full_integrations(tenant),
+        )
+    )
+
+
+@v2_saas_bp.after_request
+def _workflow_studio_no_store(response):
+    """Never cache tenant-scoped drafts, validation details, or simulations."""
+
+    if "/whatsapp/workflow-studio" in request.path:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _resolve_workflow_studio_tenant_or_error(
+    current_user: User,
+    path_slug: str | None = None,
+):
+    """Resolve and authorize the tenant without inspecting the request body."""
+
+    token_payload = getattr(g, "token_payload", None)
+    token_slug = token_payload.get("tenant_slug") if isinstance(token_payload, Mapping) else None
+    slug = first_specific_tenant_slug(
+        path_slug,
+        request.headers.get("X-Tenant-Slug"),
+        request.headers.get("X-Tenant"),
+        request.args.get("tenant_slug"),
+        request.args.get("tenant"),
+        token_slug,
+        getattr(current_user, "tenant_slug", None),
+    )
+
+    tenant = None
+    if slug:
+        tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug).one_or_none()
+    elif getattr(current_user, "tenant_id", None):
+        tenant = db.session.get(TenantProfile, current_user.tenant_id)
+
+    if tenant is None:
+        if slug:
+            return None, _error_response(
+                "Tenant no encontrado",
+                404,
+                "tenant_resolution_failed",
+                "send_valid_tenant",
+            )
+        return None, _error_response(
+            "tenant_slug es obligatorio para este endpoint",
+            400,
+            "tenant_resolution_failed",
+            "send_valid_tenant",
+        )
+    if not _user_can_access_tenant(current_user, tenant):
+        return None, _error_response(
+            "Permisos insuficientes para este tenant",
+            403,
+            "forbidden_tenant",
+            "switch_tenant",
+        )
+    return tenant, None
+
+
+def _workflow_studio_json_payload(
+    *,
+    allowed_fields: set[str],
+    max_bytes: int,
+):
+    if not request.is_json:
+        return None, _error_response(
+            "Workflow Studio requiere Content-Type application/json.",
+            415,
+            "workflow_content_type_invalid",
+            "send_application_json",
+        )
+    if request.content_length is not None and request.content_length > max_bytes:
+        return None, _error_response(
+            "El request de Workflow Studio supera el tamano permitido.",
+            413,
+            "workflow_request_too_large",
+            "reduce_workflow_payload",
+        )
+    raw_body = request.get_data(cache=True)
+    if len(raw_body) > max_bytes:
+        return None, _error_response(
+            "El body JSON de Workflow Studio supera el tamano permitido.",
+            413,
+            "workflow_request_too_large",
+            "reduce_workflow_payload",
+        )
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, Mapping):
+        return None, _error_response(
+            "Se requiere un body JSON.",
+            400,
+            "workflow_request_invalid",
+            "send_json_object",
+        )
+    if set(payload) - allowed_fields:
+        return None, _error_response(
+            "El request de Workflow Studio contiene campos desconocidos.",
+            400,
+            "workflow_request_unknown_fields",
+            "send_only_documented_fields",
+        )
+    return payload, None
+
+
+def _workflow_studio_operation_error(exc: WorkflowStudioError):
+    db.session.rollback()
+    return _error_response(
+        exc.message,
+        exc.status_code,
+        exc.reason_code,
+        exc.action_hint,
+    )
+
+
+def _workflow_studio_storage_error():
+    db.session.rollback()
+    current_app.logger.error(
+        "Workflow Studio durable storage unavailable; request content and SQL parameters omitted"
+    )
+    return _error_response(
+        "El almacenamiento durable de Workflow Studio no esta disponible.",
+        503,
+        "workflow_storage_unavailable",
+        "verify_migration_and_retry",
+    )
+
+
+def _require_workflow_studio_durable_or_error(tenant: TenantProfile):
+    plan_error = _require_full_integration_plan(tenant, "whatsapp_business_platform")
+    if plan_error:
+        return plan_error
+    try:
+        require_workflow_durable_control_plane(
+            current_app.config,
+            tenant_id=tenant.id,
+        )
+    except WorkflowStudioError as exc:
+        return _workflow_studio_operation_error(exc)
+    return None
+
+
+@v2_saas_bp.route("/whatsapp/workflow-studio/validate", methods=["POST"])
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/validate",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def validate_whatsapp_workflow_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    payload, payload_error = _workflow_studio_json_payload(
+        allowed_fields={"draft"},
+        max_bytes=MAX_DRAFT_BYTES + 4096,
+    )
+    if payload_error:
+        return payload_error
+    gate = workflow_durable_control_plane_gate(
+        current_app.config,
+        tenant_id=tenant.id,
+        plan_allowed=plan_allows_full_integrations(tenant),
+    )
+    return _json_response(
+        validate_workflow_draft(
+            payload.get("draft"),
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            durable_control_plane_ready=gate["available"] is True,
+        )
+    )
+
+
+@v2_saas_bp.route("/whatsapp/workflow-studio/simulate", methods=["POST"])
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/simulate",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def simulate_whatsapp_workflow_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    payload, payload_error = _workflow_studio_json_payload(
+        allowed_fields={"draft", "event"},
+        max_bytes=MAX_DRAFT_BYTES + MAX_EVENT_BYTES + 4096,
+    )
+    if payload_error:
+        return payload_error
+    gate = workflow_durable_control_plane_gate(
+        current_app.config,
+        tenant_id=tenant.id,
+        plan_allowed=plan_allows_full_integrations(tenant),
+    )
+    result = simulate_workflow_draft(
+        payload.get("draft"),
+        payload.get("event"),
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        durable_control_plane_ready=gate["available"] is True,
+    )
+    return _json_response(result, 422 if result.get("status") == "blocked" else 200)
+
+
+@v2_saas_bp.route("/whatsapp/workflow-studio/workflows", methods=["GET"])
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/workflows",
+    methods=["GET"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def list_whatsapp_workflows_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    gate_error = _require_workflow_studio_durable_or_error(tenant)
+    if gate_error:
+        return gate_error
+    try:
+        return _json_response(list_workflow_ledgers(tenant_id=tenant.id))
+    except WorkflowStudioError as exc:
+        return _workflow_studio_operation_error(exc)
+    except SQLAlchemyError:
+        return _workflow_studio_storage_error()
+
+
+@v2_saas_bp.route(
+    "/whatsapp/workflow-studio/workflows/<string:workflow_id>",
+    methods=["GET"],
+)
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/workflows/<string:workflow_id>",
+    methods=["GET"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def get_whatsapp_workflow_v2(
+    current_user,
+    workflow_id: str,
+    tenant_slug: str | None = None,
+):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    gate_error = _require_workflow_studio_durable_or_error(tenant)
+    if gate_error:
+        return gate_error
+    try:
+        return _json_response(
+            get_workflow_ledger(tenant_id=tenant.id, workflow_id=workflow_id)
+        )
+    except WorkflowStudioError as exc:
+        return _workflow_studio_operation_error(exc)
+    except SQLAlchemyError:
+        return _workflow_studio_storage_error()
+
+
+@v2_saas_bp.route("/whatsapp/workflow-studio/drafts", methods=["POST"])
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/drafts",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def create_whatsapp_workflow_draft_v2(current_user, tenant_slug: str | None = None):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    gate_error = _require_workflow_studio_durable_or_error(tenant)
+    if gate_error:
+        return gate_error
+    payload, payload_error = _workflow_studio_json_payload(
+        allowed_fields={"draft", "idempotency_key"},
+        max_bytes=MAX_DRAFT_BYTES + 4096,
+    )
+    if payload_error:
+        return payload_error
+    try:
+        result = save_workflow_draft(
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            actor_user_id=current_user.id,
+            draft=payload.get("draft"),
+            idempotency_key=payload.get("idempotency_key"),
+        )
+        return _json_response(result, 200 if result["idempotent_replay"] else 201)
+    except WorkflowStudioError as exc:
+        return _workflow_studio_operation_error(exc)
+    except SQLAlchemyError:
+        return _workflow_studio_storage_error()
+
+
+@v2_saas_bp.route(
+    "/whatsapp/workflow-studio/workflows/<string:workflow_id>/drafts",
+    methods=["POST"],
+)
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/workflows/<string:workflow_id>/drafts",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def revise_whatsapp_workflow_draft_v2(
+    current_user,
+    workflow_id: str,
+    tenant_slug: str | None = None,
+):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    gate_error = _require_workflow_studio_durable_or_error(tenant)
+    if gate_error:
+        return gate_error
+    payload, payload_error = _workflow_studio_json_payload(
+        allowed_fields={"draft", "expected_revision", "idempotency_key"},
+        max_bytes=MAX_DRAFT_BYTES + 4096,
+    )
+    if payload_error:
+        return payload_error
+    try:
+        result = save_workflow_draft(
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            actor_user_id=current_user.id,
+            draft=payload.get("draft"),
+            idempotency_key=payload.get("idempotency_key"),
+            workflow_id=workflow_id,
+            expected_revision=payload.get("expected_revision"),
+        )
+        return _json_response(result, 200 if result["idempotent_replay"] else 201)
+    except WorkflowStudioError as exc:
+        return _workflow_studio_operation_error(exc)
+    except SQLAlchemyError:
+        return _workflow_studio_storage_error()
+
+
+@v2_saas_bp.route(
+    "/whatsapp/workflow-studio/workflows/<string:workflow_id>/reviews",
+    methods=["POST"],
+)
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/workflows/<string:workflow_id>/reviews",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def review_whatsapp_workflow_v2(
+    current_user,
+    workflow_id: str,
+    tenant_slug: str | None = None,
+):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    gate_error = _require_workflow_studio_durable_or_error(tenant)
+    if gate_error:
+        return gate_error
+    payload, payload_error = _workflow_studio_json_payload(
+        allowed_fields={"operation", "subject_id", "decision", "note", "idempotency_key"},
+        max_bytes=16 * 1024,
+    )
+    if payload_error:
+        return payload_error
+    try:
+        result = review_workflow_subject(
+            tenant_id=tenant.id,
+            workflow_id=workflow_id,
+            reviewer_user_id=current_user.id,
+            operation=payload.get("operation"),
+            subject_id=payload.get("subject_id"),
+            decision=payload.get("decision"),
+            review_note=payload.get("note"),
+            idempotency_key=payload.get("idempotency_key"),
+        )
+        return _json_response(result, 200 if result["idempotent_replay"] else 201)
+    except WorkflowStudioError as exc:
+        return _workflow_studio_operation_error(exc)
+    except SQLAlchemyError:
+        return _workflow_studio_storage_error()
+
+
+def _workflow_publication_request(
+    *,
+    current_user: User,
+    tenant: TenantProfile,
+    workflow_id: str,
+    operation: str,
+):
+    allowed_fields = (
+        {"draft_revision_id", "review_id", "idempotency_key"}
+        if operation == "publish"
+        else {"target_version_id", "review_id", "idempotency_key"}
+    )
+    payload, payload_error = _workflow_studio_json_payload(
+        allowed_fields=allowed_fields,
+        max_bytes=8 * 1024,
+    )
+    if payload_error:
+        return payload_error
+    try:
+        if operation == "publish":
+            result = publish_workflow(
+                tenant_id=tenant.id,
+                workflow_id=workflow_id,
+                publisher_user_id=current_user.id,
+                draft_revision_id=payload.get("draft_revision_id"),
+                review_id=payload.get("review_id"),
+                idempotency_key=payload.get("idempotency_key"),
+            )
+        else:
+            result = rollback_workflow(
+                tenant_id=tenant.id,
+                workflow_id=workflow_id,
+                publisher_user_id=current_user.id,
+                target_version_id=payload.get("target_version_id"),
+                review_id=payload.get("review_id"),
+                idempotency_key=payload.get("idempotency_key"),
+            )
+        return _json_response(result, 200 if result["idempotent_replay"] else 201)
+    except WorkflowStudioError as exc:
+        return _workflow_studio_operation_error(exc)
+    except SQLAlchemyError:
+        return _workflow_studio_storage_error()
+
+
+@v2_saas_bp.route(
+    "/whatsapp/workflow-studio/workflows/<string:workflow_id>/publish",
+    methods=["POST"],
+)
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/workflows/<string:workflow_id>/publish",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def publish_whatsapp_workflow_v2(
+    current_user,
+    workflow_id: str,
+    tenant_slug: str | None = None,
+):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    gate_error = _require_workflow_studio_durable_or_error(tenant)
+    if gate_error:
+        return gate_error
+    return _workflow_publication_request(
+        current_user=current_user,
+        tenant=tenant,
+        workflow_id=workflow_id,
+        operation="publish",
+    )
+
+
+@v2_saas_bp.route(
+    "/whatsapp/workflow-studio/workflows/<string:workflow_id>/rollback",
+    methods=["POST"],
+)
+@v2_saas_bp.route(
+    "/tenants/<string:tenant_slug>/whatsapp/workflow-studio/workflows/<string:workflow_id>/rollback",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "super_admin")
+def rollback_whatsapp_workflow_v2(
+    current_user,
+    workflow_id: str,
+    tenant_slug: str | None = None,
+):
+    tenant, error = _resolve_workflow_studio_tenant_or_error(current_user, tenant_slug)
+    if error:
+        return error
+    gate_error = _require_workflow_studio_durable_or_error(tenant)
+    if gate_error:
+        return gate_error
+    return _workflow_publication_request(
+        current_user=current_user,
+        tenant=tenant,
+        workflow_id=workflow_id,
+        operation="rollback",
+    )
 
 
 @v2_saas_bp.route("/whatsapp/flow-runtime", methods=["GET"])
@@ -3642,6 +4192,140 @@ def notification_delivery_status_v2(current_user):
     )
 
 
+def _operational_queue_tenant_conflict(tenant: TenantProfile, current_user: User):
+    for key in ("tenant_slug", "tenant"):
+        if len(request.args.getlist(key)) > 1:
+            return _error_response(
+                f"{key} no puede repetirse",
+                403,
+                "tenant_scope_conflict",
+                "send_one_tenant_scope",
+            )
+
+    requested_slugs = {
+        slug
+        for raw_value in (
+            request.headers.get("X-Tenant-Slug"),
+            request.headers.get("X-Tenant"),
+            request.args.get("tenant_slug"),
+            request.args.get("tenant"),
+        )
+        if (slug := first_specific_tenant_slug(raw_value))
+    }
+    if len(requested_slugs) > 1 or (
+        requested_slugs
+        and (tenant.slug or "").strip().lower() not in requested_slugs
+    ):
+        return _error_response(
+            "Los identificadores de tenant no coinciden",
+            403,
+            "tenant_scope_conflict",
+            "send_one_tenant_scope",
+        )
+
+    actor_tenant_id = getattr(current_user, "tenant_id", None)
+    actor_tenant_slug = str(getattr(current_user, "tenant_slug", None) or "").strip().lower()
+    if actor_tenant_id is not None and actor_tenant_slug:
+        try:
+            actor_tenant_id = int(actor_tenant_id)
+        except (TypeError, ValueError):
+            actor_tenant_id = None
+        actor_tenant = db.session.get(TenantProfile, actor_tenant_id) if actor_tenant_id else None
+        if actor_tenant is None or actor_tenant_slug != str(actor_tenant.slug or "").strip().lower():
+            return _error_response(
+                "La membresia persistida del actor es contradictoria",
+                403,
+                "actor_tenant_scope_conflict",
+                "repair_actor_tenant_membership",
+            )
+
+    raw_tenant_ids = request.args.getlist("tenant_id")
+    if len(raw_tenant_ids) > 1:
+        return _error_response(
+            "tenant_id no puede repetirse",
+            403,
+            "tenant_scope_conflict",
+            "send_one_tenant_scope",
+        )
+    if raw_tenant_ids:
+        try:
+            requested_tenant_id = int(raw_tenant_ids[0])
+        except (TypeError, ValueError):
+            return _error_response(
+                "tenant_id no coincide con el tenant solicitado",
+                403,
+                "tenant_scope_conflict",
+                "send_matching_tenant_scope",
+            )
+        if requested_tenant_id <= 0 or requested_tenant_id != tenant.id:
+            return _error_response(
+                "tenant_id no coincide con el tenant solicitado",
+                403,
+                "tenant_scope_conflict",
+                "send_matching_tenant_scope",
+            )
+    return None
+
+
+@v2_saas_bp.route("/inbox/operational-queue", methods=["GET"])
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def operational_queue_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+
+    conflict = _operational_queue_tenant_conflict(tenant, current_user)
+    if conflict:
+        return conflict
+
+    rate_limit = None
+    try:
+        queue_request = parse_queue_request(request.args)
+        rate_limit = enforce_operational_queue_rate_limit(
+            tenant_id=tenant.id,
+            actor_id=current_user.id,
+        )
+        payload = build_operational_queue(
+            tenant=tenant,
+            actor=current_user,
+            queue_request=queue_request,
+        )
+    except OperationalQueueGuardError as exc:
+        response = _json_response(
+            {
+                "contract_version": "shared.error.v1",
+                "status_code": exc.status_code,
+                "reason_code": exc.reason_code,
+                "retryable": exc.retryable,
+                "action_hint": exc.action_hint,
+                "error": {"code": exc.status_code, "message": str(exc)},
+                "message": str(exc),
+                "details": exc.details,
+            },
+            exc.status_code,
+        )
+        response.headers["Cache-Control"] = "no-store, private"
+        response.headers["Pragma"] = "no-cache"
+        return attach_operational_queue_rate_limit_headers(
+            response,
+            exc.rate_limit or rate_limit,
+            retry_after_seconds=exc.retry_after_seconds,
+        )
+    except OperationalQueueError as exc:
+        return _error_response(
+            str(exc),
+            exc.status_code,
+            exc.reason_code,
+            exc.action_hint,
+        )
+
+    response = _json_response(payload)
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Pragma"] = "no-cache"
+    return attach_operational_queue_rate_limit_headers(response, rate_limit)
+
+
 @v2_saas_bp.route("/inbox/omnichannel", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
@@ -3651,13 +4335,23 @@ def omnichannel_inbox_v2(current_user):
         return error
 
     limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
+    tenant_ticket_query = apply_employee_ticket_category_scope(
+        TenantTicket.query.filter_by(tenant_id=tenant.id),
+        current_user,
+        TenantTicket,
+    )
     tenant_tickets = (
-        TenantTicket.query.filter_by(tenant_id=tenant.id)
+        tenant_ticket_query
         .order_by(TenantTicket.updated_at.desc())
         .limit(limit)
         .all()
     )
-    legacy_claims = _legacy_claim_query_for_tenant(tenant).order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all()
+    legacy_claim_query = apply_employee_ticket_category_scope(
+        _legacy_claim_query_for_tenant(tenant),
+        current_user,
+        MunicipioTicket,
+    )
+    legacy_claims = legacy_claim_query.order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all()
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
     items = [_inbox_ticket_payload(ticket, live_chat_status=live_chat_status) for ticket in tenant_tickets]
     items.extend(_legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status) for ticket in legacy_claims)
@@ -4452,7 +5146,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     source_model = str(request.args.get("source_model") or "").strip().lower()
     if source_model in {"municipioticket", "municipio_ticket", "municipio"}:
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
-        if not legacy_ticket:
+        if not legacy_ticket or not employee_ticket_category_access_allows(current_user, legacy_ticket):
             return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
         item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
         return _json_response(
@@ -4468,7 +5162,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     ticket = TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
     if not ticket:
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
-        if legacy_ticket:
+        if legacy_ticket and employee_ticket_category_access_allows(current_user, legacy_ticket):
             item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
             return _json_response(
                 {
@@ -4479,6 +5173,8 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
                     "ticket": item,
                 }
             )
+        return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+    if not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
     item = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
     return _json_response(
@@ -5020,7 +5716,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         .with_for_update()
         .first()
     )
-    if not ticket:
+    if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
@@ -5064,6 +5760,13 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         assignee = assignee_query.first()
         if not assignee:
             return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
+        if not ticket_assignee_is_compatible(assignee, ticket):
+            return _error_response(
+                "El agente no tiene acceso a la categoria del ticket",
+                409,
+                "assignee_category_scope_mismatch",
+                "choose_compatible_assignee",
+            )
         ticket.asignado_a_id = assignee.id
         ticket.asignado_en = now
         if str(ticket.estado or "").lower() in {"nuevo", "open"}:
@@ -5396,7 +6099,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         .with_for_update()
         .first()
     )
-    if not ticket:
+    if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
@@ -5435,6 +6138,13 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
         if not assignee:
             return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
+        if not ticket_assignee_is_compatible(assignee, ticket):
+            return _error_response(
+                "El agente no tiene acceso a la categoria del ticket",
+                409,
+                "assignee_category_scope_mismatch",
+                "choose_compatible_assignee",
+            )
         extra["assignee_id"] = assignee.id
         extra["assignee_name"] = assignee.name
         extra["assignee_email"] = assignee.email

@@ -21,6 +21,7 @@ from routes.ticket import TICKET_ALLOWED_STATES
 from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
+from services.employee_ticket_access import apply_employee_ticket_category_scope
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     resolve_unique_tenant_for_owner,
@@ -1039,9 +1040,9 @@ def municipal_stats(current_user):
     filters, _, _ = _build_stats_filters_from_request(request.args)
 
     if filters:
-        datos = build_stats_for_municipio(municipio_id, filters=filters)
+        datos = build_stats_for_municipio(municipio_id, filters=filters, actor=current_user)
     else:
-        datos = build_stats_for_municipio(municipio_id)
+        datos = build_stats_for_municipio(municipio_id, actor=current_user)
 
     return jsonify(datos)
 
@@ -1059,9 +1060,9 @@ def municipal_stats_export(current_user, formato: str):
     filters, fecha_inicio, fecha_fin = _build_stats_filters_from_request(request.args)
 
     if filters:
-        stats = build_stats_for_municipio(municipio_id, filters=filters)
+        stats = build_stats_for_municipio(municipio_id, filters=filters, actor=current_user)
     else:
-        stats = build_stats_for_municipio(municipio_id)
+        stats = build_stats_for_municipio(municipio_id, actor=current_user)
 
     filtros_legibles = _format_filters_for_export(filters, fecha_inicio, fecha_fin)
     formato_normalizado = (formato or "").strip().lower()
@@ -1238,6 +1239,7 @@ def municipal_tickets_map_data(current_user):
     estado = request.args.get("estado")
     tickets_con_ubicacion = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket="municipio",
+        actor=current_user,
         municipio_id=municipio_id_del_admin,
         estado=estado,
     )
@@ -1259,7 +1261,8 @@ def municipal_tickets_locations(current_user):
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
     locations = servicio_tickets.obtener_locations_de_tickets(
-        municipio_id=municipio_id_del_admin
+        municipio_id=municipio_id_del_admin,
+        actor=current_user,
     )
     return jsonify(locations)
 
@@ -1277,7 +1280,11 @@ def municipal_incidents(current_user):
     try:
         tenant = _resolve_current_municipio_tenant(current_user)
         tickets = (
-            scoped_municipio_ticket_query(tenant)
+            apply_employee_ticket_category_scope(
+                scoped_municipio_ticket_query(tenant),
+                current_user,
+                MunicipioTicket,
+            )
             .filter(MunicipioTicket.estado != 'cerrado') # Podríamos querer ver todos en el admin, no solo los no cerrados
             .order_by(MunicipioTicket.fecha.desc())
             .all()
@@ -1901,9 +1908,9 @@ def municipal_analytics(current_user):
     filters, fecha_inicio, fecha_fin = _build_stats_filters_from_request(request.args)
 
     if filters:
-        stats = build_stats_for_municipio(municipio_id, filters=filters)
+        stats = build_stats_for_municipio(municipio_id, filters=filters, actor=current_user)
     else:
-        stats = build_stats_for_municipio(municipio_id)
+        stats = build_stats_for_municipio(municipio_id, actor=current_user)
 
     eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
     metrics_raw = _municipal_message_metrics(
@@ -1942,9 +1949,9 @@ def municipal_analytics_export(current_user, formato: str):
     filters, fecha_inicio, fecha_fin = _build_stats_filters_from_request(request.args)
 
     if filters:
-        stats = build_stats_for_municipio(municipio_id, filters=filters)
+        stats = build_stats_for_municipio(municipio_id, filters=filters, actor=current_user)
     else:
-        stats = build_stats_for_municipio(municipio_id)
+        stats = build_stats_for_municipio(municipio_id, actor=current_user)
 
     eid = current_user.id if current_user.empresa_id is None else current_user.empresa_id
     metrics_raw = _municipal_message_metrics(

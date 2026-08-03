@@ -7,6 +7,7 @@ from services.openai_bridge import (
 )
 from services.gemini_bridge import is_gemini_llm_configured
 from services.ollama_bridge import is_ollama_llm_configured
+from services.llm_provider_network_policy import llm_provider_network_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -227,6 +228,14 @@ def llamar_llm_con_fallback(
 
     last_error_code = "llm_no_provider_available"
     for name, func in providers:
+        provider_name = name.lower()
+        if not llm_provider_network_allowed(provider_name, app):
+            last_error_code = f"{provider_name}_test_network_disabled"
+            logger.info(
+                "Skipping LLM provider provider=%s reason=test_network_disabled",
+                provider_name,
+            )
+            continue
         try:
             logger.info("Attempting LLM call provider=%s", name)
             if name in {"OpenAI", "Gemini", "Ollama"}:

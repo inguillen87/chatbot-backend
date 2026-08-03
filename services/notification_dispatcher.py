@@ -8,7 +8,6 @@ from services.email_service import (
     enviar_email_pedido_admin,
 )
 from services.notifications import (
-    enviar_notificacion_sms,
     enviar_notificacion_whatsapp_con_plantilla,
 )
 from services.pedido_pdf import generar_pdf_nota_pedido
@@ -73,17 +72,30 @@ class NotificationDispatcher:
             if contact_phone:
                 try:
                     # Generic status update message
-                    enviar_notificacion_whatsapp_con_plantilla(
+                    result = enviar_notificacion_whatsapp_con_plantilla(
                         contact_phone,
                         getattr(order, "contact_name", None) or getattr(order, "nombre_cliente", None) or "Cliente",
                         order_id,
                         message
                     )
-                except Exception:
-                    # Fallback or silent fail
-                    pass
-        except Exception as e:
-            logger.error(f"Error dispatching order update for {order.id}: {e}")
+                    if not result:
+                        logger.info(
+                            "Order update WhatsApp blocked tenant_id=%s reason=%s",
+                            getattr(order, "tenant_id", None),
+                            getattr(result, "reason_code", "provider_acceptance_unknown"),
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Order update WhatsApp failed tenant_id=%s error_type=%s",
+                        getattr(order, "tenant_id", None),
+                        type(exc).__name__,
+                    )
+        except Exception as exc:
+            logger.error(
+                "Order update notification failed tenant_id=%s error_type=%s",
+                getattr(order, "tenant_id", None),
+                type(exc).__name__,
+            )
 
     def _notify_customer(self, pedido, pdf_bytes: Optional[bytes]):
         # Adapt fields for Order vs PymePedido
@@ -92,6 +104,7 @@ class NotificationDispatcher:
         name = getattr(pedido, 'nombre_cliente', getattr(pedido, 'buyer_name', "Cliente"))
         order_ref = getattr(pedido, 'nro_pedido', getattr(pedido, 'id', ''))
         rubro_ref = getattr(pedido, 'rubro', "Pedido")
+        tenant_id = getattr(pedido, 'tenant_id', None)
 
         # Create an adapter if it's the new Order model so legacy email service can read it
         pedido_adapter = pedido
@@ -125,23 +138,29 @@ class NotificationDispatcher:
         # WhatsApp / SMS
         if phone:
             try:
-                enviar_notificacion_whatsapp_con_plantilla(
+                result = enviar_notificacion_whatsapp_con_plantilla(
                     phone,
                     name,
                     str(order_ref),
                     rubro_ref
                 )
-                logger.info(f"Customer WhatsApp sent for order {order_ref}")
-            except Exception as e:
-                logger.error(f"Failed to send customer WhatsApp for order {order_ref}: {e}")
-                # Fallback to SMS
-                try:
-                    enviar_notificacion_sms(
-                        phone,
-                        f"Hola {name}! Tu pedido {order_ref} fue registrado."
+                if result:
+                    logger.info(
+                        "Customer WhatsApp provider accepted tenant_id=%s",
+                        tenant_id,
                     )
-                except Exception as sms_e:
-                    logger.error(f"Failed to send customer SMS fallback for order {order_ref}: {sms_e}")
+                else:
+                    logger.info(
+                        "Customer WhatsApp blocked tenant_id=%s reason=%s",
+                        tenant_id,
+                        getattr(result, "reason_code", "provider_acceptance_unknown"),
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Customer WhatsApp failed tenant_id=%s error_type=%s",
+                    tenant_id,
+                    type(exc).__name__,
+                )
 
     def _notify_dispatch(self, pedido, tenant: Optional[TenantProfile], pdf_bytes: Optional[bytes]):
         if not tenant:
@@ -162,15 +181,29 @@ class NotificationDispatcher:
             phones = [p.strip() for p in tenant.dispatch_phone.split(',') if p.strip()]
             for phone in phones:
                 try:
-                    enviar_notificacion_whatsapp_con_plantilla(
+                    result = enviar_notificacion_whatsapp_con_plantilla(
                         phone,
                         "Depósito",
                         str(order_ref),
                         "Nuevo Pedido a Preparar"
                     )
-                    logger.info(f"Dispatch WhatsApp sent to {phone} for order {order_ref}")
-                except Exception as e:
-                    logger.error(f"Failed to send dispatch WhatsApp to {phone} for order {order_ref}: {e}")
+                    if result:
+                        logger.info(
+                            "Dispatch WhatsApp provider accepted tenant_id=%s",
+                            tenant.id,
+                        )
+                    else:
+                        logger.info(
+                            "Dispatch WhatsApp blocked tenant_id=%s reason=%s",
+                            tenant.id,
+                            getattr(result, "reason_code", "provider_acceptance_unknown"),
+                        )
+                except Exception as exc:
+                    logger.error(
+                        "Dispatch WhatsApp failed tenant_id=%s error_type=%s",
+                        tenant.id,
+                        type(exc).__name__,
+                    )
 
     def _notify_admin(self, pedido: PymePedido, pdf_bytes: Optional[bytes]):
         # This is the legacy "owner" notification

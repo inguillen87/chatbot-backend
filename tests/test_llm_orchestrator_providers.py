@@ -22,6 +22,7 @@ def test_provider_order_includes_configured_gemini(monkeypatch):
 def test_llamar_llm_con_fallback_uses_gemini(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "test")
+    monkeypatch.setenv("GEMINI_ALLOW_NETWORK_IN_TESTS", "1")
 
     mock_gemini = Mock(return_value=({"message_body": "hola gemini"}, {"provider": "gemini"}))
     with patch("services.gemini_bridge.llamar_gemini", mock_gemini):
@@ -42,6 +43,8 @@ def test_llamar_llm_con_fallback_uses_gemini(monkeypatch):
 def test_safe_pre_request_fallback_does_not_send_openai_model_to_gemini(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "test")
+    monkeypatch.setenv("OPENAI_ALLOW_NETWORK_IN_TESTS", "1")
+    monkeypatch.setenv("GEMINI_ALLOW_NETWORK_IN_TESTS", "1")
     monkeypatch.delenv("GEMINI_CHAT_MODEL", raising=False)
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
 
@@ -67,6 +70,7 @@ def test_safe_pre_request_fallback_does_not_send_openai_model_to_gemini(monkeypa
 def test_ambiguous_provider_failure_fails_closed_without_switching(monkeypatch, caplog):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "test")
+    monkeypatch.setenv("OPENAI_ALLOW_NETWORK_IN_TESTS", "1")
 
     mock_openai = Mock(side_effect=ConnectionError("private-request-state-32877851"))
     mock_gemini = Mock(return_value=({"message_body": "unsafe retry"}, {}))
@@ -109,6 +113,7 @@ def test_provider_order_skips_disabled_ollama(monkeypatch):
 def test_llamar_llm_con_fallback_uses_ollama(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "ollama")
     monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_ALLOW_NETWORK_IN_TESTS", "1")
 
     mock_ollama = Mock(return_value=({"message_body": "hola ollama"}, {"provider": "ollama"}))
     with patch("services.ollama_bridge.llamar_ollama", mock_ollama):
@@ -177,6 +182,7 @@ def test_openai_default_model_is_current_sol(monkeypatch):
 def test_llamar_llm_con_fallback_routes_by_task_type(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER_ORDER", "openai,ollama")
     monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_ALLOW_NETWORK_IN_TESTS", "1")
 
     mock_ollama = Mock(return_value=({"message_body": "resumen glm"}, {"provider": "ollama"}))
     with patch("services.ollama_bridge.llamar_ollama", mock_ollama):

@@ -81,6 +81,169 @@ DEMO_MENU_ROOT_ID = "demo_menu_root"
 DEMO_SEGMENT_PREFIX = "demo_segment"
 DEMO_LEAD_ACTION_ID = "open_demo_form"
 
+_SAFE_LOG_INTERNAL_ID_KEYS = frozenset(
+    {
+        "attachment_id",
+        "context_id",
+        "owner_user_id",
+        "rubro_id",
+        "tenant_id",
+        "ticket_id",
+        "user_id",
+        "viewer_user_id",
+    }
+)
+
+
+def _safe_internal_log_id(value: Any) -> Optional[int]:
+    """Return only trusted numeric database identifiers for diagnostics."""
+
+    if type(value) is int and value >= 0:
+        return value
+    return None
+
+
+def _safe_value_log_metadata(value: Any) -> Dict[str, Any]:
+    """Describe a value without serializing its user-controlled contents."""
+
+    metadata: Dict[str, Any] = {
+        "type": type(value).__name__,
+        "present": value not in (None, "", b""),
+    }
+    if isinstance(value, (str, bytes, bytearray)):
+        metadata["length"] = len(value)
+    elif isinstance(value, dict):
+        metadata["key_count"] = len(value)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        metadata["item_count"] = len(value)
+    return metadata
+
+
+def _safe_attachment_log_metadata(value: Any) -> Dict[str, Any]:
+    metadata = _safe_value_log_metadata(value)
+    if not isinstance(value, dict):
+        metadata["valid_mapping"] = False
+        return metadata
+
+    transcript = next(
+        (
+            value.get(key)
+            for key in ("transcribed_text", "transcript", "transcripcion")
+            if isinstance(value.get(key), str)
+        ),
+        None,
+    )
+    attachment_id = _safe_internal_log_id(value.get("id"))
+    metadata.update(
+        {
+            "valid_mapping": True,
+            "attachment_id": attachment_id,
+            "has_url": bool(value.get("url")),
+            "has_thumbnail_url": bool(value.get("thumbnail_url")),
+            "has_name": bool(value.get("name") or value.get("filename")),
+            "has_mime_type": bool(value.get("mime_type") or value.get("mime")),
+            "has_transcript": transcript is not None,
+            "transcript_length": len(transcript) if transcript is not None else 0,
+        }
+    )
+    return metadata
+
+
+def _safe_location_log_metadata(value: Any) -> Dict[str, Any]:
+    metadata = _safe_value_log_metadata(value)
+    if not isinstance(value, dict):
+        metadata["valid_mapping"] = False
+        return metadata
+
+    has_latitude = value.get("lat") is not None or value.get("latitude") is not None
+    has_longitude = value.get("lon") is not None or value.get("lng") is not None or value.get("longitude") is not None
+    metadata.update(
+        {
+            "valid_mapping": True,
+            "has_coordinates": bool(has_latitude and has_longitude),
+            "has_address": bool(value.get("address") or value.get("formatted_address")),
+            "has_label": bool(value.get("label")),
+        }
+    )
+    return metadata
+
+
+def _safe_payload_log_metadata(value: Any) -> Dict[str, Any]:
+    metadata = _safe_value_log_metadata(value)
+    if not isinstance(value, dict):
+        metadata["valid_mapping"] = False
+        return metadata
+
+    body = next(
+        (
+            value.get(key)
+            for key in ("message_body", "respuesta_usuario", "respuesta", "text")
+            if isinstance(value.get(key), str)
+        ),
+        None,
+    )
+    options = value.get("options_list")
+    if not isinstance(options, list):
+        options = value.get("botones")
+    metadata.update(
+        {
+            "valid_mapping": True,
+            "body_length": len(body) if body is not None else 0,
+            "option_count": len(options) if isinstance(options, list) else 0,
+            "has_tracking": any(
+                bool(value.get(key))
+                for key in ("tracking_url", "tracking_link", "url_seguimiento")
+            ),
+            "has_media": any(
+                bool(value.get(key))
+                for key in ("audio_url", "image_url", "media_url", "archivo_url")
+            ),
+            "has_pin": any(bool(value.get(key)) for key in ("pin", "consulta_pin")),
+            "has_error": bool(value.get("error")),
+        }
+    )
+    return metadata
+
+
+def _safe_chat_log_metadata(
+    *,
+    question: Any = None,
+    attachment_info: Any = None,
+    location: Any = None,
+    payload: Any = None,
+    session_id: Any = None,
+    anon_id: Any = None,
+    error: Optional[BaseException] = None,
+    internal_ids: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build allowlisted chat telemetry without PII, secrets or free-form text."""
+
+    metadata: Dict[str, Any] = {}
+    if question is not None:
+        metadata["question"] = _safe_value_log_metadata(question)
+    if attachment_info is not None:
+        metadata["attachment"] = _safe_attachment_log_metadata(attachment_info)
+    if location is not None:
+        metadata["location"] = _safe_location_log_metadata(location)
+    if payload is not None:
+        metadata["payload"] = _safe_payload_log_metadata(payload)
+    if session_id is not None:
+        metadata["session"] = _safe_value_log_metadata(session_id)
+    if anon_id is not None:
+        metadata["anon"] = _safe_value_log_metadata(anon_id)
+    if error is not None:
+        metadata["error_type"] = type(error).__name__
+    if internal_ids:
+        safe_ids = {
+            key: safe_value
+            for key, value in internal_ids.items()
+            if key in _SAFE_LOG_INTERNAL_ID_KEYS
+            and (safe_value := _safe_internal_log_id(value)) is not None
+        }
+        if safe_ids:
+            metadata["internal_ids"] = safe_ids
+    return metadata
+
 
 def responder_chatboc(*args, **kwargs):
     from services.logic import responder_chatboc as _responder_chatboc
@@ -515,7 +678,7 @@ def _extract_entity_token_hint() -> str | None:
 
 
 def _log_widget_request(response, user):
-    """Log widget chat requests with tenant and token context."""
+    """Log widget requests without serializing credentials or tenant names."""
 
     status_code = None
     response_obj = response
@@ -525,15 +688,14 @@ def _log_widget_request(response, user):
     if status_code is None and hasattr(response_obj, "status_code"):
         status_code = response_obj.status_code
 
-    tenant_slug = getattr(user, "tenant_slug", None) if user else None
     entity_token = getattr(user, "entity_token", None) if user else None
 
     current_app.logger.info(
-        "WIDGET_REQ path=%s user_id=%s tenant=%s entity_token=%s status=%s",
+        "WIDGET_REQ path=%s user_id=%s tenant_present=%s has_entity_token=%s status=%s",
         getattr(request, "path", None),
-        getattr(user, "id", None) if user else None,
-        tenant_slug,
-        entity_token,
+        _safe_internal_log_id(getattr(user, "id", None)) if user else None,
+        bool(getattr(user, "tenant_slug", None)) if user else False,
+        bool(entity_token),
         status_code,
     )
 
@@ -917,7 +1079,10 @@ def _persist_demo_pyme_ticket(
         return ticket
     except SQLAlchemyError as exc:
         db.session.rollback()
-        current_app.logger.warning("[DEMO_WIDGET_RUNTIME] could not persist pyme ticket: %s", exc, exc_info=True)
+        current_app.logger.warning(
+            "[DEMO_WIDGET_RUNTIME] could not persist pyme ticket error_type=%s",
+            type(exc).__name__,
+        )
         return None
 
 
@@ -939,10 +1104,11 @@ def _build_demo_ticket_live_chat_contract(
             ticket_id=ticket.id,
         )
     except Exception as exc:
-        current_app.logger.exception(
-            "[DEMO_WIDGET_RUNTIME] could not build signed live-chat access for ticket %s: %s",
-            getattr(ticket, "id", None),
-            exc,
+        current_app.logger.error(
+            "[DEMO_WIDGET_RUNTIME] could not build signed live-chat access "
+            "ticket_id=%s error_type=%s",
+            _safe_internal_log_id(getattr(ticket, "id", None)),
+            type(exc).__name__,
         )
         return {
             "status": "unavailable",
@@ -983,7 +1149,10 @@ def _persist_demo_pyme_order(
         return pedido
     except SQLAlchemyError as exc:
         db.session.rollback()
-        current_app.logger.warning("[DEMO_WIDGET_RUNTIME] could not persist pyme order: %s", exc, exc_info=True)
+        current_app.logger.warning(
+            "[DEMO_WIDGET_RUNTIME] could not persist pyme order error_type=%s",
+            type(exc).__name__,
+        )
         return None
 
 
@@ -2518,8 +2687,8 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         if attachment_info:
             if not isinstance(attachment_info, dict) or not all(k in attachment_info for k in ['id', 'url']):
                 current_app.logger.warning(
-                    "attachmentInfo validado de forma laxa. Contenido: %s",
-                    str(attachment_info),
+                    "attachmentInfo validado de forma laxa attachment_metadata=%s",
+                    _safe_attachment_log_metadata(attachment_info),
                 )
                 # raise ValueError("El campo 'attachmentInfo' es inválido o le faltan campos requeridos.")
 
@@ -2600,7 +2769,10 @@ def _parse_request(tipo_chat_fijo: str | None = None):
         )
 
     except (TypeError, ValueError) as e:
-        current_app.logger.warning(f"Error al parsear /ask: {e}")
+        current_app.logger.warning(
+            "Error al parsear /ask error_type=%s",
+            type(e).__name__,
+        )
         return (
             None,
             None,
@@ -2616,7 +2788,10 @@ def _parse_request(tipo_chat_fijo: str | None = None):
             jsonify({"error": {"code": 400, "message": str(e)}}), # NEW FORMAT
         )
     except Exception as e:
-        current_app.logger.error(f"Error inesperado al parsear /ask: {e}")
+        current_app.logger.error(
+            "Error inesperado al parsear /ask error_type=%s",
+            type(e).__name__,
+        )
         return (
             None,
             None,
@@ -2661,15 +2836,24 @@ def _procesar_chat(
 
     chat_session_id_header, raw_chat_session_id_header, chat_session_source = _resolve_chat_session_id_from_request()
     if not raw_chat_session_id_header:
-        current_app.logger.warning("Chat session id not found. Generated new: %s", chat_session_id_header)
+        current_app.logger.warning(
+            "Chat session id not found; generated new session_metadata=%s",
+            _safe_value_log_metadata(chat_session_id_header),
+        )
     elif raw_chat_session_id_header != chat_session_id_header:
         current_app.logger.info(
-            "Normalized overlong chat session candidate from %s to %s",
+            "Normalized overlong chat session candidate source=%s original_length=%s "
+            "session_metadata=%s",
             chat_session_source,
-            chat_session_id_header,
+            len(raw_chat_session_id_header),
+            _safe_value_log_metadata(chat_session_id_header),
         )
     else:
-        current_app.logger.info("Using chat session id from %s: %s", chat_session_source, chat_session_id_header)
+        current_app.logger.info(
+            "Using chat session id source=%s session_metadata=%s",
+            chat_session_source,
+            _safe_value_log_metadata(chat_session_id_header),
+        )
 
     def _emit_socket_payload(payload: object) -> None:
         """Emite un mensaje por Socket.IO si hay una sesión web activa."""
@@ -2679,8 +2863,11 @@ def _procesar_chat(
 
             socketio.emit('message', payload, room=chat_session_id_header)
             current_app.logger.debug(
-                "Emitting socket message (early return)",
-                extra={"room": chat_session_id_header, "payload": payload},
+                "Emitting socket message (early return) metadata=%s",
+                _safe_chat_log_metadata(
+                    session_id=chat_session_id_header,
+                    payload=payload,
+                ),
             )
 
     actor_principal = current_user
@@ -2693,8 +2880,9 @@ def _procesar_chat(
         ).first()
     except ProgrammingError as exc:
         current_app.logger.warning(
-            "[CHAT] tenant_id missing when querying chat_session_context; retrying after safeguard",
-            exc_info=exc,
+            "[CHAT] tenant_id missing when querying chat_session_context; "
+            "retrying after safeguard error_type=%s",
+            type(exc).__name__,
         )
         db.session.rollback()
         ensure_chat_session_context_schema(db.session)
@@ -2703,9 +2891,10 @@ def _procesar_chat(
                 chat_session_id=chat_session_id_header
             ).first()
         except ProgrammingError as exc_retry:
-            current_app.logger.exception(
-                "[CHAT] Error accediendo a chat_session_context (schema mismatch)",
-                exc_info=exc_retry,
+            current_app.logger.error(
+                "[CHAT] Error accediendo a chat_session_context "
+                "schema_mismatch error_type=%s",
+                type(exc_retry).__name__,
             )
             db.session.rollback()
             return (
@@ -2717,9 +2906,10 @@ def _procesar_chat(
                 200,
             )
     except SQLAlchemyError as exc:
-        current_app.logger.exception(
-            "[CHAT] Error de base de datos obteniendo el contexto de sesión",
-            exc_info=exc,
+        current_app.logger.error(
+            "[CHAT] Error de base de datos obteniendo el contexto de sesión "
+            "error_type=%s",
+            type(exc).__name__,
         )
         db.session.rollback()
         return (
@@ -2728,7 +2918,10 @@ def _procesar_chat(
         )
 
     if not chat_context_obj:
-        current_app.logger.info(f"No ChatSessionContext found for {chat_session_id_header}. Creating new one.")
+        current_app.logger.info(
+            "No ChatSessionContext found; creating one session_metadata=%s",
+            _safe_value_log_metadata(chat_session_id_header),
+        )
         initial_context_data = {
             "source_chat_session_id": raw_chat_session_id_header,
         } if raw_chat_session_id_header and raw_chat_session_id_header != chat_session_id_header else {}
@@ -2750,13 +2943,15 @@ def _procesar_chat(
         try:
             commit_with_retry(db.session)
             current_app.logger.info(
-                f"ChatSessionContext inicial guardado para {chat_session_id_header} (commit temprano)."
+                "ChatSessionContext inicial guardado context_id=%s",
+                _safe_internal_log_id(getattr(chat_context_obj, "id", None)),
             )
         except Exception as e:
             db.session.rollback()
             current_app.logger.error(
-                f"Error guardando ChatSessionContext inicial para {chat_session_id_header}: {e}",
-                exc_info=True,
+                "Error guardando ChatSessionContext inicial context_id=%s error_type=%s",
+                _safe_internal_log_id(getattr(chat_context_obj, "id", None)),
+                type(e).__name__,
             )
             return (
                 jsonify({"error": {"code": 500, "message": "Error de base de datos"}}), # NEW FORMAT
@@ -2833,20 +3028,33 @@ def _procesar_chat(
             if not pregunta and location:
                 pregunta = "[Ubicación compartida por el usuario]"
         except Exception as e:
-            current_app.logger.error(f"Error parsing request in _procesar_chat: {e}", exc_info=True)
+            current_app.logger.error(
+                "Error parsing request in _procesar_chat error_type=%s",
+                type(e).__name__,
+            )
             return jsonify({"error": {"code": 400, "message": f"Invalid request format: {e}"}}), 400 # NEW FORMAT
 
         current_app.logger.debug(
-            "Parsed request data",
-            extra={
-                "pregunta": pregunta,
-                "tipo_chat": tipo_chat,
-                "rubro_id": rubro_id,
-                "rubro_clave": rubro_clave,
-                "attachmentInfo": attachment_info,
-                "location": location,
-                "ticket_id": ticket_id,
-                "tipo_ticket": tipo_ticket,
+            "Parsed request metadata=%s",
+            {
+                **_safe_chat_log_metadata(
+                    question=pregunta,
+                    attachment_info=attachment_info,
+                    location=location,
+                    internal_ids={
+                        "rubro_id": rubro_id,
+                        "ticket_id": ticket_id,
+                    },
+                ),
+                "tipo_chat_valid": (
+                    isinstance(tipo_chat, str)
+                    and tipo_chat in {"municipio", "pyme"}
+                ),
+                "has_rubro_clave": bool(rubro_clave),
+                "tipo_ticket_valid": (
+                    isinstance(tipo_ticket, str)
+                    and tipo_ticket in {"municipio", "pyme"}
+                ),
             },
         )
 
@@ -2865,10 +3073,12 @@ def _procesar_chat(
             verify_ticket_room_token(str(live_chat_token or ""), expected_room=expected_room)
         except LiveChatAccessError as exc:
             current_app.logger.warning(
-                "Live chat widget write rejected ticket_type=%s ticket_id=%s reason=%s",
-                tipo_ticket,
-                ticket_id,
-                exc,
+                "Live chat widget write rejected ticket_type_valid=%s "
+                "ticket_id=%s error_type=%s",
+                isinstance(tipo_ticket, str)
+                and tipo_ticket in {"municipio", "pyme"},
+                _safe_internal_log_id(ticket_id),
+                type(exc).__name__,
             )
             return jsonify({"error": {"code": 403, "message": "Acceso al chat no valido."}}), 403
 
@@ -2903,7 +3113,7 @@ def _procesar_chat(
                 commit_with_retry(db.session) # Commit the new comment
                 current_app.logger.info(
                     "User message for active ticket %s persisted through scoped realtime delivery",
-                    ticket_id,
+                    _safe_internal_log_id(getattr(ticket, "id", None)),
                 )
                 return jsonify({"status": "message_sent_to_live_chat"}), 200
             else:
@@ -2963,7 +3173,10 @@ def _procesar_chat(
             if last_message_time:
                 if datetime.utcnow() - last_message_time > timedelta(minutes=session_timeout_minutes):
                     session_expired = True
-                    current_app.logger.info(f"Sesión anónima {anon_id} expirada. Reiniciando conteo de mensajes.")
+                    current_app.logger.info(
+                        "Sesión anónima expirada; reiniciando conteo anon_metadata=%s",
+                        _safe_value_log_metadata(anon_id),
+                    )
 
             if not session_expired:
                 message_count_this_session = _anonymous_message_count(
@@ -2972,7 +3185,12 @@ def _procesar_chat(
                     chat_session_id_header,
                 )
 
-                current_app.logger.info(f"Usuario anónimo {anon_id}: {message_count_this_session} mensajes en la sesión actual (límite: {max_messages}).")
+                current_app.logger.info(
+                    "Usuario anónimo message_count=%s limit=%s anon_metadata=%s",
+                    message_count_this_session,
+                    max_messages,
+                    _safe_value_log_metadata(anon_id),
+                )
 
                 if message_count_this_session >= max_messages and not is_init_request:
                     reason_code = "anonymous_trial_limit_reached" if public_trial_active else "anonymous_message_limit_reached"
@@ -3010,7 +3228,10 @@ def _procesar_chat(
                     return jsonify(limit_payload), 403
         else:
             # Lógica para usuarios autenticados
-            current_app.logger.info(f"Usuario autenticado: {actor_principal.email} (ID: {actor_principal.id})")
+            current_app.logger.info(
+                "Usuario autenticado user_id=%s",
+                _safe_internal_log_id(getattr(actor_principal, "id", None)),
+            )
             # No se aplican límites de mensajes para usuarios autenticados
             # Si el usuario está logueado, usar su ubicación guardada si no se proporciona una nueva
             if not location and actor_principal.latitud and actor_principal.longitud:
@@ -3335,14 +3556,14 @@ def _procesar_chat(
                 "[CHAT] endpoint_mismatch auto-recovered: requested=%s owner_tipo=%s owner_id=%s",
                 tipo_chat_fijo,
                 owner_tipo_chat,
-                getattr(owner_user, "id", "N/A"),
+                _safe_internal_log_id(getattr(owner_user, "id", None)),
             )
             _set_tipo_chat(owner_tipo_chat)
         if owner_tipo_chat in {"pyme", "municipio"} and owner_tipo_chat != tipo_chat_normalized:
             current_app.logger.info(
                 "[CHAT] Ajustando tipo_chat a '%s' basado en owner_user %s (valor previo: '%s')",
                 owner_tipo_chat,
-                getattr(owner_user, "id", "N/A"),
+                _safe_internal_log_id(getattr(owner_user, "id", None)),
                 tipo_chat_normalized or "",
             )
             _set_tipo_chat(owner_tipo_chat)
@@ -3367,7 +3588,11 @@ def _procesar_chat(
 
         # If on public landing, force 'municipio' generic flow if specific tenant access is attempted without token
         if is_public_landing and tenant_slug_hint not in ("municipio", "pyme") and not request.args.get("entityToken"):
-             current_app.logger.warning(f"Public landing access to specific tenant '{tenant_slug_hint}' without entityToken. Forcing demo flow.")
+             current_app.logger.warning(
+                 "Public landing access to specific tenant without entityToken; "
+                 "forcing demo flow tenant_hint_present=%s",
+                 bool(tenant_slug_hint),
+             )
              tenant_slug_hint = "municipio"
 
         force_demo_selector_flow = (
@@ -3633,7 +3858,9 @@ def _procesar_chat(
 
                 if not owner_del_bot or not rubro_obj_global:
                     current_app.logger.error(
-                        f"[demo] La demo '{demo_key}' no cuenta con usuario o rubro configurado correctamente."
+                        "[demo] La demo seleccionada no cuenta con usuario o rubro "
+                        "configurado demo_key_present=%s",
+                        bool(demo_key),
                     )
                     demo_options = demo_options or _load_demo_rubros()
                     selector_payload = _build_demo_selector_payload(demo_options)
@@ -3692,8 +3919,10 @@ def _procesar_chat(
                     except Exception as e_commit:
                         db.session.rollback()
                         current_app.logger.error(
-                            f"Error guardando la selección de demo para la sesión {chat_session_id_header}: {e_commit}",
-                            exc_info=True,
+                            "Error guardando la selección de demo error_type=%s "
+                            "session_metadata=%s",
+                            type(e_commit).__name__,
+                            _safe_value_log_metadata(chat_session_id_header),
                         )
                     _emit_socket_payload(selector_payload)
                     return jsonify(selector_payload), 200
@@ -3721,7 +3950,10 @@ def _procesar_chat(
                     commit_with_retry(db.session)
                 except Exception as e_commit:
                     db.session.rollback()
-                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                    current_app.logger.error(
+                        "Error guardando estado de captura de lead demo error_type=%s",
+                        type(e_commit).__name__,
+                    )
                 _emit_socket_payload(payload)
                 return jsonify(payload), 200
 
@@ -3738,7 +3970,10 @@ def _procesar_chat(
                     commit_with_retry(db.session)
                 except Exception as e_commit:
                     db.session.rollback()
-                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                    current_app.logger.error(
+                        "Error guardando estado de captura de lead demo error_type=%s",
+                        type(e_commit).__name__,
+                    )
                 _emit_socket_payload(payload)
                 return jsonify(payload), 200
 
@@ -3763,7 +3998,10 @@ def _procesar_chat(
                     commit_with_retry(db.session)
                 except Exception as e_commit:
                     db.session.rollback()
-                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                    current_app.logger.error(
+                        "Error guardando estado de captura de lead demo error_type=%s",
+                        type(e_commit).__name__,
+                    )
                 _emit_socket_payload(payload)
                 return jsonify(payload), 200
 
@@ -3824,18 +4062,30 @@ def _procesar_chat(
                     commit_with_retry(db.session)
                 except Exception as e_commit:
                     db.session.rollback()
-                    current_app.logger.error("Error guardando estado de captura de lead demo: %s", e_commit, exc_info=True)
+                    current_app.logger.error(
+                        "Error guardando estado de captura de lead demo error_type=%s",
+                        type(e_commit).__name__,
+                    )
                 _emit_socket_payload(payload)
                 return jsonify(payload), 200
 
         if not owner_del_bot and rubro_obj_global:
             current_app.logger.warning(
-                f"Rubro ID {rubro_obj_global.id} ('{rubro_para_log}') encontrado pero sin User owner asociado (empresa_id=None o rol=admin). Se continuará sin owner específico si el rubro es público.")
+                "Rubro encontrado sin User owner asociado rubro_id=%s has_display_name=%s",
+                _safe_internal_log_id(getattr(rubro_obj_global, "id", None)),
+                bool(rubro_para_log),
+            )
 
         if rubro_obj_global:
             nombre_rubro_log = rubro_para_log or getattr(rubro_obj_global, "nombre", None) or getattr(rubro_obj_global, "clave", "N/A")
-            owner_id_log = getattr(owner_del_bot, "id", "N/A")
-            current_app.logger.info(f"Usando Rubro ID {rubro_obj_global.id} ('{nombre_rubro_log}') perteneciente a User ID {owner_id_log} para la lógica del bot.")
+            owner_id_log = _safe_internal_log_id(getattr(owner_del_bot, "id", None))
+            current_app.logger.info(
+                "Usando rubro para la lógica del bot rubro_id=%s owner_id=%s "
+                "has_display_name=%s",
+                _safe_internal_log_id(getattr(rubro_obj_global, "id", None)),
+                owner_id_log,
+                bool(nombre_rubro_log),
+            )
         else:
             current_app.logger.info("No se pudo determinar un rubro/owner específico para la lógica del bot. Se usará lógica genérica si aplica (ej. para rubros públicos por defecto).")
             if tipo_chat == "pyme" and not demo_session_activa and not is_anonymous:
@@ -3918,8 +4168,10 @@ def _procesar_chat(
                 except Exception as e_commit:
                     db.session.rollback()
                     current_app.logger.error(
-                        f"Error al guardar el límite de la demo para la sesión {chat_session_id_header}: {e_commit}",
-                        exc_info=True,
+                        "Error al guardar el límite de la demo error_type=%s "
+                        "session_metadata=%s",
+                        type(e_commit).__name__,
+                        _safe_value_log_metadata(chat_session_id_header),
                     )
                 _emit_socket_payload(respuesta_limite)
                 return jsonify(respuesta_limite), 403
@@ -3929,9 +4181,9 @@ def _procesar_chat(
         analisis_archivo_resultado = None
 
         current_app.logger.info(
-            "Usando Chat Session ID resuelto previamente (%s): %s",
+            "Usando Chat Session ID resuelto previamente source=%s session_metadata=%s",
             chat_session_source,
-            chat_session_id_header,
+            _safe_value_log_metadata(chat_session_id_header),
         )
 
         # Cargar o crear el contexto de la base de datos
@@ -3961,7 +4213,12 @@ def _procesar_chat(
             db.session.add(chat_context_obj)
             # No hacer commit aquí todavía, se hará después de procesar el chat
         else:
-            current_app.logger.info(f"ChatSessionContext cargado. User_id: {chat_context_obj.user_id}, Anon_id: {chat_context_obj.anon_id}")
+            current_app.logger.info(
+                "ChatSessionContext cargado context_id=%s user_id=%s has_anon_id=%s",
+                _safe_internal_log_id(getattr(chat_context_obj, "id", None)),
+                _safe_internal_log_id(getattr(chat_context_obj, "user_id", None)),
+                bool(getattr(chat_context_obj, "anon_id", None)),
+            )
             if chat_context_obj.context_data is None:
                 chat_context_obj.context_data = {}
             if isinstance(chat_context_obj.context_data, dict):
@@ -3972,7 +4229,12 @@ def _procesar_chat(
             # Detect if user just logged in with this session
             if actor_principal and chat_context_obj.user_id == actor_principal.id and not chat_context_obj.context_data.get("user_was_present_before", False):
                 chat_context_obj.context_data["just_logged_in_flag"] = True
-                current_app.logger.info(f"User {actor_principal.id} just logged in with session {chat_session_id_header}. Setting just_logged_in_flag.")
+                current_app.logger.info(
+                    "User just logged in; setting just_logged_in_flag user_id=%s "
+                    "session_metadata=%s",
+                    _safe_internal_log_id(getattr(actor_principal, "id", None)),
+                    _safe_value_log_metadata(chat_session_id_header),
+                )
 
             # This flag should be set to True if an authenticated user is present.
             chat_context_obj.context_data["user_was_present_before"] = bool(actor_principal)
@@ -4041,10 +4303,9 @@ def _procesar_chat(
                 )
             except Exception as demo_runtime_exc:
                 current_app.logger.warning(
-                    "[DEMO_MUNICIPIO_RUNTIME] skipped for session=%s: %s",
-                    chat_session_id_header,
-                    demo_runtime_exc,
-                    exc_info=True,
+                    "[DEMO_MUNICIPIO_RUNTIME] skipped error_type=%s session_metadata=%s",
+                    type(demo_runtime_exc).__name__,
+                    _safe_value_log_metadata(chat_session_id_header),
                 )
 
         v2_widget_runtime_request = bool(
@@ -4107,10 +4368,9 @@ def _procesar_chat(
                 )
             except Exception as demo_widget_exc:
                 current_app.logger.warning(
-                    "[DEMO_WIDGET_RUNTIME] skipped for session=%s: %s",
-                    chat_session_id_header,
-                    demo_widget_exc,
-                    exc_info=True,
+                    "[DEMO_WIDGET_RUNTIME] skipped error_type=%s session_metadata=%s",
+                    type(demo_widget_exc).__name__,
+                    _safe_value_log_metadata(chat_session_id_header),
                 )
 
         # --- Core Chat Logic Execution ---
@@ -4292,9 +4552,10 @@ def _procesar_chat(
                     )
         except Exception as conversation_err:
             current_app.logger.warning(
-                "[BE01/CRM] conversation persistence skipped for session=%s: %s",
-                chat_session_id_header,
-                conversation_err,
+                "[BE01/CRM] conversation persistence skipped error_type=%s "
+                "session_metadata=%s",
+                type(conversation_err).__name__,
+                _safe_value_log_metadata(chat_session_id_header),
             )
 
         # This commit is for User.preguntas_usadas and ChatSessionContext primarily
@@ -4302,7 +4563,10 @@ def _procesar_chat(
             commit_with_retry(db.session)
         except Exception as e:
             db.session.rollback()
-            current_app.logger.error(f"Error during final commit: {e}", exc_info=True)
+            current_app.logger.error(
+                "Error during final commit error_type=%s",
+                type(e).__name__,
+            )
             return jsonify({"error": {"code": 500, "message": "Error interno del servidor al guardar la sesión."}}), 500 # NEW FORMAT
 
         # Emit the result via Socket.IO if the channel is web
@@ -4311,15 +4575,20 @@ def _procesar_chat(
 
             socketio.emit('message', resultado, room=chat_session_id_header)
             current_app.logger.debug(
-                "Emitting socket message",
-                extra={"room": chat_session_id_header, "payload": resultado},
+                "Emitting socket message metadata=%s",
+                _safe_chat_log_metadata(
+                    session_id=chat_session_id_header,
+                    payload=resultado,
+                ),
             )
             current_app.logger.info(
-                f"Emitted socket event 'message' to room {chat_session_id_header}"
+                "Emitted socket event 'message' session_metadata=%s",
+                _safe_value_log_metadata(chat_session_id_header),
             )
 
         current_app.logger.debug(
-            "Returning HTTP response", extra={"payload": resultado}
+            "Returning HTTP response payload_metadata=%s",
+            _safe_payload_log_metadata(resultado),
         )
         response = jsonify(resultado)
         if isinstance(resultado, dict) and resultado.get("request_id"):
@@ -4328,22 +4597,36 @@ def _procesar_chat(
 
     except Exception as e:
         db.session.rollback()
-        error_details = {
-            "pregunta": pregunta if 'pregunta' in locals() else 'N/A',
-            "tipo_chat": tipo_chat if 'tipo_chat' in locals() else 'N/A',
-            "rubro_id": rubro_id if 'rubro_id' in locals() else 'N/A',
-            "rubro_clave": rubro_clave if 'rubro_clave' in locals() else 'N/A',
-            "actor_principal_id": actor_principal.id if 'actor_principal' in locals() and actor_principal else 'N/A',
-            "owner_del_bot_id": owner_del_bot.id if 'owner_del_bot' in locals() and owner_del_bot else 'N/A',
-            "viewer_obj_id": viewer_obj.id if 'viewer_obj' in locals() and viewer_obj else 'N/A',
-            "anon_id": anon_id if 'anon_id' in locals() else 'N/A',
-            "archivo_adjunto_id": archivo_adjunto_id if 'archivo_adjunto_id' in locals() else 'N/A',
-            "uploaded_file_info": uploaded_file_info if 'uploaded_file_info' in locals() else 'N/A',
-            "session_chat_id": session_chat_id if 'session_chat_id' in locals() else 'N/A'
-        }
+        actor_for_log = locals().get("actor_principal")
+        owner_for_log = locals().get("owner_del_bot")
+        viewer_for_log = locals().get("viewer_obj")
+        error_metadata = _safe_chat_log_metadata(
+            question=locals().get("pregunta"),
+            attachment_info=(
+                locals().get("uploaded_file_info")
+                if locals().get("uploaded_file_info") is not None
+                else locals().get("attachment_info")
+            ),
+            location=locals().get("location"),
+            payload=locals().get("resultado"),
+            session_id=(
+                locals().get("session_chat_id")
+                if locals().get("session_chat_id") is not None
+                else locals().get("chat_session_id_header")
+            ),
+            anon_id=locals().get("anon_id"),
+            error=e,
+            internal_ids={
+                "rubro_id": locals().get("rubro_id"),
+                "user_id": getattr(actor_for_log, "id", None),
+                "owner_user_id": getattr(owner_for_log, "id", None),
+                "viewer_user_id": getattr(viewer_for_log, "id", None),
+                "attachment_id": locals().get("archivo_adjunto_id"),
+            },
+        )
         current_app.logger.error(
-            f"❌ Error crítico en _procesar_chat. Details: {error_details}. Exception: {e}",
-            exc_info=True
+            "Error crítico en _procesar_chat metadata=%s",
+            error_metadata,
         )
         public_or_demo = bool(
             locals().get("demo_request_active")
@@ -4545,7 +4828,11 @@ def live_chat_schedule():
                     status["source"] = "tenant_config"
                     return _live_chat_schedule_public_response(status, tenant.configuracion)
     except Exception as exc:
-        current_app.logger.warning("[live_chat_schedule] tenant lookup failed for %s: %s", tenant_slug, exc)
+        current_app.logger.warning(
+            "[live_chat_schedule] tenant lookup failed tenant_hint_present=%s error_type=%s",
+            bool(tenant_slug),
+            type(exc).__name__,
+        )
 
     status = build_live_chat_status()
     status["source"] = "global_config"

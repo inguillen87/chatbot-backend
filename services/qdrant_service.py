@@ -22,8 +22,35 @@ COLLECTION_CATALOG = "catalog_items"
 COLLECTION_KNOWLEDGE = "knowledge_docs"
 EMBEDDING_DIMENSION = 1024  # Standardized dimension
 
+
+def _flag_enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _qdrant_network_allowed() -> bool:
+    """Keep Qdrant offline in tests unless an integration test opts in."""
+
+    testing = _flag_enabled(os.getenv("TESTING"))
+    config_opt_in = False
+    from flask import current_app, has_app_context
+
+    if has_app_context():
+        testing = testing or _flag_enabled(current_app.config.get("TESTING"))
+        config_opt_in = _flag_enabled(
+            current_app.config.get("QDRANT_ALLOW_NETWORK_IN_TESTS")
+        )
+
+    return (
+        not testing
+        or config_opt_in
+        or _flag_enabled(os.getenv("QDRANT_ALLOW_NETWORK_IN_TESTS"))
+    )
+
 def get_qdrant_client():
     """Singleton getter for Qdrant client."""
+    if not _qdrant_network_allowed():
+        logger.info("Qdrant provider blocked reason=test_network_disabled")
+        return None
     url = os.getenv("QDRANT_URL")
     api_key = os.getenv("QDRANT_API_KEY")
     if not url:

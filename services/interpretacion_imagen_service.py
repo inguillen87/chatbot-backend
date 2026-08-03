@@ -4,14 +4,18 @@ import os
 import requests
 import random # Para el mock de AnalisisArchivo en las pruebas
 from typing import Dict, Any, List, Optional
+from urllib.parse import urlsplit
 
 from models import ArchivoAdjunto, AnalisisArchivo, User, CatalogoItem, db
 from services.vision_fallback_service import analyze_image_smart
 from services.llm_utils import extract_complaint_details_llm
 from services.common_utils import limpiar_texto_base, parse_precio_flexible # Para procesar texto de pedido
 from services.pedido_processor_service import calcular_similitud_levenshtein, UMBRAL_SIMILITUD_PRODUCTO_PEDIDO # Reutilizar lógica de matching
+from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
+from services.multimodal_analyzer import UnsafeImageSource, _assert_public_remote_url
 
 logger = logging.getLogger(__name__)
+MAX_INTERPRETATION_FILE_BYTES = 20 * 1024 * 1024
 
 # --- Constantes para Reclamos Municipales ---
 PALABRAS_CLAVE_RECLAMO_OBJETOS = {
@@ -43,23 +47,51 @@ def _descargar_imagen(url: str) -> Optional[bytes]:
         local_path = os.path.join(app.root_path, url.lstrip("/"))
         try:
             with open(local_path, "rb") as f:
-                return f.read()
-        except OSError as e:
-            logger.error(f"❌ Error al leer imagen local {local_path}: {e}", exc_info=True)
+                content = f.read(MAX_INTERPRETATION_FILE_BYTES + 1)
+                if len(content) > MAX_INTERPRETATION_FILE_BYTES:
+                    logger.warning("Local media rejected reason=size_limit")
+                    return None
+                return content
+        except OSError as exc:
+            logger.error(
+                "Local media read failed error_type=%s",
+                type(exc).__name__,
+            )
             return None
+    parsed = urlsplit(str(url))
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        logger.warning("Remote media rejected reason=invalid_url")
+        return None
     try:
+        _assert_public_remote_url(url)
         response = requests.get(
             url,
-            auth=(
-                app.config.get("TWILIO_ACCOUNT_SID"),
-                app.config.get("TWILIO_AUTH_TOKEN"),
-            ),
+            # The WhatsApp webhook authenticates and persists Twilio media
+            # before this service runs. Never forward Twilio credentials to a
+            # storage or citizen-controlled URL at this second hop.
+            auth=None,
+            allow_redirects=False,
+            stream=True,
             timeout=10,
         )
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Error al descargar imagen desde {url}: {e}", exc_info=True)
+        try:
+            response.raise_for_status()
+            return read_bounded_response_body(
+                response,
+                max_bytes=MAX_INTERPRETATION_FILE_BYTES,
+            )
+        finally:
+            response.close()
+    except (requests.exceptions.RequestException, UnsafeImageSource, MediaDownloadTooLarge) as exc:
+        logger.error(
+            "Remote media download failed error_type=%s",
+            type(exc).__name__,
+        )
         return None
 
 def _inicializar_analisis_archivo(archivo_adjunto_id: int, tipo_analisis_inicial: str) -> AnalisisArchivo:
@@ -94,18 +126,21 @@ def interpretar_imagen_para_chat(
 
     input_url = None
     input_mime_type = None
-    input_source_id_info = "" # For logging
+    input_source_kind = "unknown"
 
     if is_db_object:
         input_url = archivo_adjunto.url
         input_mime_type = archivo_adjunto.mime
-        input_source_id_info = f"ArchivoAdjunto ID {archivo_adjunto.id}"
+        input_source_kind = "database_attachment"
     elif isinstance(archivo_adjunto, dict):
         input_url = archivo_adjunto.get("url")
         input_mime_type = archivo_adjunto.get("mime_type") # Asumimos que el dict tiene 'mime_type'
-        input_source_id_info = f"Diccionario (URL: {input_url})"
+        input_source_kind = "whatsapp_attachment"
     else: # tipo inesperado
-        logger.error(f"❌ Tipo de archivo_adjunto no esperado: {type(archivo_adjunto)}")
+        logger.error(
+            "Unexpected attachment input type=%s",
+            type(archivo_adjunto).__name__,
+        )
         return {'error': 'Tipo de archivo_adjunto no válido.', 'analisis_id': None}
 
     if not input_url:
@@ -120,9 +155,17 @@ def interpretar_imagen_para_chat(
     if is_db_object:
         tipo_analisis_db_prefix = f'{tipo_interpretacion}_vision_v1'
         analisis_db_record = _inicializar_analisis_archivo(archivo_adjunto.id, tipo_analisis_db_prefix)
-        logger.info(f"➡️ Iniciando interpretación '{tipo_interpretacion}' para {input_source_id_info}")
+        logger.info(
+            "Starting media interpretation type=%s source=%s has_analysis_id=true",
+            tipo_interpretacion,
+            input_source_kind,
+        )
     else: # Es un diccionario (ej. WhatsApp), no interactuamos con AnalisisArchivo todavía
-        logger.info(f"➡️ Iniciando interpretación '{tipo_interpretacion}' para imagen desde {input_source_id_info} (sin interacción con DB de AnalisisArchivo en esta etapa).")
+        logger.info(
+            "Starting media interpretation type=%s source=%s has_analysis_id=false",
+            tipo_interpretacion,
+            input_source_kind,
+        )
 
 
     file_content = _descargar_imagen(input_url)
@@ -137,7 +180,11 @@ def interpretar_imagen_para_chat(
             return {'error': error_message, 'analisis_id': None, 'raw_analysis': None}
 
     if "image" in input_mime_type:
-        logger.info(f"🖼️  Enviando imagen (tamaño: {len(file_content)} bytes, mime: {input_mime_type}) a servicios de visión...")
+        logger.info(
+            "Sending media to vision content_length=%s mime_type=%s",
+            len(file_content),
+            input_mime_type,
+        )
         vision_results = analyze_image_smart(file_content)  # OpenAI -> Cohere -> Google
     elif "pdf" in input_mime_type or "spreadsheet" in input_mime_type or "excel" in input_mime_type:
         from services.document_processing_service import document_processing_service
@@ -156,22 +203,34 @@ def interpretar_imagen_para_chat(
         analisis_db_record.datos_estructurados = current_datos_db
 
     if vision_results.get("error"):
-        error_message_vision = f"Error de Vision API: {vision_results['error']}"
-        logger.error(f"❌ {error_message_vision}")
+        provider_error = vision_results.get("error")
+        error_message_vision = "No se pudo analizar el archivo."
+        safe_vision_results = dict(vision_results)
+        safe_vision_results["error"] = "vision_analysis_failed"
+        logger.error(
+            "Vision analysis failed error_type=provider_error error_length=%s",
+            len(str(provider_error or "")),
+        )
         if is_db_object and analisis_db_record:
+            current_datos_db = analisis_db_record.datos_estructurados or {}
+            current_datos_db["vision_api_raw"] = safe_vision_results
+            analisis_db_record.datos_estructurados = current_datos_db
             analisis_db_record.estado_analisis = "error"
             analisis_db_record.error_analisis = error_message_vision
             db.session.commit()
             return {'error': error_message_vision, 'analisis_id': analisis_db_record.id}
         else: # WhatsApp dict
-            return {'error': error_message_vision, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': vision_results}}
+            return {'error': error_message_vision, 'analisis_id': None, 'raw_analysis': {'vision_api_raw': safe_vision_results}}
 
     extracted_ocr_text = ""
     if vision_results.get("full_text_annotation"):
         extracted_ocr_text = vision_results["full_text_annotation"].get("description", "").strip()
         if is_db_object and analisis_db_record:
             analisis_db_record.texto_extraido = extracted_ocr_text
-        logger.info(f" टेक्स्ट OCR detectado: '{extracted_ocr_text[:200]}...'")
+        logger.info(
+            "OCR text detected text_length=%s",
+            len(extracted_ocr_text),
+        )
 
     # Si es un objeto de DB, guardar el análisis con texto OCR antes de la lógica específica.
     if is_db_object and analisis_db_record:
@@ -363,7 +422,10 @@ def _infer_category_from_vision_results(vision_results: Dict[str, Any], min_conf
 
     # Sort by confidence
     detected_items_with_confidence.sort(key=lambda x: x["score"], reverse=True)
-    logger.info(f"[VISION_CAT_INFERENCE] Sorted detected items: {detected_items_with_confidence}")
+    logger.info(
+        "[VISION_CAT_INFERENCE] Candidates prepared candidate_count=%s",
+        len(detected_items_with_confidence),
+    )
 
     for item in detected_items_with_confidence:
         item_desc = item["text"]
@@ -371,13 +433,19 @@ def _infer_category_from_vision_results(vision_results: Dict[str, Any], min_conf
         if item_desc in VISION_LABEL_TO_RECLAMO_CATEGORIA:
             cat = VISION_LABEL_TO_RECLAMO_CATEGORIA[item_desc]
             if cat in CATEGORIAS_RECLAMO:
-                logger.info(f"[VISION_CAT_INFERENCE] Mapped '{item_desc}' to category '{cat}' with score {item['score']}")
+                logger.info(
+                    "[VISION_CAT_INFERENCE] Direct mapping selected score=%s",
+                    item["score"],
+                )
                 return cat
         # Check if any part of a multi-word item_desc maps
         for keyword, category_map in VISION_LABEL_TO_RECLAMO_CATEGORIA.items():
             if keyword in item_desc:
                  if category_map in CATEGORIAS_RECLAMO:
-                    logger.info(f"[VISION_CAT_INFERENCE] Mapped partial '{item_desc}' (found '{keyword}') to category '{category_map}' with score {item['score']}")
+                    logger.info(
+                        "[VISION_CAT_INFERENCE] Partial mapping selected score=%s",
+                        item["score"],
+                    )
                     return category_map
     return None
 
@@ -390,7 +458,11 @@ def _procesar_interpretacion_reclamo(
 ) -> Dict[str, Any]:
     """Lógica específica para interpretar un reclamo municipal."""
     analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
-    logger.info(f"⚙️ Procesando como RECLAMO MUNICIPAL (auto_mode: {auto_mode}) para Análisis ID: {analisis_id_for_log}")
+    logger.info(
+        "Processing municipal image claim auto_mode=%s has_analysis_id=%s",
+        auto_mode,
+        bool(analisis_db_record),
+    )
 
     sugerida_categoria_vision = _infer_category_from_vision_results(vision_results)
     datos_internos_analisis = {
@@ -421,7 +493,10 @@ def _procesar_interpretacion_reclamo(
         prompt_description_parts.append(f"Texto en imagen: '{ocr_snippet_for_prompt}'")
 
     if not prompt_description_parts:
-         logger.info(f"ℹ️ [RECLAMO_IMG_PROC] No hay suficiente información visual/textual para enviar al LLM (Análisis ID: {analisis_id_for_log}).")
+         logger.info(
+             "[RECLAMO_IMG_PROC] Insufficient visual input has_analysis_id=%s",
+             bool(analisis_db_record),
+         )
          if analisis_db_record:
              analisis_db_record.estado_analisis = "completado_sin_info_suficiente"
              db.session.commit()
@@ -442,7 +517,12 @@ def _procesar_interpretacion_reclamo(
     descripcion_natural = generar_descripcion_natural_de_imagen(imagen_descripcion_para_llm)
     descripcion_natural = descripcion_natural.strip()
 
-    logger.info(f"📝 [RECLAMO_IMG_PROC] Descripción para LLM (desde imagen): {descripcion_natural} (Análisis ID: {analisis_id_for_log})")
+    logger.info(
+        "[RECLAMO_IMG_PROC] Visual description prepared description_length=%s "
+        "has_analysis_id=%s",
+        len(descripcion_natural),
+        bool(analisis_db_record),
+    )
 
     detalles_llm = extract_complaint_details_llm(descripcion_natural) or {}
     if not isinstance(detalles_llm, dict):
@@ -531,7 +611,9 @@ def _procesar_interpretacion_reclamo(
 
     if matched_llm_cat:
         final_categoria_sugerida = matched_llm_cat
-        logger.info(f"[RECLAMO_IMG_PROC] LLM propuso categoría: '{llm_tipo_problema}', mapeada a: '{final_categoria_sugerida}'")
+        logger.info(
+            "[RECLAMO_IMG_PROC] LLM category mapped category_present=true"
+        )
 
     datos_internos_analisis['final_categoria_sugerida'] = final_categoria_sugerida
     datos_internos_analisis['final_descripcion_sugerida'] = llm_descripcion
@@ -563,7 +645,11 @@ def _procesar_interpretacion_pedido_pyme(
 ) -> Dict[str, Any]:
     """Lógica específica para interpretar una imagen como un pedido para una PYME."""
     analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
-    logger.info(f"⚙️ Procesando como PEDIDO PYME para Análisis ID: {analisis_id_for_log}, PYME ID: {pyme_user.id}")
+    logger.info(
+        "Processing PYME image order has_analysis_id=%s has_pyme_id=%s",
+        bool(analisis_db_record),
+        getattr(pyme_user, "id", None) is not None,
+    )
 
     datos_internos_analisis = {'tipo_analisis_sugerido': 'pedido_pyme_vision_ocr_v1'}
     if analisis_db_record:
@@ -574,7 +660,10 @@ def _procesar_interpretacion_pedido_pyme(
     resumen_ocr = ""
 
     if not extracted_ocr_text:
-        logger.info(f"ℹ️ [PEDIDO] No se detectó texto OCR en la imagen para Análisis ID: {analisis_id_for_log}.")
+        logger.info(
+            "[PEDIDO] No OCR text detected has_analysis_id=%s",
+            bool(analisis_db_record),
+        )
         if analisis_db_record:
             analisis_db_record.estado_analisis = "completado"
             analisis_db_record.tipo_analisis = 'imagen_general_vision_v1' # No hay texto, no puede ser pedido
@@ -640,7 +729,11 @@ def _procesar_interpretacion_pedido_pyme(
         #                 "linea_original_ocr": linea_raw, "linea_idx_ocr": i
         #             })
         #         except ValueError: pass
-        logger.info(f"ℹ️ [PEDIDO] Ni LLM ni Regex (si estuviera activo) produjeron items parseables. Texto OCR: {extracted_ocr_text[:200]} (Análisis ID: {analisis_id_for_log})")
+        logger.info(
+            "[PEDIDO] No parseable items ocr_length=%s has_analysis_id=%s",
+            len(extracted_ocr_text),
+            bool(analisis_db_record),
+        )
 
         datos_internos_analisis.update({
             'items_parseados_ocr': [], 'items_encontrados_catalogo': [],
@@ -665,7 +758,11 @@ def _procesar_interpretacion_pedido_pyme(
             'analisis_interno': datos_internos_analisis
         }
 
-    logger.info(f"📝 [PEDIDO] Items parseados del OCR: {posibles_items_texto} (Análisis ID: {analisis_id_for_log})")
+    logger.info(
+        "[PEDIDO] OCR items parsed item_count=%s has_analysis_id=%s",
+        len(posibles_items_texto),
+        bool(analisis_db_record),
+    )
 
     # Buscar cada item parseado en el catálogo de la PYME
     for item_ocr in posibles_items_texto:
@@ -708,7 +805,10 @@ def _procesar_interpretacion_pedido_pyme(
         if item_catalogo_encontrado:
             precio_str, precio_float, moneda = parse_precio_flexible(item_catalogo_encontrado.precio)
             if precio_float is None:
-                logger.warning(f"[PEDIDO] Producto '{item_catalogo_encontrado.nombre}' (ID: {item_catalogo_encontrado.id}) encontrado pero sin precio válido ('{item_catalogo_encontrado.precio}'). OCR: '{item_ocr['nombre_ocr']}'")
+                logger.warning(
+                    "[PEDIDO] Catalog match has invalid price has_catalog_item_id=%s",
+                    getattr(item_catalogo_encontrado, "id", None) is not None,
+                )
                 items_no_encontrados_catalogo.append({
                     "nombre_ocr": item_ocr["nombre_ocr"],
                     "cantidad_ocr": cantidad_pedido,
@@ -728,9 +828,16 @@ def _procesar_interpretacion_pedido_pyme(
                 "subtotal_calculado": round(cantidad_pedido * precio_float, 2),
                 "linea_original_ocr": item_ocr["linea_original_ocr"]
             })
-            logger.info(f"✅ [PEDIDO] OCR item '{item_ocr['nombre_ocr']}' -> Catálogo ID {item_catalogo_encontrado.id} ('{item_catalogo_encontrado.nombre}') x {cantidad_pedido}")
+            logger.info(
+                "[PEDIDO] OCR item matched has_catalog_item_id=%s quantity_present=%s",
+                getattr(item_catalogo_encontrado, "id", None) is not None,
+                cantidad_pedido is not None,
+            )
         else:
-            logger.info(f"❌ [PEDIDO] OCR item '{item_ocr['nombre_ocr']}' no encontrado en catálogo de PYME {pyme_user.id}.")
+            logger.info(
+                "[PEDIDO] OCR item not found in catalog has_pyme_id=%s",
+                getattr(pyme_user, "id", None) is not None,
+            )
             items_no_encontrados_catalogo.append({
                 "nombre_ocr": item_ocr["nombre_ocr"],
                 "cantidad_ocr": cantidad_pedido,
@@ -782,14 +889,20 @@ def _procesar_interpretacion_orden_de_compra(
     from services.purchase_order_processor import extraer_datos_orden_de_compra_con_llm
 
     analisis_id_for_log = analisis_db_record.id if analisis_db_record else "N/A (WhatsApp)"
-    logger.info(f"⚙️ Procesando como ORDEN DE COMPRA para Análisis ID: {analisis_id_for_log}")
+    logger.info(
+        "Processing purchase order image has_analysis_id=%s",
+        bool(analisis_db_record),
+    )
 
     datos_internos_analisis = {'tipo_analisis_sugerido': 'orden_de_compra_vision_llm_v1'}
     if analisis_db_record:
         analisis_db_record.tipo_analisis = 'orden_de_compra_vision_llm_v1'
 
     if not extracted_ocr_text:
-        logger.info(f"ℹ️ [OC] No se detectó texto OCR en la imagen para Análisis ID: {analisis_id_for_log}.")
+        logger.info(
+            "[OC] No OCR text detected has_analysis_id=%s",
+            bool(analisis_db_record),
+        )
         if analisis_db_record:
             analisis_db_record.estado_analisis = "completado"
             analisis_db_record.tipo_analisis = 'imagen_general_vision_v1'
@@ -806,7 +919,12 @@ def _procesar_interpretacion_orden_de_compra(
     datos_oc = extraer_datos_orden_de_compra_con_llm(extracted_ocr_text)
 
     if not datos_oc:
-        logger.warning(f"No se pudieron extraer datos de la orden de compra desde el texto OCR para Análisis ID: {analisis_id_for_log}")
+        logger.warning(
+            "Purchase order extraction returned no data ocr_length=%s "
+            "has_analysis_id=%s",
+            len(extracted_ocr_text),
+            bool(analisis_db_record),
+        )
         if analisis_db_record:
             analisis_db_record.estado_analisis = "completado"
             analisis_db_record.tipo_analisis = 'orden_de_compra_fallido_llm'

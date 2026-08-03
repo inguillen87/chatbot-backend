@@ -1,3 +1,4 @@
+import os
 import types
 from unittest.mock import patch
 import unittest
@@ -5,6 +6,14 @@ import services.herramientas_municipio as hm
 
 
 class TestObtenerDireccionDeCoordenadas(unittest.TestCase):
+    @patch.dict(os.environ, {"GEOCODING_ALLOW_NETWORK_IN_TESTS": "1"})
+    @patch.object(hm.google_maps_service, '_get_geolocators', return_value=[])
+    def test_geopy_fallback_without_providers_returns_none(self, mock_geolocators):
+        result = hm._reverse_geocode_with_geopy(-32.89, -68.83)
+
+        self.assertIsNone(result)
+        mock_geolocators.assert_called_once_with()
+
     @patch('services.herramientas_municipio._reverse_geocode_with_geopy')
     @patch('services.herramientas_municipio.parse_direccion_completa')
     @patch('services.herramientas_municipio.geocodificar_inversa_llm')

@@ -42,6 +42,7 @@ from services.tts_orchestrator import reset_tts_cache_metrics
 
 class V2SaasTestConfig(Config):
     TESTING = True
+    TWILIO_ALLOW_NETWORK_IN_TESTS = True
     ENABLE_DEMO_MODE = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     SQLALCHEMY_ENGINE_OPTIONS = {"connect_args": {"check_same_thread": False}}
@@ -536,6 +537,67 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("integrations", payload)
         self.assertIn("queues", payload)
         self.assertIn("recommended_actions", payload)
+
+    def test_employee_routing_does_not_recommend_or_apply_incompatible_assignee(self):
+        restricted = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="restricted",
+            descripcion="Caso fuera del alcance del unico agente",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"title": "Caso restringido", "priority": "high"},
+        )
+        db.session.add(restricted)
+        db.session.commit()
+
+        preview = self.client.get(
+            "/api/v2/employee-routing",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(preview.status_code, 200, preview.get_json())
+        recommendation = next(
+            item
+            for item in preview.get_json()["recommendations"]
+            if item["ticket"]["id"] == restricted.id
+            and item["ticket"]["source_model"] == "TenantTicket"
+        )
+        self.assertIsNone(recommendation["suggested_assignee"])
+        self.assertEqual(recommendation["reasons"], ["no_employee_available"])
+
+        stale_payload = {
+            "recommendations": [
+                {
+                    "ticket": {
+                        "source_model": "TenantTicket",
+                        "id": restricted.id,
+                        "ticket_id": restricted.id,
+                        "category": "restricted",
+                    },
+                    "suggested_assignee": {"id": self.employee.id},
+                    "score": 99,
+                    "reasons": ["stale_or_tampered_recommendation"],
+                }
+            ]
+        }
+        with patch("routes.v2.saas.build_employee_routing_payload", return_value=stale_payload):
+            apply_response = self.client.post(
+                "/api/v2/employee-routing/auto-assign",
+                json={
+                    "dry_run": False,
+                    "tickets": [{"source_model": "TenantTicket", "id": restricted.id}],
+                },
+                headers=self._auth(self.owner),
+            )
+
+        self.assertEqual(apply_response.status_code, 200, apply_response.get_json())
+        body = apply_response.get_json()
+        self.assertEqual(body["applied_count"], 0)
+        self.assertEqual(body["items"][0]["assignment_reason"], "assignee_category_scope_mismatch")
+        db.session.expire_all()
+        self.assertIsNone(
+            (db.session.get(TenantTicket, restricted.id).datos_extra or {}).get("assignee_id")
+        )
 
     def test_catalog_quality_contract_surfaces_image_price_and_stock_gaps(self):
         db.session.add(
@@ -3467,7 +3529,7 @@ class V2SaasContractsTest(unittest.TestCase):
             consulta_pin="880001",
             pregunta="Necesito hablar con un operador",
             asunto="Atencion ciudadana",
-            categoria="otros",
+            categoria="educacion",
             estado="nuevo",
             canal_ingreso="whatsapp",
             nombre_vecino="Marcelo",

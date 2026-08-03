@@ -17,6 +17,8 @@ from extensions import db
 from models import (
     MessagingEventLedger,
     MunicipioTicket,
+    Notification,
+    NotificationAttempt,
     ProviderSender,
     PymeTicket,
     TenantProfile,
@@ -46,6 +48,7 @@ class ScopedTwilioConfig(Config):
     SKIP_INIT_TENANTS = True
     TWILIO_ACCOUNT_SID = PARENT_ACCOUNT_SID
     TWILIO_AUTH_TOKEN = PARENT_AUTH_TOKEN
+    TWILIO_ALLOW_NETWORK_IN_TESTS = True
     BACKEND_URL = "http://localhost"
     PUBLIC_API_BASE_URL = "http://localhost"
     WHATSAPP_AUDIO_ENABLED = False
@@ -557,6 +560,71 @@ class TwilioWebhookCredentialScopingTestCase(unittest.TestCase):
                 provider_event_id="SM_parent_status:delivered",
             ).first()
         )
+
+    def test_signed_child_status_reconciles_tenant_bound_notification_attempt(self):
+        sender = self._create_sender(child_scoped=True)
+        notification = Notification(
+            tenant_id=sender.tenant_id,
+            channel="whatsapp",
+            recipient=RECIPIENT_NUMBER,
+            body="Vista local",
+            status=Notification.STATUS_SEND_UNCERTAIN,
+            idempotency_key="notification-callback-scoped-1",
+            max_retries=3,
+            attempt_count=1,
+            provider_sender_id=sender.id,
+            provider_status=Notification.PROVIDER_STATUS_UNKNOWN,
+            last_error="twilio_timeout",
+        )
+        db.session.add(notification)
+        db.session.flush()
+        attempt = NotificationAttempt(
+            notification_id=notification.id,
+            tenant_id=sender.tenant_id,
+            attempt_number=1,
+            status=NotificationAttempt.STATUS_SEND_UNCERTAIN,
+            provider="whatsapp",
+            provider_status=Notification.PROVIDER_STATUS_UNKNOWN,
+            metadata_json={"provider_call_started": True},
+        )
+        db.session.add(attempt)
+        db.session.commit()
+
+        callback_path = (
+            "/twilio/whatsapp/status?notification_attempt_id=" f"{attempt.id}"
+        )
+        payload = {
+            "AccountSid": CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": MESSAGING_SERVICE_SID,
+            "MessageSid": "SM_notification_callback_scoped",
+            "MessageStatus": "delivered",
+            "From": f"whatsapp:{SENDER_NUMBER}",
+            "To": f"whatsapp:{RECIPIENT_NUMBER}",
+        }
+        response = self.client.post(
+            callback_path,
+            data=payload,
+            headers={
+                "X-Twilio-Signature": self._signature(
+                    callback_path,
+                    payload,
+                    CHILD_AUTH_TOKEN,
+                )
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        db.session.expire_all()
+        persisted = db.session.get(Notification, notification.id)
+        persisted_attempt = db.session.get(NotificationAttempt, attempt.id)
+        self.assertEqual(persisted.status, Notification.STATUS_SENT)
+        self.assertEqual(persisted.provider_status, "delivered")
+        self.assertEqual(
+            persisted.provider_message_id,
+            "SM_notification_callback_scoped",
+        )
+        self.assertEqual(persisted_attempt.status, NotificationAttempt.STATUS_SUCCESS)
+        self.assertIsNotNone(persisted_attempt.delivery_event_id)
 
     def test_legacy_sender_uses_parent_validator_and_parent_client(self):
         self._create_sender(child_scoped=False, create_provider_sender=False)

@@ -577,6 +577,68 @@ def test_survey_runtime_hydrates_question_and_stages_valid_answer_without_voting
     assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 0
 
 
+def test_survey_runtime_rejects_restricted_eligibility_before_staging(
+    client, monkeypatch
+):
+    tenant, sender = _tenant_with_sender(
+        slug="runtime-survey-restricted",
+        waba_id="waba-survey-restricted",
+        endpoint_alias="survey-restricted-endpoint",
+    )
+    survey = _published_quick_vote(tenant, slug="runtime-restricted-vote")
+    original_metadata = {
+        "survey_context": {"id": str(survey.id), "slug": survey.slug},
+        "correlation_marker": "must-remain-unchanged",
+    }
+    interaction = _flow_interaction(
+        tenant=tenant,
+        sender=sender,
+        flow_id=SURVEY_FLOW_ID,
+        metadata=original_metadata,
+    )
+    runtime = MetaFlowRuntime(
+        environ=_env_for("waba-survey-restricted"),
+        token_verifier=_verified(
+            tenant_id=tenant.id,
+            sender_id=sender.id,
+            flow_id=SURVEY_FLOW_ID,
+            interaction_id=interaction.id,
+        ),
+    )
+    config = runtime.resolve("survey-restricted-endpoint")
+    assert config is not None
+
+    monkeypatch.setattr(
+        "services.survey_governance.survey_governance_contract",
+        lambda *_args, **_kwargs: {
+            "eligibility": {
+                "credential_required": True,
+                "transport": "http_header_only",
+            }
+        },
+    )
+
+    with pytest.raises(MetaFlowActionError) as blocked:
+        config.handlers["data_exchange"](
+            _payload(
+                action="data_exchange",
+                screen="SURVEY_QUESTION_ONE",
+                data={
+                    "selected_option": str(survey.preguntas[0].opciones[0].id)
+                },
+            ),
+            _context(config, "data_exchange"),
+        )
+
+    assert blocked.value.code == "survey_eligibility_transport_unsupported"
+    assert blocked.value.status_code == 409
+    db.session.expire_all()
+    reloaded = db.session.get(WhatsAppFlowInteraction, interaction.id)
+    assert reloaded is not None
+    assert reloaded.metadata_json == original_metadata
+    assert EncRespuesta.query.filter_by(encuesta_id=survey.id).count() == 0
+
+
 def test_survey_runtime_adapts_forward_and_back_and_prunes_hidden_branch(client):
     tenant, sender = _tenant_with_sender(
         slug="runtime-survey-adaptive",

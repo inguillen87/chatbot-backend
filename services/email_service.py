@@ -13,6 +13,7 @@ from flask import current_app, has_app_context # Para acceder a la configuració
 from twilio.rest import Client
 
 from services.config_loader import cargar_configuracion_municipio
+from services.llm_provider_network_policy import require_provider_network
 from services.map_preview import generate_static_map
 from services.ticket_utils import build_claim_tracking_url
 
@@ -1193,15 +1194,16 @@ def enviar_sms(destino: str, mensaje: str) -> bool:
         return False
 
     try:
+        require_provider_network("twilio")
         client = Client(twilio_account_sid, twilio_auth_token)
-        msg = client.messages.create(body=mensaje, from_=twilio_phone_number, to=destino)
-        logger.info(f"[SMS] Enviado a {destino} (SID: {msg.sid}). Mensaje: '{mensaje[:30]}...'")
+        client.messages.create(body=mensaje, from_=twilio_phone_number, to=destino)
+        logger.info("[SMS] Envío aceptado por el proveedor.")
         return True
     except Exception as e:
-        error_message = str(e)
-        if hasattr(e, 'status') and hasattr(e, 'uri') and hasattr(e, 'msg'):
-            error_message = f"Twilio API Error: Status {e.status}, URI {e.uri}, Message: {e.msg}, Details: {getattr(e, 'details', {})}"
-        logger.error(f"[SMS] Error enviando mensaje a {destino}: {error_message}")
+        logger.error(
+            "[SMS] Envío no confirmado error_type=%s",
+            type(e).__name__,
+        )
         return False
 
 
@@ -1244,22 +1246,16 @@ def enviar_whatsapp(destino: str, mensaje: str, media_urls: list[str] | None = N
         message_params["media_url"] = media_urls # Pass the list directly
 
     try:
+        require_provider_network("twilio")
         client = Client(twilio_account_sid, twilio_auth_token)
-        msg = client.messages.create(**message_params)
-
-        log_parts = []
-        if mensaje:
-            log_parts.append(f"Texto: '{mensaje[:30]}...'")
-        if media_urls:
-            log_parts.append(f"Media URLs: {media_urls}")
-
-        logger.info(f"[WHATSAPP] Enviado a {numero_con_prefijo} (SID: {msg.sid}). {' | '.join(log_parts)}")
+        client.messages.create(**message_params)
+        logger.info("[WHATSAPP] Envío aceptado por el proveedor.")
         return True
     except Exception as e:
-        error_message = str(e)
-        if hasattr(e, 'status') and hasattr(e, 'uri') and hasattr(e, 'msg'): # TwilioException attributes
-            error_message = f"Twilio API Error: Status {e.status}, URI {e.uri}, Message: {e.msg}, Details: {getattr(e, 'details', {})}"
-        logger.error(f"[WHATSAPP] Error enviando mensaje a {numero_con_prefijo}: {error_message}", exc_info=True)
+        logger.error(
+            "[WHATSAPP] Envío no confirmado error_type=%s",
+            type(e).__name__,
+        )
         return False
 
 # --- Nueva función para enviar WhatsApp para tickets ---

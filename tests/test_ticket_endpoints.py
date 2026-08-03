@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from app import create_app, db
-from models import User, MunicipioTicket, Rubro, TicketComentario, ArchivoAdjunto, Conversacion
+from models import User, MunicipioTicket, Rubro, TicketComentario, ArchivoAdjunto, Conversacion, TenantProfile
 from config import TestConfig
 from utils.roles import ROLE_EMPLEADO, canonical_role
 import json
@@ -41,6 +41,8 @@ class TicketEndpointsTest(unittest.TestCase):
         admin_pyme_alias_user.set_password('adminpass')
         db.session.add(admin_pyme_alias_user)
         db.session.flush()
+        admin_user.municipio_id = admin_user.id
+        admin_pyme_alias_user.municipio_id = admin_user.id
 
         employee_alias_user = User(
             email='employee@junin.com',
@@ -78,9 +80,35 @@ class TicketEndpointsTest(unittest.TestCase):
         db.session.add(user_municipio_2)
         db.session.commit()
 
+        user_municipio_2.municipio_id = user_municipio_2.id
+        tenant_junin = TenantProfile(
+            slug='tickets-junin',
+            nombre='Municipio Junin',
+            tipo='municipio',
+            municipio_id=admin_user.id,
+        )
+        tenant_otro = TenantProfile(
+            slug='tickets-otro',
+            nombre='Municipio Otro',
+            tipo='municipio',
+            municipio_id=user_municipio_2.id,
+        )
+        db.session.add_all([tenant_junin, tenant_otro])
+        db.session.flush()
+        for tenant_user in (admin_user, admin_pyme_alias_user, employee_alias_user):
+            tenant_user.tenant_id = tenant_junin.id
+            tenant_user.tenant_slug = tenant_junin.slug
+        user_municipio_2.tenant_id = tenant_otro.id
+        user_municipio_2.tenant_slug = tenant_otro.slug
+        ticket1.municipio_id = admin_user.id
+        ticket1.tenant_id = tenant_junin.id
+        ticket2.municipio_id = admin_user.id
+        ticket2.tenant_id = tenant_junin.id
+
         # Ticket de otro municipio
         ticket3 = MunicipioTicket(
-            municipio_id=2,
+            municipio_id=user_municipio_2.id,
+            tenant_id=tenant_otro.id,
             user_id=user_municipio_2.id,
             asunto='Arbol caido',
             categoria='espacios verdes',
@@ -91,6 +119,10 @@ class TicketEndpointsTest(unittest.TestCase):
 
         ticket1.asignado_a_id = employee_alias_user.id
         db.session.commit()
+
+        self.tenant_junin_id = tenant_junin.id
+        self.tenant_junin_slug = tenant_junin.slug
+        self.municipio_junin_id = admin_user.id
 
         # Conversación asociada al ticket1
         db.session.add(Conversacion(session_id='session123', pregunta='Hola', respuesta='Hola, ¿en qué puedo ayudarte?', fuente='chat'))
@@ -210,13 +242,17 @@ class TicketEndpointsTest(unittest.TestCase):
             rol='usuario',
             rubro_id=Rubro.query.filter_by(clave='municipios').first().id,
             tipo_chat='municipio',
+            municipio_id=self.municipio_junin_id,
+            tenant_id=self.tenant_junin_id,
+            tenant_slug=self.tenant_junin_slug,
         )
         cliente.set_password('clientpass')
         db.session.add(cliente)
         db.session.flush()
         db.session.add(
             MunicipioTicket(
-                municipio_id=1,
+                municipio_id=self.municipio_junin_id,
+                tenant_id=self.tenant_junin_id,
                 user_id=cliente.id,
                 asunto='Consulta propia',
                 categoria='consulta',
@@ -377,6 +413,7 @@ class TicketEndpointsTest(unittest.TestCase):
         admin_user = User.query.filter_by(email='admin@junin.com').first()
         ticket = MunicipioTicket(
             municipio_id=admin_user.municipio_id,
+            tenant_id=admin_user.tenant_id,
             user_id=admin_user.id,
             asunto='Sin fecha creada',
             categoria='prueba',

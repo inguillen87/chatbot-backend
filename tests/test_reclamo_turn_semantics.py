@@ -252,6 +252,15 @@ def test_unlabelled_free_text_is_not_silently_used_as_a_correction():
     assert extract_reclamo_corrections("Don Bosco 56, esquina Sarmiento") == {}
 
 
+def test_contact_email_alias_is_not_misread_as_claim_address():
+    decision = classify_reclamo_confirmation_turn(
+        "Mi email correcto es qa.ubicacion@example.com"
+    )
+
+    assert decision.intent is ReclamoTurnIntent.UNKNOWN
+    assert decision.corrections == {}
+
+
 def test_apply_rejects_non_correction_decision():
     with pytest.raises(ValueError, match="reclamo_correction_decision_required"):
         apply_reclamo_corrections(

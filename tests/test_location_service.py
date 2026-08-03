@@ -3,7 +3,14 @@ import unittest
 from unittest.mock import patch
 
 class TestLocationService(unittest.TestCase):
-    @patch.dict(os.environ, {"MUNICIPIO_ID": "default"}, clear=False)
+    @patch.dict(
+        os.environ,
+        {
+            "MUNICIPIO_ID": "default",
+            "GOOGLE_MAPS_ALLOW_NETWORK_IN_TESTS": "1",
+        },
+        clear=False,
+    )
     @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
     @patch("services.location_service.googlemaps.Client")
     def test_geocode_address_restricts_country(self, mock_client, *_):
@@ -28,7 +35,14 @@ class TestLocationService(unittest.TestCase):
         )
         self.assertEqual(result["geometry"]["location"]["lat"], -32.89)
 
-    @patch.dict(os.environ, {"MUNICIPIO_ID": "default"}, clear=False)
+    @patch.dict(
+        os.environ,
+        {
+            "MUNICIPIO_ID": "default",
+            "GOOGLE_MAPS_ALLOW_NETWORK_IN_TESTS": "1",
+        },
+        clear=False,
+    )
     @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
     @patch("services.location_service.googlemaps.Client")
     def test_autocomplete_address_uses_country(self, mock_client, *_):

@@ -5,11 +5,16 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 from urllib.parse import urlencode
 import base64
+import logging
 import os
 import re
 
 import requests
 
+from services.llm_provider_network_policy import (
+    ProviderNetworkDisabledError,
+    require_provider_network,
+)
 from services.provider_platform import is_sender_ready_status
 from services.render_env_sync import sync_render_env_var
 
@@ -22,6 +27,8 @@ EMBEDDED_SIGNUP_VERIFICATION_CONTRACT_VERSION = (
 _META_EMBEDDED_SIGNUP_TYPE = "WA_EMBEDDED_SIGNUP"
 _META_EMBEDDED_SIGNUP_FINISH_EVENTS = frozenset({"FINISH", "FINISH_ONLY_WABA"})
 _META_EMBEDDED_SIGNUP_ID_PATTERN = re.compile(r"^\d{6,32}$")
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -650,6 +657,17 @@ def _twilio_basic_auth(account_sid: str, auth_token: str) -> str:
     return "Basic " + base64.b64encode(raw).decode("ascii")
 
 
+def _require_twilio_provider_network(operation: str) -> None:
+    try:
+        require_provider_network("twilio")
+    except ProviderNetworkDisabledError:
+        logger.info(
+            "Twilio provider request blocked operation=%s reason=test_network_disabled",
+            operation,
+        )
+        raise
+
+
 def _twilio_post_form(
     *,
     url: str,
@@ -658,6 +676,7 @@ def _twilio_post_form(
     data: Mapping[str, Any],
     timeout: int = 20,
 ) -> dict[str, Any]:
+    _require_twilio_provider_network("post_form")
     response = requests.post(
         url,
         data={key: value for key, value in data.items() if value is not None},
@@ -669,7 +688,7 @@ def _twilio_post_form(
     except Exception:
         payload = {"raw": response.text}
     if response.status_code >= 400:
-        raise RuntimeError(f"twilio_api_error status={response.status_code} payload={payload}")
+        raise RuntimeError(f"twilio_api_error_status_{response.status_code}")
     return payload if isinstance(payload, dict) else {"payload": payload}
 
 
@@ -681,6 +700,7 @@ def _twilio_post_json(
     payload: Mapping[str, Any],
     timeout: int = 20,
 ) -> dict[str, Any]:
+    _require_twilio_provider_network("post_json")
     response = requests.post(
         url,
         json={key: value for key, value in payload.items() if value is not None},
@@ -695,7 +715,7 @@ def _twilio_post_json(
     except Exception:
         body = {"raw": response.text}
     if response.status_code >= 400:
-        raise RuntimeError(f"twilio_api_error status={response.status_code} payload={body}")
+        raise RuntimeError(f"twilio_api_error_status_{response.status_code}")
     return body if isinstance(body, dict) else {"payload": body}
 
 
@@ -706,6 +726,7 @@ def _twilio_get_json(
     auth_token: str,
     timeout: int = 20,
 ) -> dict[str, Any]:
+    _require_twilio_provider_network("get_json")
     response = requests.get(
         url,
         headers={"Authorization": _twilio_basic_auth(account_sid, auth_token)},
@@ -716,7 +737,7 @@ def _twilio_get_json(
     except Exception:
         body = {"raw": response.text}
     if response.status_code >= 400:
-        raise RuntimeError(f"twilio_api_error status={response.status_code} payload={body}")
+        raise RuntimeError(f"twilio_api_error_status_{response.status_code}")
     return body if isinstance(body, dict) else {"payload": body}
 
 

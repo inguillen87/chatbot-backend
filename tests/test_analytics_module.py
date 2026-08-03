@@ -11,6 +11,7 @@ from models import (
     MunicipioTicket,
     PymePedido,
     PymeTicket,
+    TenantProfile,
     TicketComentario,
     TicketSatisfaccion,
     User,
@@ -44,6 +45,40 @@ def random_ticket_number() -> int:
     return random.randint(1_000_000, 9_999_999)
 
 
+def _ensure_municipio_tenant(owner_id: int) -> tuple[User, TenantProfile]:
+    owner = _ensure_user(owner_id, 'municipio')
+    tenant = TenantProfile.query.filter_by(municipio_id=owner.id).one_or_none()
+    if tenant is None:
+        tenant = TenantProfile(
+            slug=f'analytics-municipio-{owner.id}',
+            nombre=f'Municipio Analytics {owner.id}',
+            tipo='municipio',
+            municipio_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+    return owner, tenant
+
+
+def _analytics_profile_id(owner_id: int) -> int:
+    return int(_ensure_municipio_tenant(owner_id)[1].id)
+
+
+def _ensure_pyme_tenant(owner_id: int) -> tuple[User, TenantProfile]:
+    owner = _ensure_user(owner_id, 'pyme')
+    tenant = TenantProfile.query.filter_by(pyme_id=owner.id).one_or_none()
+    if tenant is None:
+        tenant = TenantProfile(
+            slug=f'analytics-pyme-{owner.id}',
+            nombre=f'PyME Analytics {owner.id}',
+            tipo='pyme',
+            pyme_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+    return owner, tenant
+
+
 def _create_municipio_ticket(
     tenant_id: int,
     *,
@@ -55,9 +90,10 @@ def _create_municipio_ticket(
     latitud: float = -34.6,
     longitud: float = -58.4,
 ) -> MunicipioTicket:
-    admin = _ensure_user(tenant_id, 'municipio')
+    admin, tenant = _ensure_municipio_tenant(tenant_id)
     ticket = MunicipioTicket(
-        municipio_id=tenant_id,
+        municipio_id=admin.id,
+        tenant_id=tenant.id,
         pregunta='bache en la calle',
         categoria=categoria,
         canal_ingreso=canal,
@@ -96,9 +132,10 @@ def _create_pyme_ticket(
     latitud: float = -34.65,
     longitud: float = -58.45,
 ) -> PymeTicket:
-    admin = _ensure_user(tenant_id, 'pyme')
+    admin, tenant = _ensure_pyme_tenant(tenant_id)
     ticket = PymeTicket(
-        user_id=tenant_id,
+        user_id=admin.id,
+        tenant_id=tenant.id,
         pregunta='Necesito reposición de stock',
         categoria=categoria,
         estado=estado,
@@ -119,7 +156,8 @@ def _create_pyme_ticket(
     )
     db.session.add(comment)
     pedido = PymePedido(
-        pyme_id=tenant_id,
+        pyme_id=admin.id,
+        tenant_id=tenant.id,
         asunto='Pedido mayorista',
         detalles=json.dumps({'nombre': 'Producto X', 'qty': 2, 'precio': 3500}),
         monto_total=7000,
@@ -234,7 +272,6 @@ def test_pyme_endpoints(client):
 def test_operations_overview(client):
     tenant_id = 4
     _create_municipio_ticket(tenant_id)
-    _create_pyme_ticket(tenant_id)
     db.session.commit()
 
     response = client.get(
@@ -244,7 +281,7 @@ def test_operations_overview(client):
     )
     assert response.status_code == 200
     data = response.get_json()
-    assert data['totals']['tickets'] >= 2
+    assert data['totals']['tickets'] >= 1
     assert 'aging' in data['extras']
     assert 'tickets_cerrados' in data['totals']
     assert 'cierre_pct' in data['totals']
@@ -353,10 +390,13 @@ def test_event_ingest_requires_tenant_and_event_name(client):
 
 def test_event_ingest_is_tenant_scoped(client):
     tenant_id = 9
+    profile_id = _analytics_profile_id(tenant_id)
     response = client.post(
         '/analytics/event',
         json={
-            'tenant_id': tenant_id,
+            'tenant_profile_id': profile_id,
+            'owner_tenant_id': tenant_id,
+            'tenant_type': 'municipio',
             'event_name': 'checkout_started',
             'payload': {'step': 'shipping'},
             'channel': 'web_widget',
@@ -365,13 +405,18 @@ def test_event_ingest_is_tenant_scoped(client):
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 202
-    saved = AnalyticsEventV2.query.filter_by(tenant_id=tenant_id, event_name='checkout_started').first()
+    saved = AnalyticsEventV2.query.filter_by(tenant_id=profile_id, event_name='checkout_started').first()
     assert saved is not None
     assert saved.metadata_payload.get('step') == 'shipping'
 
     forbidden = client.post(
         '/analytics/event',
-        json={'tenant_id': tenant_id, 'event_name': 'page_view'},
+        json={
+            'tenant_profile_id': profile_id,
+            'owner_tenant_id': tenant_id,
+            'tenant_type': 'municipio',
+            'event_name': 'page_view',
+        },
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '999'},
     )
     assert forbidden.status_code == 202
@@ -380,7 +425,21 @@ def test_event_ingest_is_tenant_scoped(client):
 
 def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     tenant_id = 10
-    _create_municipio_ticket(tenant_id)
+    ticket = _create_municipio_ticket(tenant_id)
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=ticket.tenant_id,
+            event_name='ticket_created',
+            tenant_type='municipio',
+            channel='whatsapp',
+            ts=datetime.utcnow(),
+            metadata_payload={
+                'categoria': 'seguridad',
+                'barrio': 'centro',
+                'distrito': 'norte',
+            },
+        )
+    )
     db.session.commit()
 
     overview = client.get(
@@ -411,6 +470,7 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     pdf_text = pdf_export.data.decode('latin-1', errors='ignore')
     assert 'Reporte de analytics' in pdf_text
     assert 'Segmentacion principal' in pdf_text
+    assert r'seguridad \(1\)' in pdf_text
     assert 'Hotspots' in pdf_text
     xref_index = pdf_export.data.find(b"xref\n")
     assert xref_index > 0
@@ -430,10 +490,11 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
 
 def test_admin_analytics_heatmap_returns_temporal_matrix(client):
     tenant_id = 11
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='page_view',
             tenant_type='pyme',
             ts=now,
@@ -466,14 +527,43 @@ def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
     assert response.status_code == 400
 
 
+def test_admin_analytics_whatsapp_funnel_reads_profile_scoped_events(client):
+    owner_id = 217
+    profile_id = _analytics_profile_id(owner_id)
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=profile_id,
+            event_name='whatsapp_portal_menu_opened',
+            tenant_type='municipio',
+            channel='whatsapp',
+            session_id='wa-profile-scoped-session',
+            ts=datetime.utcnow(),
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/whatsapp-funnel',
+        query_string={'tenant_id': owner_id, 'scope': 'municipio'},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('totals', {}).get('events') == 1
+    assert (data.get('stages') or [])[0].get('event_name') == 'whatsapp_portal_menu_opened'
+    assert (data.get('stages') or [])[0].get('unique_sessions') == 1
+
+
 
 
 def test_admin_analytics_heatmap_segments_from_event_metadata(client):
     tenant_id = 211
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='ticket_created',
             tenant_type='municipio',
             channel='web_widget',
@@ -506,10 +596,11 @@ def test_admin_analytics_heatmap_segments_from_event_metadata(client):
 
 def test_admin_analytics_heatmap_applies_segment_filters(client):
     tenant_id = 212
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='ticket_created',
             tenant_type='municipio',
             channel='web_widget',
@@ -519,7 +610,7 @@ def test_admin_analytics_heatmap_applies_segment_filters(client):
     )
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='ticket_created',
             tenant_type='municipio',
             channel='whatsapp',
@@ -545,10 +636,11 @@ def test_admin_analytics_heatmap_applies_segment_filters(client):
 
 def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(client):
     tenant_id = 213
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='encuesta_voto',
             tenant_type='municipio',
             channel='web_widget',
@@ -563,7 +655,7 @@ def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(c
     )
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='encuesta_voto',
             tenant_type='municipio',
             channel='web_widget',
@@ -607,10 +699,11 @@ def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(c
 
 def test_admin_analytics_heatmap_honors_maplibre_style_url_from_config(client):
     tenant_id = 216
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='encuesta_voto',
             tenant_type='municipio',
             channel='web_widget',
@@ -640,10 +733,11 @@ def test_admin_analytics_heatmap_honors_maplibre_style_url_from_config(client):
 
 def test_admin_analytics_heatmap_uses_persisted_lat_lng_for_geo_layers(client):
     tenant_id = 215
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='ticket_created',
             tenant_type='municipio',
             channel='web_widget',
@@ -677,10 +771,11 @@ def test_admin_analytics_heatmap_uses_persisted_lat_lng_for_geo_layers(client):
 
 def test_admin_analytics_heatmap_supports_genero_alias_and_age_bucket(client):
     tenant_id = 214
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='encuesta_voto',
             tenant_type='municipio',
             channel='web_widget',
@@ -715,10 +810,10 @@ def test_admin_analytics_heatmap_supports_genero_alias_and_age_bucket(client):
 
 def test_api_alias_admin_analytics_overview_and_heatmap(client):
     tenant_id = 12
-    _create_municipio_ticket(tenant_id)
+    ticket = _create_municipio_ticket(tenant_id)
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=ticket.tenant_id,
             event_name='alias_view',
             tenant_type='municipio',
             ts=datetime.utcnow(),
@@ -743,18 +838,11 @@ def test_api_alias_admin_analytics_overview_and_heatmap(client):
 
 def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     tenant_id = 21
-    _create_municipio_ticket(tenant_id)
+    ticket = _create_municipio_ticket(tenant_id)
     db.session.flush()
 
-    from models import TenantProfile
-
-    tenant = TenantProfile(
-        slug='tenant-analytics-slug',
-        nombre='Tenant Analytics Slug',
-        tipo='municipio',
-        municipio_id=tenant_id,
-    )
-    db.session.add(tenant)
+    tenant = db.session.get(TenantProfile, ticket.tenant_id)
+    tenant.slug = 'tenant-analytics-slug'
     db.session.commit()
 
     overview = client.get(
@@ -770,10 +858,11 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
 
 def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     tenant_id = 333
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='realtime_business_action_executed',
             tenant_type='municipio',
             channel='realtime_voice',
@@ -790,7 +879,7 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
         )
     )
     encuesta = EncEncuesta(
-        tenant_id=tenant_id,
+        tenant_id=profile_id,
         slug=f"encuesta-{tenant_id}",
         titulo='Sondeo Express',
         estado='publicada',
@@ -801,7 +890,7 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     db.session.add(
         EncRespuesta(
             encuesta_id=encuesta.id,
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             huella_unica=f"fingerprint-{tenant_id}",
             canal='web',
         )
@@ -862,10 +951,11 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
 
 def test_admin_analytics_realtime_hub_applies_segment_filters_to_geo_layers(client):
     tenant_id = 339
+    profile_id = _analytics_profile_id(tenant_id)
     now = datetime.utcnow()
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='crear_reclamo',
             tenant_type='municipio',
             channel='voice',
@@ -884,7 +974,7 @@ def test_admin_analytics_realtime_hub_applies_segment_filters_to_geo_layers(clie
     )
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='crear_reclamo',
             tenant_type='municipio',
             channel='web',
@@ -939,9 +1029,10 @@ def test_admin_analytics_realtime_hub_applies_segment_filters_to_geo_layers(clie
 
 def test_api_alias_admin_analytics_realtime_hub_available(client):
     tenant_id = 334
+    profile_id = _analytics_profile_id(tenant_id)
     db.session.add(
         AnalyticsEventV2(
-            tenant_id=tenant_id,
+            tenant_id=profile_id,
             event_name='cluster_click',
             tenant_type='municipio',
             channel='web',
@@ -1082,8 +1173,6 @@ def test_event_ingest_accepts_query_tenant_slug(client):
     tenant_id = 34
     _ensure_user(tenant_id, 'municipio')
 
-    from models import TenantProfile
-
     tenant = TenantProfile(
         slug='junin-1',
         nombre='Junín',
@@ -1108,11 +1197,16 @@ def test_event_ingest_accepts_query_tenant_slug(client):
 
 def test_api_alias_analytics_event_maps_to_ingestor(client):
     tenant_id = 35
-    _ensure_user(tenant_id, 'municipio')
+    profile_id = _analytics_profile_id(tenant_id)
 
     response = client.post(
         '/api/analytics/event',
-        json={'tenant_id': tenant_id, 'event_name': 'dashboard_open'},
+        json={
+            'tenant_profile_id': profile_id,
+            'owner_tenant_id': tenant_id,
+            'tenant_type': 'municipio',
+            'event_name': 'dashboard_open',
+        },
         headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
     )
 
@@ -1121,10 +1215,13 @@ def test_api_alias_analytics_event_maps_to_ingestor(client):
     assert payload.get('ok') is True
     assert payload.get('request_id')
     assert response.headers.get('X-Request-Id') == payload.get('request_id')
-    assert AnalyticsEventV2.query.filter_by(tenant_id=tenant_id, event_name='dashboard_open').first() is not None
+    assert AnalyticsEventV2.query.filter_by(tenant_id=profile_id, event_name='dashboard_open').first() is not None
 
 
 def test_event_ingest_does_not_hide_unexpected_access_errors(client, monkeypatch):
+    tenant_id = 8
+    profile_id = _analytics_profile_id(tenant_id)
+
     def _boom(*_args, **_kwargs):
         raise RuntimeError("boom")
 
@@ -1133,13 +1230,18 @@ def test_event_ingest_does_not_hide_unexpected_access_errors(client, monkeypatch
     with pytest.raises(RuntimeError):
         client.post(
             '/analytics/event',
-            json={'tenant_id': 8, 'event_name': 'page_view'},
-            headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '8'},
+            json={
+                'tenant_profile_id': profile_id,
+                'owner_tenant_id': tenant_id,
+                'tenant_type': 'municipio',
+                'event_name': 'page_view',
+            },
+            headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
         )
 
 
-def test_api_alias_analytics_event_honors_feature_gate(client):
-    client.application.config["ANALYTICS_ENABLED"] = False
+def test_api_alias_analytics_event_honors_feature_gate(client, monkeypatch):
+    monkeypatch.setitem(client.application.config, "ANALYTICS_ENABLED", False)
 
     response = client.post(
         '/api/analytics/event',
@@ -1187,3 +1289,92 @@ def test_admin_analytics_realtime_hub_counts_live_chat_comments_by_tenant_ticket
     assert response.status_code == 200
     data = response.get_json()
     assert data.get('totals', {}).get('live_chat_comments') >= 1
+
+
+def test_admin_analytics_realtime_hub_never_treats_owner_as_foreign_profile_pk(client):
+    owner_id = 340
+    foreign_owner_id = 341
+    _ensure_user(owner_id, 'municipio')
+    foreign_owner = _ensure_user(foreign_owner_id, 'municipio')
+    foreign_tenant = TenantProfile(
+        id=owner_id,
+        slug='analytics-foreign-profile-collision',
+        nombre='Foreign profile collision',
+        tipo='municipio',
+        municipio_id=foreign_owner.id,
+    )
+    db.session.add(foreign_tenant)
+    db.session.flush()
+    foreign_ticket = _create_municipio_ticket(foreign_owner_id)
+    legacy_unscoped_pyme_ticket = _create_pyme_ticket(owner_id, fecha=datetime.utcnow())
+    legacy_unscoped_pyme_ticket.tenant_id = None
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=foreign_tenant.id,
+            event_name='foreign_tenant_event',
+            tenant_type='municipio',
+            channel='web',
+            ts=datetime.utcnow(),
+        )
+    )
+    db.session.commit()
+
+    response = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': owner_id, 'scope': 'municipio', 'window_minutes': 60},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data.get('totals', {}).get('events') == 0
+    assert data.get('totals', {}).get('live_chat_comments') == 0
+    assert foreign_ticket.tenant_id == foreign_tenant.id
+    assert legacy_unscoped_pyme_ticket.tenant_id is None
+
+
+def test_admin_analytics_realtime_hub_requires_exact_profile_for_ambiguous_owner(client):
+    owner_id = 342
+    owner = _ensure_user(owner_id, 'municipio')
+    tenants = [
+        TenantProfile(
+            slug=f'analytics-ambiguous-{suffix}',
+            nombre=f'Ambiguous tenant {suffix}',
+            tipo='municipio',
+            municipio_id=owner.id,
+        )
+        for suffix in ('one', 'two')
+    ]
+    db.session.add_all(tenants)
+    db.session.flush()
+    db.session.add(
+        AnalyticsEventV2(
+            tenant_id=tenants[0].id,
+            event_name='selected_tenant_event',
+            tenant_type='municipio',
+            channel='web',
+            ts=datetime.utcnow(),
+        )
+    )
+    db.session.commit()
+
+    raw_owner = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={'tenant_id': owner_id, 'scope': 'municipio', 'window_minutes': 60},
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+    )
+    exact_profile = client.get(
+        '/admin/analytics/realtime-hub',
+        query_string={
+            'tenant_id': owner_id,
+            'tenant_profile_id': tenants[0].id,
+            'scope': 'municipio',
+            'window_minutes': 60,
+        },
+        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+    )
+
+    assert raw_owner.status_code == 200
+    assert raw_owner.get_json().get('totals', {}).get('events') == 0
+    assert exact_profile.status_code == 200
+    assert exact_profile.get_json().get('totals', {}).get('events') == 1

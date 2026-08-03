@@ -19,6 +19,7 @@ def test_ollama_config_requires_explicit_enable(monkeypatch):
 
 def test_llamar_ollama_parses_json_and_sets_target(monkeypatch):
     monkeypatch.setenv("OLLAMA_ENABLED", "true")
+    monkeypatch.setenv("OLLAMA_ALLOW_NETWORK_IN_TESTS", "1")
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     monkeypatch.setenv("OLLAMA_CHAT_MODEL", "glm-test")
 

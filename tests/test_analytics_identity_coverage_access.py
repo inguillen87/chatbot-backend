@@ -58,6 +58,20 @@ class AnalyticsIdentityCoverageAccessTestCase(unittest.TestCase):
         self.app.register_blueprint(analytics_bp)
         self.client = self.app.test_client()
         self.filters = SimpleNamespace(tenant_id="10", date_from=None, date_to=None, scope="municipio")
+        self.tenant_resolution = {
+            "tenant_profile_id": 77,
+            "owner_tenant_id": 10,
+            "tenant_slug": "junin-1",
+            "tenant_type": "municipio",
+            "scope": "municipio",
+            "resolution_sources": ["tenant_id_owner"],
+        }
+        self.tenant_resolver = patch(
+            "routes.analytics._resolve_identity_event_tenant_id",
+            return_value=(77, self.tenant_resolution),
+        )
+        self.tenant_resolver.start()
+        self.addCleanup(self.tenant_resolver.stop)
 
     def test_identity_coverage_uses_read_capability_for_regular_reads(self):
         with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), patch(
@@ -149,34 +163,22 @@ class AnalyticsIdentityCoverageAccessTestCase(unittest.TestCase):
         self.assertEqual(response.headers.get("X-Request-Id"), "req-coverage-1")
 
     def test_identity_coverage_resolves_slug_to_event_store_tenant_id(self):
-        class _FakeTenant:
-            id = 77
-            slug = "junin-1"
-            municipio_id = 10
-            pyme_id = None
-
-        class _FakeTenantQuery:
-            def filter(self, *_args, **_kwargs):
-                return self
-
-            def first(self):
-                return _FakeTenant()
-
-        class _FakeSlug:
-            def ilike(self, value):
-                return value
-
-        class _FakeTenantProfile:
-            slug = _FakeSlug()
-            query = _FakeTenantQuery()
-
         with self.app.test_request_context("/analytics/identity/coverage?tenant_slug=junin-1"):
-            with patch("routes.analytics.TenantProfile", _FakeTenantProfile):
+            with patch(
+                "routes.analytics._resolve_authoritative_analytics_tenant",
+                return_value=(77, self.tenant_resolution),
+            ) as mock_resolve:
                 tenant_id, resolution = _resolve_identity_event_tenant_id(self.filters)
 
         self.assertEqual(tenant_id, 77)
         self.assertEqual(resolution["tenant_slug"], "junin-1")
         self.assertEqual(resolution["owner_tenant_id"], 10)
+        mock_resolve.assert_called_once_with(
+            tenant_profile_id=None,
+            tenant_slug="junin-1",
+            tenant_id="10",
+            scope="municipio",
+        )
 
     def test_identity_coverage_degrades_when_event_query_fails(self):
         with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), patch(

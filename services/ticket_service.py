@@ -23,6 +23,10 @@ from models import (
     db,
 )
 from utils.ticket_utils import normalize_category
+from services.employee_ticket_access import (
+    apply_employee_ticket_category_scope,
+    ticket_assignee_is_compatible,
+)
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -313,35 +317,12 @@ class ServicioTickets:
             self._municipal_employee_scope_filter(ticket),
         )
 
-        categoria_normalizada = (ticket.categoria or "").strip().lower()
         candidatos = query.order_by(User.id.asc()).all()
-
-        if not categoria_normalizada:
-            return candidatos
-
-        filtrados = []
-        for empleado in candidatos:
-            categorias_emp = [
-                c.strip().lower()
-                for c in (getattr(empleado, "ticket_categorias", None) or "").split(",")
-                if c.strip()
-            ]
-            categorias_emp.extend(
-                str(getattr(categoria, "nombre", "")).strip().lower()
-                for categoria in (getattr(empleado, "categorias_ticket", None) or [])
-                if str(getattr(categoria, "nombre", "")).strip()
-            )
-            categorias_emp.extend(
-                str(getattr(categoria, "nombre", "")).strip().lower()
-                for categoria in (getattr(empleado, "categorias", None) or [])
-                if str(getattr(categoria, "nombre", "")).strip()
-            )
-
-            categorias_emp = list(dict.fromkeys(categorias_emp))
-            if not categorias_emp or categoria_normalizada in categorias_emp:
-                filtrados.append(empleado)
-
-        return filtrados
+        return [
+            empleado
+            for empleado in candidatos
+            if ticket_assignee_is_compatible(empleado, ticket)
+        ]
 
     def _calcular_carga_empleado_municipal(
         self,
@@ -384,6 +365,8 @@ class ServicioTickets:
             ).first()
             if not empleado:
                 raise ValueError("El agente seleccionado no pertenece a este municipio.")
+            if not ticket_assignee_is_compatible(empleado, ticket):
+                raise ValueError("assignee_category_scope_mismatch")
         else:
             candidatos = self._empleados_para_ticket_municipal(ticket)
             if not candidatos or (not auto and not self.auto_assign_enabled):
@@ -447,21 +430,11 @@ class ServicioTickets:
             .all()
         )
 
-        categoria_normalizada = (ticket.categoria or "").strip().lower()
-        if not categoria_normalizada:
-            return candidatos
-
-        filtrados = []
-        for empleado in candidatos:
-            categorias_emp = [
-                c.strip().lower()
-                for c in (empleado.ticket_categorias or "").split(",")
-                if c.strip()
-            ]
-            if not categorias_emp or categoria_normalizada in categorias_emp:
-                filtrados.append(empleado)
-
-        return filtrados
+        return [
+            empleado
+            for empleado in candidatos
+            if ticket_assignee_is_compatible(empleado, ticket)
+        ]
 
     def _calcular_carga_empleado_pyme(self, empleado: User, rubro_id: int) -> int:
         return (
@@ -496,6 +469,8 @@ class ServicioTickets:
                 User.rol.in_(["empleado", "admin"]),
                 self._pyme_employee_scope_filter(ticket, owner_id),
             ).first()
+            if empleado and not ticket_assignee_is_compatible(empleado, ticket):
+                raise ValueError("assignee_category_scope_mismatch")
         else:
             candidatos = self._empleados_para_ticket_pyme(ticket, actor_id)
             if not candidatos or (not auto and not self.auto_assign_enabled):
@@ -1344,6 +1319,7 @@ class ServicioTickets:
         self,
         *,
         municipio_id: int,
+        actor: User | None = None,
     ) -> list[dict]:
         """
         Devuelve una lista de coordenadas de todos los tickets para un municipio
@@ -1353,8 +1329,13 @@ class ServicioTickets:
             resolution = resolve_unique_tenant_for_owner(municipio_id)
             if resolution.status != "unique" or resolution.tenant is None:
                 return []
+            query = apply_employee_ticket_category_scope(
+                scoped_municipio_ticket_query(resolution.tenant),
+                actor,
+                MunicipioTicket,
+            )
             tickets = (
-                scoped_municipio_ticket_query(resolution.tenant)
+                query
                 .filter(MunicipioTicket.latitud.isnot(None), MunicipioTicket.longitud.isnot(None))
                 .all()
             )
@@ -1370,6 +1351,7 @@ class ServicioTickets:
         self,
         tipo_ticket: Literal["municipio", "pyme"],
         *,
+        actor: User | None = None,
         municipio_id: int | None = None,
         rubro_id: int | None = None,
         tenant_id: int | None = None,
@@ -1404,6 +1386,7 @@ class ServicioTickets:
             )
 
             query = Model.query.filter(Model.latitud.isnot(None), Model.longitud.isnot(None))
+            query = apply_employee_ticket_category_scope(query, actor, Model)
             if tipo_ticket == "municipio":
                 tenant = None
                 if tenant_id is not None:
@@ -1808,114 +1791,22 @@ class ServicioTickets:
         *,
         tenant_id: int | None = None,
     ) -> int:
-        """Asigna a ``nuevo_user_id`` todos los tickets y comentarios
-        vinculados al ``anon_id`` proporcionado."""
-        if not anon_id or not nuevo_user_id:
-            logger.warning("migrar_tickets_de_anonimo llamado sin parametros validos")
-            return 0
+        """Atomically adopt anonymous records inside one proven tenant.
 
-        tenant = None
-        if tenant_id is not None:
-            try:
-                tenant = db.session.get(TenantProfile, int(tenant_id))
-            except (TypeError, ValueError):
-                tenant = None
-        else:
-            user = db.session.get(User, nuevo_user_id)
-            explicit_tenant_id = getattr(user, "tenant_id", None) if user is not None else None
-            if explicit_tenant_id:
-                tenant = db.session.get(TenantProfile, explicit_tenant_id)
-            elif user is not None:
-                owner_ids = []
-                for raw_owner_id in (
-                    getattr(user, "municipio_id", None),
-                    getattr(user, "pyme_id", None),
-                    getattr(user, "empresa_id", None),
-                ):
-                    try:
-                        owner_id = int(raw_owner_id)
-                    except (TypeError, ValueError):
-                        continue
-                    if owner_id > 0 and owner_id not in owner_ids:
-                        owner_ids.append(owner_id)
-                candidates = set()
-                for owner_id in owner_ids:
-                    resolution = resolve_unique_tenant_for_owner(owner_id)
-                    if resolution.status != "unique" or resolution.tenant is None:
-                        candidates.clear()
-                        break
-                    candidates.add(int(resolution.tenant.id))
-                if len(candidates) == 1:
-                    tenant = db.session.get(TenantProfile, candidates.pop())
+        Kept as a compatibility facade for legacy callers.  The authoritative
+        implementation also scopes chat, survey and commerce records and uses
+        compare-and-set ownership predicates so a later request cannot steal a
+        row already claimed by another account.
+        """
 
-        if tenant is None:
-            logger.warning(
-                "Anonymous ticket migration skipped: tenant scope unavailable user_id=%s",
-                nuevo_user_id,
-            )
-            return 0
+        from services.user_merge import merge_anon_into_user
 
-        try:
-            municipio_ids = [
-                row[0]
-                for row in scoped_municipio_ticket_query(tenant)
-                .filter(MunicipioTicket.anon_id == anon_id)
-                .with_entities(MunicipioTicket.id)
-                .all()
-            ]
-            pyme_ids = [
-                row[0]
-                for row in PymeTicket.query.filter(
-                    PymeTicket.tenant_id == tenant.id,
-                    PymeTicket.anon_id == anon_id,
-                )
-                .with_entities(PymeTicket.id)
-                .all()
-            ]
-            muni_count = (
-                MunicipioTicket.query.filter(MunicipioTicket.id.in_(municipio_ids))
-                .update(
-                    {"user_id": nuevo_user_id, "anon_id": None},
-                    synchronize_session=False,
-                )
-            )
-            pyme_count = (
-                PymeTicket.query.filter(PymeTicket.id.in_(pyme_ids))
-                .update(
-                    {"user_id": nuevo_user_id, "anon_id": None},
-                    synchronize_session=False,
-                )
-            )
-            comentario_count = (
-                TicketComentario.query.filter(
-                    TicketComentario.anon_id == anon_id,
-                    or_(
-                        TicketComentario.municipio_ticket_id.in_(municipio_ids),
-                        TicketComentario.pyme_ticket_id.in_(pyme_ids),
-                    ),
-                )
-                .update(
-                    {"user_id": nuevo_user_id, "anon_id": None},
-                    synchronize_session=False,
-                )
-            )
-            # db.session.commit() # <<< ELIMINADO
-            total = (muni_count or 0) + (pyme_count or 0) + (comentario_count or 0)
-            logger.info(
-                "Tickets migrados de anon_id %s a user_id %s: %s",
-                anon_id,
-                nuevo_user_id,
-                total,
-            )
-            return total
-        except SQLAlchemyError as e:
-            db.session.rollback()
-            logger.error(
-                "Error de DB al migrar tickets de anonimo %s: %s",
-                anon_id,
-                e,
-                exc_info=True,
-            )
-            return 0
+        user = db.session.get(User, nuevo_user_id) if nuevo_user_id else None
+        stats = merge_anon_into_user(
+            anon_id,
+            user,
+            tenant_id=tenant_id,
+        )
+        return int(stats.get("tickets", 0)) + int(stats.get("ticket_comentarios", 0))
 
 servicio_tickets = ServicioTickets()

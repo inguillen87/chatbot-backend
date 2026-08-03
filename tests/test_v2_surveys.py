@@ -27,6 +27,7 @@ from services.demo_surveys import (
     build_demo_survey_response_ack,
     build_demo_surveys_votings_contract,
 )
+from services.encuestas_service import EncuestaError, get_public_encuesta
 
 
 class V2SurveysTestConfig(Config):
@@ -563,8 +564,13 @@ class V2SurveysApiTest(unittest.TestCase):
             json={**answer, "userId": forged_target.id},
             headers=self._auth(voter),
         )
-        self.assertEqual(legacy_duplicate.status_code, 200, legacy_duplicate.get_json())
-        self.assertTrue(legacy_duplicate.get_json().get("duplicate"))
+        self.assertEqual(legacy_duplicate.status_code, 409, legacy_duplicate.get_json())
+        self.assertEqual(
+            legacy_duplicate.get_json().get("reason_code"),
+            "survey_response_duplicate",
+        )
+        self.assertNotIn("response_id", legacy_duplicate.get_json())
+        self.assertNotIn("receipt", legacy_duplicate.get_json())
 
         duplicate = self._post_public_response(
             f"/api/v2/public/surveys/{token}/respond",
@@ -1712,6 +1718,161 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(EncRespuesta.query.count(), 0)
         self.assertEqual(SurveyResponseReceipt.query.count(), 0)
 
+    def test_public_survey_reads_fail_closed_for_explicit_wrong_tenant(self):
+        _, _, token, _, _ = self._create_published_answer_context(self._create_payload())
+
+        wrong_tenant_paths = (
+            f"/api/v2/public/surveys/{token}?tenant_slug={self.tenant_2.slug}",
+            f"/api/v2/public/surveys/{token}/live-results?tenant_slug={self.tenant_2.slug}&include_heatmap=0",
+            f"/api/public/encuestas/v1/{token}?tenant_slug={self.tenant_2.slug}",
+            f"/api/public/encuestas/v1/{token}/live-results?tenant_slug={self.tenant_2.slug}&include_heatmap=0",
+            f"/api/pwa/public/surveys/{token}?tenant={self.tenant_2.slug}",
+        )
+        for path in wrong_tenant_paths:
+            with self.subTest(path=path):
+                denied = self.client.get(path)
+                self.assertEqual(denied.status_code, 404, denied.get_json())
+                self.assertEqual(denied.get_json().get("reason_code"), "survey_not_found")
+                self.assertNotIn("preguntas", denied.get_json())
+                self.assertNotIn("total_respuestas", denied.get_json())
+
+        for query in ("", f"?tenant_slug={self.tenant_1.slug}"):
+            with self.subTest(query=query or "without_tenant"):
+                public_response = self.client.get(
+                    f"/api/v2/public/surveys/{token}{query}"
+                )
+                self.assertEqual(
+                    public_response.status_code,
+                    200,
+                    public_response.get_json(),
+                )
+
+                separator = "&" if query else "?"
+                live_response = self.client.get(
+                    f"/api/v2/public/surveys/{token}/live-results"
+                    f"{query}{separator}include_heatmap=0"
+                )
+                self.assertEqual(live_response.status_code, 200, live_response.get_json())
+
+        unknown_tenant = self.client.get(
+            f"/api/v2/public/surveys/{token}?tenant_slug=tenant-that-does-not-exist",
+            # A valid bearer tenant must not replace an explicitly invalid
+            # tenant selector on a public read.
+            headers=self._auth(self.admin_1),
+        )
+        self.assertEqual(unknown_tenant.status_code, 404, unknown_tenant.get_json())
+
+        for path in (
+            f"/api/v2/public/surveys/{token}?tenant_slug=%20%20%20",
+            f"/api/public/encuestas/v1/{token}?tenant_slug=%20%20%20",
+        ):
+            with self.subTest(empty_selector_path=path):
+                empty_selector = self.client.get(path, headers=self._auth(self.admin_1))
+                self.assertEqual(
+                    empty_selector.status_code,
+                    404,
+                    empty_selector.get_json(),
+                )
+                self.assertNotIn("preguntas", empty_selector.get_json())
+
+        conflicting_tenant = self.client.get(
+            f"/api/v2/public/surveys/{token}?tenant_slug={self.tenant_2.slug}",
+            headers={"X-Tenant-Slug": self.tenant_1.slug},
+        )
+        self.assertEqual(
+            conflicting_tenant.status_code,
+            400,
+            conflicting_tenant.get_json(),
+        )
+        self.assertEqual(
+            conflicting_tenant.get_json().get("reason_code"),
+            "tenant_selector_mismatch",
+        )
+
+    def test_portal_vote_cannot_use_another_tenants_public_token(self):
+        _, _, token, _, answer = self._create_published_answer_context(
+            self._create_payload()
+        )
+        submission_id = "portal-cross-tenant-survey-0001"
+
+        denied = self.client.post(
+            f"/api/v1/portal/{self.tenant_2.slug}/surveys/{token}/responses",
+            json={
+                **answer,
+                "anon_id": "portal-cross-tenant-voter",
+                "submission_id": submission_id,
+            },
+            headers={
+                **self._auth(self.admin_2),
+                "Idempotency-Key": submission_id,
+                "X-Anon-Id": "portal-cross-tenant-voter",
+            },
+        )
+
+        self.assertEqual(denied.status_code, 404, denied.get_json())
+        self.assertEqual(denied.get_json().get("reason_code"), "survey_not_found")
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        self.assertEqual(SurveyResponseReceipt.query.count(), 0)
+
+    def test_public_survey_resolver_rejects_invalid_or_unmatched_tenant_id(self):
+        _, _, token, _, _ = self._create_published_answer_context(self._create_payload())
+
+        self.assertEqual(get_public_encuesta(token).tenant_id, self.tenant_1.id)
+        self.assertEqual(
+            get_public_encuesta(
+                token,
+                preferred_tenant_id=self.tenant_1.id,
+                require_tenant_match=True,
+            ).tenant_id,
+            self.tenant_1.id,
+        )
+        short_token = token.rsplit("-", 1)[-1]
+        self.assertEqual(get_public_encuesta(short_token).tenant_id, self.tenant_1.id)
+        self.assertEqual(
+            get_public_encuesta(
+                short_token,
+                preferred_tenant_id=self.tenant_1.id,
+                require_tenant_match=True,
+            ).tenant_id,
+            self.tenant_1.id,
+        )
+
+        for invalid_tenant_id in (
+            None,
+            True,
+            False,
+            0,
+            -1,
+            " ",
+            self.tenant_2.id,
+            max(self.tenant_1.id, self.tenant_2.id) + 10_000,
+            "not-a-tenant-id",
+        ):
+            with self.subTest(preferred_tenant_id=invalid_tenant_id):
+                with self.assertRaises(EncuestaError) as raised:
+                    get_public_encuesta(
+                        token,
+                        preferred_tenant_id=invalid_tenant_id,
+                        require_tenant_match=True,
+                    )
+                self.assertEqual(raised.exception.status_code, 404)
+                self.assertEqual(
+                    raised.exception.payload.get("reason_code"),
+                    "survey_not_found",
+                )
+
+        with self.assertRaises(EncuestaError) as short_token_denied:
+            get_public_encuesta(
+                short_token,
+                preferred_tenant_id=self.tenant_2.id,
+                require_tenant_match=True,
+            )
+        self.assertEqual(short_token_denied.exception.status_code, 404)
+        self.assertEqual(
+            short_token_denied.exception.payload.get("reason_code"),
+            "survey_not_found",
+        )
+
     def test_public_survey_replay_cannot_cross_tenant_or_disclose_receipt(self):
         self.app.config["CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE"] = "false"
         _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
@@ -1774,6 +1935,7 @@ class V2SurveysApiTest(unittest.TestCase):
             "/api/public/encuestas/v1/example/responder",
             "/public/encuestas/v1/example/respuestas",
             f"/api/pwa/public/surveys/example/respond?tenant={self.tenant_1.slug}",
+            f"/api/v1/portal/{self.tenant_1.slug}/surveys/example/responses",
         )
         for path in paths:
             with self.subTest(path=path):
@@ -1783,13 +1945,15 @@ class V2SurveysApiTest(unittest.TestCase):
                         "Origin": "http://localhost:8080",
                         "Access-Control-Request-Method": "POST",
                         "Access-Control-Request-Headers": (
-                            "X-Turnstile-Token, Idempotency-Key, Content-Type"
+                            "X-Turnstile-Token, X-Survey-Eligibility-Credential, "
+                            "Idempotency-Key, Content-Type"
                         ),
                     },
                 )
                 self.assertIn(response.status_code, {200, 204}, response.get_data(as_text=True))
                 allowed = response.headers.get("Access-Control-Allow-Headers", "").lower()
                 self.assertIn("x-turnstile-token", allowed)
+                self.assertIn("x-survey-eligibility-credential", allowed)
                 self.assertIn("idempotency-key", allowed)
 
     def test_committed_receipt_replays_after_close_without_reopening_intake(self):

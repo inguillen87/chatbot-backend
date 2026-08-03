@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from flask import current_app, g, jsonify, make_response, request
 from flask_login import current_user
 import jwt
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -102,6 +103,36 @@ _PANEL_COOKIELESS_PATHS: Set[str] = {
     "/api/pwa/tenant-info",
 }
 
+# Authentication body fields are a bounded compatibility contract for the
+# public/widget surfaces that historically accepted them. Protected domain and
+# control-plane routes must authenticate without materializing their payload.
+_AUTH_BODY_TOKEN_PATHS: Set[str] = {
+    "/auth/perfil",
+    "/perfil",
+    "/auth/profile",
+    "/profile",
+    "/api/perfil",
+    "/api/profile",
+    "/auth/widget-token",
+    "/api/auth/widget-token",
+    "/auth/widget-refresh",
+    "/api/auth/widget-refresh",
+}
+
+_AUTH_BODY_TOKEN_PREFIXES: Tuple[str, ...] = (
+    "/ask",
+    "/api/ask",
+    "/public",
+    "/api/public",
+    "/api/v2/public",
+    "/widget",
+    "/api/widget",
+    "/auth/widget",
+    "/api/auth/widget",
+    "/api/pwa/public",
+    "/api/pwa/kits",
+)
+
 _DEMO_TOKEN_WARNED: Set[str] = set()
 
 _DEMO_ALLOWED_PREFIXES: Tuple[str, ...] = (
@@ -131,6 +162,11 @@ def _normalize_path(path: Optional[str]) -> str:
     return normalized
 
 
+def _path_is_or_descends_from(path: str, prefix: str) -> bool:
+    normalized_prefix = _normalize_path(prefix)
+    return path == normalized_prefix or path.startswith(f"{normalized_prefix}/")
+
+
 def _is_jwt_token(token: Optional[str]) -> bool:
     """Return True if the token string looks like a JWT."""
 
@@ -152,7 +188,7 @@ def _widget_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
         return True
 
     for prefix in _WIDGET_ALLOWED_PREFIXES:
-        if normalized_path.startswith(prefix.rstrip("/")):
+        if _path_is_or_descends_from(normalized_path, prefix):
             return True
 
     if method == "GET" and normalized_path in _WIDGET_ALLOWED_GET_PATHS:
@@ -174,13 +210,29 @@ def _panel_cookie_allowed(path: Optional[str]) -> bool:
     )
 
 
+def _auth_body_token_allowed(path: Optional[str]) -> bool:
+    """Return True only for documented legacy token-in-body surfaces."""
+
+    normalized_path = _normalize_path(path).lower()
+    if normalized_path in _AUTH_BODY_TOKEN_PATHS:
+        return True
+    return any(
+        normalized_path == prefix
+        or normalized_path.startswith(f"{prefix}/")
+        for prefix in _AUTH_BODY_TOKEN_PREFIXES
+    )
+
+
 def _demo_session_allowed(path: Optional[str], method: Optional[str]) -> bool:
     """Restrict demo JWTs to guided public/widget experiences."""
 
     normalized_path = _normalize_path(path)
     if _widget_session_allowed(normalized_path, method):
         return True
-    return any(normalized_path.startswith(prefix) for prefix in _DEMO_ALLOWED_PREFIXES)
+    return any(
+        _path_is_or_descends_from(normalized_path, prefix)
+        for prefix in _DEMO_ALLOWED_PREFIXES
+    )
 
 
 def _truthy_env(value: object) -> bool:
@@ -298,6 +350,100 @@ def auth_tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
     return tenant
 
 
+def _explicit_admin_request_tenant() -> tuple[Optional[TenantProfile], bool]:
+    """Resolve an explicitly selected tenant without applying any fallback.
+
+    Multi-tenant owners need to select the organization they are operating.
+    Conflicting, missing, or unknown hints stay unresolved so privileged
+    decorators fail closed instead of silently choosing the user's primary or
+    the first tenant in the database.
+    """
+
+    view_args = getattr(request, "view_args", None) or {}
+    raw_slugs = [
+        view_args.get("tenant_slug"),
+        view_args.get("tenant"),
+        request.args.get("tenant_slug"),
+        request.args.get("tenant"),
+        request.headers.get("X-Tenant-Slug"),
+        request.headers.get("X-Tenant"),
+    ]
+    slugs = {
+        str(value).strip().lower()
+        for value in raw_slugs
+        if value is not None and str(value).strip()
+    }
+    raw_ids = [
+        view_args.get("tenant_id"),
+        request.args.get("tenant_id"),
+        request.headers.get("X-Tenant-Id"),
+    ]
+    ids: set[int] = set()
+    invalid_id = False
+    for value in raw_ids:
+        if value is None or not str(value).strip():
+            continue
+        try:
+            normalized_id = int(value)
+        except (TypeError, ValueError):
+            invalid_id = True
+            continue
+        if normalized_id <= 0:
+            invalid_id = True
+            continue
+        ids.add(normalized_id)
+
+    had_hint = bool(slugs or ids or invalid_id)
+    if not had_hint:
+        return None, False
+    if invalid_id or len(slugs) > 1 or len(ids) > 1:
+        return None, True
+
+    by_slug = None
+    if slugs:
+        by_slug = TenantProfile.query.filter(
+            func.lower(TenantProfile.slug) == next(iter(slugs))
+        ).one_or_none()
+        if by_slug is None:
+            return None, True
+
+    by_id = db.session.get(TenantProfile, next(iter(ids))) if ids else None
+    if ids and by_id is None:
+        return None, True
+    if by_slug is not None and by_id is not None and by_slug.id != by_id.id:
+        return None, True
+    return by_slug or by_id, True
+
+
+def _actor_belongs_to_explicit_admin_tenant(
+    user: User,
+    tenant: TenantProfile,
+) -> bool:
+    """Validate direct, owner, or legacy employee membership in one tenant."""
+
+    if getattr(user, "tenant_id", None) == tenant.id:
+        return True
+    user_slug = str(getattr(user, "tenant_slug", None) or "").strip().lower()
+    tenant_slug = str(getattr(tenant, "slug", None) or "").strip().lower()
+    if user_slug and tenant_slug and user_slug == tenant_slug:
+        return True
+
+    user_id = getattr(user, "id", None)
+    municipio_owner_id = getattr(tenant, "municipio_id", None)
+    pyme_owner_id = getattr(tenant, "pyme_id", None)
+    if user_id is not None and user_id in {municipio_owner_id, pyme_owner_id}:
+        return True
+    if municipio_owner_id is not None and getattr(user, "municipio_id", None) == municipio_owner_id:
+        return True
+    if pyme_owner_id is not None and getattr(user, "pyme_id", None) == pyme_owner_id:
+        return True
+    return getattr(user, "empresa_id", None) in {
+        owner_id
+        for owner_id in (municipio_owner_id, pyme_owner_id)
+        if owner_id is not None
+    }
+
+
 def admin_surface_access_allowed(
     user: Optional[User],
     *,
@@ -318,6 +464,13 @@ def admin_surface_access_allowed(
         return False
 
     try:
+        explicit_tenant, had_explicit_hint = _explicit_admin_request_tenant()
+        if had_explicit_hint:
+            return bool(
+                explicit_tenant is not None
+                and getattr(explicit_tenant, "is_active", True) is not False
+                and _actor_belongs_to_explicit_admin_tenant(user, explicit_tenant)
+            )
         tenant = auth_tenant_for_user(user)
     except Exception:
         current_app.logger.exception(
@@ -788,7 +941,7 @@ def obtener_entity_token() -> Optional[str]:
     def _extract_from_json(keys: tuple[str, ...]) -> list[str]:
         if not request.is_json:
             return []
-        data = request.get_json(silent=True) or {}
+        data = _bounded_auth_json_payload()
         return [data.get(key) for key in keys if data.get(key)]
 
     def _extract_from_form(keys: tuple[str, ...]) -> list[str]:
@@ -995,16 +1148,66 @@ def _resolve_owner_user(user: Optional[User]) -> Optional[User]:
 
     return user
 
+
+def _bounded_auth_json_payload() -> Dict[str, Any]:
+    """Read legacy JSON token fields without making auth an unbounded parser.
+
+    Route handlers own their domain payload limits. Authentication only needs
+    a tiny compatibility envelope, so a missing or oversized Content-Length
+    fails closed and callers must use a token header instead.
+    """
+
+    if not request.is_json:
+        return {}
+    try:
+        max_bytes = int(
+            current_app.config.get("AUTH_TOKEN_JSON_BODY_MAX_BYTES", 64 * 1024)
+        )
+    except (TypeError, ValueError):
+        return {}
+    if max_bytes <= 0 or max_bytes > 1024 * 1024:
+        return {}
+    content_length = request.content_length
+    if content_length is None or content_length < 0 or content_length > max_bytes:
+        current_app.logger.warning(
+            "[obtener_token] JSON token fallback skipped path=%s content_length=%s max_bytes=%s",
+            request.path,
+            content_length,
+            max_bytes,
+        )
+        return {}
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, dict) else {}
+
+
 def obtener_token():
     """Extrae el token desde header, query string o payload."""
     current_app.logger.debug(f"[obtener_token] Checking for token. Path: {request.path}")
 
-    # Check if request has explicit entityToken (widget context)
+    path_lower = _normalize_path(request.path).lower()
+    profile_paths = {
+        "/auth/perfil",
+        "/perfil",
+        "/auth/profile",
+        "/profile",
+        "/api/perfil",
+        "/api/profile",
+    }
+    body_token_fallback_allowed = _auth_body_token_allowed(path_lower)
+
+    # Explicit entity identity may outrank an ambient panel cookie only on its
+    # documented widget/profile surfaces. A protected admin route with a
+    # Bearer token must not deserialize its domain body during authentication.
+    auth_json_payload: Dict[str, Any] = {}
     has_entity_token = (
         request.args.get("entityToken")
         or request.headers.get("X-Entity-Token")
-        or (request.is_json and (request.get_json(silent=True) or {}).get("entityToken"))
     )
+    if not has_entity_token and body_token_fallback_allowed:
+        auth_json_payload = _bounded_auth_json_payload()
+        has_entity_token = auth_json_payload.get("entityToken") or auth_json_payload.get(
+            "entity_token"
+        )
 
     allow_cookie_auth = _panel_cookie_allowed(request.path)
     if not allow_cookie_auth:
@@ -1058,30 +1261,12 @@ def obtener_token():
             f"[obtener_token] Candidate from {source}: '{candidate[:10]}...'"
         )
 
-    path_lower = _normalize_path(request.path).lower()
     prefer_explicit_entity = (
-        path_lower
-        in {
-            "/auth/perfil",
-            "/perfil",
-            "/auth/profile",
-            "/profile",
-            "/api/perfil",
-            "/api/profile",
-        }
+        path_lower in profile_paths
         or (
             bool(has_entity_token)
             and (
-                path_lower.startswith("/public")
-                or path_lower.startswith("/api/public")
-                or path_lower.startswith("/widget")
-                or path_lower.startswith("/api/widget")
-                or path_lower.startswith("/auth/widget")
-                or path_lower.startswith("/api/auth/widget")
-                or path_lower.startswith("/pwa")
-                or path_lower.startswith("/api/pwa")
-                or path_lower.startswith("/ask")
-                or path_lower.startswith("/api/ask")
+                body_token_fallback_allowed
             )
         )
     )
@@ -1103,7 +1288,7 @@ def obtener_token():
             request.args.get("empresa_token"),
         )
         if request.is_json:
-            json_data = request.get_json(silent=True) or {}
+            json_data = auth_json_payload or _bounded_auth_json_payload()
             explicit_request_tokens = (
                 *explicit_request_tokens,
                 json_data.get("token"),
@@ -1190,8 +1375,8 @@ def obtener_token():
         current_app.logger.debug(f"[obtener_token] Found 'empresa_token' in query args: '{empresa_token_arg[:10]}...'")
         return _finalize_request_token(empresa_token_arg)
 
-    if request.is_json:
-        json_data = request.get_json(silent=True) or {}
+    if body_token_fallback_allowed and request.is_json:
+        json_data = auth_json_payload or _bounded_auth_json_payload()
         token_json = json_data.get("token")
         if token_json:
             token_json = token_json.strip()
@@ -1212,22 +1397,22 @@ def obtener_token():
             return _finalize_token_candidate(empresa_token_json)
 
 
-    token_form = request.form.get("token")
-    if token_form:
-        token_form = token_form.strip()
-        current_app.logger.debug(f"[obtener_token] Found token in form data: '{token_form[:10]}...'")
-        return _finalize_token_candidate(token_form)
+    if body_token_fallback_allowed:
+        token_form = request.form.get("token")
+        if token_form:
+            token_form = token_form.strip()
+            current_app.logger.debug(f"[obtener_token] Found token in form data: '{token_form[:10]}...'")
+            return _finalize_token_candidate(token_form)
 
-    entity_token_form = request.form.get("entityToken") or request.form.get("entity_token")
-    if entity_token_form:
-        entity_token_form = entity_token_form.strip()
-        current_app.logger.debug(f"[obtener_token] Found entityToken in form data: '{entity_token_form[:10]}...'")
-        return _finalize_token_candidate(entity_token_form)
+        entity_token_form = request.form.get("entityToken") or request.form.get("entity_token")
+        if entity_token_form:
+            entity_token_form = entity_token_form.strip()
+            current_app.logger.debug(f"[obtener_token] Found entityToken in form data: '{entity_token_form[:10]}...'")
+            return _finalize_token_candidate(entity_token_form)
 
-    # Fallback to 'empresa_token' in form data (no longer path-restricted)
-    empresa_token_form = request.form.get("empresa_token")
-    if empresa_token_form:
-        _register_candidate(empresa_token_form, "form field 'empresa_token'")
+        empresa_token_form = request.form.get("empresa_token")
+        if empresa_token_form:
+            _register_candidate(empresa_token_form, "form field 'empresa_token'")
 
     widget_cookie_name = current_app.config.get("WIDGET_TOKEN_COOKIE_NAME")
     if widget_cookie_name:
@@ -1652,7 +1837,10 @@ def anon_o_token_requerido(f):
         has_entity_token = (
             request.args.get("entityToken")
             or request.headers.get("X-Entity-Token")
-            or (request.is_json and (request.get_json(silent=True) or {}).get("entityToken"))
+            or (
+                request.is_json
+                and _bounded_auth_json_payload().get("entityToken")
+            )
         )
 
         # Force anonymous/public logic if strictly on public landing and no valid user intent

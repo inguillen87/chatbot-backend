@@ -7,12 +7,15 @@ existentes, generando uno nuevo cuando no haya uno abierto.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 
 from models import (
@@ -31,6 +34,11 @@ from services.tenant_ticket_scope import (
     normalize_municipio_ticket_write_scope,
 )
 from utils.time_utils import get_local_now
+
+try:  # Imported lazily by callers in some lightweight unit tests.
+    from services.webhook_delivery_service import stage_delivery_completion
+except Exception:  # pragma: no cover - defensive import fallback for test doubles
+    stage_delivery_completion = None
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +66,8 @@ def _clean(value: Any) -> Optional[str]:
 
 
 def _as_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -65,10 +75,27 @@ def _as_int(value: Any) -> Optional[int]:
 
 
 def _as_float(value: Any) -> Optional[float]:
+    if isinstance(value, bool):
+        return None
     try:
-        return float(value)
+        normalized = float(value)
     except (TypeError, ValueError):
         return None
+    return normalized if math.isfinite(normalized) else None
+
+
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _scoped_placeholder_email(anon_id: str) -> str:
+    """Return a deterministic, PII-free unique key for a scoped contact."""
+
+    digest = hashlib.sha256(str(anon_id).encode("utf-8")).hexdigest()
+    return f"omni+{digest[:40]}@placeholder.local"
 
 
 def _normalize_ticket_type(raw: Any) -> Optional[str]:
@@ -85,7 +112,12 @@ def _contact_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
-def _deduplicate_contact(contacto: Dict[str, Any]) -> User:
+def _deduplicate_contact(
+    contacto: Dict[str, Any],
+    *,
+    identity_mode: str = "legacy",
+    tenant: TenantProfile | None = None,
+) -> User:
     """Busca o crea un contacto base usando email/telefono/anon_id."""
 
     contacto = contacto if isinstance(contacto, dict) else {}
@@ -95,35 +127,89 @@ def _deduplicate_contact(contacto: Dict[str, Any]) -> User:
 
     user: Optional[User] = None
 
-    if email:
-        user = User.query.filter(func.lower(User.email) == email).first()
-    if not user and telefono:
-        user = User.query.filter(User.telefono == telefono).first()
-    if not user and anon_id:
-        user = User.query.filter(User.anon_id == anon_id).first()
+    scoped_identity = identity_mode == "tenant_provider_scoped_v1"
+    scoped_tenant_id: int | None = None
+    if scoped_identity:
+        # The signed adapter already replaced the provider's raw contact ID
+        # with a tenant+connection-scoped HMAC.  Email and phone remain useful
+        # CRM metadata but must not link this event to a global User account.
+        if not anon_id:
+            raise ValueError("tenant_provider_scoped_v1 requires external_id")
+        scoped_tenant_id = _as_int(getattr(tenant, "id", None))
+        if scoped_tenant_id is None or scoped_tenant_id <= 0:
+            raise ValueError("tenant_provider_scoped_v1 requires tenant")
+        generated_email = _scoped_placeholder_email(anon_id)
+        user = User.query.filter(
+            or_(
+                User.anon_id == anon_id,
+                func.lower(User.email) == generated_email,
+            )
+        ).first()
+        if user is not None and user.anon_id not in (None, anon_id):
+            raise ValueError("scoped contact identity conflicts with an existing user")
+        if user is not None and getattr(user, "tenant_id", None) not in (
+            None,
+            scoped_tenant_id,
+        ):
+            raise ValueError("scoped contact identity belongs to another tenant")
+    else:
+        generated_email = email or f"omni+{uuid.uuid4().hex[:12]}@placeholder.local"
+        if email:
+            user = User.query.filter(func.lower(User.email) == email).first()
+        if not user and telefono:
+            user = User.query.filter(User.telefono == telefono).first()
+        if not user and anon_id:
+            user = User.query.filter(User.anon_id == anon_id).first()
 
     if not user:
-        generated_email = email or f"omni+{uuid.uuid4().hex[:12]}@placeholder.local"
         user = User(
             name=contacto.get("nombre") or contacto.get("name") or "Contacto omnicanal",
             email=generated_email,
-            telefono=telefono,
+            telefono=None if scoped_identity else telefono,
             anon_id=anon_id,
             rol="usuario",
+            tenant_id=scoped_tenant_id,
+            tenant_slug=(
+                str(getattr(tenant, "slug", "") or "").strip() or None
+                if scoped_identity
+                else None
+            ),
         )
         try:
             user.set_password(uuid.uuid4().hex)
         except Exception:  # pragma: no cover - defensive for test doubles
             user.password_hash = uuid.uuid4().hex
         db.session.add(user)
-        db.session.flush()
+        try:
+            db.session.flush()
+        except IntegrityError:
+            if not scoped_identity:
+                raise
+            # Concurrent events for the same provider contact can both miss
+            # the initial lookup. The deterministic placeholder email is the
+            # database uniqueness fence; recover the winning row after rolling
+            # back the losing insert instead of creating a second identity.
+            db.session.rollback()
+            user = User.query.filter(func.lower(User.email) == generated_email).first()
+            if (
+                user is None
+                or user.anon_id not in (None, anon_id)
+                or getattr(user, "tenant_id", None) not in (None, scoped_tenant_id)
+            ):
+                raise
     else:
         updated = False
-        if not user.telefono and telefono:
+        if not scoped_identity and not user.telefono and telefono:
             user.telefono = telefono
             updated = True
         if not user.anon_id and anon_id:
             user.anon_id = anon_id
+            updated = True
+        if scoped_identity and getattr(user, "tenant_id", None) is None:
+            user.tenant_id = scoped_tenant_id
+            user.tenant_slug = (
+                str(getattr(tenant, "slug", "") or "").strip() or None
+            )
             updated = True
         if updated:
             db.session.flush()
@@ -280,14 +366,23 @@ def _contact_metadata(contacto: Dict[str, Any], user: User) -> Dict[str, Any]:
 
 def _payload_location(payload: Dict[str, Any]) -> tuple[Optional[float], Optional[float], Optional[str]]:
     coords = payload.get("coordenadas") if isinstance(payload.get("coordenadas"), dict) else {}
-    lat = _as_float(payload.get("latitud") or payload.get("lat") or payload.get("latitude") or coords.get("lat"))
+    lat = _as_float(
+        _first_present(
+            payload.get("latitud"),
+            payload.get("lat"),
+            payload.get("latitude"),
+            coords.get("lat"),
+        )
+    )
     lng = _as_float(
-        payload.get("longitud")
-        or payload.get("lon")
-        or payload.get("lng")
-        or payload.get("longitude")
-        or coords.get("lon")
-        or coords.get("lng")
+        _first_present(
+            payload.get("longitud"),
+            payload.get("lon"),
+            payload.get("lng"),
+            payload.get("longitude"),
+            coords.get("lon"),
+            coords.get("lng"),
+        )
     )
     address = _clean(payload.get("direccion") or payload.get("address") or payload.get("ubicacion"))
     return lat, lng, address
@@ -354,6 +449,16 @@ def _tenant_ticket_extra(
             "fallback": "saved_to_crm_no_external_dispatch",
         },
     }
+    for key in (
+        "message_kind",
+        "source_event_id",
+        "source_event_type",
+        "provider_connection_id",
+        "adapter_contract",
+        "call_event",
+    ):
+        if payload.get(key) not in (None, "", [], {}):
+            extra[key] = payload.get(key)
     if pedido_ref:
         extra["pedido_reference"] = pedido_ref
     for key in ("attachments", "source_attachment", "uploaded_file_info", "files"):
@@ -422,6 +527,12 @@ def _merge_tenant_ticket_extra(
         "address",
         "preview_text",
         "pedido_reference",
+        "message_kind",
+        "source_event_id",
+        "source_event_type",
+        "provider_connection_id",
+        "adapter_contract",
+        "call_event",
     ):
         if incoming.get(key):
             merged[key] = incoming[key]
@@ -440,6 +551,82 @@ def _merge_tenant_ticket_extra(
     return merged
 
 
+def _source_event_ref(payload: Dict[str, Any]) -> Optional[str]:
+    event_id = _clean(payload.get("source_event_id"))
+    if not event_id:
+        return None
+    connection_id = _as_int(payload.get("provider_connection_id"))
+    source = _clean(payload.get("source")) or "omnichannel"
+    material = f"{source}\0{connection_id or 0}\0{event_id}".encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()
+    return f"omni-event-ref-v1:{connection_id or 0}:{digest}"
+
+
+def _ticket_event_refs(ticket: MunicipioTicket | PymeTicket | TenantTicket) -> list[str]:
+    current_extra = getattr(ticket, "datos_extra", None)
+    extra = current_extra if isinstance(current_extra, dict) else {}
+    raw = extra.get("omnichannel_source_events")
+    if not isinstance(raw, list):
+        return []
+    return [str(item) for item in raw if str(item or "").strip()][-100:]
+
+
+def _record_ticket_event(
+    ticket: MunicipioTicket | PymeTicket | TenantTicket,
+    payload: Dict[str, Any],
+) -> bool:
+    """Record an adapter event once; return False for an existing event."""
+
+    event_ref = _source_event_ref(payload)
+    if not event_ref:
+        return True
+    refs = _ticket_event_refs(ticket)
+    if event_ref in refs:
+        return False
+    current_extra = getattr(ticket, "datos_extra", None)
+    extra = dict(current_extra) if isinstance(current_extra, dict) else {}
+    refs.append(event_ref)
+    extra["omnichannel_source_events"] = refs[-100:]
+    ticket.datos_extra = extra
+    flag_modified(ticket, "datos_extra")
+    return True
+
+
+def _legacy_ticket_extra(payload: Dict[str, Any]) -> Dict[str, Any]:
+    event_ref = _source_event_ref(payload)
+    extra: Dict[str, Any] = {
+        "source": _clean(payload.get("source")) or _normalize_channel(payload.get("canal")),
+        "message_kind": _clean(payload.get("message_kind")) or "text",
+    }
+    for key in (
+        "source_event_id",
+        "source_event_type",
+        "provider_connection_id",
+        "adapter_contract",
+        "call_event",
+        "attachments",
+    ):
+        if payload.get(key) not in (None, "", [], {}):
+            extra[key] = payload.get(key)
+    if event_ref:
+        extra["omnichannel_source_events"] = [event_ref]
+    return extra
+
+
+def _stage_delivery_claim(delivery_claim: Any) -> bool:
+    if delivery_claim is None:
+        return True
+    if stage_delivery_completion is None:
+        return False
+    return bool(
+        stage_delivery_completion(
+            db.session,
+            delivery_claim.delivery_id,
+            delivery_claim.attempts,
+        )
+    )
+
+
 def _registrar_tenant_interaccion(
     payload: Dict[str, Any],
     *,
@@ -448,6 +635,7 @@ def _registrar_tenant_interaccion(
     contacto: Dict[str, Any],
     canal: str,
     mensaje: str,
+    delivery_claim: Any = None,
 ) -> Dict[str, Any]:
     ticket = _buscar_tenant_ticket_abierto(user, tenant)
     nuevo_ticket = False
@@ -486,7 +674,11 @@ def _registrar_tenant_interaccion(
         db.session.add(ticket)
         nuevo_ticket = True
 
-    if mensaje:
+    ticket.datos_extra = extra
+    flag_modified(ticket, "datos_extra")
+    event_is_new = _record_ticket_event(ticket, payload)
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else extra
+    if mensaje and event_is_new:
         _append_tenant_ticket_comment(extra, user=user, canal=canal, body=mensaje)
 
     ticket.datos_extra = extra
@@ -495,6 +687,9 @@ def _registrar_tenant_interaccion(
     db.session.add(ticket)
 
     try:
+        if not _stage_delivery_claim(delivery_claim):
+            db.session.rollback()
+            return {"exito": False, "motivo": "delivery_claim_lost"}
         db.session.commit()
     except Exception as exc:  # pragma: no cover - logging only
         logger.error("Error guardando interaccion omnicanal tenant: %s", exc, exc_info=True)
@@ -509,10 +704,15 @@ def _registrar_tenant_interaccion(
         "tenant_id": tenant.id,
         "canal": canal,
         "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}",
+        "delivery_completed": delivery_claim is not None,
     }
 
 
-def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str, Any]:
+def registrar_interaccion_omnicanal(
+    payload: Dict[str, Any] | None,
+    *,
+    delivery_claim: Any = None,
+) -> Dict[str, Any]:
     """Persistir una interacción externa en el ticket apropiado.
 
     El payload puede provenir de un webhook heterogéneo, por lo que se valida y
@@ -548,7 +748,11 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
     if not mensaje and not payload.get("asunto") and not payload.get("detalles"):
         return {"exito": False, "motivo": "mensaje_requerido"}
 
-    user = _deduplicate_contact(contacto)
+    user = _deduplicate_contact(
+        contacto,
+        identity_mode=str(payload.get("identity_contract") or "legacy"),
+        tenant=tenant,
+    )
 
     if tipo_ticket == "pyme" and tenant:
         return _registrar_tenant_interaccion(
@@ -558,12 +762,14 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
             contacto=contacto,
             canal=canal,
             mensaje=mensaje,
+            delivery_claim=delivery_claim,
         )
 
     ticket_existente = _buscar_ticket_abierto(tipo_ticket, user, tenant, rubro_id)
     nuevo_ticket = False
 
     if not ticket_existente:
+        ticket_extra = _legacy_ticket_extra(payload)
         ticket_data: Dict[str, Any] = {
             "user_id": user.id,
             "anon_id": user.anon_id,
@@ -583,10 +789,22 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
             ),
             "rubro_id": rubro_id if tipo_ticket == "pyme" else None,
             "pyme_id": payload.get("pyme_id"),
+            "direccion": payload.get("direccion") or payload.get("address"),
+            "lat": payload.get("lat"),
+            "lng": _first_present(payload.get("lng"), payload.get("lon")),
+            "datos_extra": ticket_extra,
+            # The initial message is committed by ServicioTickets together
+            # with the idempotency receipt.  A crash before webhook completion
+            # can therefore replay the ticket without duplicating its comment.
+            "comentario": mensaje or None,
         }
 
         creation_result = servicio_tickets.crear_nuevo_ticket(
-            tipo_ticket, ticket_data, return_object=True
+            tipo_ticket,
+            ticket_data,
+            return_object=True,
+            idempotency_key=_clean(payload.get("idempotency_key")),
+            idempotency_tenant_id=(tenant.id if tenant else None),
         )
         ticket_existente = creation_result if not isinstance(creation_result, dict) else None
         nuevo_ticket = True
@@ -594,9 +812,10 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
     if not ticket_existente:
         logger.error("No se pudo crear o recuperar el ticket para la interacción omnicanal")
         db.session.rollback()
-        return {"exito": False, "motivo": "ticket_no_disponible"}
+        return {"exito": False, "motivo": "db_error"}
 
-    if mensaje:
+    event_is_new = _record_ticket_event(ticket_existente, payload)
+    if mensaje and not nuevo_ticket and event_is_new:
         comentario = TicketComentario(
             comentario=mensaje,
             user_id=user.id,
@@ -613,6 +832,9 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
         db.session.add(comentario)
 
     try:
+        if not _stage_delivery_claim(delivery_claim):
+            db.session.rollback()
+            return {"exito": False, "motivo": "delivery_claim_lost"}
         db.session.commit()
     except Exception as exc:  # pragma: no cover - logging only
         logger.error("Error guardando interacción omnicanal: %s", exc, exc_info=True)
@@ -624,4 +846,5 @@ def registrar_interaccion_omnicanal(payload: Dict[str, Any] | None) -> Dict[str,
         "nuevo_ticket": nuevo_ticket,
         "ticket_id": ticket_existente.id,
         "canal": canal,
+        "delivery_completed": delivery_claim is not None,
     }

@@ -172,7 +172,17 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         if (request.args.get("legacy") or "").lower() in {"1", "true", "yes"}:
             return jsonify([serialize_encuesta(e) for e in encuestas]), 200
 
-        payload = build_admin_list_payload(encuestas)
+        tenant_profile = getattr(g, "tenant_profile", None)
+        tenant_slug = (
+            getattr(tenant_profile, "slug", None)
+            if tenant_profile is not None
+            else getattr(current_user, "tenant_slug", None)
+        )
+        payload = build_admin_list_payload(
+            encuestas,
+            tenant_id=tenant_id,
+            tenant_slug=(str(tenant_slug).strip() if tenant_slug else None),
+        )
         return jsonify(payload), 200
 
     @bp.route("/templates", methods=["GET"])

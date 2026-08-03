@@ -45,6 +45,12 @@ services:
         value: "false"
       - key: LLM_PROVIDER_ORDER
         value: openai,gemini
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_CHAT_MODEL_DEFAULT
+        value: gpt-5.6-sol
+      - key: OPENAI_CHAT_MODEL_WHATSAPP
+        value: gpt-5.6-sol
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_CHAT_MODEL
@@ -59,6 +65,8 @@ services:
         value: glm-5.2:cloud
       - key: OLLAMA_TIMEOUT_SECONDS
         value: "45"
+      - key: GOOGLE_MAPS_API_KEY
+        sync: false
       - key: CLERK_ENABLED
         value: "true"
       - key: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
@@ -107,10 +115,58 @@ services:
         sync: false
       - key: EMAIL_NOTIFICATIONS_ENABLED
         value: "false"
+      # Durable inbound WhatsApp infrastructure is deployed in fail-closed
+      # standby below. The public webhook stays synchronous until this mode and
+      # a non-empty tenant allowlist are changed together after staging proof.
+      - key: WHATSAPP_INBOUND_DURABILITY_MODE
+        value: legacy
+      - key: WHATSAPP_INBOUND_QUEUE_TENANT_IDS
+        value: ""
+      - key: WHATSAPP_INBOUND_HASH_SECRET
+        sync: false
+      - key: WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES
+        value: "65536"
+      - key: WHATSAPP_INBOUND_LEASE_SECONDS
+        value: "180"
+      - key: WHATSAPP_INBOUND_MAX_ATTEMPTS
+        value: "8"
+      - key: WHATSAPP_INBOUND_WORKER_BATCH_SIZE
+        value: "8"
+      - key: WHATSAPP_INBOUND_WORKER_POLL_SECONDS
+        value: "0.5"
+      - key: WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_SECONDS
+        value: "12"
+      - key: WHATSAPP_MEDIA_MAX_BYTES
+        value: "26214400"
+      - key: WHATSAPP_INBOUND_CELERY_WAKEUP_ENABLED
+        value: "false"
+      # Retention has its own durable tenant scope. Keep former canaries here
+      # after rollback/removal so their terminal payloads do not become orphaned.
+      # Both switches below must be deliberately inverted before any scrub.
+      - key: WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS
+        value: ""
+      - key: WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED
+        value: "false"
+      - key: WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD
+        value: "true"
+      - key: WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS
+        value: "72"
+      - key: WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE
+        value: "200"
+      # Durable Notification -> Twilio transport remains canary-only. Enabling
+      # the boolean without an explicit tenant allowlist still fails closed.
+      - key: WHATSAPP_NOTIFICATION_TRANSPORT_ENABLED
+        value: "false"
+      - key: WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS
+        value: ""
+      - key: NOTIFICATION_DISPATCH_LEASE_SECONDS
+        value: "180"
       - key: SMTP_REQUIRE_AUTH
         value: "true"
       # Governance-sensitive core remains off until migration + scoped staging.
       - key: ENABLE_ASSESSMENT_INTERVIEWS_V1
+        value: "false"
+      - key: ENABLE_INTERVIEW_ASSIGNMENTS_V1
         value: "false"
       # Fail-closed rollout: keep legacy sends until the migration, worker and
       # a tenant-scoped provider smoke test are all verified in Render.
@@ -142,6 +198,16 @@ services:
         value: "0.5"
       - key: SURVEY_IDENTITY_HMAC_SECRET_V1
         sync: false
+      - key: ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1
+        value: "false"
+      - key: SURVEY_ELIGIBILITY_GRANT_TENANT_IDS
+        value: ""
+      - key: SURVEY_ELIGIBILITY_SECRET_V1
+        sync: false
+      - key: ENABLE_WHATSAPP_WORKFLOW_STUDIO_DURABLE_V1
+        value: "false"
+      - key: WHATSAPP_WORKFLOW_STUDIO_DURABLE_TENANT_IDS
+        value: ""
       # Canonical channel sessions are tenant-scoped and contain no raw phone
       # number in their binding or primary key. Shadow is the migration phase;
       # switch to enforce before enabling durable WhatsApp or realtime voice.
@@ -151,6 +217,17 @@ services:
         sync: false
       - key: CHANNEL_SESSION_IDENTITY_VERSION_V1
         value: v1
+      # Generic catch-all remains disabled. Enable this only for
+      # ProviderConnection-bound adapters that implement omnichannel.inbound.v1
+      # and hold their own derived signing key.
+      - key: OMNICHANNEL_SIGNED_INBOUND_MODE
+        value: disabled
+      - key: OMNICHANNEL_INBOUND_HMAC_SECRET_V1
+        sync: false
+      - key: OMNICHANNEL_INBOUND_MAX_PAYLOAD_BYTES
+        value: "65536"
+      - key: OMNICHANNEL_INBOUND_MAX_CLOCK_SKEW_SECONDS
+        value: "300"
       # Shared Socket.IO pub/sub for events emitted outside the web process.
       # Configure one Redis/Redis-TLS URL in the web service; the survey worker
       # receives that exact secret and channel through fromService below.
@@ -275,6 +352,348 @@ services:
         sync: false
 
   # 2. El Cron Job (Automatización Semanal)
+  # Durable WhatsApp poller. In the Blueprint default it exits application
+  # bootstrap before DB/queue/provider access and blocks on one signal-aware
+  # Event.wait(). Queue activation still requires the web mode, tenant allowlist,
+  # stream secret and canonical identity contract to pass validation together.
+  - type: worker
+    name: chatboc-whatsapp-durable
+    runtime: python
+    buildCommand: "./build.sh"
+    startCommand: "python -m services.whatsapp_inbound_worker --standby-when-legacy"
+    plan: starter
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: FLASK_APP
+        value: app.py
+      - key: ENV
+        value: production
+      - key: FLASK_ENV
+        value: production
+      - key: CHATBOC_PROCESS_ROLE
+        value: whatsapp-durable-worker
+      - key: WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED
+        value: "true"
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DATABASE_URL
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SECRET_KEY
+      - key: BACKEND_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: BACKEND_URL
+      - key: WHATSAPP_INBOUND_DURABILITY_MODE
+        # Independent from web: activate worker first and keep it draining
+        # after web rollback. Blueprint reapplies the safe standby default.
+        value: legacy
+      - key: WHATSAPP_INBOUND_QUEUE_TENANT_IDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_QUEUE_TENANT_IDS
+      - key: WHATSAPP_INBOUND_HASH_SECRET
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_HASH_SECRET
+      - key: WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES
+      - key: WHATSAPP_INBOUND_LEASE_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_LEASE_SECONDS
+      - key: WHATSAPP_INBOUND_MAX_ATTEMPTS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_MAX_ATTEMPTS
+      - key: WHATSAPP_INBOUND_WORKER_BATCH_SIZE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_WORKER_BATCH_SIZE
+      - key: WHATSAPP_INBOUND_WORKER_POLL_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_WORKER_POLL_SECONDS
+      - key: WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_SECONDS
+      - key: WHATSAPP_MEDIA_MAX_BYTES
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_MEDIA_MAX_BYTES
+      - key: WHATSAPP_INBOUND_CELERY_WAKEUP_ENABLED
+        value: "false"
+      - key: CHANNEL_SESSION_IDENTITY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHANNEL_SESSION_IDENTITY_MODE
+      - key: CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1
+      - key: CHANNEL_SESSION_IDENTITY_VERSION_V1
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHANNEL_SESSION_IDENTITY_VERSION_V1
+      - key: SOCKETIO_MESSAGE_QUEUE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SOCKETIO_MESSAGE_QUEUE_URL
+      - key: SOCKETIO_MESSAGE_QUEUE_CHANNEL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SOCKETIO_MESSAGE_QUEUE_CHANNEL
+      - key: SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SOCKETIO_MESSAGE_QUEUE_HEALTHCHECK_TIMEOUT_SECONDS
+      - key: LLM_PROVIDER_ORDER
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: LLM_PROVIDER_ORDER
+      - key: OPENAI_API_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OPENAI_API_KEY
+      - key: OPENAI_CHAT_MODEL_DEFAULT
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OPENAI_CHAT_MODEL_DEFAULT
+      - key: OPENAI_CHAT_MODEL_WHATSAPP
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OPENAI_CHAT_MODEL_WHATSAPP
+      - key: GEMINI_API_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: GEMINI_API_KEY
+      - key: GEMINI_CHAT_MODEL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: GEMINI_CHAT_MODEL
+      - key: OLLAMA_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OLLAMA_ENABLED
+      - key: OLLAMA_BASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OLLAMA_BASE_URL
+      - key: OLLAMA_API_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OLLAMA_API_KEY
+      - key: OLLAMA_CHAT_MODEL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OLLAMA_CHAT_MODEL
+      - key: OLLAMA_TIMEOUT_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: OLLAMA_TIMEOUT_SECONDS
+      - key: GOOGLE_MAPS_API_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: GOOGLE_MAPS_API_KEY
+      - key: HUGGINGFACE_API_TOKEN
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: HUGGINGFACE_API_TOKEN
+      - key: HUGGINGFACE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: HUGGINGFACE_ENABLED
+      - key: HUGGINGFACE_PROVIDER
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: HUGGINGFACE_PROVIDER
+      - key: HUGGINGFACE_ZERO_SHOT_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: HUGGINGFACE_ZERO_SHOT_ENABLED
+      - key: HUGGINGFACE_ZERO_SHOT_MODEL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: HUGGINGFACE_ZERO_SHOT_MODEL
+      - key: VISION_HUGGINGFACE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: VISION_HUGGINGFACE_ENABLED
+      - key: HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: HUGGINGFACE_IMAGE_CLASSIFICATION_MODEL
+      - key: HUGGINGFACE_OBJECT_DETECTION_MODEL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: HUGGINGFACE_OBJECT_DETECTION_MODEL
+      - key: TWILIO_ACCOUNT_SID
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: TWILIO_ACCOUNT_SID
+      - key: TWILIO_AUTH_TOKEN
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: TWILIO_AUTH_TOKEN
+      - key: TWILIO_SUBACCOUNT_AUTH_TOKEN
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: TWILIO_SUBACCOUNT_AUTH_TOKEN
+      - key: WHATSAPP_MENU_AUDIO_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_MENU_AUDIO_ENABLED
+      - key: TTS_AUDIO_CACHE_PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: TTS_AUDIO_CACHE_PUBLIC_BASE_URL
+      - key: CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CLOUDFLARE_AUDIO_CACHE_PUBLIC_BASE_URL
+      - key: R2_ENDPOINT_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: R2_ENDPOINT_URL
+      - key: R2_ACCESS_KEY_ID
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: R2_ACCESS_KEY_ID
+      - key: R2_SECRET_ACCESS_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: R2_SECRET_ACCESS_KEY
+      - key: R2_BUCKET_NAME
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: R2_BUCKET_NAME
+      - key: R2_PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: R2_PUBLIC_BASE_URL
+      - key: R2_REGION
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: R2_REGION
+      - key: R2_SIGNED_URL_TTL_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: R2_SIGNED_URL_TTL_SECONDS
+
+  # Retention stays operationally separate from delivery. Defaults perform no
+  # application/DB access: enabled=false AND legal_hold=true, with no tenant
+  # scope. Activation requires an explicit historical retention tenant list.
+  - type: cron
+    name: chatboc-whatsapp-payload-retention
+    runtime: python
+    schedule: "43 3 * * *"
+    buildCommand: "./build.sh"
+    startCommand: "python -m services.whatsapp_inbound_worker --scrub-expired-payloads"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: FLASK_APP
+        value: app.py
+      - key: ENV
+        value: production
+      - key: FLASK_ENV
+        value: production
+      - key: CHATBOC_PROCESS_ROLE
+        value: whatsapp-payload-retention-cron
+      - key: DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: DATABASE_URL
+      - key: SECRET_KEY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: SECRET_KEY
+      - key: WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS
+      - key: WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED
+      - key: WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD
+      - key: WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS
+      - key: WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE
+
   # Durable external-effect worker. It is safe to deploy in legacy mode:
   # it idles until an explicit tenant canary is enabled on both services.
   - type: worker
@@ -360,6 +779,21 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: EMAIL_NOTIFICATIONS_ENABLED
+      - key: WHATSAPP_NOTIFICATION_TRANSPORT_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_NOTIFICATION_TRANSPORT_ENABLED
+      - key: WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS
+      - key: NOTIFICATION_DISPATCH_LEASE_SECONDS
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: NOTIFICATION_DISPATCH_LEASE_SECONDS
       - key: SMTP_REQUIRE_AUTH
         fromService:
           type: web

@@ -68,8 +68,11 @@ def municipal_comment_context(init_database, owner_user):
         email_vecino="requester-private@example.com",
         telefono_vecino="+5492613333333",
     )
+    db.session.add(ticket)
+    db.session.flush()
     attachment = ArchivoAdjunto(
         user_id=owner_user.id,
+        municipio_ticket_id=ticket.id,
         filename="evidence.jpg",
         nombre_original="evidencia-privada.jpg",
         mime="image/jpeg",
@@ -77,7 +80,7 @@ def municipal_comment_context(init_database, owner_user):
         tipo="imagen",
         url="https://files.example.test/private/evidence.jpg",
     )
-    db.session.add_all([ticket, attachment])
+    db.session.add(attachment)
     db.session.commit()
     return tenant, ticket, attachment
 
@@ -97,6 +100,9 @@ def _set_legacy(app, monkeypatch) -> None:
 
 
 def _set_provider_config(app, monkeypatch, tenant=None):
+    # Provider SDKs remain offline by default under TESTING.  This suite uses
+    # explicit mocks and opts Twilio in only inside its local app config.
+    monkeypatch.setitem(app.config, "TWILIO_ALLOW_NETWORK_IN_TESTS", True)
     monkeypatch.setitem(app.config, "EMAIL_NOTIFICATIONS_ENABLED", True)
     monkeypatch.setitem(app.config, "SMTP_HOST", "smtp.test")
     monkeypatch.setitem(app.config, "SMTP_PORT", 587)
@@ -367,7 +373,7 @@ def test_citizen_comment_queues_admin_email_and_realtime_without_dual_send(
     socket_sender.assert_not_called()
 
 
-def test_partial_comment_staging_failure_rolls_back_comment_attachment_and_receipt(
+def test_partial_comment_staging_failure_rolls_back_comment_and_receipt(
     app,
     monkeypatch,
     municipal_comment_context,
@@ -405,7 +411,7 @@ def test_partial_comment_staging_failure_rolls_back_comment_attachment_and_recei
     assert TicketDomainEffectReceipt.query.filter_by(tenant_id=tenant.id).count() == 0
     assert DomainEffectOutbox.query.filter_by(tenant_id=tenant.id).count() == 0
     rebound_attachment = db.session.get(ArchivoAdjunto, attachment.id)
-    assert rebound_attachment.municipio_ticket_id is None
+    assert rebound_attachment.municipio_ticket_id == ticket.id
     assert rebound_attachment.pyme_ticket_id is None
 
 
@@ -460,16 +466,13 @@ def test_queue_rejects_attachment_already_bound_to_another_ticket(
     attachment.municipio_ticket_id = other_ticket.id
     db.session.commit()
 
-    with pytest.raises(
-        DomainEffectOutboxConfigurationError,
-        match="domain_effect_comment_attachment_binding_invalid",
-    ):
-        ServicioTickets().crear_comentario(
-            ticket.id,
-            "municipio",
-            _admin_comment_payload(attachment.id),
-        )
+    comment = ServicioTickets().crear_comentario(
+        ticket.id,
+        "municipio",
+        _admin_comment_payload(attachment.id),
+    )
 
+    assert comment is None
     assert TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).count() == 0
     assert DomainEffectOutbox.query.filter_by(tenant_id=tenant.id).count() == 0
     rebound_attachment = db.session.get(ArchivoAdjunto, attachment.id)

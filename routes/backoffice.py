@@ -29,12 +29,21 @@ from services.plan_access import (
     integration_feature_payload,
     integration_plan_required_payload,
 )
+from services.employee_ticket_access import apply_employee_ticket_category_scope
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     scoped_municipio_ticket_query,
 )
 from utils.auth_helpers import token_requerido
-from utils.roles import canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user, normalize_tenant_slug
+from utils.roles import (
+    ROLE_EMPLEADO,
+    ROLE_SUPERADMIN,
+    ROLE_TENANT_ADMIN,
+    canonical_role,
+    first_specific_tenant_slug,
+    is_authorized_superadmin_user,
+    normalize_tenant_slug,
+)
 
 backoffice_bp = Blueprint("backoffice", __name__, url_prefix="/api/app/backoffice")
 backoffice_v2_bp = Blueprint("backoffice_v2", __name__, url_prefix="/api/v2/backoffice")
@@ -635,6 +644,26 @@ def _authorized_tenant_or_response(
     return tenant, None
 
 
+def _operator_role_error(current_user: User, request_id: str):
+    """Reject authenticated non-operators before resolving or serializing data."""
+
+    role = canonical_role(getattr(current_user, "rol", None))
+    authorized = role in {ROLE_TENANT_ADMIN, ROLE_EMPLEADO}
+    if role == ROLE_SUPERADMIN:
+        authorized = is_authorized_superadmin_user(current_user)
+    if authorized:
+        return None
+    return _json(
+        {
+            "ok": False,
+            "reason_code": "backoffice_operator_required",
+            "message": "Esta operacion requiere un rol de backoffice.",
+        },
+        status=403,
+        request_id=request_id,
+    )
+
+
 def _requested_scope(tenant: TenantProfile) -> str:
     requested = _normalize_slug(request.args.get("scope"))
     if requested in {"municipio", "pyme", "colegio"}:
@@ -716,21 +745,17 @@ def _agent_summary(user: User | None, *, workload: int | None = None) -> dict[st
     return payload
 
 
-def _ticket_records_for(tenant: TenantProfile, scope: str) -> tuple[str, list[Any]]:
+def _ticket_records_for(tenant: TenantProfile, scope: str, actor: User) -> tuple[str, list[Any]]:
     use_pyme = scope == "pyme" or bool(tenant.pyme_id and not tenant.municipio_id)
     if use_pyme:
-        records = (
-            PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id)
-            .order_by(PymeTicket.fecha.desc(), PymeTicket.id.desc())
-            .all()
-        )
+        query = PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id)
+        query = apply_employee_ticket_category_scope(query, actor, PymeTicket)
+        records = query.order_by(PymeTicket.fecha.desc(), PymeTicket.id.desc()).all()
         return "pyme", records
 
-    records = (
-        scoped_municipio_ticket_query(tenant)
-        .order_by(MunicipioTicket.fecha.desc(), MunicipioTicket.id.desc())
-        .all()
-    )
+    query = scoped_municipio_ticket_query(tenant)
+    query = apply_employee_ticket_category_scope(query, actor, MunicipioTicket)
+    records = query.order_by(MunicipioTicket.fecha.desc(), MunicipioTicket.id.desc()).all()
     return "municipio", records
 
 
@@ -861,7 +886,7 @@ def _ticket_item(ticket_type: str, ticket: Any, *, now: datetime, request_id: st
 
 def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id: str) -> dict[str, Any]:
     scope = _requested_scope(tenant)
-    ticket_type, tickets = _ticket_records_for(tenant, scope)
+    ticket_type, tickets = _ticket_records_for(tenant, scope, current_user)
     now = datetime.now(timezone.utc)
     open_tickets = [ticket for ticket in tickets if not _is_closed_state(getattr(ticket, "estado", None))]
     resolved = len(tickets) - len(open_tickets)
@@ -1030,7 +1055,7 @@ def _contact_key(contact: dict[str, Any]) -> str:
     return f"anon:{contact.get('source')}:{contact.get('source_id')}"
 
 
-def _collect_contacts(tenant: TenantProfile) -> list[dict[str, Any]]:
+def _collect_contacts(tenant: TenantProfile, actor: User) -> list[dict[str, Any]]:
     contacts: dict[str, dict[str, Any]] = {}
 
     def add_contact(raw: dict[str, Any]) -> None:
@@ -1061,7 +1086,7 @@ def _collect_contacts(tenant: TenantProfile) -> list[dict[str, Any]]:
         current["accepts_marketing"] = bool(current["accepts_marketing"] or raw.get("accepts_marketing"))
         current["records"] = int(current["records"] or 0) + 1
 
-    ticket_type, tickets = _ticket_records_for(tenant, _tenant_scope(tenant))
+    ticket_type, tickets = _ticket_records_for(tenant, _tenant_scope(tenant), actor)
     for ticket in tickets:
         if ticket_type == "municipio":
             add_contact(
@@ -1136,8 +1161,8 @@ def _segment_counts(values: list[str]) -> list[dict[str, Any]]:
     ]
 
 
-def _contacts_summary_payload(tenant: TenantProfile, request_id: str) -> dict[str, Any]:
-    contacts = _collect_contacts(tenant)
+def _contacts_summary_payload(tenant: TenantProfile, actor: User, request_id: str) -> dict[str, Any]:
+    contacts = _collect_contacts(tenant, actor)
     all_channels = [channel for contact in contacts for channel in contact["channels"]]
     all_sources = [source for contact in contacts for source in contact["sources"]]
     duplicates = [contact for contact in contacts if int(contact.get("records") or 0) > 1]
@@ -1194,9 +1219,9 @@ def _employee_categories(user: User) -> list[str]:
     return sorted(category for category in categories if category)
 
 
-def _team_coverage_payload(tenant: TenantProfile, request_id: str) -> dict[str, Any]:
+def _team_coverage_payload(tenant: TenantProfile, actor: User, request_id: str) -> dict[str, Any]:
     scope = _tenant_scope(tenant)
-    ticket_type, tickets = _ticket_records_for(tenant, scope)
+    ticket_type, tickets = _ticket_records_for(tenant, scope, actor)
     open_tickets = [ticket for ticket in tickets if not _is_closed_state(getattr(ticket, "estado", None))]
     employees = _employees_for_tenant(tenant)
     workload_by_agent: dict[int, int] = {}
@@ -1296,9 +1321,9 @@ def _export_rows(resource: str, tenant: TenantProfile, current_user: User, reque
         payload = _orders_summary_payload(tenant, request_id)
         return payload.get("active_orders", [])
     if resource == "contacts":
-        return _collect_contacts(tenant)
+        return _collect_contacts(tenant, current_user)
     if resource == "team":
-        payload = _team_coverage_payload(tenant, request_id)
+        payload = _team_coverage_payload(tenant, current_user, request_id)
         return payload.get("employees", [])
     return []
 
@@ -1384,8 +1409,8 @@ def _build_download_url(filename: str) -> str:
 def _executive_summary_payload(tenant: TenantProfile, current_user: User, request_id: str) -> dict[str, Any]:
     inbox = _inbox_summary_payload(current_user, tenant, request_id)
     orders = _orders_summary_payload(tenant, request_id)
-    contacts = _contacts_summary_payload(tenant, request_id)
-    team = _team_coverage_payload(tenant, request_id)
+    contacts = _contacts_summary_payload(tenant, current_user, request_id)
+    team = _team_coverage_payload(tenant, current_user, request_id)
     total_signals = int(inbox["summary"]["total"]) + int(orders["summary"]["total"]) + int(contacts["summary"]["total"])
     if total_signals >= 30:
         confidence = "high"
@@ -1444,6 +1469,9 @@ def _executive_summary_payload(tenant: TenantProfile, current_user: User, reques
 @token_requerido
 def backoffice_v2_inbox_summary(current_user: User):
     request_id = _request_id()
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant, error = _authorized_tenant_or_response(current_user, request_id)
     if error:
         return error
@@ -1454,6 +1482,9 @@ def backoffice_v2_inbox_summary(current_user: User):
 @token_requerido
 def backoffice_v2_orders_summary(current_user: User):
     request_id = _request_id()
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant, error = _authorized_tenant_or_response(current_user, request_id)
     if error:
         return error
@@ -1464,20 +1495,26 @@ def backoffice_v2_orders_summary(current_user: User):
 @token_requerido
 def backoffice_v2_contacts_summary(current_user: User):
     request_id = _request_id()
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant, error = _authorized_tenant_or_response(current_user, request_id)
     if error:
         return error
-    return _json(_contacts_summary_payload(tenant, request_id), request_id=request_id)
+    return _json(_contacts_summary_payload(tenant, current_user, request_id), request_id=request_id)
 
 
 @backoffice_v2_bp.get("/team/coverage-summary")
 @token_requerido
 def backoffice_v2_team_coverage_summary(current_user: User):
     request_id = _request_id()
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant, error = _authorized_tenant_or_response(current_user, request_id)
     if error:
         return error
-    return _json(_team_coverage_payload(tenant, request_id), request_id=request_id)
+    return _json(_team_coverage_payload(tenant, current_user, request_id), request_id=request_id)
 
 
 @backoffice_v2_bp.post("/export")
@@ -1485,6 +1522,9 @@ def backoffice_v2_team_coverage_summary(current_user: User):
 def backoffice_v2_export(current_user: User):
     request_id = _request_id()
     body = request.get_json(silent=True) or {}
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant, error = _authorized_tenant_or_response(current_user, request_id, explicit_slug=body.get("tenant_slug"))
     if error:
         return error
@@ -1544,6 +1584,9 @@ def backoffice_v2_export(current_user: User):
 def backoffice_v2_executive_summary(current_user: User):
     request_id = _request_id()
     body = request.get_json(silent=True) or {}
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant, error = _authorized_tenant_or_response(current_user, request_id, explicit_slug=body.get("tenant_slug"))
     if error:
         return error

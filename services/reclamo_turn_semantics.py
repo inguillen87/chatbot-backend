@@ -197,6 +197,7 @@ _FIELD_ALIASES = {
     "categoria": r"categor[ií]a|tipo de reclamo",
     "descripcion": r"descripci[oó]n|detalle(?:s)?|problema",
 }
+_EMAIL_TOKEN_RE = re.compile(r"(?<!\S)[^@\s]+@[^@\s]+")
 
 
 def normalize_reclamo_turn(value: Any) -> str:
@@ -273,6 +274,12 @@ def extract_reclamo_corrections(user_input: Any) -> dict[str, str]:
     text = str(user_input or "").strip()
     if not text:
         return {}
+
+    # Contact edits can legitimately contain aliases such as "ubicacion" in
+    # an email address. Remove complete email tokens before looking for
+    # labelled claim fields so a contact update cannot become a bogus address
+    # correction.
+    text = _EMAIL_TOKEN_RE.sub(" ", text)
 
     corrections: dict[str, str] = {}
     for field_name, aliases in _FIELD_ALIASES.items():

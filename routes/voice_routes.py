@@ -140,6 +140,18 @@ def _normalize_phone(value: str | None) -> str:
     return str(value or "").replace("whatsapp:", "").strip()
 
 
+def _is_whatsapp_voice_endpoint(value: str | None) -> bool:
+    """Return whether Twilio identified this call leg as WhatsApp VoIP."""
+
+    return str(value or "").strip().lower().startswith("whatsapp:")
+
+
+def _is_whatsapp_voice_call() -> bool:
+    return _is_whatsapp_voice_endpoint(
+        request.form.get("From")
+    ) or _is_whatsapp_voice_endpoint(request.form.get("To"))
+
+
 def _configured_chatboc_demo_numbers() -> set[str]:
     raw_numbers = os.environ.get("CHATBOC_DEMO_WHATSAPP_NUMBERS") or ""
     candidates = [part for part in raw_numbers.replace(";", ",").split(",") if part.strip()]
@@ -743,6 +755,13 @@ def voice_transfer():
             or requested_target != allowed_target
         ):
             raise VoiceConsentLifecycleError("transfer_target_not_authorized")
+        # Twilio/Meta do not allow a WhatsApp Business Calling leg to be
+        # bridged to PSTN. The configured handoff target above is an E.164
+        # telephone number, so attempting this Dial would advertise a transfer
+        # that the provider must reject. A future SIP/Client handoff needs its
+        # own explicit, tenant-scoped transport contract.
+        if _is_whatsapp_voice_call():
+            raise VoiceConsentLifecycleError("whatsapp_pstn_bridge_forbidden")
     except VoiceConsentLifecycleError as exc:
         logger.warning("Twilio voice transfer refused reason=%s", exc.code)
         _voice_say(response, "La transferencia no esta disponible en este momento.")

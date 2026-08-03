@@ -30,12 +30,18 @@ class TestDerivarHumanoAction:
         persisted in the DB, and a socket event is emitted.
         """
         # Arrange
-        owner_user = User(id=1, municipio_id=10, name="Municipio Test", email="municipio@test.com")
+        owner_user = User(
+            id=1,
+            name="Municipio Test",
+            email="municipio@test.com",
+            tenant_slug="muni-live-chat",
+        )
         owner_user.set_password("test")
         viewer_user = User(id=5, name="Juan", telefono="123456789", email="juan@test.com")
         viewer_user.set_password("test")
         db.session.add_all([owner_user, viewer_user])
         db.session.flush()
+        owner_user.municipio_id = owner_user.id
         tenant = TenantProfile(
             slug="muni-live-chat",
             nombre="Municipio Live Chat",
@@ -52,6 +58,8 @@ class TestDerivarHumanoAction:
             },
         )
         db.session.add(tenant)
+        db.session.flush()
+        owner_user.tenant_id = tenant.id
         db.session.commit()
 
         context = {
@@ -85,12 +93,18 @@ class TestDerivarHumanoAction:
         # Check database
         ticket_db = db.session.query(MunicipioTicket).get(ticket_id)
         assert ticket_db is not None
+        assert ticket_db.tenant_id == tenant.id
+        assert ticket_db.municipio_id == owner_user.id
         assert ticket_db.estado == 'esperando_agente_en_vivo'
         assert ticket_db.comentarios.count() == 1
         assert ticket_db.comentarios.first().comentario == 'Necesito ayuda con algo.'
 
         # Check socket emission
-        mock_socket_emit.assert_any_call('live_chat_request', ANY, room='municipio_10')
+        mock_socket_emit.assert_any_call(
+            'live_chat_request',
+            ANY,
+            room=f'municipio_{owner_user.id}',
+        )
         mock_emit_update.assert_called_once()
 
     @patch('services.actions.pyme_actions.emit_new_ticket')
@@ -225,17 +239,35 @@ class TestDerivarHumanoAction:
     @patch('services.actions.municipio_actions.emit_new_ticket')
     def test_orchestrator_routes_to_municipio_handler(self, mock_emit_update, mock_socket_emit, app_context):
         # Arrange
-        owner_user = User(id=1, municipio_id=10, name="Municipio Test", email="municipio@test.com")
+        owner_user = User(
+            id=1,
+            name="Municipio Test",
+            email="municipio@test.com",
+            tenant_slug="muni-orchestrator-live-chat",
+        )
         owner_user.set_password("test")
         viewer_user = User(id=5, name="Juan", telefono="123456789", email="juan@test.com")
         viewer_user.set_password("test")
         db.session.add_all([owner_user, viewer_user])
+        db.session.flush()
+        owner_user.municipio_id = owner_user.id
+        tenant = TenantProfile(
+            slug="muni-orchestrator-live-chat",
+            nombre="Municipio Orchestrator Live Chat",
+            tipo="municipio",
+            municipio_id=owner_user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner_user.tenant_id = tenant.id
         db.session.commit()
 
         chat_context_data = {}
         context = {
             'viewer_user_obj': viewer_user,
             'user_obj': owner_user,
+            'tenant_profile': tenant,
             'cliente_id': 5,
             'anon_id': None,
             'target_entity_type': 'municipio',
@@ -255,5 +287,12 @@ class TestDerivarHumanoAction:
         assert chat_context_data["tipo_ticket"] == "municipio"
         assert chat_context_data["ticket_id"] == result["data"]["ticket_id"]
         assert chat_context_data["room"] == f"ticket_municipio_{result['data']['ticket_id']}"
-        mock_socket_emit.assert_any_call('live_chat_request', ANY, room='municipio_10')
+        ticket_db = db.session.get(MunicipioTicket, result["data"]["ticket_id"])
+        assert ticket_db.tenant_id == tenant.id
+        assert ticket_db.municipio_id == owner_user.id
+        mock_socket_emit.assert_any_call(
+            'live_chat_request',
+            ANY,
+            room=f'municipio_{owner_user.id}',
+        )
         mock_emit_update.assert_called_once()

@@ -4,10 +4,11 @@ import re
 import uuid
 
 from flask import Blueprint, request, jsonify, g, current_app, send_file
-from sqlalchemy import func, or_
+from sqlalchemy import false, func, or_
 
 from models import (
     CatalogoItem,
+    ChatSessionContext,
     Conversacion,
     MarketCart,
     MunicipioTicket,
@@ -18,6 +19,7 @@ from models import (
     TenantConfig,
     TenantTicket,
     User,
+    WebAuthnCredential,
     WidgetSettings,
     db,
 )
@@ -440,24 +442,101 @@ def _session_context_payload() -> dict:
         "demo_session_id": str(demo_session_id) if demo_session_id else None,
         "anon_id": str(anon_id),
         "widget_session_token": f"wst_{uuid.uuid5(uuid.NAMESPACE_URL, f'{chat_session_id}:{anon_id}').hex[:24]}",
-        "is_authenticated": bool(getattr(g, "user", None)),
+        "is_authenticated": bool(getattr(g, "viewer", None)),
         "can_checkout_as_guest": True,
         "can_link_account": True,
     }
 
 
-def _cart_counts_for_tenant(tenant: TenantProfile, session_payload: dict) -> dict:
-    session_ids = {
-        str(session_payload.get("chat_session_id") or ""),
-        str(session_payload.get("anon_id") or ""),
-    }
-    session_ids = {value for value in session_ids if value}
+def _history_session_context(
+    tenant: TenantProfile,
+    session_payload: dict,
+    viewer: User | None,
+) -> ChatSessionContext | None:
+    """Validate that a public session bearer belongs to this tenant/actor."""
+
+    chat_session_id = str(session_payload.get("chat_session_id") or "").strip()
+    if not chat_session_id:
+        return None
+    query = ChatSessionContext.query.filter(
+        ChatSessionContext.chat_session_id == chat_session_id,
+        ChatSessionContext.tenant_id == tenant.id,
+    )
+    if viewer is not None:
+        query = query.filter(ChatSessionContext.user_id == viewer.id)
+    else:
+        anon_id = str(session_payload.get("anon_id") or "").strip()
+        if not anon_id:
+            return None
+        query = query.filter(
+            ChatSessionContext.user_id.is_(None),
+            ChatSessionContext.anon_id == anon_id,
+        )
+    return query.one_or_none()
+
+
+def _history_viewer_for_tenant(
+    tenant: TenantProfile,
+    session_payload: dict,
+) -> User | None:
+    """Resolve an authenticated viewer or one unique opaque anon bearer."""
+
+    authenticated = getattr(g, "viewer", None)
+    if isinstance(authenticated, User):
+        return authenticated
+
+    anon_id = str(session_payload.get("anon_id") or "").strip()
+    if not anon_id:
+        return None
+    follower_user_ids = TenantFollower.query.filter(
+        TenantFollower.tenant_id == tenant.id
+    ).with_entities(TenantFollower.user_id)
+    matches = (
+        User.query.filter(
+            User.anon_id == anon_id,
+            or_(
+                User.tenant_id == tenant.id,
+                User.id.in_(follower_user_ids),
+            ),
+        )
+        .order_by(User.id.asc())
+        .limit(2)
+        .all()
+    )
+    viewer = matches[0] if len(matches) == 1 else None
+    if viewer is not None and _anon_recovery_requires_strong_verification(viewer):
+        return None
+    return viewer
+
+
+def _cart_counts_for_tenant(
+    tenant: TenantProfile,
+    session_payload: dict,
+    *,
+    viewer: User | None,
+    verified_context: ChatSessionContext | None,
+) -> dict:
     cart = None
-    if session_ids:
+    if viewer is not None:
         cart = (
             MarketCart.legacy_safe_query()
-            .filter(MarketCart.tenant_id == tenant.id, MarketCart.status == "open")
-            .filter(MarketCart.session_id.in_(session_ids))
+            .filter(
+                MarketCart.tenant_id == tenant.id,
+                MarketCart.status == "open",
+                MarketCart.user_id == viewer.id,
+            )
+            .order_by(MarketCart.updated_at.desc())
+            .first()
+        )
+    elif verified_context is not None:
+        cart = (
+            MarketCart.legacy_safe_query()
+            .filter(
+                MarketCart.tenant_id == tenant.id,
+                MarketCart.status == "open",
+                MarketCart.user_id.is_(None),
+                MarketCart.session_id == verified_context.chat_session_id,
+            )
             .order_by(MarketCart.updated_at.desc())
             .first()
         )
@@ -501,20 +580,25 @@ def _public_history_item(
     return payload
 
 
-def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: int = 30) -> list[dict]:
+def _widget_history_items(
+    tenant: TenantProfile,
+    session_payload: dict,
+    *,
+    viewer: User | None,
+    verified_context: ChatSessionContext | None,
+    limit: int = 30,
+) -> list[dict]:
     items: list[dict] = []
     chat_session_id = str(session_payload.get("chat_session_id") or "")
     anon_id = str(session_payload.get("anon_id") or "")
 
-    tenant_tickets = (
-        TenantTicket.query.filter_by(tenant_id=tenant.id)
-        .order_by(TenantTicket.created_at.desc())
-        .limit(limit)
-        .all()
-    )
+    tenant_ticket_query = TenantTicket.query.filter(TenantTicket.tenant_id == tenant.id)
+    if viewer is None:
+        tenant_ticket_query = tenant_ticket_query.filter(false())
+    else:
+        tenant_ticket_query = tenant_ticket_query.filter(TenantTicket.user_id == viewer.id)
+    tenant_tickets = tenant_ticket_query.order_by(TenantTicket.created_at.desc()).limit(limit).all()
     for ticket in tenant_tickets:
-        if anon_id and ticket.fingerprint and anon_id not in str(ticket.fingerprint):
-            continue
         items.append(
             _public_history_item(
                 item_id=f"tenant_ticket_{ticket.id}",
@@ -532,11 +616,16 @@ def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: i
         (PymeTicket, "claim", "widget", "P"),
     ):
         query = model.query.filter(model.tenant_id == tenant.id)
-        if anon_id:
-            query = query.filter(or_(model.anon_id == anon_id, model.anon_id.is_(None)))
+        if viewer is not None:
+            query = query.filter(model.user_id == viewer.id)
+        elif anon_id:
+            # Anonymous history is a bearer lookup: exact non-null ownership is
+            # mandatory.  A NULL legacy owner is never a wildcard.
+            query = query.filter(model.user_id.is_(None), model.anon_id == anon_id)
+        else:
+            query = query.filter(false())
         for ticket in query.order_by(model.fecha.desc()).limit(limit).all():
             code = getattr(ticket, "nro_ticket", None) or ticket.id
-            pin = getattr(ticket, "consulta_pin", None)
             detail = f"/api/public/tracking/experience?kind=claim&code={code_prefix}-{code}"
             items.append(
                 _public_history_item(
@@ -547,19 +636,17 @@ def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: i
                     status=getattr(ticket, "estado", None),
                     created_at=getattr(ticket, "fecha", None),
                     detail_endpoint=detail,
-                    extra={
-                        "pin": str(pin),
-                        "credential_transport": "x-tracking-pin-header",
-                    } if pin else None,
                 )
             )
 
-    pedidos = (
-        PymePedido.query.filter_by(tenant_id=tenant.id)
-        .order_by(PymePedido.fecha.desc())
-        .limit(limit)
-        .all()
-    )
+    pedido_query = PymePedido.query.filter(PymePedido.tenant_id == tenant.id)
+    if viewer is None:
+        # Legacy anonymous orders have no durable session/anon ownership
+        # column.  Showing them by tenant alone would disclose every order.
+        pedido_query = pedido_query.filter(false())
+    else:
+        pedido_query = pedido_query.filter(PymePedido.user_id == viewer.id)
+    pedidos = pedido_query.order_by(PymePedido.fecha.desc()).limit(limit).all()
     for pedido in pedidos:
         items.append(
             _public_history_item(
@@ -574,9 +661,9 @@ def _widget_history_items(tenant: TenantProfile, session_payload: dict, limit: i
             )
         )
 
-    if chat_session_id:
+    if verified_context is not None:
         messages = (
-            Conversacion.query.filter_by(session_id=chat_session_id)
+            Conversacion.query.filter_by(session_id=verified_context.chat_session_id)
             .order_by(Conversacion.timestamp.desc())
             .limit(10)
             .all()
@@ -619,6 +706,158 @@ def _ensure_tenant_follower(user: User, tenant: TenantProfile) -> bool:
         return False
     db.session.add(TenantFollower(user_id=user.id, tenant_id=tenant.id, notifications_enabled=True))
     return True
+
+
+def _unique_user_for_anon(anon_id: object) -> tuple[User | None, bool]:
+    """Return one exact anon principal and an ambiguity flag.
+
+    ``User.anon_id`` is a legacy non-unique column.  Public registration/linking
+    must never recover an arbitrary ``.first()`` when duplicate historical
+    values exist.
+    """
+
+    normalized = str(anon_id or "").strip()
+    if not normalized:
+        return None, False
+    matches = (
+        User.query.filter(User.anon_id == normalized)
+        .order_by(User.id.asc())
+        .limit(2)
+        .all()
+    )
+    if len(matches) > 1:
+        return None, True
+    return (matches[0] if matches else None), False
+
+
+def _user_has_webauthn_credential(user: User | None) -> bool:
+    if user is None:
+        return False
+    return (
+        WebAuthnCredential.query.filter(WebAuthnCredential.user_id == user.id)
+        .with_entities(WebAuthnCredential.id)
+        .first()
+        is not None
+    )
+
+
+def _anon_recovery_requires_strong_verification(user: User | None) -> bool:
+    """Reject opaque ``anon_id`` recovery for accounts protected by a passkey.
+
+    An ``anon_id`` is a convenience bearer, not an authentication factor.  A
+    real authenticated viewer may continue managing their own account, but a
+    public caller cannot use a copied/guessed anon value to mutate, link, or
+    read the history of a WebAuthn-protected user.
+    """
+
+    if user is None:
+        return False
+    authenticated = getattr(g, "viewer", None)
+    if isinstance(authenticated, User) and authenticated.id == user.id:
+        return False
+    return _user_has_webauthn_credential(user)
+
+
+def _authenticated_viewer_matches_anon(
+    authenticated: User | None,
+    anon_user: User | None,
+    anon_id: object,
+) -> bool:
+    """Require an authenticated principal to own the supplied anon bearer."""
+
+    if authenticated is None:
+        return False
+    normalized = str(anon_id or "").strip()
+    if not normalized:
+        return False
+    if anon_user is None:
+        return True
+    return bool(
+        authenticated.id == anon_user.id
+        and str(authenticated.anon_id or "").strip() == normalized
+    )
+
+
+def _is_provisional_passkey_user(user: User | None) -> bool:
+    return bool(
+        user is not None
+        and str(user.email or "").lower().endswith("@passkey.chatboc")
+        and _user_has_webauthn_credential(user)
+    )
+
+
+def _passkey_verification_required_payload(
+    *,
+    contract_version: str,
+    tenant: TenantProfile,
+    linked: bool | None = None,
+) -> dict:
+    payload = {
+        "ok": False,
+        "contract_version": contract_version,
+        "tenant_slug": tenant.slug,
+        "status": "verification_required",
+        "reason_code": "passkey_verification_required",
+        "next_action": "verify_passkey_or_login",
+        "login_endpoint": "/auth/widget/bootstrap",
+    }
+    if linked is not None:
+        payload["linked"] = linked
+    return payload
+
+
+def _stage_public_session_binding(
+    tenant: TenantProfile,
+    session_payload: dict,
+    user: User | None,
+) -> bool:
+    """Stage one exact tenant/session binding or fail closed on collisions.
+
+    Registration is the point where a new public session becomes attributable
+    to the provisional account.  Existing session primary keys are accepted
+    only when they already belong to that user, or are unclaimed records with
+    the same opaque anon bearer in the same tenant.
+    """
+
+    chat_session_id = str(session_payload.get("chat_session_id") or "").strip()
+    anon_id = str(session_payload.get("anon_id") or "").strip()
+    if not chat_session_id or not anon_id:
+        return False
+    context = db.session.get(ChatSessionContext, chat_session_id)
+    if context is None:
+        db.session.add(
+            ChatSessionContext(
+                chat_session_id=chat_session_id,
+                tenant_id=tenant.id,
+                anon_id=anon_id,
+            )
+        )
+        return True
+    if context.tenant_id != tenant.id:
+        return False
+    if context.user_id is not None:
+        return user is not None and context.user_id == user.id
+    return context.anon_id == anon_id
+
+
+def _session_identity_conflict_payload(
+    *,
+    contract_version: str,
+    tenant: TenantProfile,
+    linked: bool | None = None,
+) -> dict:
+    payload = {
+        "ok": False,
+        "contract_version": contract_version,
+        "tenant_slug": tenant.slug,
+        "status": "verification_required",
+        "reason_code": "session_identity_conflict",
+        "next_action": "start_new_session_or_login",
+        "login_endpoint": "/auth/widget/bootstrap",
+    }
+    if linked is not None:
+        payload["linked"] = linked
+    return payload
 
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/menu', methods=['GET', 'OPTIONS'])
@@ -939,6 +1178,23 @@ def public_widget_commerce_session():
         return _public_json(locked_payload, locked_status)
 
     session_payload = _session_context_payload()
+    history_viewer = _history_viewer_for_tenant(tenant, session_payload)
+    verified_history_context = _history_session_context(
+        tenant,
+        session_payload,
+        history_viewer,
+    )
+    # A legacy ``User.anon_id`` is only a bearer hint, not an authenticated
+    # principal by itself. Require a tenant-bound chat session before exposing
+    # registered-user commerce state to an unauthenticated request.
+    if history_viewer is not None and not isinstance(getattr(g, "viewer", None), User):
+        if verified_history_context is None:
+            history_viewer = None
+            verified_history_context = _history_session_context(
+                tenant,
+                session_payload,
+                None,
+            )
     owner = _resolve_catalog_owner(tenant)
     catalog_products_count = 0
     if owner:
@@ -995,7 +1251,12 @@ def public_widget_commerce_session():
             "allow_guest_cart": True,
             "requires_contact_before_checkout": True,
             "public_api": public_api.get("cart"),
-            **_cart_counts_for_tenant(tenant, session_payload),
+                **_cart_counts_for_tenant(
+                    tenant,
+                    session_payload,
+                    viewer=history_viewer,
+                    verified_context=verified_history_context,
+                ),
         },
         "public_api": public_api,
         "payment": checkout_experience,
@@ -1151,6 +1412,12 @@ def public_widget_user_tenant_history():
         return _public_json(locked_payload, locked_status)
 
     session_payload = _session_context_payload()
+    viewer = _history_viewer_for_tenant(tenant, session_payload)
+    verified_context = _history_session_context(tenant, session_payload, viewer)
+    if viewer is not None and not isinstance(getattr(g, "viewer", None), User):
+        if verified_context is None:
+            viewer = None
+            verified_context = _history_session_context(tenant, session_payload, None)
     payload = {
         "contract_version": "public.widget_user_tenant_history.v1",
         "tenant_slug": tenant.slug,
@@ -1162,8 +1429,18 @@ def public_widget_user_tenant_history():
             "anon_id": session_payload["anon_id"],
             "chat_session_id": session_payload["chat_session_id"],
         },
-        "items": _widget_history_items(tenant, session_payload),
-        "cart": _cart_counts_for_tenant(tenant, session_payload),
+        "items": _widget_history_items(
+            tenant,
+            session_payload,
+            viewer=viewer,
+            verified_context=verified_context,
+        ),
+        "cart": _cart_counts_for_tenant(
+            tenant,
+            session_payload,
+            viewer=viewer,
+            verified_context=verified_context,
+        ),
     }
     return _public_json(payload)
 
@@ -1208,8 +1485,74 @@ def public_widget_user_register():
             400,
         )
 
-    existing_user = User.query.filter(func.lower(User.email) == email).first() if email else None
-    if existing_user and existing_user.anon_id != session_payload.get("anon_id"):
+    anon_id = session_payload.get("anon_id")
+    anon_user, anon_ambiguous = _unique_user_for_anon(anon_id)
+    if anon_ambiguous:
+        return _public_json(
+            {
+                "ok": False,
+                "contract_version": "public.widget_user_register.v1",
+                "tenant_slug": tenant.slug,
+                "status": "verification_required",
+                "reason_code": "anonymous_identity_ambiguous",
+                "next_action": "verify_contact_or_login",
+            },
+            409,
+        )
+    authenticated = getattr(g, "viewer", None)
+    if not isinstance(authenticated, User):
+        authenticated = None
+    if authenticated is not None and not _authenticated_viewer_matches_anon(
+        authenticated,
+        anon_user,
+        anon_id,
+    ):
+        return _public_json(
+            _session_identity_conflict_payload(
+                contract_version="public.widget_user_register.v1",
+                tenant=tenant,
+            ),
+            409,
+        )
+    if authenticated is None and _anon_recovery_requires_strong_verification(anon_user):
+        return _public_json(
+            _passkey_verification_required_payload(
+                contract_version="public.widget_user_register.v1",
+                tenant=tenant,
+            ),
+            409,
+        )
+
+    existing_user = None
+    can_complete_authenticated_profile = bool(
+        _is_provisional_passkey_user(authenticated)
+        and anon_user is not None
+        and authenticated is not None
+        and anon_user.id == authenticated.id
+        and str(authenticated.anon_id or "").strip() == str(anon_id or "").strip()
+    )
+    if authenticated is None:
+        existing_user = (
+            User.query.filter(func.lower(User.email) == email).one_or_none()
+            if email
+            else None
+        )
+    elif email and can_complete_authenticated_profile:
+        contact_owner = User.query.filter(func.lower(User.email) == email).one_or_none()
+        if contact_owner is not None and contact_owner.id != authenticated.id:
+            return _public_json(
+                {
+                    "ok": False,
+                    "contract_version": "public.widget_user_register.v1",
+                    "tenant_slug": tenant.slug,
+                    "status": "verification_required",
+                    "reason_code": "contact_already_registered",
+                    "next_action": "verify_contact_or_login",
+                    "login_endpoint": "/auth/widget/bootstrap",
+                },
+                409,
+            )
+    if existing_user and existing_user.id != getattr(anon_user, "id", None):
         return _public_json(
             {
                 "ok": True,
@@ -1228,15 +1571,27 @@ def public_widget_user_register():
             }
         )
 
-    user = existing_user or User.create_or_get_by_anon(session_payload.get("anon_id"), name)
-    status = "linked_existing" if existing_user else "registered"
-    if email and str(user.email or "").endswith("@passkey.chatboc"):
-        user.email = email
+    candidate_user = authenticated or existing_user or anon_user
+    if not _stage_public_session_binding(tenant, session_payload, candidate_user):
+        db.session.rollback()
+        return _public_json(
+            _session_identity_conflict_payload(
+                contract_version="public.widget_user_register.v1",
+                tenant=tenant,
+            ),
+            409,
+        )
 
-    if name and (not user.name or str(user.name).startswith("Ciudadano")):
-        user.name = name
-    if phone and not getattr(user, "telefono", None):
-        user.telefono = phone
+    user = candidate_user or User.create_or_get_by_anon(anon_id, name)
+    status = "linked_existing" if authenticated is not None or existing_user else "registered"
+    can_mutate_profile = authenticated is None or can_complete_authenticated_profile
+    if can_mutate_profile:
+        if email and str(user.email or "").endswith("@passkey.chatboc"):
+            user.email = email
+        if name and (not user.name or str(user.name).startswith("Ciudadano")):
+            user.name = name
+        if phone and not getattr(user, "telefono", None):
+            user.telefono = phone
     if not getattr(user, "tenant_id", None):
         user.tenant_id = tenant.id
     if not getattr(user, "tenant_slug", None):
@@ -1246,7 +1601,7 @@ def public_widget_user_register():
     db.session.flush()
     follower_created = _ensure_tenant_follower(user, tenant)
     merge_stats = merge_anon_into_user(
-        session_payload.get("anon_id"),
+        anon_id,
         user,
         session_ids=[session_payload.get("chat_session_id")],
         tenant_id=tenant.id,
@@ -1262,8 +1617,12 @@ def public_widget_user_register():
                 "is_registered": True,
                 "contact": {
                     "name": user.name,
-                    "email": email or None,
-                    "phone": phone or getattr(user, "telefono", None),
+                    "email": (
+                        None
+                        if str(user.email or "").endswith("@passkey.chatboc")
+                        else user.email
+                    ),
+                    "phone": getattr(user, "telefono", None),
                 },
                 "anon_id": session_payload["anon_id"],
                 "chat_session_id": session_payload["chat_session_id"],
@@ -1300,7 +1659,35 @@ def public_widget_user_link_session():
         return _public_json(locked_payload, locked_status)
 
     session_payload = _session_context_payload()
-    user = User.query.filter_by(anon_id=session_payload.get("anon_id")).first()
+    anon_id = session_payload.get("anon_id")
+    anon_user, anon_ambiguous = _unique_user_for_anon(anon_id)
+    authenticated = getattr(g, "viewer", None)
+    if not isinstance(authenticated, User):
+        authenticated = None
+    if authenticated is not None and not _authenticated_viewer_matches_anon(
+        authenticated,
+        anon_user,
+        anon_id,
+    ):
+        return _public_json(
+            _session_identity_conflict_payload(
+                contract_version="public.widget_user_link_session.v1",
+                tenant=tenant,
+                linked=False,
+            ),
+            409,
+        )
+    user = authenticated or anon_user
+
+    if authenticated is None and _anon_recovery_requires_strong_verification(user):
+        return _public_json(
+            _passkey_verification_required_payload(
+                contract_version="public.widget_user_link_session.v1",
+                tenant=tenant,
+                linked=False,
+            ),
+            409,
+        )
 
     if user is None:
         return _public_json(
@@ -1309,16 +1696,31 @@ def public_widget_user_link_session():
                 "contract_version": "public.widget_user_link_session.v1",
                 "tenant_slug": tenant.slug,
                 "linked": False,
-                "reason_code": "registration_required",
+                "reason_code": (
+                    "anonymous_identity_ambiguous"
+                    if anon_ambiguous
+                    else "registration_required"
+                ),
                 "required_fields": ["name", "email_or_phone"],
                 "register_endpoint": "/api/public/widget-user/register",
                 "session": session_payload,
             }
         )
 
+    if not _stage_public_session_binding(tenant, session_payload, user):
+        db.session.rollback()
+        return _public_json(
+            _session_identity_conflict_payload(
+                contract_version="public.widget_user_link_session.v1",
+                tenant=tenant,
+                linked=False,
+            ),
+            409,
+        )
+
     follower_created = _ensure_tenant_follower(user, tenant)
     merge_stats = merge_anon_into_user(
-        session_payload.get("anon_id"),
+        anon_id,
         user,
         session_ids=[session_payload.get("chat_session_id")],
         tenant_id=tenant.id,

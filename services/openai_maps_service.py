@@ -11,6 +11,7 @@ from services.openai_model_defaults import (
     chat_completion_compatibility_options,
     resolve_openai_model,
 )
+from services.llm_provider_network_policy import llm_provider_network_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,14 @@ def _solicitar_json_a_openai(
     schema: dict,
     system_message: str,
 ):
-    """Pide a OpenAI que devuelva JSON válido, with capability-only fallbacks."""
+    """Ask OpenAI for schema-constrained JSON with capability-only fallbacks."""
+
+    if not llm_provider_network_allowed("openai"):
+        logger.info(
+            "LLM provider request skipped provider=openai "
+            "capability=geocoding reason=test_network_disabled"
+        )
+        return None
 
     messages = [
         {

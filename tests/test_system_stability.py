@@ -9,7 +9,7 @@ sys.path.insert(0, project_root)
 
 from app import create_app, db
 from config import Config
-from models import User, Rubro
+from models import TenantProfile, User, Rubro
 from services.actions.municipio_actions import CrearReclamoActionHandler
 
 class TestSystemStability(unittest.TestCase):
@@ -34,8 +34,25 @@ class TestSystemStability(unittest.TestCase):
 
         # Create necessary users and rubros for tests
         self.rubro = Rubro(nombre="municipio", clave="municipio")
-        self.owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=self.rubro, municipio_id='test_muni', password_hash='hash')
-        db.session.add_all([self.rubro, self.owner_user])
+        self.owner_user = User(
+            id=1,
+            tipo_chat='municipio',
+            rol='admin',
+            email='admin@test.com',
+            name='Admin',
+            rubro=self.rubro,
+            municipio_id=1,
+            tenant_slug='system-stability',
+            password_hash='hash',
+        )
+        self.tenant = TenantProfile(
+            slug='system-stability',
+            nombre='Municipio System Stability',
+            tipo='municipio',
+            municipio_id=1,
+            is_active=True,
+        )
+        db.session.add_all([self.rubro, self.owner_user, self.tenant])
         db.session.commit()
 
     def tearDown(self):
@@ -52,6 +69,8 @@ class TestSystemStability(unittest.TestCase):
         # 1. Setup the context for the action handler to simulate an anonymous user
         handler_context = {
             "user_obj": self.owner_user,
+            "tenant_profile": self.tenant,
+            "tenant_id": self.tenant.id,
             "viewer_user_obj": None, # No existing user object
             "anon_id": "whatsapp:+5491122334455", # Anonymous ID for the user
             "profile_name": "Marcelo From WhatsApp", # This is the crucial fallback data
@@ -77,6 +96,7 @@ class TestSystemStability(unittest.TestCase):
 
         # 3. Patch the dependencies of the handler (e.g., ticket creation)
         with patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket') as mock_crear_ticket, \
+             patch('services.actions.municipio_actions.direccion_es_valida', return_value=True), \
              patch('services.actions.municipio_actions.enviar_notificacion_whatsapp_con_plantilla'), \
              patch('services.actions.municipio_actions.enviar_notificacion_sms'):
 

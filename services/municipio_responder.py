@@ -35,6 +35,9 @@ from services.tenant_ticket_scope import (
     scoped_municipio_ticket_query,
 )
 from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
+from services.whatsapp_inbound_content import (
+    normalize_safe_whatsapp_inbound_context,
+)
 from utils.db_utils import safe_flag_modified
 from utils.response_utils import normalize_response_payload
 # Compatibilidad hacia atrás para pruebas que parchean `flag_modified`
@@ -1164,6 +1167,16 @@ class ReclamoFlowHandler:
         # Ensure the municipal context reflects that we're inside the claim flow.
         self.municipal_ctx['estado_conversacion'] = "EN_FLUJO_RECLAMO"
 
+        # A contact step is only valid while a required contact field is
+        # missing or after the citizen explicitly selected "Editar datos".
+        # Older sessions could persist this state with a complete profile and
+        # then route an audio/text correction through the contact extractor,
+        # which stored a claim address as ``direccion_contacto``. Reconcile the
+        # structured state before interpreting this turn; this is independent
+        # of whether the language arrived as text, STT, reply or another
+        # normalized channel input.
+        self._reconcile_contact_state()
+
         state_name = self.flow_context.get("state")
         state = ReclamoState[state_name] if state_name else None
 
@@ -1182,6 +1195,60 @@ class ReclamoFlowHandler:
         else:
             logger.error(f"ReclamoFlowHandler: Estado desconocido o no manejado: {state_name}")
             return self.end_flow("Hubo un error en el proceso, por favor intentá de nuevo.", show_menu=True)
+
+    @staticmethod
+    def _missing_contact_fields(datos: dict[str, Any]) -> list[str]:
+        return [
+            field
+            for field in ("nombre", "dni", "email", "telefono")
+            if not datos.get(field)
+            or datos.get(field) == "Vecino/a"
+            or "@whatsapp.chatboc.com" in str(datos.get(field))
+        ]
+
+    def _reconcile_contact_state(self) -> None:
+        if self.flow_context.get("state") != ReclamoState.ESPERANDO_DATOS_CONTACTO.name:
+            return
+        if self.flow_context.get("contact_edit_mode") is True:
+            return
+        datos = self.flow_context.get("datos_reclamo")
+        if not isinstance(datos, dict) or self._missing_contact_fields(datos):
+            return
+
+        logger.warning(
+            "[RECLAMO_FLOW] Reconciled stale contact state to confirmation; "
+            "required contact fields were already complete"
+        )
+        self.flow_context["state"] = ReclamoState.ESPERANDO_CONFIRMACION.name
+
+    @staticmethod
+    def _optional_evidence_prompt(prefix: str = "") -> dict[str, Any]:
+        """Return one consistent optional-evidence prompt for every claim path.
+
+        The legacy action identifiers intentionally remain stable for already
+        published WhatsApp buttons, but the citizen may now send any supported
+        evidence instead of being forced into an image-only branch.
+        """
+
+        lead = str(prefix or "").strip()
+        prompt = (
+            "¿Querés agregar evidencia? Podés enviar una foto, una nota de voz "
+            "o un documento. Esto ayuda a resolver el problema."
+        )
+        return {
+            "message_body": f"{lead}\n\n{prompt}" if lead else prompt,
+            "options_list": [
+                {
+                    "texto": "Enviar evidencia",
+                    "action_id": "reclamo_adjuntar_foto_si",
+                },
+                {
+                    "texto": "Seguir sin adjunto",
+                    "action_id": "reclamo_adjuntar_foto_no",
+                },
+            ],
+            "message_type": "interactive_buttons",
+        }
 
     def start_flow(self, datos_iniciales=None, categoria_inicial=None):
         logger.info("Iniciando flujo de reclamo v2.")
@@ -1281,6 +1348,7 @@ class ReclamoFlowHandler:
         viewer = self.context.get("viewer_user_obj")
         contacto_cache = self.municipal_ctx.setdefault('contacto_usuario', {})
         last_ticket = None
+        resolved_tenant = self.context.get("tenant_profile")
 
         # 1. Find the last ticket to source contact data from.
         #    Priority: Logged-in user's tickets > Anonymous session's tickets.
@@ -1293,7 +1361,6 @@ class ReclamoFlowHandler:
             if not isinstance(owner_user_id, (int, str)):
                 owner_user_id = None
 
-            resolved_tenant = self.context.get("tenant_profile")
             if resolved_tenant is None and self.context.get("tenant_id"):
                 try:
                     resolved_tenant = db.session.get(
@@ -1339,8 +1406,11 @@ class ReclamoFlowHandler:
                                 "Prefilling contact data from last ticket %s found by phone.",
                                 last_ticket.nro_ticket,
                             )
-        except Exception as e:
-            logger.warning(f"Error fetching last ticket for prefill: {e}")
+        except Exception as exc:
+            logger.warning(
+                "Error fetching last ticket for prefill error_type=%s",
+                type(exc).__name__,
+            )
 
         # 2. Apply prefill from the found ticket
         if last_ticket:
@@ -1363,9 +1433,11 @@ class ReclamoFlowHandler:
             current_session_id = getattr(self.chat_db_context, "chat_session_id", None)
             if not isinstance(current_session_id, (int, str)):
                 current_session_id = None
-            if anon_id:
+            resolved_tenant_id = getattr(resolved_tenant, "id", None)
+            if anon_id and resolved_tenant_id is not None:
                 previous_session = (
                     ChatSessionContext.query.filter(ChatSessionContext.anon_id == anon_id)
+                    .filter(ChatSessionContext.tenant_id == resolved_tenant_id)
                     .filter(ChatSessionContext.chat_session_id != current_session_id)
                     .order_by(ChatSessionContext.last_updated.desc())
                     .first()
@@ -1382,8 +1454,15 @@ class ReclamoFlowHandler:
                     _apply_prefill('email', previous_contact.get('email'))
                     _apply_prefill('telefono', previous_contact.get('telefono'))
                     _apply_prefill('dni', previous_contact.get('dni'))
-        except Exception as e:
-            logger.warning("Error fetching previous session contact for prefill: %s", e)
+            elif anon_id:
+                logger.info(
+                    "Skipping previous-session contact prefill without authoritative tenant scope."
+                )
+        except Exception as exc:
+            logger.warning(
+                "Error fetching previous session contact for prefill error_type=%s",
+                type(exc).__name__,
+            )
 
         # 4. From the viewer profile if available
         if viewer:
@@ -1441,14 +1520,7 @@ class ReclamoFlowHandler:
                     datos['foto_url'] = self.context.get('foto_url')
                 else:
                     self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
-                    return {
-                        "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
-                        "options_list": [
-                            {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
-                            {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
-                        ],
-                        "message_type": "interactive_buttons",
-                    }
+                    return self._optional_evidence_prompt()
 
             return self.ask_for_contact_details()
 
@@ -1705,14 +1777,7 @@ class ReclamoFlowHandler:
         map_prompt = f"¿Es acá? {map_url_preview}\n\n" if map_url_preview else ""
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
-        return {
-            "message_body": f"{map_prompt}¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
-            "options_list": [
-                {"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"},
-                {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"},
-            ],
-            "message_type": "interactive_buttons",
-        }
+        return self._optional_evidence_prompt(map_prompt)
 
     
     def handle_descripcion(self, user_input, payload=None):
@@ -1734,11 +1799,7 @@ class ReclamoFlowHandler:
                 if self.flow_context['datos_reclamo'].get('foto_url') or self.context.get('foto_url'):
                     return self.ask_for_contact_details()
                 self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
-                return {
-                    "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
-                    "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
-                    "message_type": "interactive_buttons"
-                }
+                return self._optional_evidence_prompt()
 
         # Check if we already have a valid description in the context (e.g. extracted by LLM)
         existing_desc = self.flow_context['datos_reclamo'].get('descripcion')
@@ -1775,11 +1836,7 @@ class ReclamoFlowHandler:
                 self.flow_context['datos_reclamo'].setdefault('foto_url', self.context.get('foto_url'))
                 return self.ask_for_contact_details()
             self.flow_context['state'] = ReclamoState.ESPERANDO_FOTO.name
-            return {
-                "message_body": "¿Querés agregar una foto? Esto ayuda mucho a resolver el problema.",
-                "options_list": [{"texto": "Sí, agregar foto", "action_id": "reclamo_adjuntar_foto_si"}, {"texto": "No, omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
-                "message_type": "interactive_buttons"
-            }
+            return self._optional_evidence_prompt()
     def handle_foto(self, user_input, payload):
         action = payload.get("action") or payload.get("action_id")
 
@@ -1788,6 +1845,8 @@ class ReclamoFlowHandler:
         # a picture directly without first pressing "Sí, agregar foto".
         foto_url = payload.get("foto_url") or self.context.get("foto_url")
         es_foto = payload.get("es_foto") or self.context.get("es_foto")
+        es_audio = payload.get("es_audio") or self.context.get("es_audio")
+        es_archivo = payload.get("es_archivo") or self.context.get("es_archivo")
         archivo_id = payload.get("archivo_id_para_asociar") or self.context.get("archivo_id_para_asociar")
         decision = classify_reclamo_photo_turn(
             user_input,
@@ -1805,15 +1864,58 @@ class ReclamoFlowHandler:
             if archivo_id:
                 self.flow_context['datos_reclamo']['archivo_id_para_asociar'] = archivo_id
             return self.ask_for_contact_details()
+        if archivo_id and (es_audio or (es_archivo and not es_foto)):
+            datos = self.flow_context.setdefault('datos_reclamo', {})
+            evidence_type = "audio" if es_audio else "documento"
+            datos['archivo_id_para_asociar'] = archivo_id
+            datos['evidencia_tipo'] = evidence_type
+
+            # A substantive voice note at this step is useful claim context,
+            # not an invalid answer.  Exact control answers (skip/cancel/send)
+            # remain authoritative and are not copied into the description.
+            detail = re.sub(r"\s+", " ", str(user_input or "")).strip()
+            if (
+                es_audio
+                and decision.intent is ReclamoTurnIntent.UNKNOWN
+                and len(detail) >= 10
+            ):
+                current_description = str(datos.get('descripcion') or "").strip()
+                if detail.casefold() not in current_description.casefold():
+                    datos['descripcion'] = (
+                        f"{current_description}\nDetalle adicional por audio: {detail}"
+                        if current_description
+                        else detail
+                    )[:4000]
+                    datos['descripcion_resumida'] = construir_descripcion_breve(
+                        datos['descripcion']
+                    )
+
+            response = self.ask_for_contact_details()
+            evidence_label = "nota de voz" if es_audio else "documento"
+            response['message_body'] = (
+                f"Recibí tu {evidence_label} y la voy a adjuntar como evidencia del reclamo."
+                f"\n\n{response.get('message_body') or ''}"
+            )
+            return response
         if decision.intent is ReclamoTurnIntent.SKIP_PHOTO:
             self.flow_context['datos_reclamo']['foto_url'] = None
             return self.ask_for_contact_details()
         if decision.intent is ReclamoTurnIntent.ADD_PHOTO:
-            return {"message_body": "Por favor, enviá la foto ahora."}
-        return {
-            "message_body": "No entendí tu respuesta. Por favor, enviá una foto o elegí una de las opciones.",
-            "options_list": [{"texto": "Omitir foto", "action_id": "reclamo_adjuntar_foto_no"}],
-        }
+            return {
+                "message_body": (
+                    "Enviá ahora una foto, una nota de voz o un documento y lo voy "
+                    "a sumar como evidencia."
+                ),
+                "options_list": [
+                    {
+                        "texto": "Seguir sin adjunto",
+                        "action_id": "reclamo_adjuntar_foto_no",
+                    }
+                ],
+            }
+        return self._optional_evidence_prompt(
+            "No pude determinar si querés adjuntar evidencia o continuar sin ella."
+        )
 
     def ask_for_contact_details(self, force_prompt: bool = False):
         """Ask for missing contact details or allow editing if requested."""
@@ -1826,18 +1928,18 @@ class ReclamoFlowHandler:
             'telefono': 'Teléfono',
         }
 
-        missing = [
-            f for f in required_fields
-            if not datos.get(f)
-            or datos.get(f) == 'Vecino/a'
-            or '@whatsapp.chatboc.com' in str(datos.get(f))
-        ]
+        missing = self._missing_contact_fields(datos)
 
         if not force_prompt and not missing:
+            self.flow_context.pop("contact_edit_mode", None)
             self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
             return self.get_confirmation_message()
 
         self.flow_context['state'] = ReclamoState.ESPERANDO_DATOS_CONTACTO.name
+        if force_prompt:
+            self.flow_context["contact_edit_mode"] = True
+        else:
+            self.flow_context.pop("contact_edit_mode", None)
 
         known_parts = []
         missing_labels = []
@@ -1868,6 +1970,28 @@ class ReclamoFlowHandler:
         return {"message_body": "\n".join(message_lines)}
 
     def handle_datos_contacto(self, user_input):
+        # The edit step accepts corrections to claim fields as well as contact
+        # fields. Use the same conservative, explicitly-labelled correction
+        # contract as the confirmation step so an STT transcript such as
+        # "la dirección es ..." updates the claim draft, not a contact-only
+        # side field.
+        contact_edit_mode = self.flow_context.get("contact_edit_mode") is True
+        correction = (
+            classify_reclamo_confirmation_turn(user_input)
+            if contact_edit_mode
+            else None
+        )
+        if correction and correction.intent is ReclamoTurnIntent.CORRECTION:
+            datos_reclamo = self.flow_context.setdefault('datos_reclamo', {})
+            apply_reclamo_corrections(datos_reclamo, correction)
+            self.flow_context.pop("contact_edit_mode", None)
+            response = self.ask_for_contact_details()
+            response["message_body"] = (
+                "Actualicé los datos indicados.\n\n"
+                + str(response.get("message_body") or "")
+            ).strip()
+            return response
+
         contact_details = extract_multiple_contact_details_regex(user_input)
         if not contact_details:
             return {"message_body": "No pude identificar tus datos. Por favor, intentá de nuevo incluyendo nombre, DNI, email y teléfono."}
@@ -1884,6 +2008,12 @@ class ReclamoFlowHandler:
             if not v:
                 continue
             if k == "direccion":
+                if contact_edit_mode:
+                    # In explicit edit mode, only the labelled correction
+                    # contract above may mutate the claim address. Contact
+                    # extraction can otherwise hallucinate an address from
+                    # prose surrounding an email or phone update.
+                    continue
                 datos_reclamo.setdefault("direccion_contacto", v)
                 continue
             if k == "nombre" and (
@@ -1903,8 +2033,8 @@ class ReclamoFlowHandler:
             if k in {"nombre", "dni", "email", "telefono"}:
                 datos_reclamo[k] = v
         _merge_contacto_usuario(self.municipal_ctx, datos_reclamo)
-        self.flow_context['state'] = ReclamoState.ESPERANDO_CONFIRMACION.name
-        return self.get_confirmation_message()
+        self.flow_context.pop("contact_edit_mode", None)
+        return self.ask_for_contact_details()
 
     def get_confirmation_message(self):
         datos = self.flow_context.get('datos_reclamo', {})
@@ -1921,6 +2051,13 @@ class ReclamoFlowHandler:
         mensaje += f"- Email: {datos.get('email', 'No especificado')}\n"
         mensaje += f"- Teléfono: {datos.get('telefono', 'No especificado')}\n"
         mensaje += f"- Foto adjunta: {'Sí' if datos.get('foto_url') else 'No'}\n"
+        evidence_type = str(datos.get("evidencia_tipo") or "").strip().lower()
+        if evidence_type and not datos.get('foto_url'):
+            evidence_label = {
+                "audio": "Nota de voz",
+                "documento": "Documento",
+            }.get(evidence_type, "Archivo")
+            mensaje += f"- Evidencia adjunta: {evidence_label}\n"
         if datos.get("solicita_llamada"):
             mensaje += "- Contacto solicitado: llamada telefónica pendiente\n"
         maps_link = datos.get('maps_link') or datos.get('maps_search_url')
@@ -2505,25 +2642,25 @@ def _maybe_route_menu_input_to_llm(
 
     logger_actual = current_app.logger if has_app_context() else logger
 
-    reclamo_options = [
-        {"texto": category}
-        for category in RECLAMO_KEYWORDS.keys()
-        if category != "Otros"
-    ]
-    reclamo_category = find_reclamo_category_by_input(pregunta_str, reclamo_options)
-    if reclamo_category:
-        logger_actual.info(
-            "Free-form menu input looks like a reclamo. Starting guided reclamo flow without LLM."
-        )
-        handler = ReclamoFlowHandler(context, chat_db_context)
-        response_dict = handler.start_flow(
-            datos_iniciales={"descripcion": pregunta_str.strip()},
-            categoria_inicial=reclamo_category,
-        )
+    # A visible menu is presentation state, not a reason to downgrade a
+    # substantive citizen message into a keyword-only category choice. Reuse
+    # the structured claim bootstrap used outside menus so a voice transcript
+    # such as "hay un poste caído... llamame" preserves its description,
+    # callback request and every other extracted field in one pass. The Python
+    # flow still validates the resulting draft before any domain mutation.
+    municipio_config = context.get("municipio_config_actual") or {}
+    claim_payload = _try_start_reclamo_from_text(
+        pregunta_str,
+        context,
+        chat_db_context,
+        default_localidad=municipio_config.get("ciudad"),
+        default_provincia=municipio_config.get("provincia"),
+    )
+    if claim_payload:
         contexto_municipio_actual["estado_conversacion"] = "EN_FLUJO_RECLAMO"
         if chat_db_context:
-            flag_modified(chat_db_context, "context_data")
-        return response_dict
+            safe_flag_modified(chat_db_context, "context_data")
+        return claim_payload
 
     logger_actual.info(
         "Free-form sentence detected while waiting for a menu selection. Escalating to LLM."
@@ -4549,18 +4686,38 @@ def handle_info_requests(action_id: str) -> dict:
 
 
 def safe_llm_call(prompt, preamble, fallback=None):
-    logger.debug(f"[LLM_CALL_PROMPT] Enviando prompt a LLM. Preamble: '{preamble}'. Prompt: '{prompt[:500]}...'")
+    logger.debug(
+        "[LLM_CALL_PROMPT] Request prepared prompt_length=%s preamble_length=%s",
+        len(str(prompt or "")),
+        len(str(preamble or "")),
+    )
     try:
         resp = get_cohere_response(message=prompt, preamble=preamble)
-        logger.debug(f"[LLM_CALL_RESPONSE] Respuesta LLM recibida: '{resp[:500]}...'")
+        logger.debug(
+            "[LLM_CALL_RESPONSE] Response received response_length=%s",
+            len(str(resp or "")),
+        )
         generic_phrases = ["no tengo información", "lo siento", "no puedo ayudarte con eso", "no lo sé", "esa información no está disponible", "como modelo de lenguaje", "no tengo acceso a internet", "no puedo realizar esa acción"]
         if not resp: logger.warning("[LLM_FALLBACK] Respuesta vacía del LLM."); raise ValueError("Respuesta vacía del LLM")
         resp_lower = resp.lower()
         for phrase in generic_phrases:
-            if phrase in resp_lower: logger.warning(f"[LLM_FALLBACK] Respuesta genérica del LLM detectada (contiene: '{phrase}'). Respuesta completa: '{resp}'"); raise ValueError(f"Respuesta genérica del LLM (contiene: '{phrase}')")
+            if phrase in resp_lower:
+                logger.warning(
+                    "[LLM_FALLBACK] Generic response detected reason=%s response_length=%s",
+                    phrase,
+                    len(resp),
+                )
+                raise ValueError("Respuesta genérica del LLM")
         return resp
-    except ValueError as ve: logger.error(f"[LLM_FALLBACK] Problema con la respuesta del LLM: {ve}"); return fallback or "No pude encontrar una respuesta directa a tu consulta. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
-    except Exception as e: logger.error(f"[LLM_FALLBACK] Error general en llamada a LLM: {e}", exc_info=True); return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
+    except ValueError:
+        logger.warning("[LLM_FALLBACK] Response validation failed")
+        return fallback or "No pude encontrar una respuesta directa a tu consulta. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
+    except Exception as exc:
+        logger.error(
+            "[LLM_FALLBACK] Provider call failed error_type=%s",
+            type(exc).__name__,
+        )
+        return fallback or "Hubo un inconveniente al procesar tu solicitud en este momento. ¿Podrías reformularla o preferís que te muestre opciones generales como hacer un reclamo o consultar trámites?"
 
 RECLAMO_STATES = [ConversationState.ESPERANDO_CATEGORIA_RECLAMO, ConversationState.ESPERANDO_DIRECCION_RECLAMO, ConversationState.ESPERANDO_NOMBRE_VECINO, ConversationState.ESPERANDO_TELEFONO_VECINO, ConversationState.ESPERANDO_EMAIL_VECINO, ConversationState.ESPERANDO_DESCRIPCION_RECLAMO, ConversationState.ESPERANDO_ADJUNTOS_RECLAMO, ConversationState.ESPERANDO_CONFIRMACION_RECLAMO]
 
@@ -4962,6 +5119,14 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
         "datos_reclamo_actuales": datos_reclamo,
         "datos_sugerencia_actuales": datos_sugerencia,
     }
+    whatsapp_inbound_context = normalize_safe_whatsapp_inbound_context(
+        context.get("whatsapp_inbound_content")
+    )
+    if whatsapp_inbound_context:
+        # Modality explains the user turn but never replaces its exact text.
+        # The helper rejects any caller-shaped object that does not match the
+        # canonical provider contract and recomputes every policy field.
+        usuario_info_llm["entrada_whatsapp"] = whatsapp_inbound_context
 
     if demo_metadata:
         prompt_context = demo_metadata.get("prompt_context")
@@ -5702,7 +5867,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 # Si se necesita más información, no ejecutar la herramienta.
                 # Simplemente preguntar al usuario y guardar el estado para el próximo turno.
                 if info_faltante:
-                    logger.info(f"[HERRAMIENTA] LLM pide más información ('{info_faltante}') antes de ejecutar '{nombre_herramienta}'. No se ejecutará la herramienta.")
+                    logger.info(
+                        "[HERRAMIENTA] Missing information before execution tool=%s",
+                        nombre_herramienta,
+                    )
                     contexto_municipio_actual["estado_conversacion"] = ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name
                     normalized_tool_pending = _normalize_pedir_info_value(info_faltante)
                     if normalized_tool_pending:
@@ -5720,13 +5888,23 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                 funcion_herramienta = herramienta["funcion"]
 
                 try:
-                    logger.info(f"[HERRAMIENTA] Intentando ejecutar: {nombre_herramienta} con params: {parametros_herramienta}")
+                    logger.info(
+                        "[HERRAMIENTA] Execution requested tool=%s parameter_count=%s",
+                        nombre_herramienta,
+                        len(parametros_herramienta)
+                        if isinstance(parametros_herramienta, dict)
+                        else 0,
+                    )
                     import inspect
                     sig = inspect.signature(funcion_herramienta)
                     if 'context' in sig.parameters:
                         parametros_herramienta['context'] = context
                     resultado_herramienta = funcion_herramienta(**parametros_herramienta)
-                    logger.info(f"[HERRAMIENTA] Resultado de {nombre_herramienta}: {str(resultado_herramienta)[:200]}...")
+                    logger.info(
+                        "[HERRAMIENTA] Execution completed tool=%s result_type=%s",
+                        nombre_herramienta,
+                        type(resultado_herramienta).__name__,
+                    )
 
                     # Combinar la respuesta del LLM con el resultado de la herramienta
                     respuesta_final = f"{respuesta_usuario_llm}\n\n{resultado_herramienta}"
@@ -5743,8 +5921,12 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                         "fuente": f"herramienta_{nombre_herramienta}"
                     }, contexto_municipio_actual
 
-                except Exception as e:
-                    logger.error(f"Error ejecutando la herramienta '{nombre_herramienta}': {e}", exc_info=True)
+                except Exception as exc:
+                    logger.error(
+                        "[HERRAMIENTA] Execution failed tool=%s error_type=%s",
+                        nombre_herramienta,
+                        type(exc).__name__,
+                    )
                     # Friendly message for the user, more specific than a generic error.
                     user_friendly_tool_name = nombre_herramienta.replace("_", " ").replace("consultar", "la consulta de").replace("buscar", "la búsqueda de")
 
@@ -5756,7 +5938,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
                     }, contexto_municipio_actual
             else:
                 # Este caso se da si el LLM pide ejecutar una herramienta que no existe en TOOL_REGISTRY
-                logger.warning(f"Se intentó ejecutar una herramienta no registrada: '{nombre_herramienta}'")
+                logger.warning(
+                    "[HERRAMIENTA] Unregistered tool requested name_present=%s",
+                    bool(str(nombre_herramienta or "").strip()),
+                )
                 return {
                     "message_body": "No se encontró la herramienta solicitada. Por favor, reformula tu pregunta.",
                     "options_list": [],
@@ -6008,7 +6193,10 @@ def handle_llm_interaction(app, pregunta_str, context, viewer_user, owner_user, 
             return {"message_body": respuesta_usuario_llm, "options_list": botones_llm, "message_type": "interactive_buttons" if botones_llm else "text", "fuente": "llm_respuesta_general_v2"}, contexto_municipio_actual
 
     except Exception as e_llm:
-        logger.error(f"[HANDLE_LLM] Error: {e_llm}", exc_info=True)
+        logger.error(
+            "[HANDLE_LLM] Processing failed error_type=%s",
+            type(e_llm).__name__,
+        )
         for k in ["historial_llm_reclamo", "datos_parciales_llm_reclamo", "esperando_info_llm_reclamo", "historial_conversacion_general_llm", "estado_conversacion"]:
             if k == "estado_conversacion" and contexto_municipio_actual.get(k) in [ConversationState.ESPERANDO_INFO_RECLAMO_LLM.name, ConversationState.CONVERSACION_GENERAL_LLM.name]:
                 contexto_municipio_actual[k] = None
@@ -6956,7 +7144,52 @@ def _looks_like_address(value: str | None) -> bool:
     if any(char.isdigit() for char in normalized):
         return True
 
-    if "esquina" in normalized or "km" in normalized:
+    if "esquina" in normalized:
+        # "En la esquina de la plaza" is a useful landmark hint, but it is
+        # not an actionable municipal address.  Require either a named street
+        # on both sides of ``esquina`` or two named streets after it (the
+        # common "esquina de X y Y" phrasing).
+        before, after = normalized.split("esquina", 1)
+        generic_tokens = {
+            "a",
+            "aca",
+            "ahi",
+            "al",
+            "calle",
+            "cerca",
+            "de",
+            "del",
+            "e",
+            "el",
+            "en",
+            "frente",
+            "justamente",
+            "la",
+            "las",
+            "los",
+            "parque",
+            "plaza",
+            "por",
+            "sobre",
+            "y",
+        }
+
+        def _named_tokens(fragment: str) -> list[str]:
+            return [
+                token
+                for token in re.findall(r"[a-z0-9]+", fragment)
+                if token not in generic_tokens and (len(token) >= 3 or token.isdigit())
+            ]
+
+        before_named = _named_tokens(before)
+        after_named = _named_tokens(after)
+        if before_named and after_named:
+            return True
+
+        after_parts = re.split(r"\b(?:y|e)\b", after, maxsplit=1)
+        return len(after_parts) == 2 and all(_named_tokens(part) for part in after_parts)
+
+    if "km" in normalized:
         return True
 
     if any(term in normalized for term in {"kilometro", "kilometros"}):
@@ -7080,15 +7313,13 @@ def extract_reclamo_details_from_text(
     reclamo_options: list,
     default_localidad: str | None = None,
     default_provincia: str | None = None,
+    require_claim_intent: bool = False,
 ) -> dict:
     """Attempt to extract category, description, address, and contact details from a user message.
 
-    The extraction now follows a "heuristics first" approach so we can avoid
-    unnecessary llamadas al LLM cuando el mensaje es claro (por ejemplo,
-    "hay un árbol caído"). Only when crucial data is missing we fall back to
-    the LLM extractor. This behaviour is specially importante para los casos
-    donde queremos que un reclamo se dispare automáticamente al recibir texto
-    o una transcripción de audio sin depender siempre del modelo.
+    Heuristics may enrich a draft without a provider call. Automatic bootstrap
+    passes ``require_claim_intent=True`` so the model must classify the turn;
+    deterministic category matches alone never authorize opening a claim.
     """
 
     details: dict[str, Any] = {}
@@ -7244,6 +7475,7 @@ def extract_reclamo_details_from_text(
         not details.get("categoria_sugerida")
         or not details.get("descripcion_sugerida")
         or is_complex_freeform_turn
+        or require_claim_intent
     )
 
     llm_details = {}
@@ -7260,6 +7492,15 @@ def extract_reclamo_details_from_text(
             llm_details = extract_complaint_details_llm(user_input) or {}
 
     if llm_details:
+        llm_intent = llm_details.get("intencion")
+        llm_is_claim = llm_details.get("es_reclamo")
+        if (
+            llm_intent in {"crear_reclamo", "consulta_informativa", "ambiguo"}
+            and isinstance(llm_is_claim, bool)
+        ):
+            details["intencion"] = llm_intent
+            details["es_reclamo"] = llm_is_claim
+
         if llm_details.get("tipo_problema") and "categoria_sugerida" not in details:
             mapped_category = find_reclamo_category_by_input(llm_details["tipo_problema"], reclamo_options)
             if mapped_category:
@@ -7766,7 +8007,17 @@ def _try_start_reclamo_from_text(
         plain_options,
         default_localidad=default_localidad,
         default_provincia=default_provincia,
+        require_claim_intent=True,
     )
+
+    # Category and description extraction can enrich a draft, but they do not
+    # prove that the citizen wants to create one. Missing, malformed,
+    # contradictory, or unavailable model intent must fail closed.
+    if not (
+        details.get("intencion") == "crear_reclamo"
+        and details.get("es_reclamo") is True
+    ):
+        return None
 
     category = details.get("categoria") or details.get("categoria_sugerida")
     if not category:
@@ -10636,6 +10887,9 @@ def responder_municipio(
         "tenant_profile": tenant_profile,
         "tenant_id": getattr(tenant_profile, "id", None),
         "target_entity_type": "municipio",
+        "whatsapp_inbound_content": received_payload.get(
+            "whatsapp_inbound_content"
+        ),
         "source_event_id": kwargs.get("source_event_id"),
         "durable_turn_id": kwargs.get("durable_turn_id"),
         "idempotency_key": kwargs.get("idempotency_key"),
@@ -13075,7 +13329,10 @@ def responder_municipio(
                 flag_modified(chat_db_context, "context_data")
 
             if consulta_guardada:
-                logger_actual.info(f"Received location, processing saved query: '{consulta_guardada}'")
+                logger_actual.info(
+                    "Received location; processing saved query query_length=%s",
+                    len(str(consulta_guardada or "")),
+                )
                 return _finalize_response(PointsOfInterestHandler(context).handle({"pregunta": consulta_guardada, "location": location}))
             else:
                 logger_actual.warning("In ESPERANDO_UBICACION_GENERAL state but no saved query found.")
@@ -13102,7 +13359,10 @@ def responder_municipio(
                         flag_modified(chat_db_context, "context_data")
 
                     if consulta_guardada:
-                        logger_actual.info(f"Geocoded address successfully. Processing saved query: '{consulta_guardada}'")
+                        logger_actual.info(
+                            "Geocoded address successfully; processing saved query query_length=%s",
+                            len(str(consulta_guardada or "")),
+                        )
                         loc_payload = {
                             "address": geocoded_location.get("formatted_address"),
                             "lat": geocoded_location.get("lat"),
@@ -13365,6 +13625,9 @@ def responder_municipio(
         "archivo_id_para_asociar": kwargs.get("archivo_id_para_asociar"),
         "location_link_info": location_link_info,
         "demo_metadata": demo_metadata if isinstance(demo_metadata, dict) else None,
+        "whatsapp_inbound_content": received_payload.get(
+            "whatsapp_inbound_content"
+        ),
         **source_event_context,
     })
     if not (chat_db_context and hasattr(chat_db_context, 'context_data')):
@@ -13383,8 +13646,11 @@ def responder_municipio(
             )
 
     logger_actual.info(
-        f"[RESPONDER_MUNICIPIO_START_CONTEXT_INIT] Context inicializado. UserMunicipio: {context['user_obj'].id if context['user_obj'] else 'N/A'}, "
-        f"ViewerCiudadano: {context['cliente_id'] or context['anon_id']}"
+        "[RESPONDER_MUNICIPIO_START_CONTEXT_INIT] owner_id=%s viewer_id=%s "
+        "has_anonymous_identity=%s",
+        getattr(context.get("user_obj"), "id", None),
+        context.get("cliente_id"),
+        bool(context.get("anon_id")),
     )
     logger_actual.info(
         "[CONTEXTO_MUNICIPIO_LOAD_RAW] contexto presente=%s claves=%s",

@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import datetime
 from typing import DefaultDict, Iterable, List, Sequence
 
-from sqlalchemy import and_, func
+from sqlalchemy import and_, false, func, or_
 from sqlalchemy.orm import Query
 
 from extensions import db
@@ -122,13 +122,72 @@ def municipio_ticket_query(filters: AnalyticsFilters) -> Query:
     return query
 
 
+def _pyme_tenant_for_filters(filters: AnalyticsFilters) -> TenantProfile | None:
+    owner_id = tenant_as_int(filters.tenant_id)
+    if owner_id is None:
+        return None
+
+    exact_tenant_id = getattr(filters, "tenant_profile_id", None)
+    if exact_tenant_id is not None:
+        tenant = db.session.get(TenantProfile, exact_tenant_id)
+        if tenant is None or tenant.pyme_id is None or int(tenant.pyme_id) != owner_id:
+            return None
+        return tenant
+
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+    except ValueError:
+        return None
+    if (
+        resolution.status != "unique"
+        or resolution.tenant is None
+        or resolution.tenant.pyme_id is None
+        or int(resolution.tenant.pyme_id) != owner_id
+    ):
+        return None
+    return resolution.tenant
+
+
+def _pyme_entity_scope_filter(tenant: TenantProfile | None, *, tenant_column, owner_column):
+    """Scope PyME rows by exact profile, with a quarantined legacy fallback."""
+
+    if tenant is None or getattr(tenant, "id", None) is None:
+        return false()
+
+    predicates = [tenant_column == int(tenant.id)]
+    owner_id = tenant_as_int(getattr(tenant, "pyme_id", None))
+    if owner_id is None:
+        return predicates[0]
+
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+    except ValueError:
+        resolution = None
+    if (
+        resolution is not None
+        and resolution.status == "unique"
+        and resolution.tenant is not None
+        and int(resolution.tenant.id) == int(tenant.id)
+    ):
+        predicates.append(
+            and_(
+                tenant_column.is_(None),
+                owner_column == owner_id,
+            )
+        )
+    return or_(*predicates)
+
+
 def pyme_ticket_query(filters: AnalyticsFilters) -> Query:
-    tenant_id = tenant_as_int(filters.tenant_id)
     query = db.session.query(PymeTicket)
-    if tenant_id is not None:
-        query = query.filter(PymeTicket.user_id == tenant_id)
-    else:
-        query = query.filter(PymeTicket.user_id == filters.tenant_id)
+    tenant = _pyme_tenant_for_filters(filters)
+    query = query.filter(
+        _pyme_entity_scope_filter(
+            tenant,
+            tenant_column=PymeTicket.tenant_id,
+            owner_column=PymeTicket.user_id,
+        )
+    )
 
     query = _apply_date_range(query, PymeTicket.fecha, filters)
     query = _apply_bbox(query, PymeTicket, filters)
@@ -146,12 +205,15 @@ def pyme_ticket_query(filters: AnalyticsFilters) -> Query:
 
 
 def pyme_pedido_query(filters: AnalyticsFilters) -> Query:
-    tenant_id = tenant_as_int(filters.tenant_id)
     query = db.session.query(PymePedido)
-    if tenant_id is not None:
-        query = query.filter(PymePedido.pyme_id == tenant_id)
-    else:
-        query = query.filter(PymePedido.pyme_id == filters.tenant_id)
+    tenant = _pyme_tenant_for_filters(filters)
+    query = query.filter(
+        _pyme_entity_scope_filter(
+            tenant,
+            tenant_column=PymePedido.tenant_id,
+            owner_column=PymePedido.pyme_id,
+        )
+    )
     query = _apply_date_range(query, PymePedido.fecha, filters)
     query = _apply_bbox(query, PymePedido, filters)
     if filters.canales and hasattr(PymePedido, "canal"):

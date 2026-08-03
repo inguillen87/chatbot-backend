@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import TestConfig
-from models import MunicipioTicket, TicketComentario, User
+from models import MunicipioTicket, TenantProfile, TicketComentario, User
 from services.ticket_service import servicio_tickets
 from utils.auth_helpers import generar_token
 
@@ -26,14 +26,28 @@ class TicketNotificationFlowTest(unittest.TestCase):
         )
         admin.set_password("secret")
         db.session.add(admin)
-        db.session.commit()
+        db.session.flush()
         admin.municipio_id = admin.id
+
+        tenant = TenantProfile(
+            slug="ticket-notifications-municipio",
+            nombre="Municipio Ticket Notifications",
+            tipo="municipio",
+            municipio_id=admin.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        admin.tenant_id = tenant.id
+        admin.tenant_slug = tenant.slug
         db.session.commit()
         self.admin = admin
+        self.tenant = tenant
 
         ticket = MunicipioTicket(
             nro_ticket="654321",
             municipio_id=admin.id,
+            tenant_id=tenant.id,
             pregunta="¿Cuándo arreglan la luz?",
             canal_ingreso="web",
         )

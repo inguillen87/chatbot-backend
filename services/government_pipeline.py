@@ -15,6 +15,7 @@ from flask import current_app, has_app_context
 import h3
 from extensions import db
 from models import MunicipioTicket, TenantProfile
+from services.employee_ticket_access import apply_employee_ticket_category_scope
 from services.tenant_ticket_scope import (
     resolve_unique_tenant_for_owner,
     scoped_municipio_ticket_query,
@@ -92,6 +93,7 @@ def load_incidents_for_municipio(
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
     tenant_id: Optional[int] = None,
+    actor=None,
 ) -> List[IncidentRecord]:
     """Fetch incidents for the given municipality and convert them to records."""
 
@@ -120,6 +122,7 @@ def load_incidents_for_municipio(
         tenant,
         query=db.session.query(MunicipioTicket),
     )
+    query = apply_employee_ticket_category_scope(query, actor, MunicipioTicket)
     if date_from is not None:
         query = query.filter(MunicipioTicket.fecha >= date_from)
     if date_to is not None:

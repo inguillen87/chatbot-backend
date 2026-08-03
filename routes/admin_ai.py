@@ -5,22 +5,34 @@ from __future__ import annotations
 import json
 import io
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime
-from flask import Blueprint, abort, jsonify, request
+from flask import Blueprint, abort, g, jsonify, request
 import pdfplumber
 
 from extensions import db
-from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TenantTicket, TicketComentario
+from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TenantTicket, TicketComentario, User
 from services.analytics import get_summary
 from services.analytics.filters import parse_filters
-from services.analytics.rbac import require_access
+from services.analytics.rbac import (
+    TENANT_NAMESPACE_OWNER,
+    TENANT_NAMESPACE_PLATFORM,
+    TENANT_NAMESPACE_PROFILE,
+    require_access,
+)
 from services.ai_backoffice_summaries import generate_backoffice_analytics_summary, generate_backoffice_ticket_summary
 from services.ai_provider_status import build_ai_provider_status
+from services.employee_ticket_access import (
+    employee_ticket_category_access_allows,
+    employee_ticket_category_scope,
+)
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     resolve_municipio_ticket_access_tenant,
+    resolve_unique_tenant_for_owner,
 )
 from services.vision_fallback_service import analyze_image_text, analyze_text_structured
+from utils.roles import ROLE_EMPLEADO, canonical_role
 
 admin_ai_bp = Blueprint("admin_ai_bp", __name__, url_prefix="/admin")
 
@@ -31,6 +43,7 @@ _ALLOWED_BOT_FALLBACK_BEHAVIORS = {"derivar_humano", "auto_reply", "silent"}
 _MAX_BOT_NAME_LEN = 80
 _MAX_BOT_TONE_LEN = 50
 _MAX_BOT_SYSTEM_PROMPT_LEN = 5000
+_EMPTY_EMPLOYEE_CATEGORY_FILTER = "__no_authorized_employee_category__"
 
 
 def _parse_tenant_id(value):
@@ -211,21 +224,64 @@ def _resolve_ticket_access_tenant(ticket, scope: str):
             tenant = resolve_municipio_ticket_access_tenant(ticket)
         except TicketTenantScopeError:
             abort(404, description="ticket not found")
-        return str(tenant.id), tenant
+        return str(tenant.id), TENANT_NAMESPACE_PROFILE, tenant
 
     tenant_id = getattr(ticket, "tenant_id", None)
     if tenant_id:
         tenant = db.session.get(TenantProfile, tenant_id)
-        return str(tenant_id), tenant
+        return str(tenant_id), TENANT_NAMESPACE_PROFILE, tenant
 
     owner_id = getattr(ticket, "rubro_id", None) or getattr(ticket, "pyme_id", None) or getattr(ticket, "user_id", None)
-    tenant = TenantProfile.query.filter_by(pyme_id=owner_id).first() if owner_id else None
-
-    if tenant:
-        return str(tenant.id), tenant
     if owner_id:
-        return str(owner_id), None
+        try:
+            resolution = resolve_unique_tenant_for_owner(owner_id)
+        except TicketTenantScopeError:
+            abort(404, description="ticket tenant not resolved")
+        if resolution.status == "ambiguous":
+            abort(404, description="ticket tenant not resolved")
+        if resolution.status == "unique" and resolution.tenant is not None:
+            tenant = resolution.tenant
+            return str(tenant.id), TENANT_NAMESPACE_PROFILE, tenant
+        return str(owner_id), TENANT_NAMESPACE_OWNER, None
     abort(404, description="ticket tenant not resolved")
+
+
+def _orm_actor_for_viewer(viewer) -> User | None:
+    actor = getattr(g, "viewer", None)
+    if isinstance(actor, User):
+        return actor
+    viewer_id = getattr(viewer, "id", None)
+    if isinstance(viewer_id, int) and viewer_id > 0:
+        candidate = db.session.get(User, viewer_id)
+        if isinstance(candidate, User):
+            return candidate
+    return None
+
+
+def _require_employee_ticket_category_access(ticket, viewer) -> None:
+    actor = _orm_actor_for_viewer(viewer)
+    if actor is not None and not employee_ticket_category_access_allows(actor, ticket):
+        # Do not disclose that a ticket exists outside the operator's queue.
+        abort(404, description="ticket not found")
+
+
+def _scope_analytics_filters_for_employee(filters, viewer):
+    actor = _orm_actor_for_viewer(viewer)
+    if actor is None or (
+        canonical_role(getattr(actor, "rol", None)) != ROLE_EMPLEADO
+        and not bool(getattr(actor, "es_empleado", False))
+    ):
+        return filters
+
+    allowed = set(employee_ticket_category_scope(actor).names)
+    requested = {
+        str(category or "").strip().lower()
+        for category in filters.categorias
+        if str(category or "").strip()
+    }
+    effective = allowed if not requested else allowed & requested
+    categories = tuple(sorted(effective)) or (_EMPTY_EMPLOYEE_CATEGORY_FILTER,)
+    return replace(filters, categorias=categories)
 
 
 def _tenant_ticket_comments(ticket: TenantTicket, limit: int) -> list[dict]:
@@ -239,7 +295,11 @@ def _tenant_ticket_comments(ticket: TenantTicket, limit: int) -> list[dict]:
 @admin_ai_bp.get("/bot/settings")
 def get_bot_settings():
     tenant_id = _parse_tenant_id(request.args.get("tenant_id"))
-    require_access(str(tenant_id), "operador")
+    require_access(
+        str(tenant_id),
+        "operador",
+        tenant_namespace=TENANT_NAMESPACE_PROFILE,
+    )
 
     tenant = TenantProfile.query.get(tenant_id)
     if not tenant:
@@ -252,7 +312,12 @@ def get_bot_settings():
 def update_bot_settings():
     payload = request.get_json(silent=True) or {}
     tenant_id = _parse_tenant_id(payload.get("tenant_id"))
-    require_access(str(tenant_id), "operador")
+    require_access(
+        str(tenant_id),
+        "admin",
+        required_capability="settings.tenant.write",
+        tenant_namespace=TENANT_NAMESPACE_PROFILE,
+    )
 
     tenant = TenantProfile.query.get(tenant_id)
     if not tenant:
@@ -308,7 +373,11 @@ def update_bot_settings():
 
 @admin_ai_bp.get("/ai/provider-status")
 def ai_provider_status():
-    require_access("*", "admin")
+    require_access(
+        "*",
+        "admin",
+        tenant_namespace=TENANT_NAMESPACE_PLATFORM,
+    )
     include_smoke = str(request.args.get("smoke") or "").strip().lower() in {"1", "true", "yes", "on"}
     include_live = str(request.args.get("live") or "").strip().lower() in {"1", "true", "yes", "on"}
     return jsonify(build_ai_provider_status(include_smoke=include_smoke, include_live=include_live))
@@ -325,9 +394,15 @@ def executive_summary():
             "scope": payload.get("scope") or "pyme",
             "from": payload.get("from"),
             "to": payload.get("to"),
+            "categoria": payload.get("categoria"),
         }
     )
-    require_access(filters.tenant_id, "operador")
+    viewer = require_access(
+        filters.tenant_id,
+        "operador",
+        tenant_namespace=TENANT_NAMESPACE_OWNER,
+    )
+    filters = _scope_analytics_filters_for_employee(filters, viewer)
 
     metrics = get_summary(filters)
     totals = metrics.get("totals") if isinstance(metrics, dict) else {}
@@ -360,8 +435,13 @@ def ticket_ai_summary(ticket_id: int):
         abort(400, description="scope must be municipio|pyme")
 
     ticket = _resolve_ticket_for_ai(ticket_id, scope, payload)
-    access_tenant_id, _tenant = _resolve_ticket_access_tenant(ticket, scope)
-    require_access(access_tenant_id, "operador")
+    access_tenant_id, access_namespace, _tenant = _resolve_ticket_access_tenant(ticket, scope)
+    viewer = require_access(
+        access_tenant_id,
+        "operador",
+        tenant_namespace=access_namespace,
+    )
+    _require_employee_ticket_category_access(ticket, viewer)
 
     comments = (
         TicketComentario.query.filter(
@@ -406,8 +486,13 @@ def ticket_ai_enrichment(ticket_id: int):
     comments_limit = _parse_comments_limit(payload)
 
     ticket = _resolve_ticket_for_ai(ticket_id, scope, payload)
-    access_tenant_id, tenant = _resolve_ticket_access_tenant(ticket, scope)
-    require_access(access_tenant_id, "operador")
+    access_tenant_id, access_namespace, tenant = _resolve_ticket_access_tenant(ticket, scope)
+    viewer = require_access(
+        access_tenant_id,
+        "operador",
+        tenant_namespace=access_namespace,
+    )
+    _require_employee_ticket_category_access(ticket, viewer)
 
     if scope == "tenant":
         comments = _tenant_ticket_comments(ticket, comments_limit)
@@ -446,7 +531,11 @@ def product_recommendations():
     payload = request.get_json(silent=True) or {}
     tenant_id = _parse_tenant_id(payload.get("tenant_id"))
 
-    require_access(str(tenant_id), "operador")
+    require_access(
+        str(tenant_id),
+        "operador",
+        tenant_namespace=TENANT_NAMESPACE_PROFILE,
+    )
     limit = payload.get("limit", 5)
     try:
         limit = max(1, min(int(limit), 20))
@@ -534,7 +623,11 @@ def order_draft_from_document():
     """Build a preliminary order draft from uploaded PDF/image and tenant catalog."""
     tenant_id = _parse_tenant_id(request.form.get("tenant_id") or request.args.get("tenant_id"))
 
-    require_access(str(tenant_id), "operador")
+    require_access(
+        str(tenant_id),
+        "operador",
+        tenant_namespace=TENANT_NAMESPACE_PROFILE,
+    )
 
     uploaded = request.files.get("file")
     if not uploaded:

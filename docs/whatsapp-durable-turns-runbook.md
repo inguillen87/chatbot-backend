@@ -4,9 +4,31 @@ This runbook covers the DB-backed inbound queue and ordered outbound outbox.
 The feature remains opt-in. Do not enable `queue` on the public web service
 until the migration and a continuously running worker are both verified.
 
+> Production safety note (2026-08-02): `legacy` mode records its bounded
+> `MessageSid` dedupe claim before all synchronous handlers finish. A later
+> `503 RETRY` can therefore be acknowledged as a duplicate on the next Twilio
+> delivery, while blindly releasing the claim could duplicate an already
+> committed ticket/comment or an ambiguous provider send. Do not certify
+> legacy mode as lossless or retry-safe. Production cutover requires `queue`,
+> the dedicated worker, canonical channel identity in `enforce`, migrations,
+> secrets and a signed provider staging smoke test.
+
+> Current Render boundary (2026-08-02): the checked-in Blueprint explicitly
+> pins the public web service to `legacy`, leaves the queue tenant allowlist
+> empty, keeps the Celery wakeup disabled and leaves canonical channel identity
+> in `shadow`. It declares a permanent worker only in zero-I/O standby and a
+> retention cron with `SCRUB_ENABLED=false`, legal hold enabled and an empty
+> historical tenant scope. This prepares infrastructure; it is not evidence of
+> an active queue, a migrated Render database or a provider-certified rollout.
+
 ## Guarantees and current boundary
 
-- A signed, tenant-scoped Twilio webhook is committed before returning `200`.
+- In `queue` mode for an allowlisted tenant, a signed, tenant-scoped Twilio
+  webhook is committed before returning `200`; excluded tenants remain legacy.
+- In global `legacy` mode an authoritative historical sender/owner mapping may
+  still run synchronously without a materialized `TenantProfile`; this preserves
+  pre-rollout compatibility. In `queue` mode that same missing canonical tenant
+  fails closed and can never select or bypass the canary allowlist.
 - `(tenant, provider, MessageSid)` is unique and conflicting replays fail closed.
 - Every new queued turn snapshots a canonical, tenant-scoped session binding
   (`binding_id`, version and identity HMAC). The worker verifies that snapshot
@@ -75,16 +97,18 @@ template blindly.
 
    ```text
    WHATSAPP_INBOUND_DURABILITY_MODE=legacy
+   WHATSAPP_INBOUND_QUEUE_TENANT_IDS=
    WHATSAPP_INBOUND_CELERY_WAKEUP_ENABLED=false
    CHANNEL_SESSION_IDENTITY_MODE=shadow
    ```
 
 2. Apply migrations through the current Alembic head and verify there is exactly
    one head. For this local change set the expected head is
-   `20260729_domain_effect_outbox`; its ancestor chain must include
+   `20260802_notification_wa_v1`; its ancestor chain must include
    `20260729_pyme_order_payload_hash`,
    `20260729_whatsapp_turns`, `20260729_ticket_effects` and
-   `20260729_realtime_tool_receipts`.
+   `20260729_realtime_tool_receipts`. Verify the deployed database separately
+   with `flask db current`; a local head only proves repository topology.
 
 3. Generate dedicated random secrets of at least 32 bytes and store them only in
    the platform secret manager as `WHATSAPP_INBOUND_HASH_SECRET`. Do not reuse a
@@ -93,17 +117,36 @@ template blindly.
    separate `CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1`; follow
    `docs/channel-session-identity-runbook.md` for migration and rotation.
 
-4. Create a background worker with the same database and tenant/provider secret
-   scope as the web service. Its command is:
+4. Review the separately declared background-worker service and verify that its
+   database, AI, media/storage and tenant/provider secret scope matches the web
+   service. Its Blueprint command and process role are:
 
    ```text
-   python -m services.whatsapp_inbound_worker
+   CHATBOC_PROCESS_ROLE=whatsapp-durable-worker
+   WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED=true
+   python -m services.whatsapp_inbound_worker --standby-when-legacy
    ```
 
-   Set `CHANNEL_SESSION_IDENTITY_MODE=enforce` on web and worker before setting
-   `WHATSAPP_INBOUND_DURABILITY_MODE=queue`. Runtime validation rejects queue
-   with a legacy/shadow identity mode. Keep the web service in `legacy` until
-   the worker starts cleanly.
+   In `legacy`, the CLI checks the explicit standby flag before importing the
+   Flask application, then blocks on one signal-aware wait: it does not poll,
+   open the database or construct a provider client. Before queue activation,
+   independently verify every manually named per-tenant Twilio token reference
+   is present on the worker; the generic subaccount token is not proof that all
+   tenants share one credential. `OPENAI_API_KEY`, model selection, Gemini,
+   Maps, Hugging Face, R2/audio cache, media bounds and Socket.IO are inherited
+   from the web service in the Blueprint, but configured values must still be
+   verified in Render without printing them. Google ADC/file credentials, if a
+   tenant needs them, require a separately mounted worker secret/file and are
+   not supplied by `fromService`.
+
+   Move channel identity from `shadow` to `enforce` only after its separate
+   shadow audit, configure the same dedicated identity/hash secrets, and set a
+   non-empty `WHATSAPP_INBOUND_QUEUE_TENANT_IDS` while the web mode remains
+   `legacy`. Runtime validation rejects `queue` with an empty or invalid tenant
+   list. The worker mode is deliberately an independent service value: change
+   the worker to `queue` first, prove its health, and only then change the web
+   mode to `queue`. Perform this sequence first in isolated staging; Render
+   service deployments are not an atomic production cutover.
 
 5. Verify the worker contract and empty backlog:
 
@@ -112,10 +155,22 @@ template blindly.
    python -m services.whatsapp_inbound_worker --once
    ```
 
-6. Enable `queue` on one controlled web-service environment/tenant. Run signed
-   text, emoji, location, audio, image and Flow/vote smoke cases. Confirm webhook
-   acknowledgement happens after ingress commit but before media, STT, vision,
-   LLM or Twilio outbound work.
+   Set the independent worker `WHATSAPP_INBOUND_DURABILITY_MODE=queue`, then run
+   both commands in the worker environment. `--health` proves the schema
+   and reports a payload-free backlog; it does not prove a continuously running
+   poller or provider delivery. `--once` must complete in `queue` mode, and the
+   permanent process must then remain healthy before web cutover.
+
+   On PostgreSQL, also race an expired-lease recovery against a signed delivery
+   callback and verify the callback cannot be overwritten. SQLite ignores the
+   `FOR UPDATE`/`SKIP LOCKED` semantics used by this fence and is not sufficient
+   evidence for that concurrency invariant.
+
+6. Enable `queue` with exactly one controlled tenant ID in
+   `WHATSAPP_INBOUND_QUEUE_TENANT_IDS`. Tenants outside the allowlist remain on
+   the synchronous legacy path. Run signed text, emoji, location, audio, image
+   and Flow/vote smoke cases. Confirm webhook acknowledgement happens after
+   ingress commit but before media, STT, vision, LLM or Twilio outbound work.
 
 7. Monitor queue health and delivery callbacks, then expand gradually. Do not
    describe local/SQLite evidence as Render, PostgreSQL or Twilio certification.
@@ -123,8 +178,11 @@ template blindly.
 ## Required environment
 
 ```text
-WHATSAPP_INBOUND_DURABILITY_MODE=queue
+WHATSAPP_INBOUND_DURABILITY_MODE=queue  # set independently on web and worker
+WHATSAPP_INBOUND_QUEUE_TENANT_IDS=<positive canary tenant IDs>
 WHATSAPP_INBOUND_HASH_SECRET=<dedicated secret, at least 32 bytes>
+CHATBOC_PROCESS_ROLE=whatsapp-durable-worker  # worker only
+WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED=true # permits only legacy zero-I/O standby
 CHANNEL_SESSION_IDENTITY_MODE=enforce
 CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1=<different dedicated secret, at least 32 bytes>
 CHANNEL_SESSION_IDENTITY_VERSION_V1=v1
@@ -134,9 +192,11 @@ WHATSAPP_INBOUND_MAX_ATTEMPTS=8
 WHATSAPP_INBOUND_WORKER_BATCH_SIZE=8
 WHATSAPP_INBOUND_WORKER_POLL_SECONDS=0.5
 WHATSAPP_INBOUND_CELERY_WAKEUP_ENABLED=false
+WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS=<active and former durable tenant IDs>
+WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED=false
 WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS=72
 WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE=200
-WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD=false
+WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD=true
 ```
 
 Celery is only an optional wakeup optimization. The database poller is
@@ -145,17 +205,25 @@ Celery is initialized and a real broker plus worker are deployed.
 
 ## Payload retention job
 
-Schedule this command at least hourly (or invoke the equivalent Celery task
-`whatsapp.scrub_expired_inbound_payloads`):
+The Blueprint schedules this command daily at 03:43 UTC (or invoke the
+equivalent Celery task `whatsapp.scrub_expired_inbound_payloads`):
 
 ```text
 python -m services.whatsapp_inbound_worker --scrub-expired-payloads
 ```
 
-It emits only a versioned audit summary with counts, cutoff and policy; it never
-prints turn IDs, SIDs or payload content. Re-run while `remaining_eligible` is
-greater than zero. `WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS` accepts 0 to
-720 hours; it is not an unlimited-retention switch.
+The scheduled default exits before importing the Flask application and performs
+no database access. Actual retention requires both
+`WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED=true` and
+`WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD=false`, plus a non-empty, explicit
+`WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS`. This list is intentionally separate
+from the active queue canaries: keep former canaries in it after rollback until
+their durable rows have reached the scrubbed tombstone lifecycle.
+
+It emits only a versioned audit summary with aggregate counts; it never prints
+turn IDs, SIDs or payload content. Re-run bounded batches until no rows are
+selected. `WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS` accepts 0 to 720
+hours; it is not an unlimited-retention switch.
 
 For an exceptional preservation order, set
 `WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD=true`. The job then reports `legal_hold`
@@ -183,8 +251,17 @@ resolves the ambiguity.
 
 ## Rollback
 
-1. Set the public web service back to `legacy` to stop adding durable rows.
-2. Keep the worker running long enough to drain already committed inbound and
-   pending outbound rows.
-3. Investigate `send_uncertain` rows before stopping the worker.
-4. Do not downgrade/drop the migration while any queue or outbox row remains.
+1. Pause inbound routing for the affected tenant. Do not remove it from the
+   queue allowlist first: the worker uses that same scope and would stop
+   draining its committed rows.
+2. Set the public web service back to `legacy` while leaving the worker's
+   independent mode at `queue`. This stops new durable ingress without shutting
+   down the drain process. Keep routing paused to avoid interleaving new legacy
+   turns with the older queued stream.
+3. Keep the tenant allowlist in place until its inbound and outbound backlog is
+   drained. Investigate every `send_uncertain` row before proceeding.
+4. Remove the tenant from `WHATSAPP_INBOUND_QUEUE_TENANT_IDS`, put the worker in
+   standby only after all canaries are drained, then resume routing on legacy.
+5. Keep the tenant in `WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS` until all
+   retained terminal payloads are scrubbed; rollback is not a retention opt-out.
+6. Do not downgrade/drop the migration while any queue or outbox row remains.

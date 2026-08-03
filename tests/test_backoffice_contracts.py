@@ -531,3 +531,135 @@ def test_backoffice_v2_export_and_executive_summary_are_traceable(client):
     assert summary["headline"]
     assert summary["confidence"] in {"low", "medium", "high"}
     assert "/api/v2/backoffice/operations/inbox-summary" in summary["source_endpoints"]
+
+
+def test_backoffice_v2_rejects_end_user_before_pii_or_export_side_effects(client, monkeypatch):
+    owner = User(email="operator-gate-owner@test.com", name="Operator Gate", rol="admin", tipo_chat="municipio")
+    owner.set_password("pw")
+    end_user = User(
+        email="operator-gate-citizen@test.com",
+        name="Citizen",
+        rol="usuario",
+        tipo_chat="municipio",
+        tenant_slug="operator-gate",
+    )
+    end_user.set_password("pw")
+    db.session.add_all([owner, end_user])
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="operator-gate",
+        nombre="Operator Gate",
+        tipo="municipio",
+        municipio_id=owner.id,
+        plan="enterprise",
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    end_user.tenant_id = tenant.id
+    db.session.commit()
+
+    export_dir_calls = []
+    write_calls = []
+    monkeypatch.setattr("routes.backoffice._export_dir", lambda: export_dir_calls.append(True))
+    monkeypatch.setattr("routes.backoffice._write_csv_export", lambda path, rows: write_calls.append(rows))
+
+    headers = _auth_headers(end_user)
+    for endpoint in (
+        "/api/v2/backoffice/operations/inbox-summary",
+        "/api/v2/backoffice/orders/summary",
+        "/api/v2/backoffice/contacts/summary",
+        "/api/v2/backoffice/team/coverage-summary",
+    ):
+        response = client.get(endpoint, query_string={"tenant_slug": tenant.slug}, headers=headers)
+        assert response.status_code == 403
+        assert response.get_json()["reason_code"] == "backoffice_operator_required"
+
+    export_response = client.post(
+        "/api/v2/backoffice/export",
+        json={"tenant_slug": tenant.slug, "resource": "contacts", "format": "csv"},
+        headers=headers,
+    )
+    executive_response = client.post(
+        "/api/v2/backoffice/executive-summary",
+        json={"tenant_slug": tenant.slug},
+        headers=headers,
+    )
+
+    assert export_response.status_code == 403
+    assert executive_response.status_code == 403
+    assert export_dir_calls == []
+    assert write_calls == []
+
+
+def test_backoffice_v2_employee_sees_and_exports_only_allowed_ticket_categories(client, monkeypatch, tmp_path):
+    owner = User(email="category-owner@test.com", name="Category Owner", rol="admin", tipo_chat="municipio")
+    owner.set_password("pw")
+    employee = User(
+        email="category-employee@test.com",
+        name="Category Employee",
+        rol="empleado",
+        tipo_chat="municipio",
+        ticket_categorias="alumbrado",
+    )
+    employee.set_password("pw")
+    db.session.add_all([owner, employee])
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="category-scoped-backoffice",
+        nombre="Category Scoped Backoffice",
+        tipo="municipio",
+        municipio_id=owner.id,
+        plan="enterprise",
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    employee.tenant_id = tenant.id
+    employee.empresa_id = owner.id
+
+    allowed = MunicipioTicket(
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        pregunta="Luminaria permitida",
+        categoria="alumbrado",
+        estado="nuevo",
+        nombre_vecino="Allowed Citizen",
+        email_vecino="allowed-citizen@test.com",
+        telefono_vecino="111111",
+    )
+    restricted = MunicipioTicket(
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        pregunta="Bache restringido",
+        categoria="baches",
+        estado="nuevo",
+        nombre_vecino="Restricted Citizen",
+        email_vecino="restricted-citizen@test.com",
+        telefono_vecino="222222",
+    )
+    db.session.add_all([allowed, restricted])
+    db.session.commit()
+
+    headers = _auth_headers(employee)
+    inbox_response = client.get(
+        "/api/v2/backoffice/operations/inbox-summary",
+        query_string={"tenant_slug": tenant.slug, "scope": "municipio"},
+        headers=headers,
+    )
+    assert inbox_response.status_code == 200
+    item_ids = {item["id"] for item in inbox_response.get_json()["items"]}
+    assert allowed.id in item_ids
+    assert restricted.id not in item_ids
+
+    written_rows = []
+    monkeypatch.setattr("routes.backoffice._export_dir", lambda: tmp_path)
+    monkeypatch.setattr("routes.backoffice._write_csv_export", lambda path, rows: written_rows.extend(rows))
+    export_response = client.post(
+        "/api/v2/backoffice/export",
+        json={"tenant_slug": tenant.slug, "resource": "contacts", "format": "csv"},
+        headers=headers,
+    )
+
+    assert export_response.status_code == 200
+    exported_emails = {row.get("email") for row in written_rows}
+    assert "allowed-citizen@test.com" in exported_emails
+    assert "restricted-citizen@test.com" not in exported_emails

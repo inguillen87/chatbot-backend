@@ -1,5 +1,8 @@
 import io
+import jwt
 from datetime import datetime, timedelta
+
+from flask import current_app
 
 from extensions import db
 from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TicketComentario, User
@@ -22,6 +25,31 @@ def _ensure_user(tenant_id: int, scope: str) -> User:
     db.session.add(user)
     db.session.flush()
     return user
+
+
+def _create_tenant(owner_id: int, scope: str, slug: str) -> tuple[User, TenantProfile]:
+    owner = _ensure_user(owner_id, scope)
+    tenant = TenantProfile(
+        slug=slug,
+        nombre=f"Tenant {slug}",
+        tipo=scope,
+        municipio_id=owner.id if scope == "municipio" else None,
+        pyme_id=owner.id if scope == "pyme" else None,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    return owner, tenant
+
+
+def _auth_headers(user: User) -> dict[str, str]:
+    token = jwt.encode(
+        {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)},
+        current_app.config["SECRET_KEY"],
+        algorithm="HS256",
+    )
+    if isinstance(token, bytes):
+        token = token.decode("utf-8")
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_executive_summary_tenant_scoped(client, monkeypatch):
@@ -78,11 +106,11 @@ def test_ticket_ai_summary_tenant_scoped(client, monkeypatch):
         },
     )
 
-    tenant_id = 42
-    admin = _ensure_user(tenant_id, "pyme")
+    owner_id = 42
+    admin, tenant = _create_tenant(owner_id, "pyme", "ticket-summary-pyme")
     ticket = PymeTicket(
-        user_id=tenant_id,
-        tenant_id=tenant_id,
+        user_id=admin.id,
+        tenant_id=tenant.id,
         pregunta="No llegó el pedido",
         categoria="delivery",
         estado="en_progreso",
@@ -106,7 +134,7 @@ def test_ticket_ai_summary_tenant_scoped(client, monkeypatch):
     response = client.post(
         f"/admin/tickets/{ticket.id}/ai-summary",
         json={"scope": "pyme"},
-        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant_id)},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
     )
     assert response.status_code == 200
     payload = response.get_json()
@@ -269,11 +297,15 @@ def test_ticket_ai_summary_falls_back_without_provider(client, monkeypatch):
 
     monkeypatch.setattr("services.ai_backoffice_summaries.llamar_llm_con_fallback", _boom)
 
-    tenant_id = 49
-    _ensure_user(tenant_id, "municipio")
+    owner_id = 49
+    owner, tenant = _create_tenant(
+        owner_id,
+        "municipio",
+        "ticket-summary-fallback-municipio",
+    )
     ticket = MunicipioTicket(
-        municipio_id=tenant_id,
-        tenant_id=tenant_id,
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
         pregunta="Luminaria rota en plaza",
         categoria="alumbrado",
         estado="nuevo",
@@ -286,7 +318,7 @@ def test_ticket_ai_summary_falls_back_without_provider(client, monkeypatch):
     response = client.post(
         f"/admin/tickets/{ticket.id}/ai-summary",
         json={"scope": "municipio"},
-        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant_id)},
+        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
     )
 
     assert response.status_code == 200
@@ -332,7 +364,7 @@ def test_bot_settings_get_and_put_tenant_scoped(client):
                 "secondary_color": "#654321",
             },
         },
-        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+        headers={"X-Debug-Role": "admin", "X-Debug-Tenant": str(tenant.id)},
     )
     assert update_response.status_code == 200
     updated_payload = update_response.get_json()
@@ -383,7 +415,7 @@ def test_bot_settings_rejects_invalid_payload(client):
             "tenant_id": tenant.id,
             "fallback_behavior": "invalid_behavior",
         },
-        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+        headers={"X-Debug-Role": "admin", "X-Debug-Tenant": str(tenant.id)},
     )
     assert response.status_code == 400
 
@@ -410,8 +442,184 @@ def test_bot_settings_api_admin_alias(client):
     put_response = client.put(
         "/api/admin/bot/settings",
         json={"tenant_id": tenant.id, "name": "Alias Bot"},
-        headers={"X-Debug-Role": "operador", "X-Debug-Tenant": str(tenant.id)},
+        headers={"X-Debug-Role": "admin", "X-Debug-Tenant": str(tenant.id)},
     )
     assert put_response.status_code == 200
     payload = put_response.get_json()
     assert payload["settings"]["name"] == "Alias Bot"
+
+
+def test_ticket_ai_summary_employee_category_scope_blocks_provider_for_restricted_ticket(client, monkeypatch):
+    owner, tenant = _create_tenant(801, "municipio", "ai-summary-employee-scope")
+    employee = User(
+        email="ai-summary-employee@test.com",
+        name="AI Summary Employee",
+        rol="empleado",
+        tipo_chat="municipio",
+        tenant_id=tenant.id,
+        empresa_id=owner.id,
+        ticket_categorias="alumbrado",
+    )
+    employee.set_password("pw")
+    end_user = User(
+        email="ai-summary-end-user@test.com",
+        name="AI Summary End User",
+        rol="usuario",
+        tipo_chat="municipio",
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+    )
+    end_user.set_password("pw")
+    allowed = MunicipioTicket(
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        pregunta="Luminaria sin luz",
+        categoria="alumbrado",
+        estado="nuevo",
+    )
+    restricted = MunicipioTicket(
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        pregunta="Bache profundo",
+        categoria="baches",
+        estado="nuevo",
+    )
+    db.session.add_all([employee, end_user, allowed, restricted])
+    db.session.commit()
+
+    provider_calls = []
+
+    def fake_summary(ticket_payload):
+        provider_calls.append(ticket_payload)
+        return {"summary": "ok", "next_steps": [], "confidence": "high"}
+
+    monkeypatch.setattr("routes.admin_ai.generate_backoffice_ticket_summary", fake_summary)
+
+    allowed_response = client.post(
+        f"/admin/tickets/{allowed.id}/ai-summary",
+        json={"scope": "municipio"},
+        headers=_auth_headers(employee),
+    )
+    assert allowed_response.status_code == 200
+    assert [call["id"] for call in provider_calls] == [allowed.id]
+
+    provider_calls.clear()
+    restricted_response = client.post(
+        f"/admin/tickets/{restricted.id}/ai-summary",
+        json={"scope": "municipio"},
+        headers=_auth_headers(employee),
+    )
+    assert restricted_response.status_code == 404
+    assert provider_calls == []
+
+    end_user_response = client.post(
+        f"/admin/tickets/{allowed.id}/ai-summary",
+        json={"scope": "municipio"},
+        headers=_auth_headers(end_user),
+    )
+    assert end_user_response.status_code == 403
+    assert provider_calls == []
+
+
+def test_ticket_ai_enrichment_employee_category_scope_blocks_builder_for_restricted_ticket(client, monkeypatch):
+    owner, tenant = _create_tenant(802, "municipio", "ai-enrichment-employee-scope")
+    employee = User(
+        email="ai-enrichment-employee@test.com",
+        name="AI Enrichment Employee",
+        rol="empleado",
+        tipo_chat="municipio",
+        tenant_id=tenant.id,
+        empresa_id=owner.id,
+        ticket_categorias="alumbrado",
+    )
+    employee.set_password("pw")
+    allowed = MunicipioTicket(
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        pregunta="Poste sin luz",
+        categoria="alumbrado",
+        estado="nuevo",
+    )
+    restricted = MunicipioTicket(
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        pregunta="Residuo sin retirar",
+        categoria="limpieza",
+        estado="nuevo",
+    )
+    db.session.add_all([employee, allowed, restricted])
+    db.session.commit()
+
+    enrichment_calls = []
+
+    def fake_enrichment(ticket, **kwargs):
+        enrichment_calls.append((ticket.id, kwargs))
+        return {"ticket_id": ticket.id, "suggested_category": ticket.categoria}
+
+    monkeypatch.setattr("services.ticket_ai_enrichment.build_ticket_ai_enrichment", fake_enrichment)
+
+    allowed_response = client.post(
+        f"/admin/tickets/{allowed.id}/ai-enrichment",
+        json={"scope": "municipio"},
+        headers=_auth_headers(employee),
+    )
+    assert allowed_response.status_code == 200
+    assert [call[0] for call in enrichment_calls] == [allowed.id]
+
+    enrichment_calls.clear()
+    restricted_response = client.post(
+        f"/admin/tickets/{restricted.id}/ai-enrichment",
+        json={"scope": "municipio"},
+        headers=_auth_headers(employee),
+    )
+    assert restricted_response.status_code == 404
+    assert enrichment_calls == []
+
+
+def test_executive_ai_intersects_employee_category_scope_before_aggregation_and_provider(client, monkeypatch):
+    owner, tenant = _create_tenant(803, "municipio", "ai-executive-employee-scope")
+    employee = User(
+        email="ai-executive-employee@test.com",
+        name="AI Executive Employee",
+        rol="empleado",
+        tipo_chat="municipio",
+        tenant_id=tenant.id,
+        empresa_id=owner.id,
+        ticket_categorias="alumbrado",
+    )
+    employee.set_password("pw")
+    db.session.add(employee)
+    db.session.commit()
+
+    captured_filters = []
+    provider_metrics = []
+
+    def fake_get_summary(filters):
+        captured_filters.append(filters)
+        ticket_count = 1 if filters.categorias == ("alumbrado",) else 0
+        return {"totals": {"tickets": ticket_count, "pedidos": 0}}
+
+    def fake_provider(metrics, tenant_type="municipio"):
+        provider_metrics.append(metrics)
+        return {"summary": "scoped", "opportunities": [], "threats": []}
+
+    monkeypatch.setattr("routes.admin_ai.get_summary", fake_get_summary)
+    monkeypatch.setattr("routes.admin_ai.generate_backoffice_analytics_summary", fake_provider)
+
+    allowed_response = client.post(
+        "/admin/ai/executive-summary",
+        json={"tenant_id": owner.id, "scope": "municipio"},
+        headers=_auth_headers(employee),
+    )
+    assert allowed_response.status_code == 200
+    assert captured_filters[-1].categorias == ("alumbrado",)
+    assert provider_metrics[-1]["totals"]["tickets"] == 1
+
+    restricted_response = client.post(
+        "/admin/ai/executive-summary",
+        json={"tenant_id": owner.id, "scope": "municipio", "categoria": "baches"},
+        headers=_auth_headers(employee),
+    )
+    assert restricted_response.status_code == 200
+    assert captured_filters[-1].categorias == ("__no_authorized_employee_category__",)
+    assert provider_metrics[-1]["totals"]["tickets"] == 0

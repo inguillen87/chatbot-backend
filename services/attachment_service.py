@@ -58,8 +58,13 @@ def create_attachment_with_thumbnail(file_storage: FileStorage, user_id: int = N
 
         return nuevo_adjunto
 
-    except Exception as e:
+    except Exception as exc:
         # The calling function should handle the rollback
-        current_app.logger.error(f"Error preparing attachment records for DB: {e}", exc_info=True)
+        current_app.logger.error(
+            "Attachment record preparation failed error_type=%s "
+            "has_thumbnail_metadata=%s",
+            type(exc).__name__,
+            bool(upload_result.get("thumb_meta")),
+        )
         # Here we should ideally also delete the files from storage to avoid orphans
         return None

@@ -44,6 +44,16 @@ def clasificar_adjunto_whatsapp(adjunto_info: Dict[str, Any], owner_user: User) 
             **extra_kwargs,
         )
         return resultado
-    except Exception as e:  # pragma: no cover - logging for unexpected errors
-        logger.error(f"Error al clasificar adjunto de WhatsApp: {e}", exc_info=True)
-        return {"error": str(e)}
+    except Exception as exc:
+        # Provider exceptions can contain signed media URLs, OCR text or
+        # credentials. Keep both logs and the user-facing result bounded.
+        logger.error(
+            "WhatsApp media classification failed error_type=%s "
+            "interpretation_type=%s",
+            type(exc).__name__,
+            tipo_interpretacion,
+        )
+        return {
+            "error": "media_classification_failed",
+            "error_type": type(exc).__name__,
+        }

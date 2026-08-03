@@ -1,5 +1,6 @@
 import unittest
 import importlib
+import inspect
 from types import SimpleNamespace
 from unittest.mock import patch
 import sys
@@ -52,7 +53,7 @@ class MunicipalMetricsTests(unittest.TestCase):
         db_mock = make_db()
         with patch.object(municipal_module, 'db', db_mock), \
              patch.object(municipal_module, 'jsonify', lambda x: x):
-            resp = municipal_module.municipal_metrics.__wrapped__(make_user())
+            resp = inspect.unwrap(municipal_module.municipal_metrics)(make_user())
         self.assertEqual(resp['cards'][0]['value'], 5)
         self.assertEqual(resp['cards'][1]['value'], 10)
         self.assertEqual(resp['cards'][2]['value'], 20)

@@ -19,6 +19,16 @@ from services.audio_transcription_service import (
 
 class TestAudioTranscriptionService(unittest.TestCase):
     def setUp(self):
+        self.network_patcher = patch.dict(
+            os.environ,
+            {"OPENAI_ALLOW_NETWORK_IN_TESTS": "1"},
+            clear=False,
+        )
+        self.network_patcher.start()
+        clear_transcription_cache()
+
+    def tearDown(self):
+        self.network_patcher.stop()
         clear_transcription_cache()
 
     @patch("services.audio_transcription_service.requests.get")
@@ -98,7 +108,11 @@ class TestAudioTranscriptionService(unittest.TestCase):
 
     def test_openai_client_is_lazy_and_does_not_use_dummy_key(self):
         with (
-            patch.dict(os.environ, {}, clear=True),
+            patch.dict(
+                os.environ,
+                {"OPENAI_ALLOW_NETWORK_IN_TESTS": "1", "TESTING": "1"},
+                clear=True,
+            ),
             patch.object(audio_service, "openai_client", None),
             patch.object(audio_service, "http_client", None),
             patch("services.audio_transcription_service.OpenAI") as mock_constructor,
@@ -109,6 +123,24 @@ class TestAudioTranscriptionService(unittest.TestCase):
         self.assertIsNone(result)
         mock_constructor.assert_not_called()
         self.assertIn("reason=missing_api_key", "\n".join(logs.output))
+
+    def test_openai_test_network_policy_blocks_before_client_or_transcription(self):
+        with (
+            patch.dict(
+                os.environ,
+                {"TESTING": "1", "OPENAI_API_KEY": "private-test-key"},
+                clear=True,
+            ),
+            patch.object(audio_service, "openai_client", None),
+            patch.object(audio_service, "http_client", None),
+            patch("services.audio_transcription_service.OpenAI") as constructor,
+            self.assertLogs("services.audio_transcription_service", level="INFO") as logs,
+        ):
+            result = transcribe_audio_bytes(b"audio", "audio/webm")
+
+        self.assertIsNone(result)
+        constructor.assert_not_called()
+        self.assertIn("reason=test_network_disabled", "\n".join(logs.output))
 
     def test_lazy_client_prefers_explicit_flask_app_config(self):
         app = Flask(__name__)

@@ -1,11 +1,35 @@
 import types
+from contextlib import nullcontext
+from unittest.mock import patch
+
 from services.municipio_responder import (
     responder_municipio,
     CONTEXTO_MUNICIPIO,
     clear_municipio_cache,
 )
-from models import ChatSessionContext, MunicipioTicket, TenantProfile
+from models import ChatSessionContext, MunicipioTicket, TenantProfile, User
 from app import db
+
+
+def ensure_owner_tenant(owner_user):
+    tenant = TenantProfile.query.filter_by(municipio_id=owner_user.id).one_or_none()
+    if tenant is None:
+        tenant = TenantProfile(
+            slug=f"quick-flow-municipio-{owner_user.id}",
+            nombre="Municipio Quick Flow",
+            tipo="municipio",
+            municipio_id=owner_user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+
+    owner_user.municipio_id = owner_user.id
+    owner_user.tenant_id = tenant.id
+    owner_user.tenant_slug = tenant.slug
+    db.session.add(owner_user)
+    db.session.commit()
+    return tenant
 
 
 def run_turn(
@@ -18,12 +42,17 @@ def run_turn(
     contact_info=None,
     set_state=True,
     anon_id="anon",
+    claim_intent_confirmed=False,
 ):
     existing = ChatSessionContext.query.get("test_session")
     if existing:
         db.session.delete(existing)
         db.session.commit()
-    ctx = ChatSessionContext(chat_session_id="test_session", anon_id=anon_id)
+    ctx = ChatSessionContext(
+        chat_session_id="test_session",
+        anon_id=anon_id,
+        tenant_id=getattr(owner_user, "tenant_id", None),
+    )
     ctx.context_data = {}
     muni = ctx.context_data.setdefault(CONTEXTO_MUNICIPIO, {})
     if contact_info:
@@ -43,22 +72,38 @@ def run_turn(
         payload["ubicacion_usuario"] = location
         payload["es_ubicacion"] = True
     clear_municipio_cache()
-    resp = responder_municipio(
-        pregunta_original=payload if location else message,
-        owner_user=owner_user,
-        viewer_user=None,
-        rubro_obj=owner_user.rubro,
-        chat_db_context=ctx,
-        anon_id=anon_id,
-        channel="whatsapp",
+    intent_double = (
+        patch(
+            "services.municipio_responder.extract_complaint_details_llm",
+            return_value={
+                "intencion": "crear_reclamo",
+                "es_reclamo": True,
+            },
+        )
+        if claim_intent_confirmed
+        else nullcontext()
     )
+    with intent_double:
+        resp = responder_municipio(
+            pregunta_original=payload if location else message,
+            owner_user=owner_user,
+            viewer_user=None,
+            rubro_obj=owner_user.rubro,
+            chat_db_context=ctx,
+            anon_id=anon_id,
+            channel="whatsapp",
+        )
     db.session.commit()
     ctx_after = ChatSessionContext.query.get("test_session").context_data[CONTEXTO_MUNICIPIO]
     return types.SimpleNamespace(response=resp, ctx=ctx_after)
 
 
 def test_free_text_sets_category_and_asks_address(owner_user):
-    result = run_turn("hay un agujero en mi cuadra", owner_user=owner_user)
+    result = run_turn(
+        "hay un agujero en mi cuadra",
+        owner_user=owner_user,
+        claim_intent_confirmed=True,
+    )
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
@@ -67,7 +112,9 @@ def test_free_text_sets_category_and_asks_address(owner_user):
 
 def test_tree_text_triggers_arbolado(owner_user):
     result = run_turn(
-        "ramas y arbol partido en mitad de la cuadra", owner_user=owner_user
+        "ramas y arbol partido en mitad de la cuadra",
+        owner_user=owner_user,
+        claim_intent_confirmed=True,
     )
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
     flow = result.ctx["reclamo_flow_v2"]
@@ -75,7 +122,11 @@ def test_tree_text_triggers_arbolado(owner_user):
 
 
 def test_hueco_en_vereda_maps_to_arreglo(owner_user):
-    result = run_turn("hay un hueco en la vereda", owner_user=owner_user)
+    result = run_turn(
+        "hay un hueco en la vereda",
+        owner_user=owner_user,
+        claim_intent_confirmed=True,
+    )
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["categoria"] == "Arreglo de calle"
@@ -83,7 +134,11 @@ def test_hueco_en_vereda_maps_to_arreglo(owner_user):
 
 def test_free_form_water_outage_bypasses_admin_fuzzy_menu(owner_user):
     for phrase in ("no tengo agua en mi casa", "sin agua en casa"):
-        result = run_turn(phrase, owner_user=owner_user)
+        result = run_turn(
+            phrase,
+            owner_user=owner_user,
+            claim_intent_confirmed=True,
+        )
 
         assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
         flow = result.ctx["reclamo_flow_v2"]
@@ -95,6 +150,7 @@ def test_water_leak_on_sidewalk_prefers_problem_over_location_word(owner_user):
     result = run_turn(
         "hay una perdida de agua en mi vereda",
         owner_user=owner_user,
+        claim_intent_confirmed=True,
     )
 
     assert result.ctx["estado_conversacion"] == "EN_FLUJO_RECLAMO"
@@ -259,16 +315,19 @@ def test_prefill_dni_from_contact(owner_user):
         "ramas caidas en la vereda",
         owner_user=owner_user,
         contact_info=contact,
+        claim_intent_confirmed=True,
     )
     flow = result.ctx["reclamo_flow_v2"]
     assert flow["datos_reclamo"]["dni"] == "32877851"
 
 
 def test_prefill_contact_from_previous_ticket(owner_user):
+    tenant = ensure_owner_tenant(owner_user)
     ticket = MunicipioTicket(
         pregunta="Reporte anterior",
         categoria="Arbolado",
         municipio_id=owner_user.id,
+        tenant_id=tenant.id,
         anon_id="anon",
         telefono_vecino="+5492611234567",
         email_vecino="marcelo@example.com",
@@ -281,7 +340,11 @@ def test_prefill_contact_from_previous_ticket(owner_user):
     db.session.commit()
 
     try:
-        result = run_turn("hay una rama peligrosa", owner_user=owner_user)
+        result = run_turn(
+            "hay una rama peligrosa",
+            owner_user=owner_user,
+            claim_intent_confirmed=True,
+        )
         flow = result.ctx["reclamo_flow_v2"]
         datos = flow["datos_reclamo"]
         assert datos["email"] == "marcelo@example.com"
@@ -296,11 +359,13 @@ def test_prefill_contact_from_previous_ticket(owner_user):
 
 
 def test_prefill_contact_from_ticket_phone_match(owner_user):
+    tenant = ensure_owner_tenant(owner_user)
     stored_phone = "+5492617778888"
     ticket = MunicipioTicket(
         pregunta="Ticket con telefono",
         categoria="Arbolado",
         municipio_id=owner_user.id,
+        tenant_id=tenant.id,
         anon_id="prev_anon",
         telefono_vecino=stored_phone,
         email_vecino="contacto-previo@example.com",
@@ -317,6 +382,7 @@ def test_prefill_contact_from_ticket_phone_match(owner_user):
             "se corto el arbol",
             owner_user=owner_user,
             anon_id="whatsapp_4_+5492617778888",
+            claim_intent_confirmed=True,
         )
         datos = result.ctx["reclamo_flow_v2"]["datos_reclamo"]
         assert datos["telefono"] == stored_phone
@@ -329,10 +395,12 @@ def test_prefill_contact_from_ticket_phone_match(owner_user):
 
 
 def test_prefill_contact_from_previous_session(owner_user):
+    tenant = ensure_owner_tenant(owner_user)
     anon = "+5492615550000"
     previous_ctx = ChatSessionContext(
         chat_session_id="previous_session",
         anon_id=anon,
+        tenant_id=tenant.id,
         context_data={
             CONTEXTO_MUNICIPIO: {
                 "contacto_usuario": {
@@ -352,6 +420,7 @@ def test_prefill_contact_from_previous_session(owner_user):
             "hay una rama peligrosa",
             owner_user=owner_user,
             anon_id=anon,
+            claim_intent_confirmed=True,
         )
         flow = result.ctx["reclamo_flow_v2"]
         datos = flow["datos_reclamo"]
@@ -363,6 +432,64 @@ def test_prefill_contact_from_previous_session(owner_user):
     finally:
         db.session.delete(previous_ctx)
         db.session.commit()
+
+
+def test_prefill_contact_from_previous_session_does_not_cross_tenant(owner_user):
+    ensure_owner_tenant(owner_user)
+    anon = "+5492615550001"
+
+    other_owner = User(
+        name="Other Municipality Admin",
+        email="other-prefill-admin@example.com",
+        rol="admin",
+        rubro_id=owner_user.rubro_id,
+        tipo_chat="municipio",
+    )
+    other_owner.set_password("test")
+    db.session.add(other_owner)
+    db.session.flush()
+    other_owner.municipio_id = other_owner.id
+
+    other_tenant = TenantProfile(
+        slug="other-prefill-municipio",
+        nombre="Other Prefill Municipality",
+        tipo="municipio",
+        municipio_id=other_owner.id,
+        is_active=True,
+    )
+    db.session.add(other_tenant)
+    db.session.flush()
+    other_owner.tenant_id = other_tenant.id
+
+    previous_ctx = ChatSessionContext(
+        chat_session_id="cross_tenant_previous_session",
+        anon_id=anon,
+        tenant_id=other_tenant.id,
+        context_data={
+            CONTEXTO_MUNICIPIO: {
+                "contacto_usuario": {
+                    "nombre": "Persona de otro municipio",
+                    "dni": "99888777",
+                    "email": "privado@otro-municipio.example",
+                    "telefono": anon,
+                }
+            }
+        },
+    )
+    db.session.add(previous_ctx)
+    db.session.commit()
+
+    result = run_turn(
+        "hay una rama peligrosa",
+        owner_user=owner_user,
+        anon_id=anon,
+        claim_intent_confirmed=True,
+    )
+    datos = result.ctx["reclamo_flow_v2"]["datos_reclamo"]
+
+    assert datos.get("email") != "privado@otro-municipio.example"
+    assert datos.get("dni") != "99888777"
+    assert datos.get("nombre") != "Persona de otro municipio"
 
 
 def test_handle_direccion_uses_normalizer(monkeypatch, owner_user):

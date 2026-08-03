@@ -16,6 +16,7 @@ from services.gcs_service import (
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.attachment_service import create_attachment_with_thumbnail
 from services.archivo_service import guardar_archivo_adjunto_ticket
+from services.employee_ticket_access import employee_ticket_category_access_allows
 from services.ticket_service import servicio_tickets
 from services.tenant_ticket_scope import (
     municipio_ticket_belongs_to_tenant,
@@ -156,6 +157,8 @@ def _ticket_for_actor(
         return None
 
     if getattr(user, "rol", None) == "usuario" and ticket.user_id != user.id:
+        return None
+    if not employee_ticket_category_access_allows(user, ticket):
         return None
     return ticket
 

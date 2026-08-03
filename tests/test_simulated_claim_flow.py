@@ -12,7 +12,7 @@ sys.path.insert(0, project_root)
 from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO, ConversationState
 from app import create_app, db
 from config import Config
-from models import User, ChatSessionContext
+from models import User, ChatSessionContext, TenantProfile
 
 class TestConfig(Config):
     TESTING = True
@@ -153,10 +153,24 @@ class TestSimulatedClaimFlow(unittest.TestCase):
             )
             admin_user.set_password('adminpass')
             db.session.add(admin_user)
+            db.session.flush()
+            tenant = TenantProfile(
+                slug='simulated-claim-municipio',
+                nombre='Municipio Simulated Claim',
+                tipo='municipio',
+                municipio_id=admin_user.id,
+                is_active=True,
+            )
+            db.session.add(tenant)
+            db.session.flush()
+            admin_user.municipio_id = admin_user.id
+            admin_user.tenant_id = tenant.id
+            admin_user.tenant_slug = tenant.slug
             db.session.commit()
 
             ticket1 = MunicipioTicket(
-                municipio_id=1,
+                municipio_id=admin_user.id,
+                tenant_id=tenant.id,
                 user_id=admin_user.id,
                 asunto='Bache en la calle',
                 categoria='calle',

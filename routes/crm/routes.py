@@ -13,8 +13,15 @@ from utils.auth_helpers import token_requerido
 from utils.auth_helpers import admin_o_empleado_requerido
 from middleware.tenant_context import require_tenant
 from models_memory import Contact, ContactSnapshot, InteractionEvent
-from models import Notification, Order, TenantProfile, User
+from models import AdminAuditLog, Notification, Order, TenantProfile, User
 from extensions import db
+from services.campaign_preparation_service import (
+    CAMPAIGN_PREPARE_CONTRACT_VERSION,
+    MAX_CAMPAIGN_RECIPIENTS,
+    CampaignPreparationError,
+    prepare_campaign,
+    serialize_campaign_preparation,
+)
 from services.contact_intake import is_placeholder_email, normalize_email
 from services.crm_intelligence import serialize_crm_contact
 from socket_service import emit_crm_contact_update, emit_crm_notification_update
@@ -373,10 +380,16 @@ def _serialize_campaign_event(
     tenant: TenantProfile | None = None,
 ) -> dict:
     meta = _metadata(event)
+    event_type = meta.get("event_type")
+    serialized_event_type = (
+        "campaign_registered_legacy"
+        if event_type == "campaign_send"
+        else event_type
+    )
     return {
         "id": event.id,
         "campaign_id": meta.get("campaign_id"),
-        "event_type": meta.get("event_type"),
+        "event_type": serialized_event_type,
         "channel": meta.get("channel") or event.channel,
         "status": meta.get("status"),
         "reason": meta.get("reason"),
@@ -387,6 +400,8 @@ def _serialize_campaign_event(
         "min_interval_hours": meta.get("min_interval_hours"),
         "max_per_week": meta.get("max_per_week"),
         "source": meta.get("source"),
+        "delivery_evidence": False,
+        "provider_receipt_present": False,
         "contact_id": event.contact_id,
         "contact": _contact_brief(contact),
         "tenant": _tenant_brief(tenant),
@@ -490,18 +505,26 @@ def _contact_for_legacy_user(tenant: TenantProfile, cliente: User) -> Contact:
 
 
 def _parse_scheduled_for(raw_value: str | None, tz_name: str | None) -> datetime | None:
-    if not raw_value:
+    if raw_value in (None, ""):
         return None
 
+    if not isinstance(raw_value, str) or len(raw_value) > 80 or "\x00" in raw_value:
+        raise ValueError("scheduled_for_invalid")
+    if not isinstance(tz_name, str) or not tz_name or len(tz_name) > 64 or "\x00" in tz_name:
+        raise ValueError("timezone_invalid")
+
     try:
-        parsed = datetime.fromisoformat(str(raw_value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
     except Exception as exc:
-        raise ValueError("scheduled_for debe ser ISO8601 válido") from exc
+        raise ValueError("scheduled_for_invalid") from exc
 
     if parsed.tzinfo is not None:
         return parsed.astimezone(timezone.utc)
 
-    zone = ZoneInfo(tz_name or "UTC")
+    try:
+        zone = ZoneInfo(tz_name)
+    except Exception as exc:
+        raise ValueError("timezone_invalid") from exc
     return parsed.replace(tzinfo=zone).astimezone(timezone.utc)
 
 
@@ -916,196 +939,303 @@ def campaign_send(current_user, slug):
     return _send_campaign_for_tenant(current_user, tenant)
 
 
+@crm_bp.route('/api/admin/tenants/<slug>/campaigns/prepare', methods=['POST'])
+@token_requerido
+@require_tenant
+@require_crm_tenant_operator
+def campaign_prepare(current_user, slug):
+    """Persist a strict preview and held queue receipts without dispatching."""
+
+    tenant = g.tenant_profile
+    payload = request.get_json(silent=True)
+    try:
+        campaign, created = prepare_campaign(
+            tenant_id=tenant.id,
+            actor_user_id=current_user.id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            payload=payload,
+        )
+    except CampaignPreparationError as exc:
+        response = jsonify(exc.to_dict())
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response, exc.status_code
+
+    result = serialize_campaign_preparation(
+        campaign,
+        idempotent_replay=not created,
+    )
+    audience = result["audience"]
+    db.session.add(
+        AdminAuditLog(
+            admin_user_id=current_user.id,
+            action=(
+                "campaign_preparation_created"
+                if created
+                else "campaign_preparation_replayed"
+            ),
+            target_object=campaign.id,
+            details={
+                "contract_version": CAMPAIGN_PREPARE_CONTRACT_VERSION,
+                "tenant_id": tenant.id,
+                "channel": campaign.channel,
+                "campaign_status": campaign.status,
+                "created": created,
+                "requested": audience.get("requested", 0),
+                "resolved": audience.get("resolved", 0),
+                "eligible": audience.get("eligible", 0),
+                "excluded": audience.get("excluded", 0),
+                "transport_readiness_checked": False,
+                "production_send_allowed": False,
+                "provider_calls_performed": False,
+            },
+            ip_address=request.remote_addr,
+        )
+    )
+    db.session.commit()
+
+    response = jsonify(result)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response, (201 if created else 200)
+
+
 @crm_bp.route('/api/crm/campaigns/send', methods=['POST'])
 @token_requerido
 @admin_o_empleado_requerido
 def legacy_campaign_send(current_user):
     tenant = _resolve_crm_tenant(current_user)
     if not tenant:
-        return jsonify({
+        return _legacy_campaign_response({
             "ok": False,
             "reason_code": "tenant_not_resolved",
             "message": "No se pudo resolver el tenant para enviar la campania.",
-        }), 400
+        }, 400)
     return _send_campaign_for_tenant(current_user, tenant)
 
 
+def _legacy_campaign_response(payload: dict, status_code: int = 200):
+    body = {"contract_version": "crm_campaign_legacy_audience.v1"}
+    body.update(payload)
+    response = jsonify(body)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response, status_code
+
+
 def _send_campaign_for_tenant(current_user: User, tenant: TenantProfile):
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return _legacy_campaign_response({
+            "error": "request_body_must_be_object",
+        }, 400)
 
     template_slug = payload.get("template_slug")
     message = payload.get("message")
-    contact_ids = payload.get("contact_ids") or []
-    user_ids = payload.get("user_ids") or payload.get("legacy_user_ids") or []
-    dry_run = bool(payload.get("dry_run", False))
-    try:
-        max_per_week = int(payload.get("max_per_week", 2) or 2)
-        min_interval_hours = int(payload.get("min_interval_hours", 24) or 24)
-    except (TypeError, ValueError):
-        return jsonify({"error": "max_per_week y min_interval_hours deben ser numericos"}), 400
-    if max_per_week < 1 or min_interval_hours < 1:
-        return jsonify({"error": "max_per_week y min_interval_hours deben ser mayores a cero"}), 400
-    channel = str(payload.get("channel") or "whatsapp").strip().lower()
-    tz_name = payload.get("timezone") or "UTC"
+    raw_contact_ids = payload.get("contact_ids", [])
+    raw_user_ids = payload.get("user_ids", payload.get("legacy_user_ids", []))
+    raw_dry_run = payload.get("dry_run", False)
+    if type(raw_dry_run) is not bool:
+        return _legacy_campaign_response({
+            "error": "dry_run_must_be_boolean",
+            "field": "dry_run",
+        }, 400)
+    if not raw_dry_run:
+        # The old endpoint only wrote InteractionEvent rows and called them
+        # sends. It had no provider receipt, no durable idempotency boundary
+        # and no dispatch worker. Keep audience preview compatibility, but
+        # fail closed for every mutating request.
+        return _legacy_campaign_response({
+            "reason_code": "campaign_send_endpoint_deprecated",
+            "action_hint": "use_campaign_prepare",
+            "retryable": False,
+            "side_effects": {
+                "interaction_events_created": 0,
+                "notifications_queued": 0,
+                "provider_calls_performed": False,
+                "messages_sent": 0,
+            },
+        }, 410)
 
-    if not isinstance(contact_ids, list):
-        contact_ids = []
-    if not isinstance(user_ids, list):
-        user_ids = []
+    max_per_week = payload.get("max_per_week", 2)
+    min_interval_hours = payload.get("min_interval_hours", 24)
+    if type(max_per_week) is not int or max_per_week < 1:
+        return _legacy_campaign_response({
+            "error": "max_per_week_must_be_positive_integer",
+            "field": "max_per_week",
+        }, 400)
+    if type(min_interval_hours) is not int or min_interval_hours < 1:
+        return _legacy_campaign_response({
+            "error": "min_interval_hours_must_be_positive_integer",
+            "field": "min_interval_hours",
+        }, 400)
+
+    if raw_contact_ids is None:
+        raw_contact_ids = []
+    if not isinstance(raw_contact_ids, list):
+        return _legacy_campaign_response({
+            "error": "contact_ids_must_be_array",
+            "field": "contact_ids",
+        }, 400)
+    if len(raw_contact_ids) > MAX_CAMPAIGN_RECIPIENTS:
+        return _legacy_campaign_response({
+            "error": "campaign_recipient_limit_exceeded",
+            "field": "contact_ids",
+            "max_recipients": MAX_CAMPAIGN_RECIPIENTS,
+        }, 400)
+
+    contact_ids = []
+    seen_contact_ids: set[str] = set()
+    for raw_contact_id in raw_contact_ids:
+        if (
+            not isinstance(raw_contact_id, str)
+            or not raw_contact_id.strip()
+            or len(raw_contact_id.strip()) > 128
+            or "\x00" in raw_contact_id
+        ):
+            return _legacy_campaign_response({
+                "error": "contact_id_must_be_nonempty_string",
+                "field": "contact_ids",
+            }, 400)
+        contact_id = raw_contact_id.strip()
+        if contact_id not in seen_contact_ids:
+            contact_ids.append(contact_id)
+            seen_contact_ids.add(contact_id)
+
+    if raw_user_ids is None:
+        raw_user_ids = []
+    if not isinstance(raw_user_ids, list):
+        return _legacy_campaign_response({
+            "error": "legacy_user_ids_must_be_array",
+            "field": "user_ids",
+        }, 400)
+    user_ids = raw_user_ids
     if not contact_ids and not user_ids:
-        return jsonify({"error": "contact_ids o user_ids es obligatorio"}), 400
-    if channel not in {"whatsapp", "email"}:
-        return jsonify({"error": "channel debe ser whatsapp o email"}), 400
+        return _legacy_campaign_response({"error": "recipient_ids_required"}, 400)
+    if user_ids:
+        return _legacy_campaign_response({
+            "error": "legacy_user_ids_not_supported",
+            "action_hint": "resolve_tenant_contacts",
+        }, 400)
 
+    raw_channel = payload.get("channel", "whatsapp")
+    if not isinstance(raw_channel, str):
+        return _legacy_campaign_response({
+            "error": "campaign_channel_invalid",
+            "field": "channel",
+        }, 400)
+    channel = raw_channel.strip().lower()
+    if channel not in {"whatsapp", "email"}:
+        return _legacy_campaign_response({
+            "error": "campaign_channel_invalid",
+            "field": "channel",
+        }, 400)
+
+    tz_name = payload.get("timezone", "UTC")
+
+    if template_slug and message:
+        return _legacy_campaign_response({
+            "error": "campaign_template_selector_ambiguous",
+            "field": "template_slug",
+        }, 400)
     if template_slug and not message:
         template = next((t for t in _tenant_templates(tenant) if t.get("slug") == template_slug), None)
         if not template:
-            return jsonify({"error": "Template no encontrado"}), 404
+            return _legacy_campaign_response({"error": "campaign_template_not_found"}, 404)
         message = template.get("message")
 
-    if not message:
-        return jsonify({"error": "message es obligatorio"}), 400
+    if not isinstance(message, str) or not message.strip():
+        return _legacy_campaign_response({
+            "error": "campaign_message_required",
+            "field": "message",
+        }, 400)
 
     try:
         scheduled_for_utc = _parse_scheduled_for(payload.get("scheduled_for"), tz_name)
-    except Exception as exc:
-        return jsonify({"error": str(exc)}), 400
+    except ValueError as exc:
+        error_code = str(exc)
+        if error_code not in {"scheduled_for_invalid", "timezone_invalid"}:
+            error_code = "scheduled_for_invalid"
+        return _legacy_campaign_response({"error": error_code}, 400)
 
     contacts = Contact.query.filter(
         Contact.tenant_id == tenant.id,
         Contact.id.in_(contact_ids),
     ).all()
 
-    if user_ids:
-        try:
-            normalized_user_ids = [int(value) for value in user_ids]
-        except (TypeError, ValueError):
-            return jsonify({"error": "user_ids debe contener ids numericos"}), 400
-
-        legacy_clients = _query_clientes_tenant(current_user).filter(User.id.in_(normalized_user_ids)).all()
-        existing_contact_ids = {contact.id for contact in contacts}
-        for cliente in legacy_clients:
-            contact = _contact_for_legacy_user(tenant, cliente)
-            if contact.id not in existing_contact_ids:
-                contacts.append(contact)
-                existing_contact_ids.add(contact.id)
-
     included = []
     excluded_optout = []
+    excluded_consent_missing = []
     excluded_frequency = []
     excluded_without_channel = []
-    blocked_events: list[tuple[Contact, str]] = []
 
     for contact in contacts:
-        prefs = contact.preferences or {}
+        prefs = contact.preferences if isinstance(contact.preferences, dict) else {}
         if prefs.get("marketing_opt_out") or prefs.get("marketing_opt_in") is False:
             excluded_optout.append(contact.id)
-            blocked_events.append((contact, "opt_out"))
+            continue
+        if prefs.get("marketing_opt_in") is not True:
+            excluded_consent_missing.append(contact.id)
             continue
 
         if channel == "whatsapp" and not contact.phone:
             excluded_without_channel.append(contact.id)
-            blocked_events.append((contact, "missing_whatsapp"))
             continue
         if channel == "email" and not contact.email:
             excluded_without_channel.append(contact.id)
-            blocked_events.append((contact, "missing_email"))
             continue
 
         sends_week = _campaign_sends_last_days(tenant.id, contact.id, days=7)
         sends_interval = _campaign_sends_last_hours(tenant.id, contact.id, hours=min_interval_hours)
         if sends_week >= max_per_week or sends_interval > 0:
             excluded_frequency.append(contact.id)
-            blocked_events.append((contact, "frequency_window"))
             continue
 
         included.append(contact)
 
     campaign_id = str(uuid4())
 
-    if not dry_run:
-        for contact in included:
-            db.session.add(
-                InteractionEvent(
-                    tenant_id=tenant.id,
-                    contact_id=contact.id,
-                    channel=channel,
-                    direction="outbound",
-                    content=message,
-                    metadata_payload={
-                        "event_type": "campaign_send",
-                        "campaign_id": campaign_id,
-                        "scheduled_for": scheduled_for_utc.isoformat() if scheduled_for_utc else None,
-                        "status": "scheduled" if scheduled_for_utc else "queued",
-                        "channel": channel,
-                        "min_interval_hours": min_interval_hours,
-                        "max_per_week": max_per_week,
-                        "source": payload.get("source") or "crm_campaign",
-                    },
-                )
-            )
-        for contact, reason in blocked_events:
-            db.session.add(
-                InteractionEvent(
-                    tenant_id=tenant.id,
-                    contact_id=contact.id,
-                    channel=channel,
-                    direction="outbound",
-                    content=message,
-                    metadata_payload={
-                        "event_type": "campaign_blocked",
-                        "campaign_id": campaign_id,
-                        "status": "blocked",
-                        "reason": reason,
-                        "scheduled_for": scheduled_for_utc.isoformat() if scheduled_for_utc else None,
-                        "channel": channel,
-                        "min_interval_hours": min_interval_hours,
-                        "max_per_week": max_per_week,
-                        "source": payload.get("source") or "crm_campaign",
-                    },
-                )
-            )
-        db.session.commit()
-        emit_crm_notification_update(
-            tenant,
-            {
-                "type": "campaign.ledger.updated",
-                "campaign_id": campaign_id,
-                "channel": channel,
-                "mode": "scheduled",
-                "scheduled_for": scheduled_for_utc.isoformat() if scheduled_for_utc else None,
-                "counts": {
-                    "requested": len(contact_ids) + len(user_ids),
-                    "resolved": len(contacts),
-                    "eligible": len(included),
-                    "blocked": len(blocked_events),
-                    "excluded_optout": len(excluded_optout),
-                    "excluded_frequency": len(excluded_frequency),
-                    "excluded_without_channel": len(excluded_without_channel),
-                },
-            },
-        )
-
-    return jsonify(
+    return _legacy_campaign_response(
         {
             "campaign_id": campaign_id,
-            "mode": "dry_run" if dry_run else "scheduled",
+            "mode": "dry_run",
             "channel": channel,
             "scheduled_for_utc": scheduled_for_utc.isoformat() if scheduled_for_utc else None,
             "totals": {
-                "requested": len(contact_ids) + len(user_ids),
+                "requested": len(raw_contact_ids),
+                "unique_requested": len(contact_ids),
+                "duplicates_ignored": len(raw_contact_ids) - len(contact_ids),
                 "resolved": len(contacts),
+                "unresolved": len(contact_ids) - len(contacts),
                 "eligible": len(included),
                 "excluded_optout": len(excluded_optout),
+                "excluded_consent_missing": len(excluded_consent_missing),
                 "excluded_frequency": len(excluded_frequency),
                 "excluded_without_channel": len(excluded_without_channel),
             },
-            "excluded_optout": excluded_optout,
-            "excluded_frequency": excluded_frequency,
-            "excluded_without_channel": excluded_without_channel,
-            "eligible_contacts": [c.id for c in included],
             "request_id": campaign_id,
-        }
+            "readiness": {
+                "audience_evaluated": True,
+                "consent_evaluated": True,
+                "transport_readiness_checked": False,
+                "production_send_allowed": False,
+                "blockers": [
+                    "legacy_audience_preview_only",
+                    "campaign_dispatch_not_authorized",
+                ],
+            },
+            "consent_policy": {
+                "purpose": "marketing",
+                "explicit_opt_in_required": True,
+            },
+            "side_effects": {
+                "interaction_events_created": 0,
+                "notifications_queued": 0,
+                "provider_calls_performed": False,
+                "messages_sent": 0,
+            },
+        },
+        200,
     )
 
 
@@ -1136,6 +1266,9 @@ def campaign_history(current_user, slug):
                 "max_per_week": meta.get("max_per_week"),
                 "status_counts": {},
                 "sent_count": 0,
+                "delivered_count": 0,
+                "read_count": 0,
+                "registered_without_delivery_evidence_count": 0,
                 "blocked_count": 0,
                 "contacts": set(),
             },
@@ -1151,7 +1284,10 @@ def campaign_history(current_user, slug):
         if meta.get("event_type") == "campaign_blocked":
             item["blocked_count"] += 1
         else:
-            item["sent_count"] += 1
+            # Legacy campaign_send rows are registration records only. They
+            # have no provider receipt or callback and must never be counted
+            # as sent, delivered or read.
+            item["registered_without_delivery_evidence_count"] += 1
 
     items = []
     for item in grouped.values():
@@ -1295,7 +1431,9 @@ def campaign_metrics(current_user, slug, campaign_id):
         InteractionEvent.metadata_payload["campaign_id"].astext == campaign_id,
     )
 
-    sent = base.filter(InteractionEvent.metadata_payload["event_type"].astext == "campaign_send").count()
+    registered_without_delivery_evidence = base.filter(
+        InteractionEvent.metadata_payload["event_type"].astext == "campaign_send"
+    ).count()
     blocked = base.filter(InteractionEvent.metadata_payload["event_type"].astext == "campaign_blocked").count()
     scheduled = base.filter(InteractionEvent.metadata_payload["status"].astext == "scheduled").count()
     queued = base.filter(InteractionEvent.metadata_payload["status"].astext == "queued").count()
@@ -1304,7 +1442,11 @@ def campaign_metrics(current_user, slug, campaign_id):
         {
             "campaign_id": campaign_id,
             "metrics": {
-                "sent_or_queued": sent,
+                "sent_or_queued": 0,
+                "sent": 0,
+                "delivered": 0,
+                "read": 0,
+                "registered_without_delivery_evidence": registered_without_delivery_evidence,
                 "blocked": blocked,
                 "scheduled": scheduled,
                 "queued": queued,

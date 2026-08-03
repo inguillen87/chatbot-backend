@@ -21,6 +21,30 @@ _OPENAI_CLIENT: OpenAI | None = None
 _OPENAI_CLIENT_KEY_DIGEST: str | None = None
 
 
+def _flag_enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _openai_network_allowed() -> bool:
+    """Keep test runs offline unless an integration test opts in explicitly."""
+
+    testing = _flag_enabled(os.getenv("TESTING"))
+    config_opt_in = False
+    from flask import current_app, has_app_context
+
+    if has_app_context():
+        testing = testing or _flag_enabled(current_app.config.get("TESTING"))
+        config_opt_in = _flag_enabled(
+            current_app.config.get("OPENAI_ALLOW_NETWORK_IN_TESTS")
+        )
+
+    return (
+        not testing
+        or config_opt_in
+        or _flag_enabled(os.getenv("OPENAI_ALLOW_NETWORK_IN_TESTS"))
+    )
+
+
 def _configured_model(explicit_model: object = None) -> str:
     requested = str(explicit_model or "").strip()
     return (
@@ -38,6 +62,9 @@ def _get_openai_client() -> OpenAI:
     api_key = str(os.getenv("OPENAI_API_KEY") or "").strip()
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
+    if not _openai_network_allowed():
+        logger.info("OpenAI text provider blocked reason=test_network_disabled")
+        raise RuntimeError("OpenAI network access is disabled while TESTING is active")
 
     key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
     try:

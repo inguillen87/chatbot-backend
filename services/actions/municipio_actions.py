@@ -59,6 +59,84 @@ logger = logging.getLogger(__name__)
 
 CONTEXTO_MUNICIPIO = "contexto_municipio_v2"
 
+# Only stable schema field names are useful for operational diagnostics.  LLM
+# action values can contain a citizen's message, address, contact details,
+# attachment URLs, or provider tokens and must never be written to logs.
+_SAFE_ACTION_LOG_FIELDS = frozenset(
+    {
+        "accion",
+        "analisis_imagen",
+        "archivo_url",
+        "campo_a_corregir",
+        "categoria",
+        "coordenadas",
+        "descripcion",
+        "distrito",
+        "dni",
+        "email",
+        "email_detectado",
+        "foto_url",
+        "foto_url_directa",
+        "id_ticket_mencionado",
+        "latitud",
+        "longitud",
+        "media_url",
+        "motivo_derivacion",
+        "motivo_llamada",
+        "nombre",
+        "nombre_tramite",
+        "nombre_usuario_detectado",
+        "nuevo_valor",
+        "phone",
+        "pin",
+        "solicita_llamada",
+        "telefono",
+        "telefono_detectado",
+        "tipo_comercio",
+        "ubicacion",
+        "usuario",
+    }
+)
+_ATTACHMENT_ACTION_FIELDS = frozenset(
+    {"analisis_imagen", "archivo_url", "foto_url", "foto_url_directa", "media_url"}
+)
+
+
+def _safe_action_log_metadata(action_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Return observability metadata without serialising citizen-supplied values."""
+
+    data = action_data if isinstance(action_data, dict) else {}
+    supplied_fields = sorted(
+        str(key) for key in data.keys() if str(key) in _SAFE_ACTION_LOG_FIELDS
+    )
+    return {
+        "supplied_fields": supplied_fields,
+        "other_field_count": max(0, len(data) - len(supplied_fields)),
+        "has_location": "ubicacion" in data,
+        "has_coordinates": "coordenadas" in data,
+        "has_attachment": any(field in data for field in _ATTACHMENT_ACTION_FIELDS),
+    }
+
+
+def _log_action_execution(
+    handler_name: str,
+    action_data: Dict[str, Any],
+    *,
+    level: int = logging.INFO,
+) -> None:
+    metadata = _safe_action_log_metadata(action_data)
+    logger.log(
+        level,
+        "Executing municipal action handler=%s supplied_fields=%s "
+        "other_field_count=%s has_location=%s has_coordinates=%s has_attachment=%s",
+        handler_name,
+        metadata["supplied_fields"],
+        metadata["other_field_count"],
+        metadata["has_location"],
+        metadata["has_coordinates"],
+        metadata["has_attachment"],
+    )
+
 
 def _durable_ticket_effect_kwargs(
     context: Dict[str, Any],
@@ -302,14 +380,19 @@ def _acquire_municipal_claim_confirmation_lock(
             {"lock_id": lock_id},
         )
         return True
-    except Exception:
-        logger.exception(
-            "No se pudo adquirir el bloqueo idempotente del reclamo municipal."
+    except Exception as exc:
+        logger.error(
+            "No se pudo adquirir el bloqueo idempotente del reclamo municipal "
+            "error_type=%s.",
+            type(exc).__name__,
         )
         try:
             session.rollback()
-        except Exception:
-            logger.exception("No se pudo revertir la sesion tras fallar el bloqueo.")
+        except Exception as rollback_exc:
+            logger.error(
+                "No se pudo revertir la sesion tras fallar el bloqueo error_type=%s.",
+                type(rollback_exc).__name__,
+            )
         return False
 
 
@@ -407,10 +490,10 @@ def _persist_municipio_ticket_ai_enrichment(
     except Exception as exc:
         db.session.rollback()
         logger.warning(
-            "No se pudo persistir enrichment IA advisory para reclamo municipal %s: %s",
+            "No se pudo persistir enrichment IA advisory para reclamo municipal %s "
+            "error_type=%s",
             getattr(ticket_obj, "id", None),
-            exc,
-            exc_info=True,
+            type(exc).__name__,
         )
         return None
 
@@ -509,7 +592,10 @@ def _get_categoria_candidates(owner_user: Any, context: Dict[str, Any]) -> list[
             .all()
         )
     except Exception as exc:
-        logger.warning("No se pudieron cargar categorías del tenant: %s", exc)
+        logger.warning(
+            "No se pudieron cargar categorías del tenant error_type=%s",
+            type(exc).__name__,
+        )
         return categorias
 
     normalized_existing = {normalizar_texto_municipio(cat) for cat in categorias if cat}
@@ -789,7 +875,7 @@ class BuscarEstacionamientoActionHandler(BaseActionHandler):
     action_name = "buscar_estacionamiento"
 
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing BuscarEstacionamientoActionHandler with data: {action_data}")
+        _log_action_execution("BuscarEstacionamientoActionHandler", action_data)
 
         # La ubicación puede venir de la acción del LLM o del contexto si se pidió antes
         ubicacion = action_data.get("ubicacion") or self.context.get("ubicacion_usuario")
@@ -824,10 +910,13 @@ class BuscarEstacionamientoActionHandler(BaseActionHandler):
 
 class CrearReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
+        action_log_metadata = _safe_action_log_metadata(action_data)
         logger.info(
-            "Executing CrearReclamoActionHandler channel=%s supplied_fields=%s",
+            "Executing CrearReclamoActionHandler channel=%s supplied_fields=%s "
+            "other_field_count=%s",
             str(self.context.get("channel") or "unknown").lower(),
-            sorted(str(key) for key in action_data.keys()),
+            action_log_metadata["supplied_fields"],
+            action_log_metadata["other_field_count"],
         )
 
         contexto_reclamo = self.context.get(CONTEXTO_MUNICIPIO)
@@ -2011,7 +2100,7 @@ class CrearReclamoActionHandler(BaseActionHandler):
 
 class ConsultarEstadoTicketActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ConsultarEstadoTicketActionHandler with data: {action_data}")
+        _log_action_execution("ConsultarEstadoTicketActionHandler", action_data)
         ticket_id = action_data.get("id_ticket_mencionado")
         if not ticket_id:
             # Try to parse from raw user question stored in context
@@ -2100,7 +2189,7 @@ class ConsultarEstadoTicketActionHandler(BaseActionHandler):
 
 class ConsultarInfoTramiteActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ConsultarInfoTramiteActionHandler with data: {action_data}")
+        _log_action_execution("ConsultarInfoTramiteActionHandler", action_data)
         tramite_nombre = action_data.get("nombre_tramite") or action_data.get("categoria") # Categoria might be used if specific tramite name isn't clear
         if not tramite_nombre:
             return {
@@ -2132,13 +2221,7 @@ class ConsultarInfoTramiteActionHandler(BaseActionHandler):
 
 class HacerSugerenciaActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(
-            "Executing HacerSugerenciaActionHandler supplied_fields=%s "
-            "has_location=%s has_coordinates=%s",
-            sorted(str(key) for key in action_data.keys()),
-            bool(action_data.get("ubicacion")),
-            bool(action_data.get("coordenadas")),
-        )
+        _log_action_execution("HacerSugerenciaActionHandler", action_data)
         descripcion_sugerencia = action_data.get("descripcion")
         if not descripcion_sugerencia:
             return {
@@ -2287,10 +2370,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                     )
             except Exception as e_notify:
                 logger.error(
-                    "Error enviando notificación en tiempo real para sugerencia %s: %s",
+                    "Error enviando notificación en tiempo real para sugerencia %s "
+                    "error_type=%s",
                     nro_ticket_str,
-                    e_notify,
-                    exc_info=True,
+                    type(e_notify).__name__,
                 )
 
             # Limpiar el contexto para evitar estados pegajosos
@@ -2398,7 +2481,10 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
                 caption_values=caption_values,
             )
         except Exception as e:
-            logger.error(f"Error en HacerSugerenciaActionHandler: {e}", exc_info=True)
+            logger.error(
+                "Error en HacerSugerenciaActionHandler error_type=%s",
+                type(e).__name__,
+            )
             return {
                 "success": False,
                 "message_to_user": "Hubo un problema al intentar registrar tu sugerencia. Por favor, intenta de nuevo más tarde.",
@@ -2407,7 +2493,7 @@ class HacerSugerenciaActionHandler(BaseActionHandler):
 
 class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ConsultarPuntosDeInteresActionHandler with data: {action_data}")
+        _log_action_execution("ConsultarPuntosDeInteresActionHandler", action_data)
 
         tipo_de_comercio = action_data.get("tipo_comercio")
         if not tipo_de_comercio:
@@ -2440,7 +2526,7 @@ class ConsultarPuntosDeInteresActionHandler(BaseActionHandler):
 
 class ActivarPanicoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.critical(f"Executing ActivarPanicoActionHandler with data: {action_data}")
+        _log_action_execution("ActivarPanicoActionHandler", action_data, level=logging.CRITICAL)
         # Simulate alerting emergency services
         user_message = "🚨 ALERTA DE PÁNICO RECIBIDA. Hemos notificado a los servicios de emergencia con tu ubicación. Mantené la calma, la ayuda está en camino."
         if not action_data.get("coordenadas") and not action_data.get("ubicacion"):
@@ -2459,7 +2545,7 @@ from routes.ticket import serialize_ticket_to_json
 class DerivarHumanoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         """Crea un ticket real de chat en vivo y devuelve su identificador."""
-        logger.info(f"Executing DerivarHumanoActionHandler with data: {action_data}")
+        _log_action_execution("DerivarHumanoActionHandler", action_data)
 
         try:
             viewer_user = self.context.get("viewer_user_obj")
@@ -2508,7 +2594,12 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 ticket_json = serialize_ticket_to_json(sala_obj, ticket_type)
                 emit_new_ticket(ticket_json)
             except Exception as e_notify:
-                logger.error(f"Error enviando notificación en tiempo real para ticket #{sala_dict['nro_ticket']}: {e_notify}", exc_info=True)
+                logger.error(
+                    "Error enviando notificación en tiempo real para ticket #%s "
+                    "error_type=%s",
+                    sala_dict["nro_ticket"],
+                    type(e_notify).__name__,
+                )
 
             servicio_tickets.crear_comentario(
                 ticket_id=sala_dict['id'],
@@ -2532,7 +2623,11 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 socketio.emit('live_chat_request', ticket_json, room=admin_socket_room)
                 logger.info(f"Socket event 'live_chat_request' emitted to room '{admin_socket_room}' for ticket {sala_obj.id}")
             except Exception as e_socket:
-                logger.error(f"Failed to emit socket event for new live chat ticket {sala_obj.id}: {e_socket}", exc_info=True)
+                logger.error(
+                    "Failed to emit socket event for new live chat ticket %s error_type=%s",
+                    sala_obj.id,
+                    type(e_socket).__name__,
+                )
 
 
             chat_id = f"M-{sala_dict['nro_ticket']}"
@@ -2592,7 +2687,10 @@ class DerivarHumanoActionHandler(BaseActionHandler):
                 },
             }
         except Exception as e:
-            logger.error(f"Error en DerivarHumanoActionHandler: {e}", exc_info=True)
+            logger.error(
+                "Error en DerivarHumanoActionHandler error_type=%s",
+                type(e).__name__,
+            )
             return {
                 "success": False,
                 "message_to_user": "Ocurrió un problema al crear el chat en vivo. ¿Podés intentar de nuevo más tarde?",
@@ -2601,7 +2699,7 @@ class DerivarHumanoActionHandler(BaseActionHandler):
 
 class ProcesarAdjuntoReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing ProcesarAdjuntoReclamoActionHandler with data: {action_data}")
+        _log_action_execution("ProcesarAdjuntoReclamoActionHandler", action_data)
         # This handler would be triggered AFTER an image/file is uploaded and processed by InputProcessor
         # and its analysis (e.g., from Vision API) is available in action_data.
 
@@ -2630,7 +2728,7 @@ class ProcesarAdjuntoReclamoActionHandler(BaseActionHandler):
 
 class CorregirDatosReclamoActionHandler(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"Executing CorregirDatosReclamoActionHandler with data: {action_data}")
+        _log_action_execution("CorregirDatosReclamoActionHandler", action_data)
 
         campo_a_corregir = action_data.get("campo_a_corregir")
         nuevo_valor = action_data.get("nuevo_valor")

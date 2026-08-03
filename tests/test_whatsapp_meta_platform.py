@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlsplit
 from unittest.mock import MagicMock, patch
 
 import jwt
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -33,6 +34,11 @@ from services.meta_flow_json import (
 )
 from services.meta_flow_management import MetaFlowManagementError
 from services.whatsapp_experience import build_whatsapp_experience
+
+
+@pytest.fixture(autouse=True)
+def _allow_explicit_mocked_twilio(monkeypatch):
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
 
 
 META_FLOW_ID = "1232445823264765"

@@ -21,7 +21,11 @@ from utils.auth_helpers import (
 )
 from datetime import datetime, timedelta # Añadido timedelta
 
-from services.tenant_ticket_scope import scoped_municipio_ticket_query, tenant_owner_ids
+from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.tenant_ticket_scope import (
+    scoped_municipio_ticket_query,
+    tenant_unique_legacy_owner_id,
+)
 from utils.roles import is_authorized_superadmin_user
 
 
@@ -45,7 +49,8 @@ def _crm_pyme_ticket_query(actor: User, *, cliente_id: int | None = None):
     tenant = _crm_tenant_for_actor(actor)
     if tenant is None:
         return query.filter(false())
-    return query.filter(PymeTicket.tenant_id == tenant.id)
+    query = query.filter(PymeTicket.tenant_id == tenant.id)
+    return apply_employee_ticket_category_scope(query, actor, PymeTicket)
 
 
 def _crm_municipio_ticket_query(actor: User, *, cliente_id: int | None = None):
@@ -57,7 +62,8 @@ def _crm_municipio_ticket_query(actor: User, *, cliente_id: int | None = None):
     tenant = _crm_tenant_for_actor(actor)
     if tenant is None:
         return query.filter(false())
-    return scoped_municipio_ticket_query(tenant, query)
+    query = scoped_municipio_ticket_query(tenant, query)
+    return apply_employee_ticket_category_scope(query, actor, MunicipioTicket)
 
 
 def _crm_conversation_query(actor: User, *, cliente_id: int):
@@ -75,18 +81,18 @@ def _crm_client_query(actor: User):
     if is_authorized_superadmin_user(actor):
         return query
     tenant = _crm_tenant_for_actor(actor)
-    owners = tenant_owner_ids(tenant)
-    if tenant is None or len(owners) != 1:
+    legacy_owner_id = tenant_unique_legacy_owner_id(tenant)
+    if tenant is None:
         return query.filter(false())
-    return query.filter(
-        or_(
-            User.tenant_id == tenant.id,
+    filters = [User.tenant_id == tenant.id]
+    if legacy_owner_id is not None:
+        filters.append(
             and_(
                 User.tenant_id.is_(None),
-                User.empresa_id == owners[0],
-            ),
+                User.empresa_id == legacy_owner_id,
+            )
         )
-    )
+    return query.filter(or_(*filters))
 
 
 def _crm_note_query(actor: User, *, cliente_id: int | None = None):
@@ -96,20 +102,36 @@ def _crm_note_query(actor: User, *, cliente_id: int | None = None):
     if is_authorized_superadmin_user(actor):
         return query
     tenant = _crm_tenant_for_actor(actor)
-    owners = tenant_owner_ids(tenant)
-    if tenant is None or len(owners) != 1:
+    if tenant is None:
         return query.filter(false())
-    creator_ids = User.query.filter(
-        or_(
-            User.tenant_id == tenant.id,
-            User.id == owners[0],
-            and_(
-                User.tenant_id.is_(None),
-                User.empresa_id == owners[0],
-            ),
-        )
-    ).with_entities(User.id)
-    return query.filter(ClienteNota.creada_por_user_id.in_(creator_ids))
+    # ``tenant_id`` is the historical authorization scope.  Deriving access
+    # from the creator's *current* membership would make notes move between
+    # organizations when an employee changes tenant.
+    return query.filter(ClienteNota.tenant_id == tenant.id)
+
+
+def _crm_note_write_tenant(actor: User, cliente: User) -> TenantProfile | None:
+    if not is_authorized_superadmin_user(actor):
+        return _crm_tenant_for_actor(actor)
+    tenant_id = getattr(cliente, "tenant_id", None)
+    if not tenant_id:
+        return None
+    tenant = db.session.get(TenantProfile, tenant_id)
+    if tenant is None or getattr(tenant, "is_active", True) is False:
+        return None
+    return tenant
+
+
+def _crm_llm_log_query(actor: User):
+    """Return review rows from the actor's immutable tenant snapshot only."""
+
+    query = LlmInteractionLog.query.filter_by(status="pending_review")
+    if is_authorized_superadmin_user(actor):
+        return query
+    tenant = _crm_tenant_for_actor(actor)
+    if tenant is None:
+        return query.filter(false())
+    return query.filter(LlmInteractionLog.tenant_id == tenant.id)
 
 
 def _crm_last_interaction_date(actor: User, cliente_id: int):
@@ -768,6 +790,7 @@ def _serialize_nota(nota: ClienteNota, creador_email: str = "N/A"):
         "id": nota.id,
         "cliente_user_id": nota.cliente_user_id,
         "creada_por_user_id": nota.creada_por_user_id,
+        "tenant_id": nota.tenant_id,
         "creador_email": creador_email, # Email de quien creó la nota
         "nota": nota.nota,
         "fecha_creacion": nota.fecha_creacion.isoformat(),
@@ -787,9 +810,14 @@ def crear_nota_cliente(current_user: User, cliente_id: int):
     if not data or not data.get('nota'):
         return jsonify({"error": "El contenido de la nota es obligatorio."}), 400
 
+    tenant = _crm_note_write_tenant(current_user, cliente)
+    if tenant is None:
+        return jsonify({"error": "No se pudo determinar el tenant de la nota."}), 409
+
     nueva_nota = ClienteNota(
         cliente_user_id=cliente_id,
         creada_por_user_id=current_user.id, # El admin/empleado actual es el creador
+        tenant_id=tenant.id,
         nota=data['nota']
     )
     db.session.add(nueva_nota)
@@ -904,17 +932,9 @@ def get_recent_clients(current_user: User):
 @admin_o_empleado_requerido
 def llm_review(current_user: User):
     """Muestra las interacciones del LLM que están pendientes de revisión."""
-    query = LlmInteractionLog.query.filter_by(status='pending_review')
-    if not is_authorized_superadmin_user(current_user):
-        tenant = _crm_tenant_for_actor(current_user)
-        if tenant is None:
-            query = query.filter(false())
-        else:
-            query = query.join(
-                ChatSessionContext,
-                ChatSessionContext.chat_session_id == LlmInteractionLog.chat_session_id,
-            ).filter(ChatSessionContext.tenant_id == tenant.id)
-    logs = query.order_by(LlmInteractionLog.created_at.desc()).all()
+    logs = _crm_llm_log_query(current_user).order_by(
+        LlmInteractionLog.created_at.desc()
+    ).all()
     return render_template('admin/llm_review.html', logs=logs)
 
 @crm_bp.route('/clientes/insights/needs_followup', methods=['GET'])

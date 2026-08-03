@@ -8,6 +8,7 @@ functional.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import smtplib
 from email.message import EmailMessage
@@ -16,6 +17,94 @@ from typing import Any, Iterable, Optional
 from flask import current_app
 
 logger = logging.getLogger(__name__)
+
+
+# These compatibility helpers do not implement a provider transport.  Keep the
+# capability flags explicit and fail closed so callers cannot mistake a log
+# line for provider acceptance.  Durable, tenant-bound workers may opt in only
+# after they own a complete sender/template/idempotency contract.
+WHATSAPP_TEMPLATE_TRANSPORT_IMPLEMENTED = False
+ORDER_WHATSAPP_TRANSPORT_IMPLEMENTED = False
+SMS_TRANSPORT_IMPLEMENTED = False
+
+
+@dataclass(frozen=True)
+class NotificationDispatchResult:
+    """PII-free acknowledgement returned by compatibility notification APIs."""
+
+    channel: str
+    accepted: bool
+    reason_code: str
+    tenant_id: int | None = None
+    template_registry_id: int | None = None
+    idempotency_bound: bool = False
+    provider_message_id: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.accepted
+
+
+def _positive_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _safe_idempotency_key(value: Any) -> str | None:
+    rendered = str(value or "").strip()
+    if not 8 <= len(rendered) <= 128:
+        return None
+    if any(character in rendered for character in "\r\n\x00"):
+        return None
+    return rendered
+
+
+def _blocked_dispatch_result(
+    channel: str,
+    reason_code: str,
+    *,
+    tenant_id: Any = None,
+    template_registry_id: Any = None,
+    idempotency_key: Any = None,
+) -> NotificationDispatchResult:
+    return NotificationDispatchResult(
+        channel=channel,
+        accepted=False,
+        reason_code=reason_code,
+        tenant_id=_positive_int(tenant_id),
+        template_registry_id=_positive_int(template_registry_id),
+        idempotency_bound=_safe_idempotency_key(idempotency_key) is not None,
+    )
+
+
+def _log_legacy_channel_blocked(
+    *,
+    channel: str,
+    reason_code: str,
+    tenant_id: Any = None,
+    template_registry_id: Any = None,
+    idempotency_key: Any = None,
+    has_recipient: bool,
+    body_length: int = 0,
+) -> None:
+    """Log only allowlisted operational metadata, never recipient/body PII."""
+
+    logger.info(
+        "[notifications] legacy dispatch blocked channel=%s reason=%s "
+        "tenant_id=%s template_registry_id=%s idempotency_bound=%s "
+        "has_recipient=%s body_length=%s",
+        channel,
+        reason_code,
+        _positive_int(tenant_id),
+        _positive_int(template_registry_id),
+        _safe_idempotency_key(idempotency_key) is not None,
+        bool(has_recipient),
+        max(0, int(body_length or 0)),
+    )
 
 
 def _log_dispatch(channel: str, ticket: Any, event_type: str, *, ok: bool = True) -> None:
@@ -139,30 +228,46 @@ def send_ticket_email(ticket: Any, event_type: str) -> None:
     _log_dispatch("email", ticket, event_type, ok=bool(recipient))
 
 
-def send_ticket_whatsapp(ticket: Any, event_type: str) -> None:
-    """Send a WhatsApp notification for a ticket event."""
+def send_ticket_whatsapp(ticket: Any, event_type: str) -> NotificationDispatchResult:
+    """Fail closed until a durable tenant/template-bound adapter owns delivery."""
 
-    provider = current_app.config.get("WHATSAPP_PROVIDER")
-    if not provider:
-        _log_dispatch("whatsapp", ticket, event_type, ok=False)
-        logger.info("[notifications] WHATSAPP_PROVIDER no configurado; omitiendo envío")
-        return
+    tenant_id = _positive_int(getattr(ticket, "tenant_id", None))
+    _log_dispatch("whatsapp", ticket, event_type, ok=False)
+    reason = (
+        "whatsapp_tenant_scope_required"
+        if tenant_id is None
+        else "whatsapp_template_transport_unavailable"
+    )
+    _log_legacy_channel_blocked(
+        channel="whatsapp",
+        reason_code=reason,
+        tenant_id=tenant_id,
+        has_recipient=bool(
+            getattr(ticket, "telefono", None)
+            or getattr(ticket, "telefono_vecino", None)
+            or getattr(ticket, "telefono_cliente", None)
+        ),
+    )
+    return _blocked_dispatch_result("whatsapp", reason, tenant_id=tenant_id)
 
-    _log_dispatch("whatsapp", ticket, event_type)
-    logger.info("[notifications] WhatsApp provider '%s' configurado para envíos", provider)
 
+def send_ticket_sms(ticket: Any, event_type: str) -> NotificationDispatchResult:
+    """Fail closed until a durable tenant-bound SMS adapter owns delivery."""
 
-def send_ticket_sms(ticket: Any, event_type: str) -> None:
-    """Send an SMS notification for a ticket event."""
-
-    provider = current_app.config.get("SMS_PROVIDER")
-    if not provider:
-        _log_dispatch("sms", ticket, event_type, ok=False)
-        logger.info("[notifications] SMS_PROVIDER no configurado; omitiendo envío")
-        return
-
-    _log_dispatch("sms", ticket, event_type)
-    logger.info("[notifications] SMS provider '%s' configurado para envíos", provider)
+    tenant_id = _positive_int(getattr(ticket, "tenant_id", None))
+    _log_dispatch("sms", ticket, event_type, ok=False)
+    reason = "sms_tenant_scope_required" if tenant_id is None else "sms_transport_unavailable"
+    _log_legacy_channel_blocked(
+        channel="sms",
+        reason_code=reason,
+        tenant_id=tenant_id,
+        has_recipient=bool(
+            getattr(ticket, "telefono", None)
+            or getattr(ticket, "telefono_vecino", None)
+            or getattr(ticket, "telefono_cliente", None)
+        ),
+    )
+    return _blocked_dispatch_result("sms", reason, tenant_id=tenant_id)
 
 
 def send_ticket_history_email(ticket: Any, history_html: str | None = None) -> None:
@@ -194,41 +299,109 @@ def enviar_notificacion_whatsapp_con_plantilla(
     ticket_id: str | int | None,
     categoria: str | None = None,
     mensaje: str | None = None,
-) -> None:
-    """Placeholder for WhatsApp template notifications.
+    *,
+    tenant_id: int | None = None,
+    template_registry_id: int | None = None,
+    expected_sender_binding: str | None = None,
+    idempotency_key: str | None = None,
+) -> NotificationDispatchResult:
+    """Compatibility shim with an explicit, fail-closed delivery contract.
 
-    The concrete provider wiring still lives elsewhere; this shim maintains
-    compatibility with legacy modules and logs the attempted dispatch so the
-    platform can evolve without runtime import errors.
+    The positional legacy arguments contain no trustworthy tenant, sender,
+    approved registry row, or idempotency binding. They are therefore never
+    enough to contact Twilio. Keyword-only bindings document what a future
+    durable adapter must supply, but this shim remains unavailable until the
+    real transport replaces it.
     """
 
-    if not telefono:
-        logger.info(
-            "[notifications] WhatsApp omitido: sin teléfono para ticket_id=%s categoria=%s",
-            ticket_id,
-            categoria,
+    del nombre, ticket_id, categoria  # User-controlled values must not reach logs.
+    normalized_tenant_id = _positive_int(tenant_id)
+    normalized_template_id = _positive_int(template_registry_id)
+    normalized_idempotency = _safe_idempotency_key(idempotency_key)
+    sender_binding_valid = bool(
+        isinstance(expected_sender_binding, str)
+        and len(expected_sender_binding.strip()) == 64
+        and all(
+            character in "0123456789abcdefABCDEF"
+            for character in expected_sender_binding.strip()
         )
-        return
+    )
 
-    logger.info(
-        "[notifications] WhatsApp template programado to=%s nombre=%s ticket_id=%s categoria=%s mensaje=%s",
-        telefono,
-        nombre,
-        ticket_id,
-        categoria,
-        (mensaje or "").strip(),
+    if not telefono:
+        reason = "whatsapp_recipient_required"
+    elif normalized_tenant_id is None:
+        reason = "whatsapp_tenant_scope_required"
+    elif normalized_idempotency is None:
+        reason = "whatsapp_idempotency_key_required"
+    elif normalized_template_id is None:
+        reason = "whatsapp_template_registry_required"
+    elif not sender_binding_valid:
+        reason = "whatsapp_sender_binding_required"
+    else:
+        # Even complete-looking caller input is not provider proof. The real
+        # worker must re-load and validate registry/sender after its durable
+        # I/O claim, then persist either provider SID or uncertainty.
+        reason = "whatsapp_template_transport_unavailable"
+
+    _log_legacy_channel_blocked(
+        channel="whatsapp",
+        reason_code=reason,
+        tenant_id=normalized_tenant_id,
+        template_registry_id=normalized_template_id,
+        idempotency_key=normalized_idempotency,
+        has_recipient=bool(telefono),
+        body_length=len(str(mensaje or "")),
+    )
+    return _blocked_dispatch_result(
+        "whatsapp",
+        reason,
+        tenant_id=normalized_tenant_id,
+        template_registry_id=normalized_template_id,
+        idempotency_key=normalized_idempotency,
     )
 
 
-def enviar_notificacion_sms(telefono: str | None, body: str | None = None) -> None:
-    """Placeholder SMS sender to avoid breaking legacy imports."""
+def enviar_notificacion_sms(
+    telefono: str | None,
+    body: str | None = None,
+    *,
+    tenant_id: int | None = None,
+    expected_sender_binding: str | None = None,
+    idempotency_key: str | None = None,
+) -> NotificationDispatchResult:
+    """Compatibility SMS shim that never treats configuration as acceptance."""
 
+    normalized_tenant_id = _positive_int(tenant_id)
+    normalized_idempotency = _safe_idempotency_key(idempotency_key)
+    sender_binding_valid = bool(
+        isinstance(expected_sender_binding, str)
+        and len(expected_sender_binding.strip()) == 64
+        and all(
+            character in "0123456789abcdefABCDEF"
+            for character in expected_sender_binding.strip()
+        )
+    )
     if not telefono:
-        logger.info("[notifications] SMS omitido: sin teléfono de destino")
-        return
-
-    logger.info(
-        "[notifications] SMS programado to=%s body=%s",
-        telefono,
-        (body or "").strip(),
+        reason = "sms_recipient_required"
+    elif normalized_tenant_id is None:
+        reason = "sms_tenant_scope_required"
+    elif normalized_idempotency is None:
+        reason = "sms_idempotency_key_required"
+    elif not sender_binding_valid:
+        reason = "sms_sender_binding_required"
+    else:
+        reason = "sms_transport_unavailable"
+    _log_legacy_channel_blocked(
+        channel="sms",
+        reason_code=reason,
+        tenant_id=normalized_tenant_id,
+        idempotency_key=normalized_idempotency,
+        has_recipient=bool(telefono),
+        body_length=len(str(body or "")),
+    )
+    return _blocked_dispatch_result(
+        "sms",
+        reason,
+        tenant_id=normalized_tenant_id,
+        idempotency_key=normalized_idempotency,
     )

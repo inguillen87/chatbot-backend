@@ -13,6 +13,8 @@ from models import (
     AuditEvent,
     ChannelSessionIdentityBinding,
     ChatSessionContext,
+    MessageTemplateRegistry,
+    MessagingEventLedger,
     TenantProfile,
     User,
     WhatsAppInboundTurn,
@@ -30,6 +32,12 @@ from models_interviews import (
 from services.interview_access_policy import (
     INTERVIEW_CASES_CREATE,
     INTERVIEW_CASES_READ,
+    INTERVIEW_SESSIONS_CONDUCT,
+)
+from services.channel_session_identity import (
+    channel_session_identity_mode,
+    derive_channel_session_identity_hmac,
+    resolve_channel_session_identity_secret,
 )
 from utils.auth_helpers import generar_token
 
@@ -43,6 +51,7 @@ class TestInterviewsV2(unittest.TestCase):
         "Autorizo el tratamiento de mis respuestas para esta entrevista institucional."
     )
     CONSENT_TEXT_SHA256 = hashlib.sha256(CONSENT_TEXT.encode("utf-8")).hexdigest()
+    CONSENT_CONTENT_SID = "HX" + ("1" * 32)
     @classmethod
     def setUpClass(cls):
         cls.app = create_app(InterviewTestingConfig)
@@ -58,6 +67,7 @@ class TestInterviewsV2(unittest.TestCase):
         self.other_owner, self.other_tenant, self.other_headers = self._make_tenant(
             "foreign"
         )
+        self._binding_provider_identities = {}
 
     def tearDown(self):
         db.session.rollback()
@@ -151,9 +161,17 @@ class TestInterviewsV2(unittest.TestCase):
     def _subject_binding(self, *, tenant=None):
         tenant = tenant or self.tenant
         chat_session_id = str(uuid.uuid4())
-        identity_hmac = hashlib.sha256(
-            f"subject:{tenant.id}:{chat_session_id}".encode("utf-8")
-        ).hexdigest()
+        provider_identity = f"+549261{int(time.time_ns() % 10_000_000):07d}"
+        identity_hmac = derive_channel_session_identity_hmac(
+            secret=resolve_channel_session_identity_secret(
+                self.app.config,
+                mode=channel_session_identity_mode(self.app.config),
+            ),
+            tenant_id=tenant.id,
+            provider="twilio",
+            identity_version="v1",
+            provider_identity=provider_identity,
+        )
         db.session.add(
             ChatSessionContext(
                 chat_session_id=chat_session_id,
@@ -175,6 +193,7 @@ class TestInterviewsV2(unittest.TestCase):
         )
         db.session.add(binding)
         db.session.flush()
+        self._binding_provider_identities[binding.id] = provider_identity
         return binding
 
     def _participant_attestation(
@@ -187,6 +206,7 @@ class TestInterviewsV2(unittest.TestCase):
         provider_status="delivered",
         outbound_mutator=None,
         presentation_status_at=None,
+        signed_status_callback=True,
     ):
         if source != "whatsapp":
             raise AssertionError("test helper only creates signed WhatsApp receipts")
@@ -209,6 +229,66 @@ class TestInterviewsV2(unittest.TestCase):
         self.assertEqual(action_text_sha256, challenge["consent_text_sha256"])
 
         presentation_at = presentation_status_at or datetime.now(timezone.utc)
+        registry = MessageTemplateRegistry.query.filter_by(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            content_sid=self.CONSENT_CONTENT_SID,
+        ).first()
+        if registry is None:
+            registry = MessageTemplateRegistry(
+                tenant_id=self.tenant.id,
+                provider="twilio",
+                channel="whatsapp",
+                name="chatboc_interview_consent_exact_v1",
+                language="es",
+                category="UTILITY",
+                status="approved",
+                content_sid=self.CONSENT_CONTENT_SID,
+                external_template_id="chatboc_interview_consent_exact_v1",
+                body_preview="{{1}}",
+                components={
+                    "twilio/text": {"body": "{{1}}"},
+                    "twilio/quick-reply": {
+                        "body": "{{1}}",
+                        "actions": [
+                            {
+                                "type": "QUICK_REPLY",
+                                "title": "Acepto",
+                                "id": "{{2}}",
+                            }
+                        ],
+                    },
+                },
+                metadata_json={
+                    "source": "whatsapp_experience_creation_manifest",
+                    "sync_state": "complete",
+                },
+                last_sync_at=presentation_at - timedelta(seconds=5),
+            )
+            db.session.add(registry)
+        registry.status = "approved"
+        registry.body_preview = "{{1}}"
+        registry.components = {
+            "twilio/text": {"body": "{{1}}"},
+            "twilio/quick-reply": {
+                "body": "{{1}}",
+                "actions": [
+                    {
+                        "type": "QUICK_REPLY",
+                        "title": "Acepto",
+                        "id": "{{2}}",
+                    }
+                ],
+            },
+        }
+        registry.metadata_json = {
+            "source": "whatsapp_experience_creation_manifest",
+            "sync_state": "complete",
+        }
+        registry.last_sync_at = presentation_at - timedelta(seconds=5)
+        db.session.add(registry)
+        db.session.flush()
         source_sid = f"SMConsentSource{time.time_ns()}"
         source_turn = WhatsAppInboundTurn(
             tenant_id=self.tenant.id,
@@ -231,9 +311,10 @@ class TestInterviewsV2(unittest.TestCase):
         db.session.flush()
         outbound_contract = challenge["presentation_outbound_contract"]
         outbound_payload = {
-            "content_sid": "HXInterviewConsentExactV1",
+            "content_sid": self.CONSENT_CONTENT_SID,
             "content_variables": outbound_contract["content_variables"],
             "_chatboc_policy_metadata": outbound_contract["policy_metadata"],
+            "to": f"whatsapp:{self._binding_provider_identities[binding.id]}",
         }
         if outbound_mutator is not None:
             outbound_mutator(outbound_payload)
@@ -257,6 +338,25 @@ class TestInterviewsV2(unittest.TestCase):
             completed_at=presentation_at,
         )
         db.session.add(attempt)
+        if signed_status_callback:
+            db.session.add(
+                MessagingEventLedger(
+                    tenant_id=self.tenant.id,
+                    provider="twilio",
+                    channel="whatsapp",
+                    direction="outbound",
+                    event_type="delivery_status",
+                    provider_event_id=f"{attempt_sid}:{provider_status}",
+                    external_message_sid=attempt_sid,
+                    external_status=provider_status,
+                    payload={
+                        "MessageSid": attempt_sid,
+                        "MessageStatus": provider_status,
+                    },
+                    occurred_at=presentation_at,
+                    created_at=presentation_at,
+                )
+            )
         db.session.commit()
         if register_presentation:
             registered = self.client.post(
@@ -363,6 +463,51 @@ class TestInterviewsV2(unittest.TestCase):
 
     def _published_program(self):
         created = self._create_program()
+        program_id = created.get_json()["program"]["id"]
+        self._publish_program(program_id)
+        return program_id
+
+    def _published_runtime_program(self):
+        created = self.client.post(
+            "/api/v2/interviews/programs",
+            headers=self._with_idempotency(
+                self.owner_headers, f"program:runtime:{time.time_ns()}"
+            ),
+            json={
+                "name": "Entrevista conversacional 2027",
+                "description": "Runtime reanudable y multimodal",
+                "program_type": "school_admission",
+                "definition": {
+                    "contract_version": "interview.definition.v1",
+                    "sections": [
+                        {
+                            "id": "profile",
+                            "questions": [
+                                {
+                                    "id": "motivation",
+                                    "prompt": "Contanos por que elegiste la institucion.",
+                                    "required": True,
+                                    "evidence_types": [
+                                        "audio",
+                                        "transcript",
+                                        "structured",
+                                    ],
+                                },
+                                {
+                                    "id": "document",
+                                    "prompt": "Adjunta la constancia solicitada.",
+                                    "required": True,
+                                    "evidence_types": ["image", "file"],
+                                },
+                            ],
+                        }
+                    ],
+                },
+                "consent_policy_version": "school-consent-2026.1",
+                "consent_text": self.CONSENT_TEXT,
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
         program_id = created.get_json()["program"]["id"]
         self._publish_program(program_id)
         return program_id
@@ -912,6 +1057,22 @@ class TestInterviewsV2(unittest.TestCase):
             issued.get_json()["consent_challenge"]["expected_identity_binding_id"],
             pinned_binding.id,
         )
+        outbound_contract = issued.get_json()["consent_challenge"][
+            "presentation_outbound_contract"
+        ]
+        self.assertEqual(
+            outbound_contract["template_contract"]["types"]["twilio/quick-reply"]
+            ["actions"][0]["id"],
+            "{{2}}",
+        )
+        self.assertEqual(
+            len(
+                outbound_contract["policy_metadata"]
+                ["interview_consent_presentation"]
+                ["template_definition_sha256"]
+            ),
+            64,
+        )
 
     def test_whatsapp_start_requires_prior_durable_consent_presentation(self):
         program_id = self._published_program()
@@ -991,6 +1152,125 @@ class TestInterviewsV2(unittest.TestCase):
                 interview_session_id=session_id
             ).one()
             self.assertEqual(presentation.outbound_provider_status, provider_status)
+            self.assertIsNotNone(presentation.outbound_status_event_id)
+            self.assertEqual(len(presentation.outbound_status_event_sha256), 64)
+            self.assertEqual(len(presentation.outbound_template_sha256), 64)
+
+    def test_delivered_attempt_without_signed_callback_cannot_be_presented(self):
+        program_id = self._published_program()
+        case_id = self._create_case(program_id).get_json()["case"]["id"]
+        session_id = self._create_session(case_id).get_json()["session"]["id"]
+        self._participant_attestation(
+            session_id,
+            register_presentation=False,
+            provider_status="delivered",
+            signed_status_callback=False,
+        )
+        challenge = InterviewConsentChallenge.query.filter_by(
+            interview_session_id=session_id
+        ).one()
+        attempt = WhatsAppOutboundAttempt.query.order_by(
+            WhatsAppOutboundAttempt.id.desc()
+        ).first()
+
+        response = self._register_presentation(
+            session_id,
+            challenge.id,
+            attempt.attempt_id,
+            key="presentation:no-signed-callback",
+        )
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "interview_consent_presentation_signed_callback_required",
+        )
+        self.assertIsNone(
+            InterviewConsentPresentation.query.filter_by(
+                interview_session_id=session_id
+            ).first()
+        )
+
+    def test_registered_template_snapshot_survives_later_registry_refresh(self):
+        program_id = self._published_program()
+        case_id = self._create_case(program_id).get_json()["case"]["id"]
+        session_id = self._create_session(case_id).get_json()["session"]["id"]
+        attestation = self._participant_attestation(session_id)
+        registry = MessageTemplateRegistry.query.filter_by(
+            tenant_id=self.tenant.id,
+            content_sid=self.CONSENT_CONTENT_SID,
+        ).one()
+        registry.last_sync_at = datetime.now(timezone.utc)
+        registry.metadata_json = {
+            "source": "whatsapp_experience_creation_manifest",
+            "sync_state": "complete",
+            "refresh": "after_delivery",
+        }
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/v2/interviews/sessions/{session_id}/start",
+            headers=self._with_idempotency(
+                self.owner_headers, "start:template-snapshot-refresh"
+            ),
+            json={
+                "consent": {
+                    "granted": True,
+                    "policy_version": "school-consent-2026.1",
+                    "text_sha256": self.CONSENT_TEXT_SHA256,
+                    "source": "whatsapp",
+                    "attestation": attestation,
+                }
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertTrue(
+            response.get_json()["session"]["consent"]
+            ["participant_evidence_verified"]
+        )
+
+    def test_registered_callback_event_tampering_fails_closed(self):
+        program_id = self._published_program()
+        case_id = self._create_case(program_id).get_json()["case"]["id"]
+        session_id = self._create_session(case_id).get_json()["session"]["id"]
+        attestation = self._participant_attestation(session_id)
+        presentation = InterviewConsentPresentation.query.filter_by(
+            interview_session_id=session_id
+        ).one()
+        callback_event = db.session.get(
+            MessagingEventLedger, presentation.outbound_status_event_id
+        )
+        callback_event.payload = {
+            "MessageSid": "SMForgedDifferentMessage",
+            "MessageStatus": "delivered",
+        }
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/v2/interviews/sessions/{session_id}/start",
+            headers=self._with_idempotency(
+                self.owner_headers, "start:tampered-callback-event"
+            ),
+            json={
+                "consent": {
+                    "granted": True,
+                    "policy_version": "school-consent-2026.1",
+                    "text_sha256": self.CONSENT_TEXT_SHA256,
+                    "source": "whatsapp",
+                    "attestation": attestation,
+                }
+            },
+        )
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "interview_consent_presentation_signed_callback_invalid",
+        )
+        session = db.session.get(InterviewSession, session_id)
+        self.assertEqual(session.status, "scheduled")
+        self.assertFalse(session.consent_granted)
 
     def _start_session_with_status(self, session_id, provider_status):
         attestation = self._participant_attestation(
@@ -1013,6 +1293,105 @@ class TestInterviewsV2(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200, response.get_json())
         return response
+
+    def test_presentation_requires_fresh_approved_exact_provider_template(self):
+        program_id = self._published_program()
+        mutations = (
+            lambda row: setattr(row, "status", "pending"),
+            lambda row: setattr(
+                row,
+                "last_sync_at",
+                datetime.now(timezone.utc) - timedelta(days=8),
+            ),
+            lambda row: setattr(
+                row,
+                "components",
+                {
+                    "twilio/text": {"body": "Texto fijo que no muestra el consentimiento"},
+                    "twilio/quick-reply": {
+                        "body": "Texto fijo que no muestra el consentimiento",
+                        "actions": [
+                            {
+                                "type": "QUICK_REPLY",
+                                "title": "Acepto",
+                                "id": "{{2}}",
+                            }
+                        ],
+                    },
+                },
+            ),
+            lambda row: setattr(
+                row,
+                "metadata_json",
+                {"source": "operator_claim", "sync_state": "complete"},
+            ),
+        )
+        for index, mutation in enumerate(mutations):
+            case_id = self._create_case(program_id).get_json()["case"]["id"]
+            session_id = self._create_session(case_id).get_json()["session"]["id"]
+            self._participant_attestation(session_id, register_presentation=False)
+            challenge = InterviewConsentChallenge.query.filter_by(
+                interview_session_id=session_id
+            ).one()
+            attempt = WhatsAppOutboundAttempt.query.order_by(
+                WhatsAppOutboundAttempt.id.desc()
+            ).first()
+            registry = MessageTemplateRegistry.query.filter_by(
+                tenant_id=self.tenant.id,
+                content_sid=self.CONSENT_CONTENT_SID,
+            ).one()
+            mutation(registry)
+            db.session.commit()
+
+            response = self._register_presentation(
+                session_id,
+                challenge.id,
+                attempt.attempt_id,
+                key=f"presentation:bad-template-{index}",
+            )
+            self.assertEqual(response.status_code, 409, response.get_json())
+            self.assertEqual(
+                response.get_json()["reason_code"],
+                "interview_consent_template_contract_invalid",
+            )
+            self.assertIsNone(
+                InterviewConsentPresentation.query.filter_by(
+                    interview_session_id=session_id
+                ).first()
+            )
+
+    def test_presentation_requires_the_pinned_outbound_recipient(self):
+        program_id = self._published_program()
+        mutations = (
+            lambda payload: payload.pop("to"),
+            lambda payload: payload.__setitem__("to", "whatsapp:+5492615550000"),
+        )
+        expected_reasons = (
+            "interview_consent_presentation_recipient_invalid",
+            "interview_consent_presentation_recipient_mismatch",
+        )
+        for index, mutation in enumerate(mutations):
+            case_id = self._create_case(program_id).get_json()["case"]["id"]
+            session_id = self._create_session(case_id).get_json()["session"]["id"]
+            self._participant_attestation(
+                session_id,
+                register_presentation=False,
+                outbound_mutator=mutation,
+            )
+            challenge = InterviewConsentChallenge.query.filter_by(
+                interview_session_id=session_id
+            ).one()
+            attempt = WhatsAppOutboundAttempt.query.order_by(
+                WhatsAppOutboundAttempt.id.desc()
+            ).first()
+            response = self._register_presentation(
+                session_id,
+                challenge.id,
+                attempt.attempt_id,
+                key=f"presentation:bad-recipient-{index}",
+            )
+            self.assertEqual(response.status_code, 409, response.get_json())
+            self.assertEqual(response.get_json()["reason_code"], expected_reasons[index])
 
     def test_consent_presentation_rejects_wrong_text_action_and_identity(self):
         program_id = self._published_program()
@@ -1556,6 +1935,278 @@ class TestInterviewsV2(unittest.TestCase):
             headers=foreign_context_headers,
         )
         self.assertEqual(foreign_context_lookup.status_code, 403)
+
+    def test_session_resume_tracks_multimodal_steps_and_gates_completion(self):
+        program_id = self._published_runtime_program()
+        case_id = self._create_case(program_id).get_json()["case"]["id"]
+        session_id = self._create_session(case_id).get_json()["session"]["id"]
+        resume_url = f"/api/v2/interviews/sessions/{session_id}"
+
+        scheduled = self.client.get(resume_url, headers=self.owner_headers)
+        self.assertEqual(scheduled.status_code, 200, scheduled.get_json())
+        self.assertEqual(scheduled.headers["Cache-Control"], "no-store")
+        scheduled_resume = scheduled.get_json()["resume"]
+        self.assertEqual(
+            scheduled_resume["contract_version"], "interview.session_resume.v1"
+        )
+        self.assertEqual(scheduled_resume["next_action"], "issue_consent_challenge")
+        self.assertEqual(
+            scheduled_resume["program_snapshot"]["runtime_contract"],
+            "interview.definition.v1",
+        )
+        self.assertEqual(
+            [step["step_ref"] for step in scheduled_resume["steps"]],
+            ["profile.motivation", "profile.document"],
+        )
+        self.assertEqual(scheduled_resume["progress"]["percent"], 0)
+        self.assertEqual(
+            scheduled_resume["progress"]["last_checkpoint_source"],
+            "session_created",
+        )
+        self.assertEqual(
+            scheduled_resume["progress"]["current_step"]["step_ref"],
+            "profile.motivation",
+        )
+
+        _without_capability, denied_headers = self._employee([])
+        denied = self.client.get(resume_url, headers=denied_headers)
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+        self.assertIn(
+            INTERVIEW_SESSIONS_CONDUCT,
+            denied.get_json()["missing_capabilities"],
+        )
+        _conductor, conductor_headers = self._employee(
+            [INTERVIEW_SESSIONS_CONDUCT]
+        )
+        allowed = self.client.get(resume_url, headers=conductor_headers)
+        self.assertEqual(allowed.status_code, 200, allowed.get_json())
+        foreign = self.client.get(resume_url, headers=self.other_headers)
+        self.assertEqual(foreign.status_code, 404, foreign.get_json())
+        self.assertEqual(
+            foreign.get_json()["reason_code"], "interview_session_not_found"
+        )
+
+        self._start_session(session_id)
+        premature = self.client.post(
+            f"{resume_url}/complete",
+            headers=self._with_idempotency(
+                self.owner_headers, "complete:runtime-incomplete"
+            ),
+            json={},
+        )
+        self.assertEqual(premature.status_code, 409, premature.get_json())
+        self.assertEqual(
+            premature.get_json()["reason_code"],
+            "interview_required_steps_incomplete",
+        )
+        self.assertEqual(
+            premature.get_json()["progress"]["pending_required_step_refs"],
+            ["profile.motivation", "profile.document"],
+        )
+
+        first_evidence = {
+            "evidence_type": "audio",
+            "source_channel": "whatsapp",
+            "storage_ref": "storage:runtimeAudioObjectAbc123",
+            "content_sha256": "a" * 64,
+            "provenance": {
+                "provider": "twilio",
+                "source_channel": "whatsapp",
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "mime_type": "audio/ogg",
+                "step_ref": "profile.motivation",
+            },
+            "size_bytes": 2048,
+        }
+        first = self.client.post(
+            f"{resume_url}/evidence",
+            headers=self._with_idempotency(
+                self.owner_headers, "evidence:runtime-audio"
+            ),
+            json=first_evidence,
+        )
+        self.assertEqual(first.status_code, 201, first.get_json())
+
+        halfway = self.client.get(resume_url, headers=self.owner_headers).get_json()[
+            "resume"
+        ]
+        self.assertEqual(halfway["progress"]["percent"], 50)
+        self.assertEqual(
+            halfway["progress"]["current_step"]["step_ref"], "profile.document"
+        )
+        self.assertFalse(halfway["progress"]["can_complete"])
+        self.assertEqual(halfway["progress"]["last_checkpoint_source"], "evidence")
+        self.assertEqual(
+            halfway["evidence"][0]["provenance"]["step_ref"],
+            "profile.motivation",
+        )
+
+        wrong_type = dict(first_evidence)
+        wrong_type["storage_ref"] = "storage:runtimeWrongTypeDef456"
+        wrong_type["provenance"] = {
+            **first_evidence["provenance"],
+            "step_ref": "profile.document",
+        }
+        wrong = self.client.post(
+            f"{resume_url}/evidence",
+            headers=self._with_idempotency(
+                self.owner_headers, "evidence:runtime-wrong-type"
+            ),
+            json=wrong_type,
+        )
+        self.assertEqual(wrong.status_code, 422, wrong.get_json())
+        self.assertEqual(
+            wrong.get_json()["reason_code"],
+            "interview_evidence_type_not_accepted",
+        )
+        self.assertEqual(
+            wrong.get_json()["accepted_evidence_types"], ["image", "file"]
+        )
+
+        second_evidence = {
+            "evidence_type": "image",
+            "source_channel": "whatsapp",
+            "storage_ref": "storage:runtimeImageObjectDef456",
+            "content_sha256": "b" * 64,
+            "provenance": {
+                "provider": "twilio",
+                "source_channel": "whatsapp",
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+                "mime_type": "image/jpeg",
+                "step_ref": "profile.document",
+            },
+            "size_bytes": 4096,
+        }
+        second = self.client.post(
+            f"{resume_url}/evidence",
+            headers=self._with_idempotency(
+                self.owner_headers, "evidence:runtime-image"
+            ),
+            json=second_evidence,
+        )
+        self.assertEqual(second.status_code, 201, second.get_json())
+
+        ready = self.client.get(resume_url, headers=self.owner_headers).get_json()[
+            "resume"
+        ]
+        self.assertEqual(ready["progress"]["percent"], 100)
+        self.assertTrue(ready["progress"]["can_complete"])
+        self.assertEqual(ready["next_action"], "complete_interview")
+        self.assertEqual(ready["progress"]["evidence_by_type"]["audio"], 1)
+        self.assertEqual(ready["progress"]["evidence_by_type"]["image"], 1)
+
+        completed = self.client.post(
+            f"{resume_url}/complete",
+            headers=self._with_idempotency(
+                self.owner_headers, "complete:runtime-ready"
+            ),
+            json={},
+        )
+        self.assertEqual(completed.status_code, 200, completed.get_json())
+        final_resume = self.client.get(
+            resume_url, headers=self.owner_headers
+        ).get_json()["resume"]
+        self.assertEqual(final_resume["next_action"], "human_review")
+        self.assertFalse(final_resume["resumable"])
+
+    def test_runtime_evidence_requires_a_known_step_reference(self):
+        program_id = self._published_runtime_program()
+        case_id = self._create_case(program_id).get_json()["case"]["id"]
+        session_id = self._create_session(case_id).get_json()["session"]["id"]
+        self._start_session(session_id)
+        payload = {
+            "evidence_type": "structured",
+            "source_channel": "whatsapp",
+            "storage_ref": "storage:runtimeStructuredAnswer123",
+            "content_sha256": "c" * 64,
+            "provenance": {
+                "provider": "chatboc",
+                "source_channel": "whatsapp",
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        missing = self.client.post(
+            f"/api/v2/interviews/sessions/{session_id}/evidence",
+            headers=self._with_idempotency(
+                self.owner_headers, "evidence:runtime-missing-step"
+            ),
+            json=payload,
+        )
+        self.assertEqual(missing.status_code, 422, missing.get_json())
+        self.assertEqual(
+            missing.get_json()["reason_code"], "interview_evidence_step_required"
+        )
+        self.assertEqual(
+            missing.get_json()["expected_step_refs"],
+            ["profile.motivation", "profile.document"],
+        )
+
+        payload["provenance"]["step_ref"] = "foreign.unknown"
+        unknown = self.client.post(
+            f"/api/v2/interviews/sessions/{session_id}/evidence",
+            headers=self._with_idempotency(
+                self.owner_headers, "evidence:runtime-unknown-step"
+            ),
+            json=payload,
+        )
+        self.assertEqual(unknown.status_code, 422, unknown.get_json())
+        self.assertEqual(
+            unknown.get_json()["reason_code"], "interview_evidence_step_unknown"
+        )
+
+    def test_runtime_definition_contract_fails_closed_when_unsupported_or_ambiguous(self):
+        base_payload = {
+            "name": "Runtime invalido",
+            "description": "No debe degradar silenciosamente a legacy",
+            "program_type": "school_admission",
+            "consent_policy_version": "school-consent-2026.1",
+            "consent_text": self.CONSENT_TEXT,
+        }
+        unsupported = self.client.post(
+            "/api/v2/interviews/programs",
+            headers=self._with_idempotency(
+                self.owner_headers, "program:runtime-unsupported"
+            ),
+            json={
+                **base_payload,
+                "definition": {
+                    "contract_version": "interview.definition.v999",
+                    "sections": [],
+                },
+            },
+        )
+        self.assertEqual(unsupported.status_code, 409, unsupported.get_json())
+        self.assertEqual(
+            unsupported.get_json()["reason_code"],
+            "interview_runtime_definition_unsupported",
+        )
+
+        ambiguous = self.client.post(
+            "/api/v2/interviews/programs",
+            headers=self._with_idempotency(
+                self.owner_headers, "program:runtime-duplicate-step"
+            ),
+            json={
+                **base_payload,
+                "definition": {
+                    "contract_version": "interview.definition.v1",
+                    "sections": [
+                        {
+                            "id": "profile",
+                            "questions": [
+                                {"id": "same", "prompt": "Primera"},
+                                {"id": "same", "prompt": "Segunda"},
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+        self.assertEqual(ambiguous.status_code, 422, ambiguous.get_json())
+        self.assertEqual(
+            ambiguous.get_json()["reason_code"],
+            "interview_runtime_definition_invalid",
+        )
 
     def test_evidence_requires_active_session_opaque_refs_and_safe_provenance(self):
         program_id = self._published_program()

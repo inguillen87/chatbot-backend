@@ -39,21 +39,36 @@ class DummyUser:
     id = 2
 models_stub.User = DummyUser
 
-import importlib
 import services.ticket_service as ts
 ServicioTickets = ts.ServicioTickets
 
 class TicketServiceTests(unittest.TestCase):
     def setUp(self):
-        # Patch the 'models' module so ServicioTickets imports our dummy models
-        self.mod_patch = patch.dict(sys.modules, {'models': models_stub})
-        self.mod_patch.start()
-        importlib.reload(ts) # Reload to make sure it picks up the patched models
+        # Patch only the collaborators used by this module.  Replacing
+        # ``sys.modules['models']`` process-wide is unsafe: if setup raises
+        # before unittest calls tearDown, the fake module leaks into the rest
+        # of the suite and later ``create_app`` calls cannot import real model
+        # classes (for example EncEncuesta).
+        self.models_patch = patch.multiple(
+            ts,
+            MunicipioTicket=models_stub.MunicipioTicket,
+            PymeTicket=models_stub.PymeTicket,
+            TicketComentario=models_stub.TicketComentario,
+            TicketDomainEffectReceipt=models_stub.TicketDomainEffectReceipt,
+            TicketSatisfaccion=models_stub.TicketSatisfaccion,
+            Conversacion=models_stub.Conversacion,
+            User=models_stub.User,
+            db=models_stub.db,
+        )
+        self.models_patch.start()
+        self.addCleanup(self.models_patch.stop)
         models_stub.db.session.flush = MagicMock()
         self.email_admin_patch = patch("services.email_service.enviar_email_ticket_admin", return_value=True)
         self.email_cliente_patch = patch("services.email_service.enviar_email_ticket_cliente", return_value=True)
         self.email_admin_patch.start()
+        self.addCleanup(self.email_admin_patch.stop)
         self.email_cliente_patch.start()
+        self.addCleanup(self.email_cliente_patch.stop)
         self.ticket_scope_resolution_patch = patch.object(
             ts,
             "resolve_unique_tenant_for_owner",
@@ -70,15 +85,9 @@ class TicketServiceTests(unittest.TestCase):
             ).filter_by(municipio_id=tenant.municipio_id),
         )
         self.ticket_scope_resolution_patch.start()
+        self.addCleanup(self.ticket_scope_resolution_patch.stop)
         self.ticket_scope_query_patch.start()
-
-    def tearDown(self):
-        self.ticket_scope_query_patch.stop()
-        self.ticket_scope_resolution_patch.stop()
-        self.email_admin_patch.stop()
-        self.email_cliente_patch.stop()
-        self.mod_patch.stop()
-        importlib.reload(ts) # Reload again to restore original imports for other tests
+        self.addCleanup(self.ticket_scope_query_patch.stop)
 
     def test_guardar_encuesta_crea_objeto(self):
         service = ServicioTickets()

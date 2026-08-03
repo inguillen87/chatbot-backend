@@ -244,6 +244,142 @@ class TestReclamoFlowUX(unittest.TestCase):
         self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
         self.assertIn("foto adjunta", resp["message_body"].lower())
 
+    def test_optional_evidence_prompt_is_multimodal_and_button_safe(self):
+        response = ReclamoFlowHandler._optional_evidence_prompt()
+
+        self.assertIn("foto", response["message_body"].lower())
+        self.assertIn("nota de voz", response["message_body"].lower())
+        self.assertIn("documento", response["message_body"].lower())
+        self.assertEqual(response["message_type"], "interactive_buttons")
+        self.assertTrue(
+            all(len(option["texto"]) <= 20 for option in response["options_list"])
+        )
+
+    def test_handle_foto_accepts_authenticated_audio_as_claim_evidence(self):
+        original_description = "pozo grande que bloquea la calle"
+        transcript = "También está bloqueando la vereda y puede caer una bicicleta."
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_FOTO.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "direccion": "Calle 123",
+                "descripcion": original_description,
+                "nombre": "Test User",
+                "dni": "12345",
+                "email": "test@test.com",
+                "telefono": "+5492613168608",
+            },
+        }
+        handler = self._build_handler(flow_context)
+
+        response = handler.handle(
+            transcript,
+            {
+                "pregunta": transcript,
+                "es_audio": True,
+                "es_archivo": True,
+                "archivo_id_para_asociar": 702,
+            },
+        )
+
+        claim = handler.flow_context["datos_reclamo"]
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertEqual(claim["archivo_id_para_asociar"], 702)
+        self.assertEqual(claim["evidencia_tipo"], "audio")
+        self.assertIn(original_description, claim["descripcion"])
+        self.assertIn(transcript, claim["descripcion"])
+        self.assertIn("recibí tu nota de voz", response["message_body"].lower())
+        self.assertIn("evidencia adjunta: nota de voz", response["message_body"].lower())
+        self.assertNotIn("no entend", response["message_body"].lower())
+
+    def test_audio_control_answer_is_attached_without_polluting_description(self):
+        original_description = "pozo grande que bloquea la calle"
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_FOTO.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "direccion": "Calle 123",
+                "descripcion": original_description,
+                "nombre": "Test User",
+                "dni": "12345",
+                "email": "test@test.com",
+                "telefono": "+5492613168608",
+            },
+        }
+        handler = self._build_handler(flow_context)
+
+        response = handler.handle(
+            "No tengo foto, seguí sin foto",
+            {
+                "pregunta": "No tengo foto, seguí sin foto",
+                "es_audio": True,
+                "es_archivo": True,
+                "archivo_id_para_asociar": 703,
+            },
+        )
+
+        claim = handler.flow_context["datos_reclamo"]
+        self.assertEqual(claim["descripcion"], original_description)
+        self.assertEqual(claim["archivo_id_para_asociar"], 703)
+        self.assertEqual(claim["evidencia_tipo"], "audio")
+        self.assertIn("recibí tu nota de voz", response["message_body"].lower())
+
+    def test_audio_without_validated_attachment_is_not_claimed_as_evidence(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_FOTO.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "direccion": "Calle 123",
+                "descripcion": "pozo grande que bloquea la calle",
+                "nombre": "Test User",
+                "dni": "12345",
+                "email": "test@test.com",
+                "telefono": "+5492613168608",
+            },
+        }
+        handler = self._build_handler(flow_context)
+
+        response = handler.handle_foto(
+            "Te mando este detalle por audio",
+            {"es_audio": True, "es_archivo": True},
+        )
+
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_FOTO.name)
+        self.assertNotIn("archivo_id_para_asociar", handler.flow_context["datos_reclamo"])
+        self.assertNotIn("evidencia_tipo", handler.flow_context["datos_reclamo"])
+        self.assertIn("evidencia", response["message_body"].lower())
+
+    def test_handle_foto_accepts_authenticated_document_as_claim_evidence(self):
+        flow_context = {
+            "state": ReclamoState.ESPERANDO_FOTO.name,
+            "datos_reclamo": {
+                "categoria": "Bache",
+                "direccion": "Calle 123",
+                "descripcion": "pozo grande que bloquea la calle",
+                "nombre": "Test User",
+                "dni": "12345",
+                "email": "test@test.com",
+                "telefono": "+5492613168608",
+            },
+        }
+        handler = self._build_handler(flow_context)
+
+        response = handler.handle(
+            "Adjunto el informe técnico",
+            {
+                "pregunta": "Adjunto el informe técnico",
+                "es_archivo": True,
+                "archivo_id_para_asociar": 704,
+            },
+        )
+
+        claim = handler.flow_context["datos_reclamo"]
+        self.assertEqual(handler.flow_context["state"], ReclamoState.ESPERANDO_CONFIRMACION.name)
+        self.assertEqual(claim["archivo_id_para_asociar"], 704)
+        self.assertEqual(claim["evidencia_tipo"], "documento")
+        self.assertIn("recibí tu documento", response["message_body"].lower())
+        self.assertIn("evidencia adjunta: documento", response["message_body"].lower())
+
     def test_missing_dni_goes_to_contact_request(self):
         flow_context = {
             "datos_reclamo": {

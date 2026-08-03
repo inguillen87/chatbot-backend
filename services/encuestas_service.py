@@ -105,6 +105,39 @@ _SURVEY_RECEIPT_EXCLUDED_FIELDS = frozenset(
         "requestId",
     }
 )
+_SURVEY_ELIGIBILITY_FORBIDDEN_PAYLOAD_KEYS = frozenset(
+    {
+        "credential",
+        "eligibilitycredential",
+        "eligibilitytoken",
+        "surveyeligibilitycredential",
+        "surveyeligibilitytoken",
+        "xsurveyeligibilitycredential",
+    }
+)
+
+
+def _reject_survey_eligibility_credential_smuggling(value: Any) -> None:
+    """Keep the bearer credential exclusively in its dedicated HTTP header."""
+
+    if isinstance(value, Mapping):
+        for raw_key, child in value.items():
+            normalized_key = re.sub(r"[^a-z0-9]", "", str(raw_key).casefold())
+            if normalized_key in _SURVEY_ELIGIBILITY_FORBIDDEN_PAYLOAD_KEYS:
+                raise EncuestaError(
+                    "La credencial de elegibilidad solo se admite por el header dedicado",
+                    status_code=400,
+                    payload={
+                        "contract_version": "surveys.public_eligibility.v1",
+                        "reason_code": "survey_eligibility_credential_transport_invalid",
+                        "retryable": False,
+                        "action_hint": "send_eligibility_credential_header_only",
+                    },
+                )
+            _reject_survey_eligibility_credential_smuggling(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _reject_survey_eligibility_credential_smuggling(child)
 
 
 def _public_schedule_now() -> datetime:
@@ -227,6 +260,21 @@ def _survey_duplicate_response_error() -> EncuestaError:
             "reason_code": "survey_response_duplicate",
             "retryable": False,
             "action_hint": "show_existing_participation",
+        },
+    )
+
+
+def _public_survey_not_found_error() -> EncuestaError:
+    """Return one non-enumerating error for missing or tenant-mismatched links."""
+
+    return EncuestaError(
+        "Encuesta no encontrada",
+        status_code=404,
+        payload={
+            "contract_version": "surveys.public.v2",
+            "reason_code": "survey_not_found",
+            "retryable": False,
+            "action_hint": "check_survey_link",
         },
     )
 
@@ -3653,6 +3701,23 @@ def cerrar_encuesta(encuesta_id: int, user: Any) -> EncEncuesta:
                 "action_hint": "close_governance_release",
             },
         )
+    estado_actual = str(encuesta.estado or "").strip().lower()
+    if estado_actual == "cerrada":
+        # A retry must not alter the immutable closing timestamp or reopen the
+        # participation window.
+        return encuesta
+    if estado_actual != "publicada":
+        raise EncuestaError(
+            "Solo se puede cerrar una encuesta publicada",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.lifecycle.v1",
+                "reason_code": "survey_not_closable",
+                "retryable": False,
+                "action_hint": "publish_survey_before_closing",
+                "current_state": estado_actual or "unknown",
+            },
+        )
     encuesta.estado = "cerrada"
     encuesta.fin_at = encuesta.fin_at or _public_schedule_now()
     db.session.commit()
@@ -4246,18 +4311,43 @@ def get_public_encuesta(
     *,
     allow_inactive_for_user: Optional[Any] = None,
     preferred_tenant_id: Optional[int] = None,
+    require_tenant_match: bool = False,
     allow_inactive_for_receipt_lookup: bool = False,
 ) -> EncEncuesta:
+    """Resolve a public survey, optionally requiring an exact tenant match.
+
+    ``preferred_tenant_id`` remains a compatibility hint by default.  Callers
+    at an authoritative tenant boundary must opt into ``require_tenant_match``;
+    that mode requires a valid positive tenant id and never falls back to a
+    survey owned by another tenant.
+    """
+
     normalized_slug = (slug_publico or "").strip().lower()
     if not normalized_slug:
+        if require_tenant_match:
+            raise _public_survey_not_found_error()
         raise EncuestaError("Encuesta no encontrada", status_code=404)
 
     preferred_tenant: Optional[int] = None
     if preferred_tenant_id is not None:
-        try:
-            preferred_tenant = int(preferred_tenant_id)
-        except (TypeError, ValueError):
+        if isinstance(preferred_tenant_id, bool):
+            if require_tenant_match:
+                raise _public_survey_not_found_error()
+        elif isinstance(preferred_tenant_id, int):
+            preferred_tenant = preferred_tenant_id
+        elif isinstance(preferred_tenant_id, str) and re.fullmatch(
+            r"[1-9][0-9]*",
+            preferred_tenant_id.strip(),
+        ):
+            preferred_tenant = int(preferred_tenant_id.strip())
+        elif require_tenant_match:
+            raise _public_survey_not_found_error()
+        if preferred_tenant is not None and preferred_tenant <= 0 and require_tenant_match:
+            raise _public_survey_not_found_error()
+        if preferred_tenant is not None and preferred_tenant <= 0:
             preferred_tenant = None
+    if require_tenant_match and preferred_tenant is None:
+        raise _public_survey_not_found_error()
 
     def _pick_best_candidate(items: Sequence[Optional[EncEncuesta]]) -> Optional[EncEncuesta]:
         """Prefer currently active public surveys when multiple rows share a slug."""
@@ -4270,7 +4360,7 @@ def get_public_encuesta(
             matches = [
                 candidate for candidate in normalized_items if int(candidate.tenant_id or 0) == preferred_tenant
             ]
-            if matches:
+            if require_tenant_match or matches:
                 tenant_filtered = matches
 
         fallback: Optional[EncEncuesta] = tenant_filtered[0] if tenant_filtered else None
@@ -4280,43 +4370,59 @@ def get_public_encuesta(
         return fallback
 
     encuesta: Optional[EncEncuesta] = None
-    matching_links = (
-        EncLink.query.filter(func.lower(EncLink.slug_publico) == normalized_slug)
-        .order_by(EncLink.id.desc())
-        .all()
+    matching_links_query = EncLink.query.filter(
+        func.lower(EncLink.slug_publico) == normalized_slug
     )
+    if require_tenant_match and preferred_tenant is not None:
+        matching_links_query = matching_links_query.join(
+            EncEncuesta,
+            EncLink.encuesta_id == EncEncuesta.id,
+        ).filter(EncEncuesta.tenant_id == preferred_tenant)
+    matching_links = matching_links_query.order_by(EncLink.id.desc()).all()
     if matching_links:
         encuesta = _pick_best_candidate([link.encuesta for link in matching_links])
     else:
-        slug_matches = (
-            EncEncuesta.query.filter(func.lower(EncEncuesta.slug) == normalized_slug)
-            .order_by(EncEncuesta.id.desc())
-            .all()
+        slug_matches_query = EncEncuesta.query.filter(
+            func.lower(EncEncuesta.slug) == normalized_slug
         )
+        if require_tenant_match and preferred_tenant is not None:
+            slug_matches_query = slug_matches_query.filter(
+                EncEncuesta.tenant_id == preferred_tenant
+            )
+        slug_matches = slug_matches_query.order_by(EncEncuesta.id.desc()).all()
         encuesta = _pick_best_candidate(slug_matches)
         if encuesta is None:
             alias_match = _PUBLIC_SLUG_ALIAS_RE.match(normalized_slug)
             if alias_match:
                 base_slug = alias_match.group("base")
-                base_slug_matches = (
-                    EncEncuesta.query.filter(func.lower(EncEncuesta.slug) == base_slug)
-                    .order_by(EncEncuesta.id.desc())
-                    .all()
+                base_slug_query = EncEncuesta.query.filter(
+                    func.lower(EncEncuesta.slug) == base_slug
                 )
+                if require_tenant_match and preferred_tenant is not None:
+                    base_slug_query = base_slug_query.filter(
+                        EncEncuesta.tenant_id == preferred_tenant
+                    )
+                base_slug_matches = base_slug_query.order_by(
+                    EncEncuesta.id.desc()
+                ).all()
                 encuesta = _pick_best_candidate(base_slug_matches)
 
     if encuesta is None and re.fullmatch(r"[0-9a-z]{5,12}", normalized_slug):
-        short_link = (
-            EncLink.query.filter(
-                EncLink.slug_publico.ilike(f"%-{normalized_slug}")
-            )
-            .order_by(EncLink.id.desc())
-            .first()
+        short_link_query = EncLink.query.filter(
+            EncLink.slug_publico.ilike(f"%-{normalized_slug}")
         )
+        if require_tenant_match and preferred_tenant is not None:
+            short_link_query = short_link_query.join(
+                EncEncuesta,
+                EncLink.encuesta_id == EncEncuesta.id,
+            ).filter(EncEncuesta.tenant_id == preferred_tenant)
+        short_link = short_link_query.order_by(EncLink.id.desc()).first()
         if short_link:
             encuesta = short_link.encuesta
 
     if encuesta is None:
+        if require_tenant_match:
+            raise _public_survey_not_found_error()
         raise EncuestaError("Encuesta no encontrada", status_code=404)
 
     preview_user = allow_inactive_for_user
@@ -5736,6 +5842,7 @@ def find_survey_response_replay(
     *,
     submission_id: Optional[str],
     preferred_tenant_id: Optional[int] = None,
+    require_tenant_match: bool = False,
     authenticated_user: Optional[User] = None,
 ) -> Optional[EncRespuesta]:
     """Return a committed replay before one-shot security checks are repeated."""
@@ -5745,6 +5852,7 @@ def find_survey_response_replay(
     encuesta = get_public_encuesta(
         slug_publico,
         preferred_tenant_id=preferred_tenant_id,
+        require_tenant_match=require_tenant_match,
         allow_inactive_for_receipt_lookup=True,
     )
     # Do not expose or validate an inactive instrument for a fresh submission.
@@ -6017,11 +6125,14 @@ def save_respuesta(
     request_ctx: Dict[str, Any],
     *,
     preferred_tenant_id: Optional[int] = None,
+    require_tenant_match: bool = False,
     authenticated_user: Optional[User] = None,
     commit: bool = True,
     emit_realtime_update: bool = True,
     grant_reward: bool = True,
     submission_id: Optional[str] = None,
+    eligibility_credential: Any = None,
+    eligibility_transport: Optional[str] = None,
 ) -> EncRespuesta:
     if not isinstance(payload, dict):
         if isinstance(payload, Mapping):
@@ -6030,6 +6141,8 @@ def save_respuesta(
             raise EncuestaError("Debe enviar respuestas")
     else:
         payload = dict(payload)
+
+    _reject_survey_eligibility_credential_smuggling(payload)
 
     submission_id = resolve_survey_submission_id(
         payload,
@@ -6055,12 +6168,17 @@ def save_respuesta(
             request_ctx,
             submission_id=submission_id,
             preferred_tenant_id=preferred_tenant_id,
+            require_tenant_match=require_tenant_match,
             authenticated_user=authenticated_user,
         )
         if replay is not None:
             return replay
 
-    encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
+    encuesta = get_public_encuesta(
+        slug_publico,
+        preferred_tenant_id=preferred_tenant_id,
+        require_tenant_match=require_tenant_match,
+    )
     encuesta = _acquire_encuesta_response_guard(encuesta.id)
     _ensure_locked_public_encuesta(encuesta)
     expected_structure_revision = int(encuesta.structure_revision or 1)
@@ -6275,6 +6393,31 @@ def save_respuesta(
         privacy_submission["retention_days"],
     )
 
+    eligibility_grant = None
+    if governance_release is not None:
+        from services.survey_eligibility import (
+            SurveyEligibilityError,
+            lock_eligibility_grant_for_submission,
+        )
+
+        try:
+            eligibility_grant = lock_eligibility_grant_for_submission(
+                encuesta=encuesta,
+                release=governance_release,
+                credential=eligibility_credential,
+                submission_id=submission_id,
+                commit=commit,
+                transport=eligibility_transport,
+            )
+        except SurveyEligibilityError as exc:
+            if commit:
+                db.session.rollback()
+            raise EncuestaError(
+                exc.message,
+                status_code=exc.status_code,
+                payload=exc.to_dict(),
+            ) from exc
+
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
         tenant_id=tenant_id,
@@ -6340,6 +6483,40 @@ def save_respuesta(
             if replay is not None:
                 return replay
         raise
+
+    if eligibility_grant is not None:
+        from services.survey_eligibility import (
+            SurveyEligibilityError,
+            stage_eligibility_redemption,
+        )
+
+        try:
+            stage_eligibility_redemption(
+                grant=eligibility_grant,
+                respuesta=respuesta,
+                submission_payload_hash=str(submission_payload_hash or ""),
+                redeemed_at=submitted_at,
+            )
+        except SurveyEligibilityError as exc:
+            if commit:
+                db.session.rollback()
+            if (
+                exc.reason_code == "survey_eligibility_terminal_conflict"
+                and submission_id is not None
+                and submission_payload_hash is not None
+            ):
+                replay = _resolve_survey_response_receipt(
+                    encuesta,
+                    submission_id,
+                    submission_payload_hash,
+                )
+                if replay is not None:
+                    return replay
+            raise EncuestaError(
+                exc.message,
+                status_code=exc.status_code,
+                payload=exc.to_dict(),
+            ) from exc
 
     receipt: Optional[SurveyResponseReceipt] = None
     if submission_id is not None and submission_payload_hash is not None:
@@ -6467,6 +6644,7 @@ def emit_survey_response_update(
             live_stats = calculate_live_results(
                 public_slug,
                 preferred_tenant_id=tenant_id,
+                require_tenant_match=tenant_id is not None,
                 include_heatmap=True,
             )
             live_stats["legacy_results"] = _compute_live_results(encuesta)
@@ -7171,8 +7349,126 @@ def _empty_panel_metrics() -> Dict[str, Any]:
     }
 
 
+def _admin_schedule_datetime(
+    value: Optional[datetime], reference: datetime
+) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=reference.tzinfo)
+    return value.astimezone(reference.tzinfo)
+
+
+def _build_admin_lifecycle_contract(
+    encuesta: EncEncuesta,
+    metricas: Mapping[str, Any],
+    *,
+    governed_release: bool,
+) -> Dict[str, Any]:
+    """Describe the persisted lifecycle without deriving unavailable KPIs."""
+
+    reference = _public_schedule_now()
+    opens_at = _admin_schedule_datetime(encuesta.inicio_at, reference)
+    closes_at = _admin_schedule_datetime(encuesta.fin_at, reference)
+    persisted_state = str(encuesta.estado or "").strip().lower() or "unknown"
+    instrument_kind = (
+        "voting"
+        if bool(encuesta.es_votacion_envivo)
+        or str(encuesta.tipo or "").strip().lower() == "votacion"
+        else "survey"
+    )
+
+    if persisted_state == "borrador":
+        phase = "draft"
+    elif persisted_state == "cerrada":
+        phase = "closed"
+    elif persisted_state == "archivada":
+        phase = "archived"
+    elif persisted_state == "publicada" and opens_at and reference < opens_at:
+        phase = "scheduled"
+    elif persisted_state == "publicada" and closes_at and reference > closes_at:
+        phase = "window_ended"
+    elif persisted_state == "publicada" and instrument_kind == "voting":
+        phase = "live_voting"
+    elif persisted_state == "publicada":
+        phase = "collecting"
+    else:
+        phase = "unknown"
+
+    has_questions = bool(encuesta.preguntas)
+    response_count = int(metricas.get("total_respuestas") or 0)
+    can_publish = persisted_state == "borrador" and has_questions and not governed_release
+    can_close = persisted_state == "publicada" and not governed_release
+    can_delete = persisted_state == "borrador" and response_count == 0 and not governed_release
+    accepts_responses = phase in {"collecting", "live_voting"}
+
+    publish_reason = None
+    close_reason = None
+    if governed_release:
+        publish_reason = "survey_governance_release_required"
+        close_reason = "survey_governance_release_required"
+    elif not has_questions:
+        publish_reason = "survey_questions_required"
+    elif persisted_state != "borrador":
+        publish_reason = "survey_not_draft"
+    if not governed_release and persisted_state != "publicada":
+        close_reason = "survey_not_published"
+
+    return {
+        "contract_version": "surveys.admin_lifecycle.v1",
+        "instrument_kind": instrument_kind,
+        "phase": phase,
+        "persisted_state": persisted_state,
+        "accepts_responses": accepts_responses,
+        "schedule": {
+            "opens_at": opens_at.isoformat() if opens_at else None,
+            "closes_at": closes_at.isoformat() if closes_at else None,
+            "evaluated_at": reference.isoformat(),
+        },
+        "participation": {
+            "responses": response_count,
+            "unique_participants": int(metricas.get("participantes_unicos") or 0),
+            "responses_last_24h": int(metricas.get("respuestas_ultimas_24h") or 0),
+            "last_response_at": metricas.get("ultima_respuesta_at"),
+            "eligible_population": None,
+            "participation_rate": None,
+            "abstentions": None,
+            "denominator_status": {
+                "available": False,
+                "reason_code": "survey_eligible_population_not_configured",
+            },
+        },
+        "capabilities": {
+            "can_publish": can_publish,
+            "can_close": can_close,
+            "can_delete": can_delete,
+            "can_share": persisted_state == "publicada" and bool(_resolve_public_slug(encuesta)),
+            "can_view_results": response_count > 0,
+        },
+        "actions": {
+            "publish": {
+                "method": "POST",
+                "endpoint": f"/api/v2/surveys/{encuesta.id}/publish",
+                "enabled": can_publish,
+                "disabled_reason_code": None if can_publish else publish_reason,
+            },
+            "close": {
+                "method": "POST",
+                "endpoint": f"/api/v2/surveys/{encuesta.id}/close",
+                "enabled": can_close,
+                "confirmation_required": True,
+                "irreversible": True,
+                "disabled_reason_code": None if can_close else close_reason,
+            },
+        },
+    }
+
+
 def build_admin_list_payload(
     encuestas: Sequence[EncEncuesta],
+    *,
+    tenant_id: Optional[int] = None,
+    tenant_slug: Optional[str] = None,
 ) -> Dict[str, Any]:
     stats_map = _collect_admin_panel_stats(encuestas)
     geo_points = _collect_recent_geo_points(encuestas)
@@ -7183,6 +7479,8 @@ def build_admin_list_payload(
     total_24h = 0
     activas = 0
     con_respuestas = 0
+    accepting_responses = 0
+    instrument_kinds = Counter()
 
     seed_profiles_map = _geo_catalog()
     for encuesta in encuestas:
@@ -7191,6 +7489,15 @@ def build_admin_list_payload(
         data["metricas"] = metricas
         data["esta_activa"] = _is_encuesta_activa(encuesta)
         data["slug_publico"] = _resolve_public_slug(encuesta)
+        lifecycle = _build_admin_lifecycle_contract(
+            encuesta,
+            metricas,
+            governed_release=bool(
+                isinstance(data.get("governance"), Mapping)
+                and data["governance"].get("release_required") is True
+            ),
+        )
+        data["admin_lifecycle"] = lifecycle
         geo_metadata = _resolve_geo_metadata_for_tenant(encuesta.tenant_id)
         data["geo"] = {
             "points": geo_points.get(encuesta.id or -1, []),
@@ -7228,6 +7535,9 @@ def build_admin_list_payload(
             con_respuestas += 1
         if data["esta_activa"]:
             activas += 1
+        if lifecycle["accepts_responses"]:
+            accepting_responses += 1
+        instrument_kinds[lifecycle["instrument_kind"]] += 1
 
     resumen = {
         "total": len(encuestas_payload),
@@ -7237,6 +7547,15 @@ def build_admin_list_payload(
         "total_respuestas": total_respuestas,
         "respuestas_con_coordenadas": total_geo,
         "respuestas_ultimas_24h": total_24h,
+        "accepting_responses": accepting_responses,
+        "por_tipo_instrumento": {
+            "survey": int(instrument_kinds.get("survey", 0)),
+            "voting": int(instrument_kinds.get("voting", 0)),
+        },
+        "participation_denominator": {
+            "available": False,
+            "reason_code": "survey_eligible_population_not_configured",
+        },
     }
 
     seed_profiles = []
@@ -7265,6 +7584,13 @@ def build_admin_list_payload(
     }
 
     return {
+        "contract_version": "surveys.admin_list.v2",
+        "tenant": {"id": tenant_id, "slug": tenant_slug},
+        "freshness": {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "source": "enc_encuesta_and_enc_respuesta",
+            "synthetic": False,
+        },
         "encuestas": encuestas_payload,
         "resumen": resumen,
         "seed_demo": {"defaults": seed_defaults, "profiles": seed_profiles},
@@ -7529,6 +7855,11 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
             "provider": "chatboc_session",
         },
         "privacy": data["privacy"],
+        "eligibility": (
+            data.get("governance", {}).get("eligibility")
+            if isinstance(data.get("governance"), dict)
+            else None
+        ),
         "idempotency": {
             "contract_version": SURVEY_RESPONSE_RECEIPT_CONTRACT_VERSION,
             "supported": True,

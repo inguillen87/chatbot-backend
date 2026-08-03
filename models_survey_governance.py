@@ -101,6 +101,19 @@ class SurveyGovernanceRelease(db.Model):
         UniqueConstraint(
             "tenant_id",
             "survey_id",
+            "id",
+            name="uq_survey_governance_release_scope_id",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "survey_id",
+            "id",
+            "eligibility_policy_version",
+            name="uq_survey_governance_release_scope_policy_id",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "survey_id",
             "version_number",
             name="uq_survey_governance_release_version",
         ),

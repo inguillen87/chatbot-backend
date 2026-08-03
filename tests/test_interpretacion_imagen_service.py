@@ -162,10 +162,18 @@ class TestInterpretacionImagenService(unittest.TestCase):
         resultado = interpretar_imagen_para_chat(archivo_adjunto, tipo_interpretacion="reclamo_municipal", pyme_user=None)
 
         self.assertFalse(resultado.get("es_reclamo"))
-        self.assertIn("Error de Vision API: Error de Vision simulado", resultado.get("error", ""))
+        self.assertEqual(resultado.get("error"), "No se pudo analizar el archivo.")
         analisis_guardado = db.session.get(AnalisisArchivo, resultado["analisis_id"])
         self.assertEqual(analisis_guardado.estado_analisis, "error")
-        self.assertIn("Error de Vision API: Error de Vision simulado", analisis_guardado.error_analisis)
+        self.assertEqual(analisis_guardado.error_analisis, "No se pudo analizar el archivo.")
+        self.assertEqual(
+            analisis_guardado.datos_estructurados["vision_api_raw"]["error"],
+            "vision_analysis_failed",
+        )
+        self.assertNotIn(
+            "Error de Vision simulado",
+            str(analisis_guardado.datos_estructurados),
+        )
 
     @patch('services.interpretacion_imagen_service._descargar_imagen')
     @patch('services.interpretacion_imagen_service.analyze_image_smart')

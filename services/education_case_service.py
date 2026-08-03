@@ -5,9 +5,22 @@ from datetime import datetime, timezone
 from typing import Any
 
 from database import db
-from models import MunicipioTicket, PymeTicket, TenantProfile, User
-from models_education import Campus, Guardian, School, SchoolCaseAlias, StudentGuardianRelation
+from models import AuditEvent, MunicipioTicket, PymeTicket, TenantProfile, User
+from models_education import (
+    Campus,
+    CourseSection,
+    Guardian,
+    School,
+    SchoolCaseAlias,
+    Student,
+    StudentGuardianRelation,
+)
 from services.education_contracts import education_case_taxonomy, fold_text
+from services.education_access_policy import (
+    EDUCATION_DIRECTORY_READ,
+    education_staff_can_be_assigned,
+)
+from services.tenant_ticket_scope import scoped_municipio_ticket_query
 
 
 EDUCATION_CASE_ALIAS_CONTRACT_VERSION = "education.case_alias.v1"
@@ -26,6 +39,164 @@ def _normalize_case_type(case_type: Any) -> str:
     normalized = fold_text(case_type).replace(" ", "_")
     taxonomy_keys = {item["key"] for item in education_case_taxonomy()}
     return normalized if normalized in taxonomy_keys else "secretaria"
+
+
+def _active_tenant(tenant_profile: TenantProfile | int | None) -> TenantProfile | None:
+    raw_id = tenant_profile if isinstance(tenant_profile, int) else getattr(tenant_profile, "id", None)
+    try:
+        tenant_id = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+    return TenantProfile.query.filter_by(id=tenant_id, is_active=True).one_or_none()
+
+
+def _ticket_for_tenant(tenant: TenantProfile, ticket_type: str, ticket_id: int):
+    if ticket_type == "pyme":
+        return PymeTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
+    if ticket_type == "municipio":
+        return (
+            scoped_municipio_ticket_query(tenant)
+            .filter(MunicipioTicket.id == ticket_id)
+            .first()
+        )
+    return None
+
+
+def _section_is_bound_to_school(
+    section: CourseSection | None,
+    school: School,
+    tenant: TenantProfile,
+) -> bool:
+    if (
+        section is None
+        or section.campus is None
+        or section.campus.school_id != school.id
+        or section.level is None
+        or section.level.school_id != school.id
+        or section.shift is None
+        or section.shift.school_id != school.id
+    ):
+        return False
+    if section.homeroom_staff_id is None:
+        return True
+    return education_staff_can_be_assigned(
+        db.session.get(User, section.homeroom_staff_id),
+        tenant,
+        EDUCATION_DIRECTORY_READ,
+    )
+
+
+def _student_is_bound_to_school(
+    student: Student | None,
+    school: School,
+    tenant: TenantProfile,
+) -> bool:
+    if student is None or student.school_id != school.id:
+        return False
+    if student.campus_id is not None and Campus.query.filter_by(
+        id=student.campus_id, school_id=school.id
+    ).first() is None:
+        return False
+    if student.section_id is not None:
+        section = db.session.get(CourseSection, student.section_id)
+        if not _section_is_bound_to_school(section, school, tenant):
+            return False
+        if student.campus_id is not None and section.campus_id != student.campus_id:
+            return False
+    return True
+
+
+def _record_corrupt_alias(alias: SchoolCaseAlias, reason_code: str) -> None:
+    """Stage one deduplicated durable audit event for a corrupt alias."""
+
+    resource_id = str(alias.id)
+    exists = AuditEvent.query.filter_by(
+        tenant_id=alias.tenant_id,
+        event_type="education.case_alias.corrupt",
+        resource_type="education_case_alias",
+        resource_id=resource_id,
+    ).first()
+    if exists is not None:
+        return
+    db.session.add(
+        AuditEvent(
+            tenant_id=alias.tenant_id,
+            actor_user_id=None,
+            event_type="education.case_alias.corrupt",
+            resource_type="education_case_alias",
+            resource_id=resource_id,
+            details={
+                "contract_version": "education.case_alias_integrity.v1",
+                "reason_code": reason_code,
+                "ticket_type": alias.ticket_type,
+                "raw_foreign_values_persisted": False,
+            },
+            ip_address=None,
+        )
+    )
+    db.session.info["education_case_alias_audit_pending"] = True
+
+
+def validated_ticket_for_school_case_alias(
+    alias: SchoolCaseAlias | None,
+    *,
+    audit_corrupt: bool = True,
+):
+    """Return the tenant-owned ticket only when every alias reference is valid."""
+
+    if alias is None:
+        return None
+    tenant = _active_tenant(alias.tenant_id)
+    reason_code = None
+    ticket = None
+    if tenant is None:
+        reason_code = "tenant_inactive_or_missing"
+    else:
+        school = School.query.filter_by(id=alias.school_id, tenant_id=tenant.id).first()
+        if school is None:
+            reason_code = "school_tenant_mismatch"
+        elif alias.campus_id is not None and Campus.query.filter_by(
+            id=alias.campus_id, school_id=school.id
+        ).first() is None:
+            reason_code = "campus_school_mismatch"
+        elif alias.section_id is not None:
+            section = (
+                CourseSection.query.join(Campus, CourseSection.campus_id == Campus.id)
+                .join(School, Campus.school_id == School.id)
+                .filter(
+                    CourseSection.id == alias.section_id,
+                    School.id == school.id,
+                    School.tenant_id == tenant.id,
+                )
+                .first()
+            )
+            if (
+                not _section_is_bound_to_school(section, school, tenant)
+                or (alias.campus_id is not None and section.campus_id != alias.campus_id)
+            ):
+                reason_code = "section_school_mismatch"
+        if reason_code is None and alias.student_id is not None:
+            student = Student.query.filter_by(id=alias.student_id, school_id=school.id).first()
+            if not _student_is_bound_to_school(student, school, tenant):
+                reason_code = "student_school_mismatch"
+            elif alias.campus_id is not None and student.campus_id not in {None, alias.campus_id}:
+                reason_code = "student_campus_mismatch"
+            elif alias.section_id is not None and student.section_id not in {None, alias.section_id}:
+                reason_code = "student_section_mismatch"
+        if reason_code is None and alias.guardian_id is not None:
+            guardian = Guardian.query.filter_by(id=alias.guardian_id, tenant_id=tenant.id).first()
+            if guardian is None or guardian.school_id not in {None, school.id}:
+                reason_code = "guardian_school_mismatch"
+        if reason_code is None:
+            ticket = _ticket_for_tenant(tenant, alias.ticket_type, alias.ticket_id)
+            if ticket is None:
+                reason_code = "ticket_tenant_mismatch"
+
+    if reason_code is not None:
+        if audit_corrupt:
+            _record_corrupt_alias(alias, reason_code)
+        return None
+    return ticket
 
 
 def _main_campus_for_school(school_id: int | None) -> Campus | None:
@@ -79,24 +250,66 @@ def resolve_default_school_case_context(
     student_id: int | None = None,
     guardian_id: int | None = None,
 ) -> dict[str, Any]:
-    tenant_id = tenant_profile if isinstance(tenant_profile, int) else getattr(tenant_profile, "id", None)
-    if not tenant_id:
+    tenant = _active_tenant(tenant_profile)
+    if tenant is None:
         return {"resolved": False, "reason_code": "tenant_required"}
+    tenant_id = tenant.id
 
-    guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant_id).first() if guardian_id else None
-    guardian = guardian or _guardian_from_user_or_phone(tenant_id, end_user=end_user, phone=phone)
+    guardian = None
+    if guardian_id is not None:
+        guardian = Guardian.query.filter_by(id=guardian_id, tenant_id=tenant_id).first()
+        if guardian is None:
+            return {"resolved": False, "reason_code": "guardian_not_available", "tenant_id": tenant_id}
+    else:
+        guardian = _guardian_from_user_or_phone(tenant_id, end_user=end_user, phone=phone)
 
     relation = None
     student = None
     if guardian:
         relation = (
-            StudentGuardianRelation.query.filter_by(guardian_id=guardian.id, status="active")
+            StudentGuardianRelation.query.join(
+                Student, StudentGuardianRelation.student_id == Student.id
+            )
+            .join(School, Student.school_id == School.id)
+            .filter(
+                StudentGuardianRelation.guardian_id == guardian.id,
+                StudentGuardianRelation.status == "active",
+                School.tenant_id == tenant_id,
+            )
             .order_by(StudentGuardianRelation.is_primary.desc(), StudentGuardianRelation.id.asc())
             .first()
         )
         student = getattr(relation, "student", None) if relation else None
 
-    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first() if school_id else None
+    if student_id is not None:
+        explicit_student = (
+            Student.query.join(School, Student.school_id == School.id)
+            .filter(Student.id == student_id, School.tenant_id == tenant_id)
+            .first()
+        )
+        if explicit_student is None or explicit_student.school is None or not _student_is_bound_to_school(
+            explicit_student, explicit_student.school, tenant
+        ):
+            return {"resolved": False, "reason_code": "student_not_available", "tenant_id": tenant_id}
+        if guardian is not None:
+            guardian_relation = StudentGuardianRelation.query.filter_by(
+                guardian_id=guardian.id,
+                student_id=explicit_student.id,
+                status="active",
+            ).first()
+            if guardian_relation is None:
+                return {
+                    "resolved": False,
+                    "reason_code": "guardian_student_relation_required",
+                    "tenant_id": tenant_id,
+                }
+        student = explicit_student
+
+    school = None
+    if school_id is not None:
+        school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+        if school is None:
+            return {"resolved": False, "reason_code": "school_not_available", "tenant_id": tenant_id}
     if not school and student:
         school = student.school
     if not school and guardian and guardian.school_id:
@@ -109,16 +322,64 @@ def resolve_default_school_case_context(
     if not school:
         return {"resolved": False, "reason_code": "school_not_configured", "tenant_id": tenant_id}
 
-    campus = Campus.query.filter_by(id=campus_id, school_id=school.id).first() if campus_id else None
-    campus = campus or getattr(student, "campus", None) or _main_campus_for_school(school.id)
+    if student is not None and student.school_id != school.id:
+        return {"resolved": False, "reason_code": "student_school_mismatch", "tenant_id": tenant_id}
+    if guardian is not None and guardian.school_id not in {None, school.id}:
+        return {"resolved": False, "reason_code": "guardian_school_mismatch", "tenant_id": tenant_id}
+
+    campus = None
+    if campus_id is not None:
+        campus = Campus.query.filter_by(id=campus_id, school_id=school.id).first()
+        if campus is None:
+            return {"resolved": False, "reason_code": "campus_school_mismatch", "tenant_id": tenant_id}
+    else:
+        candidate_campus = getattr(student, "campus", None)
+        if candidate_campus is not None and candidate_campus.school_id == school.id:
+            campus = candidate_campus
+        else:
+            campus = _main_campus_for_school(school.id)
+
+    section = None
+    if section_id is not None:
+        section = (
+            CourseSection.query.join(Campus, CourseSection.campus_id == Campus.id)
+            .join(School, Campus.school_id == School.id)
+            .filter(
+                CourseSection.id == section_id,
+                School.id == school.id,
+                School.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if (
+            not _section_is_bound_to_school(section, school, tenant)
+            or (campus is not None and section.campus_id != campus.id)
+        ):
+            return {"resolved": False, "reason_code": "section_school_mismatch", "tenant_id": tenant_id}
+    else:
+        candidate_section = getattr(student, "section", None)
+        if (
+            candidate_section is not None
+            and _section_is_bound_to_school(candidate_section, school, tenant)
+            and (campus is None or candidate_section.campus_id == campus.id)
+        ):
+            section = candidate_section
+
+    if student is not None:
+        if not _student_is_bound_to_school(student, school, tenant):
+            return {"resolved": False, "reason_code": "student_school_mismatch", "tenant_id": tenant_id}
+        if campus is not None and student.campus_id not in {None, campus.id}:
+            return {"resolved": False, "reason_code": "student_campus_mismatch", "tenant_id": tenant_id}
+        if section is not None and student.section_id not in {None, section.id}:
+            return {"resolved": False, "reason_code": "student_section_mismatch", "tenant_id": tenant_id}
 
     return {
         "resolved": True,
         "tenant_id": tenant_id,
         "school_id": school.id,
         "campus_id": getattr(campus, "id", None),
-        "section_id": section_id or getattr(student, "section_id", None),
-        "student_id": student_id or getattr(student, "id", None),
+        "section_id": getattr(section, "id", None),
+        "student_id": getattr(student, "id", None),
         "guardian_id": getattr(guardian, "id", None),
         "resolution_source": "guardian" if guardian else "default_school",
     }
@@ -140,7 +401,8 @@ def create_school_case_alias_for_ticket(
     student_id: int | None = None,
     guardian_id: int | None = None,
 ) -> SchoolCaseAlias | None:
-    tenant_id = tenant_profile if isinstance(tenant_profile, int) else getattr(tenant_profile, "id", None)
+    tenant = _active_tenant(tenant_profile)
+    tenant_id = getattr(tenant, "id", None)
     try:
         parsed_ticket_id = int(ticket_id) if ticket_id is not None else None
     except (TypeError, ValueError):
@@ -148,9 +410,20 @@ def create_school_case_alias_for_ticket(
     if not tenant_id or not parsed_ticket_id or ticket_type not in {"pyme", "municipio"}:
         return None
 
+    # The alias is a projection, never an ownership source.  The referenced
+    # ticket must already prove the same authoritative tenant.
+    if _ticket_for_tenant(tenant, ticket_type, parsed_ticket_id) is None:
+        return None
+
     existing = SchoolCaseAlias.query.filter_by(ticket_type=ticket_type, ticket_id=parsed_ticket_id).first()
     if existing:
-        return existing if existing.tenant_id == tenant_id else None
+        if existing.tenant_id != tenant_id:
+            return None
+        if validated_ticket_for_school_case_alias(existing) is None:
+            db.session.commit()
+            db.session.info.pop("education_case_alias_audit_pending", None)
+            return None
+        return existing
 
     normalized_case_type = _normalize_case_type(case_type)
     resolved = resolve_default_school_case_context(
@@ -189,7 +462,7 @@ def create_school_case_alias_for_ticket(
 
 
 def school_case_alias_payload(alias: SchoolCaseAlias | None) -> dict[str, Any] | None:
-    if not alias:
+    if not alias or validated_ticket_for_school_case_alias(alias) is None:
         return None
     return {
         "contract_version": EDUCATION_CASE_ALIAS_CONTRACT_VERSION,
@@ -209,9 +482,7 @@ def school_case_alias_payload(alias: SchoolCaseAlias | None) -> dict[str, Any] |
 
 
 def _ticket_for_alias(alias: SchoolCaseAlias):
-    if alias.ticket_type == "pyme":
-        return PymeTicket.query.get(alias.ticket_id)
-    return MunicipioTicket.query.get(alias.ticket_id)
+    return validated_ticket_for_school_case_alias(alias)
 
 
 def _ticket_status(ticket: Any) -> str:
@@ -232,8 +503,8 @@ def _has_attachments(ticket: Any) -> bool:
 
 
 def build_education_operations_summary(tenant_profile: TenantProfile | int | None) -> dict[str, Any]:
-    tenant_id = tenant_profile if isinstance(tenant_profile, int) else getattr(tenant_profile, "id", None)
-    tenant = tenant_profile if isinstance(tenant_profile, TenantProfile) else TenantProfile.query.get(tenant_id)
+    tenant = _active_tenant(tenant_profile)
+    tenant_id = getattr(tenant, "id", None)
     if not tenant_id:
         return {
             "contract_version": EDUCATION_OPERATIONS_SUMMARY_CONTRACT_VERSION,
@@ -258,9 +529,13 @@ def build_education_operations_summary(tenant_profile: TenantProfile | int | Non
     cases_today = 0
     cases_with_location = 0
     cases_with_attachments = 0
+    valid_cases = 0
 
     for alias in aliases:
         ticket = _ticket_for_alias(alias)
+        if ticket is None:
+            continue
+        valid_cases += 1
         status = _ticket_status(ticket)
         is_open = status not in _CLOSED_STATES
         by_type[alias.case_type or "sin_tipo"] += 1
@@ -327,7 +602,7 @@ def build_education_operations_summary(tenant_profile: TenantProfile | int | Non
         "tenant_slug": getattr(tenant, "slug", None),
         "summary": {
             "schools": schools_count,
-            "total_cases": len(aliases),
+            "total_cases": valid_cases,
             "open_cases": open_cases,
             "waiting_assignment": waiting_assignment,
             "sensitive_open_cases": sensitive_open_cases,
@@ -367,8 +642,8 @@ def build_education_operations_heatmap(
     school_id: int | None = None,
     max_points: int = 500,
 ) -> dict[str, Any]:
-    tenant_id = tenant_profile if isinstance(tenant_profile, int) else getattr(tenant_profile, "id", None)
-    tenant = tenant_profile if isinstance(tenant_profile, TenantProfile) else TenantProfile.query.get(tenant_id)
+    tenant = _active_tenant(tenant_profile)
+    tenant_id = getattr(tenant, "id", None)
     if not tenant_id:
         return {
             "contract_version": EDUCATION_OPERATIONS_HEATMAP_CONTRACT_VERSION,
@@ -397,6 +672,8 @@ def build_education_operations_heatmap(
     aliases = query.order_by(SchoolCaseAlias.created_at.desc()).limit(max_points * 3).all()
     for alias in aliases:
         ticket = _ticket_for_alias(alias)
+        if ticket is None:
+            continue
         lat = _float_or_none(getattr(ticket, "latitud", None))
         lng = _float_or_none(getattr(ticket, "longitud", None))
         if lat is None or lng is None:

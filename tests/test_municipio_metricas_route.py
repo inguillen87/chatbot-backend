@@ -1,7 +1,7 @@
 import unittest
 from app import create_app, db
 from config import TestConfig
-from models import User, MunicipioTicket
+from models import User, MunicipioTicket, TenantProfile
 
 
 class MunicipioMetricasRouteTests(unittest.TestCase):
@@ -12,15 +12,49 @@ class MunicipioMetricasRouteTests(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
-        user = User(name='Admin', email='admin@municipio.com', municipio_id=1)
+        user = User(
+            name='Admin',
+            email='admin@municipio.com',
+            rol='admin',
+            tipo_chat='municipio',
+        )
         user.set_password('secret')
         db.session.add(user)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug='municipio-metricas-test',
+            nombre='Municipio Métricas Test',
+            tipo='municipio',
+            municipio_id=user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        user.municipio_id = user.id
+        user.tenant_id = tenant.id
+        user.tenant_slug = tenant.slug
         db.session.commit()
         self.user = user
+        self.tenant = tenant
 
-        t1 = MunicipioTicket(municipio_id=1, estado='nuevo', user_id=1)
-        t2 = MunicipioTicket(municipio_id=1, estado='cerrado', user_id=1)
-        t3 = MunicipioTicket(municipio_id=1, estado='cerrado', user_id=2)
+        t1 = MunicipioTicket(
+            municipio_id=user.id,
+            tenant_id=tenant.id,
+            estado='nuevo',
+            user_id=1,
+        )
+        t2 = MunicipioTicket(
+            municipio_id=user.id,
+            tenant_id=tenant.id,
+            estado='cerrado',
+            user_id=1,
+        )
+        t3 = MunicipioTicket(
+            municipio_id=user.id,
+            tenant_id=tenant.id,
+            estado='cerrado',
+            user_id=2,
+        )
         db.session.add_all([t1, t2, t3])
         db.session.commit()
 

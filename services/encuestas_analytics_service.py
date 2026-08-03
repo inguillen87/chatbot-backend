@@ -3451,6 +3451,7 @@ def calculate_live_results(
     slug_publico: str,
     *,
     preferred_tenant_id: Optional[int] = None,
+    require_tenant_match: bool = False,
     include_heatmap: bool = True,
     max_points: int = 2000,
     max_cells: int = 200,
@@ -3462,7 +3463,11 @@ def calculate_live_results(
     Returns simplified aggregate counts for live voting animations.
     Optimized for frequent polling.
     """
-    encuesta = get_public_encuesta(slug_publico, preferred_tenant_id=preferred_tenant_id)
+    encuesta = get_public_encuesta(
+        slug_publico,
+        preferred_tenant_id=preferred_tenant_id,
+        require_tenant_match=require_tenant_match,
+    )
     if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
         raise EncuestaError(
             "Los resultados en vivo no estan publicados para esta encuesta.",

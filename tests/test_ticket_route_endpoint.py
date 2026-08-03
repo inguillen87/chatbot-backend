@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 from app import create_app
-from models import db, User, MunicipioTicket
+from models import db, User, MunicipioTicket, TenantProfile
 from utils.auth_helpers import generar_token
 from config import TestingConfig
 
@@ -13,10 +13,28 @@ class TicketRouteEndpointTests(unittest.TestCase):
             db.create_all()
             municipio = User(id=1, name='Muni', email='m@e.com', password_hash='x', rol='admin', tipo_chat='municipio', latitud=-34.6, longitud=-58.45)
             db.session.add(municipio)
-            ticket = MunicipioTicket(id=1, pregunta='p', municipio_id=1, latitud=-34.61, longitud=-58.44)
+            db.session.flush()
+            tenant = TenantProfile(
+                slug='ticket-route-muni',
+                nombre='Municipio Ruta',
+                tipo='municipio',
+                municipio_id=municipio.id,
+            )
+            db.session.add(tenant)
+            db.session.flush()
+            municipio.tenant_id = tenant.id
+            municipio.tenant_slug = tenant.slug
+            ticket = MunicipioTicket(
+                id=1,
+                pregunta='p',
+                municipio_id=municipio.id,
+                tenant_id=tenant.id,
+                latitud=-34.61,
+                longitud=-58.44,
+            )
             db.session.add(ticket)
             db.session.commit()
-            self.token = generar_token(1, 'admin', 'municipio', municipio_id=1, pyme_id=None)
+            self.token = generar_token(municipio.id, 'admin', 'municipio', municipio_id=municipio.id, pyme_id=None)
 
     def tearDown(self):
         with self.app.app_context():

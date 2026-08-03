@@ -145,7 +145,35 @@ from models import ChatSessionContext
 from twilio.rest import Client
 import os
 from sqlalchemy.orm.attributes import flag_modified
+from services.llm_provider_network_policy import (
+    ProviderNetworkDisabledError,
+    require_provider_network,
+)
 from services.notification_orchestrator import NotificationOrchestrator
+
+
+def _send_image_analysis_twilio_message(
+    *,
+    account_sid,
+    auth_token,
+    from_number,
+    to_number,
+    body,
+):
+    try:
+        require_provider_network("twilio")
+    except ProviderNetworkDisabledError:
+        logger.info(
+            "Image analysis reply blocked provider=twilio reason=test_network_disabled"
+        )
+        raise
+    twilio_client = Client(account_sid, auth_token)
+    require_provider_network("twilio")
+    return twilio_client.messages.create(
+        from_=from_number,
+        body=body,
+        to=to_number,
+    )
 
 @celery_app.task
 def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file_info_whatsapp, chat_session_id):
@@ -155,8 +183,6 @@ def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file
     """
     from app import app
     with app.app_context():
-        # Get the Twilio client
-        twilio_client = Client(os.environ.get("TWILIO_ACCOUNT_SID"), os.environ.get("TWILIO_AUTH_TOKEN"))
         from_number = f"whatsapp:{os.environ.get('TWILIO_WHATSAPP_NUMBER_JUNIN')}"
         to_number = f"whatsapp:{user_phone_number}"
 
@@ -196,10 +222,12 @@ def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file
         db.session.commit()
 
         # Send the message
-        twilio_client.messages.create(
-            from_=from_number,
+        _send_image_analysis_twilio_message(
+            account_sid=os.environ.get("TWILIO_ACCOUNT_SID"),
+            auth_token=os.environ.get("TWILIO_AUTH_TOKEN"),
+            from_number=from_number,
             body=message_body,
-            to=to_number
+            to_number=to_number,
         )
 
 

@@ -41,6 +41,24 @@ class TicketStateSyncTest(unittest.TestCase):
         rubro = Rubro(clave='r1', nombre='R1')
         db.session.add(rubro)
         db.session.commit()
+
+        muni_tenant = TenantProfile(
+            slug='municipio-state-sync',
+            nombre='Municipio State Sync',
+            tipo='municipio',
+            municipio_id=muni_admin.id,
+            is_active=True,
+        )
+        db.session.add(muni_tenant)
+        db.session.flush()
+        muni_admin.municipio_id = muni_admin.id
+        muni_admin.tenant_id = muni_tenant.id
+        muni_admin.tenant_slug = muni_tenant.slug
+        citizen.municipio_id = muni_admin.id
+        citizen.tenant_id = muni_tenant.id
+        citizen.tenant_slug = muni_tenant.slug
+        db.session.commit()
+
         pyme_admin = User(name='Pyme Admin', email='pyme@example.com', rol='admin', tipo_chat='pyme', rubro_id=rubro.id)
         pyme_admin.set_password('pass')
         db.session.add(pyme_admin)
@@ -58,12 +76,20 @@ class TicketStateSyncTest(unittest.TestCase):
         db.session.commit()
 
         self.muni_admin = muni_admin
+        self.muni_tenant = muni_tenant
         self.citizen = citizen
         self.pyme_admin = pyme_admin
         self.pyme_tenant = pyme_tenant
 
         # Create a municipal ticket
-        muni_ticket = MunicipioTicket(nro_ticket='111111', municipio_id=1, pregunta='p', consulta_pin='222222', user_id=citizen.id)
+        muni_ticket = MunicipioTicket(
+            nro_ticket='111111',
+            municipio_id=muni_admin.id,
+            tenant_id=muni_tenant.id,
+            pregunta='p',
+            consulta_pin='222222',
+            user_id=citizen.id,
+        )
         db.session.add(muni_ticket)
         db.session.commit()
         self.muni_ticket = muni_ticket

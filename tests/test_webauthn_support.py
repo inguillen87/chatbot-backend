@@ -74,12 +74,12 @@ class WebAuthnSupportTests(unittest.TestCase):
         )
         user.set_password("secret")
         db.session.add(user)
-        db.session.commit()
+        db.session.flush()
 
         municipio_ticket = MunicipioTicket(
             pregunta="¿Cuándo se arregla la calle?",
             user_id=None,
-            municipio_id=None,
+            municipio_id=user.id,
             anon_id=anon_id,
         )
         pyme_ticket = PymeTicket(
@@ -103,17 +103,26 @@ class WebAuthnSupportTests(unittest.TestCase):
         tenant = TenantProfile(
             slug="merge-tenant",
             nombre="Tenant Merge",
-            tipo="pyme",
-            pyme_id=user.id,
+            tipo="municipio",
+            municipio_id=user.id,
         )
         db.session.add(tenant)
         db.session.flush()
+
+        municipio_ticket.tenant_id = tenant.id
+        pyme_ticket.tenant_id = tenant.id
+        sugerencia.municipio_id = user.id
+        encuesta.tenant_id = tenant.id
 
         respuesta = PublicSurveyResponse(
             survey_id=encuesta.id,
             anon_id=anon_id,
         )
-        chat_context = ChatSessionContext(anon_id=anon_id)
+        chat_context = ChatSessionContext(
+            chat_session_id="chat-merge-001",
+            tenant_id=tenant.id,
+            anon_id=anon_id,
+        )
         cart = MarketCart(
             tenant_id=tenant.id,
             session_id="chat-merge-001",

@@ -1,5 +1,12 @@
+import importlib.util
 import os
 import sys
+
+# Keep both pytest and the documented unittest runner in deterministic test
+# mode before application modules can inherit live provider credentials.
+os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
+os.environ.setdefault("TESTING", "1")
+os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 # Add the project root to the Python path
 # This allows tests to import modules from the 'services', 'routes', etc. directories
@@ -10,7 +17,10 @@ if project_root not in sys.path:
 
 # Provide a lightweight stub for the `webauthn` package during tests when the
 # real dependency is not installed in the execution environment.
-if "webauthn" not in sys.modules:
+if (
+    "webauthn" not in sys.modules
+    and importlib.util.find_spec("webauthn") is None
+):
     import base64
     import json
     import types
@@ -36,13 +46,24 @@ if "webauthn" not in sys.modules:
     def _options_to_json(options: _Options) -> str:
         return json.dumps(options.payload)
 
-    def _registration_payload(rp_id: str, rp_name: str, user_id: str, display_name: str, challenge: bytes) -> Dict[str, Any]:
+    def _registration_payload(
+        rp_id: str,
+        rp_name: str,
+        user_id: Any,
+        display_name: str,
+        challenge: bytes,
+    ) -> Dict[str, Any]:
+        serialized_user_id = (
+            _bytes_to_base64url(user_id)
+            if isinstance(user_id, bytes)
+            else str(user_id)
+        )
         return {
             "challenge": _bytes_to_base64url(challenge),
             "rp": {"id": rp_id, "name": rp_name},
             "user": {
-                "id": user_id,
-                "name": user_id,
+                "id": serialized_user_id,
+                "name": serialized_user_id,
                 "displayName": display_name,
             },
             "pubKeyCredParams": [],
@@ -113,6 +134,9 @@ if "webauthn" not in sys.modules:
         PREFERRED = "preferred"
         REQUIRED = "required"
 
+    class AttestationConveyancePreference:
+        NONE = "none"
+
     class UserVerificationRequirement:
         REQUIRED = "required"
 
@@ -125,8 +149,13 @@ if "webauthn" not in sys.modules:
     class PublicKeyCredentialDescriptor:
         id: bytes
 
-    def verify_registration_response(credential: RegistrationCredential, **_kwargs) -> _RegistrationVerification:
-        credential_id = _base64url_to_bytes(credential.id or "") or b"credential"
+    def verify_registration_response(credential: Any, **_kwargs) -> _RegistrationVerification:
+        credential_value = (
+            credential.get("id", "")
+            if isinstance(credential, dict)
+            else credential.id
+        )
+        credential_id = _base64url_to_bytes(credential_value or "") or b"credential"
         return _RegistrationVerification(
             credential_id=credential_id,
             credential_public_key=credential_id,
@@ -148,6 +177,7 @@ if "webauthn" not in sys.modules:
 
     structs_module.RegistrationCredential = RegistrationCredential
     structs_module.AuthenticationCredential = AuthenticationCredential
+    structs_module.AttestationConveyancePreference = AttestationConveyancePreference
     structs_module.AuthenticatorSelectionCriteria = AuthenticatorSelectionCriteria
     structs_module.PublicKeyCredentialDescriptor = PublicKeyCredentialDescriptor
     structs_module.ResidentKeyRequirement = ResidentKeyRequirement

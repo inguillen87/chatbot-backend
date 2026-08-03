@@ -4,7 +4,7 @@ import os
 import re
 import unicodedata
 import requests
-from flask import has_app_context
+from flask import current_app, has_app_context
 from geopy.exc import GeocoderServiceError, GeocoderTimedOut
 import services.google_maps_service as google_maps_service
 from services.config_loader import cargar_configuracion_municipio
@@ -15,6 +15,7 @@ from models import MunicipioTicket, MunicipioPost
 from database import db
 from services.openai_bridge import client as openai_client
 from services.openai_maps_service import geocodificar_inversa_llm, geocodificar_texto_llm
+from services.llm_provider_network_policy import llm_provider_network_allowed
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TERRA_MODEL,
     chat_completion_compatibility_options,
@@ -66,7 +67,10 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
     todas_las_categorias = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values()))) # Still useful for keyword matching
     # LLM call removed. Category suggestion is now expected from the main LLM call.
     # This function now performs basic keyword matching as a fallback or primary if called directly.
-    logger.info(f"Sugiriendo categorías (NO-LLM) para: '{texto_usuario[:50]}...'")
+    logger.info(
+        "Suggesting categories without LLM input_chars=%s",
+        len(str(texto_usuario or "")),
+    )
     sugeridas = []
     if not texto_usuario:
         return sugeridas
@@ -103,10 +107,74 @@ def sugerir_categorias_relevantes(texto_usuario: str) -> list[str]:
         if "Otro Motivo" in CATEGORIAS_RECLAMO: # Check against the defined list
             sugeridas.append("Otro Motivo")
 
-    logger.info(f"Categorías sugeridas (NO-LLM) para '{texto_usuario[:50]}...': {sugeridas}")
+    logger.info(
+        "Categories suggested without LLM input_chars=%s suggestion_count=%s",
+        len(str(texto_usuario or "")),
+        len(sugeridas),
+    )
     return sugeridas # Devuelve hasta 3, o menos si no hay suficientes matches.
    
 logger = logging.getLogger(__name__)
+
+_SAFE_GEO_RESULT_FIELDS = frozenset(
+    {
+        "barrio",
+        "calle",
+        "codigo_postal",
+        "departamento",
+        "distrito",
+        "formatted_address",
+        "localidad",
+        "lote",
+        "manzana",
+        "numero",
+        "otros_detalles",
+        "piso",
+        "provincia",
+    }
+)
+_SAFE_TOOL_PARAMETER_FIELDS = frozenset(
+    {
+        "direccion",
+        "fecha",
+        "lat",
+        "latitude",
+        "localidad",
+        "lon",
+        "longitude",
+        "opennow",
+        "radio",
+        "radius",
+        "rubro",
+        "tipo_lugar",
+        "tipo_negocio",
+        "ubicacion",
+    }
+)
+
+
+def _safe_geo_present_fields(value) -> list[str]:
+    """Return known structural field names without serialising geo values."""
+
+    if not isinstance(value, dict):
+        return []
+    return sorted(
+        field
+        for field in _SAFE_GEO_RESULT_FIELDS
+        if field in value and value.get(field) not in (None, "")
+    )
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _openai_network_allowed_for_address_parsing() -> bool:
+    """Disable real OpenAI calls in tests unless explicitly opted in."""
+
+    app_testing = bool(has_app_context() and current_app.config.get("TESTING"))
+    testing = app_testing or _env_flag_enabled("TESTING")
+    return not testing or _env_flag_enabled("OPENAI_ALLOW_NETWORK_IN_TESTS")
 
 
 def geocode_address(*args, **kwargs):
@@ -254,9 +322,10 @@ def _parse_direccion_basica(texto_direccion: str, municipio_config: dict | None 
         return None
 
     logger.info(
-        "[ParseDireccion][Fallback] Dirección parseada sin LLM para '%s': %s",
-        texto_direccion,
-        resultado,
+        "[ParseDireccion][Fallback] Address parsed without LLM input_chars=%s "
+        "result_fields=%s",
+        len(str(texto_direccion or "")),
+        _safe_geo_present_fields(resultado),
     )
     return resultado
 
@@ -371,48 +440,57 @@ def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None
 
     Responde únicamente con el objeto JSON. Si no puedes extraer una calle o una localidad, devuelve un JSON vacío.
     """
-    try:
-        if not openai_client:
-            raise ConnectionError("OpenAI client is not initialized.")
-
-        model = resolve_openai_model(
-            "OPENAI_ADDRESS_NORMALIZATION_MODEL",
-            DEFAULT_OPENAI_TERRA_MODEL,
-        )
-        request_kwargs = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "Sos un experto en normalización de direcciones argentinas. Tu única función es devolver un objeto JSON con los datos de la dirección.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            "response_format": {"type": "json_object"},
-        }
-        request_kwargs.update(chat_completion_compatibility_options(model))
-        response = openai_client.chat.completions.create(**request_kwargs)
-        respuesta_llm = response.choices[0].message.content
-        parsed_data = json.loads(respuesta_llm)
-        if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
-            logger.warning(
-                "[ParseDireccion] LLM response missing required fields model=%s input_chars=%s",
-                model,
-                len(texto_direccion),
-            )
-        else:
-            logger.info(
-                "[ParseDireccion] Address normalized model=%s input_chars=%s",
-                model,
-                len(texto_direccion),
-            )
-            return parsed_data
-    except Exception as exc:
-        logger.error(
-            "[ParseDireccion] OpenAI normalization failed error_type=%s input_chars=%s",
-            type(exc).__name__,
+    if not _openai_network_allowed_for_address_parsing():
+        logger.info(
+            "[ParseDireccion] OpenAI normalization skipped reason=test_network_disabled "
+            "input_chars=%s",
             len(texto_direccion),
         )
+    else:
+        try:
+            if not openai_client:
+                raise ConnectionError("OpenAI client is not initialized.")
+
+            model = resolve_openai_model(
+                "OPENAI_ADDRESS_NORMALIZATION_MODEL",
+                DEFAULT_OPENAI_TERRA_MODEL,
+            )
+            request_kwargs = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Sos un experto en normalización de direcciones argentinas. Tu única función es devolver un objeto JSON con los datos de la dirección.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            }
+            request_kwargs.update(chat_completion_compatibility_options(model))
+            response = openai_client.chat.completions.create(**request_kwargs)
+            respuesta_llm = response.choices[0].message.content
+            parsed_data = json.loads(respuesta_llm)
+            if not isinstance(parsed_data, dict) or not parsed_data.get("calle") or not parsed_data.get("localidad"):
+                logger.warning(
+                    "[ParseDireccion] LLM response missing required fields model=%s input_chars=%s",
+                    model,
+                    len(texto_direccion),
+                )
+            else:
+                logger.info(
+                    "[ParseDireccion] Address normalized model=%s input_chars=%s "
+                    "result_fields=%s",
+                    model,
+                    len(texto_direccion),
+                    _safe_geo_present_fields(parsed_data),
+                )
+                return parsed_data
+        except Exception as exc:
+            logger.error(
+                "[ParseDireccion] OpenAI normalization failed error_type=%s input_chars=%s",
+                type(exc).__name__,
+                len(texto_direccion),
+            )
 
     # Fallback determinístico si el LLM no entrega datos útiles
     parsed_fallback = _parse_direccion_basica(texto_direccion, municipio_config)
@@ -431,7 +509,10 @@ def consultar_recoleccion_por_direccion(direccion: str, context: dict | None = N
     Herramienta profesional que usa la API de Google Maps para geocodificar una dirección
     y luego determina el horario de recolección.
     """
-    logger.info(f"[HERRAMIENTA GEO] Buscando horario para: '{direccion}'")
+    logger.info(
+        "[HERRAMIENTA GEO] Looking up collection schedule input_chars=%s",
+        len(str(direccion or "")),
+    )
 
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
@@ -451,7 +532,14 @@ def consultar_recoleccion_por_direccion(direccion: str, context: dict | None = N
         component_parts.append(f"locality:{ciudad.replace(' ', '')}")
 
     components_str = "|".join(component_parts)
-    logger.info(f"Geocoding recoleccion with components: {components_str}")
+    logger.info(
+        "Geocoding recoleccion component_count=%s has_country=%s "
+        "has_admin_area=%s has_locality=%s",
+        len(component_parts),
+        True,
+        bool(provincia),
+        bool(ciudad),
+    )
 
     params = {
         'address': direccion,
@@ -467,12 +555,21 @@ def consultar_recoleccion_por_direccion(direccion: str, context: dict | None = N
         data = response.json()
 
         if not data or data['status'] != 'OK' or not data.get('results'):
-            logger.warning(f"[HERRAMIENTA GEO] La API de Google no pudo geocodificar la dirección: {direccion}")
+            logger.warning(
+                "[HERRAMIENTA GEO] Provider could not geocode address "
+                "input_chars=%s has_results=%s",
+                len(str(direccion or "")),
+                bool(data and data.get("results")),
+            )
             return "No pude verificar esa dirección. ¿Puedes ser un poco más específico, incluyendo la ciudad?"
 
         location = data['results'][0]['geometry']['location']
         lat, lng = location['lat'], location['lng']
-        logger.info(f"[HERRAMIENTA GEO] Coordenadas para '{direccion}': Lat={lat}, Lng={lng}")
+        logger.info(
+            "[HERRAMIENTA GEO] Geocode succeeded input_chars=%s has_coordinates=%s",
+            len(str(direccion or "")),
+            lat is not None and lng is not None,
+        )
 
         if -34.595 <= lat <= -34.580 and -60.955 <= lng <= -60.935:
             return f"Detecté que la dirección '{direccion}' está en la **zona céntrica**. Allí, la recolección es de **Lunes a Sábado por la noche (a partir de las 22:00 hs)**."
@@ -481,7 +578,11 @@ def consultar_recoleccion_por_direccion(direccion: str, context: dict | None = N
         else:
             return "Según la ubicación, te corresponde el servicio de recolección zonal. Los días son **Lunes, Miércoles y Viernes por la noche (a partir de las 21:00 hs)**. Te recomiendo confirmarlo en la web del municipio."
     except requests.exceptions.RequestException as e:
-        logger.error(f"[HERRAMIENTA GEO] Error de conexión con la API de Google: {e}")
+        logger.error(
+            "[HERRAMIENTA GEO] Provider request failed error_type=%s input_chars=%s",
+            type(e).__name__,
+            len(str(direccion or "")),
+        )
         return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
 
 
@@ -791,7 +892,13 @@ def buscar_puntos_de_interes(
     if any(token in rubro_normalizado for token in ("de turno", "24", "24hs", "24 horas", "guardia")):
         opennow = True
 
-    logger.info(f"[HERRAMIENTA POI] Buscando puntos de interés para: rubro='{rubro}', localidad='{localidad}', opennow={opennow}")
+    logger.info(
+        "[HERRAMIENTA POI] Searching points of interest keyword_chars=%s "
+        "location_chars=%s opennow=%s",
+        len(str(rubro or "")),
+        len(str(localidad or "")),
+        bool(opennow),
+    )
 
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA POI] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
@@ -805,7 +912,12 @@ def buscar_puntos_de_interes(
         data = response.json()
 
         if not data or data.get('status') != 'OK' or not data.get('results'):
-            logger.warning(f"[HERRAMIENTA POI] La API de Google no pudo geocodificar la localidad: {localidad}")
+            logger.warning(
+                "[HERRAMIENTA POI] Provider could not geocode locality "
+                "location_chars=%s has_results=%s",
+                len(str(localidad or "")),
+                bool(data and data.get("results")),
+            )
             return f"No pude encontrar la localidad '{localidad}'. ¿Puedes ser más específico?"
 
         location = data['results'][0]['geometry']['location']
@@ -875,14 +987,38 @@ def buscar_puntos_de_interes(
                 return f"No encontré resultados para '{rubro}' en '{localidad}'."
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error de conexión con Google API para POI ({rubro}, {localidad}): {e}")
+        logger.error(
+            "Provider request failed for POI error_type=%s keyword_chars=%s "
+            "location_chars=%s",
+            type(e).__name__,
+            len(str(rubro or "")),
+            len(str(localidad or "")),
+        )
         return "Tuve un problema de comunicación con el servicio de mapas. Por favor, intenta de nuevo en unos momentos."
     except Exception as e:
-        logger.error(f"Error inesperado en búsqueda de POI para {rubro}, {localidad}: {e}", exc_info=True)
+        logger.error(
+            "Unexpected POI search failure error_type=%s keyword_chars=%s "
+            "location_chars=%s",
+            type(e).__name__,
+            len(str(rubro or "")),
+            len(str(localidad or "")),
+        )
         return "Ocurrió un error inesperado al buscar los puntos de interés."
 
 def log_uso_herramienta(nombre, usuario, parametros, resultado):
-    logger.info(f"[USO_HERRAMIENTA] {nombre} | Usuario: {usuario} | Parámetros: {parametros} | Resultado: {resultado[:100]}")
+    raw_parameter_fields = list(parametros.keys()) if isinstance(parametros, dict) else []
+    parameter_fields = sorted(
+        str(key) for key in raw_parameter_fields if str(key) in _SAFE_TOOL_PARAMETER_FIELDS
+    )
+    logger.info(
+        "[USO_HERRAMIENTA] tool_name_chars=%s has_user=%s parameter_fields=%s "
+        "other_parameter_count=%s result_chars=%s",
+        len(str(nombre or "")),
+        usuario is not None,
+        parameter_fields,
+        max(0, len(raw_parameter_fields) - len(parameter_fields)),
+        len(str(resultado or "")),
+    )
 
 _CAMARAS_CACHE: list[dict] | None = None
 
@@ -966,7 +1102,10 @@ def validar_y_formatear_direccion(direccion: str, municipio_config: dict | None 
                 "source": "openai_llm",
             }
 
-    logger.warning("[GEO] No se pudo resolver la dirección '%s' sin Google.", direccion)
+    logger.warning(
+        "[GEO] Address could not be resolved without Google input_chars=%s",
+        len(str(direccion or "")),
+    )
     return None
 
 def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
@@ -988,7 +1127,11 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
                 parsed["formatted_address"] = formatted
                 return parsed
     except Exception as e:
-        logger.error(f"OpenAI inverse geocoding failed: {e}", exc_info=True)
+        logger.error(
+            "OpenAI inverse geocoding failed error_type=%s has_coordinates=%s",
+            type(e).__name__,
+            lat is not None and lon is not None,
+        )
 
     # --- Fallback determinístico usando geolocalizadores tradicionales ---
     fallback_structured = _reverse_geocode_with_geopy(lat, lon)
@@ -996,6 +1139,9 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
         return fallback_structured
 
     # --- Último recurso: Google Geocoding ---
+    if not llm_provider_network_allowed("geocoding"):
+        logger.info("Reverse geocoding provider skipped reason=test_network_disabled")
+        return None
     if not Maps_API_KEY:
         logger.error("[HERRAMIENTA GEO] Clave de API de Google Maps (Maps_API_KEY) no configurada en el entorno.")
         return None
@@ -1054,30 +1200,54 @@ def obtener_direccion_de_coordenadas(lat: float, lon: float) -> dict | None:
                 }
             else:
                 logger.warning(
-                    f"Google API no devolvió dirección formateada ni componentes suficientes para {lat},{lon}."
+                    "Google API returned insufficient address data has_coordinates=%s "
+                    "result_fields=%s",
+                    lat is not None and lon is not None,
+                    _safe_geo_present_fields(
+                        {
+                            "calle": calle,
+                            "numero": numero,
+                            "localidad": localidad,
+                            "provincia": provincia,
+                            "codigo_postal": cp,
+                            "barrio": barrio,
+                        }
+                    ),
                 )
                 return None
         else:
             logger.warning(
-                f"Google API no pudo obtener dirección para {lat},{lon}. Status: {data.get('status')}, Error: {data.get('error_message', 'N/A')}"
+                "Google API could not reverse geocode has_coordinates=%s "
+                "has_results=%s has_provider_error=%s",
+                lat is not None and lon is not None,
+                bool(isinstance(data, dict) and data.get("results")),
+                bool(isinstance(data, dict) and data.get("error_message")),
             )
             return None
 
     except requests.exceptions.RequestException as e:
         logger.error(
-            f"Error de conexión con Google API para reverse geocoding ({lat},{lon}): {e}"
+            "Provider request failed for reverse geocoding error_type=%s "
+            "has_coordinates=%s",
+            type(e).__name__,
+            lat is not None and lon is not None,
         )
         return None
     except Exception as e:
         logger.error(
-            f"Error inesperado en reverse geocoding para {lat},{lon}: {e}",
-            exc_info=True,
+            "Unexpected reverse geocoding failure error_type=%s has_coordinates=%s",
+            type(e).__name__,
+            lat is not None and lon is not None,
         )
         return None
 
 
 def _reverse_geocode_with_geopy(lat: float, lon: float, municipio_config: dict | None = None) -> dict | None:
     """Utiliza geopy (Google, MapTiler o Nominatim) para obtener una dirección estructurada."""
+
+    if not llm_provider_network_allowed("geocoding"):
+        logger.info("Geopy fallback skipped reason=test_network_disabled")
+        return None
 
     municipio_config = municipio_config or CONFIG_MUNICIPIO or {}
     try:
@@ -1139,31 +1309,31 @@ def _reverse_geocode_with_geopy(lat: float, lon: float, municipio_config: dict |
             }
 
             logger.info(
-                "[GeoFallback] Dirección obtenida vía geopy para (%s,%s): %s",
-                lat,
-                lon,
-                resultado,
+                "[GeoFallback] Address resolved via geopy has_coordinates=%s "
+                "result_fields=%s",
+                lat is not None and lon is not None,
+                _safe_geo_present_fields(resultado),
             )
             return resultado
 
         except (GeocoderTimedOut, GeocoderServiceError) as e:
             logger.warning(
-                "[GeoFallback] Error en geolocalizador %s: %s",
+                "[GeoFallback] Geolocator failure provider=%s error_type=%s",
                 getattr(geolocator, "__class__", type(geolocator)).__name__,
-                e,
+                type(e).__name__,
             )
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
-                "[GeoFallback] Error inesperado en geolocalizador %s: %s",
+                "[GeoFallback] Unexpected geolocator failure provider=%s error_type=%s",
                 getattr(geolocator, "__class__", type(geolocator)).__name__,
-                e,
-                exc_info=True,
+                type(e).__name__,
             )
 
     logger.warning(
-        "[GeoFallback] No se pudo determinar la dirección para las coordenadas (%s,%s) con geopy.",
-        lat,
-        lon,
+        "[GeoFallback] Address could not be resolved with geopy "
+        "has_coordinates=%s provider_count=%s",
+        lat is not None and lon is not None,
+        len(geolocators),
     )
     return None
 # --- ACTUALIZA TU TOOL_REGISTRY ASÍ ---

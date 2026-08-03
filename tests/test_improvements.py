@@ -9,7 +9,7 @@ sys.path.insert(0, project_root)
 
 from flask import Flask
 from services.municipio_responder import responder_municipio, ConversationState, CONTEXTO_MUNICIPIO
-from models import db, User, Rubro, ChatSessionContext
+from models import ChatSessionContext, MunicipioTicket, Rubro, TenantProfile, User, db
 
 class TestMunicipioImprovements(unittest.TestCase):
 
@@ -25,12 +25,30 @@ class TestMunicipioImprovements(unittest.TestCase):
         with self.app.app_context():
             db.create_all()
             # Create dummy data for testing
-            owner_user = User(id=1, name='test_owner', email='owner@test.com', password_hash='test')
+            owner_user = User(
+                id=1,
+                name='test_owner',
+                email='owner@test.com',
+                password_hash='test',
+                rol='admin',
+                tipo_chat='municipio',
+                tenant_slug='test-municipio',
+            )
             viewer_user = User(id=2, name='test_viewer', email='viewer@test.com', password_hash='test')
             rubro = Rubro(id=1, clave='municipios', nombre='municipios')
-            db.session.add(owner_user)
-            db.session.add(viewer_user)
-            db.session.add(rubro)
+            db.session.add_all([owner_user, viewer_user, rubro])
+            db.session.flush()
+            owner_user.municipio_id = owner_user.id
+            tenant = TenantProfile(
+                slug='test-municipio',
+                nombre='Municipio Test',
+                tipo='municipio',
+                municipio_id=owner_user.id,
+                is_active=True,
+            )
+            db.session.add(tenant)
+            db.session.flush()
+            owner_user.tenant_id = tenant.id
             db.session.commit()
 
     def tearDown(self):
@@ -49,6 +67,7 @@ class TestMunicipioImprovements(unittest.TestCase):
             owner_user = User.query.get(1)
             viewer_user = User.query.get(2)
             rubro = Rubro.query.get(1)
+            tenant = TenantProfile.query.filter_by(slug='test-municipio').one()
 
             chat_session = ChatSessionContext(
                 chat_session_id='test_session_type_error',
@@ -85,6 +104,10 @@ class TestMunicipioImprovements(unittest.TestCase):
                     )
                 except TypeError as e:
                     self.fail(f"responder_municipio raised TypeError unexpectedly: {e}")
+
+            ticket = MunicipioTicket.query.one()
+            self.assertEqual(ticket.tenant_id, tenant.id)
+            self.assertEqual(ticket.municipio_id, owner_user.id)
 
 
 if __name__ == '__main__':

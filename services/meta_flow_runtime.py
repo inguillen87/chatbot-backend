@@ -1544,6 +1544,7 @@ def _apply_survey_completion(
                 payload,
                 request_context,
                 preferred_tenant_id=tenant_id,
+                require_tenant_match=True,
                 authenticated_user=authenticated_user,
                 commit=False,
                 # The outer WhatsApp transaction commits the response and both
@@ -1551,6 +1552,7 @@ def _apply_survey_completion(
                 # only after invocation consumption is durably committed.
                 emit_realtime_update=True,
                 grant_reward=False,
+                eligibility_transport="meta_flow",
             )
     except EncuestaError as exc:
         reason = (
@@ -1566,6 +1568,8 @@ def _apply_survey_completion(
             # automatically replay an ambiguous external submission.
             code = reason
         elif reason in {"authentication_required", "identity_required"}:
+            code = reason
+        elif reason.startswith("survey_eligibility_"):
             code = reason
         else:
             code = "survey_submission_invalid"
@@ -1783,7 +1787,11 @@ def _resolve_survey_context(
     from services.encuestas_service import EncuestaError, get_public_encuesta
 
     try:
-        survey = get_public_encuesta(slug, preferred_tenant_id=int(tenant_id))
+        survey = get_public_encuesta(
+            slug,
+            preferred_tenant_id=int(tenant_id),
+            require_tenant_match=True,
+        )
     except EncuestaError as exc:
         raise _action_error(
             "survey_context_unavailable",
@@ -1802,6 +1810,26 @@ def _resolve_survey_context(
             "survey_context_scope_mismatch",
             "The survey linked to this Flow is unavailable.",
             403,
+        )
+    # Resolve this at the shared authorization boundary after the caller's
+    # survey scope is proven, so policy details cannot be enumerated through a
+    # mismatched signed context. Restricted surveys cannot be sent, navigated
+    # or staged through Meta because the one-time header cannot survive screens.
+    from services.survey_governance import survey_governance_contract
+
+    governance_contract = survey_governance_contract(
+        survey,
+        validate_integrity=True,
+    )
+    eligibility_contract = governance_contract.get("eligibility")
+    if (
+        isinstance(eligibility_contract, Mapping)
+        and eligibility_contract.get("credential_required") is True
+    ):
+        raise _action_error(
+            "survey_eligibility_transport_unsupported",
+            "This governed survey requires the supported secure web intake.",
+            409,
         )
     supplied_revision = raw_context.get("instrument_revision")
     if supplied_revision in (None, ""):

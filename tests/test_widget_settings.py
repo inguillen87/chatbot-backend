@@ -328,7 +328,7 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["channel"], "transcription")
-        self.assertEqual(payload["model"], "gpt-realtime-whisper")
+        self.assertEqual(payload["model"], "gpt-live-transcribe")
         request_obj = mock_urlopen.call_args.args[0]
         upstream_payload = json.loads(request_obj.data.decode("utf-8"))
         session = upstream_payload["session"]
@@ -338,7 +338,7 @@ class WidgetSettingsTests(unittest.TestCase):
         self.assertNotIn("output_modalities", session)
         self.assertEqual(
             session["audio"]["input"]["transcription"]["model"],
-            "gpt-realtime-whisper",
+            "gpt-live-transcribe",
         )
         self.assertEqual(session["audio"]["input"]["turn_detection"]["type"], "server_vad")
         self.assertFalse(session["audio"]["input"]["turn_detection"]["create_response"])

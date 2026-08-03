@@ -30,6 +30,10 @@ from models import (
 )
 from routes import whatsapp_webhook as webhook_module
 from services import whatsapp_inbound_worker as worker_module
+from services.whatsapp_inbound_durability import (
+    WhatsAppInboundDurabilityConfigurationError,
+)
+from services.whatsapp_inbound_turns import claim_next_whatsapp_inbound_turn
 
 
 PARENT_ACCOUNT_SID = "ACqueue_parent"
@@ -40,6 +44,11 @@ CHILD_TOKEN_REF = "TWILIO_SUBACCOUNT_AUTH_TOKEN_ACQUEUE_CHILD"
 MESSAGING_SERVICE_SID = "MG_queue_sender"
 SENDER_NUMBER = "+15550103030"
 RECIPIENT_NUMBER = "+15550909090"
+SECOND_CHILD_ACCOUNT_SID = "ACqueue_child_second"
+SECOND_CHILD_AUTH_TOKEN = "queue-child-second-secret"
+SECOND_CHILD_TOKEN_REF = "TWILIO_SUBACCOUNT_AUTH_TOKEN_ACQUEUE_CHILD_SECOND"
+SECOND_MESSAGING_SERVICE_SID = "MG_queue_sender_second"
+SECOND_SENDER_NUMBER = "+15550104040"
 STREAM_SECRET = "queue-stream-secret-with-at-least-32-bytes"
 
 
@@ -55,6 +64,7 @@ class QueueWebhookConfig(Config):
     SKIP_INIT_TENANTS = True
     TWILIO_ACCOUNT_SID = PARENT_ACCOUNT_SID
     TWILIO_AUTH_TOKEN = PARENT_AUTH_TOKEN
+    TWILIO_ALLOW_NETWORK_IN_TESTS = True
     PUBLIC_API_BASE_URL = "http://localhost"
     BACKEND_URL = "http://localhost"
     WHATSAPP_AUDIO_ENABLED = False
@@ -124,6 +134,7 @@ class WhatsAppInboundQueueWebhookTestCase(unittest.TestCase):
             )
         )
         db.session.commit()
+        self.app.config["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"] = str(self.tenant.id)
 
     def tearDown(self):
         db.session.remove()
@@ -158,6 +169,73 @@ class WhatsAppInboundQueueWebhookTestCase(unittest.TestCase):
             headers={
                 "X-Twilio-Signature": signature or self._signature(payload),
             },
+        )
+
+    def _create_secondary_sender_scope(self):
+        owner = User(
+            name="Excluded Queue Tenant",
+            email="excluded-queue-tenant@example.com",
+            rol="empresa",
+            tipo_chat="pyme",
+            nombre_empresa="Excluded Queue Tenant",
+        )
+        owner.set_password("test-password")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="excluded-queue-tenant",
+            nombre="Excluded Queue Tenant",
+            tipo="pyme",
+            pyme_id=owner.id,
+            configuracion={
+                "twilio_tech_provider": {
+                    "twilio_account_sid": SECOND_CHILD_ACCOUNT_SID,
+                    "twilio_subaccount_token_ref": SECOND_CHILD_TOKEN_REF,
+                    "messaging_service_sid": SECOND_MESSAGING_SERVICE_SID,
+                }
+            },
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        sender = ProviderSender(
+            tenant_id=tenant.id,
+            channel="whatsapp",
+            phone_number=SECOND_SENDER_NUMBER,
+            sender_id=f"whatsapp:{SECOND_SENDER_NUMBER}",
+            messaging_service_sid=SECOND_MESSAGING_SERVICE_SID,
+            status="active",
+        )
+        db.session.add(sender)
+        db.session.add(
+            WhatsappNumero(
+                numero_whatsapp=SECOND_SENDER_NUMBER,
+                user_id=owner.id,
+                is_active=True,
+            )
+        )
+        db.session.commit()
+        self.app.config[SECOND_CHILD_TOKEN_REF] = SECOND_CHILD_AUTH_TOKEN
+        return tenant, sender
+
+    @staticmethod
+    def _secondary_payload(sid: str) -> dict:
+        return {
+            "AccountSid": SECOND_CHILD_ACCOUNT_SID,
+            "MessagingServiceSid": SECOND_MESSAGING_SERVICE_SID,
+            "To": f"whatsapp:{SECOND_SENDER_NUMBER}",
+            "From": f"whatsapp:{RECIPIENT_NUMBER}",
+            "WaId": RECIPIENT_NUMBER.removeprefix("+"),
+            "Body": "Mensaje para tenant fuera del canario",
+            "MessageSid": sid,
+            "SmsMessageSid": sid,
+            "NumMedia": "0",
+        }
+
+    @staticmethod
+    def _secondary_signature(payload: dict) -> str:
+        return RequestValidator(SECOND_CHILD_AUTH_TOKEN).compute_signature(
+            "http://localhost/webhook/whatsapp",
+            payload,
         )
 
     def test_invalid_signature_never_persists_turn(self):
@@ -241,6 +319,210 @@ class WhatsAppInboundQueueWebhookTestCase(unittest.TestCase):
         self.assertEqual(WhatsAppInboundTurn.query.count(), 0)
         self.assertEqual(ChatSessionContext.query.count(), 0)
         self.assertEqual(User.query.count(), 1)
+
+    def test_excluded_tenant_stays_legacy_and_form_fields_cannot_enable_queue(self):
+        excluded_tenant, _ = self._create_secondary_sender_scope()
+        payload = self._secondary_payload("SMexcludedtenantlegacy001")
+        payload.update(
+            {
+                "TenantId": str(self.tenant.id),
+                "tenant_id": str(self.tenant.id),
+                "ProviderSenderId": str(self.sender.id),
+            }
+        )
+        provider_client = MagicMock()
+        provider_client.messages.create.return_value = SimpleNamespace(
+            sid="SMexcludedlegacyreply001",
+            status="queued",
+        )
+
+        with (
+            patch.object(webhook_module, "Client", return_value=provider_client),
+            patch.object(
+                webhook_module,
+                "responder_chatboc",
+                return_value={
+                    "message_body": "Respuesta legacy del tenant excluido.",
+                    "message_type": "text",
+                    "options_list": [],
+                },
+            ) as responder,
+        ):
+            response = self._post(
+                payload,
+                signature=self._secondary_signature(payload),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(excluded_tenant.id, {self.tenant.id})
+        self.assertEqual(WhatsAppInboundTurn.query.count(), 0)
+        responder.assert_called_once()
+        provider_client.messages.create.assert_called()
+
+    def test_allowed_signature_cannot_cross_route_an_excluded_sender(self):
+        self._create_secondary_sender_scope()
+        payload = self._secondary_payload("SMcrosssendercanary001")
+
+        with patch.object(webhook_module, "responder_chatboc") as responder:
+            response = self._post(payload, signature=self._signature(payload))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(WhatsAppInboundTurn.query.count(), 0)
+        responder.assert_not_called()
+
+    def test_invalid_queue_allowlist_fails_closed_after_signature_and_sender_scope(self):
+        self.app.config["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"] = ""
+        payload = self._payload("SMinvalidcanaryconfig001")
+
+        with patch.object(webhook_module, "responder_chatboc") as responder:
+            response = self._post(payload)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(WhatsAppInboundTurn.query.count(), 0)
+        self.assertEqual(ChannelSessionIdentityBinding.query.count(), 0)
+        responder.assert_not_called()
+
+    def test_worker_tasks_and_broker_never_claim_an_excluded_tenant(self):
+        excluded_tenant_id = self.tenant.id
+        canary_tenant_id = excluded_tenant_id + 1000
+        self.app.config["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"] = str(canary_tenant_id)
+
+        with (
+            patch.object(worker_module, "claim_next_whatsapp_inbound_turn") as inbound_claim,
+            patch.object(worker_module, "claim_next_whatsapp_outbound_attempt") as outbound_claim,
+            patch.object(
+                worker_module.process_whatsapp_inbound_stream_task,
+                "apply_async",
+            ) as apply_async,
+        ):
+            inbound_claim.return_value = None
+            outbound_claim.return_value = None
+            with self.assertRaisesRegex(
+                WhatsAppInboundDurabilityConfigurationError,
+                "whatsapp_inbound_worker_tenant_not_canary",
+            ):
+                worker_module.process_whatsapp_inbound_stream(
+                    tenant_id=excluded_tenant_id,
+                    stream_key="excluded-stream",
+                    limit=1,
+                )
+            with self.assertRaisesRegex(
+                WhatsAppInboundDurabilityConfigurationError,
+                "whatsapp_inbound_worker_tenant_not_canary",
+            ):
+                worker_module.process_whatsapp_inbound_stream_task.run(
+                    excluded_tenant_id,
+                    "excluded-stream",
+                )
+            with self.assertRaisesRegex(
+                WhatsAppInboundDurabilityConfigurationError,
+                "whatsapp_inbound_worker_tenant_not_canary",
+            ):
+                worker_module.dispatch_next_whatsapp_outbound_attempt(
+                    tenant_id=excluded_tenant_id
+                )
+            self.assertFalse(
+                worker_module.enqueue_whatsapp_inbound_stream(
+                    tenant_id=excluded_tenant_id,
+                    stream_key="excluded-stream",
+                )
+            )
+
+            sweep = worker_module.sweep_whatsapp_inbound_turns_task.run(limit=1)
+            outbound = worker_module.dispatch_whatsapp_outbound_attempts(limit=1)
+
+        self.assertEqual(sweep["processed"], 0)
+        self.assertEqual(outbound["processed"], 0)
+        self.assertEqual(inbound_claim.call_args.kwargs["tenant_id"], canary_tenant_id)
+        self.assertEqual(outbound_claim.call_args.kwargs["tenant_id"], canary_tenant_id)
+        apply_async.assert_not_called()
+
+    def test_sweep_leaves_excluded_tenant_backlog_unclaimed_and_recoverable(self):
+        payload = self._payload("SMexcludedbacklog001")
+        with patch.object(webhook_module, "Client", return_value=MagicMock()):
+            self.assertEqual(self._post(payload).status_code, 200)
+        self.app.config["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"] = str(
+            self.tenant.id + 1000
+        )
+
+        result = worker_module.process_whatsapp_inbound_stream(limit=1)
+
+        self.assertEqual(result["processed"], 0)
+        db.session.expire_all()
+        retained = WhatsAppInboundTurn.query.one()
+        self.assertEqual(retained.status, WhatsAppInboundTurn.STATUS_RECEIVED)
+        self.assertIsNone(retained.lease_token)
+        self.assertEqual(retained.attempt_count, 0)
+
+    def test_outbound_dispatch_leaves_removed_canary_attempt_unclaimed(self):
+        payload = self._payload("SMexcludedoutboundbacklog001")
+        with patch.object(webhook_module, "Client", return_value=MagicMock()):
+            self.assertEqual(self._post(payload).status_code, 200)
+            turn = WhatsAppInboundTurn.query.one()
+            with patch.object(
+                webhook_module,
+                "responder_chatboc",
+                return_value={
+                    "message_body": "Respuesta durable pendiente.",
+                    "message_type": "text",
+                    "options_list": [],
+                },
+            ):
+                processed = worker_module.process_whatsapp_inbound_stream(
+                    tenant_id=self.tenant.id,
+                    stream_key=turn.stream_key,
+                    limit=1,
+                )
+        self.assertEqual(processed["completed"], 1, processed)
+        self.app.config["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"] = str(
+            self.tenant.id + 1000
+        )
+
+        with patch.object(worker_module, "Client") as provider_client:
+            dispatch = worker_module.dispatch_whatsapp_outbound_attempts(limit=1)
+
+        self.assertEqual(dispatch["processed"], 0)
+        provider_client.assert_not_called()
+        db.session.expire_all()
+        attempt = WhatsAppOutboundAttempt.query.one()
+        self.assertEqual(attempt.status, WhatsAppOutboundAttempt.STATUS_PENDING)
+        self.assertIsNone(attempt.lease_token)
+        self.assertEqual(attempt.attempt_count, 0)
+
+    def test_worker_startup_rejects_empty_queue_allowlist_before_database_read(self):
+        self.app.config["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"] = ""
+
+        with (
+            patch.object(worker_module, "summarize_whatsapp_turn_health") as health,
+            self.assertRaisesRegex(
+                WhatsAppInboundDurabilityConfigurationError,
+                "whatsapp_inbound_queue_tenant_allowlist_required",
+            ),
+        ):
+            worker_module.run_whatsapp_durable_worker(self.app, once=True)
+
+        health.assert_not_called()
+
+    def test_removed_canary_replay_503_is_retryable_not_dead_lettered(self):
+        payload = self._payload("SMremovedcanaryretry001")
+        with patch.object(webhook_module, "Client", return_value=MagicMock()):
+            self.assertEqual(self._post(payload).status_code, 200)
+        turn = WhatsAppInboundTurn.query.one()
+        claim = claim_next_whatsapp_inbound_turn(
+            tenant_id=self.tenant.id,
+            stream_key=turn.stream_key,
+            lease_seconds=180,
+        )
+        self.assertIsNotNone(claim)
+        self.app.config["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"] = str(self.tenant.id + 1000)
+
+        result = worker_module.process_whatsapp_inbound_claim(claim)
+
+        self.assertEqual(result.status, WhatsAppInboundTurn.STATUS_RETRY_WAIT)
+        db.session.expire_all()
+        retained = WhatsAppInboundTurn.query.one()
+        self.assertEqual(retained.status, WhatsAppInboundTurn.STATUS_RETRY_WAIT)
+        self.assertEqual(retained.last_error_code, "webhook_replay_http_503")
 
     def test_queue_commits_before_200_without_llm_media_or_provider_send(self):
         payload = self._payload("SMqueueboundary001")
@@ -864,6 +1146,37 @@ class WhatsAppInboundQueueWebhookTestCase(unittest.TestCase):
             "whatsapp_durable_worker_requires_queue_mode",
         ):
             worker_module.run_whatsapp_durable_worker(self.app, once=True)
+
+    def test_worker_exception_logs_exclude_sql_provider_payloads_and_tracebacks(self):
+        private_error = (
+            "psycopg2 OperationalError SQL params phone=5492613168608 "
+            "provider=https://api.twilio.test/messages?token=private-token"
+        )
+
+        with (
+            patch.object(worker_module, "summarize_whatsapp_turn_health", return_value={}),
+            patch.object(
+                worker_module,
+                "process_whatsapp_inbound_stream",
+                side_effect=RuntimeError(private_error),
+            ),
+            self.assertLogs(worker_module.logger, level="ERROR") as captured,
+        ):
+            result = worker_module.run_whatsapp_durable_worker(self.app, once=True)
+
+        self.assertEqual(result["cycles"], 1)
+        rendered = "\n".join(captured.output)
+        self.assertIn("RuntimeError", rendered)
+        for private_value in (
+            "psycopg2",
+            "OperationalError",
+            "SQL params",
+            "5492613168608",
+            "api.twilio.test",
+            "private-token",
+            "Traceback",
+        ):
+            self.assertNotIn(private_value, rendered)
 
     def test_signed_status_callback_reconciles_uncertain_attempt(self):
         payload = self._payload("SMqueuecallback001")

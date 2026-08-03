@@ -10,17 +10,23 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 
 
-MIGRATION_PATH = (
+V3_MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
     / "migrations"
     / "versions"
     / "20260730_add_interview_consent_subject_proof_v3.py"
 )
+V4_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "migrations"
+    / "versions"
+    / "20260801_interview_consent_delivery_proof_v4.py"
+)
 
 
-def _load_migration():
+def _load_migration(path=V3_MIGRATION_PATH):
     spec = importlib.util.spec_from_file_location(
-        "interview_consent_subject_proof_v3", MIGRATION_PATH
+        f"interview_migration_{path.stem}", path
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -55,6 +61,7 @@ def _base_schema(connection):
         "channel VARCHAR(24) NOT NULL, UNIQUE (tenant_id, id))",
         "CREATE TABLE whatsapp_outbound_attempt ("
         "id INTEGER PRIMARY KEY, attempt_id VARCHAR(36) NOT NULL UNIQUE)",
+        "CREATE TABLE messaging_event_ledger (id INTEGER PRIMARY KEY)",
         "CREATE TABLE interview_consent_challenge ("
         "id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, "
         "interview_session_id INTEGER NOT NULL, program_version_id INTEGER NOT NULL, "
@@ -71,9 +78,12 @@ def _base_schema(connection):
 
 
 def test_subject_proof_migration_pins_identity_and_creates_immutable_delivery_ledger():
-    migration = _load_migration()
-    assert migration.revision == "20260730_interview_consent_proof_v3"
-    assert migration.down_revision == "20260730_interview_consent_challenge_v2"
+    v3_migration = _load_migration()
+    v4_migration = _load_migration(V4_MIGRATION_PATH)
+    assert v3_migration.revision == "20260730_interview_consent_proof_v3"
+    assert v3_migration.down_revision == "20260730_interview_consent_challenge_v2"
+    assert v4_migration.revision == "20260801_interview_delivery_v4"
+    assert v4_migration.down_revision == "20260801_crm_history_scope_v1"
 
     engine = sa.create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
@@ -117,10 +127,33 @@ def test_subject_proof_migration_pins_identity_and_creates_immutable_delivery_le
         connection.execute(
             sa.text("INSERT INTO whatsapp_outbound_attempt VALUES (40, 'attempt-1')")
         )
+        connection.execute(
+            sa.text("INSERT INTO messaging_event_ledger VALUES (50)")
+        )
 
-        _run(migration, connection, "upgrade")
+        _run(v3_migration, connection, "upgrade")
+        _run(v4_migration, connection, "upgrade")
         inspector = sa.inspect(connection)
         assert "interview_consent_presentation" in inspector.get_table_names()
+        presentation_columns = {
+            column["name"]
+            for column in inspector.get_columns("interview_consent_presentation")
+        }
+        assert {
+            "outbound_status_event_id",
+            "outbound_status_event_sha256",
+            "outbound_payload_sha256",
+            "outbound_template_sha256",
+        }.issubset(presentation_columns)
+        presentation_unique_constraints = {
+            constraint["name"]
+            for constraint in inspector.get_unique_constraints(
+                "interview_consent_presentation"
+            )
+        }
+        assert "uq_interview_consent_presentation_status_event" in (
+            presentation_unique_constraints
+        )
         case = connection.execute(
             sa.text(
                 "SELECT subject_identity_binding_id, subject_identity_version, "
@@ -152,20 +185,26 @@ def test_subject_proof_migration_pins_identity_and_creates_immutable_delivery_le
             "INSERT INTO interview_consent_presentation ("
             "tenant_id, interview_session_id, consent_challenge_id, outbound_attempt_id, "
             "outbound_provider, outbound_provider_message_sid, outbound_content_sid, "
-            "outbound_provider_status, outbound_provider_status_at, outbound_payload_sha256, "
+            "outbound_provider_status, outbound_provider_status_at, "
+            "outbound_status_event_id, outbound_status_event_sha256, "
+            "outbound_payload_sha256, "
+            "outbound_template_sha256, "
             "expected_identity_binding_id, expected_identity_version, expected_identity_hmac, "
             "expected_chat_session_id, consent_text_sha256, challenge_nonce_sha256, action, "
             "registered_by_user_id, registration_idempotency_key, registration_request_hash, "
             "registered_at) VALUES ("
             "1, 10, 30, 'attempt-1', 'twilio', 'SM-presented-1', 'HX-consent-v1', "
-            ":provider_status, '2026-07-31 00:01:00', :payload_hash, "
+            ":provider_status, '2026-07-31 00:01:00', 50, :status_event_hash, "
+            ":payload_hash, :template_hash, "
             ":binding_id, 'v1', :identity_hash, 'chat-1', :text_hash, :nonce_hash, "
             "'grant_consent', 1, 'presentation:key:001', :request_hash, "
             "'2026-07-31 00:01:01')"
         )
         params = {
             "provider_status": "delivered",
+            "status_event_hash": "8" * 64,
             "payload_hash": "d" * 64,
+            "template_hash": "9" * 64,
             "binding_id": 20,
             "identity_hash": "b" * 64,
             "text_hash": "a" * 64,
@@ -192,7 +231,8 @@ def test_subject_proof_migration_pins_identity_and_creates_immutable_delivery_le
                 sa.text("DELETE FROM interview_consent_presentation WHERE id = 1")
             )
 
-        _run(migration, connection, "downgrade")
+        _run(v4_migration, connection, "downgrade")
+        _run(v3_migration, connection, "downgrade")
         inspector = sa.inspect(connection)
         assert "interview_consent_presentation" not in inspector.get_table_names()
         assert "subject_identity_binding_id" not in {
@@ -218,3 +258,240 @@ def test_subject_proof_migration_fails_closed_for_unpinned_whatsapp_case():
         with pytest.raises(RuntimeError, match="unpinned WhatsApp interview subjects"):
             _run(migration, connection, "upgrade")
 
+
+def test_v4_preserves_legacy_presentations_without_fabricating_callback_proof():
+    v3_migration = _load_migration()
+    v4_migration = _load_migration(V4_MIGRATION_PATH)
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(sa.text("PRAGMA foreign_keys = ON"))
+        _base_schema(connection)
+        connection.execute(sa.text("INSERT INTO tenant_profile VALUES (1)"))
+        connection.execute(sa.text('INSERT INTO "user" VALUES (1)'))
+        connection.execute(sa.text("INSERT INTO chat_session_context VALUES ('chat-1')"))
+        connection.execute(
+            sa.text(
+                "INSERT INTO channel_session_identity_binding VALUES "
+                "(20, 1, 'v1', :identity_hash, 'chat-1')"
+            ),
+            {"identity_hash": "b" * 64},
+        )
+        connection.execute(
+            sa.text("INSERT INTO assessment_case VALUES (5, 1, 'whatsapp')")
+        )
+        connection.execute(
+            sa.text("INSERT INTO interview_session VALUES (10, 1, 5, 'whatsapp')")
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO interview_consent_challenge ("
+                "id, tenant_id, interview_session_id, program_version_id, "
+                "consent_text_sha256, expected_identity_binding_id, expected_identity_hmac, "
+                "nonce_sha256, expires_at, issued_by_user_id, issued_at, contract_version) "
+                "VALUES (30, 1, 10, 7, :text_hash, 20, :identity_hash, :nonce_hash, "
+                "'2026-07-31 00:10:00', 1, '2026-07-31 00:00:00', "
+                "'interview.consent_challenge.v2')"
+            ),
+            {
+                "text_hash": "a" * 64,
+                "identity_hash": "b" * 64,
+                "nonce_hash": "c" * 64,
+            },
+        )
+        connection.execute(
+            sa.text("INSERT INTO whatsapp_outbound_attempt VALUES (40, 'attempt-legacy')")
+        )
+        _run(v3_migration, connection, "upgrade")
+        connection.execute(
+            sa.text(
+                "INSERT INTO interview_consent_presentation ("
+                "tenant_id, interview_session_id, consent_challenge_id, outbound_attempt_id, "
+                "outbound_provider, outbound_provider_message_sid, outbound_content_sid, "
+                "outbound_provider_status, outbound_provider_status_at, "
+                "outbound_payload_sha256, expected_identity_binding_id, "
+                "expected_identity_version, expected_identity_hmac, expected_chat_session_id, "
+                "consent_text_sha256, challenge_nonce_sha256, action, registered_by_user_id, "
+                "registration_idempotency_key, registration_request_hash, registered_at) "
+                "VALUES (1, 10, 30, 'attempt-legacy', 'twilio', 'SM-legacy', 'HX-legacy', "
+                "'delivered', '2026-07-31 00:01:00', :payload_hash, 20, 'v1', "
+                ":identity_hash, 'chat-1', :text_hash, :nonce_hash, 'grant_consent', 1, "
+                "'presentation:legacy', :request_hash, '2026-07-31 00:01:01')"
+            ),
+            {
+                "payload_hash": "d" * 64,
+                "identity_hash": "b" * 64,
+                "text_hash": "a" * 64,
+                "nonce_hash": "c" * 64,
+                "request_hash": "f" * 64,
+            },
+        )
+
+        _run(v4_migration, connection, "upgrade")
+
+        proof = connection.execute(
+            sa.text(
+                "SELECT outbound_status_event_id, outbound_status_event_sha256, "
+                "outbound_template_sha256 FROM interview_consent_presentation"
+            )
+        ).one()
+        assert tuple(proof) == (None, None, None)
+        with pytest.raises(IntegrityError):
+            connection.execute(
+                sa.text(
+                    "UPDATE interview_consent_presentation "
+                    "SET outbound_provider_status = 'read' WHERE id = 1"
+                )
+            )
+
+
+def test_subject_proof_migration_rejects_conflicting_challenges_for_one_session():
+    v3_migration = _load_migration()
+    v4_migration = _load_migration(V4_MIGRATION_PATH)
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(sa.text("PRAGMA foreign_keys = ON"))
+        _base_schema(connection)
+        connection.execute(sa.text("INSERT INTO tenant_profile VALUES (1)"))
+        connection.execute(sa.text('INSERT INTO "user" VALUES (1)'))
+        connection.execute(
+            sa.text("INSERT INTO chat_session_context VALUES ('chat-1'), ('chat-2')")
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO channel_session_identity_binding VALUES "
+                "(20, 1, 'v1', :hmac1, 'chat-1'), "
+                "(21, 1, 'v1', :hmac2, 'chat-2')"
+            ),
+            {"hmac1": "b" * 64, "hmac2": "e" * 64},
+        )
+        connection.execute(
+            sa.text("INSERT INTO assessment_case VALUES (5, 1, 'whatsapp')")
+        )
+        connection.execute(
+            sa.text("INSERT INTO interview_session VALUES (10, 1, 5, 'whatsapp')")
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO interview_consent_challenge ("
+                "id, tenant_id, interview_session_id, program_version_id, "
+                "consent_text_sha256, expected_identity_binding_id, expected_identity_hmac, "
+                "nonce_sha256, expires_at, issued_by_user_id, issued_at, contract_version) "
+                "VALUES "
+                "(30, 1, 10, 7, :text_hash, 20, :hmac1, :nonce1, "
+                "'2026-07-31 00:10:00', 1, '2026-07-31 00:00:00', "
+                "'interview.consent_challenge.v2'), "
+                "(31, 1, 10, 7, :text_hash, 21, :hmac2, :nonce2, "
+                "'2026-07-31 00:11:00', 1, '2026-07-31 00:01:00', "
+                "'interview.consent_challenge.v2')"
+            ),
+            {
+                "text_hash": "a" * 64,
+                "hmac1": "b" * 64,
+                "hmac2": "e" * 64,
+                "nonce1": "c" * 64,
+                "nonce2": "d" * 64,
+            },
+        )
+        _run(v3_migration, connection, "upgrade")
+        with pytest.raises(RuntimeError, match="ambiguous consent identities"):
+            _run(v4_migration, connection, "upgrade")
+
+
+def test_subject_proof_migration_rejects_conflicting_sessions_for_one_case():
+    v3_migration = _load_migration()
+    v4_migration = _load_migration(V4_MIGRATION_PATH)
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(sa.text("PRAGMA foreign_keys = ON"))
+        _base_schema(connection)
+        connection.execute(sa.text("INSERT INTO tenant_profile VALUES (1)"))
+        connection.execute(sa.text('INSERT INTO "user" VALUES (1)'))
+        connection.execute(
+            sa.text("INSERT INTO chat_session_context VALUES ('chat-1'), ('chat-2')")
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO channel_session_identity_binding VALUES "
+                "(20, 1, 'v1', :hmac1, 'chat-1'), "
+                "(21, 1, 'v1', :hmac2, 'chat-2')"
+            ),
+            {"hmac1": "b" * 64, "hmac2": "e" * 64},
+        )
+        connection.execute(
+            sa.text("INSERT INTO assessment_case VALUES (5, 1, 'whatsapp')")
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO interview_session VALUES "
+                "(10, 1, 5, 'whatsapp'), (11, 1, 5, 'whatsapp')"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO interview_consent_challenge ("
+                "id, tenant_id, interview_session_id, program_version_id, "
+                "consent_text_sha256, expected_identity_binding_id, expected_identity_hmac, "
+                "nonce_sha256, expires_at, issued_by_user_id, issued_at, contract_version) "
+                "VALUES "
+                "(30, 1, 10, 7, :text_hash, 20, :hmac1, :nonce1, "
+                "'2026-07-31 00:10:00', 1, '2026-07-31 00:00:00', "
+                "'interview.consent_challenge.v2'), "
+                "(31, 1, 11, 7, :text_hash, 21, :hmac2, :nonce2, "
+                "'2026-07-31 00:11:00', 1, '2026-07-31 00:01:00', "
+                "'interview.consent_challenge.v2')"
+            ),
+            {
+                "text_hash": "a" * 64,
+                "hmac1": "b" * 64,
+                "hmac2": "e" * 64,
+                "nonce1": "c" * 64,
+                "nonce2": "d" * 64,
+            },
+        )
+        _run(v3_migration, connection, "upgrade")
+        with pytest.raises(RuntimeError, match="conflicting WhatsApp identities"):
+            _run(v4_migration, connection, "upgrade")
+
+
+def test_subject_proof_migration_rejects_challenge_binding_snapshot_mismatch():
+    v3_migration = _load_migration()
+    v4_migration = _load_migration(V4_MIGRATION_PATH)
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.execute(sa.text("PRAGMA foreign_keys = ON"))
+        _base_schema(connection)
+        connection.execute(sa.text("INSERT INTO tenant_profile VALUES (1)"))
+        connection.execute(sa.text('INSERT INTO "user" VALUES (1)'))
+        connection.execute(sa.text("INSERT INTO chat_session_context VALUES ('chat-1')"))
+        connection.execute(
+            sa.text(
+                "INSERT INTO channel_session_identity_binding VALUES "
+                "(20, 1, 'v1', :binding_hmac, 'chat-1')"
+            ),
+            {"binding_hmac": "b" * 64},
+        )
+        connection.execute(
+            sa.text("INSERT INTO assessment_case VALUES (5, 1, 'whatsapp')")
+        )
+        connection.execute(
+            sa.text("INSERT INTO interview_session VALUES (10, 1, 5, 'whatsapp')")
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO interview_consent_challenge ("
+                "id, tenant_id, interview_session_id, program_version_id, "
+                "consent_text_sha256, expected_identity_binding_id, expected_identity_hmac, "
+                "nonce_sha256, expires_at, issued_by_user_id, issued_at, contract_version) "
+                "VALUES (30, 1, 10, 7, :text_hash, 20, :wrong_hmac, :nonce_hash, "
+                "'2026-07-31 00:10:00', 1, '2026-07-31 00:00:00', "
+                "'interview.consent_challenge.v2')"
+            ),
+            {
+                "text_hash": "a" * 64,
+                "wrong_hmac": "f" * 64,
+                "nonce_hash": "c" * 64,
+            },
+        )
+        _run(v3_migration, connection, "upgrade")
+        with pytest.raises(RuntimeError, match="does not match its tenant-scoped"):
+            _run(v4_migration, connection, "upgrade")

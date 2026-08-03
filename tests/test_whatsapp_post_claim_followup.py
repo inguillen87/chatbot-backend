@@ -350,7 +350,12 @@ def test_durable_failure_raises_for_worker_but_direct_mode_returns_retry():
     assert raised.value.__cause__ is source_error
 
 
-def test_webhook_pin_question_short_circuits_bot_after_created_ticket(client):
+def test_webhook_pin_question_short_circuits_bot_after_created_ticket(client, monkeypatch):
+    monkeypatch.setitem(
+        client.application.config,
+        "TWILIO_ALLOW_NETWORK_IN_TESTS",
+        True,
+    )
     owner, _tenant, _ticket, _session = _seed_open_followup()
     mapping = WhatsappNumero(
         numero_whatsapp="+5491100000000",
@@ -413,7 +418,12 @@ def _post_followup_media(client, owner):
     )
 
 
-def test_closed_ticket_media_is_not_attached_or_reinterpreted(client):
+def test_closed_ticket_media_is_not_attached_or_reinterpreted(client, monkeypatch):
+    monkeypatch.setitem(
+        client.application.config,
+        "TWILIO_ALLOW_NETWORK_IN_TESTS",
+        True,
+    )
     owner, _tenant, _ticket, session = _seed_open_followup(ticket_state="cerrado")
     attachment = MagicMock(
         id=77,
@@ -452,7 +462,8 @@ def test_closed_ticket_media_is_not_attached_or_reinterpreted(client):
     assert any("ya está cerrado" in body and "No adjunté" in body for body in sent_bodies)
 
 
-def test_open_ticket_media_is_attached_and_followup_window_stays_active(client):
+def test_open_ticket_media_is_attached_and_followup_window_stays_active(client, monkeypatch):
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
     owner, _tenant, ticket, session = _seed_open_followup()
     attachment = MagicMock(
         id=79,
@@ -494,7 +505,275 @@ def test_open_ticket_media_is_attached_and_followup_window_stays_active(client):
     assert "awaiting_ticket_photo" not in session.context_data
 
 
-def test_open_ticket_audio_keeps_transcript_as_ticket_evidence(client):
+@pytest.mark.parametrize(
+    ("mime_type", "suffix", "expected_guidance"),
+    [
+        ("image/webp", "webp", "sticker"),
+        ("text/vcard", "vcf", "tarjeta de contacto"),
+    ],
+)
+def test_open_ticket_non_evidence_media_is_not_auto_attached(
+    client,
+    monkeypatch,
+    mime_type,
+    suffix,
+    expected_guidance,
+):
+    """An open follow-up window is not blanket consent to bind every media."""
+
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
+    owner, _tenant, ticket, session = _seed_open_followup()
+    mapping = WhatsappNumero(
+        numero_whatsapp="+5491100000000",
+        user_id=owner.id,
+        is_active=True,
+    )
+    db.session.add(mapping)
+    db.session.commit()
+    attachment = MagicMock(
+        id=180,
+        url=f"https://storage.example.test/followup.{suffix}",
+        mime=mime_type,
+        nombre_original=f"private-followup.{suffix}",
+        analisis=None,
+    )
+    twilio = MagicMock()
+    twilio.messages.create.return_value = SimpleNamespace(sid="SM-non-evidence")
+
+    with (
+        patch("routes.whatsapp_webhook.validator") as validator,
+        patch("routes.whatsapp_webhook.twilio_client", twilio),
+        patch(
+            "routes.whatsapp_webhook._download_twilio_media",
+            return_value=b"bounded-private-media",
+        ),
+        patch(
+            "routes.whatsapp_webhook.create_attachment_with_thumbnail",
+            return_value=attachment,
+        ) as create_attachment,
+        patch(
+            "routes.whatsapp_webhook._attach_whatsapp_adjunto_to_ticket"
+        ) as attach,
+        patch("routes.whatsapp_webhook.create_whatsapp_assisted_intake") as intake,
+        patch("routes.whatsapp_webhook.responder_chatboc") as responder,
+    ):
+        validator.validate.return_value = True
+        payload = {
+            "To": "whatsapp:+5491100000000",
+            "From": "whatsapp:+5492613168608",
+            "Body": "private-person.vcf" if suffix == "vcf" else "",
+            "MessageSid": f"SM-followup-{suffix}-inbound",
+            "NumMedia": "1",
+            "MediaUrl0": f"https://media.example.test/followup.{suffix}?token=secret",
+            "MediaContentType0": mime_type,
+        }
+        headers = {"X-Twilio-Signature": "valid"}
+        response = client.post(
+            "/webhook/whatsapp", data=payload, headers=headers
+        )
+        duplicate = client.post(
+            "/webhook/whatsapp", data=payload, headers=headers
+        )
+
+    assert response.status_code == 200
+    assert duplicate.status_code == 200
+    create_attachment.assert_called_once()
+    attach.assert_not_called()
+    intake.assert_not_called()
+    responder.assert_not_called()
+    assert TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).count() == 0
+    sent_body = str(twilio.messages.create.call_args.kwargs.get("body") or "")
+    assert expected_guidance in sent_body.lower()
+    assert "private-person" not in sent_body
+    assert "token=secret" not in sent_body
+    twilio.messages.create.assert_called_once()
+    db.session.refresh(session)
+    assert session.context_data["active_ticket_followup"]["ticket_nro"] == "M-401746"
+
+
+def test_open_ticket_document_is_validated_contextual_evidence(client, monkeypatch):
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
+    owner, _tenant, ticket, _session = _seed_open_followup()
+    mapping = WhatsappNumero(
+        numero_whatsapp="+5491100000000",
+        user_id=owner.id,
+        is_active=True,
+    )
+    db.session.add(mapping)
+    db.session.commit()
+    attachment = MagicMock(
+        id=181,
+        url="https://storage.example.test/evidence.pdf",
+        mime="application/pdf",
+        nombre_original="evidence.pdf",
+        analisis=None,
+    )
+    twilio = MagicMock()
+    twilio.messages.create.return_value = SimpleNamespace(sid="SM-document-evidence")
+
+    with (
+        patch("routes.whatsapp_webhook.validator") as validator,
+        patch("routes.whatsapp_webhook.twilio_client", twilio),
+        patch(
+            "routes.whatsapp_webhook._download_twilio_media",
+            return_value=b"bounded-pdf",
+        ),
+        patch(
+            "routes.whatsapp_webhook.create_attachment_with_thumbnail",
+            return_value=attachment,
+        ),
+        patch(
+            "routes.whatsapp_webhook._attach_whatsapp_adjunto_to_ticket"
+        ) as attach,
+        patch("routes.whatsapp_webhook.create_whatsapp_assisted_intake") as intake,
+        patch("routes.whatsapp_webhook.responder_chatboc") as responder,
+    ):
+        validator.validate.return_value = True
+        response = client.post(
+            "/webhook/whatsapp",
+            data={
+                "To": "whatsapp:+5491100000000",
+                "From": "whatsapp:+5492613168608",
+                "Body": "",
+                "MessageSid": "SM-followup-document-inbound",
+                "NumMedia": "1",
+                "MediaUrl0": "https://media.example.test/evidence.pdf",
+                "MediaContentType0": "application/pdf",
+            },
+            headers={"X-Twilio-Signature": "valid"},
+        )
+
+    assert response.status_code == 200
+    attach.assert_called_once()
+    assert attach.call_args.kwargs["ticket"].id == ticket.id
+    assert "archivo como evidencia" in attach.call_args.kwargs["comentario_text"]
+    intake.assert_not_called()
+    responder.assert_not_called()
+
+
+def test_real_session_tail_keeps_two_intentional_claims_after_correction_photo_and_pin(
+    client,
+    monkeypatch,
+):
+    """Replay the failure tail from the supplied Junin production session.
+
+    The citizen intentionally created Luminaria and Arbolado claims.  A later
+    address correction, photo and PIN question must enrich/query Arbolado,
+    never re-run its stale confirmation and materialize three extra tickets.
+    """
+
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
+    owner, tenant, arbolado_ticket, session = _seed_open_followup()
+    arbolado_ticket.asunto = "Arbolado"
+    arbolado_ticket.categoria = "Arbolado"
+    arbolado_ticket.detalles = "Arbolado en Plaza Junin"
+    arbolado_ticket.direccion = "Don Bosco 56 esquina Sarmiento, Junin"
+
+    luminaria_ticket = MunicipioTicket(
+        pregunta="",
+        asunto="Luminaria",
+        categoria="Luminaria",
+        detalles="Poste caido en Palmira",
+        direccion="Don Bosco 56, Palmira",
+        municipio_id=owner.id,
+        tenant_id=tenant.id,
+        anon_id="+5492613168608",
+        nro_ticket="603142",
+        consulta_pin="112233",
+        estado="nuevo",
+    )
+    db.session.add(luminaria_ticket)
+    db.session.flush()
+
+    stale_context = session.context_data
+    stale_context["pending_sensitive_action"] = {
+        "action_id": "reclamo_confirmar_si",
+    }
+    stale_context[CONTEXTO_MUNICIPIO]["reclamo_flow_v2"] = {
+        "state": ReclamoState.ESPERANDO_CONFIRMACION.name,
+        "confirmation_id": "stale-arbolado-confirmation",
+        "datos_reclamo": {
+            "categoria": "Arbolado",
+            "descripcion": "Arbolado en Plaza Junin",
+            "direccion": "Don Bosco 56 esquina Sarmiento, Junin",
+        },
+    }
+    session.context_data = _apply_completed_reclamo_context(
+        stale_context,
+        {
+            "confirmation_id": "stale-arbolado-confirmation",
+            "ticket_id": arbolado_ticket.id,
+            "ticket_nro": "M-401746",
+            "consulta_pin": "167779",
+            "tracking_url": "https://chatboc.test/tracking/claim/401746#pin=167779",
+        },
+    )
+    db.session.add(session)
+    db.session.commit()
+
+    assert MunicipioTicket.query.count() == 2
+    assert "reclamo_flow_v2" not in session.context_data[CONTEXTO_MUNICIPIO]
+    assert "pending_sensitive_action" not in session.context_data
+
+    with patch("routes.whatsapp_webhook._send_twilio_message"):
+        assert _handle(
+            session,
+            owner,
+            tenant,
+            "La direccion correcta es Don Bosco 55 esquina Sarmiento, Plaza Junin.",
+            MagicMock(),
+        ) == ("OK", 200)
+
+    attachment = MagicMock(
+        id=91,
+        url="https://storage.example.test/session-tail.jpg",
+        mime="image/jpeg",
+        nombre_original="session-tail.jpg",
+        analisis=None,
+    )
+    twilio = MagicMock()
+    twilio.messages.create.return_value = SimpleNamespace(sid="SM-session-tail")
+    download = MagicMock(content=b"image-bytes")
+    download.raise_for_status.return_value = None
+    with (
+        patch("routes.whatsapp_webhook.validator") as validator,
+        patch("routes.whatsapp_webhook.twilio_client", twilio),
+        patch("routes.whatsapp_webhook.requests.get", return_value=download),
+        patch(
+            "routes.whatsapp_webhook.create_attachment_with_thumbnail",
+            return_value=attachment,
+        ),
+        patch("routes.whatsapp_webhook._attach_whatsapp_adjunto_to_ticket") as attach,
+        patch("routes.whatsapp_webhook.create_whatsapp_assisted_intake") as intake,
+        patch("routes.whatsapp_webhook.responder_chatboc") as responder,
+    ):
+        validator.validate.return_value = True
+        media_response = _post_followup_media(client, owner)
+
+    assert media_response.status_code == 200
+    attach.assert_called_once()
+    assert attach.call_args.kwargs["ticket"].id == arbolado_ticket.id
+    intake.assert_not_called()
+    responder.assert_not_called()
+
+    with patch("routes.whatsapp_webhook._send_twilio_message") as send:
+        assert _handle(
+            session,
+            owner,
+            tenant,
+            "Y mi PIN para poder consultar en el futuro?",
+            MagicMock(),
+        ) == ("OK", 200)
+
+    assert "167779" in send.call_args.kwargs["body"]
+    assert MunicipioTicket.query.count() == 2
+    assert {
+        ticket.nro_ticket for ticket in MunicipioTicket.query.order_by(MunicipioTicket.id)
+    } == {"401746", "603142"}
+
+
+def test_open_ticket_audio_keeps_transcript_as_ticket_evidence(client, monkeypatch):
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
     owner, _tenant, ticket, session = _seed_open_followup()
     mapping = WhatsappNumero(
         numero_whatsapp="+5491100000000",
@@ -559,7 +838,8 @@ def test_open_ticket_audio_keeps_transcript_as_ticket_evidence(client):
     assert session.context_data["active_ticket_followup"]["ticket_nro"] == "M-401746"
 
 
-def test_media_bridge_failure_returns_retry_and_never_falls_into_assisted_intake(client):
+def test_media_bridge_failure_returns_retry_and_never_falls_into_assisted_intake(client, monkeypatch):
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
     owner, _tenant, _ticket, _session = _seed_open_followup()
     attachment = MagicMock(
         id=78,

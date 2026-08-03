@@ -17,24 +17,49 @@ from dataclasses import dataclass, field
 import hashlib
 import hmac
 import json
+import logging
+import math
 import re
-from typing import Any, Literal, Mapping, Sequence
-from urllib.parse import urlparse
+from typing import Any, Callable, Literal, Mapping, Sequence
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from uuid import UUID
 
 from flask import current_app
 from sqlalchemy.orm import joinedload
 from twilio.rest import Client
 
-from models import ProviderConnection, ProviderSender, TenantProfile, db
+from models import (
+    MessageTemplateRegistry,
+    Notification,
+    NotificationAttempt,
+    ProviderConnection,
+    ProviderSender,
+    TenantProfile,
+    db,
+)
+from services.llm_provider_network_policy import (
+    ProviderNetworkDisabledError,
+    require_provider_network,
+)
 from services.provider_platform import is_sender_ready_status
+from services.message_templates import whatsapp_template_lifecycle
 from services.twilio_tech_provider import resolve_twilio_runtime_credentials
 
 
 TwilioChannel = Literal["sms", "whatsapp"]
 
+logger = logging.getLogger(__name__)
+
 _E164_RE = re.compile(r"^\+[1-9][0-9]{7,14}$")
 _HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _MESSAGE_SERVICE_RE = re.compile(r"^MG[A-Za-z0-9]{8,64}$")
+_TWILIO_CONTENT_SID_RE = re.compile(r"^HX[0-9a-fA-F]{32}$")
+_CONTENT_VARIABLE_KEY_RE = re.compile(r"^[1-9][0-9]{0,2}$")
+_STATUS_CALLBACK_ATTEMPT_PARAM = "notification_attempt_id"
+_MAX_CALLBACK_URL_LENGTH = 2048
+_MAX_CONTENT_VARIABLES = 100
+_MAX_CONTENT_VARIABLE_LENGTH = 1000
+_MAX_CONTENT_VARIABLES_JSON_LENGTH = 32768
 
 
 class TenantTwilioScopeError(RuntimeError):
@@ -278,10 +303,24 @@ def _normalized_e164(value: Any) -> str | None:
 
 def _valid_callback_url(value: Any) -> str | None:
     rendered = _clean(value)
-    if not rendered:
+    if (
+        not rendered
+        or len(rendered) > _MAX_CALLBACK_URL_LENGTH
+        or any(character.isspace() or ord(character) < 32 for character in rendered)
+    ):
         return None
-    parsed = urlparse(rendered)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    try:
+        parsed = urlparse(rendered)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not hostname
+        or parsed.fragment
+    ):
         return None
     if parsed.username or parsed.password:
         return None
@@ -305,24 +344,234 @@ def _validated_media_urls(values: Sequence[Any]) -> tuple[str, ...] | None:
     return tuple(normalized)
 
 
+def _serialized_content_variables(
+    values: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """Return Twilio's JSON string without accepting transport-shaped input."""
+
+    if values is None:
+        return None, None
+    if not isinstance(values, Mapping) or len(values) > _MAX_CONTENT_VARIABLES:
+        return None, "whatsapp_template_variables_invalid"
+
+    normalized_by_index: dict[int, str] = {}
+    for key, value in values.items():
+        if not isinstance(key, str) or not _CONTENT_VARIABLE_KEY_RE.fullmatch(key):
+            return None, "whatsapp_template_variables_invalid"
+        index = int(key)
+        if index in normalized_by_index:
+            return None, "whatsapp_template_variables_invalid"
+
+        if isinstance(value, str):
+            rendered = value
+        elif isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, int):
+            rendered = str(value)
+        elif isinstance(value, float) and math.isfinite(value):
+            rendered = str(value)
+        else:
+            return None, "whatsapp_template_variables_invalid"
+
+        # Twilio rejects blank/control-character values and long whitespace
+        # runs. Reject them here rather than modifying customer-visible text.
+        if (
+            not rendered
+            or rendered != rendered.strip()
+            or len(rendered) > _MAX_CONTENT_VARIABLE_LENGTH
+            or any(ord(character) < 32 or ord(character) == 127 for character in rendered)
+            or "     " in rendered
+        ):
+            return None, "whatsapp_template_variables_invalid"
+        normalized_by_index[index] = rendered
+
+    indexes = sorted(normalized_by_index)
+    if indexes != list(range(1, len(indexes) + 1)):
+        return None, "whatsapp_template_variables_invalid"
+
+    normalized = {
+        str(index): normalized_by_index[index]
+        for index in indexes
+    }
+    if not normalized:
+        return None, None
+    serialized = json.dumps(
+        normalized,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if len(serialized.encode("utf-8")) > _MAX_CONTENT_VARIABLES_JSON_LENGTH:
+        return None, "whatsapp_template_variables_invalid"
+    return serialized, None
+
+
+def _tenant_template_content_sid(
+    *,
+    tenant_id: int,
+    template_registry_id: Any,
+    session,
+) -> tuple[str | None, str | None]:
+    registry_id = _positive_int(template_registry_id)
+    if registry_id is None:
+        return None, "whatsapp_template_registry_mismatch"
+
+    registry = (
+        session.query(MessageTemplateRegistry)
+        .filter(
+            MessageTemplateRegistry.id == registry_id,
+            MessageTemplateRegistry.tenant_id == int(tenant_id),
+            MessageTemplateRegistry.provider == "twilio",
+            MessageTemplateRegistry.channel == "whatsapp",
+        )
+        .one_or_none()
+    )
+    if registry is None:
+        return None, "whatsapp_template_registry_mismatch"
+
+    content_sid = _clean(getattr(registry, "content_sid", None))
+    if not _TWILIO_CONTENT_SID_RE.fullmatch(content_sid):
+        return None, "whatsapp_template_registry_mismatch"
+
+    lifecycle = whatsapp_template_lifecycle(
+        getattr(registry, "status", None),
+        source="message_template_registry",
+        provider_reference=content_sid,
+        observed_at=getattr(registry, "last_sync_at", None),
+    )
+    if not lifecycle.get("production_send_allowed"):
+        return None, "whatsapp_template_not_approved"
+    return content_sid, None
+
+
+def _canonical_notification_attempt_id(value: Any) -> str | None:
+    rendered = _clean(value)
+    if not rendered:
+        return None
+    try:
+        canonical = str(UUID(rendered))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return canonical if rendered.lower() == canonical else None
+
+
+def _status_callback_for_message(
+    *,
+    tenant_id: int,
+    channel: TwilioChannel,
+    sender: ProviderSender,
+    notification_attempt_id: Any,
+    session,
+) -> tuple[str | None, str | None]:
+    """Derive a per-attempt callback only from the bound sender base URL."""
+
+    raw_callback = _clean(getattr(sender, "status_callback_url", None))
+    callback = _valid_callback_url(raw_callback)
+    if raw_callback and callback is None:
+        return None, f"{channel}_status_callback_invalid"
+
+    canonical_attempt_id: str | None = None
+    if notification_attempt_id is not None:
+        canonical_attempt_id = _canonical_notification_attempt_id(
+            notification_attempt_id
+        )
+        if canonical_attempt_id is None:
+            return None, "notification_attempt_scope_mismatch"
+        if callback is None:
+            return None, f"{channel}_status_callback_missing"
+
+        attempt = (
+            session.query(NotificationAttempt)
+            .filter(
+                NotificationAttempt.id == canonical_attempt_id,
+                NotificationAttempt.tenant_id == int(tenant_id),
+                NotificationAttempt.status == NotificationAttempt.STATUS_SENDING,
+            )
+            .one_or_none()
+        )
+        notification = (
+            session.query(Notification)
+            .filter(
+                Notification.id == getattr(attempt, "notification_id", None),
+                Notification.tenant_id == int(tenant_id),
+                Notification.channel == channel,
+                Notification.status == Notification.STATUS_SENDING,
+                Notification.provider_sender_id == int(sender.id),
+                Notification.provider_connection_id
+                == int(sender.provider_connection_id),
+            )
+            .one_or_none()
+            if attempt is not None
+            else None
+        )
+        if (
+            attempt is None
+            or notification is None
+            or int(attempt.attempt_number) != int(notification.attempt_count)
+        ):
+            return None, "notification_attempt_scope_mismatch"
+
+    if callback is None:
+        return None, None
+
+    parsed = urlparse(callback)
+    try:
+        query_items = parse_qsl(
+            parsed.query,
+            keep_blank_values=True,
+            max_num_fields=50,
+        )
+    except ValueError:
+        return None, f"{channel}_status_callback_invalid"
+
+    reserved_present = any(
+        key == _STATUS_CALLBACK_ATTEMPT_PARAM for key, _value in query_items
+    )
+    if canonical_attempt_id is None:
+        if reserved_present:
+            return None, f"{channel}_status_callback_invalid"
+        return callback, None
+
+    query_items = [
+        (key, value)
+        for key, value in query_items
+        if key != _STATUS_CALLBACK_ATTEMPT_PARAM
+    ]
+    query_items.append((_STATUS_CALLBACK_ATTEMPT_PARAM, canonical_attempt_id))
+    derived = urlunparse(parsed._replace(query=urlencode(query_items)))
+    validated = _valid_callback_url(derived)
+    if validated is None:
+        return None, f"{channel}_status_callback_invalid"
+    return validated, None
+
+
 def prepare_bound_tenant_twilio_message(
     *,
     tenant_id: int,
     channel: TwilioChannel,
     expected_sender_binding: str,
     recipient: str,
-    body: str,
+    body: str | None = None,
     media_urls: Sequence[str] = (),
+    template_registry_id: int | None = None,
+    content_variables: Mapping[str, Any] | None = None,
+    notification_attempt_id: str | None = None,
     session=None,
 ) -> TenantTwilioMessagePreflight:
-    """Validate tenant scope and return an immutable Twilio provider call."""
+    """Validate tenant scope and return an immutable Twilio provider call.
+
+    ``template_registry_id`` is the only accepted template selector. The
+    provider ``ContentSid`` is loaded from a fresh approved tenant-owned row;
+    callers cannot override it. Likewise, ``notification_attempt_id`` only
+    augments the callback base URL already bound into the sender digest.
+    """
 
     if not _HEX_DIGEST_RE.fullmatch(_clean(expected_sender_binding).lower()):
         raise TenantTwilioScopeError("tenant_twilio_sender_binding_invalid")
+    effect_session = session or db.session
     snapshot = resolve_tenant_twilio_sender_snapshot(
         tenant_id=tenant_id,
         channel=channel,
-        session=session,
+        session=effect_session,
     )
     if not hmac.compare_digest(
         snapshot.binding,
@@ -335,7 +584,7 @@ def prepare_bound_tenant_twilio_message(
     if sender is None:  # Defensive: the resolver contract should make this impossible.
         raise TenantTwilioScopeError("tenant_twilio_sender_resolution_invalid")
 
-    tenant = (session or db.session).get(TenantProfile, int(tenant_id))
+    tenant = effect_session.get(TenantProfile, int(tenant_id))
     if tenant is None or int(getattr(tenant, "id", 0) or 0) != int(tenant_id):
         raise TenantTwilioScopeError("tenant_twilio_tenant_missing")
     connection = getattr(sender, "provider_connection", None)
@@ -367,15 +616,6 @@ def prepare_bound_tenant_twilio_message(
         return TenantTwilioMessagePreflight(
             reason_code="requester_phone_invalid"
         )
-    normalized_body = _clean(body)
-    if not normalized_body:
-        return TenantTwilioMessagePreflight(
-            reason_code=f"{channel}_message_empty"
-        )
-    if len(normalized_body) > 1600:
-        return TenantTwilioMessagePreflight(
-            reason_code=f"{channel}_message_too_long"
-        )
 
     normalized_media = _validated_media_urls(tuple(media_urls or ()))
     if normalized_media is None:
@@ -391,6 +631,44 @@ def prepare_bound_tenant_twilio_message(
             reason_code="whatsapp_media_count_invalid"
         )
 
+    normalized_body = _clean(body)
+    content_sid: str | None = None
+    serialized_variables: str | None = None
+    if template_registry_id is not None:
+        if channel != "whatsapp":
+            return TenantTwilioMessagePreflight(
+                reason_code="sms_template_not_supported"
+            )
+        if normalized_body or normalized_media:
+            return TenantTwilioMessagePreflight(
+                reason_code="whatsapp_template_payload_conflict"
+            )
+        content_sid, template_error = _tenant_template_content_sid(
+            tenant_id=int(tenant_id),
+            template_registry_id=template_registry_id,
+            session=effect_session,
+        )
+        if template_error:
+            return TenantTwilioMessagePreflight(reason_code=template_error)
+        serialized_variables, variables_error = _serialized_content_variables(
+            content_variables
+        )
+        if variables_error:
+            return TenantTwilioMessagePreflight(reason_code=variables_error)
+    else:
+        if content_variables is not None:
+            return TenantTwilioMessagePreflight(
+                reason_code="whatsapp_template_registry_required"
+            )
+        if not normalized_body:
+            return TenantTwilioMessagePreflight(
+                reason_code=f"{channel}_message_empty"
+            )
+        if len(normalized_body) > 1600:
+            return TenantTwilioMessagePreflight(
+                reason_code=f"{channel}_message_too_long"
+            )
+
     messaging_service_sid = _clean(
         getattr(sender, "messaging_service_sid", None)
     )
@@ -403,8 +681,13 @@ def prepare_bound_tenant_twilio_message(
             if channel == "whatsapp"
             else normalized_recipient
         ),
-        "body": normalized_body,
     }
+    if content_sid:
+        params["content_sid"] = content_sid
+        if serialized_variables:
+            params["content_variables"] = serialized_variables
+    else:
+        params["body"] = normalized_body
     if messaging_service_sid:
         if not _MESSAGE_SERVICE_RE.fullmatch(messaging_service_sid):
             return TenantTwilioMessagePreflight(
@@ -424,7 +707,15 @@ def prepare_bound_tenant_twilio_message(
 
     if normalized_media:
         params["media_url"] = list(normalized_media)
-    callback = _valid_callback_url(getattr(sender, "status_callback_url", None))
+    callback, callback_error = _status_callback_for_message(
+        tenant_id=int(tenant_id),
+        channel=channel,
+        sender=sender,
+        notification_attempt_id=notification_attempt_id,
+        session=effect_session,
+    )
+    if callback_error:
+        return TenantTwilioMessagePreflight(reason_code=callback_error)
     if callback:
         params["status_callback"] = callback
 
@@ -440,12 +731,31 @@ def prepare_bound_tenant_twilio_message(
 
 def send_prepared_tenant_twilio_message(
     prepared: PreparedTenantTwilioMessage,
+    *,
+    on_provider_call_start: Callable[[], None] | None = None,
 ) -> str | None:
-    """Perform the single provider call and return its acknowledgement SID."""
+    """Perform one provider call and return its acknowledgement SID.
+
+    ``on_provider_call_start`` runs after all local setup and immediately
+    before ``messages.create``. A failure before the hook is known pre-I/O; an
+    exception after the hook may be an ambiguous provider outcome and must not
+    be retried as though no request was sent.
+    """
 
     if not isinstance(prepared, PreparedTenantTwilioMessage):
         raise TypeError("tenant_twilio_prepared_message_invalid")
+    if on_provider_call_start is not None and not callable(on_provider_call_start):
+        raise TypeError("tenant_twilio_provider_call_hook_invalid")
+    try:
+        require_provider_network("twilio")
+    except ProviderNetworkDisabledError:
+        logger.info(
+            "Tenant message blocked provider=twilio reason=test_network_disabled"
+        )
+        raise
     client = Client(prepared.account_sid, prepared.auth_token)
+    if on_provider_call_start is not None:
+        on_provider_call_start()
     message = client.messages.create(**dict(prepared.params))
     return _clean(getattr(message, "sid", None)) or None
 

@@ -6,7 +6,7 @@ from typing import Any
 import json
 from urllib.parse import quote
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 
 from models import (
     AnalyticsEventV2,
@@ -33,6 +33,10 @@ from services.tenant_ticket_scope import scoped_municipio_ticket_query
 
 _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
 _OVERDUE_STATES = {"vencido", "overdue", "breached"}
+_SLA_AT_RISK_STATES = {"at_risk", "risk", "warning", "en_riesgo"}
+_SLA_HEALTHY_STATES = {"ok", "normal", "healthy", "on_track", "within_sla"}
+_SLA_PAUSED_STATES = {"paused", "pausado", "on_hold", "waiting_customer", "esperando_cliente"}
+_SLA_AT_RISK_WINDOW_SECONDS = 4 * 60 * 60
 _ACTIVE_PRESENCE = {"active", "online", "typing", "present"}
 _LIVE_SURVEY_STATES = {"publicada", "published", "activa", "active", "en_vivo", "live"}
 _COMMERCE_REQUEST_KINDS = {
@@ -483,10 +487,112 @@ def _heatmap_map_layers(
     }
 
 
-def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
+def _sla_observation(
+    *,
+    status: str,
+    metadata: dict[str, Any] | None,
+    as_of: datetime | None = None,
+) -> dict[str, Any]:
+    """Return the evidence-backed SLA state for one current ticket.
+
+    Missing SLA evidence is deliberately ``unknown``.  A missing field must
+    never become a synthetic healthy/normal result in an operational KPI.
+    """
+
+    details = _as_dict(metadata)
+    sla = _as_dict(details.get("sla"))
+    raw_state = _norm(
+        sla.get("status")
+        or sla.get("state")
+        or details.get("sla_status")
+        or details.get("sla_state"),
+        "",
+    )
+    due_raw = (
+        sla.get("resolution_due_at")
+        or sla.get("next_update_due_at")
+        or sla.get("due_at")
+        or details.get("resolution_due_at")
+        or details.get("next_update_due_at")
+        or details.get("sla_due_at")
+        or details.get("due_at")
+    )
+    due_at = _parse_datetime(due_raw)
+    observed_at = _aware_datetime(as_of) or datetime.now(timezone.utc)
+    paused = bool(
+        status in _SLA_PAUSED_STATES
+        or sla.get("paused_at")
+        or sla.get("is_paused") is True
+        or raw_state in _SLA_PAUSED_STATES
+    )
+    eligible = status not in _CLOSED_STATES and not paused
+
+    evidence: list[str] = []
+    if due_at is not None:
+        evidence.append("due_at")
+    if raw_state:
+        evidence.append("explicit_state")
+    if status in _OVERDUE_STATES:
+        evidence.append("ticket_status")
+
+    known = bool(
+        eligible
+        and (
+            due_at is not None
+            or raw_state in (_OVERDUE_STATES | _SLA_AT_RISK_STATES | _SLA_HEALTHY_STATES)
+            or status in _OVERDUE_STATES
+        )
+    )
+    breached = bool(
+        known
+        and (
+            status in _OVERDUE_STATES
+            or raw_state in _OVERDUE_STATES
+            or (due_at is not None and due_at <= observed_at)
+        )
+    )
+    seconds_to_due = None
+    if due_at is not None:
+        seconds_to_due = int((due_at - observed_at).total_seconds())
+    at_risk = bool(
+        known
+        and not breached
+        and (
+            raw_state in _SLA_AT_RISK_STATES
+            or (
+                seconds_to_due is not None
+                and 0 < seconds_to_due <= _SLA_AT_RISK_WINDOW_SECONDS
+            )
+        )
+    )
+    if not eligible:
+        state = "not_eligible"
+    elif not known:
+        state = "unknown"
+    elif breached:
+        state = "breached"
+    elif at_risk:
+        state = "at_risk"
+    else:
+        state = "healthy"
+
+    return {
+        "eligible": eligible,
+        "known": known,
+        "state": state,
+        "breached": breached,
+        "at_risk": at_risk,
+        "due_at": _iso(due_at),
+        "seconds_to_due": seconds_to_due,
+        "evidence": evidence,
+        "raw_state": raw_state or None,
+    }
+
+
+def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     extra = _as_dict(ticket.datos_extra)
     status = _norm(ticket.estado, "nuevo")
-    sla_state = _norm(extra.get("sla_state") or extra.get("sla_status"), "normal")
+    sla = _sla_observation(status=status, metadata=extra, as_of=as_of)
     priority = _norm(extra.get("priority") or extra.get("prioridad"), "normal")
     channel = _norm(extra.get("channel") or extra.get("canal") or ticket.origen, "web")
     address = _record_address_from_metadata(extra)
@@ -506,17 +612,19 @@ def _tenant_ticket_record(ticket: TenantTicket) -> dict[str, Any]:
         "demographics": _demographics_from_metadata(extra),
         "created_at": getattr(ticket, "created_at", None),
         "updated_at": getattr(ticket, "updated_at", None),
-        "sla_state": sla_state,
-        "overdue": status in _OVERDUE_STATES or sla_state in _OVERDUE_STATES,
+        "sla": sla,
+        "sla_state": sla["state"],
+        "overdue": sla["breached"],
     }
 
 
-def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
+def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     channel = _norm(getattr(ticket, "canal_ingreso", None), "web")
     details = _json_object(getattr(ticket, "detalles", None))
     address = _clean_text(getattr(ticket, "direccion", None)) or _record_address_from_metadata(details)
-    overdue = status in _OVERDUE_STATES
+    metadata = {**details, **_as_dict(getattr(ticket, "datos_extra", None))}
+    sla = _sla_observation(status=status, metadata=metadata, as_of=as_of)
     return {
         "source": "municipio_ticket",
         "id": ticket.id,
@@ -533,15 +641,20 @@ def _municipio_ticket_record(ticket: MunicipioTicket) -> dict[str, Any]:
         "demographics": _demographics_from_metadata(details),
         "created_at": ticket.fecha,
         "updated_at": ticket.ultima_actividad or ticket.fecha,
-        "sla_state": "overdue" if overdue else "normal",
-        "overdue": overdue,
+        "sla": sla,
+        "sla_state": sla["state"],
+        "overdue": sla["breached"],
     }
 
 
-def _pyme_ticket_record(ticket: PymeTicket) -> dict[str, Any]:
+def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     address = _clean_text(getattr(ticket, "direccion", None))
-    overdue = status in _OVERDUE_STATES
+    sla = _sla_observation(
+        status=status,
+        metadata=_as_dict(getattr(ticket, "datos_extra", None)),
+        as_of=as_of,
+    )
     return {
         "source": "pyme_ticket",
         "id": ticket.id,
@@ -558,24 +671,147 @@ def _pyme_ticket_record(ticket: PymeTicket) -> dict[str, Any]:
         "demographics": {"gender": "unknown", "age": None, "age_range": "unknown", "source": "missing"},
         "created_at": ticket.fecha,
         "updated_at": ticket.fecha,
-        "sla_state": "overdue" if overdue else "normal",
-        "overdue": overdue,
+        "sla": sla,
+        "sla_state": sla["state"],
+        "overdue": sla["breached"],
     }
 
 
-def _collect_ticket_records(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> list[dict[str, Any]]:
+def _collect_ticket_records(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    as_of: datetime | None = None,
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
     tenant_tickets = _between(TenantTicket.query.filter_by(tenant_id=tenant.id), TenantTicket.created_at, start_date, end_date).all()
-    records.extend(_tenant_ticket_record(ticket) for ticket in tenant_tickets)
+    records.extend(_tenant_ticket_record(ticket, as_of=as_of) for ticket in tenant_tickets)
 
     municipio_tickets = _between(_municipio_ticket_query(tenant), MunicipioTicket.fecha, start_date, end_date).all()
-    records.extend(_municipio_ticket_record(ticket) for ticket in municipio_tickets)
+    records.extend(_municipio_ticket_record(ticket, as_of=as_of) for ticket in municipio_tickets)
 
     pyme_tickets = _between(PymeTicket.query.filter_by(tenant_id=tenant.id), PymeTicket.fecha, start_date, end_date).all()
-    records.extend(_pyme_ticket_record(ticket) for ticket in pyme_tickets)
+    records.extend(_pyme_ticket_record(ticket, as_of=as_of) for ticket in pyme_tickets)
 
     return records
+
+
+def _open_status_query(query, status_column):
+    normalized_status = func.lower(func.trim(func.coalesce(status_column, "")))
+    return query.filter(~normalized_status.in_(_CLOSED_STATES))
+
+
+def _created_at_membership_query(query, created_column, *, as_of: datetime):
+    """Apply the queue's declared creation-membership boundary."""
+
+    return query.filter(or_(created_column.is_(None), created_column <= as_of))
+
+
+def _collect_open_ticket_records(
+    tenant: TenantProfile,
+    *,
+    as_of: datetime,
+) -> list[dict[str, Any]]:
+    """Collect the complete current queue without a created-at window."""
+
+    records: list[dict[str, Any]] = []
+    records.extend(
+        _tenant_ticket_record(ticket, as_of=as_of)
+        for ticket in _created_at_membership_query(
+            _open_status_query(
+                TenantTicket.query.filter_by(tenant_id=tenant.id),
+                TenantTicket.estado,
+            ),
+            TenantTicket.created_at,
+            as_of=as_of,
+        ).all()
+    )
+    records.extend(
+        _municipio_ticket_record(ticket, as_of=as_of)
+        for ticket in _created_at_membership_query(
+            _open_status_query(
+                _municipio_ticket_query(tenant),
+                MunicipioTicket.estado,
+            ),
+            MunicipioTicket.fecha,
+            as_of=as_of,
+        ).all()
+    )
+    records.extend(
+        _pyme_ticket_record(ticket, as_of=as_of)
+        for ticket in _created_at_membership_query(
+            _open_status_query(
+                PymeTicket.query.filter_by(tenant_id=tenant.id),
+                PymeTicket.estado,
+            ),
+            PymeTicket.fecha,
+            as_of=as_of,
+        ).all()
+    )
+    return records
+
+
+def _queue_membership_quality(
+    tenant: TenantProfile,
+    *,
+    as_of: datetime,
+    included_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Report records quarantined by the queue creation-time boundary."""
+
+    source_queries = (
+        (
+            "TenantTicket",
+            _open_status_query(
+                TenantTicket.query.filter_by(tenant_id=tenant.id),
+                TenantTicket.estado,
+            ),
+            TenantTicket.created_at,
+        ),
+        (
+            "MunicipioTicket",
+            _open_status_query(
+                _municipio_ticket_query(tenant),
+                MunicipioTicket.estado,
+            ),
+            MunicipioTicket.fecha,
+        ),
+        (
+            "PymeTicket",
+            _open_status_query(
+                PymeTicket.query.filter_by(tenant_id=tenant.id),
+                PymeTicket.estado,
+            ),
+            PymeTicket.fecha,
+        ),
+    )
+    future_by_source = [
+        {
+            "source_model": source_model,
+            "excluded_records": int(query.filter(created_column > as_of).count()),
+        }
+        for source_model, query, created_column in source_queries
+    ]
+    future_total = sum(item["excluded_records"] for item in future_by_source)
+    null_created_at = len(
+        [record for record in included_records if _aware_datetime(record.get("created_at")) is None]
+    )
+    return {
+        "contract_version": "operations.queue_membership_quality.v1",
+        "creation_membership": "created_at_null_or_lte_as_of",
+        "null_created_at": {
+            "policy": "included_with_unknown_age",
+            "included_records": null_created_at,
+        },
+        "future_created_at": {
+            "state": "quarantined" if future_total else "clean",
+            "policy": "excluded_from_queue",
+            "excluded_records": future_total,
+            "by_source_model": future_by_source,
+        },
+    }
 
 
 def _municipio_ticket_query(tenant: TenantProfile):
@@ -606,6 +842,240 @@ def _ticket_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
         "by_category": _counter(category_counts),
         "by_priority": _counter(priority_counts),
         "by_source": _counter(source_counts),
+    }
+
+
+def _percentage(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return round((numerator / denominator) * 100, 2)
+
+
+def _build_queue_truth(
+    *,
+    queue_records: list[dict[str, Any]],
+    period_records: list[dict[str, Any]],
+    start_date: datetime,
+    end_date: datetime,
+    as_of: datetime,
+    membership_quality: dict[str, Any],
+) -> dict[str, Any]:
+    """Separate point-in-time queue truth from tickets created in a period."""
+
+    source_model_names = {
+        "tenant_ticket": "TenantTicket",
+        "municipio_ticket": "MunicipioTicket",
+        "pyme_ticket": "PymeTicket",
+    }
+    source_counts = Counter(record.get("source") for record in queue_records)
+    period_source_counts = Counter(record.get("source") for record in period_records)
+
+    sla_rows = [_as_dict(record.get("sla")) for record in queue_records]
+    sla_eligible = len([row for row in sla_rows if row.get("eligible")])
+    sla_known = len([row for row in sla_rows if row.get("eligible") and row.get("known")])
+    sla_unknown = max(sla_eligible - sla_known, 0)
+    sla_breached = len([row for row in sla_rows if row.get("eligible") and row.get("breached")])
+    sla_at_risk = len([row for row in sla_rows if row.get("eligible") and row.get("at_risk")])
+    sla_non_eligible = len(queue_records) - sla_eligible
+
+    assigned = len([record for record in queue_records if record.get("assignee_id") is not None])
+    unassigned = len(queue_records) - assigned
+    owner_counts = Counter(
+        str(record.get("assignee_id"))
+        for record in queue_records
+        if record.get("assignee_id") is not None
+    )
+
+    age_specs = [
+        ("lt_1h", "Menos de 1 hora", 0, 60 * 60),
+        ("1h_4h", "1 a 4 horas", 60 * 60, 4 * 60 * 60),
+        ("4h_24h", "4 a 24 horas", 4 * 60 * 60, 24 * 60 * 60),
+        ("1d_3d", "1 a 3 dias", 24 * 60 * 60, 3 * 24 * 60 * 60),
+        ("3d_7d", "3 a 7 dias", 3 * 24 * 60 * 60, 7 * 24 * 60 * 60),
+        ("gte_7d", "7 dias o mas", 7 * 24 * 60 * 60, None),
+    ]
+    age_counts = Counter()
+    age_values: list[int] = []
+    age_unknown = 0
+    for record in queue_records:
+        created_at = _aware_datetime(record.get("created_at"))
+        if created_at is None:
+            age_unknown += 1
+            continue
+        age_seconds = max(0, int((as_of - created_at).total_seconds()))
+        age_values.append(age_seconds)
+        for key, _label, lower, upper in age_specs:
+            if age_seconds >= lower and (upper is None or age_seconds < upper):
+                age_counts[key] += 1
+                break
+
+    age_buckets = [
+        {
+            "key": key,
+            "label": label,
+            "count": int(age_counts.get(key, 0)),
+            "lower_bound_seconds": lower,
+            "upper_bound_seconds": upper,
+            "href": _crm_tickets_href(focus=f"open_age_{key}"),
+            "link_semantics": "navigation_only",
+            "exact_filter": False,
+        }
+        for key, label, lower, upper in age_specs
+    ]
+    if age_unknown:
+        age_buckets.append(
+            {
+                "key": "unknown",
+                "label": "Antiguedad desconocida",
+                "count": age_unknown,
+                "lower_bound_seconds": None,
+                "upper_bound_seconds": None,
+                "href": _crm_tickets_href(focus="open_age_unknown"),
+                "link_semantics": "navigation_only",
+                "exact_filter": False,
+            }
+        )
+
+    source_coverage = [
+        {
+            "source_model": model_name,
+            "open_records": int(source_counts.get(source_key, 0)),
+        }
+        for source_key, model_name in source_model_names.items()
+    ]
+    period_source_breakdown = [
+        {
+            "source_model": model_name,
+            "created_records": int(period_source_counts.get(source_key, 0)),
+        }
+        for source_key, model_name in source_model_names.items()
+    ]
+    coverage = {
+        "source_records": len(queue_records),
+        "source_models": source_coverage,
+        "tenant_scope": "authoritative",
+        "sla": {
+            "eligible": sla_eligible,
+            "known": sla_known,
+            "unknown": sla_unknown,
+            "non_eligible": sla_non_eligible,
+            "known_pct": _percentage(sla_known, sla_eligible),
+        },
+        "age": {
+            "known": len(age_values),
+            "unknown": age_unknown,
+            "known_pct": _percentage(len(age_values), len(queue_records)),
+        },
+        "ownership": {
+            "known": len(queue_records),
+            "unknown": 0,
+            "known_pct": 100.0 if queue_records else None,
+        },
+    }
+
+    period_metrics = _ticket_metrics(period_records)
+    return {
+        "contract_version": "operations.queue_truth.v1",
+        "grain": "one_current_open_ticket",
+        "source_models": list(source_model_names.values()),
+        "as_of": _iso(as_of),
+        "membership_quality": membership_quality,
+        "coverage": coverage,
+        "queue_snapshot": {
+            "grain": "one_current_open_ticket",
+            "as_of": _iso(as_of),
+            "summary": {
+                "open_total": len(queue_records),
+                "oldest_open_age_seconds": max(age_values) if age_values else None,
+                "sla_breached": sla_breached,
+                "sla_at_risk": sla_at_risk,
+                "sla_unknown": sla_unknown,
+                "assigned": assigned,
+                "unassigned": unassigned,
+            },
+            "sla": {
+                "eligible": sla_eligible,
+                "known": sla_known,
+                "unknown": sla_unknown,
+                "non_eligible": sla_non_eligible,
+                "breached": sla_breached,
+                "at_risk": sla_at_risk,
+                "healthy": max(sla_known - sla_breached - sla_at_risk, 0),
+                "numerator": sla_breached,
+                "denominator": sla_known,
+                "breach_rate_pct": _percentage(sla_breached, sla_known),
+                "at_risk_window_seconds": _SLA_AT_RISK_WINDOW_SECONDS,
+                "state": (
+                    "empty"
+                    if sla_eligible == 0
+                    else "unavailable"
+                    if sla_known == 0
+                    else "partial"
+                    if sla_unknown > 0
+                    else "available"
+                ),
+                "unknown_reason": "missing_sla_evidence" if sla_unknown else None,
+            },
+            "ownership": {
+                "assigned": assigned,
+                "unassigned": unassigned,
+                "numerator": assigned,
+                "denominator": len(queue_records),
+                "assignment_rate_pct": _percentage(assigned, len(queue_records)),
+                "by_owner": [
+                    {
+                        "assignee_id": owner_id,
+                        "count": int(count),
+                        "href": _crm_tickets_href(focus="assigned_open_queue", assignee=owner_id),
+                        "link_semantics": "navigation_only",
+                        "exact_filter": False,
+                    }
+                    for owner_id, count in owner_counts.most_common(20)
+                ],
+                "unassigned_href": _crm_tickets_href(
+                    focus="unassigned_open_queue",
+                    assignee="unassigned",
+                ),
+            },
+            "age_buckets": age_buckets,
+            "links": {
+                "open": _crm_tickets_href(focus="open_queue"),
+                "sla_breached": _crm_tickets_href(focus="sla_breached_queue"),
+                "sla_at_risk": _crm_tickets_href(focus="sla_at_risk_queue"),
+                "sla_unknown": _crm_tickets_href(focus="sla_unknown_queue"),
+                "unassigned": _crm_tickets_href(
+                    focus="unassigned_open_queue",
+                    assignee="unassigned",
+                ),
+            },
+            "link_contract": {
+                "open": {"semantics": "navigation_only", "exact_filter": False},
+                "sla_breached": {"semantics": "navigation_only", "exact_filter": False},
+                "sla_at_risk": {"semantics": "navigation_only", "exact_filter": False},
+                "sla_unknown": {"semantics": "navigation_only", "exact_filter": False},
+                "unassigned": {"semantics": "navigation_only", "exact_filter": False},
+                "ownership_by_owner": {"semantics": "navigation_only", "exact_filter": False},
+                "age_buckets": {"semantics": "navigation_only", "exact_filter": False},
+                "reason_code": "operational_queue_v1_not_yet_bound_to_queue_truth_snapshot",
+                "notice": (
+                    "Los drilldowns exactos están pendientes; estos contadores no abren filtros "
+                    "hasta vincular la bandeja al mismo corte y alcance."
+                ),
+            },
+        },
+        "period_flow": {
+            "grain": "one_ticket_created_in_period",
+            "period": {"from": _iso(start_date), "to": _iso(end_date)},
+            "as_of": _iso(as_of),
+            "summary": {
+                "created_total": period_metrics["summary"]["total"],
+                "currently_open": period_metrics["summary"]["open"],
+                "currently_closed": period_metrics["summary"]["closed"],
+            },
+            "by_source_model": period_source_breakdown,
+            "status_semantics": "current_status_as_of_for_tickets_created_in_period",
+            "does_not_measure": ["tickets_closed_in_period", "historical_backlog_snapshot"],
+        },
     }
 
 
@@ -1520,6 +1990,7 @@ def _crm_tickets_href(
     status: Any | None = None,
     heatmap_cell: Any | None = None,
     sla: Any | None = None,
+    assignee: Any | None = None,
 ) -> str:
     params: list[tuple[str, Any]] = [("tab", "tickets")]
     if focus:
@@ -1536,6 +2007,8 @@ def _crm_tickets_href(
         params.append(("heatmap_cell", heatmap_cell))
     if sla:
         params.append(("sla", sla))
+    if assignee is not None:
+        params.append(("agent", assignee))
     return "/perfil?" + "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params)
 
 
@@ -3003,8 +3476,6 @@ def _summary_from_metrics(
 
 def _build_trends(current: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     keys = [
-        "open_tickets",
-        "overdue_tickets",
         "survey_responses",
         "live_votes",
         "chat_messages",
@@ -3017,6 +3488,16 @@ def _build_trends(current: dict[str, Any], previous: dict[str, Any]) -> dict[str
     return {
         "contract_version": "operations.trends.v1",
         "items": [_trend_item(key, current.get(key, 0), previous.get(key, 0)) for key in keys],
+        "unavailable": [
+            {
+                "key": "open_tickets",
+                "reason_code": "point_in_time_snapshot_has_no_historical_ledger",
+            },
+            {
+                "key": "overdue_tickets",
+                "reason_code": "point_in_time_snapshot_has_no_historical_ledger",
+            },
+        ],
     }
 
 
@@ -3604,9 +4085,19 @@ def build_ai_ops_queue(tenant: TenantProfile, start_date: datetime, end_date: da
 
 
 def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
-    ticket_records = _collect_ticket_records(tenant, start_date, end_date)
+    as_of = datetime.now(timezone.utc)
+    ticket_records = _collect_ticket_records(tenant, start_date, end_date, as_of=as_of)
+    queue_records = _collect_open_ticket_records(tenant, as_of=as_of)
+    queue_membership_quality = _queue_membership_quality(
+        tenant,
+        as_of=as_of,
+        included_records=queue_records,
+    )
     commerce_records, commerce_raw_count = _collect_commerce_records(tenant, start_date, end_date)
     ticket_metrics = _ticket_metrics(ticket_records)
+    queue_ticket_metrics = _ticket_metrics(queue_records)
+    ticket_metrics["grain"] = "one_ticket_created_in_period"
+    ticket_metrics["period"] = {"from": _iso(start_date), "to": _iso(end_date)}
     survey_metrics = _survey_metrics(tenant, start_date, end_date)
     chat_metrics = _chat_metrics(tenant, start_date, end_date)
     commerce_metrics = _commerce_metrics(
@@ -3616,8 +4107,8 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         commerce_records=commerce_records,
         raw_record_count=commerce_raw_count,
     )
-    employee_metrics = _employee_metrics(tenant, ticket_records)
-    live_chat = _active_presence(ticket_records)
+    employee_metrics = _employee_metrics(tenant, queue_records)
+    live_chat = _active_presence(queue_records)
     heatmap = build_operational_heatmap(
         tenant,
         start_date,
@@ -3627,12 +4118,25 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         include_ai=False,
         commerce_records=commerce_records,
     )
-    alerts = _build_alerts(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, commerce_metrics)
-    summary = _summary_from_metrics(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts, commerce_metrics)
+    alerts = _build_alerts(queue_ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, commerce_metrics)
+    summary = _summary_from_metrics(queue_ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts, commerce_metrics)
+    queue_truth = _build_queue_truth(
+        queue_records=queue_records,
+        period_records=ticket_records,
+        start_date=start_date,
+        end_date=end_date,
+        as_of=as_of,
+        membership_quality=queue_membership_quality,
+    )
     period = _period_delta(start_date, end_date)
     previous_start = start_date - period
     previous_end = start_date
-    previous_ticket_records = _collect_ticket_records(tenant, previous_start, previous_end)
+    previous_ticket_records = _collect_ticket_records(
+        tenant,
+        previous_start,
+        previous_end,
+        as_of=as_of,
+    )
     previous_commerce_records, previous_commerce_raw_count = _collect_commerce_records(
         tenant,
         previous_start,
@@ -3667,7 +4171,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         [],
         previous_commerce_metrics,
     )
-    next_best_actions = _build_next_best_actions(ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts, commerce_metrics)
+    next_best_actions = _build_next_best_actions(queue_ticket_metrics, survey_metrics, chat_metrics, employee_metrics, heatmap, alerts, commerce_metrics)
     ai_brief = _build_ai_operational_brief(
         summary=summary,
         alerts=alerts,
@@ -3681,6 +4185,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period": {"from": _iso(start_date), "to": _iso(end_date)},
         "summary": summary,
+        "queue_truth": queue_truth,
         "previous_summary": previous_summary,
         "trends": _build_trends(summary, previous_summary),
         "tickets": ticket_metrics,

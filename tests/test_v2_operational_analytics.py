@@ -22,6 +22,7 @@ from models import (
     Order,
     PedidoConversacional,
     PymePedido,
+    PymeTicket,
     TenantProfile,
     TenantTicket,
     TicketRealtimeState,
@@ -308,6 +309,214 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertTrue(any(alert.get("reason_code") == "tickets_overdue" for alert in payload.get("alerts") or []))
         self.assertTrue(any(alert.get("reason_code") == "assisted_orders_need_review" for alert in payload.get("alerts") or []))
 
+    def test_queue_truth_keeps_full_backlog_and_reports_sla_unknowns(self):
+        now = datetime.now(timezone.utc)
+        old_open = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="alumbrado",
+            descripcion="Reclamo abierto anterior a la ventana del dashboard",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={},
+            created_at=now - timedelta(days=30),
+            updated_at=now - timedelta(days=30),
+        )
+        expired_due = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="agua",
+            descripcion="SLA vencido respaldado solo por due_at",
+            estado="nuevo",
+            origen="web",
+            datos_extra={
+                "sla": {
+                    "resolution_due_at": (now - timedelta(hours=2)).isoformat(),
+                }
+            },
+        )
+        foreign_owner = User(
+            name="Operador ajeno",
+            email="foreign-queue-truth@example.com",
+            rol="admin",
+            tenant_slug="foreign-queue-truth",
+        )
+        foreign_owner.set_password("123456")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-queue-truth",
+            nombre="Tenant ajeno a la cola",
+            tipo="pyme",
+            pyme_id=foreign_owner.id,
+            plan="full",
+        )
+        db.session.add_all([old_open, expired_due, foreign_tenant])
+        db.session.flush()
+        db.session.add(
+            TenantTicket(
+                tenant_id=foreign_tenant.id,
+                categoria="privado",
+                descripcion="foreign queue truth secret",
+                estado="nuevo",
+                origen="web",
+                datos_extra={"sla_status": "breached"},
+            )
+        )
+        db.session.commit()
+
+        import routes.v2.analytics as analytics_routes
+
+        analytics_routes._clear_operations_dashboard_cache_for_tests()
+        response = self.client.get(
+            "/api/v2/analytics/operations/dashboard?days=7",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        queue_truth = payload.get("queue_truth") or {}
+        self.assertEqual(queue_truth.get("contract_version"), "operations.queue_truth.v1")
+        self.assertEqual(queue_truth.get("grain"), "one_current_open_ticket")
+        self.assertTrue(queue_truth.get("as_of"))
+        self.assertEqual(
+            queue_truth.get("source_models"),
+            ["TenantTicket", "MunicipioTicket", "PymeTicket"],
+        )
+
+        snapshot = queue_truth.get("queue_snapshot") or {}
+        snapshot_summary = snapshot.get("summary") or {}
+        self.assertEqual(snapshot_summary.get("open_total"), 4)
+        self.assertEqual(snapshot_summary.get("sla_breached"), 2)
+        self.assertEqual(snapshot_summary.get("sla_unknown"), 2)
+        self.assertEqual(snapshot_summary.get("unassigned"), 3)
+
+        sla = snapshot.get("sla") or {}
+        self.assertEqual(sla.get("eligible"), 4)
+        self.assertEqual(sla.get("known"), 2)
+        self.assertEqual(sla.get("unknown"), 2)
+        self.assertEqual(sla.get("breached"), 2)
+        self.assertEqual(sla.get("numerator"), 2)
+        self.assertEqual(sla.get("denominator"), 2)
+        self.assertEqual(sla.get("breach_rate_pct"), 100.0)
+
+        age_buckets = {item.get("key"): item for item in snapshot.get("age_buckets") or []}
+        self.assertEqual((age_buckets.get("gte_7d") or {}).get("count"), 1)
+        self.assertIn("/perfil?tab=tickets", (age_buckets.get("gte_7d") or {}).get("href") or "")
+        self.assertFalse((age_buckets.get("gte_7d") or {}).get("exact_filter"))
+        ownership = snapshot.get("ownership") or {}
+        self.assertIn("agent=unassigned", ownership.get("unassigned_href") or "")
+        by_owner = ownership.get("by_owner") or []
+        self.assertTrue(by_owner)
+        self.assertTrue(all(item.get("link_semantics") == "navigation_only" for item in by_owner))
+        self.assertTrue(all(item.get("exact_filter") is False for item in by_owner))
+        self.assertNotIn("sla=", ((snapshot.get("links") or {}).get("sla_breached") or ""))
+        link_contract = snapshot.get("link_contract") or {}
+        self.assertFalse(((link_contract.get("sla_breached") or {}).get("exact_filter")))
+        self.assertEqual(
+            link_contract.get("unassigned"),
+            {"semantics": "navigation_only", "exact_filter": False},
+        )
+        self.assertEqual(
+            link_contract.get("ownership_by_owner"),
+            {"semantics": "navigation_only", "exact_filter": False},
+        )
+        self.assertEqual(
+            link_contract.get("reason_code"),
+            "operational_queue_v1_not_yet_bound_to_queue_truth_snapshot",
+        )
+        self.assertIn("drilldowns exactos", link_contract.get("notice") or "")
+
+        period_flow = queue_truth.get("period_flow") or {}
+        self.assertEqual(period_flow.get("grain"), "one_ticket_created_in_period")
+        self.assertEqual((period_flow.get("summary") or {}).get("created_total"), 3)
+        self.assertIn("historical_backlog_snapshot", period_flow.get("does_not_measure") or [])
+        self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 4)
+        self.assertEqual((payload.get("summary") or {}).get("overdue_tickets"), 2)
+        unavailable_trends = {item.get("key") for item in (payload.get("trends") or {}).get("unavailable") or []}
+        self.assertEqual(unavailable_trends, {"open_tickets", "overdue_tickets"})
+        self.assertNotIn("foreign queue truth secret", json.dumps(payload).lower())
+
+    def test_queue_truth_applies_as_of_membership_and_quarantines_future_dates(self):
+        now = datetime.now(timezone.utc)
+        future_at = now + timedelta(days=30)
+        future_tenant = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="futuro",
+            descripcion="No debe entrar al corte operativo",
+            estado="nuevo",
+            origen="web",
+            created_at=future_at,
+            updated_at=future_at,
+        )
+        future_municipio = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.admin.id,
+            pregunta="Registro municipal con fecha futura",
+            asunto="Futuro municipio",
+            categoria="futuro",
+            estado="nuevo",
+            canal_ingreso="web",
+            fecha=future_at,
+        )
+        future_pyme = PymeTicket(
+            tenant_id=self.tenant.id,
+            pregunta="Registro pyme con fecha futura",
+            asunto="Futuro pyme",
+            categoria="futuro",
+            estado="nuevo",
+            nro_ticket=987654320,
+            fecha=future_at,
+        )
+        null_created_at = PymeTicket(
+            tenant_id=self.tenant.id,
+            pregunta="Registro legado sin fecha",
+            asunto="Legado sin fecha",
+            categoria="legado",
+            estado="nuevo",
+            nro_ticket=987654321,
+            fecha=now,
+        )
+        db.session.add_all(
+            [future_tenant, future_municipio, future_pyme, null_created_at]
+        )
+        db.session.flush()
+        null_created_at.fecha = None
+        db.session.commit()
+
+        import routes.v2.analytics as analytics_routes
+
+        analytics_routes._clear_operations_dashboard_cache_for_tests()
+        response = self.client.get(
+            "/api/v2/analytics/operations/dashboard?days=7",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        queue_truth = payload.get("queue_truth") or {}
+        self.assertEqual((queue_truth.get("queue_snapshot") or {}).get("summary", {}).get("open_total"), 3)
+        quality = queue_truth.get("membership_quality") or {}
+        self.assertEqual(
+            quality.get("creation_membership"),
+            "created_at_null_or_lte_as_of",
+        )
+        self.assertEqual(
+            (quality.get("null_created_at") or {}).get("included_records"),
+            1,
+        )
+        future_quality = quality.get("future_created_at") or {}
+        self.assertEqual(future_quality.get("state"), "quarantined")
+        self.assertEqual(future_quality.get("excluded_records"), 3)
+        self.assertEqual(
+            {
+                item.get("source_model"): item.get("excluded_records")
+                for item in future_quality.get("by_source_model") or []
+            },
+            {"TenantTicket": 1, "MunicipioTicket": 1, "PymeTicket": 1},
+        )
+
     def test_operations_commerce_unifies_normal_orders_and_maps_only_privacy_safe_locations(self):
         legacy = PymePedido(
             pyme_id=self.admin.id,
@@ -452,7 +661,9 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
-        self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 2)
+        # Once the legacy owner maps to two profiles, its tenant_id=NULL row
+        # is intentionally quarantined; only the exact TenantTicket remains.
+        self.assertEqual((payload.get("summary") or {}).get("open_tickets"), 1)
         self.assertNotIn("dato territorial de otro tenant", json.dumps(payload).lower())
 
     def test_commerce_dedupe_inherits_amount_and_currency_from_complete_source(self):

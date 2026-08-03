@@ -7,7 +7,7 @@ import importlib
 from flask import Flask
 from extensions import db
 from config import TestConfig
-from models import User
+from models import TenantProfile, User
 from tests.auth_test_utils import clerk_superadmin_headers
 
 
@@ -29,17 +29,42 @@ class WhatsappPromocionarTest(unittest.TestCase):
         self.other_admin = User(name='Other', email='o@o.com', password_hash='x', rol='admin')
         db.session.add_all([self.admin_user, self.other_admin])
         db.session.flush()
+        self.tenant = TenantProfile(
+            slug='promo-admin',
+            nombre='Promo Admin',
+            tipo='pyme',
+            pyme_id=self.admin_user.id,
+            is_active=True,
+        )
+        self.other_tenant = TenantProfile(
+            slug='promo-other',
+            nombre='Promo Other',
+            tipo='pyme',
+            pyme_id=self.other_admin.id,
+            is_active=True,
+        )
+        db.session.add_all([self.tenant, self.other_tenant])
+        db.session.flush()
         # Admin users are owners in this auth model; employees point to empresa_id.
         self.admin_user.empresa_id = None
+        self.admin_user.tenant_id = self.tenant.id
+        self.admin_user.tenant_slug = self.tenant.slug
+        self.admin_user.tipo_chat = 'pyme'
         self.other_admin.empresa_id = None
+        self.other_admin.tenant_id = self.other_tenant.id
+        self.other_admin.tenant_slug = self.other_tenant.slug
+        self.other_admin.tipo_chat = 'pyme'
 
         self.client_user = User(
             name='Cliente1', email='c1@c.com', password_hash='x',
-            telefono='+123', acepta_marketing=True, empresa_id=self.admin_user.id
+            telefono='+123', acepta_marketing=True, empresa_id=self.admin_user.id,
+            tenant_id=self.tenant.id, tenant_slug=self.tenant.slug, tipo_chat='pyme'
         )
         self.other_client = User(
             name='Cliente2', email='c2@c.com', password_hash='x',
-            telefono='+456', acepta_marketing=True, empresa_id=self.other_admin.id
+            telefono='+456', acepta_marketing=True, empresa_id=self.other_admin.id,
+            tenant_id=self.other_tenant.id, tenant_slug=self.other_tenant.slug,
+            tipo_chat='pyme'
         )
         db.session.add_all([self.client_user, self.other_client])
         db.session.commit()

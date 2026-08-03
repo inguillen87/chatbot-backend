@@ -84,8 +84,54 @@ def _parse_bbox(value: Optional[str]) -> Optional[tuple[float, float, float, flo
 
 
 def _tenant_owner_id_for_scope(tenant: TenantProfile, scope: str) -> Optional[str]:
-    owner_id = tenant.pyme_id if scope == "pyme" else tenant.municipio_id
-    return str(owner_id) if owner_id is not None else None
+    if scope == "pyme":
+        owner_candidates = (tenant.pyme_id,)
+    elif scope == "municipio":
+        owner_candidates = (tenant.municipio_id,)
+    else:
+        owner_candidates = (tenant.municipio_id, tenant.pyme_id)
+    owner_ids = tuple(
+        dict.fromkeys(int(value) for value in owner_candidates if value is not None)
+    )
+    return str(owner_ids[0]) if len(owner_ids) == 1 else None
+
+
+def _profile_context_for_scope(profile_id, scope: str) -> tuple[str, int]:
+    try:
+        normalized_profile_id = int(profile_id)
+    except (TypeError, ValueError):
+        abort(400, description="tenant context is invalid")
+    if normalized_profile_id <= 0:
+        abort(400, description="tenant context is invalid")
+
+    tenant = TenantProfile.query.filter_by(id=normalized_profile_id).one_or_none()
+    if tenant is None:
+        abort(400, description="tenant context is invalid")
+    owner_id = _tenant_owner_id_for_scope(tenant, scope)
+    if owner_id is None:
+        abort(400, description="tenant context is invalid for scope")
+    return owner_id, int(tenant.id)
+
+
+def _validate_viewer_profile_context(viewer, *, owner_id: str, profile_id: int, scope: str) -> None:
+    viewer_profile_id = getattr(viewer, "tenant_id", None)
+    if viewer_profile_id is not None:
+        try:
+            if int(viewer_profile_id) != profile_id:
+                abort(400, description="tenant context is inconsistent")
+        except (TypeError, ValueError):
+            abort(400, description="tenant context is inconsistent")
+
+    if scope == "pyme":
+        owner_attrs = ("pyme_id", "empresa_id")
+    elif scope == "municipio":
+        owner_attrs = ("municipio_id", "empresa_id")
+    else:
+        owner_attrs = ("municipio_id", "pyme_id", "empresa_id")
+    for attr in owner_attrs:
+        value = getattr(viewer, attr, None)
+        if value is not None and str(value) != owner_id:
+            abort(400, description="tenant context is inconsistent")
 
 
 def _resolve_tenant_from_context(scope: str) -> tuple[Optional[str], Optional[int]]:
@@ -101,17 +147,39 @@ def _resolve_tenant_from_context(scope: str) -> tuple[Optional[str], Optional[in
 
     tenant_profile = getattr(g, "tenant_profile", None)
     if tenant_profile is not None and getattr(tenant_profile, "id", None) is not None:
-        owner_id = _tenant_owner_id_for_scope(tenant_profile, scope)
-        if owner_id:
-            return owner_id, int(tenant_profile.id)
+        owner_id, profile_id = _profile_context_for_scope(tenant_profile.id, scope)
+        viewer = getattr(g, "viewer", None)
+        if viewer is not None:
+            _validate_viewer_profile_context(
+                viewer,
+                owner_id=owner_id,
+                profile_id=profile_id,
+                scope=scope,
+            )
+        return owner_id, profile_id
 
     viewer = getattr(g, "viewer", None)
     if viewer is not None:
-        preferred_attrs = (
-            ("pyme_id", "empresa_id", "tenant_id", "id")
-            if scope == "pyme"
-            else ("municipio_id", "empresa_id", "tenant_id", "id")
-        )
+        # User.tenant_id is a TenantProfile foreign key, not a legacy owner
+        # identifier. Resolve it before considering owner-only fallbacks so a
+        # numeric collision can never select another tenant's rows.
+        viewer_profile_id = getattr(viewer, "tenant_id", None)
+        if viewer_profile_id is not None:
+            owner_id, profile_id = _profile_context_for_scope(viewer_profile_id, scope)
+            _validate_viewer_profile_context(
+                viewer,
+                owner_id=owner_id,
+                profile_id=profile_id,
+                scope=scope,
+            )
+            return owner_id, profile_id
+
+        if scope == "pyme":
+            preferred_attrs = ("pyme_id", "empresa_id", "id")
+        elif scope == "municipio":
+            preferred_attrs = ("municipio_id", "empresa_id", "id")
+        else:
+            preferred_attrs = ("municipio_id", "pyme_id", "empresa_id", "id")
         for attr in preferred_attrs:
             value = getattr(viewer, attr, None)
             if value is not None:
@@ -140,13 +208,10 @@ def parse_filters(args) -> AnalyticsFilters:
     except (TypeError, ValueError):
         abort(400, description="tenant_profile_id must be an integer")
     if tenant_profile_id is not None:
-        tenant_obj = TenantProfile.query.filter_by(id=tenant_profile_id).one_or_none()
-        if tenant_obj is None:
-            abort(400, description="tenant context is invalid")
-        owner_scope = "pyme" if normalized_scope == "pyme" else "municipio"
-        owner_id = _tenant_owner_id_for_scope(tenant_obj, owner_scope)
-        if not owner_id:
-            abort(400, description="tenant context is invalid for scope")
+        owner_id, tenant_profile_id = _profile_context_for_scope(
+            tenant_profile_id,
+            normalized_scope,
+        )
         if tenant_id and str(tenant_id) != owner_id:
             abort(400, description="tenant context is inconsistent")
         tenant_id = owner_id
@@ -158,11 +223,13 @@ def parse_filters(args) -> AnalyticsFilters:
                 tenant_obj = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).one_or_none()
             except SQLAlchemyError:
                 current_app.logger.exception("[analytics] tenant_slug resolution failed slug=%s", tenant_slug)
-                tenant_obj = None
-            if tenant_obj:
-                owner_scope = "pyme" if normalized_scope == "pyme" else "municipio"
-                tenant_id = _tenant_owner_id_for_scope(tenant_obj, owner_scope)
-                tenant_profile_id = int(tenant_obj.id)
+                abort(503, description="tenant context is unavailable")
+            if tenant_obj is None:
+                abort(400, description="tenant context is invalid")
+            tenant_id, tenant_profile_id = _profile_context_for_scope(
+                tenant_obj.id,
+                normalized_scope,
+            )
 
     if not tenant_id:
         tenant_id, context_profile_id = _resolve_tenant_from_context(normalized_scope)

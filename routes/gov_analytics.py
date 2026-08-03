@@ -86,6 +86,7 @@ def _load_records(current_user):
         date_from=date_from,
         date_to=date_to,
         tenant_id=getattr(current_user, "tenant_id", None),
+        actor=current_user,
     )
     return records, None, None
 

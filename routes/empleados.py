@@ -28,6 +28,7 @@ from services.employee_routing import (
 from services.tenant_ticket_scope import (
     resolve_unique_tenant_for_owner,
     scoped_municipio_ticket_query,
+    tenant_unique_legacy_owner_id,
 )
 
 def _normalize_categorias_input(categorias_raw):
@@ -226,17 +227,13 @@ def _empleados_query(current_user: User):
     tenant = _tenant_for_current_user(current_user)
     if tenant is None:
         return User.query.filter(false())
-    legacy_owner_ids = [
-        value
-        for value in (tenant.municipio_id, tenant.pyme_id)
-        if value is not None
-    ]
     ownership_filters = [User.tenant_id == tenant.id]
-    if legacy_owner_ids:
+    legacy_owner_id = tenant_unique_legacy_owner_id(tenant)
+    if legacy_owner_id is not None:
         ownership_filters.append(
             and_(
                 User.tenant_id.is_(None),
-                User.empresa_id.in_(legacy_owner_ids),
+                User.empresa_id == legacy_owner_id,
             )
         )
     return User.query.filter(

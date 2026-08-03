@@ -22,7 +22,7 @@ from models_education import (
     Student,
     StudentGuardianRelation,
 )
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import auth_tenant_for_user, token_requerido
 from services.education_contracts import (
     build_education_admin_menu,
     build_education_profile,
@@ -35,18 +35,26 @@ from services.education_contracts import (
 from services.education_case_service import (
     build_education_operations_heatmap,
     build_education_operations_summary,
+    validated_ticket_for_school_case_alias,
 )
 from services.tenant_ticket_scope import (
-    TicketTenantScopeError,
     normalize_municipio_ticket_write_scope,
-    resolve_unique_tenant_for_owner,
-    scoped_municipio_ticket_query,
 )
 from services.education_access_policy import (
+    EDUCATION_ANALYTICS_READ,
+    EDUCATION_CASES_MANAGE,
+    EDUCATION_CASES_READ,
+    EDUCATION_CASES_WRITE,
+    EDUCATION_DIRECTORY_READ,
+    EDUCATION_DIRECTORY_WRITE,
     EDUCATION_GUARDIANS_LINK,
     EDUCATION_GUARDIANS_READ,
     EDUCATION_GUARDIANS_VERIFY,
-    missing_education_capabilities,
+    EDUCATION_SETTINGS_READ,
+    EDUCATION_SETTINGS_WRITE,
+    decide_education_admin_access,
+    education_staff_can_be_assigned,
+    is_education_tenant_owner,
 )
 from services.plan_access import (
     integration_access_payload,
@@ -128,9 +136,9 @@ def _tenant_write_access_response(
     if not tenant_id:
         return None, (jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400)
 
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
+    tenant = TenantProfile.query.filter_by(id=tenant_id, is_active=True).one_or_none()
     if not tenant:
-        return None, (jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404)
+        return None, (jsonify({"error": {"code": 403, "message": "Active tenant profile not found"}}), 403)
 
     if not plan_allows_integration_feature(tenant, feature_id):
         return None, _education_plan_required_response(
@@ -164,6 +172,43 @@ def _education_access_error(
     return jsonify(payload), status_code
 
 
+def _education_admin_context(current_user, actor_principal, *required: str):
+    """Resolve one active tenant and authorize one education capability set."""
+
+    actor = actor_principal or current_user
+    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    if not tenant_id:
+        return None, _education_access_error(
+            "Tenant context required",
+            400,
+            "education_tenant_context_required",
+            action_hint="select_tenant",
+        )
+    tenant = TenantProfile.query.filter_by(id=tenant_id, is_active=True).one_or_none()
+    if tenant is None:
+        return None, _education_access_error(
+            "Active tenant profile not found",
+            403,
+            "education_tenant_inactive",
+        )
+
+    decision = decide_education_admin_access(actor, tenant, *required)
+    if decision.allowed:
+        return tenant, None
+    message = (
+        "Permisos insuficientes para esta operacion educativa"
+        if decision.reason_code == "education_capability_required"
+        else "Acceso administrativo educativo denegado"
+    )
+    return None, _education_access_error(
+        message,
+        403,
+        decision.reason_code or "education_access_denied",
+        action_hint="ask_tenant_admin",
+        missing_capabilities=list(decision.missing_capabilities),
+    )
+
+
 def _guardian_operation_tenant(current_user, actor_principal, data: dict):
     actor = actor_principal or current_user
     actor_tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
@@ -189,12 +234,12 @@ def _guardian_operation_tenant(current_user, actor_principal, data: dict):
             action_hint="use_authenticated_tenant",
         )
 
-    tenant = TenantProfile.query.filter_by(id=actor_tenant_id).first()
+    tenant = TenantProfile.query.filter_by(id=actor_tenant_id, is_active=True).one_or_none()
     if not tenant:
         return None, _education_access_error(
-            "Tenant profile not found",
-            404,
-            "education_tenant_not_found",
+            "Active tenant profile not found",
+            403,
+            "education_tenant_inactive",
         )
     if not _is_authorized_for_tenant(actor, tenant_id=tenant.id, tenant_slug=tenant.slug):
         return None, _education_access_error(
@@ -213,28 +258,27 @@ def _guardian_operation_tenant(current_user, actor_principal, data: dict):
 
 
 def _is_guardian_tenant_owner(actor, tenant: TenantProfile) -> bool:
-    actor_id = getattr(actor, "id", None)
-    return bool(
-        actor_id
-        and actor_id in {getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None)}
-    )
+    return is_education_tenant_owner(actor, tenant)
 
 
 def _guardian_capability_response(actor, tenant: TenantProfile, *required: str):
-    # Some legacy tenant owners were provisioned before role normalization and
-    # still carry rol=usuario. Ownership is server-side and already tenant-bound,
-    # so preserve their administrative access without trusting token claims.
-    if _is_guardian_tenant_owner(actor, tenant):
+    # Reuse the same server-authoritative role and tenant policy as every other
+    # education admin surface. In particular, persisted capability-looking
+    # metadata on a citizen/lead must never turn that account into staff.
+    decision = decide_education_admin_access(actor, tenant, *required)
+    if decision.allowed:
         return None
-    missing = missing_education_capabilities(actor, *required)
-    if not missing:
-        return None
+    reason_code = (
+        "education_guardian_capability_required"
+        if decision.reason_code == "education_capability_required"
+        else "education_guardian_role_required"
+    )
     return _education_access_error(
         "Permisos insuficientes para operar perfiles familiares",
         403,
-        "education_guardian_capability_required",
+        reason_code,
         action_hint="ask_tenant_admin",
-        missing_capabilities=missing,
+        missing_capabilities=list(decision.missing_capabilities),
     )
 
 
@@ -294,60 +338,17 @@ def _resolve_actor_tenant_id(current_user=None, actor_principal=None):
     actor = actor_principal or current_user
     if actor is None:
         return None
-
-    tenant_id = getattr(actor, "tenant_id", None)
-    if tenant_id:
-        try:
-            tenant = db.session.get(TenantProfile, int(tenant_id))
-        except (TypeError, ValueError):
-            return None
-        return int(tenant.id) if tenant is not None else None
-
-    # A platform superadmin without an explicit tenant intentionally keeps the
-    # existing global read surface; do not bind it through a coincidental user
-    # id. Mutations already require an explicit declared tenant downstream.
-    if canonical_role(getattr(actor, "rol", None)) == ROLE_SUPERADMIN:
+    try:
+        tenant = auth_tenant_for_user(actor)
+    except Exception:
+        current_app.logger.exception(
+            "Unable to resolve authoritative education tenant for actor %s",
+            getattr(actor, "id", None),
+        )
         return None
-
-    owner_ids = []
-    for raw_owner_id in (
-        getattr(actor, "municipio_id", None),
-        getattr(actor, "pyme_id", None),
-        getattr(actor, "empresa_id", None),
-    ):
-        if raw_owner_id in (None, ""):
-            continue
-        try:
-            normalized_owner_id = int(raw_owner_id)
-        except (TypeError, ValueError):
-            return None
-        if normalized_owner_id > 0 and normalized_owner_id not in owner_ids:
-            owner_ids.append(normalized_owner_id)
-
-    if not owner_ids and str(getattr(actor, "tipo_chat", "") or "").lower() in {
-        "municipio",
-        "pyme",
-        "colegio",
-        "educacion",
-    }:
-        try:
-            actor_user_id = int(getattr(actor, "id", None))
-        except (TypeError, ValueError):
-            actor_user_id = None
-        if actor_user_id and actor_user_id > 0:
-            owner_ids.append(actor_user_id)
-
-    resolved_tenant_ids = set()
-    for owner_id in owner_ids:
-        try:
-            resolution = resolve_unique_tenant_for_owner(owner_id)
-        except TicketTenantScopeError:
-            return None
-        if resolution.status != "unique" or resolution.tenant is None:
-            return None
-        resolved_tenant_ids.add(int(resolution.tenant.id))
-
-    return resolved_tenant_ids.pop() if len(resolved_tenant_ids) == 1 else None
+    if tenant is None or getattr(tenant, "is_active", True) is False:
+        return None
+    return int(tenant.id)
 
 
 def _resolve_school_tenant_id(raw_tenant_id):
@@ -439,6 +440,49 @@ def _section_payload(section: CourseSection) -> dict:
     }
 
 
+def _section_is_tenant_bound(
+    section: CourseSection | None,
+    school: School,
+    tenant: TenantProfile,
+) -> bool:
+    if (
+        section is None
+        or section.campus is None
+        or section.campus.school_id != school.id
+        or section.level is None
+        or section.level.school_id != school.id
+        or section.shift is None
+        or section.shift.school_id != school.id
+    ):
+        return False
+    if section.homeroom_staff_id is None:
+        return True
+    return education_staff_can_be_assigned(
+        db.session.get(User, section.homeroom_staff_id),
+        tenant,
+        EDUCATION_DIRECTORY_READ,
+    )
+
+
+def _student_is_tenant_bound(
+    student: Student | None,
+    school: School,
+    tenant: TenantProfile,
+) -> bool:
+    if student is None or student.school_id != school.id:
+        return False
+    if student.campus_id is not None:
+        if Campus.query.filter_by(id=student.campus_id, school_id=school.id).first() is None:
+            return False
+    if student.section_id is not None:
+        section = db.session.get(CourseSection, student.section_id)
+        if not _section_is_tenant_bound(section, school, tenant):
+            return False
+        if student.campus_id is not None and section.campus_id != student.campus_id:
+            return False
+    return True
+
+
 def _guardian_payload(guardian: Guardian) -> dict:
     return {
         "id": guardian.id,
@@ -453,27 +497,20 @@ def _guardian_payload(guardian: Guardian) -> dict:
 
 
 def _get_case_alias_for_tenant(case_id: int, tenant_id: int) -> SchoolCaseAlias | None:
-    return SchoolCaseAlias.query.filter_by(id=case_id, tenant_id=tenant_id).first()
+    alias = SchoolCaseAlias.query.filter_by(id=case_id, tenant_id=tenant_id).first()
+    if alias is None or _ticket_for_case(alias) is None:
+        return None
+    return alias
 
 
 def _ticket_for_case(alias: SchoolCaseAlias):
-    if alias.ticket_type == "pyme":
-        return PymeTicket.query.filter_by(
-            id=alias.ticket_id,
-            tenant_id=alias.tenant_id,
-        ).first()
-    if alias.ticket_type != "municipio":
-        return None
-    tenant = db.session.get(TenantProfile, alias.tenant_id)
-    if tenant is None:
-        return None
-    return scoped_municipio_ticket_query(tenant).filter(
-        MunicipioTicket.id == alias.ticket_id
-    ).first()
+    return validated_ticket_for_school_case_alias(alias)
 
 
-def _case_payload(alias: SchoolCaseAlias, *, include_comments: bool = False) -> dict:
+def _case_payload(alias: SchoolCaseAlias, *, include_comments: bool = False) -> dict | None:
     ticket = _ticket_for_case(alias)
+    if ticket is None:
+        return None
     payload = {
         "school_case_id": alias.id,
         "school_id": alias.school_id,
@@ -508,11 +545,11 @@ def _truthy(value) -> bool:
 
 
 def _case_matches_ticket_filters(alias: SchoolCaseAlias, *, status: str = "", assignee_id: int | None = None, unassigned: bool = False) -> bool:
-    if not status and assignee_id is None and not unassigned:
-        return True
     ticket = _ticket_for_case(alias)
     if not ticket:
         return False
+    if not status and assignee_id is None and not unassigned:
+        return True
     if status and fold_text(getattr(ticket, "estado", None)) != status:
         return False
     if assignee_id is not None and getattr(ticket, "asignado_a_id", None) != assignee_id:
@@ -522,15 +559,32 @@ def _case_matches_ticket_filters(alias: SchoolCaseAlias, *, status: str = "", as
     return True
 
 
+def _commit_case_alias_integrity_audits():
+    if not db.session.info.pop("education_case_alias_audit_pending", False):
+        return None
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.info.pop("education_case_alias_audit_pending", None)
+        db.session.rollback()
+        current_app.logger.exception("Unable to persist corrupt education case alias audit")
+        return _education_access_error(
+            "No se pudo auditar la integridad de los casos escolares",
+            503,
+            "education_case_alias_audit_failed",
+            action_hint="retry_later",
+        )
+    return None
+
+
 @education_bp.route("/api/v1/education/tenant/capabilities", methods=["GET"])
 @token_requerido
 def get_education_capabilities(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_SETTINGS_READ
+    )
+    if access_response:
+        return access_response
 
     payload = {
         "tenant_id": tenant.id,
@@ -549,12 +603,11 @@ def get_education_capabilities(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/tenant/capabilities", methods=["PUT"])
 @token_requerido
 def update_education_capabilities(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_SETTINGS_WRITE
+    )
+    if access_response:
+        return access_response
     if not plan_allows_integration_feature(tenant, "education_management"):
         return _education_plan_required_response(tenant)
 
@@ -602,12 +655,11 @@ def update_education_capabilities(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/cases/taxonomy", methods=["GET"])
 @token_requerido
 def get_school_case_taxonomy(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_CASES_READ
+    )
+    if access_response:
+        return access_response
 
     payload = {
         "tenant_id": tenant.id,
@@ -624,12 +676,11 @@ def get_school_case_taxonomy(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/admin/menu", methods=["GET"])
 @token_requerido
 def get_education_admin_menu(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_SETTINGS_READ
+    )
+    if access_response:
+        return access_response
     payload = build_education_admin_menu(tenant)
     return jsonify(_education_with_access(payload, tenant))
 
@@ -637,12 +688,11 @@ def get_education_admin_menu(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/whatsapp/playbook", methods=["GET"])
 @token_requerido
 def get_education_whatsapp_playbook(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_SETTINGS_READ
+    )
+    if access_response:
+        return access_response
     payload = build_education_whatsapp_playbook(tenant)
     return jsonify(_education_with_access(payload, tenant))
 
@@ -650,26 +700,27 @@ def get_education_whatsapp_playbook(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/operations/summary", methods=["GET"])
 @token_requerido
 def get_education_operations_summary(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_ANALYTICS_READ
+    )
+    if access_response:
+        return access_response
     payload = build_education_operations_summary(tenant)
     payload["education_enabled"] = _tenant_supports_education(tenant)
+    audit_response = _commit_case_alias_integrity_audits()
+    if audit_response:
+        return audit_response
     return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/operations/heatmap", methods=["GET"])
 @token_requerido
 def get_education_operations_heatmap(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_ANALYTICS_READ
+    )
+    if access_response:
+        return access_response
     if not plan_allows_integration_feature(tenant, "heatmaps"):
         return _education_plan_required_response(
             tenant,
@@ -685,42 +736,51 @@ def get_education_operations_heatmap(current_user, actor_principal=None):
         max_points=min(request.args.get("limit", default=500, type=int) or 500, 1000),
     )
     payload["education_enabled"] = _tenant_supports_education(tenant)
+    audit_response = _commit_case_alias_integrity_audits()
+    if audit_response:
+        return audit_response
     return jsonify(_education_with_access(payload, tenant))
 
 
 @education_bp.route("/api/v1/education/schools", methods=["GET"])
 @token_requerido
 def get_schools(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    query = School.query
-    if tenant_id:
-        query = query.filter(School.tenant_id == tenant_id)
-
-    schools = query.order_by(School.name.asc()).all()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    schools = (
+        School.query.filter_by(tenant_id=tenant.id)
+        .order_by(School.name.asc())
+        .all()
+    )
     return jsonify([_school_payload(school) for school in schools])
 
 
 @education_bp.route("/api/v1/education/schools/<int:school_id>", methods=["GET"])
 @token_requerido
 def get_school_detail(current_user, school_id: int, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    school = School.query.filter_by(id=school_id).first()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    school = School.query.filter_by(id=school_id, tenant_id=tenant.id).first()
     if not school:
         return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
-    if tenant_id and school.tenant_id != tenant_id:
-        return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
     return jsonify(_school_payload(school, include_counts=True))
 
 
 @education_bp.route("/api/v1/education/schools", methods=["POST"])
 @token_requerido
 def create_school(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
-    tenant = TenantProfile.query.filter_by(id=tenant_id).first()
-    if not tenant:
-        return jsonify({"error": {"code": 404, "message": "Tenant profile not found"}}), 404
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_WRITE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     if not plan_allows_integration_feature(tenant, "education_management"):
         return _education_plan_required_response(tenant)
     if not _tenant_supports_education(tenant):
@@ -759,12 +819,14 @@ def get_campuses(current_user, actor_principal=None):
     if not school_id:
         return jsonify({"error": {"code": 400, "message": "school_id required"}}), 400
 
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    school = School.query.filter_by(id=school_id).first()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    school = School.query.filter_by(id=school_id, tenant_id=tenant.id).first()
     if not school:
         return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
-    if tenant_id and school.tenant_id != tenant_id:
-        return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
 
     campuses = Campus.query.filter_by(school_id=school.id).order_by(Campus.name.asc()).all()
     return jsonify([_campus_payload(campus) for campus in campuses])
@@ -773,12 +835,14 @@ def get_campuses(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/schools/<int:school_id>/campuses", methods=["GET"])
 @token_requerido
 def get_school_campuses(current_user, school_id: int, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    school = School.query.filter_by(id=school_id).first()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    school = School.query.filter_by(id=school_id, tenant_id=tenant.id).first()
     if not school:
         return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
-    if tenant_id and school.tenant_id != tenant_id:
-        return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
 
     campuses = Campus.query.filter_by(school_id=school.id).order_by(Campus.name.asc()).all()
     return jsonify([_campus_payload(campus) for campus in campuses])
@@ -787,7 +851,12 @@ def get_school_campuses(current_user, school_id: int, actor_principal=None):
 @education_bp.route("/api/v1/education/campuses", methods=["POST"])
 @token_requerido
 def create_campus(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_WRITE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     tenant, access_response = _tenant_write_access_response(tenant_id)
     if access_response:
         return access_response
@@ -826,36 +895,54 @@ def get_sections(current_user, actor_principal=None):
     if not campus_id:
         return jsonify({"error": {"code": 400, "message": "campus_id required"}}), 400
 
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    campus = Campus.query.filter_by(id=campus_id).first()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    campus = (
+        Campus.query.join(School, Campus.school_id == School.id)
+        .filter(Campus.id == campus_id, School.tenant_id == tenant.id)
+        .first()
+    )
     if not campus:
         return jsonify({"error": {"code": 404, "message": "Campus not found"}}), 404
-    if tenant_id and campus.school and campus.school.tenant_id != tenant_id:
-        return jsonify({"error": {"code": 403, "message": "Campus not available for tenant"}}), 403
 
-    sections = CourseSection.query.filter_by(campus_id=campus.id).order_by(CourseSection.academic_year.desc()).all()
+    sections = [
+        section
+        for section in CourseSection.query.filter_by(campus_id=campus.id)
+        .order_by(CourseSection.academic_year.desc())
+        .all()
+        if _section_is_tenant_bound(section, campus.school, tenant)
+    ]
     return jsonify([_section_payload(section) for section in sections])
 
 
 @education_bp.route("/api/v1/education/schools/<int:school_id>/sections", methods=["GET"])
 @token_requerido
 def get_school_sections(current_user, school_id: int, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    school = School.query.filter_by(id=school_id).first()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    school = School.query.filter_by(id=school_id, tenant_id=tenant.id).first()
     if not school:
         return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
-    if tenant_id and school.tenant_id != tenant_id:
-        return jsonify({"error": {"code": 403, "message": "School not available for tenant"}}), 403
 
     campus_ids = [campus.id for campus in school.campuses.all()]
     if not campus_ids:
         return jsonify([])
-    sections = (
+    sections = [
+        section
+        for section in (
         CourseSection.query
         .filter(CourseSection.campus_id.in_(campus_ids))
         .order_by(CourseSection.academic_year.desc(), CourseSection.grade.asc(), CourseSection.division.asc())
         .all()
-    )
+        )
+        if _section_is_tenant_bound(section, school, tenant)
+    ]
     return jsonify([_section_payload(section) for section in sections])
 
 
@@ -866,8 +953,12 @@ def get_academic_levels(current_user, actor_principal=None):
     if not school_id:
         return jsonify({"error": {"code": 400, "message": "school_id required"}}), 400
 
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    school = School.query.filter_by(id=school_id, tenant_id=tenant.id).first()
     if not school:
         return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
 
@@ -878,7 +969,12 @@ def get_academic_levels(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/levels", methods=["POST"])
 @token_requerido
 def create_academic_level(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_WRITE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     tenant, access_response = _tenant_write_access_response(tenant_id)
     if access_response:
         return access_response
@@ -911,8 +1007,12 @@ def get_shifts(current_user, actor_principal=None):
     if not school_id:
         return jsonify({"error": {"code": 400, "message": "school_id required"}}), 400
 
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    school = School.query.filter_by(id=school_id, tenant_id=tenant_id).first()
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_READ
+    )
+    if access_response:
+        return access_response
+    school = School.query.filter_by(id=school_id, tenant_id=tenant.id).first()
     if not school:
         return jsonify({"error": {"code": 404, "message": "School not found"}}), 404
 
@@ -923,7 +1023,12 @@ def get_shifts(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/shifts", methods=["POST"])
 @token_requerido
 def create_shift(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_WRITE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     tenant, access_response = _tenant_write_access_response(tenant_id)
     if access_response:
         return access_response
@@ -952,7 +1057,12 @@ def create_shift(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/sections", methods=["POST"])
 @token_requerido
 def create_section(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_DIRECTORY_WRITE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     tenant, access_response = _tenant_write_access_response(tenant_id)
     if access_response:
         return access_response
@@ -971,8 +1081,12 @@ def create_section(current_user, actor_principal=None):
     except (TypeError, ValueError):
         return jsonify({"error": {"code": 400, "message": "academic_year must be integer"}}), 400
 
-    campus = Campus.query.filter_by(id=campus_id).first()
-    if not campus or not campus.school or campus.school.tenant_id != tenant_id:
+    campus = (
+        Campus.query.join(School, Campus.school_id == School.id)
+        .filter(Campus.id == campus_id, School.tenant_id == tenant_id)
+        .first()
+    )
+    if not campus:
         return jsonify({"error": {"code": 404, "message": "Campus not found"}}), 404
     level = AcademicLevel.query.filter_by(id=level_id, school_id=campus.school_id).first()
     if not level:
@@ -992,6 +1106,25 @@ def create_section(current_user, actor_principal=None):
     if existing:
         return jsonify({"error": {"code": 409, "message": "Section already exists"}}), 409
 
+    try:
+        homeroom_staff_id = _parse_optional_int(
+            data.get("homeroom_staff_id"), "homeroom_staff_id"
+        )
+    except ValueError as exc:
+        return jsonify({"error": {"code": 400, "message": str(exc)}}), 400
+    if homeroom_staff_id is not None:
+        homeroom_staff = db.session.get(User, homeroom_staff_id)
+        if not education_staff_can_be_assigned(
+            homeroom_staff,
+            tenant,
+            EDUCATION_DIRECTORY_READ,
+        ):
+            return _education_access_error(
+                "Homeroom staff must be privileged staff from this tenant",
+                400,
+                "education_homeroom_staff_invalid",
+            )
+
     section = CourseSection(
         campus_id=campus.id,
         academic_year=academic_year,
@@ -999,7 +1132,7 @@ def create_section(current_user, actor_principal=None):
         grade=grade,
         division=division,
         shift_id=shift.id,
-        homeroom_staff_id=data.get("homeroom_staff_id"),
+        homeroom_staff_id=homeroom_staff_id,
     )
     db.session.add(section)
     db.session.commit()
@@ -1221,12 +1354,16 @@ def link_guardian_student(current_user, actor_principal=None):
     if guardian.verification_status != "verified":
         return jsonify({"error": {"code": 403, "message": "Guardian must be verified before linking students"}}), 403
 
-    student = Student.query.filter_by(id=student_id).first()
-    if not student:
+    student = (
+        Student.query.join(School, Student.school_id == School.id)
+        .filter(Student.id == student_id, School.tenant_id == tenant.id)
+        .first()
+    )
+    if student is None or student.school is None:
         return jsonify({"error": {"code": 404, "message": "Student not found"}}), 404
-    school = School.query.filter_by(id=student.school_id, tenant_id=tenant.id).first()
-    if not school:
-        return jsonify({"error": {"code": 403, "message": "Student not available for tenant"}}), 403
+    school = student.school
+    if not _student_is_tenant_bound(student, school, tenant):
+        return jsonify({"error": {"code": 404, "message": "Student not found"}}), 404
     if guardian.school_id and guardian.school_id != school.id:
         return jsonify({"error": {"code": 400, "message": "Guardian and student belong to different schools"}}), 400
 
@@ -1379,6 +1516,8 @@ def get_family_context(current_user, actor_principal=None):
     students = []
     for relation in relations:
         student = relation.student
+        if not _student_is_tenant_bound(student, student.school, tenant):
+            continue
         students.append(
             {
                 "id": student.id,
@@ -1427,8 +1566,17 @@ def get_family_context(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/cases", methods=["POST"])
 @token_requerido
 def create_school_case(current_user, actor_principal=None):
+    # Institutional/admin creation only. Citizen and guardian intake remains in
+    # the WhatsApp/widget conversation pipeline, where identity and disclosure
+    # rules differ from this case-management surface.
     data = request.json or {}
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    actor = actor_principal or current_user
+    tenant_profile, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_CASES_WRITE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant_profile.id
     tenant_profile, access_response = _tenant_write_access_response(
         tenant_id,
         contract_version="education.case_write_access.v1",
@@ -1466,21 +1614,26 @@ def create_school_case(current_user, actor_principal=None):
 
     section = None
     if section_id is not None:
-        section = CourseSection.query.filter_by(id=section_id).first()
-        if not section:
+        section = (
+            CourseSection.query.join(Campus, CourseSection.campus_id == Campus.id)
+            .join(School, Campus.school_id == School.id)
+            .filter(
+                CourseSection.id == section_id,
+                School.id == school.id,
+                School.tenant_id == tenant_id,
+            )
+            .first()
+        )
+        if not _section_is_tenant_bound(section, school, tenant_profile):
             return jsonify({"error": {"code": 404, "message": "Section not found"}}), 404
-        if section.campus is None or section.campus.school_id != school.id:
-            return jsonify({"error": {"code": 400, "message": "Section does not belong to school"}}), 400
         if campus_id is not None and section.campus_id != campus_id:
             return jsonify({"error": {"code": 400, "message": "Section does not belong to campus"}}), 400
 
     student = None
     if student_id is not None:
-        student = Student.query.filter_by(id=student_id).first()
-        if not student:
+        student = Student.query.filter_by(id=student_id, school_id=school.id).first()
+        if not _student_is_tenant_bound(student, school, tenant_profile):
             return jsonify({"error": {"code": 404, "message": "Student not found"}}), 404
-        if student.school_id != school.id:
-            return jsonify({"error": {"code": 400, "message": "Student does not belong to school"}}), 400
         if campus_id is not None and student.campus_id and student.campus_id != campus_id:
             return jsonify({"error": {"code": 400, "message": "Student does not belong to campus"}}), 400
         if section_id is not None and student.section_id and student.section_id != section_id:
@@ -1504,7 +1657,7 @@ def create_school_case(current_user, actor_principal=None):
             pregunta=pregunta,
             asunto=asunto,
             categoria=f"educacion:{case_type}",
-            user_id=getattr(current_user, "id", None),
+            user_id=getattr(actor, "id", None),
         )
     else:
         municipal_scope = normalize_municipio_ticket_write_scope(
@@ -1519,7 +1672,7 @@ def create_school_case(current_user, actor_principal=None):
             pregunta=pregunta,
             asunto=asunto,
             categoria=f"educacion:{case_type}",
-            user_id=getattr(current_user, "id", None),
+            user_id=getattr(actor, "id", None),
         )
 
     db.session.add(ticket)
@@ -1558,9 +1711,12 @@ def create_school_case(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/cases", methods=["GET"])
 @token_requerido
 def list_school_cases(current_user, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_CASES_READ
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
 
     school_id = request.args.get("school_id", type=int)
     campus_id = request.args.get("campus_id", type=int)
@@ -1601,7 +1757,14 @@ def list_school_cases(current_user, actor_principal=None):
         for alias in aliases
         if _case_matches_ticket_filters(alias, status=status, assignee_id=assignee_id, unassigned=unassigned)
     ]
-    items = [_case_payload(alias) for alias in filtered_aliases[:limit]]
+    items = [
+        payload
+        for alias in filtered_aliases[:limit]
+        if (payload := _case_payload(alias)) is not None
+    ]
+    audit_response = _commit_case_alias_integrity_audits()
+    if audit_response:
+        return audit_response
     if not envelope:
         return jsonify(items)
     return jsonify(
@@ -1630,11 +1793,17 @@ def list_school_cases(current_user, actor_principal=None):
 @education_bp.route("/api/v1/education/cases/<int:case_id>", methods=["GET"])
 @token_requerido
 def get_school_case_detail(current_user, case_id: int, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
-    if not tenant_id:
-        return jsonify({"error": {"code": 400, "message": "Tenant context required"}}), 400
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_CASES_READ
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     alias = _get_case_alias_for_tenant(case_id, tenant_id)
     if not alias:
+        audit_response = _commit_case_alias_integrity_audits()
+        if audit_response:
+            return audit_response
         return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
     return jsonify(_case_payload(alias, include_comments=True))
 
@@ -1642,7 +1811,13 @@ def get_school_case_detail(current_user, case_id: int, actor_principal=None):
 @education_bp.route("/api/v1/education/cases/<int:case_id>/reply", methods=["POST"])
 @token_requerido
 def reply_school_case(current_user, case_id: int, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    actor = actor_principal or current_user
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_CASES_WRITE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     tenant, access_response = _tenant_write_access_response(
         tenant_id,
         contract_version="education.case_reply_access.v1",
@@ -1651,6 +1826,9 @@ def reply_school_case(current_user, case_id: int, actor_principal=None):
         return access_response
     alias = _get_case_alias_for_tenant(case_id, tenant_id)
     if not alias:
+        audit_response = _commit_case_alias_integrity_audits()
+        if audit_response:
+            return audit_response
         return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
     ticket = _ticket_for_case(alias)
     if not ticket:
@@ -1665,9 +1843,9 @@ def reply_school_case(current_user, case_id: int, actor_principal=None):
         pyme_ticket_id=ticket.id if alias.ticket_type == "pyme" else None,
         municipio_ticket_id=ticket.id if alias.ticket_type != "pyme" else None,
         comentario=comentario,
-        user_id=getattr(current_user, "id", None),
-        es_admin=bool(data.get("es_admin", True)),
-        origen=(data.get("origen") or "education").strip().lower(),
+        user_id=getattr(actor, "id", None),
+        es_admin=True,
+        origen="education",
         estado_ticket=getattr(ticket, "estado", None),
     )
     if hasattr(ticket, "ultima_actividad"):
@@ -1689,7 +1867,13 @@ def reply_school_case(current_user, case_id: int, actor_principal=None):
 @education_bp.route("/api/v1/education/cases/<int:case_id>/assign", methods=["POST"])
 @token_requerido
 def assign_school_case(current_user, case_id: int, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    actor = actor_principal or current_user
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_CASES_MANAGE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     tenant, access_response = _tenant_write_access_response(
         tenant_id,
         contract_version="education.case_assign_access.v1",
@@ -1698,6 +1882,9 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
         return access_response
     alias = _get_case_alias_for_tenant(case_id, tenant_id)
     if not alias:
+        audit_response = _commit_case_alias_integrity_audits()
+        if audit_response:
+            return audit_response
         return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
     ticket = _ticket_for_case(alias)
     if not ticket:
@@ -1711,9 +1898,17 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
     if not assignee_id:
         return jsonify({"error": {"code": 400, "message": "assignee_id required"}}), 400
 
-    assignee = User.query.get(assignee_id)
-    if not assignee:
-        return jsonify({"error": {"code": 404, "message": "Assignee not found"}}), 404
+    assignee = db.session.get(User, assignee_id)
+    if not education_staff_can_be_assigned(
+        assignee,
+        tenant,
+        EDUCATION_CASES_WRITE,
+    ):
+        return _education_access_error(
+            "Assignee must be privileged staff from this tenant",
+            400,
+            "education_assignee_invalid",
+        )
 
     ticket.asignado_a_id = assignee.id
     ticket.asignado_en = _utc_now()
@@ -1726,7 +1921,7 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
         pyme_ticket_id=ticket.id if alias.ticket_type == "pyme" else None,
         municipio_ticket_id=ticket.id if alias.ticket_type != "pyme" else None,
         comentario=f"Caso escolar asignado a usuario #{assignee.id}",
-        user_id=getattr(current_user, "id", None),
+        user_id=getattr(actor, "id", None),
         es_admin=True,
         origen="education",
         estado_ticket=getattr(ticket, "estado", None),
@@ -1741,7 +1936,13 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
 @education_bp.route("/api/v1/education/cases/<int:case_id>/escalate", methods=["POST"])
 @token_requerido
 def escalate_school_case(current_user, case_id: int, actor_principal=None):
-    tenant_id = _resolve_actor_tenant_id(current_user, actor_principal)
+    actor = actor_principal or current_user
+    tenant, access_response = _education_admin_context(
+        current_user, actor_principal, EDUCATION_CASES_MANAGE
+    )
+    if access_response:
+        return access_response
+    tenant_id = tenant.id
     tenant, access_response = _tenant_write_access_response(
         tenant_id,
         contract_version="education.case_escalate_access.v1",
@@ -1750,6 +1951,9 @@ def escalate_school_case(current_user, case_id: int, actor_principal=None):
         return access_response
     alias = _get_case_alias_for_tenant(case_id, tenant_id)
     if not alias:
+        audit_response = _commit_case_alias_integrity_audits()
+        if audit_response:
+            return audit_response
         return jsonify({"error": {"code": 404, "message": "School case not found"}}), 404
     ticket = _ticket_for_case(alias)
     if not ticket:
@@ -1771,7 +1975,7 @@ def escalate_school_case(current_user, case_id: int, actor_principal=None):
         pyme_ticket_id=ticket.id if alias.ticket_type == "pyme" else None,
         municipio_ticket_id=ticket.id if alias.ticket_type != "pyme" else None,
         comentario=f"Caso escolar escalado ({level}): {reason}",
-        user_id=getattr(current_user, "id", None),
+        user_id=getattr(actor, "id", None),
         es_admin=True,
         origen="education",
         estado_ticket=getattr(ticket, "estado", None),

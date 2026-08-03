@@ -1,7 +1,7 @@
 from urllib.parse import unquote_plus, urlparse
 
 from app import db
-from models import AnalyticsEventV2, CatalogoItem, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
+from models import AnalyticsEventV2, CatalogoItem, ChatSessionContext, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
 from services.catalog_share import build_catalog_share_payload
 
 
@@ -770,7 +770,31 @@ def test_widget_user_tenant_history_returns_cart_claims_and_orders(client):
     tenant = _seed_pyme_tenant_with_catalog()
     owner = tenant.pyme
 
-    cart = MarketCart(tenant_id=tenant.id, session_id="chat_public_2", status="open")
+    viewer = User(
+        email="viewer-history@test.com",
+        name="Viewer History",
+        rol="usuario",
+        anon_id="anon_public_2",
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+    )
+    viewer.set_password("pass")
+    db.session.add(viewer)
+    db.session.flush()
+    db.session.add(
+        ChatSessionContext(
+            chat_session_id="chat_public_2",
+            tenant_id=tenant.id,
+            user_id=viewer.id,
+        )
+    )
+
+    cart = MarketCart(
+        tenant_id=tenant.id,
+        user_id=viewer.id,
+        session_id="chat_public_2",
+        status="open",
+    )
     db.session.add(cart)
     db.session.flush()
     item = CatalogoItem.query.filter_by(tenant_id=tenant.id).first()
@@ -789,6 +813,7 @@ def test_widget_user_tenant_history_returns_cart_claims_and_orders(client):
         categoria="servicio",
         municipio_id=owner.id,
         tenant_id=tenant.id,
+        user_id=viewer.id,
         anon_id="anon_public_2",
         canal_ingreso="widget",
     )
@@ -798,6 +823,7 @@ def test_widget_user_tenant_history_returns_cart_claims_and_orders(client):
         detalles="{}",
         monto_total=100.0,
         tenant_id=tenant.id,
+        user_id=viewer.id,
         nombre_cliente="Cliente Demo",
     )
     db.session.add_all([ticket, pedido])

@@ -10,7 +10,9 @@ REALTIME_VOICE_CONTRACT_VERSION = "realtime.voice_capabilities.v1"
 CHATBOC_BOT_AVATAR_CONTRACT_VERSION = "chatboc.avatar.v1"
 DEFAULT_REALTIME_VOICE_MODEL = "gpt-realtime-2.1"
 FALLBACK_REALTIME_VOICE_MODEL = "gpt-realtime-2.1"
-DEFAULT_REALTIME_TRANSCRIPTION_MODEL = "gpt-realtime-whisper"
+# Dedicated streaming transcription sessions use the current low-latency model.
+# Speech-to-speech call captions remain independently configurable below.
+DEFAULT_REALTIME_TRANSCRIPTION_MODEL = "gpt-live-transcribe"
 DEFAULT_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 DEFAULT_REALTIME_TRANSLATION_MODEL = "gpt-realtime-translate"
 DEFAULT_REALTIME_VOICE = "marin"
@@ -90,7 +92,7 @@ def resolve_realtime_input_transcription_model(
 ) -> str:
     """Resolve caption guidance for a speech-to-speech Realtime session.
 
-    This is separate from ``gpt-realtime-whisper``, whose contract is a
+    This is separate from ``gpt-live-transcribe``, whose contract is a
     dedicated ``type=transcription`` session.
     """
 

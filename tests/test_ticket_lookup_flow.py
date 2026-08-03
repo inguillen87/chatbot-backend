@@ -1,18 +1,38 @@
 import types
 import pytest
-from unittest.mock import MagicMock
 from sqlalchemy.orm.attributes import flag_modified
 from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
-from models import ChatSessionContext, MunicipioTicket
+from models import ChatSessionContext, MunicipioTicket, Rubro, TenantProfile, User
 from app import db
 
 @pytest.fixture
 def owner_user(client):
-    """Provides a mock owner_user with a rubro object."""
-    user = MagicMock()
-    user.id = 1
-    user.municipio_id = "1"
-    user.rubro.nombre = "municipio"
+    """Provide a persisted municipal owner with one authoritative tenant."""
+    rubro = Rubro(clave="ticket-lookup-municipio", nombre="municipio")
+    user = User(
+        name="Municipio Ticket Lookup",
+        email="ticket-lookup-municipio@example.test",
+        rol="admin",
+        tipo_chat="municipio",
+        rubro=rubro,
+    )
+    user.set_password("ticket-lookup-test-password")
+    db.session.add_all([rubro, user])
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="ticket-lookup-municipio",
+        nombre="Municipio Ticket Lookup",
+        tipo="municipio",
+        municipio_id=user.id,
+        is_active=True,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    user.municipio_id = user.id
+    user.tenant_id = tenant.id
+    user.tenant_slug = tenant.slug
+    db.session.commit()
     return user
 
 def run_turn(message, state=None, numero=None, owner_user=None):
@@ -20,7 +40,13 @@ def run_turn(message, state=None, numero=None, owner_user=None):
     session_id = "ticket_session"
     ctx = ChatSessionContext.query.get(session_id)
     if not ctx:
-        ctx = ChatSessionContext(chat_session_id=session_id, context_data={})
+        ctx = ChatSessionContext(
+            chat_session_id=session_id,
+            user_id=owner_user.id,
+            tenant_id=owner_user.tenant_id,
+            anon_id="anon_test",
+            context_data={},
+        )
         db.session.add(ctx)
 
     context_data = dict(ctx.context_data or {})
@@ -78,7 +104,8 @@ def test_ticket_summary_has_basic_links(owner_user, app):
                 pregunta="",
                 estado="nuevo",
                 nombre_vecino="Test User",
-                municipio_id=1,
+                municipio_id=owner_user.id,
+                tenant_id=owner_user.tenant_id,
             )
         )
         db.session.commit()

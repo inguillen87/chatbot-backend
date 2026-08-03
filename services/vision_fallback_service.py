@@ -13,6 +13,8 @@ import httpx
 from flask import current_app, has_app_context
 from openai import OpenAI
 
+from services.llm_provider_network_policy import llm_provider_network_allowed
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_VISION_MODEL = "gpt-5.6-sol"
@@ -94,6 +96,9 @@ def _openai_model(default_model: str = DEFAULT_OPENAI_VISION_MODEL) -> str:
 
 def _get_openai_client() -> OpenAI:
     """Build the SDK client lazily after Flask/dotenv configuration is loaded."""
+
+    if not llm_provider_network_allowed("openai"):
+        raise OpenAIConfigurationError("openai_test_network_disabled")
 
     api_key = _configured_value("OPENAI_API_KEY")
     if not api_key:
@@ -257,8 +262,13 @@ def _call_openai(
     """Analyze an image once through Responses with strict structured output."""
     try:
         client = _get_openai_client()
-    except OpenAIConfigurationError:
-        logger.warning("OpenAI vision skipped reason=missing_api_key")
+    except OpenAIConfigurationError as exc:
+        reason = (
+            "test_network_disabled"
+            if str(exc) == "openai_test_network_disabled"
+            else "missing_api_key"
+        )
+        logger.warning("OpenAI vision skipped reason=%s", reason)
         return None
 
     prompt = _ensure_json_prompt(
@@ -335,8 +345,13 @@ def _call_openai_image_text(
     """Extract raw image text once through Responses."""
     try:
         client = _get_openai_client()
-    except OpenAIConfigurationError:
-        logger.warning("OpenAI OCR skipped reason=missing_api_key")
+    except OpenAIConfigurationError as exc:
+        reason = (
+            "test_network_disabled"
+            if str(exc) == "openai_test_network_disabled"
+            else "missing_api_key"
+        )
+        logger.warning("OpenAI OCR skipped reason=%s", reason)
         return None
 
     prompt = custom_prompt or (
@@ -389,8 +404,13 @@ def _call_openai_text(
     """Analyze text once through Responses and return structured JSON."""
     try:
         client = _get_openai_client()
-    except OpenAIConfigurationError:
-        logger.warning("OpenAI text analysis skipped reason=missing_api_key")
+    except OpenAIConfigurationError as exc:
+        reason = (
+            "test_network_disabled"
+            if str(exc) == "openai_test_network_disabled"
+            else "missing_api_key"
+        )
+        logger.warning("OpenAI text analysis skipped reason=%s", reason)
         return None
 
     prompt = _ensure_json_prompt(
@@ -448,6 +468,9 @@ def _call_cohere(image_bytes: bytes, custom_prompt: Optional[str] = None) -> Opt
     """Analyze an image using Cohere's multimodal API."""
     if not _cohere_vision_enabled():
         logger.info("Cohere vision fallback is disabled.")
+        return None
+    if not llm_provider_network_allowed("cohere"):
+        logger.info("Cohere vision fallback blocked reason=test_network_disabled")
         return None
 
     api_key = os.getenv("COHERE_API_KEY")

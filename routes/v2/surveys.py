@@ -63,13 +63,15 @@ from services.survey_response_effects import (
     summarize_survey_response_effects,
 )
 from services.survey_access_policy import (
+    SURVEY_ELIGIBILITY_MANAGE_CAPABILITY,
     SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
     SURVEY_PII_READ_CAPABILITY,
     missing_survey_capabilities,
 )
+from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
-from utils.roles import is_authorized_superadmin_user
+from utils.roles import is_authorized_superadmin_user, normalize_tenant_slug
 from utils.turnstile import (
     turnstile_enforce_public_intake,
     verify_turnstile,
@@ -82,6 +84,10 @@ _RESPONSE_EFFECT_SUMMARY_CONTRACT = "surveys.response_effects.admin_summary.v1"
 _RESPONSE_EFFECT_RECONCILE_CONTRACT = "surveys.response_effects.reconcile.v1"
 _DEFAULT_RESPONSE_EFFECT_RECONCILE_LIMIT = 50
 _MAX_RESPONSE_EFFECT_RECONCILE_LIMIT = 100
+_OPAQUE_ELIGIBILITY_SUBJECT_RE = re.compile(r"^subj_[A-Za-z0-9_-]{43}$")
+_ELIGIBILITY_AUTHORITY_NAMESPACE_V1 = "chatboc_manual_review"
+_ELIGIBILITY_SUBJECT_NAMESPACE_V1 = _ELIGIBILITY_AUTHORITY_NAMESPACE_V1
+_ELIGIBILITY_AUTHORITY_ADAPTER_V1 = "manual_review.v1"
 
 _TYPE_MAP = {
     "single": "opcion_unica",
@@ -242,6 +248,73 @@ def _survey_governance_capability_error(missing: list[str]):
             "message": message,
         },
         403,
+    )
+
+
+def _no_store_response(result):
+    response = result[0] if isinstance(result, tuple) else result
+    if hasattr(response, "headers"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return result
+
+
+def _survey_eligibility_json_response(payload: dict[str, Any], status: int = 200):
+    return _no_store_response(_json_response(payload, status))
+
+
+def _survey_eligibility_capability_error(missing: list[str]):
+    message = "No tenes permisos para administrar elegibilidad de encuestas."
+    return _survey_eligibility_json_response(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": 403,
+            "reason_code": "survey_eligibility_manage_capability_required",
+            "retryable": False,
+            "action_hint": "request_capability_from_tenant_admin",
+            "required_capabilities": [SURVEY_ELIGIBILITY_MANAGE_CAPABILITY],
+            "missing_capabilities": list(missing),
+            "error": {"code": 403, "message": message},
+            "message": message,
+        },
+        403,
+    )
+
+
+def _survey_eligibility_error_response(exc):
+    payload = exc.to_dict()
+    payload.setdefault("status_code", int(exc.status_code))
+    return _survey_eligibility_json_response(payload, int(exc.status_code))
+
+
+def _survey_eligibility_release_scope_error(
+    *, tenant_id: int, survey_id: int, release_id: int
+):
+    from models import EncEncuesta
+    from models_survey_governance import SurveyGovernanceRelease
+
+    survey_exists = EncEncuesta.query.filter_by(
+        id=survey_id,
+        tenant_id=tenant_id,
+    ).first()
+    release_exists = SurveyGovernanceRelease.query.filter_by(
+        id=release_id,
+        survey_id=survey_id,
+        tenant_id=tenant_id,
+    ).first()
+    if survey_exists is not None and release_exists is not None:
+        return None
+    return _survey_eligibility_json_response(
+        {
+            "ok": False,
+            "contract_version": "surveys.eligibility_grant.v1",
+            "reason_code": "survey_governance_release_not_found",
+            "retryable": False,
+            "action_hint": "check_release_scope",
+            "message": "Release no encontrado.",
+        },
+        404,
     )
 
 
@@ -593,19 +666,63 @@ def _persist_survey_draft_save(
 
 
 def _resolve_tenant_or_error(*, required: bool = True):
-    explicit_slug = (
-        request.headers.get("X-Tenant-Slug")
-        or request.headers.get("X-Tenant")
-        or request.args.get("tenant_slug")
-        or request.args.get("tenant")
-        or ""
-    ).strip()
+    has_explicit_selector = any(
+        header_name in request.headers
+        for header_name in ("X-Tenant-Slug", "X-Tenant")
+    ) or any(
+        query_name in request.args
+        for query_name in ("tenant_slug", "tenant")
+    )
+    explicit_candidates = [
+        request.headers.get("X-Tenant-Slug"),
+        request.headers.get("X-Tenant"),
+        request.args.get("tenant_slug"),
+        request.args.get("tenant"),
+    ]
+    normalized_candidates = [
+        normalize_tenant_slug(value)
+        for value in explicit_candidates
+        if normalize_tenant_slug(value)
+    ]
+    if len(set(normalized_candidates)) > 1:
+        return None, _error_response(
+            "Los selectores de tenant deben coincidir",
+            400,
+            "tenant_selector_mismatch",
+            "send_matching_tenant_slug",
+        )
+    explicit_slug = normalized_candidates[0] if normalized_candidates else ""
+    if has_explicit_selector and not explicit_slug:
+        return None, _error_response(
+            "Tenant no encontrado",
+            404,
+            "tenant_resolution_failed",
+            "check_tenant_slug",
+        )
     if required and not explicit_slug:
         return None, _error_response("X-Tenant-Slug es obligatorio en surveys v2", 400, "missing_tenant", "send_tenant_slug")
     try:
-        return resolve_tenant_v2(required=required, explicit_slug=explicit_slug or None), None
+        tenant = resolve_tenant_v2(
+            # Public survey links may omit tenant entirely. Once a caller does
+            # provide one, however, an unknown slug must not dissolve into an
+            # unscoped lookup or fall back to another identity source.
+            required=required or bool(explicit_slug),
+            explicit_slug=explicit_slug or None,
+        )
     except V2TenantResolutionError as exc:
         return None, _error_response(exc.message, exc.status_code, "tenant_resolution_failed", "check_tenant_slug")
+    if explicit_slug and (
+        tenant is None
+        or normalize_tenant_slug(getattr(tenant, "slug", None))
+        != normalize_tenant_slug(explicit_slug)
+    ):
+        return None, _error_response(
+            "Tenant no encontrado",
+            404,
+            "tenant_resolution_failed",
+            "check_tenant_slug",
+        )
+    return tenant, None
 
 
 def _clean_base_url(value: Any) -> str | None:
@@ -2110,6 +2227,10 @@ def list_survey_governance_releases_v2(current_user, survey_id: int):
         {
             "ok": True,
             "contract_version": "surveys.governance_releases.v1",
+            # Bind the administrative envelope to the same tenant selected by
+            # the authenticated request.  The browser reconciles this field
+            # before exposing any governance mutation.
+            "tenant": {"id": int(tenant.id), "slug": str(tenant.slug)},
             "survey_id": survey_id,
             "survey_state": encuesta.estado,
             "active_release_id": active_release.id if active_release else None,
@@ -2284,6 +2405,213 @@ def close_survey_governance_release_v2(
     return _json_response(serialize_release(release, replayed=replayed), 200)
 
 
+@v2_surveys_bp.route(
+    "/surveys/<int:survey_id>/releases/<int:release_id>/eligibility-grants",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def issue_survey_eligibility_grant_v2(
+    current_user, survey_id: int, release_id: int
+):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return _no_store_response(error)
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return _no_store_response(denied)
+    if not _survey_writes_allowed(tenant):
+        return _no_store_response(_survey_plan_required_response(tenant))
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_ELIGIBILITY_MANAGE_CAPABILITY
+    )
+    if missing:
+        return _survey_eligibility_capability_error(missing)
+    scope_error = _survey_eligibility_release_scope_error(
+        tenant_id=tenant.id,
+        survey_id=survey_id,
+        release_id=release_id,
+    )
+    if scope_error is not None:
+        return scope_error
+    payload = request.get_json(silent=True)
+    allowed_fields = {"subject_ref", "review_reference", "expires_at"}
+    if not isinstance(payload, dict) or set(payload) - allowed_fields:
+        return _survey_eligibility_json_response(
+            {
+                "ok": False,
+                "contract_version": "surveys.eligibility_grant.v1",
+                "reason_code": "survey_eligibility_issue_payload_invalid",
+                "retryable": False,
+                "action_hint": "send_opaque_subject_review_and_optional_expiry",
+                "message": "La emision solo admite referencias opacas y vencimiento.",
+            },
+            400,
+        )
+    subject_ref = str(payload.get("subject_ref") or "").strip()
+    if not _OPAQUE_ELIGIBILITY_SUBJECT_RE.fullmatch(subject_ref):
+        return _survey_eligibility_json_response(
+            {
+                "ok": False,
+                "contract_version": "surveys.eligibility_grant.v1",
+                "reason_code": "survey_eligibility_subject_ref_invalid",
+                "retryable": False,
+                "action_hint": "provide_stable_opaque_subject_ref",
+                "message": "subject_ref debe ser una referencia opaca estable; no envies DNI, email ni telefono.",
+            },
+            422,
+        )
+    from services.survey_eligibility import (
+        SurveyEligibilityError,
+        issue_eligibility_grant,
+        require_eligibility_gate,
+        serialize_issue_receipt,
+    )
+
+    try:
+        grant, _credential, replayed = issue_eligibility_grant(
+            tenant_id=tenant.id,
+            survey_id=survey_id,
+            release_id=release_id,
+            actor_user_id=current_user.id,
+            subject_namespace=_ELIGIBILITY_SUBJECT_NAMESPACE_V1,
+            subject_ref=subject_ref,
+            authority_namespace=_ELIGIBILITY_AUTHORITY_NAMESPACE_V1,
+            authority_adapter_version=_ELIGIBILITY_AUTHORITY_ADAPTER_V1,
+            review_reference=payload.get("review_reference"),
+            expires_at=payload.get("expires_at"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            ip_address=request.remote_addr,
+        )
+        gate = require_eligibility_gate(current_app.config, tenant_id=tenant.id)
+        response_payload = serialize_issue_receipt(
+            grant,
+            gate=gate,
+            replayed=replayed,
+        )
+    except SurveyEligibilityError as exc:
+        db.session.rollback()
+        return _survey_eligibility_error_response(exc)
+    return _survey_eligibility_json_response(
+        response_payload,
+        200 if replayed else 201,
+    )
+
+
+@v2_surveys_bp.route(
+    "/surveys/<int:survey_id>/releases/<int:release_id>/eligibility-grants/<string:grant_ref>/revoke",
+    methods=["POST"],
+)
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def revoke_survey_eligibility_grant_v2(
+    current_user, survey_id: int, release_id: int, grant_ref: str
+):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return _no_store_response(error)
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return _no_store_response(denied)
+    if not _survey_writes_allowed(tenant):
+        return _no_store_response(_survey_plan_required_response(tenant))
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_ELIGIBILITY_MANAGE_CAPABILITY
+    )
+    if missing:
+        return _survey_eligibility_capability_error(missing)
+    scope_error = _survey_eligibility_release_scope_error(
+        tenant_id=tenant.id,
+        survey_id=survey_id,
+        release_id=release_id,
+    )
+    if scope_error is not None:
+        return scope_error
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or set(payload) != {"reason_code"}:
+        return _survey_eligibility_json_response(
+            {
+                "ok": False,
+                "contract_version": "surveys.eligibility_grant.v1",
+                "reason_code": "survey_eligibility_revoke_payload_invalid",
+                "retryable": False,
+                "action_hint": "send_supported_reason_code_only",
+                "message": "La revocacion requiere solamente reason_code.",
+            },
+            400,
+        )
+    from services.survey_eligibility import (
+        SurveyEligibilityError,
+        revoke_eligibility_grant,
+        serialize_revocation_receipt,
+    )
+
+    try:
+        grant, terminal, replayed = revoke_eligibility_grant(
+            tenant_id=tenant.id,
+            survey_id=survey_id,
+            release_id=release_id,
+            grant_ref=grant_ref,
+            actor_user_id=current_user.id,
+            reason_code=payload.get("reason_code"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            ip_address=request.remote_addr,
+        )
+        response_payload = serialize_revocation_receipt(
+            grant,
+            terminal,
+            replayed=replayed,
+        )
+    except SurveyEligibilityError as exc:
+        db.session.rollback()
+        return _survey_eligibility_error_response(exc)
+    return _survey_eligibility_json_response(response_payload, 200)
+
+
+@v2_surveys_bp.route(
+    "/surveys/<int:survey_id>/releases/<int:release_id>/eligibility-summary",
+    methods=["GET"],
+)
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def survey_eligibility_summary_v2(
+    current_user, survey_id: int, release_id: int
+):
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return _no_store_response(error)
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return _no_store_response(denied)
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_ELIGIBILITY_MANAGE_CAPABILITY
+    )
+    if missing:
+        return _survey_eligibility_capability_error(missing)
+    scope_error = _survey_eligibility_release_scope_error(
+        tenant_id=tenant.id,
+        survey_id=survey_id,
+        release_id=release_id,
+    )
+    if scope_error is not None:
+        return scope_error
+    from services.survey_eligibility import (
+        SurveyEligibilityError,
+        eligibility_aggregate,
+    )
+
+    try:
+        response_payload = eligibility_aggregate(
+            tenant_id=tenant.id,
+            survey_id=survey_id,
+            release_id=release_id,
+        )
+    except SurveyEligibilityError as exc:
+        db.session.rollback()
+        return _survey_eligibility_error_response(exc)
+    return _survey_eligibility_json_response(response_payload, 200)
+
+
 @v2_surveys_bp.route("/surveys/<int:survey_id>", methods=["PATCH"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
@@ -2354,6 +2682,8 @@ def close_survey_v2(current_user, survey_id: int):
     allowed, denied = _enforce_tenant_access(current_user, tenant)
     if not allowed:
         return denied
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
 
     g.tenant_profile = tenant
     try:
@@ -2403,7 +2733,11 @@ def survey_public_by_token_v2(token: str):
 
     preferred_tenant_id = tenant.id if tenant is not None else None
     try:
-        encuesta = get_public_encuesta(token, preferred_tenant_id=preferred_tenant_id)
+        encuesta = get_public_encuesta(
+            token,
+            preferred_tenant_id=preferred_tenant_id,
+            require_tenant_match=preferred_tenant_id is not None,
+        )
     except EncuestaError as exc:
         return _encuesta_error_response(exc)
 
@@ -2613,6 +2947,7 @@ def respond_public_survey_v2(token: str):
                 request_ctx,
                 submission_id=submission_id,
                 preferred_tenant_id=preferred_tenant_id,
+                require_tenant_match=preferred_tenant_id is not None,
                 authenticated_user=authenticated_user,
             )
         except EncuestaError as exc:
@@ -2687,8 +3022,13 @@ def respond_public_survey_v2(token: str):
             payload,
             request_ctx,
             preferred_tenant_id=preferred_tenant_id,
+            require_tenant_match=preferred_tenant_id is not None,
             authenticated_user=authenticated_user,
             submission_id=submission_id,
+            eligibility_credential=request.headers.get(
+                SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
+            ),
+            eligibility_transport="http",
         )
     except EncuestaError as exc:
         db.session.rollback()
@@ -2745,7 +3085,11 @@ def survey_live_results_v2(token: str):
         return _json_response(_attach_demo_live_results_contract(demo_results, token))
 
     try:
-        encuesta = get_public_encuesta(token, preferred_tenant_id=preferred_tenant_id)
+        encuesta = get_public_encuesta(
+            token,
+            preferred_tenant_id=preferred_tenant_id,
+            require_tenant_match=preferred_tenant_id is not None,
+        )
         if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
             return _error_response(
                 "Los resultados en vivo no estan publicados para esta encuesta.",
@@ -2756,6 +3100,7 @@ def survey_live_results_v2(token: str):
         results = calculate_live_results(
             token,
             preferred_tenant_id=preferred_tenant_id,
+            require_tenant_match=preferred_tenant_id is not None,
             include_heatmap=include_heatmap,
             max_points=max(100, min(max_points, 5000)),
             max_cells=max(50, min(max_cells, 1000)),

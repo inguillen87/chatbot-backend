@@ -7,6 +7,7 @@ can finalize an admission, rejection, hiring, eligibility, or other decision.
 
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -17,10 +18,15 @@ import secrets
 import unicodedata
 from typing import Any, Mapping
 
+from flask import current_app
+from sqlalchemy import and_, func, or_
+
 from extensions import db
 from models import (
     AuditEvent,
     ChannelSessionIdentityBinding,
+    MessageTemplateRegistry,
+    MessagingEventLedger,
     TenantProfile,
     User,
     WhatsAppInboundTurn,
@@ -32,15 +38,30 @@ from models_interviews import (
     INTERVIEW_CONSENT_ATTESTATION_KINDS,
     INTERVIEW_CONSENT_SOURCES,
     INTERVIEW_EVIDENCE_TYPES,
+    INTERVIEW_ASSIGNMENT_REASON_CODES,
+    INTERVIEW_SESSION_STATUSES,
     PROGRAM_TYPES,
     AssessmentCase,
     AssessmentProgram,
     AssessmentProgramVersion,
     InterviewConsentChallenge,
     InterviewConsentPresentation,
+    InterviewAssignment,
     InterviewEvidence,
     InterviewSession,
 )
+from services.interview_access_policy import (
+    INTERVIEW_SESSIONS_CONDUCT,
+    missing_interview_capabilities,
+)
+from services.channel_session_identity import (
+    ChannelSessionIdentityError,
+    channel_session_identity_mode,
+    derive_channel_session_identity_hmac,
+    resolve_channel_session_identity_secret,
+)
+from utils.auth_decorators import _is_authorized_for_tenant
+from utils.roles import canonical_role
 
 
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
@@ -66,6 +87,28 @@ _CONSENT_ACTION_RE = re.compile(
 _CONSENT_PRESENTATION_OUTBOUND_CONTRACT = (
     "interview.consent_presentation_outbound.v1"
 )
+_CONSENT_TEMPLATE_CONTRACT_VERSION = "interview.consent_template.v1"
+_CONSENT_TEMPLATE_BODY = "{{1}}"
+_CONSENT_TEMPLATE_ACTION_TITLE = "Acepto"
+_CONSENT_TEMPLATE_ACTION_ID = "{{2}}"
+_CONSENT_TEMPLATE_PROVIDER_EVIDENCE_MAX_AGE = timedelta(days=7)
+_TWILIO_CONTENT_SID_RE = re.compile(r"^HX[0-9a-fA-F]{32}$")
+_INTERVIEW_RUNTIME_DEFINITION_CONTRACT = "interview.definition.v1"
+_INTERVIEW_RESUME_CONTRACT = "interview.session_resume.v1"
+_INTERVIEW_INBOX_CONTRACT_V1 = "assessment.interviews.inbox.v1"
+_INTERVIEW_INBOX_CONTRACT_V2 = "assessment.interviews.inbox.v2"
+_INTERVIEW_ASSIGNMENT_MUTATION_CONTRACT = "assessment.interviews.assignment.v1"
+_INTERVIEW_ASSIGNMENT_CANDIDATES_CONTRACT = (
+    "assessment.interviews.assignment_candidates.v1"
+)
+_INTERVIEW_ASSIGNMENT_REASON_LABELS = {
+    "initial_assignment": "Asignaci\u00f3n inicial",
+    "workload_balance": "Balance de carga",
+    "availability": "Disponibilidad",
+    "specialty_match": "Especialidad requerida",
+    "continuity": "Continuidad del caso",
+    "supervisor_override": "Reasignaci\u00f3n supervisada",
+}
 _FORBIDDEN_DECISION_KEYS = frozenset(
     {
         "decision",
@@ -90,11 +133,38 @@ _ALLOWED_PROVENANCE_KEYS = frozenset(
         "mime_type",
         "transformation",
         "model_version",
+        "step_ref",
     }
 )
 _RAW_EVIDENCE_KEYS = frozenset(
     {"body", "bytes", "content", "data", "payload", "raw", "text", "transcript"}
 )
+
+_INTERVIEW_SESSION_LABELS = {
+    "scheduled": "Programada",
+    "active": "En curso",
+    "completed": "Pendiente de revisión humana",
+    "interrupted": "Interrumpida",
+    "no_show": "Ausente",
+    "void": "Anulada",
+}
+_INTERVIEW_CHANNEL_LABELS = {
+    "api": "API",
+    "web": "Web",
+    "widget": "Widget",
+    "whatsapp": "WhatsApp",
+    "voice": "Voz",
+    "in_person": "Presencial",
+}
+_INTERVIEW_NEXT_ACTION_LABELS = {
+    "issue_consent_challenge": "Solicitar consentimiento",
+    "record_consent_and_start": "Registrar consentimiento e iniciar",
+    "capture_step": "Continuar captura de evidencia",
+    "complete_interview": "Completar entrevista",
+    "human_review": "Requiere revisión humana",
+    "operator_reschedule_required": "Requiere reprogramación",
+    "none": "Sin acción disponible",
+}
 
 
 class InterviewDomainError(Exception):
@@ -106,6 +176,7 @@ class InterviewDomainError(Exception):
         reason_code: str = "interview_validation_failed",
         action_hint: str = "check_request",
         retryable: bool = False,
+        details: Mapping[str, Any] | None = None,
     ):
         super().__init__(message)
         self.message = message
@@ -113,6 +184,7 @@ class InterviewDomainError(Exception):
         self.reason_code = reason_code
         self.action_hint = action_hint
         self.retryable = retryable
+        self.details = dict(details or {})
 
 
 @dataclass(frozen=True)
@@ -247,6 +319,11 @@ def _json_definition(value: Any) -> tuple[dict[str, Any], str]:
             action_hint="provide_versioned_definition",
         )
     _reject_forbidden_definition_keys(value)
+    # The versioned runtime contract is optional for historical definitions,
+    # but when selected it must be executable and checkpointable.  This keeps
+    # legacy programs readable while making new conversational interviews
+    # deterministic across reconnects and channels.
+    _runtime_steps_from_definition(value)
     serialized = _canonical_json(value)
     if len(serialized.encode("utf-8")) > _MAX_DEFINITION_BYTES:
         raise InterviewDomainError(
@@ -256,6 +333,197 @@ def _json_definition(value: Any) -> tuple[dict[str, Any], str]:
             action_hint="reduce_definition_size",
         )
     return dict(value), hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _runtime_steps_from_definition(
+    definition: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Project an immutable definition into stable, channel-neutral steps.
+
+    ``interview.definition.v1`` is strict: every section/question has a safe
+    stable identifier and every question declares a prompt. Older definitions
+    receive an advisory ordinal projection so an operator can resume them, but
+    completion is not retroactively gated on data they never captured.
+    """
+
+    definition = definition if isinstance(definition, Mapping) else {}
+    declared_contract = str(definition.get("contract_version") or "").strip()
+    if (
+        declared_contract.startswith("interview.definition.")
+        and declared_contract != _INTERVIEW_RUNTIME_DEFINITION_CONTRACT
+    ):
+        raise InterviewDomainError(
+            "Unsupported interview runtime definition contract",
+            status_code=409,
+            reason_code="interview_runtime_definition_unsupported",
+            action_hint="use_supported_interview_definition_contract",
+        )
+    strict = declared_contract == _INTERVIEW_RUNTIME_DEFINITION_CONTRACT
+    sections = definition.get("sections")
+    if not isinstance(sections, list):
+        if strict:
+            raise InterviewDomainError(
+                "interview.definition.v1 requires a non-empty sections array",
+                reason_code="interview_runtime_definition_invalid",
+                action_hint="provide_versioned_interview_sections",
+            )
+        return "evidence_only", []
+
+    steps: list[dict[str, Any]] = []
+    seen_refs: set[str] = set()
+    for section_index, section_value in enumerate(sections, start=1):
+        section = section_value if isinstance(section_value, Mapping) else {}
+        questions = section.get("questions")
+        if not isinstance(questions, list):
+            if strict:
+                raise InterviewDomainError(
+                    "Every interview.definition.v1 section requires questions",
+                    reason_code="interview_runtime_definition_invalid",
+                    action_hint="provide_versioned_interview_questions",
+                )
+            continue
+
+        raw_section_id = str(section.get("id") or "").strip().lower()
+        if strict:
+            if not _SAFE_IDENTIFIER_RE.fullmatch(raw_section_id):
+                raise InterviewDomainError(
+                    "Every interview section requires a safe stable id",
+                    reason_code="interview_runtime_definition_invalid",
+                    action_hint="provide_safe_section_and_question_ids",
+                )
+            section_id = raw_section_id
+        else:
+            section_id = (
+                raw_section_id
+                if _SAFE_IDENTIFIER_RE.fullmatch(raw_section_id)
+                else f"section_{section_index}"
+            )
+
+        for question_index, question_value in enumerate(questions, start=1):
+            if isinstance(question_value, Mapping):
+                question = question_value
+                raw_question_id = str(question.get("id") or "").strip().lower()
+                prompt_value = (
+                    question.get("prompt")
+                    if question.get("prompt") not in (None, "")
+                    else question.get("text")
+                    if question.get("text") not in (None, "")
+                    else question.get("question")
+                )
+                required_value = question.get("required", True)
+                raw_evidence_types = question.get("evidence_types")
+            else:
+                question = {}
+                raw_question_id = ""
+                prompt_value = question_value
+                required_value = True
+                raw_evidence_types = None
+
+            if strict:
+                if not isinstance(question_value, Mapping):
+                    raise InterviewDomainError(
+                        "interview.definition.v1 questions must be objects",
+                        reason_code="interview_runtime_definition_invalid",
+                        action_hint="provide_stable_question_ids_and_prompts",
+                    )
+                if not _SAFE_IDENTIFIER_RE.fullmatch(raw_question_id):
+                    raise InterviewDomainError(
+                        "Every interview question requires a safe stable id",
+                        reason_code="interview_runtime_definition_invalid",
+                        action_hint="provide_safe_section_and_question_ids",
+                    )
+                question_id = raw_question_id
+            else:
+                question_id = (
+                    raw_question_id
+                    if _SAFE_IDENTIFIER_RE.fullmatch(raw_question_id)
+                    else f"question_{question_index}"
+                )
+
+            prompt = str(prompt_value or "").strip()
+            if strict and (not prompt or len(prompt) > 4000):
+                raise InterviewDomainError(
+                    "Every interview question requires a prompt of at most 4000 characters",
+                    reason_code="interview_runtime_definition_invalid",
+                    action_hint="provide_stable_question_ids_and_prompts",
+                )
+            if not prompt:
+                continue
+            if len(prompt) > 4000:
+                prompt = prompt[:4000]
+
+            if strict and not isinstance(required_value, bool):
+                raise InterviewDomainError(
+                    "Interview question required must be boolean",
+                    reason_code="interview_runtime_definition_invalid",
+                    action_hint="use_boolean_question_required",
+                )
+            required = required_value if isinstance(required_value, bool) else True
+
+            if raw_evidence_types is None:
+                evidence_types = list(INTERVIEW_EVIDENCE_TYPES)
+            elif isinstance(raw_evidence_types, list):
+                evidence_types = []
+                for raw_type in raw_evidence_types:
+                    normalized_type = str(raw_type or "").strip().lower()
+                    if normalized_type not in INTERVIEW_EVIDENCE_TYPES:
+                        if strict:
+                            raise InterviewDomainError(
+                                "Interview question declares an unsupported evidence type",
+                                reason_code="interview_runtime_definition_invalid",
+                                action_hint="choose_supported_interview_evidence_types",
+                            )
+                        continue
+                    if normalized_type not in evidence_types:
+                        evidence_types.append(normalized_type)
+                if strict and not evidence_types:
+                    raise InterviewDomainError(
+                        "Interview question evidence_types cannot be empty",
+                        reason_code="interview_runtime_definition_invalid",
+                        action_hint="choose_supported_interview_evidence_types",
+                    )
+                if not evidence_types:
+                    evidence_types = list(INTERVIEW_EVIDENCE_TYPES)
+            else:
+                if strict:
+                    raise InterviewDomainError(
+                        "Interview question evidence_types must be an array",
+                        reason_code="interview_runtime_definition_invalid",
+                        action_hint="choose_supported_interview_evidence_types",
+                    )
+                evidence_types = list(INTERVIEW_EVIDENCE_TYPES)
+
+            step_ref = f"{section_id}.{question_id}"
+            if not _SAFE_IDENTIFIER_RE.fullmatch(step_ref) or step_ref in seen_refs:
+                if strict:
+                    raise InterviewDomainError(
+                        "Interview step ids must be unique and at most 64 characters",
+                        reason_code="interview_runtime_definition_invalid",
+                        action_hint="provide_unique_short_section_and_question_ids",
+                    )
+                step_ref = f"section_{section_index}.question_{question_index}"
+            if step_ref in seen_refs:
+                continue
+            seen_refs.add(step_ref)
+            steps.append(
+                {
+                    "step_ref": step_ref,
+                    "section_id": section_id,
+                    "question_id": question_id,
+                    "prompt": prompt,
+                    "required": bool(required),
+                    "evidence_types": evidence_types,
+                    "ordinal": len(steps) + 1,
+                }
+            )
+
+    if strict and not steps:
+        raise InterviewDomainError(
+            "interview.definition.v1 requires at least one question",
+            reason_code="interview_runtime_definition_invalid",
+            action_hint="provide_versioned_interview_questions",
+        )
+    return ("step_evidence_v1" if strict else "legacy_advisory"), steps
 
 
 def _sha256(value: Any, field: str) -> str:
@@ -442,6 +710,232 @@ def _outbound_payload_digest(payload: Any) -> str:
     return hashlib.sha256(_canonical_json(dict(payload)).encode("utf-8")).hexdigest()
 
 
+def _consent_template_definition() -> dict[str, Any]:
+    return {
+        "contract_version": _CONSENT_TEMPLATE_CONTRACT_VERSION,
+        "types": {
+            "twilio/text": {"body": _CONSENT_TEMPLATE_BODY},
+            "twilio/quick-reply": {
+                "body": _CONSENT_TEMPLATE_BODY,
+                "actions": [
+                    {
+                        "type": "QUICK_REPLY",
+                        "title": _CONSENT_TEMPLATE_ACTION_TITLE,
+                        "id": _CONSENT_TEMPLATE_ACTION_ID,
+                    }
+                ],
+            },
+        },
+    }
+
+
+def _consent_template_definition_digest() -> str:
+    return hashlib.sha256(
+        _canonical_json(_consent_template_definition()).encode("utf-8")
+    ).hexdigest()
+
+
+def _verified_consent_template_digest(
+    *,
+    tenant: TenantProfile,
+    attempt: WhatsAppOutboundAttempt,
+    content_sid: str,
+) -> str:
+    """Verify the provider-created template renders only the pinned text/action.
+
+    Delivery of a ContentSid proves transport, not what that remote template
+    renders.  The local provider-sync registry is therefore part of the proof:
+    it must be an approved, fresh definition created by Chatboc's Content API
+    workflow before this attempt was staged.
+    """
+
+    if not _TWILIO_CONTENT_SID_RE.fullmatch(content_sid):
+        raise InterviewDomainError(
+            "Consent outbound ContentSid is invalid",
+            status_code=409,
+            reason_code="interview_consent_template_contract_invalid",
+            action_hint="use_provider_synced_consent_template",
+        )
+    rows = (
+        MessageTemplateRegistry.query.filter_by(
+            tenant_id=tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            content_sid=content_sid,
+        )
+        .order_by(MessageTemplateRegistry.id.asc())
+        .limit(2)
+        .all()
+    )
+    if len(rows) != 1:
+        raise InterviewDomainError(
+            "Consent outbound template is missing or ambiguous for this tenant",
+            status_code=409,
+            reason_code="interview_consent_template_contract_invalid",
+            action_hint="sync_one_tenant_scoped_consent_template",
+        )
+    registry = rows[0]
+    metadata = registry.metadata_json if isinstance(registry.metadata_json, Mapping) else {}
+    components = registry.components if isinstance(registry.components, Mapping) else {}
+    text_type = components.get("twilio/text")
+    quick_reply_type = components.get("twilio/quick-reply")
+    text_type = text_type if isinstance(text_type, Mapping) else {}
+    quick_reply_type = quick_reply_type if isinstance(quick_reply_type, Mapping) else {}
+    actions = quick_reply_type.get("actions")
+    actions = actions if isinstance(actions, list) else []
+    action = actions[0] if len(actions) == 1 and isinstance(actions[0], Mapping) else {}
+    action_keys = set(action)
+    definition_matches = bool(
+        set(components) == {"twilio/text", "twilio/quick-reply"}
+        and dict(text_type) == {"body": _CONSENT_TEMPLATE_BODY}
+        and set(quick_reply_type) == {"body", "actions"}
+        and quick_reply_type.get("body") == _CONSENT_TEMPLATE_BODY
+        and action_keys in ({"title", "id"}, {"type", "title", "id"})
+        and str(action.get("type") or "QUICK_REPLY").upper() == "QUICK_REPLY"
+        and action.get("title") == _CONSENT_TEMPLATE_ACTION_TITLE
+        and action.get("id") == _CONSENT_TEMPLATE_ACTION_ID
+        and str(registry.body_preview or "") == _CONSENT_TEMPLATE_BODY
+    )
+    synced_at = _as_utc(registry.last_sync_at)
+    registry_updated_at = _as_utc(registry.updated_at)
+    attempt_created_at = _as_utc(attempt.created_at)
+    now = datetime.now(timezone.utc)
+    provider_sync_matches = bool(
+        registry.status == "approved"
+        and metadata.get("source") == "whatsapp_experience_creation_manifest"
+        and metadata.get("sync_state") == "complete"
+        and synced_at is not None
+        and registry_updated_at is not None
+        and attempt_created_at is not None
+        and synced_at <= registry_updated_at <= attempt_created_at
+        and attempt_created_at <= now + timedelta(minutes=5)
+        and attempt_created_at - synced_at
+        <= _CONSENT_TEMPLATE_PROVIDER_EVIDENCE_MAX_AGE
+    )
+    if not definition_matches or not provider_sync_matches:
+        raise InterviewDomainError(
+            "Consent outbound template has no fresh exact provider-sync contract",
+            status_code=409,
+            reason_code="interview_consent_template_contract_invalid",
+            action_hint="sync_and_approve_exact_text_action_template",
+        )
+    return _consent_template_definition_digest()
+
+
+def _delivery_callback_event_digest(event: MessagingEventLedger) -> str:
+    occurred_at = _as_utc(event.occurred_at)
+    created_at = _as_utc(event.created_at)
+    return hashlib.sha256(
+        _canonical_json(
+            {
+                "contract_version": "interview.consent_delivery_callback.v1",
+                "event_id": event.id,
+                "tenant_id": event.tenant_id,
+                "provider_connection_id": event.provider_connection_id,
+                "provider_sender_id": event.provider_sender_id,
+                "channel": event.channel,
+                "direction": event.direction,
+                "event_type": event.event_type,
+                "provider": event.provider,
+                "provider_event_id": event.provider_event_id,
+                "external_message_sid": event.external_message_sid,
+                "external_status": str(event.external_status or "").lower(),
+                "occurred_at": _iso(occurred_at),
+                "created_at": _iso(created_at),
+            }
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _verified_delivery_callback_event(
+    *,
+    tenant: TenantProfile,
+    attempt: WhatsAppOutboundAttempt,
+    required_status: Any = None,
+    required_occurred_at: datetime | None = None,
+) -> tuple[MessagingEventLedger, str]:
+    """Bind consent delivery to the durable event created after signature checks."""
+
+    current_status = str(attempt.provider_status or "").strip().lower()
+    status = str(required_status or current_status).strip().lower()
+    status_rank = {"delivered": 1, "read": 2}
+    if (
+        current_status not in status_rank
+        or status not in status_rank
+        or status_rank[current_status] < status_rank[status]
+    ):
+        raise InterviewDomainError(
+            "Consent delivery has no delivered/read provider evidence",
+            status_code=409,
+            reason_code="interview_consent_presentation_not_delivered",
+            action_hint="wait_for_signed_delivered_or_read_callback",
+        )
+
+    provider_message_sid = str(attempt.provider_message_sid or "").strip()
+    query = MessagingEventLedger.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+        direction="outbound",
+        event_type="delivery_status",
+        provider_event_id=f"{provider_message_sid}:{status}",
+        external_message_sid=provider_message_sid,
+        external_status=status,
+    )
+    if attempt.provider_sender_id is not None:
+        query = query.filter_by(provider_sender_id=attempt.provider_sender_id)
+    if attempt.provider_connection_id is not None:
+        query = query.filter_by(
+            provider_connection_id=attempt.provider_connection_id
+        )
+    rows = query.order_by(MessagingEventLedger.id.asc()).limit(2).all()
+    if len(rows) != 1:
+        raise InterviewDomainError(
+            "Consent delivery has no unique signed provider callback event",
+            status_code=409,
+            reason_code="interview_consent_presentation_signed_callback_required",
+            action_hint="wait_for_signed_delivered_or_read_callback",
+        )
+    event = rows[0]
+    payload = event.payload if isinstance(event.payload, Mapping) else {}
+    message_refs = [
+        str(payload[key]).strip()
+        for key in ("MessageSid", "SmsMessageSid")
+        if payload.get(key) not in (None, "")
+    ]
+    statuses = [
+        str(payload[key]).strip().lower()
+        for key in ("MessageStatus", "SmsStatus")
+        if payload.get(key) not in (None, "")
+    ]
+    occurred_at = _as_utc(event.occurred_at)
+    created_at = _as_utc(event.created_at)
+    attempt_completed_at = _as_utc(attempt.completed_at)
+    expected_occurred_at = _as_utc(required_occurred_at)
+    callback_shape_valid = bool(
+        message_refs
+        and all(value == provider_message_sid for value in message_refs)
+        and statuses
+        and all(value == status for value in statuses)
+        and occurred_at is not None
+        and created_at is not None
+        and attempt_completed_at is not None
+        and occurred_at <= created_at <= attempt_completed_at
+        and (
+            expected_occurred_at is None
+            or occurred_at == expected_occurred_at
+        )
+    )
+    if not callback_shape_valid:
+        raise InterviewDomainError(
+            "Consent provider callback evidence is inconsistent with the outbound attempt",
+            status_code=409,
+            reason_code="interview_consent_presentation_signed_callback_invalid",
+            action_hint="repair_signed_provider_callback_evidence",
+        )
+    return event, _delivery_callback_event_digest(event)
+
+
 def _consent_attestation(value: Any, *, source: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise InterviewDomainError(
@@ -536,7 +1030,10 @@ def _presentation_attempt_scope(
     challenge: InterviewConsentChallenge,
     version: AssessmentProgramVersion,
     attempt: WhatsAppOutboundAttempt,
-) -> tuple[WhatsAppInboundTurn, str]:
+    required_provider_status: Any = None,
+    required_provider_status_at: datetime | None = None,
+    verify_current_template_registry: bool = True,
+) -> tuple[WhatsAppInboundTurn, str, str, MessagingEventLedger, str]:
     if not (
         attempt.tenant_id == tenant.id
         and attempt.provider == "twilio"
@@ -553,6 +1050,13 @@ def _presentation_attempt_scope(
             reason_code="interview_consent_presentation_not_delivered",
             action_hint="wait_for_signed_delivered_or_read_callback",
         )
+
+    status_event, status_event_digest = _verified_delivery_callback_event(
+        tenant=tenant,
+        attempt=attempt,
+        required_status=required_provider_status,
+        required_occurred_at=required_provider_status_at,
+    )
 
     source_turn = WhatsAppInboundTurn.query.filter_by(
         id=attempt.inbound_turn_id,
@@ -602,6 +1106,37 @@ def _presentation_attempt_scope(
             action_hint="use_immutable_durable_outbound_payload",
         )
 
+    try:
+        identity_mode = channel_session_identity_mode(current_app.config)
+        identity_secret = resolve_channel_session_identity_secret(
+            current_app.config,
+            mode=identity_mode,
+        )
+        recipient_hmac = derive_channel_session_identity_hmac(
+            secret=identity_secret,
+            tenant_id=tenant.id,
+            provider=attempt.provider,
+            identity_version=challenge.expected_identity_version,
+            provider_identity=payload.get("to"),
+        )
+    except ChannelSessionIdentityError as exc:
+        raise InterviewDomainError(
+            "Consent outbound recipient cannot be verified against the pinned subject",
+            status_code=409,
+            reason_code="interview_consent_presentation_recipient_invalid",
+            action_hint="send_to_pinned_subject_channel_identity",
+        ) from exc
+    if not hmac.compare_digest(
+        recipient_hmac,
+        str(challenge.expected_identity_hmac or ""),
+    ):
+        raise InterviewDomainError(
+            "Consent outbound recipient is not the pinned subject channel identity",
+            status_code=409,
+            reason_code="interview_consent_presentation_recipient_mismatch",
+            action_hint="send_to_pinned_subject_channel_identity",
+        )
+
     policy = payload.get("_chatboc_policy_metadata")
     metadata = (
         policy.get("interview_consent_presentation")
@@ -618,6 +1153,7 @@ def _presentation_attempt_scope(
         "expected_identity_version": challenge.expected_identity_version,
         "expected_chat_session_id": challenge.expected_chat_session_id,
         "template_contract": "interview_consent_exact_text_action.v1",
+        "template_definition_sha256": _consent_template_definition_digest(),
     }
     if not isinstance(metadata, Mapping) or dict(metadata) != expected_metadata:
         raise InterviewDomainError(
@@ -639,6 +1175,15 @@ def _presentation_attempt_scope(
             reason_code="interview_consent_presentation_payload_mismatch",
             action_hint="render_exact_consent_text_and_action",
         )
+    template_digest = (
+        _verified_consent_template_digest(
+            tenant=tenant,
+            attempt=attempt,
+            content_sid=content_sid,
+        )
+        if verify_current_template_registry
+        else _consent_template_definition_digest()
+    )
     try:
         presented_text, presented_text_sha256 = _normalize_consent_text(
             variables.get("1")
@@ -678,7 +1223,13 @@ def _presentation_attempt_scope(
             reason_code="interview_consent_presentation_payload_mismatch",
             action_hint="render_exact_consent_text_and_action",
         )
-    return source_turn, payload_digest
+    return (
+        source_turn,
+        payload_digest,
+        template_digest,
+        status_event,
+        status_event_digest,
+    )
 
 
 def _verify_registered_consent_presentation(
@@ -712,12 +1263,27 @@ def _verify_registered_consent_presentation(
             reason_code="interview_consent_presentation_invalid",
             action_hint="repair_provider_bound_presentation_evidence",
         )
-    _presentation_attempt_scope(
+    (
+        _,
+        _,
+        template_digest,
+        status_event,
+        status_event_digest,
+    ) = _presentation_attempt_scope(
         tenant=tenant,
         session=session,
         challenge=challenge,
         version=version,
         attempt=attempt,
+        required_provider_status=presentation.outbound_provider_status,
+        required_provider_status_at=presentation.outbound_provider_status_at,
+        # The immutable presentation already snapshots the exact approved
+        # definition. Later provider-registry refreshes must not invalidate a
+        # historical consent proof merely because ``updated_at`` advanced.
+        verify_current_template_registry=False,
+    )
+    attempt_payload = (
+        attempt.payload_json if isinstance(attempt.payload_json, Mapping) else {}
     )
     if not (
         presentation.contract_version == InterviewConsentPresentation.CONTRACT_VERSION
@@ -728,8 +1294,21 @@ def _verify_registered_consent_presentation(
             str(attempt.provider_message_sid or ""),
         )
         and hmac.compare_digest(
+            str(presentation.outbound_content_sid or ""),
+            str(attempt_payload.get("content_sid") or ""),
+        )
+        and presentation.outbound_status_event_id == status_event.id
+        and hmac.compare_digest(
+            str(presentation.outbound_status_event_sha256 or ""),
+            status_event_digest,
+        )
+        and hmac.compare_digest(
             str(presentation.outbound_payload_sha256 or ""),
             str(attempt.payload_digest or ""),
+        )
+        and hmac.compare_digest(
+            str(presentation.outbound_template_sha256 or ""),
+            template_digest,
         )
         and presentation.expected_identity_binding_id
         == challenge.expected_identity_binding_id
@@ -742,8 +1321,16 @@ def _verify_registered_consent_presentation(
             str(challenge.expected_identity_hmac or ""),
         )
         and hmac.compare_digest(
+            str(presentation.expected_identity_hmac or ""),
+            str(session.subject_identity_hmac or ""),
+        )
+        and hmac.compare_digest(
             str(presentation.expected_chat_session_id or ""),
             str(challenge.expected_chat_session_id or ""),
+        )
+        and hmac.compare_digest(
+            str(presentation.expected_chat_session_id or ""),
+            str(session.subject_chat_session_id or ""),
         )
         and hmac.compare_digest(
             str(presentation.consent_text_sha256 or ""),
@@ -849,7 +1436,7 @@ def _verify_participant_event_attestation(
             "Provider event has no supported one-time consent receipt",
             status_code=409,
             reason_code="interview_consent_provider_receipt_mismatch",
-            action_hint="issue_and_use_v2_consent_challenge",
+            action_hint="issue_and_use_v3_consent_challenge",
         )
     nonce_sha256 = str(receipt.get("challenge_nonce_sha256") or "").strip().lower()
     receipt_text_sha256 = str(receipt.get("consent_text_sha256") or "").strip().lower()
@@ -861,7 +1448,7 @@ def _verify_participant_event_attestation(
             "Provider consent receipt has an invalid challenge digest",
             status_code=409,
             reason_code="interview_consent_provider_receipt_mismatch",
-            action_hint="issue_and_use_v2_consent_challenge",
+            action_hint="issue_and_use_v3_consent_challenge",
         )
     challenge = InterviewConsentChallenge.query.filter_by(
         tenant_id=tenant.id,
@@ -1249,7 +1836,30 @@ def serialize_consent_challenge(
             "required_provider_statuses": list(
                 InterviewConsentPresentation.VERIFIED_PROVIDER_STATUSES
             ),
+            "required_delivery_evidence": "signed_provider_status_callback",
             "content_variables": {"1": consent_text, "2": action_id},
+            "template_contract": {
+                "contract_version": _CONSENT_TEMPLATE_CONTRACT_VERSION,
+                "provider": "twilio",
+                "channel": "whatsapp",
+                "status": "approved",
+                "max_provider_evidence_age_seconds": int(
+                    _CONSENT_TEMPLATE_PROVIDER_EVIDENCE_MAX_AGE.total_seconds()
+                ),
+                "types": {
+                    "twilio/text": {"body": _CONSENT_TEMPLATE_BODY},
+                    "twilio/quick-reply": {
+                        "body": _CONSENT_TEMPLATE_BODY,
+                        "actions": [
+                            {
+                                "type": "QUICK_REPLY",
+                                "title": _CONSENT_TEMPLATE_ACTION_TITLE,
+                                "id": _CONSENT_TEMPLATE_ACTION_ID,
+                            }
+                        ],
+                    },
+                },
+            },
             "policy_metadata": {
                 "interview_consent_presentation": {
                     "contract_version": _CONSENT_PRESENTATION_OUTBOUND_CONTRACT,
@@ -1263,6 +1873,9 @@ def serialize_consent_challenge(
                     "expected_identity_version": challenge.expected_identity_version,
                     "expected_chat_session_id": challenge.expected_chat_session_id,
                     "template_contract": "interview_consent_exact_text_action.v1",
+                    "template_definition_sha256": (
+                        _consent_template_definition_digest()
+                    ),
                 }
             },
         },
@@ -1285,12 +1898,18 @@ def serialize_consent_presentation(
         "outbound_provider_status_at": _iso(
             presentation.outbound_provider_status_at
         ),
+        "outbound_status_event_id": presentation.outbound_status_event_id,
+        "outbound_status_event_sha256": (
+            presentation.outbound_status_event_sha256
+        ),
         "outbound_payload_sha256": presentation.outbound_payload_sha256,
+        "outbound_template_sha256": presentation.outbound_template_sha256,
         "expected_identity_binding_id": presentation.expected_identity_binding_id,
         "consent_text_sha256": presentation.consent_text_sha256,
         "action": presentation.action,
         "registered_at": _iso(presentation.registered_at),
         "delivery_evidence_verified": True,
+        "signed_provider_callback_verified": True,
         "read_receipt_verified": presentation.outbound_provider_status == "read",
         "civil_identity_verified": False,
     }
@@ -1366,6 +1985,1069 @@ def serialize_evidence(evidence: InterviewEvidence) -> dict[str, Any]:
         "provenance": evidence.provenance_json,
         "size_bytes": evidence.size_bytes,
         "created_at": _iso(evidence.created_at),
+    }
+
+
+def serialize_interview_assignment(
+    assignment: InterviewAssignment,
+) -> dict[str, Any]:
+    """Serialize the stable append-only assignment receipt."""
+
+    return {
+        "contract_version": InterviewAssignment.CONTRACT_VERSION,
+        "id": assignment.id,
+        "tenant_id": assignment.tenant_id,
+        "interview_session_id": assignment.interview_session_id,
+        "version": assignment.version,
+        "assignee_user_id": assignment.assignee_user_id,
+        "previous_assignee_user_id": assignment.previous_assignee_user_id,
+        "assigned_by_user_id": assignment.assigned_by_user_id,
+        "reason_code": assignment.reason_code,
+        "supersedes_assignment_id": assignment.supersedes_assignment_id,
+        "created_at": _iso(assignment.created_at),
+        "history_immutable": True,
+    }
+
+
+def get_interview_session(
+    tenant: TenantProfile, session_id: int
+) -> InterviewSession:
+    session = InterviewSession.query.filter_by(
+        tenant_id=tenant.id,
+        id=session_id,
+    ).first()
+    if session is None:
+        raise InterviewDomainError(
+            "Interview session not found",
+            status_code=404,
+            reason_code="interview_session_not_found",
+            action_hint="choose_tenant_session",
+        )
+    return session
+
+
+def _current_interview_assignment(
+    tenant_id: int,
+    session_id: int,
+) -> InterviewAssignment | None:
+    return (
+        InterviewAssignment.query.filter_by(
+            tenant_id=tenant_id,
+            interview_session_id=session_id,
+        )
+        .order_by(InterviewAssignment.version.desc(), InterviewAssignment.id.desc())
+        .first()
+    )
+
+
+def _assignment_integer(value: Any, field: str, *, minimum: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise InterviewDomainError(
+            f"{field} must be an integer greater than or equal to {minimum}",
+            reason_code="interview_assignment_payload_invalid",
+            action_hint="send_valid_assignment_payload",
+            details={"field": field},
+        )
+    return value
+
+
+def _eligible_assignment_user(
+    tenant: TenantProfile,
+    assignee_user_id: int,
+) -> User:
+    assignee = db.session.get(User, assignee_user_id)
+    eligible = bool(assignee and _assignment_user_is_eligible(assignee, tenant))
+    if not eligible:
+        raise InterviewDomainError(
+            "The selected interview assignee is not eligible for this tenant",
+            reason_code="interview_assignment_assignee_ineligible",
+            action_hint="choose_authorized_conductor",
+        )
+    return assignee
+
+
+def _assignment_user_has_explicit_membership(user: User, tenant: TenantProfile) -> bool:
+    owner_ids = {
+        int(value)
+        for value in (tenant.municipio_id, tenant.pyme_id)
+        if isinstance(value, int) and value > 0
+    }
+    user_tenant_id = getattr(user, "tenant_id", None)
+    user_tenant_slug = str(getattr(user, "tenant_slug", "") or "").strip().lower()
+    tenant_slug = str(tenant.slug or "").strip().lower()
+    return bool(
+        user_tenant_id == tenant.id
+        or (user_tenant_slug and user_tenant_slug == tenant_slug)
+        or user.id in owner_ids
+        or getattr(user, "empresa_id", None) in owner_ids
+    )
+
+
+def _assignment_user_is_eligible(user: User, tenant: TenantProfile) -> bool:
+    return bool(
+        str(getattr(user, "name", "") or "").strip()
+        and _assignment_user_has_explicit_membership(user, tenant)
+        and _is_authorized_for_tenant(
+            user,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+        )
+        and not missing_interview_capabilities(
+            user,
+            tenant,
+            INTERVIEW_SESSIONS_CONDUCT,
+        )
+    )
+
+
+def assign_interview_session(
+    tenant: TenantProfile,
+    actor: User,
+    session_id: int,
+    payload: Mapping[str, Any],
+    idempotency_key: str,
+) -> InterviewMutation:
+    """Append one assignment revision and synchronize the legacy session pointer."""
+
+    _ensure_allowed_fields(
+        payload,
+        {"assignee_user_id", "reason_code", "expected_assignment_version"},
+    )
+    assignee_user_id = _assignment_integer(
+        payload.get("assignee_user_id"),
+        "assignee_user_id",
+        minimum=1,
+    )
+    expected_version = _assignment_integer(
+        payload.get("expected_assignment_version"),
+        "expected_assignment_version",
+        minimum=0,
+    )
+    reason_code = _enum_value(
+        payload.get("reason_code"),
+        "reason_code",
+        INTERVIEW_ASSIGNMENT_REASON_CODES,
+    )
+    normalized = {
+        "session_id": session_id,
+        "assignee_user_id": assignee_user_id,
+        "reason_code": reason_code,
+        "expected_assignment_version": expected_version,
+    }
+    request_hash = _operation_hash("interview.assignment.create.v1", normalized)
+    existing = InterviewAssignment.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key=idempotency_key,
+    ).first()
+    if existing is not None:
+        if not hmac.compare_digest(existing.request_hash, request_hash):
+            raise _idempotency_conflict()
+        return InterviewMutation(existing, replayed=True)
+
+    session = (
+        InterviewSession.query.filter_by(tenant_id=tenant.id, id=session_id)
+        .with_for_update()
+        .first()
+    )
+    if session is None:
+        raise InterviewDomainError(
+            "Interview session not found",
+            status_code=404,
+            reason_code="interview_session_not_found",
+            action_hint="choose_tenant_session",
+        )
+    # A second read after the session lock turns a concurrent retry with the
+    # same operation identity into a replay instead of a stale-version error.
+    existing_after_lock = InterviewAssignment.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key=idempotency_key,
+    ).first()
+    if existing_after_lock is not None:
+        if not hmac.compare_digest(existing_after_lock.request_hash, request_hash):
+            raise _idempotency_conflict()
+        return InterviewMutation(existing_after_lock, replayed=True)
+    if session.status in {"completed", "void"}:
+        raise InterviewDomainError(
+            "Closed interview sessions cannot be reassigned",
+            status_code=409,
+            reason_code="interview_assignment_session_closed",
+            action_hint="choose_open_interview_session",
+        )
+    assignee = _eligible_assignment_user(tenant, assignee_user_id)
+    current_assignment = _current_interview_assignment(tenant.id, session.id)
+    current_version = current_assignment.version if current_assignment else 0
+    if current_assignment and session.interviewer_user_id != current_assignment.assignee_user_id:
+        raise InterviewDomainError(
+            "The interview assignment ledger does not match the session owner",
+            status_code=409,
+            reason_code="interview_assignment_pointer_inconsistent",
+            action_hint="repair_assignment_ledger",
+        )
+    if expected_version != current_version:
+        raise InterviewDomainError(
+            "The interview assignment changed before this request was applied",
+            status_code=409,
+            reason_code="interview_assignment_version_conflict",
+            action_hint="refresh_assignment_and_retry",
+            details={"current_assignment_version": current_version},
+        )
+    if current_assignment and current_assignment.assignee_user_id == assignee.id:
+        raise InterviewDomainError(
+            "The selected user is already assigned to this interview",
+            status_code=409,
+            reason_code="interview_assignment_unchanged",
+            action_hint="choose_different_assignee",
+            details={"current_assignment_version": current_version},
+        )
+
+    previous_assignee_user_id = session.interviewer_user_id
+    baseline_materialized = bool(
+        current_assignment is None
+        and previous_assignee_user_id == assignee.id
+    )
+    change_kind = "baseline_materialized" if baseline_materialized else "assignee_changed"
+    assignment = InterviewAssignment(
+        tenant_id=tenant.id,
+        interview_session_id=session.id,
+        version=current_version + 1,
+        assignee_user_id=assignee.id,
+        previous_assignee_user_id=previous_assignee_user_id,
+        assigned_by_user_id=actor.id,
+        reason_code=reason_code,
+        supersedes_assignment_id=(
+            current_assignment.id if current_assignment is not None else None
+        ),
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    db.session.add(assignment)
+    db.session.flush()
+    session.interviewer_user_id = assignee.id
+    _audit(
+        tenant=tenant,
+        actor=actor,
+        event_type=(
+            "interview.assignment.baselined"
+            if baseline_materialized
+            else "interview.assignment.changed"
+        ),
+        resource_type="interview_assignment",
+        resource_id=assignment.id,
+        details={
+            "contract_version": InterviewAssignment.CONTRACT_VERSION,
+            "interview_session_id": session.id,
+            "assignment_version": assignment.version,
+            "assignee_user_id": assignee.id,
+            "previous_assignee_user_id": (
+                assignment.previous_assignee_user_id
+            ),
+            "change_kind": change_kind,
+            "reason_code": reason_code,
+            "free_text_persisted": False,
+        },
+    )
+    return InterviewMutation(assignment)
+
+
+def build_interview_assignment_candidates(tenant: TenantProfile) -> dict[str, Any]:
+    """Return the minimal tenant roster eligible to conduct an interview."""
+
+    owner_ids = {
+        int(value)
+        for value in (tenant.municipio_id, tenant.pyme_id)
+        if isinstance(value, int) and value > 0
+    }
+    normalized_tenant_slug = str(tenant.slug or "").strip().lower()
+    clauses = [User.tenant_id == tenant.id]
+    if normalized_tenant_slug:
+        clauses.append(
+            func.lower(func.trim(User.tenant_slug)) == normalized_tenant_slug
+        )
+    if owner_ids:
+        clauses.extend([User.id.in_(owner_ids), User.empresa_id.in_(owner_ids)])
+    candidates = []
+    role_labels = {
+        "tenant_admin": "Administrador",
+        "employee": "Operador",
+        "superadmin": "Administrador de plataforma",
+    }
+    for user in User.query.filter(or_(*clauses)).order_by(User.name.asc(), User.id.asc()).all():
+        if not _assignment_user_is_eligible(user, tenant):
+            continue
+        normalized_role = canonical_role(getattr(user, "rol", None))
+        candidates.append(
+            {
+                "user_id": user.id,
+                "display_name": str(user.name or "").strip(),
+                "role_label": role_labels.get(normalized_role, "Entrevistador"),
+                "can_conduct": True,
+            }
+        )
+    return {
+        "contract_version": _INTERVIEW_ASSIGNMENT_CANDIDATES_CONTRACT,
+        "tenant": {"id": tenant.id, "slug": tenant.slug},
+        "candidates": candidates,
+        "presentation": {
+            "empty_title": "No hay entrevistadores disponibles",
+            "empty_description": "Un administrador debe habilitar la capacidad de conducir entrevistas.",
+        },
+    }
+
+
+def _verified_runtime_steps(
+    case: AssessmentCase | None,
+    version: AssessmentProgramVersion | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Validate one pinned immutable definition without performing new queries."""
+
+    snapshot_valid = bool(
+        case is not None
+        and version is not None
+        and version.program_id == case.program_id
+        and version.status == "published"
+        and version.published_at is not None
+        and isinstance(version.definition_json, dict)
+        and version.definition_json
+    )
+    if snapshot_valid:
+        definition_digest = hashlib.sha256(
+            _canonical_json(version.definition_json).encode("utf-8")
+        ).hexdigest()
+        snapshot_valid = hmac.compare_digest(
+            definition_digest,
+            str(version.definition_hash or ""),
+        )
+    if not snapshot_valid:
+        raise InterviewDomainError(
+            "The session's published interview definition cannot be verified",
+            status_code=409,
+            reason_code="interview_runtime_snapshot_invalid",
+            action_hint="quarantine_session_and_repair_program_version",
+        )
+    progress_mode, steps = _runtime_steps_from_definition(version.definition_json)
+    return progress_mode, steps
+
+
+def _pinned_session_runtime(
+    session: InterviewSession,
+) -> tuple[AssessmentCase, AssessmentProgramVersion, str, list[dict[str, Any]]]:
+    """Resolve and integrity-check the immutable runtime selected by a session."""
+
+    case = AssessmentCase.query.filter_by(
+        tenant_id=session.tenant_id,
+        id=session.assessment_case_id,
+        program_version_id=session.program_version_id,
+    ).first()
+    version = AssessmentProgramVersion.query.filter_by(
+        tenant_id=session.tenant_id,
+        id=session.program_version_id,
+    ).first()
+    progress_mode, steps = _verified_runtime_steps(case, version)
+    return case, version, progress_mode, steps
+
+
+def _session_progress(
+    *,
+    session: InterviewSession,
+    progress_mode: str,
+    steps: list[dict[str, Any]],
+    evidence_rows: list[InterviewEvidence],
+) -> dict[str, Any]:
+    evidence_by_type = {item: 0 for item in INTERVIEW_EVIDENCE_TYPES}
+    step_evidence_counts = {item["step_ref"]: 0 for item in steps}
+    for evidence in evidence_rows:
+        evidence_by_type[evidence.evidence_type] = (
+            evidence_by_type.get(evidence.evidence_type, 0) + 1
+        )
+        provenance = (
+            evidence.provenance_json
+            if isinstance(evidence.provenance_json, Mapping)
+            else {}
+        )
+        step_ref = str(provenance.get("step_ref") or "").strip().lower()
+        if step_ref in step_evidence_counts:
+            step_evidence_counts[step_ref] += 1
+
+    completed_refs = [
+        item["step_ref"]
+        for item in steps
+        if step_evidence_counts.get(item["step_ref"], 0) > 0
+    ]
+    required_refs = [item["step_ref"] for item in steps if item["required"]]
+    completed_required_refs = [
+        step_ref for step_ref in required_refs if step_ref in completed_refs
+    ]
+    pending_required_refs = [
+        step_ref for step_ref in required_refs if step_ref not in completed_refs
+    ]
+    candidate_refs = pending_required_refs or [
+        item["step_ref"]
+        for item in steps
+        if item["step_ref"] not in completed_refs
+    ]
+    next_step = next(
+        (item for item in steps if item["step_ref"] in candidate_refs),
+        None,
+    )
+    if progress_mode == "evidence_only":
+        percent = None
+        required_satisfied = None
+    else:
+        required_satisfied = not pending_required_refs
+        percent = (
+            100
+            if not required_refs
+            else int(round(100 * len(completed_required_refs) / len(required_refs)))
+        )
+    if evidence_rows:
+        last_checkpoint = evidence_rows[-1].created_at
+        checkpoint_source = "evidence"
+    elif session.started_at is not None:
+        last_checkpoint = session.started_at
+        checkpoint_source = "session_started"
+    else:
+        last_checkpoint = session.created_at
+        checkpoint_source = "session_created"
+    return {
+        "contract_version": "interview.progress.v1",
+        "mode": progress_mode,
+        "completion_gate_enforced": progress_mode == "step_evidence_v1",
+        "total_steps": len(steps),
+        "required_steps": len(required_refs),
+        "completed_steps": len(completed_refs),
+        "completed_required_steps": len(completed_required_refs),
+        "pending_required_steps": len(pending_required_refs),
+        "percent": percent,
+        "required_steps_satisfied": required_satisfied,
+        "completed_step_refs": completed_refs,
+        "pending_required_step_refs": pending_required_refs,
+        "step_evidence_counts": step_evidence_counts,
+        "evidence_count": len(evidence_rows),
+        "evidence_by_type": evidence_by_type,
+        "last_checkpoint_at": _iso(last_checkpoint),
+        "last_checkpoint_source": checkpoint_source,
+        "current_step": dict(next_step) if next_step is not None else None,
+        "session_status": session.status,
+    }
+
+
+def _interview_resume_actions(
+    session: InterviewSession,
+    progress: Mapping[str, Any],
+    progress_mode: str,
+) -> tuple[str, list[str]]:
+    if session.status == "scheduled":
+        next_action = (
+            "issue_consent_challenge"
+            if session.channel == "whatsapp"
+            else "record_consent_and_start"
+        )
+        available_actions = (
+            ["issue_consent_challenge", "start_session"]
+            if session.channel == "whatsapp"
+            else ["start_session"]
+        )
+    elif session.status == "active":
+        next_action = (
+            "capture_step"
+            if progress.get("current_step") is not None
+            else "complete_interview"
+        )
+        available_actions = ["add_evidence"]
+        if (
+            progress_mode != "step_evidence_v1"
+            or progress.get("required_steps_satisfied") is True
+        ):
+            available_actions.append("complete_session")
+    elif session.status == "completed":
+        next_action = "human_review"
+        available_actions = []
+    elif session.status in {"interrupted", "no_show"}:
+        next_action = "operator_reschedule_required"
+        available_actions = []
+    else:
+        next_action = "none"
+        available_actions = []
+    return next_action, available_actions
+
+
+def serialize_interview_resume(session: InterviewSession) -> dict[str, Any]:
+    """Return the no-store runtime/checkpoint needed to resume one session."""
+
+    case, version, progress_mode, steps = _pinned_session_runtime(session)
+    evidence_rows = (
+        InterviewEvidence.query.filter_by(
+            tenant_id=session.tenant_id,
+            interview_session_id=session.id,
+        )
+        .order_by(InterviewEvidence.id.asc())
+        .all()
+    )
+    progress = _session_progress(
+        session=session,
+        progress_mode=progress_mode,
+        steps=steps,
+        evidence_rows=evidence_rows,
+    )
+    next_action, available_actions = _interview_resume_actions(
+        session,
+        progress,
+        progress_mode,
+    )
+
+    progress["can_complete"] = "complete_session" in available_actions
+    return {
+        "contract_version": _INTERVIEW_RESUME_CONTRACT,
+        "tenant_id": session.tenant_id,
+        "session": serialize_interview_session(session),
+        "case": {
+            "id": case.id,
+            "status": case.status,
+            "program_id": case.program_id,
+            "program_version_id": case.program_version_id,
+            "source_channel": case.source_channel,
+        },
+        "program_snapshot": {
+            "id": version.id,
+            "program_id": version.program_id,
+            "version_number": version.version_number,
+            "definition_hash": version.definition_hash,
+            "definition": version.definition_json,
+            "runtime_contract": (
+                _INTERVIEW_RUNTIME_DEFINITION_CONTRACT
+                if progress_mode == "step_evidence_v1"
+                else None
+            ),
+            "immutable": True,
+        },
+        "steps": steps,
+        "progress": progress,
+        "evidence": [serialize_evidence(item) for item in evidence_rows],
+        "supported_evidence_types": list(INTERVIEW_EVIDENCE_TYPES),
+        "next_action": next_action,
+        "available_actions": available_actions,
+        "resumable": session.status in {"scheduled", "active"},
+        "updated_at": _iso(session.updated_at),
+    }
+
+
+def _inbox_action(
+    *,
+    action_id: str,
+    label: str,
+    enabled: bool,
+    method: str | None,
+    endpoint: str | None,
+    disabled_reason_code: str | None,
+    candidates: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "action_id": action_id,
+        "label": label,
+        "enabled": enabled,
+        "method": method,
+        "endpoint": endpoint,
+        "disabled_reason_code": disabled_reason_code,
+    }
+    if candidates is not None:
+        payload["candidates"] = candidates
+    return payload
+
+
+def build_interview_inbox(
+    tenant: TenantProfile,
+    *,
+    can_view_resume: bool,
+    assignment_feature_enabled: bool = False,
+    can_assign: bool = False,
+    limit: int = 50,
+    status: str | None = None,
+) -> dict[str, Any]:
+    """Build a bounded, tenant-scoped operational inbox from persisted facts.
+
+    Managed assignment is exposed only when its separate fail-closed feature
+    gate and caller capability are both enabled. Human-review completion and
+    follow-up remain disabled because they have no durable records yet.
+    """
+
+    can_assign = bool(assignment_feature_enabled and can_assign)
+
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        raise InterviewDomainError(
+            "Interview inbox limit must be an integer between 1 and 100",
+            status_code=400,
+            reason_code="interview_inbox_limit_invalid",
+            action_hint="send_valid_limit",
+        )
+    normalized_status = str(status or "").strip().lower() or None
+    if normalized_status is not None and normalized_status not in INTERVIEW_SESSION_STATUSES:
+        raise InterviewDomainError(
+            "Interview inbox status filter is invalid",
+            status_code=400,
+            reason_code="interview_inbox_status_invalid",
+            action_hint="choose_supported_interview_status",
+            details={"supported_statuses": list(INTERVIEW_SESSION_STATUSES)},
+        )
+
+    query = (
+        db.session.query(
+            InterviewSession,
+            AssessmentCase,
+            AssessmentProgramVersion,
+            AssessmentProgram,
+        )
+        .join(
+            AssessmentCase,
+            and_(
+                AssessmentCase.tenant_id == InterviewSession.tenant_id,
+                AssessmentCase.id == InterviewSession.assessment_case_id,
+                AssessmentCase.program_version_id == InterviewSession.program_version_id,
+            ),
+        )
+        .join(
+            AssessmentProgramVersion,
+            and_(
+                AssessmentProgramVersion.tenant_id == InterviewSession.tenant_id,
+                AssessmentProgramVersion.id == InterviewSession.program_version_id,
+                AssessmentProgramVersion.program_id == AssessmentCase.program_id,
+            ),
+        )
+        .join(
+            AssessmentProgram,
+            and_(
+                AssessmentProgram.tenant_id == InterviewSession.tenant_id,
+                AssessmentProgram.id == AssessmentCase.program_id,
+            ),
+        )
+        .filter(
+            InterviewSession.tenant_id == tenant.id,
+            AssessmentCase.tenant_id == tenant.id,
+            AssessmentProgramVersion.tenant_id == tenant.id,
+            AssessmentProgram.tenant_id == tenant.id,
+        )
+    )
+    if normalized_status is not None:
+        query = query.filter(InterviewSession.status == normalized_status)
+    rows = (
+        query.order_by(InterviewSession.updated_at.desc(), InterviewSession.id.desc())
+        .limit(limit + 1)
+        .all()
+    )
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    session_ids = [int(session.id) for session, _case, _version, _program in rows]
+
+    evidence_rows: list[InterviewEvidence] = []
+    if session_ids:
+        evidence_rows = (
+            InterviewEvidence.query.filter(
+                InterviewEvidence.tenant_id == tenant.id,
+                InterviewEvidence.interview_session_id.in_(session_ids),
+            )
+            .order_by(
+                InterviewEvidence.interview_session_id.asc(),
+                InterviewEvidence.created_at.asc(),
+                InterviewEvidence.id.asc(),
+            )
+            .all()
+        )
+    evidence_by_session: dict[int, list[InterviewEvidence]] = defaultdict(list)
+    evidence_session_by_id: dict[str, int] = {}
+    for evidence in evidence_rows:
+        evidence_by_session[int(evidence.interview_session_id)].append(evidence)
+        evidence_session_by_id[str(evidence.id)] = int(evidence.interview_session_id)
+
+    assignment_rows: list[InterviewAssignment] = []
+    if assignment_feature_enabled and session_ids:
+        assignment_rows = (
+            InterviewAssignment.query.filter(
+                InterviewAssignment.tenant_id == tenant.id,
+                InterviewAssignment.interview_session_id.in_(session_ids),
+            )
+            .order_by(
+                InterviewAssignment.interview_session_id.asc(),
+                InterviewAssignment.version.desc(),
+                InterviewAssignment.id.desc(),
+            )
+            .all()
+        )
+    current_assignment_by_session: dict[int, InterviewAssignment] = {}
+    assignment_session_by_id: dict[str, int] = {}
+    for assignment in assignment_rows:
+        session_key = int(assignment.interview_session_id)
+        current_assignment_by_session.setdefault(session_key, assignment)
+        assignment_session_by_id[str(assignment.id)] = session_key
+
+    assigned_user_ids = {
+        int(session.interviewer_user_id)
+        for session, _case, _version, _program in rows
+        if session.interviewer_user_id
+    }
+    assigned_user_labels = {}
+    for user in (
+        User.query.filter(User.id.in_(assigned_user_ids)).all()
+        if assigned_user_ids
+        else []
+    ):
+        if _assignment_user_is_eligible(user, tenant):
+            assigned_user_labels[int(user.id)] = str(user.name or "").strip()
+
+    audit_events: list[AuditEvent] = []
+    if session_ids:
+        audit_clauses = [
+            and_(
+                AuditEvent.resource_type == "interview_session",
+                AuditEvent.resource_id.in_([str(item) for item in session_ids]),
+            )
+        ]
+        if evidence_session_by_id:
+            audit_clauses.append(
+                and_(
+                    AuditEvent.resource_type == "interview_evidence",
+                    AuditEvent.resource_id.in_(list(evidence_session_by_id)),
+                )
+            )
+        if assignment_session_by_id:
+            audit_clauses.append(
+                and_(
+                    AuditEvent.resource_type == "interview_assignment",
+                    AuditEvent.resource_id.in_(list(assignment_session_by_id)),
+                )
+            )
+        audit_events = (
+            AuditEvent.query.filter(AuditEvent.tenant_id == tenant.id)
+            .filter(or_(*audit_clauses))
+            .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+            .all()
+        )
+    audit_by_session: dict[int, list[AuditEvent]] = defaultdict(list)
+    for event in audit_events:
+        if event.resource_type == "interview_session":
+            try:
+                session_id = int(str(event.resource_id or ""))
+            except (TypeError, ValueError):
+                continue
+        else:
+            resource_id = str(event.resource_id or "")
+            session_id = evidence_session_by_id.get(resource_id)
+            if session_id is None:
+                session_id = assignment_session_by_id.get(resource_id)
+        if session_id in session_ids:
+            audit_by_session[int(session_id)].append(event)
+
+    items: list[dict[str, Any]] = []
+    status_counts: Counter[str] = Counter()
+    total_evidence = 0
+    total_audit_events = 0
+    assignment_disabled_reason = (
+        None
+        if can_assign
+        else (
+            "interview_assignment_domain_not_implemented"
+            if not assignment_feature_enabled
+            else "interview_assignment_capability_required"
+        )
+    )
+    for session, case, version, program in rows:
+        item_can_assign = bool(
+            can_assign and session.status not in {"completed", "void"}
+        )
+        item_assignment_disabled_reason = (
+            None
+            if item_can_assign
+            else (
+                "interview_assignment_session_closed"
+                if can_assign and session.status in {"completed", "void"}
+                else assignment_disabled_reason
+            )
+        )
+        current_assignment = current_assignment_by_session.get(int(session.id))
+        if (
+            current_assignment is not None
+            and current_assignment.assignee_user_id != session.interviewer_user_id
+        ):
+            raise InterviewDomainError(
+                "The interview assignment ledger does not match the session owner",
+                status_code=409,
+                reason_code="interview_assignment_pointer_inconsistent",
+                action_hint="repair_assignment_ledger",
+            )
+        progress_mode, steps = _verified_runtime_steps(case, version)
+        session_evidence = evidence_by_session.get(int(session.id), [])
+        progress = _session_progress(
+            session=session,
+            progress_mode=progress_mode,
+            steps=steps,
+            evidence_rows=session_evidence,
+        )
+        next_action, available_actions = _interview_resume_actions(
+            session,
+            progress,
+            progress_mode,
+        )
+        progress["can_complete"] = "complete_session" in available_actions
+        current_step = progress.get("current_step")
+        progress_summary = {
+            "contract_version": "interview.progress.v1",
+            "mode": progress["mode"],
+            "completion_gate_enforced": progress["completion_gate_enforced"],
+            "total_steps": progress["total_steps"],
+            "required_steps": progress["required_steps"],
+            "completed_steps": progress["completed_steps"],
+            "completed_required_steps": progress["completed_required_steps"],
+            "pending_required_steps": progress["pending_required_steps"],
+            "percent": progress["percent"],
+            "evidence_count": progress["evidence_count"],
+            "last_checkpoint_at": progress["last_checkpoint_at"],
+            "current_step_ref": (
+                current_step.get("step_ref") if isinstance(current_step, Mapping) else None
+            ),
+            "can_complete": progress["can_complete"],
+        }
+        by_type = {
+            evidence_type: int(progress["evidence_by_type"].get(evidence_type, 0))
+            for evidence_type in INTERVIEW_EVIDENCE_TYPES
+        }
+        evidence_summary = {
+            "total": len(session_evidence),
+            "by_type": by_type,
+            "last_captured_at": (
+                _iso(session_evidence[-1].created_at) if session_evidence else None
+            ),
+            "content_hashes_present": sum(
+                1 for item in session_evidence if bool(item.content_sha256)
+            ),
+            "references_exposed": False,
+        }
+        session_audit = audit_by_session.get(int(session.id), [])
+        last_event = session_audit[0] if session_audit else None
+        audit_summary = {
+            "source": "audit_event",
+            "events_recorded": len(session_audit),
+            "last_event": (
+                {
+                    "event_type": last_event.event_type,
+                    "actor_user_id": last_event.actor_user_id,
+                    "created_at": _iso(last_event.created_at),
+                }
+                if last_event is not None
+                else None
+            ),
+            "sensitive_details_exposed": False,
+        }
+        actions = {
+            "view_resume": _inbox_action(
+                action_id="view_resume",
+                label="Abrir checkpoint",
+                enabled=bool(can_view_resume),
+                method="GET",
+                endpoint=f"/api/v2/interviews/sessions/{session.id}",
+                disabled_reason_code=(
+                    None if can_view_resume else "interview_conduct_capability_required"
+                ),
+            ),
+            "assign": _inbox_action(
+                action_id="assign",
+                label="Asignar responsable",
+                enabled=item_can_assign,
+                method="POST" if item_can_assign else None,
+                endpoint=(
+                    f"/api/v2/interviews/sessions/{session.id}/assignment"
+                    if item_can_assign
+                    else None
+                ),
+                disabled_reason_code=item_assignment_disabled_reason,
+                candidates=(
+                    {
+                        "method": "GET",
+                        "endpoint": "/api/v2/interviews/assignment-candidates",
+                    }
+                    if item_can_assign
+                    else None
+                ),
+            ),
+            "review": _inbox_action(
+                action_id="review",
+                label="Registrar revisión",
+                enabled=False,
+                method=None,
+                endpoint=None,
+                disabled_reason_code="interview_human_review_domain_not_implemented",
+            ),
+            "follow_up": _inbox_action(
+                action_id="follow_up",
+                label="Marcar seguimiento",
+                enabled=False,
+                method=None,
+                endpoint=None,
+                disabled_reason_code="interview_follow_up_domain_not_implemented",
+            ),
+        }
+        items.append(
+            {
+                "id": session.id,
+                "tenant_id": session.tenant_id,
+                "session": {
+                    "id": session.id,
+                    "status": session.status,
+                    "status_label": _INTERVIEW_SESSION_LABELS[session.status],
+                    "channel": session.channel,
+                    "channel_label": _INTERVIEW_CHANNEL_LABELS[session.channel],
+                    "interviewer_user_id": session.interviewer_user_id,
+                    "scheduled_for": _iso(session.scheduled_for),
+                    "started_at": _iso(session.started_at),
+                    "completed_at": _iso(session.completed_at),
+                    "updated_at": _iso(session.updated_at),
+                    "consent_granted": bool(session.consent_granted),
+                },
+                "case": {
+                    "id": case.id,
+                    "status": case.status,
+                    "subject_type": case.subject_type,
+                    "subject_reference_exposed": False,
+                    "source_channel": case.source_channel,
+                },
+                "program": {
+                    "id": program.id,
+                    "name": program.name,
+                    "program_type": program.program_type,
+                    "version_id": version.id,
+                    "version_number": version.version_number,
+                    "immutable": True,
+                },
+                "progress": progress_summary,
+                "evidence": evidence_summary,
+                "review": {
+                    "required": case.status == "awaiting_human_review",
+                    "state": (
+                        "pending" if case.status == "awaiting_human_review" else "not_ready"
+                    ),
+                    "decision_available": False,
+                },
+                "assignment": (
+                    {
+                        "interviewer_user_id": session.interviewer_user_id,
+                        "assignment_id": (
+                            current_assignment.id
+                            if current_assignment is not None
+                            else None
+                        ),
+                        "version": (
+                            current_assignment.version
+                            if current_assignment is not None
+                            else 0
+                        ),
+                        "managed_assignment_available": True,
+                        "assigned_user_label": (
+                            assigned_user_labels.get(int(session.interviewer_user_id))
+                            if session.interviewer_user_id is not None
+                            else None
+                        ),
+                    }
+                    if assignment_feature_enabled
+                    else {
+                        "interviewer_user_id": session.interviewer_user_id,
+                        "managed_assignment_available": False,
+                    }
+                ),
+                "audit": audit_summary,
+                "next_action": next_action,
+                "next_action_label": _INTERVIEW_NEXT_ACTION_LABELS[next_action],
+                "actions": actions,
+            }
+        )
+        status_counts[session.status] += 1
+        total_evidence += len(session_evidence)
+        total_audit_events += len(session_audit)
+
+    presentation = {
+        "title": "Entrevistas y evaluaciones",
+        "description": "Bandeja operativa con progreso, evidencia y trazabilidad verificables.",
+        "empty_title": "No hay entrevistas en esta bandeja",
+        "empty_description": "Las sesiones aparecer\u00e1n cuando exista un caso con entrevista programada.",
+    }
+    if assignment_feature_enabled:
+        presentation["assignment_dialog"] = {
+            "title": "Asignar responsable",
+            "description": "Seleccion\u00e1 una persona autorizada para conducir esta entrevista.",
+            "assignee_label": "Responsable",
+            "assignee_placeholder": "Seleccionar responsable",
+            "reason_label": "Motivo de la asignaci\u00f3n",
+            "submit_label": "Confirmar asignaci\u00f3n",
+            "retry_label": "Reintentar",
+            "cancel_label": "Cancelar",
+            "loading_candidates_label": "Cargando responsables autorizados",
+            "candidates_error_label": "No pudimos cargar los responsables autorizados.",
+            "submit_error_label": "No pudimos registrar la asignaci\u00f3n.",
+            "reasons": [
+                {"reason_code": value, "label": _INTERVIEW_ASSIGNMENT_REASON_LABELS[value]}
+                for value in INTERVIEW_ASSIGNMENT_REASON_CODES
+            ],
+        }
+
+    return {
+        "contract_version": (
+            _INTERVIEW_INBOX_CONTRACT_V2
+            if assignment_feature_enabled
+            else _INTERVIEW_INBOX_CONTRACT_V1
+        ),
+        "tenant": {
+            "id": tenant.id,
+            "slug": tenant.slug,
+            "name": tenant.nombre,
+        },
+        "presentation": presentation,
+        "freshness": {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "source": (
+                "assessment_case_interview_session_evidence_assignment_audit_event"
+                if assignment_feature_enabled
+                else "assessment_case_interview_session_evidence_audit_event"
+            ),
+            "synthetic": False,
+        },
+        "summary": {
+            "scope": "current_page",
+            "sessions": len(items),
+            "scheduled": int(status_counts.get("scheduled", 0)),
+            "active": int(status_counts.get("active", 0)),
+            "awaiting_human_review": sum(
+                1 for item in items if item["review"]["required"] is True
+            ),
+            "with_evidence": sum(1 for item in items if item["evidence"]["total"] > 0),
+            "evidence_records": total_evidence,
+            "audit_events": total_audit_events,
+        },
+        "capabilities": {
+            "read_only": not can_assign,
+            "can_view_inbox": True,
+            "can_view_resume": bool(can_view_resume),
+            "can_assign": can_assign,
+            "can_review": False,
+            "can_mark_follow_up": False,
+        },
+        "governance": {
+            "assignment_workflow_persisted": bool(assignment_feature_enabled),
+            "human_review_workflow_persisted": False,
+            "follow_up_workflow_persisted": False,
+            "automated_decisions_allowed": False,
+            "disabled_reason_codes": {
+                "assign": assignment_disabled_reason,
+                "review": "interview_human_review_domain_not_implemented",
+                "follow_up": "interview_follow_up_domain_not_implemented",
+            },
+        },
+        "filters": {"status": normalized_status},
+        "page": {
+            "limit": limit,
+            "returned": len(items),
+            "has_more": has_more,
+            "continuation_available": False,
+            "continuation_disabled_reason_code": (
+                "interview_inbox_cursor_not_implemented" if has_more else None
+            ),
+        },
+        "items": items,
     }
 
 
@@ -2128,7 +3810,7 @@ def issue_interview_consent_challenge(
             "consent_text_sha256": version.consent_text_sha256,
             "expected_identity_binding_id": binding.id,
             "expires_at": _iso(challenge.expires_at),
-            "raw_nonce_persisted": False,
+            "raw_nonce_persisted_in_audit": False,
         },
     )
     return InterviewMutation(
@@ -2264,14 +3946,20 @@ def register_interview_consent_presentation(
             reason_code="interview_consent_presentation_attempt_not_found",
             action_hint="use_tenant_scoped_outbound_attempt",
         )
-    _, payload_digest = _presentation_attempt_scope(
+    (
+        _,
+        payload_digest,
+        template_digest,
+        status_event,
+        status_event_digest,
+    ) = _presentation_attempt_scope(
         tenant=tenant,
         session=session,
         challenge=challenge,
         version=version,
         attempt=attempt,
     )
-    provider_status_at = _as_utc(attempt.completed_at)
+    provider_status_at = _as_utc(status_event.occurred_at)
     if provider_status_at is None or not (
         issued_at <= provider_status_at <= now <= expires_at
     ):
@@ -2290,9 +3978,12 @@ def register_interview_consent_presentation(
         outbound_provider=attempt.provider,
         outbound_provider_message_sid=attempt.provider_message_sid,
         outbound_content_sid=str(payload_json.get("content_sid") or ""),
-        outbound_provider_status=str(attempt.provider_status or "").lower(),
+        outbound_provider_status=str(status_event.external_status or "").lower(),
         outbound_provider_status_at=provider_status_at,
+        outbound_status_event_id=status_event.id,
+        outbound_status_event_sha256=status_event_digest,
         outbound_payload_sha256=payload_digest,
+        outbound_template_sha256=template_digest,
         expected_identity_binding_id=challenge.expected_identity_binding_id,
         expected_identity_version=challenge.expected_identity_version,
         expected_identity_hmac=challenge.expected_identity_hmac,
@@ -2321,12 +4012,15 @@ def register_interview_consent_presentation(
             "outbound_provider": presentation.outbound_provider,
             "outbound_provider_status": presentation.outbound_provider_status,
             "outbound_provider_status_at": _iso(provider_status_at),
+            "outbound_status_event_id": status_event.id,
+            "outbound_status_event_sha256": status_event_digest,
             "outbound_payload_sha256": payload_digest,
+            "outbound_template_sha256": template_digest,
             "expected_identity_binding_id": challenge.expected_identity_binding_id,
             "consent_text_sha256": challenge.consent_text_sha256,
             "action": _CONSENT_ACTION,
             "provider_message_sid_persisted_in_audit": False,
-            "raw_nonce_persisted": False,
+            "raw_nonce_persisted_in_audit": False,
             "civil_identity_verified": False,
         },
     )
@@ -2620,6 +4314,40 @@ def complete_interview_session(
             action_hint="reload_session",
         )
 
+    runtime_case, _version, progress_mode, steps = _pinned_session_runtime(session)
+    if runtime_case.id != case.id:
+        raise InterviewDomainError(
+            "Interview session case scope is inconsistent",
+            status_code=409,
+            reason_code="interview_runtime_snapshot_invalid",
+            action_hint="quarantine_session_and_repair_program_version",
+        )
+    evidence_rows = (
+        InterviewEvidence.query.filter_by(
+            tenant_id=tenant.id,
+            interview_session_id=session.id,
+        )
+        .order_by(InterviewEvidence.id.asc())
+        .all()
+    )
+    progress = _session_progress(
+        session=session,
+        progress_mode=progress_mode,
+        steps=steps,
+        evidence_rows=evidence_rows,
+    )
+    if (
+        progress_mode == "step_evidence_v1"
+        and progress["required_steps_satisfied"] is not True
+    ):
+        raise InterviewDomainError(
+            "Required interview steps are missing durable evidence",
+            status_code=409,
+            reason_code="interview_required_steps_incomplete",
+            action_hint="resume_interview",
+            details={"progress": progress},
+        )
+
     now = datetime.now(timezone.utc)
     session.status = "completed"
     session.complete_idempotency_key = idempotency_key
@@ -2641,6 +4369,9 @@ def complete_interview_session(
             "case_status": "awaiting_human_review",
             "review_required": True,
             "next_action": "human_review",
+            "progress_mode": progress_mode,
+            "required_steps": progress["required_steps"],
+            "completed_required_steps": progress["completed_required_steps"],
         },
     )
     return InterviewMutation(session)
@@ -2715,7 +4446,7 @@ def _provenance(value: Any, *, expected_channel: str) -> dict[str, Any]:
                 reason_code="interview_evidence_provenance_invalid",
             )
         normalized["mime_type"] = mime_type
-    for key in ("transformation", "model_version"):
+    for key in ("transformation", "model_version", "step_ref"):
         if key not in value:
             continue
         identifier = str(value.get(key) or "").strip().lower()
@@ -2783,6 +4514,52 @@ def create_interview_evidence(
                 "size_bytes must be between 0 and 10 GiB",
                 reason_code="interview_evidence_size_invalid",
             )
+
+    session = InterviewSession.query.filter_by(
+        tenant_id=tenant.id, id=session_id
+    ).first()
+    if not session:
+        raise InterviewDomainError(
+            "Interview session not found",
+            status_code=404,
+            reason_code="interview_session_not_found",
+            action_hint="choose_tenant_session",
+        )
+    _case, _version, progress_mode, steps = _pinned_session_runtime(session)
+    step_ref = str(provenance.get("step_ref") or "").strip().lower()
+    step_by_ref = {item["step_ref"]: item for item in steps}
+    if progress_mode == "step_evidence_v1" and not step_ref:
+        raise InterviewDomainError(
+            "Evidence for interview.definition.v1 requires provenance.step_ref",
+            reason_code="interview_evidence_step_required",
+            action_hint="resume_session_and_use_current_step_ref",
+            details={"expected_step_refs": list(step_by_ref)},
+        )
+    if step_ref and step_ref not in step_by_ref:
+        raise InterviewDomainError(
+            "provenance.step_ref does not belong to the pinned interview definition",
+            reason_code="interview_evidence_step_unknown",
+            action_hint="resume_session_and_use_current_step_ref",
+            details={"expected_step_refs": list(step_by_ref)},
+        )
+    if step_ref and evidence_type not in step_by_ref[step_ref]["evidence_types"]:
+        raise InterviewDomainError(
+            "Evidence type is not accepted by the referenced interview step",
+            reason_code="interview_evidence_type_not_accepted",
+            action_hint="use_step_supported_evidence_type",
+            details={
+                "step_ref": step_ref,
+                "accepted_evidence_types": step_by_ref[step_ref]["evidence_types"],
+            },
+        )
+    if progress_mode == "step_evidence_v1" and source_channel != session.channel:
+        raise InterviewDomainError(
+            "Evidence source channel must match the pinned interview channel",
+            status_code=409,
+            reason_code="interview_evidence_channel_mismatch",
+            action_hint="capture_evidence_in_pinned_session_channel",
+        )
+
     normalized = {
         "session_id": session_id,
         "evidence_type": evidence_type,
@@ -2801,16 +4578,6 @@ def create_interview_evidence(
             raise _idempotency_conflict()
         return InterviewMutation(existing, replayed=True)
 
-    session = InterviewSession.query.filter_by(
-        tenant_id=tenant.id, id=session_id
-    ).first()
-    if not session:
-        raise InterviewDomainError(
-            "Interview session not found",
-            status_code=404,
-            reason_code="interview_session_not_found",
-            action_hint="choose_tenant_session",
-        )
     if session.status != "active":
         raise InterviewDomainError(
             "Evidence can only be attached to an active interview session",

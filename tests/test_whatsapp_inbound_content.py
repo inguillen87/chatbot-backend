@@ -6,6 +6,8 @@ from services.whatsapp_inbound_content import (
     classify_twilio_whatsapp_payload,
     honest_unprocessable_reply,
     is_audio_media_type,
+    normalize_safe_whatsapp_inbound_context,
+    twilio_inbound_media_count,
 )
 
 
@@ -157,7 +159,129 @@ def test_contact_classifier_never_copies_raw_vcard_or_provider_url():
     assert "secret" not in rendered
 
 
-@pytest.mark.parametrize("kind", ["audio", "image", "video", "sticker", "contact", "unsupported"])
+def test_safe_context_preserves_emoji_as_language_input_without_copying_body():
+    emoji = "👍🏽"
+    content = classify_twilio_whatsapp_payload({**BASE, "Body": emoji})
+
+    safe_context = content.to_safe_context()
+
+    assert safe_context == {
+        "contract_version": "whatsapp.inbound_content.v1",
+        "kind": "emoji",
+        "durable_message_kind": "text",
+        "is_language_input": True,
+        "has_media": False,
+        "media_mime_type": None,
+        "evidence_policy": "not_applicable",
+        "reason": None,
+    }
+    assert emoji not in repr(safe_context)
+
+
+@pytest.mark.parametrize(
+    ("mime_type", "kind", "evidence_policy", "allowed"),
+    [
+        ("image/jpeg", "image", "exact_active_context_only", True),
+        ("audio/ogg", "audio", "exact_active_context_only", True),
+        ("application/pdf", "document", "exact_active_context_only", True),
+        ("video/mp4", "video", "exact_active_context_only", True),
+        ("image/webp", "sticker", "never_automatic", False),
+        ("text/vcard", "contact", "never_automatic", False),
+    ],
+)
+def test_attachment_evidence_policy_is_explicit_and_fail_closed(
+    mime_type, kind, evidence_policy, allowed
+):
+    content = classify_twilio_whatsapp_payload(
+        {
+            **BASE,
+            "NumMedia": "1",
+            "MediaUrl0": "https://provider.test/private",
+            "MediaContentType0": mime_type,
+        }
+    )
+
+    assert content.kind == kind
+    assert content.evidence_policy == evidence_policy
+    assert content.allows_automatic_ticket_evidence is allowed
+    assert "provider.test" not in repr(content.to_safe_context())
+
+
+def test_safe_context_revalidation_rejects_spoofed_kind_policy_and_private_mime():
+    spoofed_contact_as_image = {
+        "contract_version": "whatsapp.inbound_content.v1",
+        "kind": "image",
+        "durable_message_kind": "image",
+        "is_language_input": False,
+        "has_media": True,
+        "media_mime_type": "text/vcard",
+        "evidence_policy": "exact_active_context_only",
+        "reason": None,
+    }
+    private_mime = {
+        **spoofed_contact_as_image,
+        "kind": "document",
+        "durable_message_kind": "document",
+        "media_mime_type": "private.example/secret",
+    }
+
+    assert normalize_safe_whatsapp_inbound_context(spoofed_contact_as_image) is None
+    assert normalize_safe_whatsapp_inbound_context(private_mime) is None
+
+
+def test_safe_context_revalidation_rejects_unsupported_media_with_known_mime():
+    spoofed_unsupported = {
+        "contract_version": "whatsapp.inbound_content.v1",
+        "kind": "unsupported_media",
+        "durable_message_kind": "unknown",
+        "is_language_input": False,
+        "has_media": True,
+        "media_mime_type": "application/pdf",
+        "evidence_policy": "never_automatic",
+        "reason": "missing_media_content_type",
+    }
+
+    assert normalize_safe_whatsapp_inbound_context(spoofed_unsupported) is None
+
+
+@pytest.mark.parametrize("non_boolean", ["true", "false", 0, 1, None])
+def test_safe_context_revalidation_requires_exact_boolean_has_media(non_boolean):
+    spoofed_boolean = {
+        "contract_version": "whatsapp.inbound_content.v1",
+        "kind": "emoji",
+        "durable_message_kind": "text",
+        "is_language_input": True,
+        "has_media": non_boolean,
+        "media_mime_type": None,
+        "evidence_policy": "not_applicable",
+        "reason": None,
+    }
+
+    assert normalize_safe_whatsapp_inbound_context(spoofed_boolean) is None
+
+
+def test_multiple_media_count_uses_declared_or_discovered_attachments():
+    assert twilio_inbound_media_count({"NumMedia": "2", "MediaUrl0": "one"}) == 2
+    assert (
+        twilio_inbound_media_count(
+            {"NumMedia": "invalid", "MediaUrl0": "one", "MediaUrl1": "two"}
+        )
+        == 2
+    )
+
+
+def test_multiple_media_fallback_discloses_no_partial_processing():
+    reply = honest_unprocessable_reply("multiple_media").lower()
+
+    assert "varios archivos" in reply
+    assert "no procesé el lote de forma parcial" in reply
+    assert "de a uno" in reply
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["audio", "image", "video", "sticker", "contact", "multiple_media", "unsupported"],
+)
 def test_honest_fallback_never_claims_understanding_or_creation(kind):
     reply = honest_unprocessable_reply(kind)
 

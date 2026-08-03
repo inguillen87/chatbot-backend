@@ -9,6 +9,30 @@ from flask import Request
 _PHONE_DIGITS_RE = re.compile(r"\D+")
 
 
+# Only these public/conversational surfaces may enrich the request identity
+# from JSON.  Protected admin/control-plane routes must be able to apply their
+# feature, plan and tenant gates before a domain payload is materialized.
+_BODY_IDENTITY_PATH_PREFIXES = (
+    "/ask",
+    "/api/ask",
+    "/widget",
+    "/api/widget",
+    "/auth/widget",
+    "/api/auth/widget",
+    "/api/pwa/public",
+    "/api/pwa/kits",
+    "/pwa/anon-id",
+    "/api/pwa/anon-id",
+    "/pwa/tenant-info",
+    "/api/pwa/tenant-info",
+    "/public",
+    "/api/public",
+    "/api/v2/public",
+    "/analytics/event",
+    "/api/analytics/event",
+)
+
+
 def _clean(value: Any) -> str:
     if value is None:
         return ""
@@ -32,15 +56,51 @@ def _normalize_phone_e164(raw_value: Any) -> str:
     return f"+{digits}"
 
 
-def _extract_payload(request: Request) -> Dict[str, Any]:
-    if request.method in {"POST", "PUT", "PATCH"}:
-        payload = request.get_json(silent=True)
-        if isinstance(payload, dict):
-            return payload
+def request_path_allows_contact_identity_body(path: Any) -> bool:
+    normalized = f"/{_clean(path).lstrip('/')}".rstrip("/") or "/"
+    return any(
+        normalized == prefix or normalized.startswith(f"{prefix}/")
+        for prefix in _BODY_IDENTITY_PATH_PREFIXES
+    )
+
+
+def _extract_payload(
+    request: Request,
+    *,
+    include_body: bool,
+    max_body_bytes: int,
+) -> Dict[str, Any]:
+    if not include_body or request.method not in {"POST", "PUT", "PATCH"}:
+        return {}
+    if not request.is_json:
+        return {}
+
+    try:
+        bounded_max = int(max_body_bytes)
+    except (TypeError, ValueError):
+        return {}
+    content_length = request.content_length
+    if (
+        bounded_max <= 0
+        or bounded_max > 1024 * 1024
+        or content_length is None
+        or content_length < 0
+        or content_length > bounded_max
+    ):
+        return {}
+
+    payload = request.get_json(silent=True)
+    if isinstance(payload, dict):
+        return payload
     return {}
 
 
-def resolve_contact_identity_from_request(request: Request) -> Dict[str, Optional[str]]:
+def resolve_contact_identity_from_request(
+    request: Request,
+    *,
+    include_body: bool = True,
+    max_body_bytes: int = 64 * 1024,
+) -> Dict[str, Optional[str]]:
     """Resolve contact identity from headers/body with a stable precedence.
 
     Precedence for contact key:
@@ -49,7 +109,11 @@ def resolve_contact_identity_from_request(request: Request) -> Dict[str, Optiona
       3) anon_id
     """
 
-    payload = _extract_payload(request)
+    payload = _extract_payload(
+        request,
+        include_body=include_body,
+        max_body_bytes=max_body_bytes,
+    )
 
     conversation_id = (
         _clean(request.headers.get("X-Conversation-Id"))

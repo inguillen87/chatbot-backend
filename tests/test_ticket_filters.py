@@ -62,18 +62,45 @@ class TicketFiltersTests(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    def test_estado_filter_municipio(self):
-        admin_user = User(email='admin@test.com', name='Admin Test', rol='admin', municipio_id=5, tipo_chat='municipio')
+    def _create_municipal_admin(self, *, email: str, name: str):
+        admin_user = User(
+            email=email,
+            name=name,
+            rol='admin',
+            tipo_chat='municipio',
+        )
         admin_user.set_password('password')
         db.session.add(admin_user)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug=f'ticket-filters-municipio-{admin_user.id}',
+            nombre=name,
+            tipo='municipio',
+            municipio_id=admin_user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        admin_user.municipio_id = admin_user.id
+        admin_user.tenant_id = tenant.id
+        admin_user.tenant_slug = tenant.slug
         db.session.commit()
+        return admin_user, tenant
 
-        t1 = MunicipioTicket(id=1, nro_ticket='1', estado='abierto', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=5)
-        t2 = MunicipioTicket(id=2, nro_ticket='2', estado='cerrado', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=5)
+    def test_estado_filter_municipio(self):
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin@test.com',
+            name='Admin Test',
+        )
+
+        t1 = MunicipioTicket(id=1, nro_ticket='1', estado='abierto', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=admin_user.id, tenant_id=tenant.id)
+        t2 = MunicipioTicket(id=2, nro_ticket='2', estado='cerrado', fecha=datetime.now(), categoria='A', direccion=None, latitud=None, longitud=None, municipio_id=admin_user.id, tenant_id=tenant.id)
         db.session.add_all([t1, t2])
         db.session.commit()
 
-        with self.app.test_request_context('?estado=abierto'):
+        with self.app.test_request_context('?estado=abierto'), patch(
+            'routes.ticket.get_current_tenant_profile', return_value=tenant
+        ):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
@@ -123,20 +150,20 @@ class TicketFiltersTests(unittest.TestCase):
         self.assertIsNone(data["current_scope"]["tenant_slug"])
 
     def test_estado_filter_uses_filtered_pagination_total(self):
-        admin_user = User(email='admin-pagination@test.com', name='Admin Pagination', rol='admin', municipio_id=15, tipo_chat='municipio')
-        admin_user.set_password('password')
-        db.session.add(admin_user)
-        db.session.commit()
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin-pagination@test.com',
+            name='Admin Pagination',
+        )
 
         tickets = [
-            MunicipioTicket(id=11, nro_ticket='P-11', estado='abierto', fecha=datetime.now(), categoria='A', municipio_id=15),
-            MunicipioTicket(id=12, nro_ticket='P-12', estado='abierto', fecha=datetime.now(), categoria='A', municipio_id=15),
-            MunicipioTicket(id=13, nro_ticket='P-13', estado='cerrado', fecha=datetime.now(), categoria='A', municipio_id=15),
+            MunicipioTicket(id=11, nro_ticket='P-11', estado='abierto', fecha=datetime.now(), categoria='A', municipio_id=admin_user.id, tenant_id=tenant.id),
+            MunicipioTicket(id=12, nro_ticket='P-12', estado='abierto', fecha=datetime.now(), categoria='A', municipio_id=admin_user.id, tenant_id=tenant.id),
+            MunicipioTicket(id=13, nro_ticket='P-13', estado='cerrado', fecha=datetime.now(), categoria='A', municipio_id=admin_user.id, tenant_id=tenant.id),
         ]
         db.session.add_all(tickets)
         db.session.commit()
 
-        with self.app.test_request_context('?estado=abierto&per_page=1'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context('?estado=abierto&per_page=1'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
@@ -147,16 +174,16 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(data['summary']['total'], 3)
 
     def test_search_finds_ticket_without_user_join_match(self):
-        admin_user = User(email='admin-search@test.com', name='Admin Search', rol='admin', municipio_id=16, tipo_chat='municipio')
-        admin_user.set_password('password')
-        db.session.add(admin_user)
-        db.session.commit()
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin-search@test.com',
+            name='Admin Search',
+        )
 
-        ticket = MunicipioTicket(id=21, nro_ticket='M-ANON-777', estado='nuevo', fecha=datetime.now(), categoria='Luminaria', municipio_id=16, user_id=None)
+        ticket = MunicipioTicket(id=21, nro_ticket='M-ANON-777', estado='nuevo', fecha=datetime.now(), categoria='Luminaria', municipio_id=admin_user.id, tenant_id=tenant.id, user_id=None)
         db.session.add(ticket)
         db.session.commit()
 
-        with self.app.test_request_context('?q=ANON-777'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context('?q=ANON-777'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
@@ -164,11 +191,22 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(data['tickets'][0]['id'], 21)
 
     def test_channel_and_agent_filters_municipio(self):
-        admin_user = User(email='admin-agent@test.com', name='Admin Agent', rol='admin', municipio_id=17, tipo_chat='municipio')
-        assigned_user = User(email='agent@test.com', name='Agent Test', rol='empleado', municipio_id=17, tipo_chat='municipio')
-        admin_user.set_password('password')
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin-agent@test.com',
+            name='Admin Agent',
+        )
+        assigned_user = User(
+            email='agent@test.com',
+            name='Agent Test',
+            rol='empleado',
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            empresa_id=admin_user.id,
+            tipo_chat='municipio',
+        )
         assigned_user.set_password('password')
-        db.session.add_all([admin_user, assigned_user])
+        db.session.add(assigned_user)
         db.session.commit()
 
         assigned_ticket = MunicipioTicket(
@@ -177,7 +215,8 @@ class TicketFiltersTests(unittest.TestCase):
             estado='nuevo',
             fecha=datetime.now(),
             categoria='A',
-            municipio_id=17,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
             canal_ingreso='whatsapp',
             asignado_a_id=assigned_user.id,
         )
@@ -187,21 +226,22 @@ class TicketFiltersTests(unittest.TestCase):
             estado='nuevo',
             fecha=datetime.now(),
             categoria='A',
-            municipio_id=17,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
             canal_ingreso='web',
             asignado_a_id=None,
         )
         db.session.add_all([assigned_ticket, unassigned_ticket])
         db.session.commit()
 
-        with self.app.test_request_context(f'?channel=whatsapp&assigned_agent={assigned_user.id}'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context(f'?channel=whatsapp&assigned_agent={assigned_user.id}'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
             self.assertEqual(data['pagination']['total_items'], 1)
             self.assertEqual(data['tickets'][0]['id'], 31)
 
-        with self.app.test_request_context('?unassigned=true'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context('?unassigned=true'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
@@ -209,11 +249,22 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(data['tickets'][0]['id'], 32)
 
     def test_facets_are_global_to_scope_not_current_page(self):
-        admin_user = User(email='admin-facets@test.com', name='Admin Facets', rol='admin', municipio_id=21, tipo_chat='municipio')
-        assigned_user = User(email='agent-facets@test.com', name='Agent Facets', rol='empleado', municipio_id=21, tipo_chat='municipio')
-        admin_user.set_password('password')
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin-facets@test.com',
+            name='Admin Facets',
+        )
+        assigned_user = User(
+            email='agent-facets@test.com',
+            name='Agent Facets',
+            rol='empleado',
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            empresa_id=admin_user.id,
+            tipo_chat='municipio',
+        )
         assigned_user.set_password('password')
-        db.session.add_all([admin_user, assigned_user])
+        db.session.add(assigned_user)
         db.session.commit()
 
         tickets = [
@@ -223,7 +274,8 @@ class TicketFiltersTests(unittest.TestCase):
                 estado='nuevo',
                 fecha=get_local_now() - timedelta(minutes=1),
                 categoria='Luminaria',
-                municipio_id=21,
+                municipio_id=admin_user.id,
+                tenant_id=tenant.id,
                 canal_ingreso='whatsapp',
                 asignado_a_id=assigned_user.id,
             ),
@@ -233,7 +285,8 @@ class TicketFiltersTests(unittest.TestCase):
                 estado='nuevo',
                 fecha=get_local_now() - timedelta(minutes=2),
                 categoria='Arbolado',
-                municipio_id=21,
+                municipio_id=admin_user.id,
+                tenant_id=tenant.id,
                 canal_ingreso='web',
                 asignado_a_id=None,
             ),
@@ -243,7 +296,8 @@ class TicketFiltersTests(unittest.TestCase):
                 estado='cerrado',
                 fecha=get_local_now() - timedelta(minutes=3),
                 categoria='Luminaria',
-                municipio_id=21,
+                municipio_id=admin_user.id,
+                tenant_id=tenant.id,
                 canal_ingreso='whatsapp',
                 asignado_a_id=assigned_user.id,
             ),
@@ -251,7 +305,7 @@ class TicketFiltersTests(unittest.TestCase):
         db.session.add_all(tickets)
         db.session.commit()
 
-        with self.app.test_request_context('?estado=nuevo&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context('?estado=nuevo&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
@@ -279,10 +333,10 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(agents['unassigned'], 1)
 
     def test_operational_sla_filter_is_applied_before_pagination(self):
-        admin_user = User(email='admin-sla@test.com', name='Admin SLA', rol='admin', municipio_id=18, tipo_chat='municipio')
-        admin_user.set_password('password')
-        db.session.add(admin_user)
-        db.session.commit()
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin-sla@test.com',
+            name='Admin SLA',
+        )
 
         recent_ticket = MunicipioTicket(
             id=41,
@@ -290,7 +344,8 @@ class TicketFiltersTests(unittest.TestCase):
             estado='nuevo',
             fecha=get_local_now(),
             categoria='A',
-            municipio_id=18,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
             asignado_a_id=None,
         )
         risk_ticket = MunicipioTicket(
@@ -300,13 +355,14 @@ class TicketFiltersTests(unittest.TestCase):
             fecha=get_local_now() - timedelta(hours=10),
             ultima_actividad=get_local_now() - timedelta(hours=10),
             categoria='A',
-            municipio_id=18,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
             asignado_a_id=None,
         )
         db.session.add_all([recent_ticket, risk_ticket])
         db.session.commit()
 
-        with self.app.test_request_context('?sla=risk&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context('?sla=risk&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
@@ -315,10 +371,10 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(data['tickets'][0]['sla_status'], 'por_vencer')
 
     def test_unread_filter_is_applied_before_pagination(self):
-        admin_user = User(email='admin-unread-filter@test.com', name='Admin Unread Filter', rol='admin', municipio_id=19, tipo_chat='municipio')
-        admin_user.set_password('password')
-        db.session.add(admin_user)
-        db.session.commit()
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin-unread-filter@test.com',
+            name='Admin Unread Filter',
+        )
 
         newest_ticket = MunicipioTicket(
             id=51,
@@ -326,7 +382,8 @@ class TicketFiltersTests(unittest.TestCase):
             estado='nuevo',
             fecha=get_local_now(),
             categoria='A',
-            municipio_id=19,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
         )
         unread_ticket = MunicipioTicket(
             id=52,
@@ -334,7 +391,8 @@ class TicketFiltersTests(unittest.TestCase):
             estado='nuevo',
             fecha=get_local_now() - timedelta(hours=2),
             categoria='A',
-            municipio_id=19,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
         )
         db.session.add_all([newest_ticket, unread_ticket])
         db.session.commit()
@@ -361,7 +419,7 @@ class TicketFiltersTests(unittest.TestCase):
         )
         db.session.commit()
 
-        with self.app.test_request_context('?unread=unread&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context('?unread=unread&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()
@@ -370,10 +428,10 @@ class TicketFiltersTests(unittest.TestCase):
             self.assertEqual(data['tickets'][0]['collaboration_state']['unread_viewer_count'], 1)
 
     def test_priority_filter_uses_ai_details_payload(self):
-        admin_user = User(email='admin-priority@test.com', name='Admin Priority', rol='admin', municipio_id=20, tipo_chat='municipio')
-        admin_user.set_password('password')
-        db.session.add(admin_user)
-        db.session.commit()
+        admin_user, tenant = self._create_municipal_admin(
+            email='admin-priority@test.com',
+            name='Admin Priority',
+        )
 
         normal_ticket = MunicipioTicket(
             id=61,
@@ -381,7 +439,8 @@ class TicketFiltersTests(unittest.TestCase):
             estado='nuevo',
             fecha=get_local_now(),
             categoria='A',
-            municipio_id=20,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
         )
         high_priority_ticket = MunicipioTicket(
             id=62,
@@ -389,7 +448,8 @@ class TicketFiltersTests(unittest.TestCase):
             estado='nuevo',
             fecha=get_local_now() - timedelta(minutes=10),
             categoria='A',
-            municipio_id=20,
+            municipio_id=admin_user.id,
+            tenant_id=tenant.id,
             detalles=json.dumps({
                 'prioridad_sugerida': 'alta',
                 'prioridad_confianza': 0.87,
@@ -399,7 +459,7 @@ class TicketFiltersTests(unittest.TestCase):
         db.session.add_all([normal_ticket, high_priority_ticket])
         db.session.commit()
 
-        with self.app.test_request_context('?priority=alta&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=None):
+        with self.app.test_request_context('?priority=alta&per_page=1&include=compact'), patch('routes.ticket.get_current_tenant_profile', return_value=tenant):
             response = get_tickets_del_usuario_logic(admin_user)
             self.assertEqual(response.status_code, 200)
             data = response.get_json()

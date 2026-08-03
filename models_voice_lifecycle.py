@@ -1,8 +1,10 @@
-"""Minimal, auditable lifecycle for consent-gated PSTN voice calls.
+"""Minimal, auditable lifecycle for consent-gated Twilio voice calls.
 
 This ledger deliberately stores provider/control-plane identifiers and bounded
 decision codes only.  Phone numbers, DTMF digits, audio and transcripts do not
-belong in these tables.
+belong in these tables. The transport can be PSTN or WhatsApp Business
+Calling; both use the same consent boundary while retaining provider rules at
+the routing layer.
 """
 
 from __future__ import annotations

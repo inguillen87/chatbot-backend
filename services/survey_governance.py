@@ -842,6 +842,21 @@ def publish_release(
         )
     _assert_release_snapshot_integrity(survey, release)
     _assert_release_public_consent_integrity(release)
+    from services.survey_eligibility import (
+        SurveyEligibilityError,
+        assert_restricted_release_gate_ready,
+    )
+
+    try:
+        assert_restricted_release_gate_ready(release)
+    except SurveyEligibilityError as exc:
+        raise SurveyGovernanceError(
+            exc.message,
+            status_code=exc.status_code,
+            reason_code=exc.reason_code,
+            action_hint=exc.action_hint,
+            extra=exc.extra,
+        ) from exc
 
     # Reuse the battle-tested validation rules without its commit boundary.
     from services.encuestas_service import (
@@ -879,10 +894,7 @@ def publish_release(
 
 def _response_set_manifest(release: SurveyGovernanceRelease) -> tuple[int, str]:
     rows = (
-        EncRespuesta.query.with_entities(
-            EncRespuesta.id, EncRespuesta.content_hash, EncRespuesta.submitted_at
-        )
-        .filter_by(
+        EncRespuesta.query.filter_by(
             tenant_id=release.tenant_id,
             encuesta_id=release.survey_id,
             governance_release_id=release.id,
@@ -890,6 +902,26 @@ def _response_set_manifest(release: SurveyGovernanceRelease) -> tuple[int, str]:
         .order_by(EncRespuesta.id.asc())
         .all()
     )
+    # Mirror fields on enc_respuesta are useful for reads, but the append-only
+    # terminal ledger is authoritative for restricted eligibility. A
+    # privileged or future writer must not be able to close a governed release
+    # by populating only the mirror columns.
+    from services.survey_eligibility import (
+        SurveyEligibilityError,
+        response_eligibility_contract,
+    )
+
+    for row in rows:
+        try:
+            response_eligibility_contract(row)
+        except SurveyEligibilityError as exc:
+            raise SurveyGovernanceError(
+                "Una respuesta no tiene un recibo de elegibilidad autoritativo; el cierre falla de forma segura",
+                status_code=409,
+                reason_code="survey_governance_eligibility_receipt_incomplete",
+                action_hint="investigate_eligibility_receipt_integrity",
+                extra={"eligibility_reason_code": exc.reason_code},
+            ) from exc
     canonical_rows = [
         {
             "response_id": int(row.id),
@@ -1193,22 +1225,41 @@ def survey_governance_contract(
             "normalization": CONSENT_TEXT_NORMALIZATION,
         }
     )
+    active_eligibility = None
+    if active is not None:
+        # Import locally to keep the governance snapshot layer independent
+        # from the runtime redemption model while exposing one authoritative
+        # public gate contract.
+        from services.survey_eligibility import public_eligibility_contract
+
+        active_eligibility = public_eligibility_contract(active)
+    eligibility_ready = bool(
+        active_eligibility is not None
+        and active_eligibility.get("intake_available") is True
+    )
+    blocked_reason_code = None
+    if active_consent["complete"] is not True:
+        blocked_reason_code = active_consent["reason_code"]
+    elif not eligibility_ready:
+        blocked_reason_code = (
+            active_eligibility.get("blocked_reason_code")
+            if isinstance(active_eligibility, Mapping)
+            else "survey_governance_release_not_active"
+        )
     return {
         "contract_version": GOVERNANCE_PUBLIC_CONTRACT_VERSION,
         "mode": "governed_release",
         "release_required": True,
         "active_release": serialize_release(active) if active is not None else None,
         "latest_release": serialize_release(latest),
+        "eligibility": active_eligibility,
         "accepting_responses": bool(
             active is not None
             and encuesta.estado == "publicada"
             and active_consent["complete"] is True
+            and eligibility_ready
         ),
-        "blocked_reason_code": (
-            None
-            if active_consent["complete"] is True
-            else active_consent["reason_code"]
-        ),
+        "blocked_reason_code": blocked_reason_code,
         "regulated_election_certified": False,
         "result_certified": False,
     }
@@ -1291,12 +1342,16 @@ def bind_governed_response(
 
 
 def response_governance_contract(respuesta: EncRespuesta) -> dict[str, Any]:
+    from services.survey_eligibility import response_eligibility_contract
+
+    eligibility = response_eligibility_contract(respuesta)
     release_id = getattr(respuesta, "governance_release_id", None)
     if release_id is None:
         return {
             "contract_version": GOVERNANCE_PUBLIC_CONTRACT_VERSION,
             "mode": "legacy",
             "release_id": None,
+            "eligibility": eligibility,
         }
     release = db.session.get(SurveyGovernanceRelease, int(release_id))
     return {
@@ -1313,7 +1368,8 @@ def response_governance_contract(respuesta: EncRespuesta) -> dict[str, Any]:
         "acknowledged_at": _iso(
             getattr(respuesta, "governance_acknowledged_at", None)
         ),
-        "eligibility_decision": "not_evaluated",
+        "eligibility": eligibility,
+        "eligibility_decision": eligibility.get("decision", "not_evaluated"),
         "human_review_required": True,
         "regulated_election_certified": False,
         "result_certified": False,

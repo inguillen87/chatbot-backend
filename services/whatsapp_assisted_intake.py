@@ -32,6 +32,8 @@ from routes.pedidos_from_file import (
     _unmatched_catalog_candidates_payload,
 )
 from services.commerce_unified import _build_assisted_operator_pack
+from services.constants import CONTEXTO_MUNICIPIO
+from services.education_contracts import is_education_tenant
 from services.marketplace_analytics import track_marketplace_event
 from services.order_attachment_preview import build_crm_order_draft
 from services.whatsapp_inbound_content import is_audio_media_type
@@ -42,6 +44,8 @@ WHATSAPP_ASSISTED_INTAKE_CONTRACT_VERSION = "whatsapp.assisted_intake.v1"
 _MAX_WHATSAPP_INTAKE_BYTES = 8 * 1024 * 1024
 _MAX_WHATSAPP_TEXT_CHARS = 12000
 _TRUE_VALUES = {"1", "true", "yes", "si", "on", "enabled"}
+_COMMERCE_VERTICALS = frozenset({"pyme", "comercio", "commerce", "empresa", "business"})
+_EDUCATION_VERTICALS = frozenset({"educacion", "education", "colegio", "colegios", "school", "schools"})
 
 
 def _truthy(value: object) -> bool:
@@ -94,6 +98,76 @@ def whatsapp_assisted_intake_enabled(tenant: Optional[TenantProfile], owner_user
             )
         )
     return False
+
+
+def _normalized_vertical(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _has_active_claim_flow(context_data: dict[str, Any]) -> bool:
+    candidates = [
+        context_data.get(CONTEXTO_MUNICIPIO),
+        context_data.get("contexto_municipio"),
+        context_data,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        flow = candidate.get("reclamo_flow_v2")
+        if isinstance(flow, dict) and bool(flow.get("state")):
+            return True
+    return False
+
+
+def whatsapp_assisted_intake_eligible(
+    tenant: Optional[TenantProfile],
+    owner_user: Optional[User] = None,
+    conversation_context: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Return whether this turn may be consumed as a commerce file intake.
+
+    The feature flag is not an intent or vertical boundary.  A globally enabled
+    rollout must never turn municipal evidence, a school document, a live-chat
+    attachment, or post-ticket evidence into a commerce order draft.
+    """
+
+    if not whatsapp_assisted_intake_enabled(tenant, owner_user):
+        return False
+
+    tenant_vertical = _normalized_vertical(getattr(tenant, "tipo", None))
+    owner_vertical = _normalized_vertical(getattr(owner_user, "tipo_chat", None))
+    if tenant_vertical not in _COMMERCE_VERTICALS:
+        return False
+    if owner_vertical and owner_vertical not in _COMMERCE_VERTICALS:
+        return False
+    if is_education_tenant(tenant):
+        return False
+
+    if not isinstance(conversation_context, dict):
+        return True
+
+    if conversation_context.get("human_chat_in_progress") or conversation_context.get("room"):
+        return False
+    if any(
+        conversation_context.get(key)
+        for key in (
+            "active_ticket_followup",
+            "awaiting_ticket_photo",
+            "awaiting_photo_for_ticket",
+            "pending_attachment_id",
+        )
+    ):
+        return False
+    if (
+        "education_context" in conversation_context
+        or "education_pending_case" in conversation_context
+        or _normalized_vertical(conversation_context.get("vertical")) in _EDUCATION_VERTICALS
+    ):
+        return False
+    if _has_active_claim_flow(conversation_context):
+        return False
+
+    return True
 
 
 def _extension_from_media(filename: Optional[str], mime_type: Optional[str]) -> str:
@@ -215,8 +289,13 @@ def create_whatsapp_assisted_intake(
     media_bytes: Optional[bytes],
     location_info: Optional[dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
+    conversation_context: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    if not whatsapp_assisted_intake_enabled(tenant, owner_user):
+    if not whatsapp_assisted_intake_eligible(
+        tenant,
+        owner_user,
+        conversation_context,
+    ):
         return None
 
     mime_type = str((uploaded_file_info or {}).get("mime_type") or "").lower()
@@ -228,7 +307,10 @@ def create_whatsapp_assisted_intake(
     if not content:
         return None
     if len(content) > _MAX_WHATSAPP_INTAKE_BYTES:
-        logger.info("WhatsApp assisted intake skipped: file too large tenant=%s", getattr(tenant, "slug", None))
+        logger.info(
+            "WhatsApp assisted intake skipped: file too large tenant_id=%s",
+            getattr(tenant, "id", None),
+        )
         return {
             "created": False,
             "error": "archivo_demasiado_grande",
@@ -260,7 +342,10 @@ def create_whatsapp_assisted_intake(
     except Exception as exc:  # noqa: BLE001
         rows = []
         extraction_error = "Error interno al interpretar el adjunto de WhatsApp"
-        logger.exception("Unexpected WhatsApp assisted intake extraction error", exc_info=exc)
+        logger.error(
+            "Unexpected WhatsApp assisted intake extraction error error_type=%s",
+            type(exc).__name__,
+        )
 
     request_kind, request_kind_classification, request_kind_config = _maybe_reclassify_request_kind_from_extraction(
         current_kind=request_kind,
@@ -632,7 +717,10 @@ def create_whatsapp_assisted_intake(
             user_id=getattr(end_user, "id", None),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("WhatsApp assisted intake analytics event failed: %s", exc)
+        logger.warning(
+            "WhatsApp assisted intake analytics event failed error_type=%s",
+            type(exc).__name__,
+        )
 
     return {
         "created": True,

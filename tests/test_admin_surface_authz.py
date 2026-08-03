@@ -129,6 +129,34 @@ class AdminSurfaceAuthorizationTest(unittest.TestCase):
         if surveys.status_code != 404:
             self.assertEqual(surveys.status_code, 403)
 
+    def test_ambiguous_owner_requires_and_honors_exact_owned_tenant_selection(self):
+        owner = self._user(email="multi-owner@test.com", role="admin")
+        tenant_a = self._tenant(owner, slug="multi-owner-a")
+        tenant_b = self._tenant(owner, slug="multi-owner-b")
+        owner.tenant_id = tenant_a.id
+        outsider = self._user(email="outsider@test.com", role="admin")
+        outsider_tenant = self._tenant(outsider, slug="outsider")
+        outsider.tenant_id = outsider_tenant.id
+        db.session.commit()
+
+        def endpoint(_user):
+            return "ok"
+
+        protected = admin_o_empleado_requerido(endpoint)
+        with self.app.test_request_context("/"):
+            self.assertEqual(self._status(protected(owner)), 403)
+        with self.app.test_request_context(
+            "/",
+            headers={"X-Tenant-Slug": tenant_b.slug},
+        ):
+            self.assertEqual(self._status(protected(owner)), 200)
+            self.assertEqual(self._status(protected(outsider)), 403)
+        with self.app.test_request_context(
+            "/?tenant_slug=multi-owner-a",
+            headers={"X-Tenant-Slug": tenant_b.slug},
+        ):
+            self.assertEqual(self._status(protected(owner)), 403)
+
     def test_registered_owner_without_tenant_cannot_select_market_tenant(self):
         victim_owner = self._user(email="victim@test.com", role="admin")
         victim_tenant = self._tenant(victim_owner, slug="victim")

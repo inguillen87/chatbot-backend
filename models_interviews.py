@@ -59,6 +59,14 @@ INTERVIEW_EVIDENCE_TYPES = (
     "location",
     "structured",
 )
+INTERVIEW_ASSIGNMENT_REASON_CODES = (
+    "initial_assignment",
+    "workload_balance",
+    "availability",
+    "specialty_match",
+    "continuity",
+    "supervisor_override",
+)
 
 
 def _utc_now():
@@ -452,6 +460,106 @@ class InterviewSession(db.Model):
     )
 
 
+class InterviewAssignment(db.Model):
+    """Append-only managed assignment history for one interview session."""
+
+    __tablename__ = "interview_assignment"
+
+    CONTRACT_VERSION = "interview.assignment.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(db.Integer, nullable=False)
+    interview_session_id = db.Column(db.Integer, nullable=False)
+    version = db.Column(db.Integer, nullable=False)
+    assignee_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    previous_assignee_user_id = db.Column(
+        db.Integer, db.ForeignKey("user.id"), nullable=False
+    )
+    assigned_by_user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    reason_code = db.Column(db.String(40), nullable=False)
+    supersedes_assignment_id = db.Column(db.Integer, nullable=True)
+    idempotency_key = db.Column(db.String(128), nullable=False)
+    request_hash = db.Column(db.String(64), nullable=False)
+    created_at = db.Column(db.DateTime(timezone=True), nullable=False, default=_utc_now)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["tenant_id", "interview_session_id"],
+            ["interview_session.tenant_id", "interview_session.id"],
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "interview_session_id", "supersedes_assignment_id"],
+            [
+                "interview_assignment.tenant_id",
+                "interview_assignment.interview_session_id",
+                "interview_assignment.id",
+            ],
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("version > 0", name="ck_interview_assignment_version"),
+        CheckConstraint(
+            f"reason_code IN ({_sql_values(INTERVIEW_ASSIGNMENT_REASON_CODES)})",
+            name="ck_interview_assignment_reason_code",
+        ),
+        CheckConstraint(
+            "(version = 1 AND supersedes_assignment_id IS NULL) OR "
+            "(version > 1 AND supersedes_assignment_id IS NOT NULL)",
+            name="ck_interview_assignment_predecessor",
+        ),
+        CheckConstraint(
+            "supersedes_assignment_id IS NULL OR supersedes_assignment_id <> id",
+            name="ck_interview_assignment_not_self_superseding",
+        ),
+        CheckConstraint(
+            "length(request_hash) = 64",
+            name="ck_interview_assignment_request_hash",
+        ),
+        UniqueConstraint(
+            "tenant_id", "id", name="uq_interview_assignment_tenant_id"
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "interview_session_id",
+            "id",
+            name="uq_interview_assignment_session_id",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "interview_session_id",
+            "version",
+            name="uq_interview_assignment_session_version",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "idempotency_key",
+            name="uq_interview_assignment_tenant_idempotency",
+        ),
+        db.Index(
+            "ix_interview_assignment_tenant_session_version",
+            "tenant_id",
+            "interview_session_id",
+            "version",
+        ),
+        db.Index(
+            "ix_interview_assignment_tenant_assignee",
+            "tenant_id",
+            "assignee_user_id",
+            "created_at",
+        ),
+    )
+
+
+@event.listens_for(InterviewAssignment, "before_update")
+def _interview_assignment_history_is_immutable(_mapper, _connection, _target):
+    raise ValueError("interview assignment history is immutable")
+
+
+@event.listens_for(InterviewAssignment, "before_delete")
+def _interview_assignment_history_cannot_be_deleted(_mapper, _connection, _target):
+    raise ValueError("interview assignment history is immutable")
+
+
 class InterviewConsentChallenge(db.Model):
     """One-time, non-PII challenge binding WhatsApp consent to one identity."""
 
@@ -560,7 +668,16 @@ class InterviewConsentPresentation(db.Model):
     outbound_content_sid = db.Column(db.String(180), nullable=False)
     outbound_provider_status = db.Column(db.String(16), nullable=False)
     outbound_provider_status_at = db.Column(db.DateTime(timezone=True), nullable=False)
+    outbound_status_event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("messaging_event_ledger.id", ondelete="RESTRICT"),
+        # Forward migration v4 leaves historical v3 presentations nullable:
+        # their signed callback/template proof cannot be fabricated safely.
+        nullable=True,
+    )
+    outbound_status_event_sha256 = db.Column(db.String(64), nullable=True)
     outbound_payload_sha256 = db.Column(db.String(64), nullable=False)
+    outbound_template_sha256 = db.Column(db.String(64), nullable=True)
     expected_identity_binding_id = db.Column(db.Integer, nullable=False)
     expected_identity_version = db.Column(db.String(32), nullable=False)
     expected_identity_hmac = db.Column(db.String(64), nullable=False)
@@ -614,7 +731,13 @@ class InterviewConsentPresentation(db.Model):
             name="ck_interview_consent_presentation_action",
         ),
         CheckConstraint(
-            "length(outbound_payload_sha256) = 64 "
+            "((outbound_status_event_id IS NULL "
+            "AND outbound_status_event_sha256 IS NULL "
+            "AND outbound_template_sha256 IS NULL) OR "
+            "(outbound_status_event_id IS NOT NULL "
+            "AND length(outbound_status_event_sha256) = 64 "
+            "AND length(outbound_template_sha256) = 64)) "
+            "AND length(outbound_payload_sha256) = 64 "
             "AND length(expected_identity_hmac) = 64 "
             "AND length(consent_text_sha256) = 64 "
             "AND length(challenge_nonce_sha256) = 64",
@@ -632,6 +755,11 @@ class InterviewConsentPresentation(db.Model):
             "tenant_id",
             "outbound_attempt_id",
             name="uq_interview_consent_presentation_attempt",
+        ),
+        UniqueConstraint(
+            "tenant_id",
+            "outbound_status_event_id",
+            name="uq_interview_consent_presentation_status_event",
         ),
         UniqueConstraint(
             "tenant_id",

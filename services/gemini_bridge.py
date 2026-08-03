@@ -4,6 +4,7 @@ import os
 from typing import Any, Dict, Tuple
 
 from services.chatbot_prompts import get_system_prompt
+from services.llm_provider_network_policy import require_llm_provider_network
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ def llamar_gemini(
     api_key = _gemini_api_key()
     if not api_key:
         raise ConnectionError("GEMINI_API_KEY is not configured.")
+    require_llm_provider_network("gemini", app)
 
     genai, types = _get_genai_modules()
     resolved_model = model or _gemini_chat_model()
@@ -146,7 +148,7 @@ def llamar_gemini(
     contents = _history_to_gemini_contents(historial or [], types)
     contents.append(types.Content(role="user", parts=[types.Part(text=message)]))
 
-    logger.info("Sending to Gemini. Message: %s... Model: %s", message[:100], resolved_model)
+    logger.info("LLM provider request started provider=gemini")
 
     try:
         client = genai.Client(api_key=api_key)
@@ -160,11 +162,14 @@ def llamar_gemini(
             ),
         )
         raw_response_text = _extract_response_text(response)
-        logger.info("Response from Gemini (raw): %s", raw_response_text)
+        logger.info("LLM provider response received provider=gemini")
 
         parsed_response = _parse_llm_json(raw_response_text, usuario=usuario)
         return parsed_response, {"model_used": resolved_model, "provider": "gemini"}
 
     except Exception as exc:
-        logger.error("Error calling Gemini API: %s", exc, exc_info=True)
+        logger.error(
+            "LLM provider request failed provider=gemini error_type=%s",
+            type(exc).__name__,
+        )
         raise

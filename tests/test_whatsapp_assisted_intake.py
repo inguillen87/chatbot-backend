@@ -1,14 +1,17 @@
 from datetime import datetime, timedelta
 
 import jwt
+import pytest
 
 from database import db
 from models import CatalogoItem, PedidoConversacional, TenantProfile, TenantTicket, User
 from services.commerce_unified import serialize_unified_order
 from services.whatsapp_assisted_intake import (
     create_whatsapp_assisted_intake,
+    whatsapp_assisted_intake_eligible,
     whatsapp_assisted_intake_enabled,
 )
+from services.constants import CONTEXTO_MUNICIPIO
 
 
 def _auth_headers(app, user: User, tenant_slug: str) -> dict:
@@ -20,12 +23,14 @@ def _auth_headers(app, user: User, tenant_slug: str) -> dict:
     return {"Authorization": f"Bearer {token}", "X-Tenant": tenant_slug}
 
 
-def _owner_and_tenant(*, enabled: bool) -> tuple[User, TenantProfile, User]:
+def _owner_and_tenant(*, enabled: bool, tipo: str = "pyme") -> tuple[User, TenantProfile, User]:
+    suffix = f"{tipo}-{enabled}"
     owner = User(
         name="Owner WA",
-        email=f"owner-wa-{enabled}@chatboc.test",
+        email=f"owner-wa-{suffix}@chatboc.test",
         rol="admin",
-        tenant_slug=f"wa-intake-{enabled}",
+        tipo_chat=tipo,
+        tenant_slug=f"wa-intake-{suffix}",
     )
     owner.set_password("secret123")
     end_user = User(
@@ -38,10 +43,11 @@ def _owner_and_tenant(*, enabled: bool) -> tuple[User, TenantProfile, User]:
     db.session.add_all([owner, end_user])
     db.session.flush()
     tenant = TenantProfile(
-        slug=f"wa-intake-{enabled}",
+        slug=f"wa-intake-{suffix}",
         nombre="Ferreteria WhatsApp",
-        tipo="pyme",
-        pyme_id=owner.id,
+        tipo=tipo,
+        pyme_id=owner.id if tipo == "pyme" else None,
+        municipio_id=owner.id if tipo == "municipio" else None,
         configuracion={"whatsapp_assisted_intake_v1": enabled},
     )
     db.session.add(tenant)
@@ -76,6 +82,7 @@ def test_whatsapp_assisted_intake_is_disabled_by_default(client):
 
 def test_whatsapp_assisted_intake_creates_operational_ticket(client, monkeypatch):
     owner, tenant, end_user = _owner_and_tenant(enabled=True)
+    assert whatsapp_assisted_intake_eligible(tenant, owner, {}) is True
     db.session.add(
         CatalogoItem(
             user_id=owner.id,
@@ -149,6 +156,118 @@ def test_whatsapp_assisted_intake_creates_operational_ticket(client, monkeypatch
     assert serialized["assisted_request"]["crm_order_draft"]["reference"] == f"pedido:{pedido.id}"
     assert serialized["crm_review_card"]["contract_version"] == "marketplace.crm_review_card.v1"
     assert serialized["crm_review_card"]["contact_links"][0]["type"] == "whatsapp"
+
+
+def test_whatsapp_assisted_intake_rejects_non_commerce_vertical_even_when_enabled(client):
+    owner, tenant, end_user = _owner_and_tenant(enabled=True, tipo="municipio")
+
+    assert whatsapp_assisted_intake_eligible(tenant, owner, {}) is False
+    with client.application.test_request_context("/whatsapp"):
+        result = create_whatsapp_assisted_intake(
+            tenant=tenant,
+            owner_user=owner,
+            end_user=end_user,
+            session_id="whatsapp-municipio",
+            from_number="+5492613000000",
+            message_body="foto de una luminaria caida",
+            uploaded_file_info={
+                "mime_type": "image/jpeg",
+                "name": "luminaria.jpg",
+                "url": "https://cdn.test/luminaria.jpg",
+            },
+            media_bytes=b"municipal-evidence",
+        )
+
+    assert result is None
+    assert PedidoConversacional.query.count() == 0
+    assert TenantTicket.query.count() == 0
+
+
+@pytest.mark.parametrize(
+    "conversation_context",
+    [
+        {CONTEXTO_MUNICIPIO: {"reclamo_flow_v2": {"state": "ESPERANDO_FOTO"}}},
+        {"education_context": {"vertical": "educacion"}},
+        {"human_chat_in_progress": True},
+        {"room": "ticket_pyme_42"},
+        {"active_ticket_followup": {"ticket_nro": "M-42", "until": 9999999999}},
+    ],
+    ids=["claim", "education", "live-chat", "live-room", "post-ticket"],
+)
+def test_whatsapp_assisted_intake_rejects_reserved_conversation_states(
+    client,
+    conversation_context,
+):
+    owner, tenant, _end_user = _owner_and_tenant(enabled=True)
+
+    assert whatsapp_assisted_intake_eligible(
+        tenant,
+        owner,
+        conversation_context,
+    ) is False
+
+
+def test_whatsapp_assisted_intake_exception_logs_exclude_content_and_provider_details(
+    client,
+    monkeypatch,
+    caplog,
+):
+    owner, tenant, end_user = _owner_and_tenant(enabled=True)
+    transcript = "Guillermo Persona Secreta dijo DNI 32877851 en Don Bosco 56"
+    media_token = "https://media.twilio.test/private.ogg?token=media-secret"
+    sql_provider_error = (
+        "psycopg2 IntegrityError SQL params phone=5492613168608 "
+        "provider_response=AC11111111111111111111111111111111"
+    )
+
+    def fail_extraction(*_args, **_kwargs):
+        raise RuntimeError(f"{transcript} {media_token}")
+
+    def fail_analytics(*_args, **_kwargs):
+        raise RuntimeError(sql_provider_error)
+
+    monkeypatch.setattr(
+        "services.whatsapp_assisted_intake._extract_rows_from_text",
+        fail_extraction,
+    )
+    monkeypatch.setattr(
+        "services.whatsapp_assisted_intake.track_marketplace_event",
+        fail_analytics,
+    )
+    caplog.set_level("WARNING", logger="services.whatsapp_assisted_intake")
+
+    with client.application.test_request_context("/whatsapp"):
+        result = create_whatsapp_assisted_intake(
+            tenant=tenant,
+            owner_user=owner,
+            end_user=end_user,
+            session_id="whatsapp_42_5492613168608\r\nFORGED_SESSION=1",
+            from_number="5492613168608",
+            message_body="pedido por audio transcripto",
+            uploaded_file_info=None,
+            media_bytes=None,
+            idempotency_key="privacy-log-canary",
+        )
+
+    assert result is not None
+    assert result["created"] is True
+    rendered = caplog.text
+    assert "RuntimeError" in rendered
+    for private_value in (
+        "Guillermo Persona Secreta",
+        "32877851",
+        "Don Bosco 56",
+        "media.twilio.test",
+        "media-secret",
+        "5492613168608",
+        "AC11111111111111111111111111111111",
+        "psycopg2",
+        "IntegrityError",
+        "SQL params",
+        "provider_response",
+        "Traceback",
+    ):
+        assert private_value not in rendered
 
 
 def test_whatsapp_assisted_intake_admin_catalog_resolution_updates_draft(client, monkeypatch):

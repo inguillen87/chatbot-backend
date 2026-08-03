@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from models import ChatSessionContext, MunicipioTicket, db
+from models import ChatSessionContext, MunicipioTicket, TenantProfile, User, db
 from routes.whatsapp_webhook import _apply_completed_reclamo_context
 from services.actions.municipio_actions import (
     CrearReclamoActionHandler,
@@ -138,6 +138,25 @@ def test_webhook_completion_marker_wins_over_stale_formatter_merge():
 
 
 def test_replayed_confirmation_reuses_durable_ticket_without_new_create(client):
+    owner = User(
+        id=123,
+        name="Municipio Replay",
+        email="municipio-replay@example.com",
+        password_hash="test-hash",
+        rol="admin",
+        tipo_chat="municipio",
+        municipio_id=123,
+        tenant_slug="municipio-replay",
+    )
+    tenant = TenantProfile(
+        slug="municipio-replay",
+        nombre="Municipio Replay",
+        tipo="municipio",
+        municipio_id=123,
+        is_active=True,
+    )
+    db.session.add_all([owner, tenant])
+    db.session.flush()
     existing = MunicipioTicket(
         pregunta="",
         asunto="Arbolado",
@@ -145,6 +164,7 @@ def test_replayed_confirmation_reuses_durable_ticket_without_new_create(client):
         detalles="Hay una rama grande caída sobre la vereda.",
         direccion="Don Bosco 56, Junín",
         municipio_id=123,
+        tenant_id=tenant.id,
         anon_id="+5492613168608",
         nro_ticket="401746",
         consulta_pin="167779",
@@ -159,15 +179,10 @@ def test_replayed_confirmation_reuses_durable_ticket_without_new_create(client):
     db.session.add(existing)
     db.session.commit()
 
-    owner = SimpleNamespace(
-        id=123,
-        municipio_id=123,
-        link_web=None,
-        telefono=None,
-        horario=None,
-    )
     context = {
         "user_obj": owner,
+        "tenant_profile": tenant,
+        "tenant_id": tenant.id,
         "viewer_user_obj": None,
         "anon_id": "+5492613168608",
         "channel": "whatsapp",
@@ -190,6 +205,11 @@ def test_replayed_confirmation_reuses_durable_ticket_without_new_create(client):
     with (
         patch("services.actions.municipio_actions.validar_email", return_value=True),
         patch("services.actions.municipio_actions.validar_telefono", return_value=True),
+        patch("services.actions.municipio_actions.direccion_es_valida", return_value=True),
+        patch(
+            "services.actions.municipio_actions.parse_direccion",
+            return_value={"localidad": "Junín"},
+        ),
         patch(
             "services.actions.municipio_actions.formatear_telefono_e164",
             return_value="+5492613168608",

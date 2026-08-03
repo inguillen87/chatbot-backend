@@ -7,10 +7,35 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 qdrant_client_instance: Optional[QdrantClient] = None
 
+
+def _flag_enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _qdrant_network_allowed() -> bool:
+    testing = _flag_enabled(os.getenv("TESTING"))
+    config_opt_in = False
+    from flask import current_app, has_app_context
+
+    if has_app_context():
+        testing = testing or _flag_enabled(current_app.config.get("TESTING"))
+        config_opt_in = _flag_enabled(
+            current_app.config.get("QDRANT_ALLOW_NETWORK_IN_TESTS")
+        )
+
+    return (
+        not testing
+        or config_opt_in
+        or _flag_enabled(os.getenv("QDRANT_ALLOW_NETWORK_IN_TESTS"))
+    )
+
 def get_qdrant_client() -> Optional[QdrantClient]:
     """Devuelve una instancia singleton de ``QdrantClient``."""
 
     global qdrant_client_instance
+    if not _qdrant_network_allowed():
+        logger.info("[QDRANT UTILS] Provider blocked reason=test_network_disabled")
+        return None
     if qdrant_client_instance is None:
         url = os.getenv("QDRANT_URL")
         api_key = os.getenv("QDRANT_API_KEY")
@@ -27,7 +52,10 @@ def get_qdrant_client() -> Optional[QdrantClient]:
                 if ":6333" in url:
                     url = url.replace(":6333", "")
 
-                logger.info(f"[QDRANT UTILS] URL ajustada para Cloud: {url}")
+                logger.info(
+                    "[QDRANT UTILS] Cloud URL normalized secure_transport=%s",
+                    url.startswith("https://"),
+                )
                 # Explicitly passing port=None or 443 might be needed depending on client version
                 # But typically ensuring the URL is correct is enough.
                 # If QdrantClient adds 6333, we can try passing port=443 explicitly if https.
@@ -36,13 +64,16 @@ def get_qdrant_client() -> Optional[QdrantClient]:
                 else:
                      qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
             else:
-                logger.info(f"[QDRANT UTILS] Intentando conectar a Qdrant URL: {url}")
+                logger.info(
+                    "[QDRANT UTILS] Initializing provider secure_transport=%s",
+                    str(url).startswith("https://"),
+                )
                 qdrant_client_instance = QdrantClient(url=url, api_key=api_key, timeout=20)
             logger.info("✅ [QDRANT UTILS] Cliente Qdrant inicializado.")
         except Exception as e:
             logger.error(
-                f"❌ [QDRANT UTILS] Error al conectar/inicializar cliente Qdrant: {e}",
-                exc_info=True,
+                "[QDRANT UTILS] Client initialization failed error_type=%s",
+                type(e).__name__,
             )
             qdrant_client_instance = None
 

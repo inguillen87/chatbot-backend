@@ -61,7 +61,9 @@ class AdminWhatsappFunnelPayloadTests(unittest.TestCase):
             SimpleNamespace(event_name="whatsapp_video_handoff_shared", session_id="s1"),
         ]
 
-        with patch.object(admin_analytics, "AnalyticsEventV2", _FakeEventModel(rows)):
+        with patch.object(admin_analytics, "_analytics_event_tenant_id", return_value=1), patch.object(
+            admin_analytics, "AnalyticsEventV2", _FakeEventModel(rows)
+        ):
             payload = admin_analytics._build_whatsapp_funnel_payload(self._filters(), window_minutes=60)
 
         stages = {stage["event_name"]: stage for stage in payload["stages"]}
@@ -70,7 +72,9 @@ class AdminWhatsappFunnelPayloadTests(unittest.TestCase):
         self.assertEqual(stages["whatsapp_video_handoff_shared"]["conversion_from_prev_pct"], 100.0)
 
     def test_invalid_window_minutes_falls_back_to_default(self):
-        with patch.object(admin_analytics, "AnalyticsEventV2", _FakeEventModel([])):
+        with patch.object(admin_analytics, "_analytics_event_tenant_id", return_value=1), patch.object(
+            admin_analytics, "AnalyticsEventV2", _FakeEventModel([])
+        ):
             payload = admin_analytics._build_whatsapp_funnel_payload(self._filters(), window_minutes="invalid")
 
         self.assertEqual(payload["window_minutes"], 60)
@@ -86,7 +90,9 @@ class AdminWhatsappFunnelPayloadTests(unittest.TestCase):
             ),
         ]
 
-        with patch.object(admin_analytics, "AnalyticsEventV2", _FakeEventModel(rows)):
+        with patch.object(admin_analytics, "_analytics_event_tenant_id", return_value=1), patch.object(
+            admin_analytics, "AnalyticsEventV2", _FakeEventModel(rows)
+        ):
             payload = admin_analytics._build_whatsapp_funnel_payload(self._filters(), window_minutes=60)
 
         stages = {stage["event_name"]: stage for stage in payload["stages"]}

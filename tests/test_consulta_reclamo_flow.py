@@ -7,7 +7,7 @@ sys.path.insert(0, project_root)
 
 from app import create_app, db
 from config import TestConfig
-from models import User, Rubro, ChatSessionContext, MunicipioTicket
+from models import User, Rubro, ChatSessionContext, MunicipioTicket, TenantProfile
 from services.municipio_responder import responder_municipio, ConversationState, clear_municipio_cache
 
 class TestConsultaReclamoFlow(unittest.TestCase):
@@ -18,11 +18,39 @@ class TestConsultaReclamoFlow(unittest.TestCase):
         db.create_all()
 
         rubro = Rubro(id=1, clave='municipio', nombre='municipio')
-        owner_user = User(id=1, tipo_chat='municipio', rol='admin', email='admin@test.com', name='Admin', rubro=rubro, municipio_id=1)
+        owner_user = User(
+            id=1,
+            tipo_chat='municipio',
+            rol='admin',
+            email='admin@test.com',
+            name='Admin',
+            rubro=rubro,
+            municipio_id=1,
+            tenant_slug='consulta-reclamo-municipio',
+        )
         owner_user.set_password('password')
         db.session.add_all([rubro, owner_user])
+        db.session.flush()
 
-        ticket = MunicipioTicket(nro_ticket='123456', municipio_id=1, categoria='Luminaria', estado='en_proceso', consulta_pin='654321')
+        tenant = TenantProfile(
+            slug='consulta-reclamo-municipio',
+            nombre='Municipio Consulta Reclamo',
+            tipo='municipio',
+            municipio_id=owner_user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner_user.tenant_id = tenant.id
+
+        ticket = MunicipioTicket(
+            nro_ticket='123456',
+            tenant_id=tenant.id,
+            municipio_id=owner_user.id,
+            categoria='Luminaria',
+            estado='en_proceso',
+            consulta_pin='654321',
+        )
         db.session.add(ticket)
         db.session.commit()
         clear_municipio_cache()

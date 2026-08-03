@@ -791,6 +791,7 @@ def estadisticas_dashboard(current_user):
 
     heatmap = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
         tipo_ticket=tipo,
+        actor=current_user,
         municipio_id=municipio_id,
         rubro_id=rubro_id,
         tenant_id=tenant_id,
@@ -831,9 +832,9 @@ def estadisticas_dashboard(current_user):
 
     if tipo == "municipio":
         if stats_filters:
-            stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
+            stats = build_stats_for_municipio(municipio_id, filters=stats_filters, actor=current_user)
         else:
-            stats = build_stats_for_municipio(municipio_id)
+            stats = build_stats_for_municipio(municipio_id, actor=current_user)
 
         resumen = dict(stats.get("resumen", {})) if isinstance(stats, dict) else {}
         payload["stats"] = stats
@@ -927,6 +928,7 @@ def mapa_calor_datos(current_user):
         stats_filters = _build_stats_filters(args, estados)
         puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
             tipo_ticket=tipo_ticket,
+            actor=current_user,
             municipio_id=municipio_id,
             rubro_id=rubro_id,
             tenant_id=tenant_id,
@@ -963,9 +965,9 @@ def mapa_calor_datos(current_user):
 
     if tipo_ticket == "municipio":
         if stats_filters:
-            stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
+            stats = build_stats_for_municipio(municipio_id, filters=stats_filters, actor=current_user)
         else:
-            stats = build_stats_for_municipio(municipio_id)
+            stats = build_stats_for_municipio(municipio_id, actor=current_user)
 
         resumen = dict(stats.get("resumen", {})) if isinstance(stats, dict) else {}
         payload["stats"] = stats
@@ -1049,6 +1051,7 @@ def estadisticas_tickets(current_user):
         stats_filters = _build_stats_filters(args, estados)
         puntos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
             tipo_ticket=tipo,
+            actor=current_user,
             municipio_id=municipio_id,
             rubro_id=rubro_id,
             tenant_id=tenant_id,
@@ -1087,9 +1090,9 @@ def estadisticas_tickets(current_user):
 
     if tipo == "municipio":
         if stats_filters:
-            stats = build_stats_for_municipio(municipio_id, filters=stats_filters)
+            stats = build_stats_for_municipio(municipio_id, filters=stats_filters, actor=current_user)
         else:
-            stats = build_stats_for_municipio(municipio_id)
+            stats = build_stats_for_municipio(municipio_id, actor=current_user)
 
         resumen = dict(stats.get("resumen", {})) if isinstance(stats, dict) else {}
         respuesta["stats"] = stats

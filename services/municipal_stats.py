@@ -20,6 +20,7 @@ from models import (
     db,
 )
 from utils.time_utils import get_local_now
+from services.employee_ticket_access import apply_employee_ticket_category_scope
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     resolve_unique_tenant_for_owner,
@@ -222,7 +223,7 @@ def _apply_suggestion_filters(query, filters: StatsFilters | None):
 
 
 def _compute_time_to_first_response(
-    tenant: TenantProfile, filters: StatsFilters | None
+    tenant: TenantProfile, filters: StatsFilters | None, actor=None
 ) -> list[float]:
     """Return the response times in hours for tickets con primera respuesta."""
 
@@ -249,6 +250,7 @@ def _compute_time_to_first_response(
         .join(first_admin_comment, first_admin_comment.c.ticket_id == MunicipioTicket.id)
         .filter(municipio_ticket_scope_filter(tenant))
     )
+    query = apply_employee_ticket_category_scope(query, actor, MunicipioTicket)
     query = _apply_ticket_filters(query, filters)
     rows = query.all()
 
@@ -257,7 +259,7 @@ def _compute_time_to_first_response(
 
 
 def _compute_time_to_close(
-    tenant: TenantProfile, filters: StatsFilters | None
+    tenant: TenantProfile, filters: StatsFilters | None, actor=None
 ) -> list[float]:
     """Return closure times in hours for closed tickets."""
 
@@ -274,6 +276,7 @@ def _compute_time_to_close(
             MunicipioTicket.ultima_actividad.isnot(None),
         )
     )
+    query = apply_employee_ticket_category_scope(query, actor, MunicipioTicket)
     query = _apply_ticket_filters(query, filters)
     rows = query.all()
 
@@ -303,6 +306,7 @@ def build_stats_for_municipio(
     *,
     filters: StatsFilters | None = None,
     now: datetime | None = None,
+    actor=None,
 ) -> dict:
     """Return detailed analytics for tickets and citizen suggestions."""
 
@@ -361,6 +365,7 @@ def build_stats_for_municipio(
 
     def _tickets_query(*columns):
         query = db.session.query(*columns).filter(ticket_scope)
+        query = apply_employee_ticket_category_scope(query, actor, MunicipioTicket)
         return _apply_ticket_filters(query, active_filters)
 
     # --- Tickets por estado -------------------------------------------------
@@ -425,9 +430,14 @@ def build_stats_for_municipio(
         ),
         isouter=True,
     )
+    categoria_satisfaccion_query = apply_employee_ticket_category_scope(
+        categoria_satisfaccion_query.filter(ticket_scope),
+        actor,
+        MunicipioTicket,
+    )
     categoria_satisfaccion_rows = (
         _apply_ticket_filters(
-            categoria_satisfaccion_query.filter(ticket_scope),
+            categoria_satisfaccion_query,
             active_filters,
         )
         .group_by(MunicipioTicket.categoria)
@@ -557,8 +567,8 @@ def build_stats_for_municipio(
     )
 
     # --- Tiempos de respuesta y cierre ------------------------------------
-    tiempos_respuesta_horas = _compute_time_to_first_response(tenant, active_filters)
-    tiempos_cierre_horas = _compute_time_to_close(tenant, active_filters)
+    tiempos_respuesta_horas = _compute_time_to_first_response(tenant, active_filters, actor)
+    tiempos_cierre_horas = _compute_time_to_close(tenant, active_filters, actor)
 
     tiempos_respuesta = _summarize_hours(tiempos_respuesta_horas)
     tiempos_cierre = _summarize_hours(tiempos_cierre_horas)
@@ -646,9 +656,14 @@ def build_stats_for_municipio(
             TicketSatisfaccion.tipo == "municipio",
         ),
     )
+    satisfaccion_query = apply_employee_ticket_category_scope(
+        satisfaccion_query.filter(ticket_scope),
+        actor,
+        MunicipioTicket,
+    )
     satisfaccion_global = (
         _apply_ticket_filters(
-            satisfaccion_query.filter(ticket_scope),
+            satisfaccion_query,
             active_filters,
         )
         .first()
@@ -680,9 +695,14 @@ def build_stats_for_municipio(
             TicketSatisfaccion.tipo == "municipio",
         ),
     )
+    satisfaccion_distribucion_query = apply_employee_ticket_category_scope(
+        satisfaccion_distribucion_query.filter(ticket_scope),
+        actor,
+        MunicipioTicket,
+    )
     satisfaccion_distribucion_rows = (
         _apply_ticket_filters(
-            satisfaccion_distribucion_query.filter(ticket_scope),
+            satisfaccion_distribucion_query,
             active_filters,
         )
         .group_by(TicketSatisfaccion.puntuacion)

@@ -9,7 +9,7 @@ sys.path.insert(0, project_root)
 
 from app import create_app, db
 from config import TestConfig
-from models import User, Rubro, ChatSessionContext
+from models import User, Rubro, ChatSessionContext, TenantProfile
 from services.municipio_responder import responder_municipio, ConversationState, ReclamoState
 
 class TestSugerenciaFlow(unittest.TestCase):
@@ -26,7 +26,20 @@ class TestSugerenciaFlow(unittest.TestCase):
         viewer_user = User(id=2, email='vecino@test.com', name='Vecino', direccion='Calle 123', telefono='+5491111111')
         viewer_user.set_password('password')
         db.session.add_all([rubro, owner_user, viewer_user])
+        db.session.flush()
+        tenant = TenantProfile(
+            slug='sugerencia-flow-municipio',
+            nombre='Municipio Sugerencia Flow',
+            tipo='municipio',
+            municipio_id=owner_user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner_user.tenant_id = tenant.id
+        owner_user.tenant_slug = tenant.slug
         db.session.commit()
+        self.tenant = tenant
 
     def tearDown(self):
         db.session.remove()
@@ -37,7 +50,12 @@ class TestSugerenciaFlow(unittest.TestCase):
         owner_user = User.query.get(1)
         viewer_user = User.query.get(2)
         rubro_obj = owner_user.rubro
-        chat_context = ChatSessionContext(chat_session_id='test_sugerencia_session', user_id=1, context_data={})
+        chat_context = ChatSessionContext(
+            chat_session_id='test_sugerencia_session',
+            user_id=1,
+            tenant_id=self.tenant.id,
+            context_data={},
+        )
         db.session.add(chat_context)
         db.session.commit()
 
@@ -130,7 +148,12 @@ class TestSugerenciaFlow(unittest.TestCase):
         owner_user = User.query.get(1)
         viewer_user = User.query.get(2)
         rubro_obj = owner_user.rubro
-        chat_context = ChatSessionContext(chat_session_id='test_sugerencia_reuse', user_id=1, context_data={})
+        chat_context = ChatSessionContext(
+            chat_session_id='test_sugerencia_reuse',
+            user_id=1,
+            tenant_id=self.tenant.id,
+            context_data={},
+        )
         db.session.add(chat_context)
         db.session.commit()
 
@@ -178,7 +201,12 @@ class TestSugerenciaFlow(unittest.TestCase):
         owner_user = User.query.get(1)
         viewer_user = User.query.get(2)
         rubro_obj = owner_user.rubro
-        chat_context = ChatSessionContext(chat_session_id='test_interrupcion', user_id=1, context_data={})
+        chat_context = ChatSessionContext(
+            chat_session_id='test_interrupcion',
+            user_id=1,
+            tenant_id=self.tenant.id,
+            context_data={},
+        )
         db.session.add(chat_context)
         db.session.commit()
 
@@ -212,7 +240,10 @@ class TestSugerenciaFlow(unittest.TestCase):
         viewer_user = User.query.get(2)
         rubro_obj = owner_user.rubro
         chat_context = ChatSessionContext(
-            chat_session_id='test_sugerencia_location', user_id=1, context_data={}
+            chat_session_id='test_sugerencia_location',
+            user_id=1,
+            tenant_id=self.tenant.id,
+            context_data={},
         )
         db.session.add(chat_context)
         db.session.commit()
@@ -260,6 +291,7 @@ class TestSugerenciaFlow(unittest.TestCase):
         chat_context = ChatSessionContext(
             chat_session_id='test_sugerencia_nombre',
             user_id=1,
+            tenant_id=self.tenant.id,
             context_data={
                 'contexto_municipio_v2': {
                     'contacto_usuario': {

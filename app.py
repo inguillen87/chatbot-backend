@@ -12,6 +12,7 @@ TESTING_MODE = (
 )
 NON_WEB_PROCESS = os.getenv("CHATBOC_PROCESS_ROLE", "").strip().lower() in {
     "whatsapp-durable-worker",
+    "whatsapp-payload-retention-cron",
     "domain-effect-worker",
     "survey-effect-worker",
 }
@@ -81,7 +82,10 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
 from middleware import tenant_middleware
 from utils.errors import ApiError
-from utils.contact_identity import resolve_contact_identity_from_request
+from utils.contact_identity import (
+    request_path_allows_contact_identity_body,
+    resolve_contact_identity_from_request,
+)
 from utils.safe_logging import describe_database_uri
 
 
@@ -376,7 +380,14 @@ def create_app(config_class=Config):
 
         @app.before_request
         def attach_contact_identity():
-            g.contact_identity = resolve_contact_identity_from_request(request)
+            g.contact_identity = resolve_contact_identity_from_request(
+                request,
+                include_body=request_path_allows_contact_identity_body(request.path),
+                max_body_bytes=current_app.config.get(
+                    "CONTACT_IDENTITY_JSON_BODY_MAX_BYTES",
+                    64 * 1024,
+                ),
+            )
 
         tenant_middleware(app)
 
@@ -532,6 +543,7 @@ def create_app(config_class=Config):
             "X-Whatsapp-Dst",
             "X-Checkout-Origin",
             "X-Turnstile-Token",
+            "X-Survey-Eligibility-Credential",
             "X-Contact-Key",
             "X-Conversation-Id",
             "X-Tracking-Pin",
@@ -603,7 +615,9 @@ def create_app(config_class=Config):
 
         exposed_headers = (
             "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
-            "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id"
+            "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id, "
+            "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Window, "
+            "X-RateLimit-Reset-After, Retry-After"
         )
 
         @app.after_request
@@ -657,6 +671,11 @@ def create_app(config_class=Config):
                 "Anon-Id",
                 "X-Contact-Key",
                 "X-Conversation-Id",
+                "X-RateLimit-Limit",
+                "X-RateLimit-Remaining",
+                "X-RateLimit-Window",
+                "X-RateLimit-Reset-After",
+                "Retry-After",
             ],
         )
 

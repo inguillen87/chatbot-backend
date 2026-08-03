@@ -41,6 +41,35 @@ from utils.tenant import get_current_tenant_profile
 carrito_bp = Blueprint('carrito_bp', __name__, url_prefix='/carrito')
 logger = logging.getLogger(__name__)
 
+_SAFE_CART_ADD_LOG_FIELDS = frozenset(
+    {
+        "cantidad",
+        "catalogo_item_id",
+        "id",
+        "item_id",
+        "product_id",
+        "producto_id",
+    }
+)
+_CART_ITEM_ID_FIELDS = frozenset(
+    {"catalogo_item_id", "id", "item_id", "product_id", "producto_id"}
+)
+
+
+def _safe_cart_add_log_metadata(payload) -> dict:
+    """Describe a cart request without logging values or arbitrary field names."""
+
+    data = payload if hasattr(payload, "keys") else {}
+    supplied_fields = sorted(
+        str(key) for key in data.keys() if str(key) in _SAFE_CART_ADD_LOG_FIELDS
+    )
+    return {
+        "supplied_fields": supplied_fields,
+        "other_field_count": max(0, len(data) - len(supplied_fields)),
+        "has_item_id": any(field in data for field in _CART_ITEM_ID_FIELDS),
+        "has_quantity": "cantidad" in data,
+    }
+
 _CORS_ALLOWED_HEADERS = [
     "Content-Type",
     "Authorization",
@@ -144,8 +173,9 @@ def _market_cart_has_channel_column() -> bool:
         columns = inspector.get_columns("market_cart")
     except Exception as exc:
         logger.warning(
-            "No se pudo inspeccionar esquema de market_cart; compat mode desactiva channel: %s",
-            exc,
+            "No se pudo inspeccionar esquema de market_cart; compat mode desactiva "
+            "channel error_type=%s",
+            type(exc).__name__,
         )
         return False
     return any((col.get("name") or "").lower() == "channel" for col in columns)
@@ -611,8 +641,21 @@ def agregar():
     if not payload and request.form:
         payload = request.form
 
-    session_debug = _resolve_session_identifier()
-    logger.debug(f"Carrito Add Payload: {payload} | SessionID: {session_debug}")
+    # Preserve the existing session initialisation, but never log the session
+    # identifier or any request value (contact details and tokens may be sent
+    # by older clients as extra fields).
+    session_identifier = _resolve_session_identifier()
+    log_metadata = _safe_cart_add_log_metadata(payload)
+    logger.debug(
+        "Cart add request tenant_id=%s supplied_fields=%s other_field_count=%s "
+        "has_item_id=%s has_quantity=%s session_resolved=%s",
+        getattr(tenant, "id", None),
+        log_metadata["supplied_fields"],
+        log_metadata["other_field_count"],
+        log_metadata["has_item_id"],
+        log_metadata["has_quantity"],
+        bool(session_identifier),
+    )
 
     # Support multiple formats
     item_id = payload.get('catalogo_item_id') or payload.get('item_id') or payload.get('product_id') or payload.get('id') or payload.get('producto_id')

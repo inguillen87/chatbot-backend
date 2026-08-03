@@ -12,6 +12,30 @@ _DEFAULT_GEO_CONTEXT_SENTINEL = object()
 _default_geo_context: Any = _DEFAULT_GEO_CONTEXT_SENTINEL
 
 
+def _flag_enabled(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _google_maps_network_allowed() -> bool:
+    """Keep test runs offline unless an integration test opts in explicitly."""
+
+    testing = _flag_enabled(os.getenv("TESTING"))
+    config_opt_in = False
+    from flask import current_app, has_app_context
+
+    if has_app_context():
+        testing = testing or _flag_enabled(current_app.config.get("TESTING"))
+        config_opt_in = _flag_enabled(
+            current_app.config.get("GOOGLE_MAPS_ALLOW_NETWORK_IN_TESTS")
+        )
+
+    return (
+        not testing
+        or config_opt_in
+        or _flag_enabled(os.getenv("GOOGLE_MAPS_ALLOW_NETWORK_IN_TESTS"))
+    )
+
+
 def _get_default_geo_context() -> Optional[Dict[str, Any]]:
     """Load the geo context for the active municipality when available."""
 
@@ -24,9 +48,11 @@ def _get_default_geo_context() -> Optional[Dict[str, Any]]:
         from services.geo_context import get_geo_context
 
         _default_geo_context = get_geo_context(str(tenant_id))
-    except Exception:
+    except Exception as exc:
         logger.debug(
-            "No se pudo cargar el contexto geográfico para %s", tenant_id, exc_info=True
+            "No se pudo cargar el contexto geográfico tenant_id=%s error_type=%s",
+            tenant_id,
+            type(exc).__name__,
         )
         _default_geo_context = None
     return _default_geo_context
@@ -115,6 +141,9 @@ def get_gmaps_client():
     if not GOOGLE_MAPS_API_KEY:
         logger.error("GOOGLE_MAPS_API_KEY not set.")
         return None
+    if not _google_maps_network_allowed():
+        logger.info("Google Maps provider blocked reason=test_network_disabled")
+        return None
     return googlemaps.Client(key=GOOGLE_MAPS_API_KEY)
 
 
@@ -164,10 +193,18 @@ def geocode_address(address: str, geo_ctx: Optional[Dict[str, Any]] = None):
         if getattr(e, "status", "") == "REQUEST_DENIED":
             logger.warning("Google Maps Geocoding disabled or denied. Falling back.")
             return None
-        logger.error(f"Error geocoding address: {e}", exc_info=True)
+        logger.error(
+            "Error geocoding address error_type=%s input_chars=%s",
+            type(e).__name__,
+            len(str(address or "")),
+        )
         return None
     except Exception as e:
-        logger.error(f"Error geocoding address: {e}", exc_info=True)
+        logger.error(
+            "Error geocoding address error_type=%s input_chars=%s",
+            type(e).__name__,
+            len(str(address or "")),
+        )
         return None
 
 
@@ -192,7 +229,11 @@ def autocomplete_address(query: str, geo_ctx: Optional[Dict[str, Any]] = None):
     try:
         return gmaps.places_autocomplete(**request_kwargs)
     except Exception as e:
-        logger.error(f"Error getting autocomplete suggestions: {e}", exc_info=True)
+        logger.error(
+            "Error getting autocomplete suggestions error_type=%s input_chars=%s",
+            type(e).__name__,
+            len(str(query or "")),
+        )
         return None
 
 
@@ -220,5 +261,12 @@ def find_nearby_places(location, keyword, radius=1500):
         )
         return places_result.get("results", [])
     except Exception as e:
-        logger.error(f"Error finding nearby places: {e}", exc_info=True)
+        logger.error(
+            "Error finding nearby places error_type=%s has_location=%s "
+            "keyword_chars=%s radius_supplied=%s",
+            type(e).__name__,
+            location is not None,
+            len(str(keyword or "")),
+            radius is not None,
+        )
         return None

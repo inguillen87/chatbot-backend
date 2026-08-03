@@ -33,6 +33,7 @@ from services.public_survey_intake import (
     enforce_public_survey_replay_scope,
     public_survey_client_ip,
 )
+from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
 from services.tenant_resolver import (
     TenantResolutionError,
     resolve_tenant_only,
@@ -59,8 +60,12 @@ pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
 def _survey_response_cors_kwargs() -> dict:
     kwargs = _cors_kwargs(["POST"])
     allowed_headers = list(kwargs.get("allow_headers") or [])
-    if TURNSTILE_TOKEN_HEADER not in allowed_headers:
-        allowed_headers.append(TURNSTILE_TOKEN_HEADER)
+    for header_name in (
+        TURNSTILE_TOKEN_HEADER,
+        "X-Survey-Eligibility-Credential",
+    ):
+        if header_name not in allowed_headers:
+            allowed_headers.append(header_name)
     kwargs["allow_headers"] = allowed_headers
     return kwargs
 
@@ -763,7 +768,11 @@ def get_survey(slug: str):
     tenant = _require_tenant()
     tenant_id = _resolve_encuestas_tenant_id(tenant)
     try:
-        encuesta = get_public_encuesta(slug, preferred_tenant_id=tenant_id)
+        encuesta = get_public_encuesta(
+            slug,
+            preferred_tenant_id=tenant_id,
+            require_tenant_match=tenant_id is not None,
+        )
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
 
@@ -819,6 +828,7 @@ def respond_survey(slug: str):
                 request_ctx,
                 submission_id=submission_id,
                 preferred_tenant_id=tenant_id,
+                require_tenant_match=tenant_id is not None,
                 authenticated_user=authenticated_user,
             )
         except EncuestaError as exc:
@@ -856,7 +866,11 @@ def respond_survey(slug: str):
             return response
 
         try:
-            encuesta = get_public_encuesta(slug, preferred_tenant_id=tenant_id)
+            encuesta = get_public_encuesta(
+                slug,
+                preferred_tenant_id=tenant_id,
+                require_tenant_match=tenant_id is not None,
+            )
         except EncuestaError as exc:
             return jsonify(exc.to_dict()), exc.status_code
 
@@ -869,8 +883,13 @@ def respond_survey(slug: str):
                 payload,
                 request_ctx,
                 preferred_tenant_id=tenant_id,
+                require_tenant_match=tenant_id is not None,
                 authenticated_user=authenticated_user,
                 submission_id=submission_id,
+                eligibility_credential=request.headers.get(
+                    SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
+                ),
+                eligibility_transport="http",
             )
         except EncuestaError as exc:
             return jsonify(exc.to_dict()), exc.status_code

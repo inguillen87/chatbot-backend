@@ -53,7 +53,7 @@ def test_notification_idempotency(client, app):
             "channel": "in_app",
             "recipient": f"user:{admin.id}",
             "user_id": admin.id,
-            "body": "Hola duplicado",
+            "body": "Hola",
             "idempotency_key": "idem-1",
         },
     )
@@ -61,6 +61,20 @@ def test_notification_idempotency(client, app):
     second_payload = second.get_json()
     assert second_payload["created"] is False
     assert second_payload["id"] == first_payload["id"]
+
+    conflict = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "in_app",
+            "recipient": f"user:{admin.id}",
+            "user_id": admin.id,
+            "body": "Hola con otro payload",
+            "idempotency_key": "idem-1",
+        },
+    )
+    assert conflict.status_code == 409
+    assert conflict.get_json()["error"] == "notification_idempotency_payload_conflict"
 
 
 def test_notification_templates_list_endpoint(client, app):
@@ -84,6 +98,63 @@ def test_notification_templates_list_endpoint(client, app):
     payload = listed.get_json()
     assert isinstance(payload, list)
     assert any(item["key"] == "order_ready" and item["channel"] == "email" for item in payload)
+
+
+def test_notification_template_queue_rejects_unresolved_variables(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    created = client.post(
+        "/api/admin/notifications/templates",
+        headers=headers,
+        json={
+            "key": "strict_order_ready",
+            "channel": "email",
+            "subject_template": "Pedido ${order_id}",
+            "body_template": "Hola ${name}, tu pedido ${order_id} esta listo",
+        },
+    )
+    assert created.status_code == 201
+
+    missing = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "strict@test.com",
+            "template_key": "strict_order_ready",
+            "template_context": {"name": "Ana"},
+            "idempotency_key": "strict-template-missing-1",
+        },
+    )
+    assert missing.status_code == 400
+    assert missing.get_json()["error"] == "template_context_missing_variables"
+    assert Notification.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key="strict-template-missing-1",
+    ).first() is None
+
+    unexpected = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "strict@test.com",
+            "template_key": "strict_order_ready",
+            "template_context": {
+                "name": "Ana",
+                "order_id": "A-100",
+                "extra": "must-not-leak",
+            },
+            "idempotency_key": "strict-template-extra-1",
+        },
+    )
+    assert unexpected.status_code == 400
+    assert unexpected.get_json()["error"] == "template_context_unexpected_variables"
+    assert Notification.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key="strict-template-extra-1",
+    ).first() is None
 
 
 def test_notification_retry_attempts(client, app):
@@ -367,6 +438,57 @@ def test_notification_metrics_endpoint_returns_channel_aggregates(client, app):
     assert data["totals"]["failed"] >= 1
     assert "in_app" in data["by_channel"]
     assert "email" in data["by_channel"]
+
+
+def test_blocked_transport_is_visible_and_can_be_explicitly_requeued(client, app):
+    admin, tenant = _seed_admin_tenant()
+    headers = _auth_headers(app, admin, tenant.slug)
+
+    queued = client.post(
+        "/api/admin/notifications",
+        headers=headers,
+        json={
+            "channel": "email",
+            "recipient": "blocked@example.test",
+            "body": "provider unavailable",
+            "idempotency_key": "idem-blocked-visible-1",
+        },
+    )
+    assert queued.status_code == 201
+    notification_id = queued.get_json()["id"]
+
+    dispatched = client.post(
+        "/api/workers/notifications/dispatch",
+        headers=headers,
+        json={"limit": 20},
+    )
+    assert dispatched.status_code == 200
+    assert dispatched.get_json()["blocked"] == 1
+
+    metrics = client.get(
+        "/api/admin/notifications/metrics?period_days=7",
+        headers=headers,
+    )
+    assert metrics.status_code == 200
+    metrics_payload = metrics.get_json()
+    assert metrics_payload["totals"]["blocked"] == 1
+    assert metrics_payload["totals"]["success_rate"] == 0.0
+    assert metrics_payload["by_channel"]["email"]["blocked"] == 1
+
+    requeued = client.post(
+        "/api/admin/notifications/requeue-blocked",
+        headers=headers,
+        json={
+            "channels": ["email"],
+            "reason_codes": ["email_transport_unavailable"],
+        },
+    )
+    assert requeued.status_code == 200
+    assert requeued.get_json() == {"requeued": 1}
+    notification = Notification.query.filter_by(id=notification_id).one()
+    assert notification.tenant_id == tenant.id
+    assert notification.status == "queued"
+    assert notification.last_error is None
 
 
 def test_notification_detail_endpoint_returns_single_notification(client, app):

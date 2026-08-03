@@ -114,6 +114,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         self.assertEqual(payload["filters"], {})
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
+            actor=current_user,
             municipio_id=1,
             rubro_id=None,
             tenant_id=None,
@@ -139,6 +140,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
+            actor=current_user,
             municipio_id=1,
             rubro_id=None,
             tenant_id=None,
@@ -211,6 +213,7 @@ class EstadisticasTicketsRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
+            actor=current_user,
             municipio_id=42,
             rubro_id=None,
             tenant_id=None,

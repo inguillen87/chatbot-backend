@@ -8,6 +8,7 @@ from flask import current_app
 
 from extensions import db
 from models import TenantProfile, TenantTicket
+from services.employee_ticket_access import apply_employee_ticket_category_scope
 from services.v2.ticket_event_service import record_ticket_event
 
 _DEFAULT_POLICIES = {
@@ -62,7 +63,12 @@ def save_policies_for_tenant(tenant: TenantProfile, policies: dict[str, Any]) ->
     return normalized
 
 
-def apply_sla_to_ticket(ticket: TenantTicket, policies: dict[str, Any], *, force_recalculate: bool = False) -> dict[str, Any]:
+def _sla_fields_for_ticket(
+    ticket: TenantTicket,
+    policies: dict[str, Any],
+    *,
+    force_recalculate: bool = False,
+) -> dict[str, Any]:
     extra = copy.deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
     priority = str(extra.get("priority") or "medium").lower()
     policy = policies.get(priority) or policies.get("medium") or _DEFAULT_POLICIES["medium"]
@@ -93,18 +99,30 @@ def apply_sla_to_ticket(ticket: TenantTicket, policies: dict[str, Any], *, force
             due_fields["next_update_due_at"] = (created_at + timedelta(minutes=policy["next_update_minutes"])).isoformat()
         due_fields["paused"] = False
 
+    return due_fields
+
+
+def apply_sla_to_ticket(ticket: TenantTicket, policies: dict[str, Any], *, force_recalculate: bool = False) -> dict[str, Any]:
+    due_fields = _sla_fields_for_ticket(
+        ticket,
+        policies,
+        force_recalculate=force_recalculate,
+    )
+    extra = copy.deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
     extra["sla"] = due_fields
     ticket.datos_extra = extra
     return due_fields
 
 
-def is_ticket_overdue(ticket: TenantTicket) -> bool:
+def is_ticket_overdue(ticket: TenantTicket, *, sla_override: dict[str, Any] | None = None) -> bool:
     status = str(ticket.estado or "").lower()
     if status in _CLOSED_STATUSES or status in _PAUSED_STATUSES:
         return False
 
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
-    sla = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
+    sla = sla_override if isinstance(sla_override, dict) else (
+        extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
+    )
 
     due_text = sla.get("resolution_due_at") or sla.get("next_update_due_at")
     if not due_text:
@@ -120,14 +138,25 @@ def is_ticket_overdue(ticket: TenantTicket) -> bool:
     return _utc_now() > due
 
 
-def detect_sla_breaches_for_tenant(tenant: TenantProfile, actor_user=None) -> list[dict[str, Any]]:
+def detect_sla_breaches_for_tenant(
+    tenant: TenantProfile,
+    actor_user=None,
+    *,
+    materialize: bool = True,
+) -> list[dict[str, Any]]:
     policies = get_policies_for_tenant(tenant)
     breaches: list[dict[str, Any]] = []
 
-    tickets = TenantTicket.query.filter_by(tenant_id=tenant.id).all()
+    query = TenantTicket.query.filter_by(tenant_id=tenant.id)
+    query = apply_employee_ticket_category_scope(query, actor_user, TenantTicket)
+    tickets = query.all()
     for ticket in tickets:
-        apply_sla_to_ticket(ticket, policies)
-        if not is_ticket_overdue(ticket):
+        sla_fields = _sla_fields_for_ticket(ticket, policies)
+        if materialize:
+            extra_with_sla = copy.deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
+            extra_with_sla["sla"] = sla_fields
+            ticket.datos_extra = extra_with_sla
+        if not is_ticket_overdue(ticket, sla_override=sla_fields):
             continue
 
         extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
@@ -141,7 +170,7 @@ def detect_sla_breaches_for_tenant(tenant: TenantProfile, actor_user=None) -> li
         }
         breaches.append(breach_payload)
 
-        if not already_emitted:
+        if materialize and not already_emitted:
             record_ticket_event(
                 tenant_id=tenant.id,
                 event_type="sla.breach_detected",

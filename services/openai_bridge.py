@@ -21,6 +21,7 @@ from services.openai_model_defaults import (
     DEFAULT_OPENAI_SOL_MODEL,
     DEFAULT_OPENAI_TERRA_MODEL,
 )
+from services.llm_provider_network_policy import require_llm_provider_network
 from services.openai_text_service import _privacy_safe_identifier
 
 try:
@@ -45,6 +46,17 @@ class _LazyOpenAIClientProxy:
     """Preserve old ``from openai_bridge import client`` imports lazily."""
 
     def __getattr__(self, name: str) -> Any:
+        # Introspection must describe the proxy itself.  In particular,
+        # ``unittest.mock`` probes ``__func__`` before patching an object; if
+        # that probe reached the provider it would defeat lazy initialization
+        # (and could require network permission merely to install a mock).
+        # Python's coroutine inspection also probes private marker attributes.
+        # None of these are OpenAI client API surfaces, while public SDK
+        # attributes continue to delegate to the real client.
+        if (
+            name.startswith("__") and name.endswith("__")
+        ) or name in {"_is_coroutine", "_is_coroutine_marker"}:
+            raise AttributeError(name)
         return getattr(_get_openai_client(None), name)
 
     def __bool__(self) -> bool:
@@ -111,6 +123,7 @@ def _get_openai_client(app: Any = None) -> Any:
     api_key = str(_config_value(app, "OPENAI_API_KEY", "") or "").strip()
     if not api_key:
         raise LLMProviderPreRequestError("openai_not_configured")
+    require_llm_provider_network("openai", app)
 
     base_url = str(_config_value(app, "OPENAI_BASE_URL", "") or "").strip()
     try:

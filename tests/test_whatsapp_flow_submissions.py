@@ -297,6 +297,7 @@ class _WebhookConfig(Config):
     SKIP_INIT_TENANTS = True
     TWILIO_ACCOUNT_SID = "AC_flow_submission_test"
     TWILIO_AUTH_TOKEN = "twilio_flow_test_token"
+    TWILIO_ALLOW_NETWORK_IN_TESTS = True
     BACKEND_URL = "https://api.chatboc.test"
     WHATSAPP_FLOW_TOKEN_KEY_V1 = "test-whatsapp-flow-key-v1-00000000000000000000000000000000"
     WHATSAPP_FLOW_TOKEN_TTL_SECONDS = 3600

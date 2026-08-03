@@ -8,6 +8,7 @@ from sqlalchemy import or_
 from models import CatalogoItem, CategoriaTicket, MunicipioTicket, PymeTicket, TenantProfile, TenantTicket, User
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 from services.education_contracts import education_case_taxonomy, is_education_tenant
+from services.employee_ticket_access import ticket_assignee_category_values_are_compatible
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 
 
@@ -449,6 +450,12 @@ def score_employee_for_ticket(emp: User, ticket: dict[str, Any], workload: int =
 def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], workloads: dict[int, int]) -> dict[str, Any] | None:
     candidates = []
     for emp in employees:
+        if not ticket_assignee_category_values_are_compatible(
+            emp,
+            category=ticket.get("category"),
+            category_id=ticket.get("category_id"),
+        ):
+            continue
         workload = workloads.get(emp.id, 0)
         score, reasons = score_employee_for_ticket(emp, ticket, workload)
         candidates.append(

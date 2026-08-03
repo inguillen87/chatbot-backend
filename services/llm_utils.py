@@ -738,17 +738,23 @@ def extract_multiple_contact_details_llm(text: str, potential_fields: List[str])
                     raw_extracted = {k: parsed.get(k) for k in filtered_fields if parsed.get(k)}
                 else:
                     logger.info(
-                        "[LLM_CONTACT_EXTRACT] Ignoring non-dict response for text: %s", text
+                        "[LLM_CONTACT_EXTRACT] Ignoring non-dict response "
+                        "response_type=%s response_length=%s input_length=%s",
+                        type(parsed).__name__,
+                        len(response_content or ""),
+                        len(text or ""),
                     )
             else:
                 logger.info(
-                    "[LLM_CONTACT_EXTRACT] LLM response was empty after cleaning for text: %s",
-                    text,
+                    "[LLM_CONTACT_EXTRACT] LLM response was empty after cleaning "
+                    "response_length=%s input_length=%s",
+                    len(response_content or ""),
+                    len(text or ""),
                 )
         else:
             logger.info(
-                "[LLM_CONTACT_EXTRACT] LLM returned empty response for text: %s",
-                text,
+                "[LLM_CONTACT_EXTRACT] LLM returned empty response input_length=%s",
+                len(text or ""),
             )
 
     except json.JSONDecodeError as exc:
@@ -890,7 +896,12 @@ def extract_complaint_details_llm(
     default_localidad: str | None = None,
     default_provincia: str | None = None,
 ) -> Dict[str, Any]:
-    """Extract complaint details combining LLM output with deterministic heuristics."""
+    """Classify intent and extract complaint details from one citizen turn.
+
+    ``intencion`` and ``es_reclamo`` form the fail-closed intent contract used
+    by automatic claim bootstrap. Python validates that both fields agree; it
+    never infers claim intent from a category or description alone.
+    """
 
     if not text:
         return {}
@@ -917,28 +928,35 @@ def extract_complaint_details_llm(
         )
 
     prompt = (
-        "Eres un asistente amable y comprensivo. Analiza el RECLAMO DEL USUARIO y extrae los siguientes detalles: "
-        "1. 'tipo_problema': La categoría general del problema (ej: 'Alumbrado público', 'Recolección de residuos', 'Fuga de agua'). "
-        "2. 'ubicacion_problema': El lugar específico del problema (calle, número, etc.). "
-        "3. 'descripcion_problema': Un resumen claro y conciso del reclamo. "
-        "4. 'descripcion_corta': Una descripción muy breve del problema, de no más de 5 palabras (ej: 'Basura en la zanja', 'Poste de luz caído'). "
-        "5. 'nombre_cliente': El nombre de la persona que reclama, si lo menciona. "
-        "6. 'email_cliente': El email de la persona, si lo menciona. NOTA: A veces, la transcripción de audio confunde '@' con un punto ('.'). Si ves algo como 'usuario.dominio.com', es muy probable que sea 'usuario@dominio.com'. "
-        "7. 'telefono_cliente': El teléfono de la persona, si lo menciona. "
-        "8. 'dni_cliente': El DNI de la persona, si lo menciona. "
-        "9. 'solicita_llamada': true solamente si la persona pide explícitamente que la llamen o contacten por teléfono; en caso contrario false. "
-        "10. 'motivo_llamada': Un motivo breve y operativo para la llamada, solo cuando 'solicita_llamada' sea true. "
+        "Eres un asistente municipal amable y comprensivo. Primero clasifica la intención del MENSAJE DEL USUARIO y luego extrae datos si corresponde: "
+        "1. 'intencion': usa exactamente 'crear_reclamo' si la persona reporta un problema concreto y pide o implica acción municipal; "
+        "usa 'consulta_informativa' si pregunta por áreas, responsabilidades, requisitos, horarios o información sin reportar un incidente propio; "
+        "usa 'ambiguo' si no hay evidencia suficiente para decidir. "
+        "2. 'es_reclamo': booleano JSON true solamente cuando 'intencion' sea 'crear_reclamo'; false en los demás casos. "
+        "Una categoría municipal mencionada dentro de una pregunta informativa NO convierte el mensaje en reclamo. "
+        "3. 'tipo_problema': La categoría general del problema (ej: 'Alumbrado público', 'Recolección de residuos', 'Fuga de agua'). "
+        "4. 'ubicacion_problema': El lugar específico del problema (calle, número, etc.). "
+        "5. 'descripcion_problema': Un resumen claro y conciso del reclamo. "
+        "6. 'descripcion_corta': Una descripción muy breve del problema, de no más de 5 palabras (ej: 'Basura en la zanja', 'Poste de luz caído'). "
+        "7. 'nombre_cliente': El nombre de la persona que reclama, si lo menciona. "
+        "8. 'email_cliente': El email de la persona, si lo menciona. NOTA: A veces, la transcripción de audio confunde '@' con un punto ('.'). Si ves algo como 'usuario.dominio.com', es muy probable que sea 'usuario@dominio.com'. "
+        "9. 'telefono_cliente': El teléfono de la persona, si lo menciona. "
+        "10. 'dni_cliente': El DNI de la persona, si lo menciona. "
+        "11. 'solicita_llamada': true solamente si la persona pide explícitamente que la llamen o contacten por teléfono; en caso contrario false. "
+        "12. 'motivo_llamada': Un motivo breve y operativo para la llamada, solo cuando 'solicita_llamada' sea true. "
         f"{location_context_instruction} "
         "Devuelve la información SOLAMENTE como un objeto JSON válido con estas claves. "
         "Si no encuentras un detalle, puedes omitir la clave. "
         "No añadas explicaciones ni texto conversacional.\n\n"
-        f"RECLAMO DEL USUARIO: \"{text}\"\n\n"
+        f"MENSAJE DEL USUARIO: \"{text}\"\n\n"
         "RESPUESTA JSON:"
     )
 
     response_content: Optional[str] = None
     llm_result: Dict[str, Any] = {}
     valid_keys = [
+        "intencion",
+        "es_reclamo",
         "tipo_problema",
         "ubicacion_problema",
         "descripcion_problema",
@@ -962,6 +980,19 @@ def extract_complaint_details_llm(
                         if key not in parsed:
                             continue
                         value = parsed.get(key)
+                        if key == "es_reclamo":
+                            if isinstance(value, bool):
+                                llm_result[key] = value
+                            continue
+                        if key == "intencion":
+                            normalized_intent = str(value or "").strip().lower()
+                            if normalized_intent in {
+                                "crear_reclamo",
+                                "consulta_informativa",
+                                "ambiguo",
+                            }:
+                                llm_result[key] = normalized_intent
+                            continue
                         if key == "solicita_llamada":
                             if value is True or (
                                 isinstance(value, str)
@@ -980,18 +1011,23 @@ def extract_complaint_details_llm(
                             llm_result[key] = sanitized
                 else:
                     logger.info(
-                        "[LLM_COMPLAINT_EXTRACT] Ignoring non-dict response for text: %s",
-                        text,
+                        "[LLM_COMPLAINT_EXTRACT] Ignoring non-dict response "
+                        "response_type=%s response_length=%s input_length=%s",
+                        type(parsed).__name__,
+                        len(response_content or ""),
+                        len(text or ""),
                     )
             else:
                 logger.info(
-                    "[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning for text: %s",
-                    text,
+                    "[LLM_COMPLAINT_EXTRACT] LLM response was empty after cleaning "
+                    "response_length=%s input_length=%s",
+                    len(response_content or ""),
+                    len(text or ""),
                 )
         else:
             logger.info(
-                "[LLM_COMPLAINT_EXTRACT] LLM returned empty response for text: %s",
-                text,
+                "[LLM_COMPLAINT_EXTRACT] LLM returned empty response input_length=%s",
+                len(text or ""),
             )
 
     except json.JSONDecodeError as exc:
@@ -1012,7 +1048,26 @@ def extract_complaint_details_llm(
             len(text or ""),
         )
 
-    result: Dict[str, Any] = {k: v for k, v in llm_result.items() if v}
+    result: Dict[str, Any] = {
+        key: value
+        for key, value in llm_result.items()
+        if value or (key == "es_reclamo" and isinstance(value, bool))
+    }
+
+    # Fail closed on incomplete or contradictory model output. These fields
+    # are deliberately not synthesized when both are absent so callers can
+    # distinguish a provider/schema failure from an explicit non-claim.
+    if "intencion" in result or "es_reclamo" in result:
+        intent = result.get("intencion")
+        is_claim = result.get("es_reclamo")
+        contract_is_consistent = (
+            intent == "crear_reclamo" and is_claim is True
+        ) or (
+            intent in {"consulta_informativa", "ambiguo"} and is_claim is False
+        )
+        if not contract_is_consistent:
+            result["intencion"] = "ambiguo"
+            result["es_reclamo"] = False
     normalized_text = text or ""
 
     explicit_callback_request = _extract_explicit_callback_request(normalized_text)
@@ -1156,7 +1211,11 @@ def extract_complaint_details_llm(
     else:
         result.pop("descripcion_corta", None)
 
-    result = {k: v for k, v in result.items() if v}
+    result = {
+        key: value
+        for key, value in result.items()
+        if value or (key == "es_reclamo" and isinstance(value, bool))
+    }
     return result
 
 def update_summary_with_llm_extraction(current_summary: str, extracted_data: Dict[str, Any]) -> str:
@@ -1500,8 +1559,12 @@ def generar_descripcion_natural_de_imagen(elementos: str) -> str:
         if not descripcion:
             return elementos
         return _sanitize_llm_text_output(descripcion)
-    except Exception as e:
-        logger.error(f"Error al generar descripción natural de imagen: {e}")
+    except Exception as exc:
+        logger.error(
+            "Image description generation failed error_type=%s input_length=%s",
+            type(exc).__name__,
+            len(elementos or ""),
+        )
         return elementos # Fallback a los elementos crudos
 
 
@@ -1547,7 +1610,11 @@ def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optio
         "Array JSON:"
     )
 
-    logger_llm_utils.info(f"[LLM_PEDIDO_EXTRACT] Llamando al LLM para extraer de: {texto_ocr[:200]}...")
+    logger_llm_utils.info(
+        "[LLM_PEDIDO_EXTRACT] Calling provider input_length=%s has_pyme_context=%s",
+        len(texto_ocr),
+        pyme_id_context is not None,
+    )
     respuesta_llm_texto = llamar_llm_para_generacion_texto(
         system_prompt_especifico=system_prompt_pedido,
         user_prompt=user_prompt_pedido,
@@ -1555,7 +1622,10 @@ def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optio
     )
 
     if not respuesta_llm_texto:
-        logger_llm_utils.warning(f"[LLM_PEDIDO_EXTRACT] El LLM no devolvió respuesta para el texto OCR.")
+        logger_llm_utils.warning(
+            "[LLM_PEDIDO_EXTRACT] Provider returned empty response input_length=%s",
+            len(texto_ocr),
+        )
         return []
 
     cleaned_json_str = _clean_llm_json_output(respuesta_llm_texto)
@@ -1573,17 +1643,47 @@ def extraer_lista_pedido_de_texto_con_llm(texto_ocr: str, pyme_id_context: Optio
                         item["cantidad_ocr"] = 1 # Default si la cantidad no es numérica
                     items_validos.append(item)
                 else:
-                    logger_llm_utils.warning(f"[LLM_PEDIDO_EXTRACT] Item de LLM no tiene campos requeridos: {item}")
-            logger_llm_utils.info(f"[LLM_PEDIDO_EXTRACT] Items válidos extraídos por LLM: {items_validos}")
+                    logger_llm_utils.warning(
+                        "[LLM_PEDIDO_EXTRACT] Provider item missing required fields "
+                        "item_type=%s has_name=%s has_quantity=%s",
+                        type(item).__name__,
+                        isinstance(item, dict) and "nombre_producto_ocr" in item,
+                        isinstance(item, dict) and "cantidad_ocr" in item,
+                    )
+            logger_llm_utils.info(
+                "[LLM_PEDIDO_EXTRACT] Extraction completed valid_item_count=%s "
+                "response_length=%s input_length=%s",
+                len(items_validos),
+                len(respuesta_llm_texto),
+                len(texto_ocr),
+            )
             return items_validos
         else:
-            logger_llm_utils.error(f"[LLM_PEDIDO_EXTRACT] LLM no devolvió una lista JSON. Respuesta: {cleaned_json_str}")
+            logger_llm_utils.error(
+                "[LLM_PEDIDO_EXTRACT] Provider response was not a JSON list "
+                "response_type=%s response_length=%s input_length=%s",
+                type(items_extraidos).__name__,
+                len(respuesta_llm_texto),
+                len(texto_ocr),
+            )
             return []
-    except json.JSONDecodeError as e:
-        logger_llm_utils.error(f"[LLM_PEDIDO_EXTRACT] Error decodificando JSON de LLM: {e}. Respuesta: {cleaned_json_str}")
+    except json.JSONDecodeError as exc:
+        logger_llm_utils.error(
+            "[LLM_PEDIDO_EXTRACT] Invalid JSON response error_type=%s "
+            "response_length=%s input_length=%s",
+            type(exc).__name__,
+            len(respuesta_llm_texto),
+            len(texto_ocr),
+        )
         return []
-    except Exception as e_gen:
-        logger_llm_utils.error(f"[LLM_PEDIDO_EXTRACT] Error general procesando respuesta de LLM: {e_gen}", exc_info=True)
+    except Exception as exc:
+        logger_llm_utils.error(
+            "[LLM_PEDIDO_EXTRACT] Response processing failed error_type=%s "
+            "response_length=%s input_length=%s",
+            type(exc).__name__,
+            len(respuesta_llm_texto),
+            len(texto_ocr),
+        )
         return []
 
 def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int = 200, min_longitud: int = 50) -> str:
@@ -1638,18 +1738,41 @@ def resumir_descripcion_producto_llm(descripcion_larga: str, max_longitud: int =
 
             if len(resumen) < min_longitud and len_original > min_longitud : # Si el resumen es demasiado corto y el original no
                 # Podríamos intentar re-prompting con "hazlo un poco más largo" o simplemente usar el original truncado
-                logger.warning(f"[LLM_RESUMEN_PROD] Resumen LLM ('{resumen}') más corto ({len(resumen)}) que min_longitud ({min_longitud}). Original era {len_original}.")
+                logger.warning(
+                    "[LLM_RESUMEN_PROD] Summary below minimum "
+                    "summary_length=%s minimum_length=%s original_length=%s",
+                    len(resumen),
+                    min_longitud,
+                    len_original,
+                )
                 # Fallback a una porción del original si el resumen es insatisfactorio
                 return descripcion_larga[:max_longitud].strip()
 
 
-            logger.info(f"[LLM_RESUMEN_PROD] Descripción original (len {len_original}): '{descripcion_larga[:100]}...' -> Resumen (len {len(resumen)}): '{resumen[:100]}...'")
+            logger.info(
+                "[LLM_RESUMEN_PROD] Summary completed original_length=%s "
+                "summary_length=%s max_length=%s",
+                len_original,
+                len(resumen),
+                max_longitud,
+            )
         else:
-            logger.warning(f"[LLM_RESUMEN_PROD] LLM no devolvió resumen para: '{descripcion_larga[:100]}...'. Se usará original truncado si es necesario.")
+            logger.warning(
+                "[LLM_RESUMEN_PROD] Provider returned empty summary "
+                "original_length=%s max_length=%s",
+                len_original,
+                max_longitud,
+            )
             return descripcion_larga[:max_longitud].strip()
 
-    except Exception as e:
-        logger.error(f"[LLM_RESUMEN_PROD] Error al resumir descripción: {e}. Original: '{descripcion_larga[:100]}...'", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "[LLM_RESUMEN_PROD] Summary generation failed error_type=%s "
+            "original_length=%s max_length=%s",
+            type(exc).__name__,
+            len_original,
+            max_longitud,
+        )
         # Fallback a la descripción original (o una versión truncada si es muy larga)
         return descripcion_larga[:max_longitud].strip()
 
@@ -1687,20 +1810,31 @@ def analyze_image_with_google_vision_ocr(image_content: bytes) -> str:
     if not client:
         try:
             client = vision.ImageAnnotatorClient()
-        except Exception as e:
-            logger.error(f"Failed to initialise Vision client: {e}")
+        except Exception as exc:
+            logger.error(
+                "Failed to initialise Vision client error_type=%s",
+                type(exc).__name__,
+            )
             return ""
 
     try:
         image = vision.Image(content=image_content)
         response = client.text_detection(image=image)
         if response.error.message:
-            logger.error(f"Vision API error: {response.error.message}")
+            logger.error(
+                "Vision API returned an error error_type=provider_error "
+                "error_length=%s",
+                len(str(response.error.message)),
+            )
             return ""
         if response.text_annotations:
             return response.text_annotations[0].description or ""
-    except Exception as e:
-        logger.error(f"Error in analyze_image_with_google_vision_ocr: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Vision OCR failed error_type=%s content_length=%s",
+            type(exc).__name__,
+            len(image_content or b""),
+        )
     return ""
 
 def analyze_document_with_google_document_ai(
@@ -1727,7 +1861,15 @@ def analyze_document_with_google_document_ai(
         logger.error("Google Cloud DocumentAI library not available or not fully mocked. Cannot analyze document.")
         return None
 
-    logger.info(f"Placeholder: Analyzing document ({mime_type}) with Google Document AI for project {project_id}.")
+    logger.info(
+        "Document AI processing requested content_length=%s "
+        "has_project=%s has_location=%s has_processor=%s has_mime_type=%s",
+        len(file_content or b""),
+        bool(project_id),
+        bool(location),
+        bool(processor_id),
+        bool(mime_type),
+    )
     # In a real implementation:
     # try:
     #     opts = {"api_endpoint": f"{location}-documentai.googleapis.com"}
@@ -1755,7 +1897,12 @@ def analyze_document_with_google_document_ai(
         if opts:
             client = documentai.DocumentProcessorServiceClient(client_options=opts)
         else: # Fallback if location is not set, though this might lead to errors if endpoint isn't default
-            logger.warning(f"Document AI location not set, using default endpoint for client. Project: {project_id}")
+            logger.warning(
+                "Document AI location not set; using default endpoint "
+                "has_project=%s has_processor=%s",
+                bool(project_id),
+                bool(processor_id),
+            )
             client = documentai.DocumentProcessorServiceClient()
 
         name = client.processor_path(project_id, location, processor_id)
@@ -1766,7 +1913,11 @@ def analyze_document_with_google_document_ai(
         # Construct the request
         request = documentai.ProcessRequest(name=name, raw_document=raw_document)
 
-        logger.info(f"Processing document with Document AI. Processor: {name}")
+        logger.info(
+            "Processing document with Document AI content_length=%s has_processor_path=%s",
+            len(file_content or b""),
+            bool(name),
+        )
         result = client.process_document(request=request)
         logger.info("Document AI processing complete.")
         return result.document
@@ -1774,10 +1925,14 @@ def analyze_document_with_google_document_ai(
     except ImportError: # Should have been caught by the check at the top of the function
         logger.error("Google Cloud DocumentAI library not available during client instantiation.")
         return None
-    except Exception as e:
-        logger.error(f"Error in analyze_document_with_google_document_ai: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "Document AI processing failed error_type=%s content_length=%s",
+            type(exc).__name__,
+            len(file_content or b""),
+        )
         # Return a mock/empty document with error information if possible, or just None
-        error_doc_text = f"Error processing document with Document AI: {str(e)}"
+        error_doc_text = f"Error processing document with Document AI: {str(exc)}"
         if isinstance(documentai, type) and hasattr(documentai, 'Document'): # Check if it's the MockDocumentAI class
              # Create a mock document indicating error.
             mock_error_doc = documentai.Document(text=error_doc_text, mime_type=mime_type)

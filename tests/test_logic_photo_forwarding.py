@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from flask import Flask
 from services.logic import responder_chatboc
-from models import User, Rubro, ChatSessionContext
+from models import ArchivoAdjunto, User, Rubro, ChatSessionContext
 from services.constants import CONTEXTO_MUNICIPIO
 
 class LogicPhotoForwardingTest(unittest.TestCase):
@@ -62,14 +62,26 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         mock_get.assert_not_called()
 
     @patch('services.municipio_responder.responder_municipio')
+    @patch('services.interpretacion_imagen_service.interpretar_imagen_para_chat', return_value={})
     @patch('services.logic.db.session')
-    def test_web_upload_photo_sets_context(self, mock_db_session, mock_responder):
+    def test_web_upload_photo_sets_context(self, mock_db_session, mock_interpretar, mock_responder):
         app = Flask(__name__)
 
         owner_user = User(id=5, nombre_empresa="Municipio Test", tipo_chat="municipio")
+        viewer_user = User(id=7)
         rubro = Rubro(id=6, nombre="municipio", es_publico=True)
         owner_user.rubro = rubro
         chat_context = ChatSessionContext(context_data={})
+
+        attachment = ArchivoAdjunto(
+            id=555,
+            user_id=viewer_user.id,
+            filename="web_photo.jpg",
+            nombre_original="web_photo.jpg",
+            mime="image/jpeg",
+            url="http://example.com/web_photo.jpg",
+        )
+        mock_db_session.get.return_value = attachment
 
         uploaded = {
             "id": 555,
@@ -83,6 +95,7 @@ class LogicPhotoForwardingTest(unittest.TestCase):
             responder_chatboc(
                 "",
                 owner_user=owner_user,
+                current_user=viewer_user,
                 rubro_obj=rubro,
                 chat_db_context=chat_context,
                 uploaded_file_info=uploaded,
@@ -95,6 +108,7 @@ class LogicPhotoForwardingTest(unittest.TestCase):
         self.assertEqual(kwargs.get("foto_url"), "http://example.com/web_photo.jpg")
         self.assertEqual(kwargs.get("archivo_url"), "http://example.com/web_photo.jpg")
         self.assertEqual(kwargs.get("archivo_id_para_asociar"), 555)
+        mock_interpretar.assert_called_once()
 
 if __name__ == '__main__':
     unittest.main()

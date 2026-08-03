@@ -308,6 +308,10 @@ class MunicipalStatsTests(unittest.TestCase):
         )
 
         with patch('routes.municipal_legacy.jsonify', lambda x: x), \
+             patch(
+                 'routes.municipal_legacy._resolve_current_municipio_tenant',
+                 return_value=SimpleNamespace(id=99),
+             ), \
              patch('routes.municipal_legacy.db.session.query', side_effect=[categories_stub, districts_stub, channels_stub, agents_stub]):
             view = getattr(self.module.municipal_stats_filters, '__wrapped__', self.module.municipal_stats_filters)
             app = Flask(__name__)

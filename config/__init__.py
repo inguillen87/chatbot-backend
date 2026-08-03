@@ -642,9 +642,32 @@ class Config:
         "UPSTASH_REDIS_URL",
         default="memory://",
     )
+    # Operational queue reads can fan out across three legacy ticket stores.
+    # Rate capacity is shared by tenant+actor; row inspection remains bounded
+    # even when a portable SQL pushdown is unavailable (for example SLA JSON).
+    CRM_OPERATIONAL_QUEUE_RATE_LIMIT = _env_first(
+        "CRM_OPERATIONAL_QUEUE_RATE_LIMIT",
+        default="120 per 60 seconds",
+    )
+    CRM_OPERATIONAL_QUEUE_MAX_SCANNED_ROWS = _env_first(
+        "CRM_OPERATIONAL_QUEUE_MAX_SCANNED_ROWS",
+        default="5000",
+    )
     # Nombre del cookie adicional que almacena el token de acceso como
     # respaldo en caso de que la sesión basada en cookies falle
     AUTH_TOKEN_COOKIE_NAME = os.getenv("AUTH_TOKEN_COOKIE_NAME", "auth_token")
+    # Legacy widget/profile clients may still place an auth token in a JSON
+    # body.  Keep that compatibility bounded: authentication must never
+    # materialize an arbitrarily large request before a route-level feature or
+    # tenant gate can reject it.  New clients should always use headers.
+    AUTH_TOKEN_JSON_BODY_MAX_BYTES = int(
+        os.getenv("AUTH_TOKEN_JSON_BODY_MAX_BYTES", str(64 * 1024))
+    )
+    # Global contact continuity may inspect JSON only on explicitly supported
+    # public/conversational routes, and never beyond this bounded size.
+    CONTACT_IDENTITY_JSON_BODY_MAX_BYTES = int(
+        os.getenv("CONTACT_IDENTITY_JSON_BODY_MAX_BYTES", str(64 * 1024))
+    )
     DEFER_ANON_MIGRATION_ON_LOGIN = os.getenv("DEFER_ANON_MIGRATION_ON_LOGIN", "true").strip().lower() not in {"0", "false", "no", "off"}
 
     # Runtime bootstrap guards: in production, schema sync and tenant init must be explicit
@@ -670,6 +693,11 @@ class Config:
     # deployment opt-in after migrations, tenant policy and staging evidence.
     ENABLE_ASSESSMENT_INTERVIEWS_V1 = _env_strict_opt_in(
         "ENABLE_ASSESSMENT_INTERVIEWS_V1"
+    )
+    # Managed assignment adds operator writes on top of the read-only inbox and
+    # therefore requires a second, deliberate rollout gate.
+    ENABLE_INTERVIEW_ASSIGNMENTS_V1 = _env_strict_opt_in(
+        "ENABLE_INTERVIEW_ASSIGNMENTS_V1"
     )
     # PSTN Media Streams remain unavailable until the consent/lifecycle
     # migration and tenant policy have been explicitly enabled.
@@ -852,6 +880,12 @@ class Config:
         "WHATSAPP_INBOUND_DURABILITY_MODE",
         "legacy",
     ).strip().lower()
+    # ``queue`` is a tenant canary, never a global switch. Tenants outside this
+    # explicit allowlist remain on the synchronous legacy path.
+    WHATSAPP_INBOUND_QUEUE_TENANT_IDS = os.getenv(
+        "WHATSAPP_INBOUND_QUEUE_TENANT_IDS",
+        "",
+    ).strip()
     WHATSAPP_INBOUND_HASH_SECRET = os.getenv("WHATSAPP_INBOUND_HASH_SECRET")
     # Canonical, tenant-scoped channel identity rollout. ``legacy`` is the
     # rollback default; deployment manifests opt into ``shadow`` explicitly
@@ -867,11 +901,41 @@ class Config:
         "CHANNEL_SESSION_IDENTITY_VERSION_V1",
         "v1",
     ).strip().lower()
+    # Normalized non-WhatsApp/non-voice adapters remain fail-closed until a
+    # dedicated ProviderConnection is active and every request carries the
+    # per-connection HMAC derived from this root secret.
+    OMNICHANNEL_SIGNED_INBOUND_MODE = os.getenv(
+        "OMNICHANNEL_SIGNED_INBOUND_MODE",
+        "disabled",
+    ).strip().lower()
+    OMNICHANNEL_INBOUND_HMAC_SECRET_V1 = os.getenv(
+        "OMNICHANNEL_INBOUND_HMAC_SECRET_V1"
+    )
+    OMNICHANNEL_INBOUND_MAX_PAYLOAD_BYTES = int(
+        os.getenv("OMNICHANNEL_INBOUND_MAX_PAYLOAD_BYTES", "65536")
+    )
+    OMNICHANNEL_INBOUND_MAX_CLOCK_SKEW_SECONDS = int(
+        os.getenv("OMNICHANNEL_INBOUND_MAX_CLOCK_SKEW_SECONDS", "300")
+    )
     WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES = int(
         os.getenv("WHATSAPP_INBOUND_MAX_PAYLOAD_BYTES", "65536")
     )
     WHATSAPP_INBOUND_LEASE_SECONDS = int(
         os.getenv("WHATSAPP_INBOUND_LEASE_SECONDS", "180")
+    )
+    # Durable outbound Notification transport. It is fail-closed and canary
+    # scoped; setting the boolean without an explicit tenant list still sends
+    # nothing.
+    WHATSAPP_NOTIFICATION_TRANSPORT_ENABLED = _env_flag(
+        False,
+        "WHATSAPP_NOTIFICATION_TRANSPORT_ENABLED",
+    )
+    WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS = os.getenv(
+        "WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS",
+        "",
+    ).strip()
+    NOTIFICATION_DISPATCH_LEASE_SECONDS = int(
+        os.getenv("NOTIFICATION_DISPATCH_LEASE_SECONDS", "180")
     )
     WHATSAPP_INBOUND_MAX_ATTEMPTS = int(
         os.getenv("WHATSAPP_INBOUND_MAX_ATTEMPTS", "8")
@@ -888,6 +952,20 @@ class Config:
         "WHATSAPP_INBOUND_CELERY_WAKEUP_ENABLED",
         "false",
     ).strip().lower() in {"1", "true", "yes", "on"}
+    # A Render worker may be provisioned before queue cutover, but only this
+    # explicit flag permits its zero-I/O legacy standby path.
+    WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED = _env_strict_opt_in(
+        "WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED"
+    )
+    # Retention is independently scoped so removing a queue canary cannot
+    # orphan that tenant's already-persisted payloads after rollback.
+    WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS = os.getenv(
+        "WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS",
+        "",
+    ).strip()
+    WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED = _env_strict_opt_in(
+        "WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED"
+    )
     WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS = int(
         os.getenv("WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS", "72")
     )
@@ -895,7 +973,7 @@ class Config:
         os.getenv("WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE", "200")
     )
     WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD = _env_fail_closed_hold(
-        False,
+        True,
         "WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD",
     )
     # Domain mutations (tickets, comments and orders) must stage every external
@@ -950,6 +1028,29 @@ class Config:
     # rotate this value for an already-published survey generation.
     SURVEY_IDENTITY_HMAC_SECRET_V1 = os.getenv(
         "SURVEY_IDENTITY_HMAC_SECRET_V1",
+        "",
+    )
+    # Controlled institutional/manual eligibility is a separate canary.  A
+    # global opt-in never enables every tenant: the explicit tenant allowlist
+    # and a dedicated secret are both required by the runtime gate.
+    ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1 = _env_strict_opt_in(
+        "ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1"
+    )
+    SURVEY_ELIGIBILITY_GRANT_TENANT_IDS = os.getenv(
+        "SURVEY_ELIGIBILITY_GRANT_TENANT_IDS",
+        "",
+    )
+    SURVEY_ELIGIBILITY_SECRET_V1 = os.getenv(
+        "SURVEY_ELIGIBILITY_SECRET_V1",
+        "",
+    )
+    # Workflow Studio durable writes remain a reviewed control-plane canary.
+    # Runtime consumption is intentionally a separate, currently disabled gate.
+    ENABLE_WHATSAPP_WORKFLOW_STUDIO_DURABLE_V1 = _env_strict_opt_in(
+        "ENABLE_WHATSAPP_WORKFLOW_STUDIO_DURABLE_V1"
+    )
+    WHATSAPP_WORKFLOW_STUDIO_DURABLE_TENANT_IDS = os.getenv(
+        "WHATSAPP_WORKFLOW_STUDIO_DURABLE_TENANT_IDS",
         "",
     )
     # The current SIGEM adapter is a placeholder, not a production transport.
@@ -1213,6 +1314,95 @@ def validate_runtime_security(config: Any) -> list[str]:
             "SURVEY_IDENTITY_HMAC_SECRET_V1 debe tener al menos 32 bytes cuando se configura."
         )
 
+    survey_eligibility_enabled = getattr(config, "get", lambda *_: None)(
+        "ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1",
+        False,
+    )
+    survey_eligibility_secret = str(
+        getattr(config, "get", lambda *_: None)(
+            "SURVEY_ELIGIBILITY_SECRET_V1",
+            "",
+        )
+        or ""
+    )
+    if (
+        survey_eligibility_secret
+        and len(survey_eligibility_secret.encode("utf-8")) < 32
+    ):
+        errors.append(
+            "SURVEY_ELIGIBILITY_SECRET_V1 debe tener al menos 32 bytes cuando se configura."
+        )
+    raw_survey_eligibility_tenants = str(
+        getattr(config, "get", lambda *_: None)(
+            "SURVEY_ELIGIBILITY_GRANT_TENANT_IDS",
+            "",
+        )
+        or ""
+    ).strip()
+    survey_eligibility_tenants: set[int] = set()
+    survey_eligibility_allowlist_invalid = False
+    if raw_survey_eligibility_tenants:
+        for raw_tenant_id in raw_survey_eligibility_tenants.split(","):
+            normalized_tenant_id = raw_tenant_id.strip()
+            try:
+                tenant_id = int(normalized_tenant_id)
+            except (TypeError, ValueError):
+                survey_eligibility_allowlist_invalid = True
+                break
+            if tenant_id <= 0 or str(tenant_id) != normalized_tenant_id:
+                survey_eligibility_allowlist_invalid = True
+                break
+            survey_eligibility_tenants.add(tenant_id)
+    if survey_eligibility_allowlist_invalid:
+        errors.append(
+            "SURVEY_ELIGIBILITY_GRANT_TENANT_IDS contiene un tenant invalido."
+        )
+    if survey_eligibility_enabled is True:
+        if len(survey_eligibility_secret.encode("utf-8")) < 32:
+            errors.append(
+                "ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1 requiere SURVEY_ELIGIBILITY_SECRET_V1."
+            )
+        if not survey_eligibility_tenants or survey_eligibility_allowlist_invalid:
+            errors.append(
+                "ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1 requiere tenants canarios explicitos."
+            )
+
+    workflow_studio_durable_enabled = getattr(config, "get", lambda *_: None)(
+        "ENABLE_WHATSAPP_WORKFLOW_STUDIO_DURABLE_V1",
+        False,
+    )
+    raw_workflow_studio_tenants = str(
+        getattr(config, "get", lambda *_: None)(
+            "WHATSAPP_WORKFLOW_STUDIO_DURABLE_TENANT_IDS",
+            "",
+        )
+        or ""
+    ).strip()
+    workflow_studio_tenants: set[int] = set()
+    workflow_studio_allowlist_invalid = False
+    if raw_workflow_studio_tenants:
+        for raw_tenant_id in raw_workflow_studio_tenants.split(","):
+            normalized_tenant_id = raw_tenant_id.strip()
+            try:
+                tenant_id = int(normalized_tenant_id)
+            except (TypeError, ValueError):
+                workflow_studio_allowlist_invalid = True
+                break
+            if tenant_id <= 0 or str(tenant_id) != normalized_tenant_id:
+                workflow_studio_allowlist_invalid = True
+                break
+            workflow_studio_tenants.add(tenant_id)
+    if workflow_studio_allowlist_invalid:
+        errors.append(
+            "WHATSAPP_WORKFLOW_STUDIO_DURABLE_TENANT_IDS contiene un tenant invalido."
+        )
+    if workflow_studio_durable_enabled is True and (
+        not workflow_studio_tenants or workflow_studio_allowlist_invalid
+    ):
+        errors.append(
+            "ENABLE_WHATSAPP_WORKFLOW_STUDIO_DURABLE_V1 requiere tenants canarios explicitos."
+        )
+
     sigem_live_enabled = getattr(config, "get", lambda *_: None)(
         "SIGEM_LIVE_ENABLED",
         False,
@@ -1224,6 +1414,49 @@ def validate_runtime_security(config: Any) -> list[str]:
     elif sigem_live_enabled is not False and sigem_live_enabled is not None:
         errors.append("SIGEM_LIVE_ENABLED inválido.")
 
+    notification_transport_enabled = getattr(config, "get", lambda *_: None)(
+        "WHATSAPP_NOTIFICATION_TRANSPORT_ENABLED",
+        False,
+    )
+    if notification_transport_enabled is True:
+        raw_tenants = str(
+            getattr(config, "get", lambda *_: None)(
+                "WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS",
+                "",
+            )
+            or ""
+        )
+        tenant_tokens = [
+            token.strip() for token in raw_tenants.split(",") if token.strip()
+        ]
+        if not tenant_tokens:
+            errors.append(
+                "WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS requiere tenants canarios explicitos."
+            )
+        for token in tenant_tokens:
+            try:
+                if int(token) <= 0:
+                    raise ValueError
+            except (TypeError, ValueError, OverflowError):
+                errors.append(
+                    "WHATSAPP_NOTIFICATION_TRANSPORT_TENANT_IDS contiene un tenant invalido."
+                )
+                break
+        try:
+            notification_lease = int(
+                getattr(config, "get", lambda *_: None)(
+                    "NOTIFICATION_DISPATCH_LEASE_SECONDS",
+                    180,
+                )
+            )
+        except (TypeError, ValueError, OverflowError):
+            errors.append("NOTIFICATION_DISPATCH_LEASE_SECONDS invalido.")
+        else:
+            if notification_lease < 30 or notification_lease > 3600:
+                errors.append("NOTIFICATION_DISPATCH_LEASE_SECONDS fuera de rango.")
+    elif notification_transport_enabled is not False and notification_transport_enabled is not None:
+        errors.append("WHATSAPP_NOTIFICATION_TRANSPORT_ENABLED invalido.")
+
     durability_mode = str(
         getattr(config, "get", lambda *_: None)(
             "WHATSAPP_INBOUND_DURABILITY_MODE",
@@ -1233,6 +1466,31 @@ def validate_runtime_security(config: Any) -> list[str]:
     ).strip().lower()
     if durability_mode not in {"legacy", "queue"}:
         errors.append("WHATSAPP_INBOUND_DURABILITY_MODE inválido.")
+    inbound_queue_tenant_tokens = [
+        token.strip()
+        for token in str(
+            getattr(config, "get", lambda *_: None)(
+                "WHATSAPP_INBOUND_QUEUE_TENANT_IDS",
+                "",
+            )
+            or ""
+        ).split(",")
+        if token.strip()
+    ]
+    if durability_mode == "queue" and not inbound_queue_tenant_tokens:
+        errors.append(
+            "WHATSAPP_INBOUND_QUEUE_TENANT_IDS requiere tenants canarios explicitos en modo queue."
+        )
+    for token in inbound_queue_tenant_tokens:
+        try:
+            if int(token) <= 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            errors.append(
+                "WHATSAPP_INBOUND_QUEUE_TENANT_IDS contiene un tenant invalido."
+            )
+            break
+
     session_identity_mode = str(
         getattr(config, "get", lambda *_: None)(
             "CHANNEL_SESSION_IDENTITY_MODE",
@@ -1287,6 +1545,46 @@ def validate_runtime_security(config: Any) -> list[str]:
         errors.append(
             "WHATSAPP_INBOUND_DURABILITY_MODE=queue requiere CHANNEL_SESSION_IDENTITY_MODE=enforce."
         )
+    omnichannel_mode = str(
+        getattr(config, "get", lambda *_: None)(
+            "OMNICHANNEL_SIGNED_INBOUND_MODE",
+            "disabled",
+        )
+        or "disabled"
+    ).strip().lower()
+    if omnichannel_mode not in {"disabled", "enforce"}:
+        errors.append("OMNICHANNEL_SIGNED_INBOUND_MODE invalido.")
+    if omnichannel_mode == "enforce":
+        omnichannel_secret = str(
+            getattr(config, "get", lambda *_: None)(
+                "OMNICHANNEL_INBOUND_HMAC_SECRET_V1",
+                "",
+            )
+            or ""
+        )
+        if len(omnichannel_secret.encode("utf-8")) < 32:
+            errors.append(
+                "OMNICHANNEL_INBOUND_HMAC_SECRET_V1 debe tener al menos 32 bytes en modo enforce."
+            )
+        omnichannel_bounds = (
+            ("OMNICHANNEL_INBOUND_MAX_PAYLOAD_BYTES", 1024, 262144, int, 65536),
+            (
+                "OMNICHANNEL_INBOUND_MAX_CLOCK_SKEW_SECONDS",
+                30,
+                900,
+                int,
+                300,
+            ),
+        )
+        for key, minimum, maximum, cast, default_value in omnichannel_bounds:
+            raw_value = getattr(config, "get", lambda *_: None)(key, default_value)
+            try:
+                value = cast(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                errors.append(f"{key} invalido para modo enforce.")
+                continue
+            if value < minimum or value > maximum:
+                errors.append(f"{key} fuera de rango para modo enforce.")
     voice_lifecycle_enabled = getattr(config, "get", lambda *_: None)(
         "ENABLE_VOICE_CONSENT_LIFECYCLE_V1",
         False,
@@ -1441,6 +1739,72 @@ def validate_runtime_security(config: Any) -> list[str]:
         getattr(config, "get", lambda *_: None)("CHATBOC_PROCESS_ROLE", "")
         or ""
     ).strip().lower()
+    durable_worker_standby = getattr(config, "get", lambda *_: None)(
+        "WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED",
+        False,
+    )
+    if not isinstance(durable_worker_standby, bool):
+        errors.append("WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED invalido.")
+    if (
+        process_role == "whatsapp-durable-worker"
+        and durability_mode != "queue"
+        and durable_worker_standby is not True
+    ):
+        errors.append(
+            "CHATBOC_PROCESS_ROLE=whatsapp-durable-worker requiere "
+            "WHATSAPP_INBOUND_DURABILITY_MODE=queue o standby explicito."
+        )
+
+    payload_scrub_enabled = getattr(config, "get", lambda *_: None)(
+        "WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED",
+        False,
+    )
+    payload_legal_hold = getattr(config, "get", lambda *_: None)(
+        "WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD",
+        True,
+    )
+    if not isinstance(payload_scrub_enabled, bool):
+        errors.append("WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED invalido.")
+    if not isinstance(payload_legal_hold, bool):
+        errors.append("WHATSAPP_INBOUND_PAYLOAD_LEGAL_HOLD invalido.")
+    scrub_tenant_tokens = [
+        token.strip()
+        for token in str(
+            getattr(config, "get", lambda *_: None)(
+                "WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS",
+                "",
+            )
+            or ""
+        ).split(",")
+        if token.strip()
+    ]
+    for token in scrub_tenant_tokens:
+        try:
+            if int(token) <= 0:
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            errors.append(
+                "WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS contiene un tenant invalido."
+            )
+            break
+    if payload_scrub_enabled is True and payload_legal_hold is False:
+        if not scrub_tenant_tokens:
+            errors.append(
+                "WHATSAPP_INBOUND_PAYLOAD_SCRUB_TENANT_IDS requiere un scope historico explicito."
+            )
+        retention_bounds = (
+            ("WHATSAPP_INBOUND_DEAD_PAYLOAD_RETENTION_HOURS", 0, 720, int, 72),
+            ("WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE", 1, 500, int, 200),
+        )
+        for key, minimum, maximum, cast, default_value in retention_bounds:
+            raw_value = getattr(config, "get", lambda *_: None)(key, default_value)
+            try:
+                value = cast(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                errors.append(f"{key} invalido para retencion WhatsApp.")
+                continue
+            if value < minimum or value > maximum:
+                errors.append(f"{key} fuera de rango para retencion WhatsApp.")
     socket_queue_url = str(
         getattr(config, "get", lambda *_: None)(
             "SOCKETIO_MESSAGE_QUEUE_URL",

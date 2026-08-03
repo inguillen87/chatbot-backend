@@ -49,6 +49,43 @@ class TestAccionesMunicipio(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
+    def _create_municipal_scope(self, slug):
+        """Create the authoritative owner/tenant pair required by ticket actions."""
+        owner = User(
+            name=f"Owner {slug}",
+            email=f"{slug}@example.com",
+            rol="admin",
+            tipo_chat="municipio",
+            tenant_slug=slug,
+        )
+        owner.set_password("test-password")
+        db.session.add(owner)
+        db.session.flush()
+        owner.municipio_id = owner.id
+
+        tenant = TenantProfile(
+            slug=slug,
+            nombre=f"Municipio {slug}",
+            tipo="municipio",
+            municipio_id=owner.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+        return owner, tenant
+
+    def _bind_municipal_scope(self, context, slug):
+        """Bind a legacy unit-test context to a real, unambiguous tenant."""
+        owner_record, tenant = self._create_municipal_scope(slug)
+        owner_context = context.get("user_obj")
+        if owner_context is None:
+            context["user_obj"] = owner_record
+        else:
+            owner_context.id = owner_record.id
+        context["tenant_profile"] = tenant
+        context["tenant_id"] = tenant.id
+        return tenant
+
     @patch('services.actions.municipio_actions.servicio_tickets.crear_nuevo_ticket')
     @patch('services.actions.municipio_actions.validar_telefono')
     @patch('services.actions.municipio_actions.validar_email')
@@ -91,6 +128,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "chat_session_uuid": "test-session-uuid-123",
             "chat_db_context_data": {"processed_idempotency_keys": {}}
         }
+        self._bind_municipal_scope(context, "claim-exito-completo")
 
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
@@ -144,6 +182,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "anon_id": "anon123",
             "municipio_config_actual": {}
         }
+        self._bind_municipal_scope(context, "claim-categoria-emoji")
 
         handler = CrearReclamoActionHandler(context)
         handler.execute(datos_llm)
@@ -188,6 +227,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "anon_id": "anon123",
             "municipio_config_actual": {}
         }
+        self._bind_municipal_scope(context, "claim-categoria-espacios")
 
         handler = CrearReclamoActionHandler(context)
         handler.execute(datos_llm)
@@ -255,6 +295,7 @@ class TestAccionesMunicipio(unittest.TestCase):
         self, mock_parse_direccion, mock_formatear_tel, mock_enviar_whatsapp, mock_geocode_address,
         mock_validar_email, mock_validar_telefono, mock_crear_ticket
     ):
+        owner, tenant = self._create_municipal_scope("claim-campos-detectados")
         mock_crear_ticket.return_value = {"id": 5, "nro_ticket": "55555", "consulta_pin": "123456"}
 
         mock_validar_telefono.return_value = True
@@ -278,9 +319,11 @@ class TestAccionesMunicipio(unittest.TestCase):
 
         context = {
             "viewer_user_obj": None,
-            "user_obj": MagicMock(id=1, municipio_id="testmuni"),
+            "user_obj": owner,
             "anon_id": "anon123",
-            "municipio_config_actual": {}
+            "tenant_profile": tenant,
+            "tenant_id": tenant.id,
+            "municipio_config_actual": {"tenant_slug": tenant.slug},
         }
 
         handler = CrearReclamoActionHandler(context)
@@ -340,6 +383,7 @@ class TestAccionesMunicipio(unittest.TestCase):
                 "datos_parciales_llm_reclamo": {},
             },
         }
+        self._bind_municipal_scope(context, "claim-prefiere-perfil")
 
         handler = CrearReclamoActionHandler(context)
         handler.execute(datos_llm)
@@ -395,6 +439,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "dni": "12345678"
         }
         context = {"viewer_user_obj": None, "user_obj": MagicMock(id=1, municipio_id="testmuni"), "anon_id": "testanon"}
+        self._bind_municipal_scope(context, "claim-pin-seguro")
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
         self.assertTrue(respuesta["success"])
@@ -443,6 +488,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "current_user": mock_viewer_user,
             "pregunta_actual_usuario": "mi pregunta de prueba"
         }
+        self._bind_municipal_scope(context, "claim-contacto-perfil")
         handler = CrearReclamoActionHandler(context)
         respuesta = handler.execute(datos_llm)
 
@@ -551,6 +597,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             'chat_db_context_data': {'processed_idempotency_keys': {}},
             'channel': 'web',
         }
+        self._bind_municipal_scope(context, "claim-web")
 
         handler = CrearReclamoActionHandler(context)
         datos_llm = {
@@ -623,6 +670,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             'chat_db_context_data': {'processed_idempotency_keys': {}},
             'channel': 'whatsapp',
         }
+        self._bind_municipal_scope(context, "claim-whatsapp")
 
         handler = CrearReclamoActionHandler(context)
         with self.assertLogs('services.actions.municipio_actions', level='INFO') as captured_logs:
@@ -894,6 +942,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "municipio_config_actual": {},
             "contexto_municipio_v2": {},
         }
+        self._bind_municipal_scope(context, "suggestion-location")
         handler = HacerSugerenciaActionHandler(context)
         datos = {
             "descripcion": "Más árboles en la plaza",
@@ -974,6 +1023,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             'anon_id': 'anonX',
             'municipio_config_actual': {'ciudad': 'Junín'}
         }
+        self._bind_municipal_scope(context, "claim-parse-distrito")
         handler = CrearReclamoActionHandler(context)
         handler.execute(datos_llm)
         mock_parse.assert_called_once_with('sarmiento y san martin', {'ciudad': 'Junín'})
@@ -1026,6 +1076,7 @@ class TestAccionesMunicipio(unittest.TestCase):
             "chat_session_uuid": "test-session-uuid-456",
             "chat_db_context_data": {"processed_idempotency_keys": {}}
         }
+        self._bind_municipal_scope(context, "claim-existing-email")
 
         # 3. Ejecutar la acción
         handler = CrearReclamoActionHandler(context)

@@ -81,6 +81,24 @@ class OmnichannelServiceTest(unittest.TestCase):
         self.assertEqual(result["ticket_id"], 99)
         self.assertEqual(result["canal"], "messenger")
 
+    def test_source_event_is_recorded_once_per_ticket(self):
+        ticket = SimpleNamespace(datos_extra={})
+        payload = {
+            "source": "signed_adapter:telegram",
+            "provider_connection_id": 12,
+            "source_event_id": "evt-1",
+        }
+
+        with patch.object(omni, "flag_modified") as flag:
+            self.assertTrue(omni._record_ticket_event(ticket, payload))
+            self.assertFalse(omni._record_ticket_event(ticket, payload))
+
+        refs = ticket.datos_extra["omnichannel_source_events"]
+        self.assertEqual(len(refs), 1)
+        self.assertTrue(refs[0].startswith("omni-event-ref-v1:12:"))
+        self.assertNotIn("evt-1", refs[0])
+        flag.assert_called_once_with(ticket, "datos_extra")
+
 
 if __name__ == "__main__":
     unittest.main()

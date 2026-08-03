@@ -247,7 +247,9 @@ def test_same_rubro_pyme_admin_cannot_read_or_reply_to_other_tenant_ticket(clien
         headers=headers,
         query_string=query_string,
     )
-    assert detail_response.status_code == 403
+    # Ticket detail lookups deliberately collapse cross-tenant denial into the
+    # same 404 used for an unknown ID, so callers cannot probe record existence.
+    assert detail_response.status_code == 404
 
     reply_response = client.post(
         f"/tickets/pyme/{ticket_b.id}/responder",

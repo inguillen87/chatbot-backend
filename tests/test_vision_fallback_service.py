@@ -11,12 +11,22 @@ from services import vision_fallback_service as vision_service
 
 class TestVisionFallbackService(unittest.TestCase):
     def setUp(self):
+        self.network_patcher = patch.dict(
+            os.environ,
+            {
+                "OPENAI_ALLOW_NETWORK_IN_TESTS": "1",
+                "COHERE_ALLOW_NETWORK_IN_TESTS": "1",
+            },
+            clear=False,
+        )
+        self.network_patcher.start()
         vision_service._OPENAI_CLIENT = None
         vision_service._OPENAI_CLIENT_KEY_DIGEST = None
 
     def tearDown(self):
         vision_service._OPENAI_CLIENT = None
         vision_service._OPENAI_CLIENT_KEY_DIGEST = None
+        self.network_patcher.stop()
 
     def test_responses_api_uses_documented_image_and_structured_output_shape(self):
         response = SimpleNamespace(
@@ -87,6 +97,23 @@ class TestVisionFallbackService(unittest.TestCase):
             max_retries=0,
             timeout=17.0,
         )
+
+    def test_test_network_policy_blocks_before_openai_constructor(self):
+        with (
+            patch.dict(
+                os.environ,
+                {"TESTING": "1", "OPENAI_API_KEY": "private-test-key"},
+                clear=True,
+            ),
+            patch("services.vision_fallback_service.OpenAI") as constructor,
+            self.assertRaisesRegex(
+                vision_service.OpenAIConfigurationError,
+                "openai_test_network_disabled",
+            ),
+        ):
+            vision_service._get_openai_client()
+
+        constructor.assert_not_called()
 
     def test_json_parse_warning_does_not_log_provider_output(self):
         sensitive = "not-json DNI 32877851 token=secret"

@@ -57,6 +57,7 @@ from services.public_survey_intake import (
     enforce_public_survey_replay_scope,
     public_survey_client_ip,
 )
+from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
 from models import TenantProfile
 from utils.auth_helpers import obtener_token, user_from_token
 
@@ -489,11 +490,12 @@ def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str]
 
 
 def _load_public_encuesta_for_request(slug: str, *, preview_user=None):
-    tenant_id = _resolve_tenant_from_request()
+    tenant_id, require_tenant_match = _resolve_public_survey_tenant_scope()
     return get_public_encuesta(
         slug,
         allow_inactive_for_user=preview_user,
         preferred_tenant_id=tenant_id,
+        require_tenant_match=require_tenant_match,
     )
 
 
@@ -728,6 +730,50 @@ def _resolve_tenant_from_request(*, explicit_only: bool = False) -> Optional[int
     return None
 
 
+def _has_explicit_tenant_selector() -> bool:
+    return any(
+        query_name in request.args
+        for query_name in (
+            "tenant_id",
+            "tenant",
+            "municipio_id",
+            "owner_id",
+            "owner",
+            "tenant_slug",
+        )
+    ) or any(
+        header_name in request.headers
+        for header_name in (
+            "X-Tenant-Id",
+            "X-Tenant",
+            "X-Municipio-Id",
+            "X-Owner-Id",
+            "X-Tenant-Slug",
+        )
+    )
+
+
+def _resolve_public_survey_tenant_scope() -> tuple[Optional[int], bool]:
+    """Resolve whether the caller explicitly constrained the public tenant."""
+
+    has_explicit_selector = _has_explicit_tenant_selector()
+    if has_explicit_selector:
+        explicit_tenant_id = _resolve_tenant_from_request(explicit_only=True)
+        if explicit_tenant_id is None or explicit_tenant_id <= 0:
+            raise EncuestaError(
+                "Encuesta no encontrada",
+                status_code=404,
+                payload={
+                    "contract_version": "public.survey_resolution.v1",
+                    "reason_code": "survey_not_found",
+                    "retryable": False,
+                    "action_hint": "check_survey_link",
+                },
+            )
+        return explicit_tenant_id, True
+    return _resolve_tenant_from_request(), False
+
+
 def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     bp = Blueprint(name, __name__, url_prefix=url_prefix)
 
@@ -770,6 +816,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     "X-Tenant",
                     "Idempotency-Key",
                     "X-Turnstile-Token",
+                    "X-Survey-Eligibility-Credential",
                 ],
             )
 
@@ -913,8 +960,11 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
     def _handle_responder(slug: str):
         ip = _extract_ip()
-        tenant_id = _resolve_tenant_from_request()
-        explicit_tenant_id = _resolve_tenant_from_request(explicit_only=True)
+        try:
+            tenant_id, require_tenant_match = _resolve_public_survey_tenant_scope()
+        except EncuestaError as err:
+            return _public_error_response(err)
+        explicit_tenant_id = tenant_id if require_tenant_match else None
         payload = _extract_request_payload()
         request_id = _resolve_request_id()
         try:
@@ -949,6 +999,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     request_ctx,
                     submission_id=submission_id,
                     preferred_tenant_id=tenant_id,
+                    require_tenant_match=require_tenant_match,
                     authenticated_user=authenticated_user,
                 )
             except EncuestaError as err:
@@ -1012,26 +1063,15 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 payload,
                 request_ctx,
                 preferred_tenant_id=tenant_id,
+                require_tenant_match=require_tenant_match,
                 authenticated_user=authenticated_user,
                 submission_id=submission_id,
+                eligibility_credential=request.headers.get(
+                    SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
+                ),
+                eligibility_transport="http",
             )
         except EncuestaError as err:
-            reason_code = str((err.payload or {}).get("reason_code") or "").strip()
-            if err.status_code == 409 and reason_code == "survey_response_duplicate":
-                return (
-                    jsonify(
-                        {
-                            "contract_version": ENCUESTAS_PUBLIC_RESPONSE_CONTRACT_VERSION,
-                            "ok": True,
-                            "duplicate": True,
-                            "reason_code": reason_code,
-                            "retryable": False,
-                            "message": "Ya registramos tu participación",
-                            "suggested_admin_endpoint_template": "/admin/encuestas/{encuesta_id}/seed-demo/bulk",
-                        }
-                    ),
-                    200,
-                )
             return _public_error_response(err)
         response, status_code = _response_ack(respuesta, request_id=request_id)
         attach_public_survey_rate_limit_headers(
@@ -1093,10 +1133,11 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         }
 
         try:
-            tenant_id = _resolve_tenant_from_request()
+            tenant_id, require_tenant_match = _resolve_public_survey_tenant_scope()
             results = calculate_live_results(
                 slug,
                 preferred_tenant_id=tenant_id,
+                require_tenant_match=require_tenant_match,
                 include_heatmap=include_heatmap,
                 max_points=max(100, min(max_points, 5000)),
                 max_cells=max(50, min(max_cells, 1000)),

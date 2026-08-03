@@ -15,6 +15,7 @@ from openai import OpenAI
 from collections import OrderedDict
 
 from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
+from services.llm_provider_network_policy import llm_provider_network_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,10 @@ def _get_openai_client() -> OpenAI | None:
     """Return the shared OpenAI client, creating it only on first real use."""
 
     global http_client, openai_client
+
+    if not llm_provider_network_allowed("openai"):
+        logger.info("OpenAI STT unavailable reason=test_network_disabled")
+        return None
 
     # This fast path also preserves the existing test seam where callers patch
     # ``openai_client`` with a mock.

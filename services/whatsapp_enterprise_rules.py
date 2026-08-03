@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from models import (
     MessagingEventLedger,
     Notification,
+    NotificationAttempt,
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
     WhatsAppFlowInteraction,
@@ -207,11 +208,41 @@ class WhatsAppEnterpriseRulesService:
             .all()
         )
         reservation_keys = {row[0] for row in reservations if row[0]}
-        notification_count = (
-            session.query(Notification.id)
-            .filter_by(tenant_id=self.tenant_id, channel="whatsapp")
+        recent_notification_attempts = (
+            session.query(Notification.id, NotificationAttempt.id)
+            .outerjoin(
+                NotificationAttempt,
+                (NotificationAttempt.notification_id == Notification.id)
+                & (NotificationAttempt.tenant_id == Notification.tenant_id)
+                & (
+                    NotificationAttempt.status.in_(
+                        [
+                            NotificationAttempt.STATUS_SUCCESS,
+                            NotificationAttempt.STATUS_SEND_UNCERTAIN,
+                        ]
+                    )
+                ),
+            )
+            .filter(
+                Notification.tenant_id == self.tenant_id,
+                Notification.channel == "whatsapp",
+            )
             .filter(Notification.created_at >= since)
-            .count()
+            .filter(
+                Notification.status.in_(
+                    [Notification.STATUS_SENT, Notification.STATUS_SEND_UNCERTAIN]
+                )
+            )
+            .all()
+        )
+        notification_ids = {row[0] for row in recent_notification_attempts}
+        notification_ids_with_reservation = {
+            row[0]
+            for row in recent_notification_attempts
+            if row[1] and f"notification:{row[1]}" in reservation_keys
+        }
+        legacy_notification_count = len(
+            notification_ids - notification_ids_with_reservation
         )
         recent_flow_keys = (
             session.query(WhatsAppFlowInteraction.idempotency_key)
@@ -224,7 +255,7 @@ class WhatsAppEnterpriseRulesService:
             for row in recent_flow_keys
             if whatsapp_flow_rate_limit_reservation_key(row[0]) not in reservation_keys
         )
-        return len(reservation_keys) + notification_count + legacy_flow_count
+        return len(reservation_keys) + legacy_notification_count + legacy_flow_count
 
     def get_contact_state(self, *, recipient: str | None) -> WhatsAppContactState | None:
         normalized = self._normalize_recipient(recipient)

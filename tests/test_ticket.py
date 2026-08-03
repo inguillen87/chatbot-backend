@@ -5,7 +5,7 @@ from unittest.mock import patch
 from app import create_app
 from config import TestingConfig
 from extensions import db
-from models import User, MunicipioTicket, TicketComentario
+from models import User, MunicipioTicket, TicketComentario, TenantProfile
 import json
 
 class TicketRoutesTests(unittest.TestCase):
@@ -19,6 +19,44 @@ class TicketRoutesTests(unittest.TestCase):
         with self.app.app_context():
             db.session.remove()
             db.drop_all()
+
+    @staticmethod
+    def _create_municipal_users():
+        admin_user = User(
+            name="Municipalidad de Test",
+            email="admin@test.gov",
+            rol="admin",
+            tipo_chat="municipio",
+        )
+        admin_user.set_password("admin_password")
+        db.session.add(admin_user)
+        db.session.flush()
+
+        tenant = TenantProfile(
+            slug="ticket-route-municipio",
+            nombre="Municipalidad de Test",
+            tipo="municipio",
+            municipio_id=admin_user.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        admin_user.municipio_id = admin_user.id
+        admin_user.tenant_id = tenant.id
+        admin_user.tenant_slug = tenant.slug
+
+        vecino_user = User(
+            name="Juan Perez",
+            email="juan.perez@test.com",
+            telefono="+5491122334455",
+            rol="usuario",
+            direccion="Calle Falsa 123",
+            empresa_id=admin_user.id,
+        )
+        vecino_user.set_password("vecino_password")
+        db.session.add(vecino_user)
+        db.session.commit()
+        return admin_user, vecino_user, tenant
 
     def test_get_chat_mensajes_anon_success(self):
         """
@@ -52,33 +90,13 @@ class TicketRoutesTests(unittest.TestCase):
         """
         with self.app.app_context():
             # 1. Create users: one admin (municipality) and one citizen (vecino)
-            admin_user = User(
-                name="Municipalidad de Test",
-                email="admin@test.gov",
-                rol="admin",
-                tipo_chat="municipio",
-                municipio_id=1
-            )
-            admin_user.set_password("admin_password")
-
-            vecino_user = User(
-                name="Juan Perez",
-                email="juan.perez@test.com",
-                telefono="+5491122334455",
-                rol="usuario",
-                direccion="Calle Falsa 123",
-                empresa_id=admin_user.id
-            )
-            vecino_user.set_password("vecino_password")
-
-            db.session.add(admin_user)
-            db.session.add(vecino_user)
-            db.session.commit()
+            admin_user, vecino_user, tenant = self._create_municipal_users()
 
             # 2. Create a ticket associated with the users
             ticket = MunicipioTicket(
                 pregunta="Luz quemada",
                 municipio_id=admin_user.municipio_id,
+                tenant_id=tenant.id,
                 user_id=vecino_user.id,
                 nombre_vecino=vecino_user.name,
                 direccion=vecino_user.direccion
@@ -121,33 +139,15 @@ class TicketRoutesTests(unittest.TestCase):
         """Si el ticket contiene datos de contacto distintos a los del perfil,
         debe mostrarse la información propia del ticket."""
         with self.app.app_context():
-            admin_user = User(
-                name="Municipalidad de Test",
-                email="admin@test.gov",
-                rol="admin",
-                tipo_chat="municipio",
-                municipio_id=1
-            )
-            admin_user.set_password("admin_password")
-
-            vecino_user = User(
-                name="Juan Perez",
-                email="juan.perez@test.com",
-                telefono="+5490000000000",
-                rol="usuario",
-                direccion="Calle Falsa 123",
-                empresa_id=admin_user.id
-            )
-            vecino_user.set_password("vecino_password")
-
-            db.session.add(admin_user)
-            db.session.add(vecino_user)
+            admin_user, vecino_user, tenant = self._create_municipal_users()
+            vecino_user.telefono = "+5490000000000"
             db.session.commit()
 
             # El ticket contiene otros datos de contacto
             ticket = MunicipioTicket(
                 pregunta="Luz quemada",
                 municipio_id=admin_user.municipio_id,
+                tenant_id=tenant.id,
                 user_id=vecino_user.id,
                 nombre_vecino="Pedro P",
                 telefono_vecino="+5491122334455",

@@ -164,6 +164,23 @@ class SurveyGovernanceV2Test(unittest.TestCase):
         self.assertIn(response.status_code, {200, 201}, response.get_json())
         return response
 
+    def _create_restricted_release(
+        self,
+        survey_id: int,
+        *,
+        key: str = "release:restricted:create:0001",
+        mode: str = "manual_review",
+    ):
+        payload = self._release_payload()
+        payload["eligibility_policy"]["mode"] = mode
+        response = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases",
+            json=payload,
+            headers=self._headers(self.owner_1, self.tenant_1, key=key),
+        )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        return response
+
     def _publish_release(self, survey_id: int, release_id: int, snapshot_hash: str):
         response = self.client.post(
             f"/api/v2/surveys/{survey_id}/releases/{release_id}/publish",
@@ -382,6 +399,10 @@ class SurveyGovernanceV2Test(unittest.TestCase):
         )
         self.assertEqual(initial.status_code, 200, initial.get_json())
         initial_payload = initial.get_json()
+        self.assertEqual(
+            initial_payload["tenant"],
+            {"id": self.tenant_1.id, "slug": self.tenant_1.slug},
+        )
         self.assertEqual(
             initial_payload["capabilities"],
             {
@@ -636,6 +657,419 @@ class SurveyGovernanceV2Test(unittest.TestCase):
             governed_response_context(survey, {"governance": {}})
         self.assertEqual(
             blocked.exception.reason_code, "survey_consent_public_text_required"
+        )
+
+    def test_restricted_eligibility_is_gated_issued_and_redeemed_atomically(self):
+        from models_survey_eligibility import (
+            SurveyEligibilityGrant,
+            SurveyEligibilityTerminal,
+        )
+
+        survey_id = self._create_survey()
+        created = self._create_restricted_release(survey_id)
+        release_id = created.get_json()["release_id"]
+        snapshot_sha256 = created.get_json()["snapshot_sha256"]
+
+        blocked_publish = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/publish",
+            json={"expected_snapshot_sha256": snapshot_sha256},
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key="release:restricted:publish:disabled",
+            ),
+        )
+        self.assertEqual(blocked_publish.status_code, 503, blocked_publish.get_json())
+        self.assertEqual(
+            blocked_publish.get_json()["reason_code"],
+            "survey_eligibility_gate_unavailable",
+        )
+        self.assertEqual(db.session.get(EncEncuesta, survey_id).estado, "borrador")
+
+        self.app.config.update(
+            ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1=True,
+            SURVEY_ELIGIBILITY_GRANT_TENANT_IDS=str(self.tenant_1.id),
+            SURVEY_ELIGIBILITY_SECRET_V1="eligibility-test-secret-32-bytes-minimum-value",
+        )
+        published = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/publish",
+            json={"expected_snapshot_sha256": snapshot_sha256},
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key="release:restricted:publish:enabled",
+            ),
+        )
+        self.assertEqual(published.status_code, 200, published.get_json())
+
+        subject_ref = "subj_" + ("A" * 43)
+        review_reference = "review:case-eligibility-0001"
+        issue_headers = self._headers(
+            self.owner_1,
+            self.tenant_1,
+            key="eligibility:issue:0001",
+        )
+        issued = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-grants",
+            json={
+                "subject_ref": subject_ref,
+                "review_reference": review_reference,
+            },
+            headers=issue_headers,
+        )
+        self.assertEqual(issued.status_code, 201, issued.get_json())
+        self.assertIn("no-store", issued.headers.get("Cache-Control", ""))
+        issued_payload = issued.get_json()
+        credential = issued_payload["credential"]
+        grant_ref = issued_payload["grant_ref"]
+        self.assertEqual(issued_payload["tenant_id"], self.tenant_1.id)
+        self.assertEqual(issued_payload["survey_id"], survey_id)
+        self.assertEqual(issued_payload["release_id"], release_id)
+        self.assertTrue(credential.startswith("sec1_"))
+        self.assertEqual(
+            issued_payload["assurance"]["assurance_level"],
+            "human_reviewed_opaque_grant",
+        )
+        serialized_issue = json.dumps(issued_payload, sort_keys=True)
+        self.assertNotIn(subject_ref, serialized_issue)
+        self.assertNotIn(review_reference, serialized_issue)
+
+        replayed_issue = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-grants",
+            json={
+                "subject_ref": subject_ref,
+                "review_reference": review_reference,
+            },
+            headers=issue_headers,
+        )
+        self.assertEqual(replayed_issue.status_code, 200, replayed_issue.get_json())
+        self.assertEqual(replayed_issue.get_json()["credential"], credential)
+        self.assertTrue(replayed_issue.get_json()["idempotency"]["replayed"])
+        self.assertEqual(replayed_issue.get_json()["tenant_id"], self.tenant_1.id)
+        self.assertEqual(replayed_issue.get_json()["survey_id"], survey_id)
+        self.assertEqual(replayed_issue.get_json()["release_id"], release_id)
+
+        cross_tenant_issue = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-grants",
+            json={
+                "subject_ref": "subj_" + ("X" * 43),
+                "review_reference": "review:cross-tenant-0001",
+            },
+            headers=self._headers(
+                self.owner_2,
+                self.tenant_2,
+                key="eligibility:issue:cross-tenant-0001",
+            ),
+        )
+        self.assertEqual(
+            cross_tenant_issue.status_code, 404, cross_tenant_issue.get_json()
+        )
+        self.assertEqual(
+            cross_tenant_issue.get_json()["reason_code"],
+            "survey_governance_release_not_found",
+        )
+        self.assertNotIn("credential", cross_tenant_issue.get_json())
+
+        link = EncLink.query.filter_by(encuesta_id=survey_id).one()
+        public = self.client.get(f"/api/v2/public/surveys/{link.slug_publico}")
+        self.assertEqual(public.status_code, 200, public.get_json())
+        public_payload = public.get_json()
+        eligibility = public_payload["governance"]["eligibility"]
+        self.assertTrue(eligibility["credential_required"])
+        self.assertTrue(eligibility["intake_available"])
+        self.assertEqual(eligibility["gate_status"], "ready")
+        self.assertEqual(
+            eligibility["transport"]["header_name"],
+            "X-Survey-Eligibility-Credential",
+        )
+        self.assertEqual(
+            public_payload["frontend_contract"]["eligibility"], eligibility
+        )
+
+        question = public_payload["preguntas"][0]
+        answer = {
+            "submission_id": "restricted:response:0001",
+            "instrument_revision": public_payload["instrument_revision"],
+            "anon_id": "restricted-anon-0001",
+            "respuestas": [
+                {
+                    "pregunta_id": question["id"],
+                    "opcion_id": question["opciones"][0]["id"],
+                }
+            ],
+            "governance": {
+                "release_id": release_id,
+                "snapshot_sha256": snapshot_sha256,
+                "eligibility_policy_version": "eligibility-2026.1",
+                "consent_policy_version": "consent-2026.1",
+                "eligibility_acknowledged": True,
+                "consent_accepted": True,
+            },
+        }
+        submission_headers = {
+            "Idempotency-Key": answer["submission_id"],
+            "X-Anon-Id": answer["anon_id"],
+        }
+        missing = self.client.post(
+            f"/api/v2/public/surveys/{link.slug_publico}/respond",
+            json=answer,
+            headers=submission_headers,
+        )
+        self.assertEqual(missing.status_code, 428, missing.get_json())
+        self.assertEqual(
+            missing.get_json()["reason_code"],
+            "survey_eligibility_credential_required",
+        )
+        self.assertEqual(EncRespuesta.query.count(), 0)
+        self.assertEqual(SurveyEligibilityTerminal.query.count(), 0)
+
+        smuggled = dict(answer)
+        smuggled["eligibility_credential"] = credential
+        smuggled["submission_id"] = "restricted:response:smuggled"
+        smuggled_response = self.client.post(
+            f"/api/v2/public/surveys/{link.slug_publico}/respond",
+            json=smuggled,
+            headers={"Idempotency-Key": smuggled["submission_id"]},
+        )
+        self.assertEqual(smuggled_response.status_code, 400, smuggled_response.get_json())
+        self.assertEqual(
+            smuggled_response.get_json()["reason_code"],
+            "survey_eligibility_credential_transport_invalid",
+        )
+        self.assertNotIn(credential, json.dumps(smuggled_response.get_json()))
+
+        accepted = self.client.post(
+            f"/api/v2/public/surveys/{link.slug_publico}/respond",
+            json=answer,
+            headers={
+                **submission_headers,
+                "X-Survey-Eligibility-Credential": credential,
+            },
+        )
+        self.assertEqual(accepted.status_code, 201, accepted.get_json())
+        accepted_payload = accepted.get_json()
+        accepted_eligibility = accepted_payload["governance"]["eligibility"]
+        self.assertEqual(
+            accepted_eligibility["decision"],
+            "verified_by_opaque_grant",
+        )
+        redemption = accepted_eligibility["redemption"]
+        self.assertEqual(redemption["state"], "committed")
+        self.assertTrue(redemption["persisted"])
+        self.assertEqual(redemption["response_id"], accepted_payload["response_id"])
+        serialized_ack = json.dumps(accepted_payload, sort_keys=True)
+        self.assertNotIn(credential, serialized_ack)
+        self.assertNotIn(grant_ref, serialized_ack)
+        self.assertNotIn(subject_ref, serialized_ack)
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyEligibilityTerminal.query.count(), 1)
+
+        grant = SurveyEligibilityGrant.query.one()
+        self.assertNotEqual(grant.credential_digest, credential)
+        self.assertFalse(
+            any(
+                value == credential
+                for value in grant.__dict__.values()
+                if isinstance(value, str)
+            )
+        )
+
+        replay = self.client.post(
+            f"/api/v2/public/surveys/{link.slug_publico}/respond",
+            json=answer,
+            headers=submission_headers,
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertTrue(replay.get_json()["replayed"])
+        self.assertEqual(replay.get_json()["response_id"], accepted_payload["response_id"])
+
+        second = dict(answer)
+        second["submission_id"] = "restricted:response:0002"
+        second["anon_id"] = "restricted-anon-0002"
+        consumed = self.client.post(
+            f"/api/v2/public/surveys/{link.slug_publico}/respond",
+            json=second,
+            headers={
+                "Idempotency-Key": second["submission_id"],
+                "X-Anon-Id": second["anon_id"],
+                "X-Survey-Eligibility-Credential": credential,
+            },
+        )
+        self.assertEqual(consumed.status_code, 409, consumed.get_json())
+        self.assertEqual(
+            consumed.get_json()["reason_code"],
+            "survey_eligibility_credential_consumed",
+        )
+        self.assertEqual(EncRespuesta.query.count(), 1)
+        self.assertEqual(SurveyEligibilityTerminal.query.count(), 1)
+
+        second_issue = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-grants",
+            json={
+                "subject_ref": "subj_" + ("B" * 43),
+                "review_reference": "review:case-eligibility-0002",
+            },
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key="eligibility:issue:0002",
+            ),
+        )
+        self.assertEqual(second_issue.status_code, 201, second_issue.get_json())
+        second_credential = second_issue.get_json()["credential"]
+        second_grant_ref = second_issue.get_json()["grant_ref"]
+        revoke_headers = self._headers(
+            self.owner_1,
+            self.tenant_1,
+            key="eligibility:revoke:0002",
+        )
+        revoked = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-grants/{second_grant_ref}/revoke",
+            json={"reason_code": "administrative_revocation"},
+            headers=revoke_headers,
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.get_json())
+        self.assertIn("no-store", revoked.headers.get("Cache-Control", ""))
+        self.assertEqual(revoked.get_json()["state"], "revoked")
+        self.assertEqual(revoked.get_json()["tenant_id"], self.tenant_1.id)
+        self.assertEqual(revoked.get_json()["survey_id"], survey_id)
+        self.assertEqual(revoked.get_json()["release_id"], release_id)
+        revoked_replay = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-grants/{second_grant_ref}/revoke",
+            json={"reason_code": "administrative_revocation"},
+            headers=revoke_headers,
+        )
+        self.assertEqual(revoked_replay.status_code, 200, revoked_replay.get_json())
+        self.assertTrue(revoked_replay.get_json()["idempotency"]["replayed"])
+        self.assertEqual(revoked_replay.get_json()["tenant_id"], self.tenant_1.id)
+        self.assertEqual(revoked_replay.get_json()["survey_id"], survey_id)
+        self.assertEqual(revoked_replay.get_json()["release_id"], release_id)
+
+        cross_tenant_revoke = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-grants/{second_grant_ref}/revoke",
+            json={"reason_code": "administrative_revocation"},
+            headers=self._headers(
+                self.owner_2,
+                self.tenant_2,
+                key="eligibility:revoke:cross-tenant-0001",
+            ),
+        )
+        self.assertEqual(
+            cross_tenant_revoke.status_code, 404, cross_tenant_revoke.get_json()
+        )
+        self.assertEqual(
+            cross_tenant_revoke.get_json()["reason_code"],
+            "survey_governance_release_not_found",
+        )
+
+        revoked_answer = dict(answer)
+        revoked_answer["submission_id"] = "restricted:response:revoked"
+        revoked_answer["anon_id"] = "restricted-anon-revoked"
+        rejected_revoked = self.client.post(
+            f"/api/v2/public/surveys/{link.slug_publico}/respond",
+            json=revoked_answer,
+            headers={
+                "Idempotency-Key": revoked_answer["submission_id"],
+                "X-Anon-Id": revoked_answer["anon_id"],
+                "X-Survey-Eligibility-Credential": second_credential,
+            },
+        )
+        self.assertEqual(rejected_revoked.status_code, 403, rejected_revoked.get_json())
+        self.assertEqual(
+            rejected_revoked.get_json()["reason_code"],
+            "survey_eligibility_grant_revoked",
+        )
+        self.assertEqual(EncRespuesta.query.count(), 1)
+
+        summary = self.client.get(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-summary",
+            headers=self._headers(self.owner_1, self.tenant_1),
+        )
+        self.assertEqual(summary.status_code, 200, summary.get_json())
+        self.assertEqual(summary.get_json()["counts"]["issued"], 2)
+        self.assertEqual(summary.get_json()["counts"]["redeemed"], 1)
+        self.assertEqual(summary.get_json()["counts"]["revoked"], 1)
+        self.assertIsNone(summary.get_json()["eligible_population"])
+        self.assertIsNone(summary.get_json()["participation_rate"])
+        self.assertIsNone(summary.get_json()["abstentions"])
+
+        employee = User(
+            name="Eligibility operator",
+            email="eligibility-operator@chatboc.test",
+            rol="empleado",
+            es_empleado=True,
+            tenant_id=self.tenant_1.id,
+            tenant_slug=self.tenant_1.slug,
+            accesibilidad={"employee_scope": {"capabilities": []}},
+        )
+        employee.set_password("secret123")
+        db.session.add(employee)
+        db.session.commit()
+        denied = self.client.get(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-summary",
+            headers=self._headers(employee, self.tenant_1),
+        )
+        self.assertEqual(denied.status_code, 403, denied.get_json())
+        self.assertEqual(
+            denied.get_json()["reason_code"],
+            "survey_eligibility_manage_capability_required",
+        )
+        employee.accesibilidad = {
+            "employee_scope": {
+                "capabilities": ["survey.eligibility.manage"],
+            }
+        }
+        db.session.add(employee)
+        db.session.commit()
+        permitted = self.client.get(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-summary",
+            headers=self._headers(employee, self.tenant_1),
+        )
+        self.assertEqual(permitted.status_code, 200, permitted.get_json())
+
+        cross_tenant = self.client.get(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/eligibility-summary",
+            headers=self._headers(self.owner_2, self.tenant_2),
+        )
+        self.assertEqual(cross_tenant.status_code, 404, cross_tenant.get_json())
+        self.assertEqual(
+            cross_tenant.get_json()["reason_code"],
+            "survey_governance_release_not_found",
+        )
+
+        forged = EncRespuesta(
+            encuesta_id=survey_id,
+            tenant_id=self.tenant_1.id,
+            huella_unica="forged-eligibility-mirror-only",
+            submitted_at=datetime.now(timezone.utc),
+            content_hash="d" * 64,
+            privacy_mode="legacy",
+            governance_release_id=release_id,
+            governance_eligibility_policy_version="eligibility-2026.1",
+            governance_consent_policy_version="consent-2026.1",
+            governance_acknowledged_at=datetime.now(timezone.utc),
+            eligibility_contract_version="surveys.public_eligibility.v1",
+            eligibility_decision="verified_by_opaque_grant",
+            eligibility_verified_at=datetime.now(timezone.utc),
+        )
+        db.session.add(forged)
+        db.session.commit()
+        self.assertIsNone(
+            SurveyEligibilityTerminal.query.filter_by(response_id=forged.id).first()
+        )
+        unsafe_close = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/close",
+            json={"human_review_reference": "review:EligibilityLedger0001"},
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key="release:restricted:close:forged-ledger",
+            ),
+        )
+        self.assertEqual(unsafe_close.status_code, 409, unsafe_close.get_json())
+        self.assertEqual(
+            unsafe_close.get_json()["reason_code"],
+            "survey_governance_eligibility_receipt_incomplete",
         )
 
 

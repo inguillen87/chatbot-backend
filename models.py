@@ -2209,6 +2209,14 @@ class ClienteNota(db.Model):
     cliente_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
     # ID del admin/empleado que escribió la nota
     creada_por_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    # Historical authorization scope. It stays nullable only for legacy rows
+    # whose tenant cannot be proven without guessing.
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id"),
+        nullable=True,
+        index=True,
+    )
     nota = db.Column(db.Text, nullable=False)
     fecha_creacion = db.Column(db.DateTime(timezone=True), default=get_local_now)
     fecha_actualizacion = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now)
@@ -2217,6 +2225,7 @@ class ClienteNota(db.Model):
     cliente = db.relationship('User', foreign_keys=[cliente_user_id], backref=db.backref('notas_recibidas', lazy='dynamic'))
     # Relationship to the User object of the creator (admin/employee)
     creador = db.relationship('User', foreign_keys=[creada_por_user_id], backref=db.backref('notas_creadas', lazy='dynamic'))
+    tenant = db.relationship('TenantProfile', foreign_keys=[tenant_id])
 
     def __repr__(self):
         return f"<ClienteNota id={self.id} para_cliente_id={self.cliente_user_id} por_creador_id={self.creada_por_user_id}>"
@@ -2662,12 +2671,21 @@ class LlmInteractionLog(db.Model):
     __tablename__ = "llm_interaction_log"
     id = db.Column(db.Integer, primary_key=True)
     chat_session_id = db.Column(db.String(36), db.ForeignKey('chat_session_context.chat_session_id'), nullable=False, index=True)
+    # Immutable tenant snapshot for review queues. Legacy rows that cannot be
+    # backfilled remain quarantined from tenant operators.
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id"),
+        nullable=True,
+        index=True,
+    )
     user_query = db.Column(db.Text, nullable=False)
     llm_response_raw = db.Column(JSONType, nullable=True)
     status = db.Column(db.String(50), default='pending_review', nullable=False, index=True) # pending_review, converted_to_faq, rejected
     created_at = db.Column(db.DateTime(timezone=True), default=get_local_now)
 
     chat_session = db.relationship('ChatSessionContext', backref=db.backref('llm_interaction_logs', lazy='dynamic'))
+    tenant = db.relationship('TenantProfile', foreign_keys=[tenant_id])
 
     def __repr__(self):
         return f"<LlmInteractionLog id={self.id} session_id={self.chat_session_id} status='{self.status}'>"
@@ -3068,6 +3086,18 @@ class EncRespuesta(db.Model, TimestampMixin):
             "AND governance_acknowledged_at IS NOT NULL)",
             name="ck_enc_respuesta_governance_ack",
         ),
+        db.CheckConstraint(
+            "(eligibility_decision IS NULL "
+            "AND eligibility_contract_version IS NULL "
+            "AND eligibility_verified_at IS NULL) OR "
+            "(eligibility_decision IS NOT NULL "
+            "AND eligibility_decision = 'verified_by_opaque_grant' "
+            "AND eligibility_contract_version IS NOT NULL "
+            "AND eligibility_contract_version = 'surveys.public_eligibility.v1' "
+            "AND eligibility_verified_at IS NOT NULL "
+            "AND governance_release_id IS NOT NULL)",
+            name="ck_enc_respuesta_opaque_eligibility",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "governance_release_id"],
             [
@@ -3124,6 +3154,9 @@ class EncRespuesta(db.Model, TimestampMixin):
     governance_eligibility_policy_version = db.Column(db.String(64), nullable=True)
     governance_consent_policy_version = db.Column(db.String(64), nullable=True)
     governance_acknowledged_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    eligibility_contract_version = db.Column(db.String(48), nullable=True)
+    eligibility_decision = db.Column(db.String(48), nullable=True)
+    eligibility_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     encuesta = db.relationship("EncEncuesta", back_populates="respuestas")
     detalles = db.relationship(
@@ -4368,6 +4401,17 @@ class NotificationTemplate(db.Model, TimestampMixin):
     quiet_hours_start = db.Column(db.Integer, nullable=True)  # 0..23
     quiet_hours_end = db.Column(db.Integer, nullable=True)  # 0..23
     metadata_json = db.Column(JSONType, nullable=True)
+    message_template_registry_id = db.Column(
+        db.Integer,
+        db.ForeignKey("message_template_registry.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    message_template_registry = db.relationship(
+        "MessageTemplateRegistry",
+        foreign_keys=[message_template_registry_id],
+    )
 
     __table_args__ = (
         db.UniqueConstraint("tenant_id", "key", "channel", name="uq_notification_template_tenant_key_channel"),
@@ -4377,6 +4421,45 @@ class NotificationTemplate(db.Model, TimestampMixin):
 class Notification(db.Model, TimestampMixin):
     __tablename__ = "notification"
 
+    STATUS_QUEUED = "queued"
+    STATUS_DELAYED = "delayed"
+    STATUS_SENDING = "sending"
+    STATUS_RETRY_WAIT = "retry_wait"
+    STATUS_SENT = "sent"
+    STATUS_SEND_UNCERTAIN = "send_uncertain"
+    STATUS_FAILED = "failed"
+    STATUS_BLOCKED = "blocked"
+    VALID_STATUSES = frozenset(
+        {
+            STATUS_QUEUED,
+            STATUS_DELAYED,
+            STATUS_SENDING,
+            STATUS_RETRY_WAIT,
+            STATUS_SENT,
+            STATUS_SEND_UNCERTAIN,
+            STATUS_FAILED,
+            STATUS_BLOCKED,
+        }
+    )
+
+    PROVIDER_STATUS_UNKNOWN = "unknown"
+    VALID_PROVIDER_STATUSES = frozenset(
+        {
+            PROVIDER_STATUS_UNKNOWN,
+            "accepted",
+            "scheduled",
+            "queued",
+            "sending",
+            "sent",
+            "delivered",
+            "read",
+            "failed",
+            "undelivered",
+            "canceled",
+            "cancelled",
+        }
+    )
+
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
@@ -4385,7 +4468,7 @@ class Notification(db.Model, TimestampMixin):
     recipient = db.Column(db.String(255), nullable=False, index=True)
     subject = db.Column(db.String(255), nullable=True)
     body = db.Column(db.Text, nullable=False)
-    status = db.Column(db.String(20), nullable=False, default="queued", index=True)  # queued|sending|sent|failed|delayed
+    status = db.Column(db.String(20), nullable=False, default="queued", index=True)  # queued|sending|sent|failed|delayed|blocked
     idempotency_key = db.Column(db.String(128), nullable=False)
     max_retries = db.Column(db.Integer, nullable=False, default=3)
     attempt_count = db.Column(db.Integer, nullable=False, default=0)
@@ -4393,26 +4476,169 @@ class Notification(db.Model, TimestampMixin):
     sent_at = db.Column(db.DateTime(timezone=True), nullable=True)
     last_error = db.Column(db.Text, nullable=True)
     metadata_json = db.Column(JSONType, nullable=True)
+    message_template_registry_id = db.Column(
+        db.Integer,
+        db.ForeignKey("message_template_registry.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    provider_connection_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_connection.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    sender_binding = db.Column(db.String(64), nullable=True)
+    content_sid = db.Column(db.String(120), nullable=True, index=True)
+    content_variables = db.Column(JSONType, nullable=True)
+    payload_digest = db.Column(db.String(64), nullable=True)
+    provider_message_id = db.Column(db.String(180), nullable=True, index=True)
+    provider_status = db.Column(
+        db.String(32),
+        nullable=False,
+        default=PROVIDER_STATUS_UNKNOWN,
+        server_default=PROVIDER_STATUS_UNKNOWN,
+    )
+    lease_token = db.Column(db.String(64), nullable=True)
+    leased_until = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
+
+    message_template_registry = db.relationship(
+        "MessageTemplateRegistry",
+        foreign_keys=[message_template_registry_id],
+    )
+    provider_connection = db.relationship(
+        "ProviderConnection",
+        foreign_keys=[provider_connection_id],
+    )
+    provider_sender = db.relationship(
+        "ProviderSender",
+        foreign_keys=[provider_sender_id],
+    )
 
     __table_args__ = (
         db.UniqueConstraint("tenant_id", "idempotency_key", name="uq_notification_tenant_idempotency"),
+        db.UniqueConstraint(
+            "tenant_id",
+            "provider_sender_id",
+            "provider_message_id",
+            name="uq_notification_tenant_sender_provider_message",
+        ),
+        db.CheckConstraint(
+            "status IN ('queued', 'delayed', 'sending', 'retry_wait', 'sent', "
+            "'send_uncertain', 'failed', 'blocked')",
+            name="ck_notification_status",
+        ),
+        db.CheckConstraint(
+            "provider_status IN ('unknown', 'accepted', 'scheduled', 'queued', "
+            "'sending', 'sent', 'delivered', 'read', 'failed', 'undelivered', "
+            "'canceled', 'cancelled')",
+            name="ck_notification_provider_status",
+        ),
+        db.CheckConstraint(
+            "sender_binding IS NULL OR length(sender_binding) = 64",
+            name="ck_notification_sender_binding_length",
+        ),
+        db.CheckConstraint(
+            "payload_digest IS NULL OR length(payload_digest) = 64",
+            name="ck_notification_payload_digest_length",
+        ),
+        db.CheckConstraint(
+            "((status = 'sending' AND lease_token IS NOT NULL AND leased_until IS NOT NULL) "
+            "OR (status <> 'sending' AND lease_token IS NULL AND leased_until IS NULL))",
+            name="ck_notification_lease_state",
+        ),
+        db.Index(
+            "ix_notification_tenant_due",
+            "tenant_id",
+            "status",
+            "next_retry_at",
+            "id",
+        ),
     )
 
 
 class NotificationAttempt(db.Model, TimestampMixin):
     __tablename__ = "notification_attempt"
 
+    STATUS_SUCCESS = "success"
+    STATUS_FAILED = "failed"
+    STATUS_DELAYED = "delayed"
+    STATUS_BLOCKED = "blocked"
+    STATUS_SENDING = "sending"
+    STATUS_SEND_UNCERTAIN = "send_uncertain"
+    VALID_STATUSES = frozenset(
+        {
+            STATUS_SUCCESS,
+            STATUS_FAILED,
+            STATUS_DELAYED,
+            STATUS_BLOCKED,
+            STATUS_SENDING,
+            STATUS_SEND_UNCERTAIN,
+        }
+    )
+
     id = db.Column(db.String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     notification_id = db.Column(db.String(36), db.ForeignKey("notification.id"), nullable=False, index=True)
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
     attempt_number = db.Column(db.Integer, nullable=False)
-    status = db.Column(db.String(20), nullable=False)  # success | failed | delayed
+    status = db.Column(db.String(20), nullable=False)  # success | failed | delayed | blocked
     provider = db.Column(db.String(40), nullable=True)
-    provider_message_id = db.Column(db.String(120), nullable=True)
+    provider_message_id = db.Column(db.String(180), nullable=True)
+    provider_status = db.Column(
+        db.String(32),
+        nullable=False,
+        default=Notification.PROVIDER_STATUS_UNKNOWN,
+        server_default=Notification.PROVIDER_STATUS_UNKNOWN,
+    )
     error_message = db.Column(db.Text, nullable=True)
+    error_digest = db.Column(db.String(64), nullable=True)
+    delivery_event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("messaging_event_ledger.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     attempted_at = db.Column(db.DateTime(timezone=True), nullable=False, default=get_local_now)
     next_retry_at = db.Column(db.DateTime(timezone=True), nullable=True)
     metadata_json = db.Column(JSONType, nullable=True)
+
+    delivery_event = db.relationship(
+        "MessagingEventLedger",
+        foreign_keys=[delivery_event_id],
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "notification_id",
+            "attempt_number",
+            name="uq_notification_attempt_number",
+        ),
+        db.CheckConstraint(
+            "status IN ('success', 'failed', 'delayed', 'blocked', 'sending', "
+            "'send_uncertain')",
+            name="ck_notification_attempt_status",
+        ),
+        db.CheckConstraint(
+            "provider_status IN ('unknown', 'accepted', 'scheduled', 'queued', "
+            "'sending', 'sent', 'delivered', 'read', 'failed', 'undelivered', "
+            "'canceled', 'cancelled')",
+            name="ck_notification_attempt_provider_status",
+        ),
+        db.CheckConstraint(
+            "attempt_number >= 1",
+            name="ck_notification_attempt_number_positive",
+        ),
+        db.CheckConstraint(
+            "error_digest IS NULL OR length(error_digest) = 64",
+            name="ck_notification_attempt_error_digest_length",
+        ),
+    )
 
 
 class AdminAuditLog(db.Model, TimestampMixin):
@@ -4713,3 +4939,13 @@ from models_education import (
     SchoolCaseAlias,
 )
 from models_survey_governance import SurveyGovernanceRelease
+from models_survey_eligibility import (
+    SurveyEligibilityGrant,
+    SurveyEligibilityTerminal,
+)
+from models_whatsapp_workflows import (
+    WhatsAppWorkflowActivation,
+    WhatsAppWorkflowDraftRevision,
+    WhatsAppWorkflowReview,
+    WhatsAppWorkflowVersion,
+)

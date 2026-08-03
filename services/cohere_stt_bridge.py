@@ -8,7 +8,15 @@ from typing import Any
 
 import httpx
 
+from services.llm_provider_network_policy import llm_provider_network_allowed
+
 logger = logging.getLogger(__name__)
+
+
+def _safe_status_code(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return str(status) if isinstance(status, int) else "unknown"
 
 
 def _build_request(
@@ -36,6 +44,10 @@ def transcribir_audio_cohere(audio_bytes: bytes, mime_type: str) -> str | None:
     Returns ``None`` when the service is not configured or fails so callers can
     fall back to alternative providers.
     """
+
+    if not llm_provider_network_allowed("cohere"):
+        logger.info("Cohere STT unavailable reason=test_network_disabled")
+        return None
 
     api_key = os.getenv("COHERE_API_KEY")
     if not api_key:
@@ -71,11 +83,21 @@ def transcribir_audio_cohere(audio_bytes: bytes, mime_type: str) -> str | None:
         text = payload.get("text") or payload.get("transcript")
         if text:
             return text.strip()
-        logger.warning("Cohere STT response missing text field: %s", payload)
+        logger.warning(
+            "Cohere STT response missing text field response_type=%s",
+            type(payload).__name__,
+        )
         return None
     except httpx.HTTPError as exc:
-        logger.error("Cohere STT HTTP error: %s", exc, exc_info=True)
+        logger.warning(
+            "Cohere STT request failed error_type=%s status_code=%s",
+            type(exc).__name__,
+            _safe_status_code(exc),
+        )
         return None
     except Exception as exc:  # pragma: no cover - defensive logging path
-        logger.error("Unexpected Cohere STT error: %s", exc, exc_info=True)
+        logger.warning(
+            "Cohere STT request failed error_type=%s status_code=unknown",
+            type(exc).__name__,
+        )
         return None

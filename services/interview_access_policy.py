@@ -13,6 +13,7 @@ INTERVIEW_CASES_READ = "interviews.cases.read"
 INTERVIEW_SESSIONS_CREATE = "interviews.sessions.create"
 INTERVIEW_SESSIONS_CONDUCT = "interviews.sessions.conduct"
 INTERVIEW_EVIDENCE_WRITE = "interviews.evidence.write"
+INTERVIEW_ASSIGNMENTS_MANAGE = "interviews.assignments.manage"
 
 
 def _flatten_capability_values(raw: Any) -> set[str]:
@@ -78,4 +79,3 @@ def missing_interview_capabilities(user: Any, tenant: Any, *required: str) -> li
         for capability in normalized_required
         if capability not in granted and "*" not in granted
     ]
-

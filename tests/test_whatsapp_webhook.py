@@ -26,6 +26,7 @@ from models import (
     Rubro,
     WhatsappNumero,
     ChatSessionContext,
+    PedidoConversacional,
     PymeTicket,
     MunicipioTicket,
     TenantTicket,
@@ -76,6 +77,20 @@ import models
 
 
 class WhatsAppWebhookLogPrivacyUnitTestCase(unittest.TestCase):
+    def test_safe_log_value_redacts_embedded_phone_and_neutralizes_log_forging(self):
+        raw_session = "whatsapp_42_5492613168608\r\nFORGED_SESSION=1"
+
+        safe = _safe_log_value(raw_session)
+        session_ref = _safe_provider_reference(raw_session)
+
+        self.assertNotIn("5492613168608", safe)
+        self.assertNotIn("\r", safe)
+        self.assertNotIn("\n", safe)
+        self.assertIn("[redacted-number]", safe)
+        self.assertRegex(session_ref or "", r"^sha256:[0-9a-f]{12}$")
+        self.assertNotIn("5492613168608", session_ref or "")
+        self.assertNotIn("FORGED_SESSION", session_ref or "")
+
     def test_safe_log_value_redacts_provider_secrets_pii_urls_and_coordinates(self):
         raw = (
             "AccountSid=AC11111111111111111111111111111111 "
@@ -226,6 +241,7 @@ class TestConfig(Config):
     CHATBOC_DEMO_MAX_MESSAGES = 10
     TWILIO_ACCOUNT_SID = "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_test" # Mock SID
     TWILIO_AUTH_TOKEN = "your_auth_token_test" # Mock Token
+    TWILIO_ALLOW_NETWORK_IN_TESTS = True
     BACKEND_URL = "https://api.chatboc.ar"
     # TWILIO_NUMEROS_JSON is no longer used
 
@@ -542,6 +558,35 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             "https://api.chatboc.ar/static/welcome/generic.mp3",
         )
 
+    def test_generic_interactive_claim_prompt_does_not_inherit_menu_audio(self):
+        payload = {
+            "message_body": "¿Querés agregar evidencia?",
+            "options_list": [
+                {
+                    "texto": "Enviar evidencia",
+                    "action_id": "reclamo_adjuntar_foto_si",
+                },
+                {
+                    "texto": "Seguir sin adjunto",
+                    "action_id": "reclamo_adjuntar_foto_no",
+                },
+            ],
+            # Final response decoration assigns this to every response. It is
+            # a cache identity, not an accessibility/audio request.
+            "tts_cache_namespace": "junin:whatsapp:confirmation",
+        }
+
+        with patch(
+            "routes.whatsapp_webhook.generar_audio",
+            return_value="https://api.chatboc.ar/static/audio_cache/unwanted.mp3",
+        ) as mock_generar_audio:
+            _ensure_welcome_audio_payload(payload)
+
+        mock_generar_audio.assert_not_called()
+        self.assertTrue(payload.get("skip_audio_generation"))
+        self.assertFalse(payload.get("generar_audio"))
+        self.assertIsNone(payload.get("audio_url"))
+
     def test_whatsapp_flow_contract_adds_safe_claim_status_webview(self):
         payload = {
             "message_body": "Tu reclamo M-123 esta en revision.",
@@ -666,6 +711,169 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         )
         db.session.add(session_context)
         db.session.commit()
+
+    def _assert_rich_onboarding_turn_is_processed(
+        self,
+        *,
+        tenant_type: str,
+        media_content_type: str,
+        body: str,
+        awaiting_user_name: bool,
+        message_sid: str,
+    ) -> None:
+        tenant = self._attach_tenant_to_owner(
+            slug=f"onboarding-{tenant_type}-{message_sid.lower()}",
+            tipo=tenant_type,
+        )
+        if awaiting_user_name:
+            self._create_confirmed_session()
+            session = ChatSessionContext.query.filter_by(
+                chat_session_id=(
+                    f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+                )
+            ).one()
+            session.tenant_id = tenant.id
+            context_data = dict(session.context_data or {})
+            context_data["awaiting_user_name"] = True
+            session.context_data = context_data
+            db.session.add(session)
+            db.session.commit()
+
+        self.mock_validator.validate.return_value = True
+        is_audio = media_content_type.startswith("audio/")
+        transcript = "Necesito informar un problema desde este audio."
+        expected_question = transcript if is_audio else body
+        is_image = media_content_type.startswith("image/")
+        extension = "ogg" if is_audio else "jpg" if is_image else "pdf"
+        attachment = SimpleNamespace(
+            id=980 if is_audio else 981,
+            url=f"https://storage.example.test/onboarding.{extension}",
+            mime=media_content_type,
+            nombre_original=f"onboarding.{extension}",
+            analisis=None,
+        )
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": body,
+            "MessageSid": message_sid,
+            "NumMedia": "1",
+            "MediaUrl0": f"https://media.example.test/onboarding.{extension}",
+            "MediaContentType0": media_content_type,
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with (
+            patch(
+                "routes.whatsapp_webhook._download_twilio_media",
+                return_value=b"bounded-provider-media",
+            ) as download_media,
+            patch(
+                "routes.whatsapp_webhook.create_attachment_with_thumbnail",
+                return_value=attachment,
+            ) as create_attachment,
+            patch(
+                "services.audio_transcription_service.transcribe_audio_bytes",
+                return_value=transcript,
+            ) as transcribe_audio,
+            patch(
+                "routes.whatsapp_webhook.clasificar_adjunto_whatsapp",
+                return_value={"categoria_sugerida": "reclamo"},
+            ),
+            patch(
+                "routes.whatsapp_webhook.extract_multiple_contact_details_llm"
+            ) as extract_name,
+            patch(
+                "routes.whatsapp_webhook.responder_chatboc",
+                return_value={"message_body": "Contenido recibido."},
+            ) as responder,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp", data=payload, headers=headers
+            )
+            duplicate = self.client.post(
+                "/webhook/whatsapp", data=payload, headers=headers
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.decode(), "OK")
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(duplicate.data.decode(), "OK")
+        download_media.assert_called_once()
+        create_attachment.assert_called_once()
+        responder.assert_called_once()
+        extract_name.assert_not_called()
+        responder_kwargs = responder.call_args.kwargs
+        self.assertEqual(responder_kwargs["pregunta"], expected_question)
+        self.assertEqual(
+            responder_kwargs["uploaded_file_info"]["mime_type"],
+            media_content_type,
+        )
+        if is_audio:
+            transcribe_audio.assert_called_once()
+            self.assertEqual(
+                responder_kwargs["uploaded_file_info"]["transcribed_text"],
+                transcript,
+            )
+        elif is_image:
+            transcribe_audio.assert_not_called()
+            self.assertTrue(responder_kwargs.get("es_foto"))
+        else:
+            transcribe_audio.assert_not_called()
+            self.assertFalse(responder_kwargs.get("es_foto", False))
+
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=(
+                f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+            )
+        ).one()
+        self.assertIn(message_sid, session.context_data["processed_message_sids"])
+        if awaiting_user_name:
+            self.assertTrue(session.context_data.get("awaiting_user_name"))
+
+    @patch("routes.whatsapp_webhook.responder_chatboc")
+    def test_emoji_only_reaches_orchestrator_exactly_with_safe_content_contract(
+        self, mock_bot
+    ):
+        self._create_confirmed_session()
+        self.mock_validator.validate.return_value = True
+        mock_bot.return_value = {
+            "message_body": "Recibí tu mensaje. ¿En qué te ayudo?",
+            "options_list": [],
+        }
+        emoji = "👍🏽"
+
+        response = self.client.post(
+            "/webhook/whatsapp",
+            data={
+                "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                "From": f"whatsapp:{self.test_user_number_str}",
+                "Body": emoji,
+                "MessageSid": "SM-EMOJI-CANONICAL-001",
+                "NumMedia": "0",
+            },
+            headers={"X-Twilio-Signature": "dummy_signature_valid"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_bot.assert_called_once()
+        bot_kwargs = mock_bot.call_args.kwargs
+        self.assertEqual(bot_kwargs["pregunta"], emoji)
+        self.assertEqual(
+            bot_kwargs["whatsapp_inbound_content"],
+            {
+                "contract_version": "whatsapp.inbound_content.v1",
+                "kind": "emoji",
+                "durable_message_kind": "text",
+                "is_language_input": True,
+                "has_media": False,
+                "media_mime_type": None,
+                "evidence_policy": "not_applicable",
+                "reason": None,
+            },
+        )
+        self.assertEqual(MunicipioTicket.query.count(), 0)
+        self.assertEqual(PymeTicket.query.count(), 0)
 
     def tearDown(self):
         db.session.remove()
@@ -3238,6 +3446,206 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             .get("personalized_name_provider_accepted_ts")
         )
 
+    def test_first_turn_municipio_image_greeting_is_not_consumed_by_welcome(self):
+        self._assert_rich_onboarding_turn_is_processed(
+            tenant_type="municipio",
+            media_content_type="image/jpeg",
+            body="hola",
+            awaiting_user_name=False,
+            message_sid="SM-ONBOARDING-MUNICIPIO-IMAGE",
+        )
+
+    def test_first_turn_pyme_audio_greeting_is_not_consumed_by_welcome(self):
+        self._assert_rich_onboarding_turn_is_processed(
+            tenant_type="pyme",
+            media_content_type="audio/ogg",
+            body="hola",
+            awaiting_user_name=False,
+            message_sid="SM-ONBOARDING-PYME-AUDIO",
+        )
+
+    def test_municipio_audio_does_not_become_a_pending_name_reply(self):
+        self._assert_rich_onboarding_turn_is_processed(
+            tenant_type="municipio",
+            media_content_type="audio/ogg",
+            body="Audio",
+            awaiting_user_name=True,
+            message_sid="SM-ONBOARDING-MUNICIPIO-AUDIO",
+        )
+
+    def test_pyme_image_caption_does_not_become_a_pending_name_reply(self):
+        self._assert_rich_onboarding_turn_is_processed(
+            tenant_type="pyme",
+            media_content_type="image/jpeg",
+            body="Foto del pedido",
+            awaiting_user_name=True,
+            message_sid="SM-ONBOARDING-PYME-IMAGE",
+        )
+
+    def test_first_turn_pyme_document_greeting_is_not_consumed_by_welcome(self):
+        self._assert_rich_onboarding_turn_is_processed(
+            tenant_type="pyme",
+            media_content_type="application/pdf",
+            body="hola",
+            awaiting_user_name=False,
+            message_sid="SM-ONBOARDING-PYME-DOCUMENT",
+        )
+
+    def test_first_turn_municipio_native_location_is_not_consumed_by_welcome(self):
+        self._attach_tenant_to_owner(
+            slug="onboarding-municipio-native-location",
+            tipo="municipio",
+        )
+        self.mock_validator.validate.return_value = True
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "MessageSid": "SM-ONBOARDING-MUNICIPIO-LOCATION",
+            "Latitude": "-34.603722",
+            "Longitude": "-58.381592",
+            "Address": "Plaza de prueba",
+            "Label": "Ubicación del problema",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with (
+            patch(
+                "routes.whatsapp_webhook.extract_multiple_contact_details_llm"
+            ) as extract_name,
+            patch(
+                "routes.whatsapp_webhook.responder_chatboc",
+                return_value={"message_body": "Ubicación recibida."},
+            ) as responder,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp", data=payload, headers=headers
+            )
+            duplicate = self.client.post(
+                "/webhook/whatsapp", data=payload, headers=headers
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(duplicate.status_code, 200)
+        extract_name.assert_not_called()
+        responder.assert_called_once()
+        kwargs = responder.call_args.kwargs
+        self.assertEqual(kwargs["pregunta"], "hola")
+        self.assertTrue(kwargs.get("es_ubicacion"))
+        self.assertEqual(
+            kwargs["location"],
+            {
+                "latitude": "-34.603722",
+                "longitude": "-58.381592",
+                "address": "Plaza de prueba",
+                "label": "Ubicación del problema",
+            },
+        )
+
+    def test_google_maps_link_does_not_become_a_pending_name_reply(self):
+        tenant = self._attach_tenant_to_owner(
+            slug="onboarding-pyme-maps-location",
+            tipo="pyme",
+        )
+        self._create_confirmed_session()
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=(
+                f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+            )
+        ).one()
+        session.tenant_id = tenant.id
+        context_data = dict(session.context_data or {})
+        context_data["awaiting_user_name"] = True
+        session.context_data = context_data
+        db.session.add(session)
+        db.session.commit()
+        self.mock_validator.validate.return_value = True
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "https://maps.google.com/maps?q=-34.603722,-58.381592",
+            "MessageSid": "SM-ONBOARDING-PYME-MAPS-LINK",
+        }
+
+        with (
+            patch(
+                "routes.whatsapp_webhook.extract_multiple_contact_details_llm"
+            ) as extract_name,
+            patch(
+                "routes.whatsapp_webhook.geocodificar_inversa_llm",
+                return_value={"formatted_address": "Plaza de prueba"},
+            ) as reverse_geocode,
+            patch(
+                "routes.whatsapp_webhook.responder_chatboc",
+                return_value={"message_body": "Ubicación recibida."},
+            ) as responder,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data=payload,
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        extract_name.assert_not_called()
+        reverse_geocode.assert_called_once_with(-34.603722, -58.381592)
+        responder.assert_called_once()
+        kwargs = responder.call_args.kwargs
+        self.assertEqual(kwargs["pregunta"], "")
+        self.assertTrue(kwargs.get("es_ubicacion"))
+        self.assertEqual(kwargs["location"]["address"], "Plaza de prueba")
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=(
+                f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+            )
+        ).one()
+        self.assertTrue(session.context_data.get("awaiting_user_name"))
+
+    def test_multiple_media_batch_is_rejected_without_partial_processing(self):
+        self._attach_tenant_to_owner(
+            slug="multiple-media-fail-closed",
+            tipo="pyme",
+        )
+        self.mock_validator.validate.return_value = True
+        payload = {
+            "To": f"whatsapp:{self.test_whatsapp_number_str}",
+            "From": f"whatsapp:{self.test_user_number_str}",
+            "Body": "hola",
+            "MessageSid": "SM-MULTIPLE-MEDIA-FAIL-CLOSED",
+            "NumMedia": "2",
+            "MediaUrl0": "https://media.example.test/first.jpg",
+            "MediaContentType0": "image/jpeg",
+            "MediaUrl1": "https://media.example.test/second.jpg",
+            "MediaContentType1": "image/jpeg",
+        }
+        headers = {"X-Twilio-Signature": "dummy_signature_valid"}
+
+        with (
+            patch("routes.whatsapp_webhook._download_twilio_media") as download_media,
+            patch(
+                "routes.whatsapp_webhook.create_attachment_with_thumbnail"
+            ) as create_attachment,
+            patch("routes.whatsapp_webhook.responder_chatboc") as responder,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp", data=payload, headers=headers
+            )
+            duplicate = self.client.post(
+                "/webhook/whatsapp", data=payload, headers=headers
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.decode(), "OK")
+        self.assertEqual(duplicate.status_code, 200)
+        download_media.assert_not_called()
+        create_attachment.assert_not_called()
+        responder.assert_not_called()
+        self.mock_twilio_create.assert_called_once()
+        guidance = self.mock_twilio_create.call_args.kwargs["body"].lower()
+        self.assertIn("varios archivos", guidance)
+        self.assertIn("no procesé el lote de forma parcial", guidance)
+        self.assertIn("de a uno", guidance)
+
     def test_whatsapp_webhook_invalid_signature(self):
         # Arrange
         self.mock_validator.validate.return_value = False # Simulate invalid signature
@@ -3417,6 +3825,13 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
             self.assertIn("datos_interpretados_archivo", kwargs)
             self.assertEqual(
                 kwargs["datos_interpretados_archivo"], {"categoria_sugerida": "documentacion"}
+            )
+            self.assertEqual(
+                kwargs["whatsapp_inbound_content"]["kind"], "document"
+            )
+            self.assertEqual(
+                kwargs["whatsapp_inbound_content"]["evidence_policy"],
+                "exact_active_context_only",
             )
 
             self.mock_twilio_create.assert_called_once()
@@ -3658,6 +4073,152 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         mock_bot.assert_called_once()
         _, kwargs = mock_bot.call_args
         self.assertEqual(kwargs["pregunta"], "Pérdida de agua")
+
+    def _assert_active_claim_image_bypasses_assisted_intake(self, caption: str):
+        tenant = self._attach_tenant_to_owner(
+            slug=f"active-claim-media-{bool(caption)}",
+            tipo="pyme",
+        )
+        tenant.configuracion = {"whatsapp_assisted_intake_v1": True}
+        db.session.add(tenant)
+        db.session.commit()
+
+        self._create_confirmed_session()
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ).one()
+        session.tenant_id = tenant.id
+        session.context_data.setdefault(CONTEXTO_MUNICIPIO, {})["reclamo_flow_v2"] = {
+            "state": "ESPERANDO_FOTO",
+            "datos_reclamo": {"categoria": "Arbolado"},
+        }
+        from sqlalchemy.orm.attributes import flag_modified
+
+        flag_modified(session, "context_data")
+        db.session.commit()
+
+        download = MagicMock(content=b"active-claim-image")
+        download.raise_for_status.return_value = None
+        attachment = SimpleNamespace(
+            id=901,
+            url="https://storage.example.test/claim-evidence.jpg",
+            mime="image/jpeg",
+            nombre_original="claim-evidence.jpg",
+            analisis=None,
+        )
+
+        with (
+            patch("routes.whatsapp_webhook.requests.get", return_value=download),
+            patch(
+                "routes.whatsapp_webhook.create_attachment_with_thumbnail",
+                return_value=attachment,
+            ),
+            patch("routes.whatsapp_webhook.create_whatsapp_assisted_intake") as intake,
+            patch("routes.whatsapp_webhook.clasificar_adjunto_whatsapp") as classifier,
+            patch("routes.whatsapp_webhook.responder_chatboc") as responder,
+        ):
+            responder.return_value = {"message_body": "Foto guardada en el reclamo."}
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                    "From": f"whatsapp:{self.test_user_number_str}",
+                    "Body": caption,
+                    "MessageSid": f"SM-active-claim-{bool(caption)}",
+                    "NumMedia": "1",
+                    "MediaUrl0": "https://media.example.test/claim-evidence.jpg",
+                    "MediaContentType0": "image/jpeg",
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data.decode(), "OK")
+        intake.assert_not_called()
+        classifier.assert_not_called()
+        responder.assert_called_once()
+        kwargs = responder.call_args.kwargs
+        self.assertEqual(kwargs["pregunta"], caption)
+        self.assertTrue(kwargs.get("es_foto"))
+        self.assertTrue(kwargs.get("skip_media_analysis"))
+        self.assertEqual(kwargs["uploaded_file_info"]["id"], attachment.id)
+        self.assertEqual(PedidoConversacional.query.count(), 0)
+        self.assertEqual(TenantTicket.query.count(), 0)
+
+    def test_enabled_assisted_intake_does_not_hijack_active_claim_image_with_caption(self):
+        self._assert_active_claim_image_bypasses_assisted_intake(
+            "La rama esta apoyada sobre los cables.",
+        )
+
+    def test_enabled_assisted_intake_does_not_hijack_active_claim_image_without_caption(self):
+        self._assert_active_claim_image_bypasses_assisted_intake("")
+
+    def test_enabled_assisted_intake_keeps_eligible_pyme_image_path(self):
+        tenant = self._attach_tenant_to_owner(
+            slug="eligible-pyme-media",
+            tipo="pyme",
+        )
+        tenant.configuracion = {"whatsapp_assisted_intake_v1": True}
+        db.session.add(tenant)
+        db.session.commit()
+        self._create_confirmed_session()
+
+        session = ChatSessionContext.query.filter_by(
+            chat_session_id=f"whatsapp_{self.empresa_id_for_test}_{self.test_user_number_str}"
+        ).one()
+        session.tenant_id = tenant.id
+        db.session.commit()
+
+        download = MagicMock(content=b"purchase-order-image")
+        download.raise_for_status.return_value = None
+        attachment = SimpleNamespace(
+            id=902,
+            url="https://storage.example.test/purchase-order.jpg",
+            mime="image/jpeg",
+            nombre_original="purchase-order.jpg",
+            analisis=None,
+        )
+
+        with (
+            patch("routes.whatsapp_webhook.requests.get", return_value=download),
+            patch(
+                "routes.whatsapp_webhook.create_attachment_with_thumbnail",
+                return_value=attachment,
+            ),
+            patch(
+                "routes.whatsapp_webhook.create_whatsapp_assisted_intake",
+                return_value={
+                    "created": True,
+                    "ticket_id": 77,
+                    "pedido_id": 88,
+                    "request_kind": "purchase_order",
+                    "customer_message": "Pedido recibido para revision.",
+                },
+            ) as intake,
+            patch("routes.whatsapp_webhook.clasificar_adjunto_whatsapp") as classifier,
+            patch("routes.whatsapp_webhook.responder_chatboc") as responder,
+        ):
+            response = self.client.post(
+                "/webhook/whatsapp",
+                data={
+                    "To": f"whatsapp:{self.test_whatsapp_number_str}",
+                    "From": f"whatsapp:{self.test_user_number_str}",
+                    "Body": "Te envio la orden de compra.",
+                    "MessageSid": "SM-eligible-pyme-intake",
+                    "NumMedia": "1",
+                    "MediaUrl0": "https://media.example.test/purchase-order.jpg",
+                    "MediaContentType0": "image/jpeg",
+                },
+                headers={"X-Twilio-Signature": "dummy_signature_valid"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        intake.assert_called_once()
+        self.assertTrue(
+            intake.call_args.kwargs["conversation_context"].get("perfil_confirmado")
+        )
+        classifier.assert_not_called()
+        responder.assert_not_called()
 
     @patch('routes.whatsapp_webhook.requests.get')
     def test_image_attachment_skips_analysis_when_reclamo_active(self, mock_requests_get):

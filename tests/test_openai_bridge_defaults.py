@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -213,6 +214,7 @@ def test_lazy_client_prefers_app_config_and_disables_sdk_retries(monkeypatch):
     imported_client_proxy = openai_bridge.client
     captured = {}
     sdk_client = _FakeClient()
+    monkeypatch.setenv("OPENAI_ALLOW_NETWORK_IN_TESTS", "1")
 
     def _fake_openai(**kwargs):
         captured.update(kwargs)
@@ -233,6 +235,38 @@ def test_lazy_client_prefers_app_config_and_disables_sdk_retries(monkeypatch):
     assert captured["timeout"] == 17.0
     # Modules that imported ``client`` before configuration retain a live proxy.
     assert imported_client_proxy.responses is sdk_client.responses
+
+
+def test_lazy_client_mock_introspection_does_not_initialize_provider(monkeypatch):
+    imported_client_proxy = openai_bridge.client
+
+    def _unexpected_client_initialization(_app=None):
+        pytest.fail("dunder introspection initialized the OpenAI provider")
+
+    monkeypatch.setattr(
+        openai_bridge,
+        "_get_openai_client",
+        _unexpected_client_initialization,
+    )
+
+    assert not hasattr(imported_client_proxy, "__func__")
+    with patch.object(openai_bridge, "client") as mocked_client:
+        assert mocked_client is not imported_client_proxy
+
+
+def test_lazy_client_still_delegates_public_provider_attributes(monkeypatch):
+    imported_client_proxy = openai_bridge.client
+    sdk_client = _FakeClient()
+    calls = []
+
+    def _fake_get_client(app=None):
+        calls.append(app)
+        return sdk_client
+
+    monkeypatch.setattr(openai_bridge, "_get_openai_client", _fake_get_client)
+
+    assert imported_client_proxy.responses is sdk_client.responses
+    assert calls == [None]
 
 
 def test_safety_identifier_is_hmac_and_never_raw_session(monkeypatch):

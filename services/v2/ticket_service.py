@@ -11,6 +11,10 @@ from sqlalchemy.orm.attributes import flag_modified
 from extensions import db
 from models import TenantTicket, User, TicketComentario
 from services.attachment_delivery import serialize_attachment_for_delivery
+from services.employee_ticket_access import (
+    apply_employee_ticket_category_scope,
+    ticket_assignee_category_values_are_compatible,
+)
 from services.v2.sla_service import apply_sla_to_ticket, get_policies_for_tenant, is_ticket_overdue
 from services.v2.ticket_event_service import record_ticket_event
 
@@ -391,6 +395,11 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
         is_assignable = bool(getattr(assignee, "es_empleado", False)) or assignee_role in {"empleado", "employee", "admin", "tenant_admin"}
         if not assignee or not is_assignable:
             raise ValueError("assignee_not_found")
+        if not ticket_assignee_category_values_are_compatible(
+            assignee,
+            category=payload.get("category"),
+        ):
+            raise ValueError("assignee_category_scope_mismatch")
 
     ticket = TenantTicket(
         tenant_id=tenant.id,
@@ -445,7 +454,7 @@ def _query_for_viewer(tenant_id: int, viewer: User | None):
     role = _role_of(viewer)
     if role == "usuario" and viewer is not None:
         query = query.filter(TenantTicket.user_id == viewer.id)
-    return query
+    return apply_employee_ticket_category_scope(query, viewer, TenantTicket)
 
 
 def list_tickets(*, tenant, viewer: User | None, filters: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, int]]:
@@ -529,6 +538,42 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
 
     extra = _ensure_extra(ticket)
 
+    validated_assignee = None
+    if "assignee_id" in payload or "category" in payload:
+        final_category = payload.get("category") or ticket.categoria
+        final_assignee_id = (
+            payload.get("assignee_id")
+            if "assignee_id" in payload
+            else extra.get("assignee_id")
+        )
+        if final_assignee_id not in (None, ""):
+            try:
+                final_assignee_id = int(final_assignee_id)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("assignee_id invalido") from exc
+            validated_assignee = User.query.filter_by(
+                id=final_assignee_id,
+                tenant_id=tenant.id,
+            ).first()
+            assignee_role = (
+                str(getattr(validated_assignee, "rol", "") or "").lower()
+                if validated_assignee
+                else ""
+            )
+            is_assignable = bool(getattr(validated_assignee, "es_empleado", False)) or assignee_role in {
+                "empleado",
+                "employee",
+                "admin",
+                "tenant_admin",
+            }
+            if not validated_assignee or not is_assignable:
+                raise LookupError("assignee_not_found")
+            if not ticket_assignee_category_values_are_compatible(
+                validated_assignee,
+                category=final_category,
+            ):
+                raise ValueError("assignee_category_scope_mismatch")
+
     if "status" in payload:
         new_status = str(payload.get("status") or "").strip().lower()
         if new_status and new_status in _ALLOWED_STATUSES and new_status != ticket.estado:
@@ -559,16 +604,9 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
         previous = extra.get("assignee_id")
         new_assignee = payload.get("assignee_id")
         if new_assignee not in (None, ""):
-            try:
-                new_assignee_int = int(new_assignee)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("assignee_id invalido") from exc
-            assignee = User.query.filter_by(id=new_assignee_int, tenant_id=tenant.id).first()
-            assignee_role = str(getattr(assignee, "rol", "") or "").lower() if assignee else ""
-            is_assignable = bool(getattr(assignee, "es_empleado", False)) or assignee_role in {"empleado", "employee", "admin", "tenant_admin"}
-            if not assignee or not is_assignable:
-                raise LookupError("assignee_not_found")
-            new_assignee = assignee.id
+            new_assignee = validated_assignee.id
+        else:
+            new_assignee = None
         if str(previous or "") != str(new_assignee or ""):
             extra["assignee_id"] = new_assignee
             record_ticket_event(

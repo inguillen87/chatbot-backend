@@ -12,6 +12,7 @@ from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
 from services.whatsapp_receipts import render_ticket_whatsapp
 from services import promo_service
 from services.config_loader import cargar_configuracion_municipio
+from services.llm_provider_network_policy import provider_network_allowed
 from services.voice_session_service import resolve_voice_chat_session_id
 from services.voice_consent_lifecycle import voice_phone_candidates
 from services.tenant_ticket_scope import (
@@ -205,8 +206,11 @@ def initiate_outbound_call(to_number, from_number, chat_session_id=None):
     if not account_sid or not auth_token:
         logger.error("Twilio credentials missing for voice call.")
         return False
-
-    client = Client(account_sid, auth_token)
+    if not provider_network_allowed("twilio"):
+        logger.info(
+            "Outbound call blocked provider=twilio reason=test_network_disabled"
+        )
+        return False
 
     # In production, this must be the public HTTPS URL.
     # We use url_for with _external=True to generate absolute URL.
@@ -237,6 +241,7 @@ def initiate_outbound_call(to_number, from_number, chat_session_id=None):
 
         status_callback = f"{base_url.rstrip('/')}/voice/status"
 
+        client = Client(account_sid, auth_token)
         call = client.calls.create(
             to=to_number_voice,
             from_=from_number_voice,

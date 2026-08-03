@@ -10,6 +10,7 @@ from utils.roles import ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, canonical_role
 SURVEY_EXPORT_CAPABILITY = "survey.export"
 SURVEY_PII_READ_CAPABILITY = "survey.pii.read"
 SURVEY_GOVERNANCE_MANAGE_CAPABILITY = "survey.governance.manage"
+SURVEY_ELIGIBILITY_MANAGE_CAPABILITY = "survey.eligibility.manage"
 
 
 def _flatten_capability_values(raw: Any) -> set[str]:

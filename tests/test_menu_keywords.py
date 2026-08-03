@@ -261,7 +261,7 @@ class TestMenuKeywords(unittest.TestCase):
             "licencia_de_conducir",
         )
 
-    def test_menu_helper_starts_guided_claim_without_llm(self):
+    def test_menu_helper_starts_guided_claim_with_confirmed_llm_intent(self):
         owner = SimpleNamespace(municipio_id="default", id=1)
         contexto_menu = {
             "estado_conversacion": ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
@@ -278,7 +278,16 @@ class TestMenuKeywords(unittest.TestCase):
         app = Flask(__name__)
         llm_response = {"message_body": "Entendido, ya registré tu reclamo."}
         with app.app_context():
-            with patch("services.municipio_responder.flag_modified") as mock_flag, \
+            with patch("services.municipio_responder.safe_flag_modified") as mock_flag, \
+                 patch(
+                     "services.municipio_responder.extract_reclamo_details_from_text",
+                     return_value={
+                         "intencion": "crear_reclamo",
+                         "es_reclamo": True,
+                         "categoria": "Luminaria",
+                         "descripcion": "Luminaria caída, parpadeando y torcida.",
+                     },
+                 ) as mock_extractor, \
                  patch(
                      "services.municipio_responder.handle_llm_interaction",
                      return_value=(llm_response, contexto_menu),
@@ -294,6 +303,7 @@ class TestMenuKeywords(unittest.TestCase):
                 )
 
         mock_llm.assert_not_called()
+        mock_extractor.assert_called_once()
         mock_flag.assert_called()
         self.assertIn("direcci", response["message_body"].lower())
         self.assertEqual(contexto_menu["estado_conversacion"], "EN_FLUJO_RECLAMO")

@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from extensions import db
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.interview_access_policy import (
+    INTERVIEW_ASSIGNMENTS_MANAGE,
     INTERVIEW_CASES_CREATE,
     INTERVIEW_CASES_READ,
     INTERVIEW_EVIDENCE_WRITE,
@@ -27,6 +28,9 @@ from services.interview_access_policy import (
 from services.interview_service import (
     InterviewDomainError,
     InterviewMutation,
+    assign_interview_session,
+    build_interview_assignment_candidates,
+    build_interview_inbox,
     complete_interview_session,
     create_assessment_case,
     create_interview_evidence,
@@ -34,6 +38,7 @@ from services.interview_service import (
     create_program,
     create_program_version,
     get_assessment_case,
+    get_interview_session,
     issue_interview_consent_challenge,
     publish_program_version,
     register_interview_consent_presentation,
@@ -42,6 +47,8 @@ from services.interview_service import (
     serialize_consent_presentation,
     serialize_evidence,
     serialize_interview_session,
+    serialize_interview_resume,
+    serialize_interview_assignment,
     serialize_program,
     start_interview_session,
     validate_idempotency_key,
@@ -58,6 +65,14 @@ v2_interviews_bp = Blueprint(
 )
 
 _FEATURE_FLAG = "ENABLE_ASSESSMENT_INTERVIEWS_V1"
+_ASSIGNMENT_FEATURE_FLAG = "ENABLE_INTERVIEW_ASSIGNMENTS_V1"
+
+
+@v2_interviews_bp.after_request
+def _interview_responses_are_never_cached(response):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def _request_id() -> str:
@@ -113,6 +128,7 @@ def _domain_error_response(exc: InterviewDomainError):
         exc.reason_code,
         exc.action_hint,
         retryable=exc.retryable,
+        **exc.details,
     )
 
 
@@ -203,6 +219,7 @@ def _execute_mutation(
     resource_name: str,
     *,
     created_status: int = 201,
+    contract_version: str = "assessment.interviews.api.v1",
 ):
     try:
         mutation = operation()
@@ -238,7 +255,7 @@ def _execute_mutation(
 
     payload = {
         "ok": True,
-        "contract_version": "assessment.interviews.api.v1",
+        "contract_version": contract_version,
         resource_name: serializer(mutation.value),
         "idempotency_replayed": mutation.replayed,
     }
@@ -254,6 +271,100 @@ def _execute_mutation(
 
 def _idempotency_key() -> str:
     return validate_idempotency_key(request.headers.get("Idempotency-Key"))
+
+
+def _authorized_assignment_tenant(current_user):
+    tenant, error = _authorized_tenant(current_user)
+    if error:
+        return None, error
+    if current_app.config.get(_ASSIGNMENT_FEATURE_FLAG) is not True:
+        return None, _error_response(
+            "Managed interview assignments are not enabled for this deployment",
+            403,
+            "interview_assignments_feature_disabled",
+            "enable_after_assignment_security_review",
+        )
+    missing = missing_interview_capabilities(
+        current_user,
+        tenant,
+        INTERVIEW_ASSIGNMENTS_MANAGE,
+    )
+    if missing:
+        return None, _error_response(
+            "A tenant interview assignment capability is required",
+            403,
+            "interview_assignment_capability_required",
+            "request_capability_from_tenant_admin",
+            required_capabilities=[INTERVIEW_ASSIGNMENTS_MANAGE],
+            missing_capabilities=missing,
+        )
+    return tenant, None
+
+
+@v2_interviews_bp.route("/inbox", methods=["GET"])
+@token_requerido
+def list_interview_inbox_v2(current_user):
+    """Return the bounded operational inbox without inventing review writes."""
+
+    tenant, error = _authorized_tenant(current_user, INTERVIEW_CASES_READ)
+    if error:
+        return error
+    raw_limit = str(request.args.get("limit") or "50").strip()
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 0
+    can_view_resume = not missing_interview_capabilities(
+        current_user,
+        tenant,
+        INTERVIEW_SESSIONS_CONDUCT,
+    )
+    assignment_feature_enabled = (
+        current_app.config.get(_ASSIGNMENT_FEATURE_FLAG) is True
+    )
+    can_assign = bool(
+        assignment_feature_enabled
+        and not missing_interview_capabilities(
+            current_user,
+            tenant,
+            INTERVIEW_ASSIGNMENTS_MANAGE,
+        )
+    )
+    try:
+        inbox = build_interview_inbox(
+            tenant,
+            can_view_resume=can_view_resume,
+            assignment_feature_enabled=assignment_feature_enabled,
+            can_assign=can_assign,
+            limit=limit,
+            status=request.args.get("status"),
+        )
+    except InterviewDomainError as exc:
+        return _domain_error_response(exc)
+    response = _json_response(
+        {
+            "ok": True,
+            "contract_version": "assessment.interviews.api.v1",
+            "inbox": inbox,
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@v2_interviews_bp.route("/assignment-candidates", methods=["GET"])
+@token_requerido
+def list_interview_assignment_candidates_v2(current_user):
+    tenant, error = _authorized_assignment_tenant(current_user)
+    if error:
+        return error
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "assessment.interviews.api.v1",
+            "assignment_candidates": build_interview_assignment_candidates(tenant),
+        }
+    )
 
 
 @v2_interviews_bp.route("/programs", methods=["POST"])
@@ -374,6 +485,29 @@ def create_interview_session_v2(current_user, case_id: int):
 
 
 @v2_interviews_bp.route(
+    "/sessions/<int:session_id>/assignment",
+    methods=["POST"],
+)
+@token_requerido
+def assign_interview_session_v2(current_user, session_id: int):
+    tenant, error = _authorized_assignment_tenant(current_user)
+    if error:
+        return error
+    return _execute_mutation(
+        lambda: assign_interview_session(
+            tenant,
+            current_user,
+            session_id,
+            _json_object(),
+            _idempotency_key(),
+        ),
+        serialize_interview_assignment,
+        "assignment",
+        contract_version="assessment.interviews.assignment.v1",
+    )
+
+
+@v2_interviews_bp.route(
     "/sessions/<int:session_id>/consent-challenges", methods=["POST"]
 )
 @token_requerido
@@ -390,6 +524,30 @@ def issue_interview_consent_challenge_v2(current_user, session_id: int):
         ),
         serialize_consent_challenge,
         "consent_challenge",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@v2_interviews_bp.route("/sessions/<int:session_id>", methods=["GET"])
+@token_requerido
+def get_interview_session_v2(current_user, session_id: int):
+    """Return an integrity-checked checkpoint for API/channel resumption."""
+
+    tenant, error = _authorized_tenant(current_user, INTERVIEW_SESSIONS_CONDUCT)
+    if error:
+        return error
+    try:
+        session = get_interview_session(tenant, session_id)
+        resume = serialize_interview_resume(session)
+    except InterviewDomainError as exc:
+        return _domain_error_response(exc)
+    response = _json_response(
+        {
+            "ok": True,
+            "contract_version": "assessment.interviews.api.v1",
+            "resume": resume,
+        }
     )
     response.headers["Cache-Control"] = "no-store"
     return response

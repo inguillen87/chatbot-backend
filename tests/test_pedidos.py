@@ -3,7 +3,7 @@ import json
 from unittest.mock import patch, MagicMock
 from app import create_app
 from extensions import db
-from models import User, PymePedido
+from models import PymePedido, TenantProfile, User
 from config import TestingConfig
 
 class TestPedidos(unittest.TestCase):
@@ -19,10 +19,22 @@ class TestPedidos(unittest.TestCase):
             name="Test Pyme",
             email="pyme@test.com",
             tipo_chat="pyme",
-            rol="admin"
+            rol="admin",
+            tenant_slug="test-pyme",
         )
         self.pyme_user.set_password("pyme_password")
         db.session.add(self.pyme_user)
+        db.session.flush()
+        self.tenant = TenantProfile(
+            slug="test-pyme",
+            nombre="Test Pyme",
+            tipo="pyme",
+            pyme_id=self.pyme_user.id,
+            is_active=True,
+        )
+        db.session.add(self.tenant)
+        db.session.flush()
+        self.pyme_user.tenant_id = self.tenant.id
         db.session.commit()
 
         # Get a token for the pyme user
@@ -55,12 +67,14 @@ class TestPedidos(unittest.TestCase):
         self.assertEqual(data['detalles'], detalles)
         self.assertEqual(data['monto_total'], 20.0)
         self.assertEqual(data['pyme_id'], self.pyme_user.id)
+        self.assertEqual(data['tenant_id'], self.tenant.id)
 
     def test_list_pedidos(self):
         """Test listing orders for a pyme."""
         # Create a test order
         pedido = PymePedido(
             pyme_id=self.pyme_user.id,
+            tenant_id=self.tenant.id,
             asunto="List Test Order",
             detalles=json.dumps([{"producto": "Test Product", "cantidad": 1}]),
             monto_total=10.0
@@ -83,6 +97,7 @@ class TestPedidos(unittest.TestCase):
         # Create a test order
         pedido = PymePedido(
             pyme_id=self.pyme_user.id,
+            tenant_id=self.tenant.id,
             asunto="Update Test Order",
             detalles=json.dumps([{"producto": "Test Product", "cantidad": 1}]),
             monto_total=10.0

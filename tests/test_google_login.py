@@ -2,27 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-import sys
-from types import ModuleType
-import importlib
-
-
-# Crear stubs mínimos de models y sqlalchemy antes de importar
-models_stub = ModuleType('models')
-class DummyUser(SimpleNamespace):
-    def set_password(self, *a, **k):
-        pass
-models_stub.User = DummyUser
-models_stub.db = SimpleNamespace(session=SimpleNamespace(add=lambda *a, **k: None, commit=lambda: None))
-
-sqlalchemy_stub = ModuleType('sqlalchemy')
-sqlalchemy_exc_stub = ModuleType('sqlalchemy.exc')
-sqlalchemy_stub.exc = sqlalchemy_exc_stub
-
-with patch.dict(sys.modules, {'models': models_stub, 'sqlalchemy': sqlalchemy_stub, 'sqlalchemy.exc': sqlalchemy_exc_stub}):
-
-    import services.google_auth as gauth
-    importlib.reload(gauth)
+import services.google_auth as gauth
 
 class GoogleLoginTests(unittest.TestCase):
     @patch.object(gauth, 'ALLOWED_CLIENT_IDS', ['test-client-id'])

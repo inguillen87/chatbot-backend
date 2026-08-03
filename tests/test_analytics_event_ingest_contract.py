@@ -13,6 +13,20 @@ class AnalyticsEventIngestContractTestCase(unittest.TestCase):
         self.app = Flask(__name__)
         self.app.register_blueprint(analytics_bp)
         self.client = self.app.test_client()
+        self.tenant_resolution = {
+            "tenant_profile_id": 77,
+            "owner_tenant_id": 7,
+            "tenant_slug": "contract-tenant",
+            "tenant_type": "municipio",
+            "scope": "municipio",
+            "resolution_sources": ["tenant_id_owner"],
+        }
+        self.tenant_resolver = patch(
+            "routes.analytics._resolve_tenant_id_from_event_payload",
+            return_value=(77, self.tenant_resolution),
+        )
+        self.tenant_resolver.start()
+        self.addCleanup(self.tenant_resolver.stop)
 
     def test_event_ingest_response_contract(self):
         with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), \
@@ -37,6 +51,7 @@ class AnalyticsEventIngestContractTestCase(unittest.TestCase):
         self.assertEqual(body["ignored"], False)
         self.assertEqual(body["contract_version"], ANALYTICS_EVENT_INGEST_CONTRACT_VERSION)
         self.assertEqual(body["tenant_id"], 7)
+        self.assertEqual(body["tenant_profile_id"], 77)
         self.assertEqual(body["event_name"], "portal_opened")
         self.assertEqual(body["contact_key"], "ck-123")
         self.assertEqual(body["conversation_id"], "conv-123")
@@ -85,7 +100,10 @@ class AnalyticsEventIngestContractTestCase(unittest.TestCase):
         self.assertEqual(response.headers.get("X-Request-Id"), "req-analytics-ingest-1")
 
     def test_event_ingest_ignored_without_tenant_preserves_contract(self):
-        with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)):
+        with patch("routes.analytics.get_config", return_value=SimpleNamespace(feature_enabled=True)), patch(
+            "routes.analytics._resolve_tenant_id_from_event_payload",
+            return_value=(None, {"code": "tenant_unresolved", "status": 400}),
+        ):
             response = self.client.post(
                 "/analytics/event",
                 headers={"X-Request-Id": "req-ignored-tenant"},

@@ -7,7 +7,10 @@ from services.openai_maps_service import geocodificar_inversa_llm
 from services.municipio_responder import responder_municipio, CONTEXTO_MUNICIPIO
 
 class GeoFlowTests(unittest.TestCase):
-    @patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"})
+    @patch.dict(
+        os.environ,
+        {"OPENAI_API_KEY": "test-key", "OPENAI_ALLOW_NETWORK_IN_TESTS": "1"},
+    )
     @patch('services.openai_maps_service.openai.OpenAI')
     def test_geocodificar_inversa_llm_normalizes(self, mock_openai):
         client = MagicMock()

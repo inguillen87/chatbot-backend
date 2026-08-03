@@ -65,6 +65,7 @@ def test_gemini_chat_model_can_be_overridden(monkeypatch):
 def test_llamar_gemini_normalizes_chatboc_contract(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_CHAT_MODEL", "gemini-test")
+    monkeypatch.setenv("GEMINI_ALLOW_NETWORK_IN_TESTS", "1")
     monkeypatch.setattr(gemini_bridge, "_get_genai_modules", lambda: (FakeGenai, FakeTypes))
 
     response, context = gemini_bridge.llamar_gemini(

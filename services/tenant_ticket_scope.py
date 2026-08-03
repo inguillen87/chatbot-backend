@@ -77,6 +77,31 @@ def tenant_owner_ids(tenant: TenantProfile | None) -> tuple[int, ...]:
     return tuple(values)
 
 
+def tenant_unique_legacy_owner_id(tenant: TenantProfile | None) -> int | None:
+    """Return the sole legacy owner only when it resolves back to ``tenant``.
+
+    Legacy rows in several CRM tables predate ``tenant_id`` and are linked via
+    an owner user.  Merely seeing one owner value on the tenant is not enough:
+    older data can contain the same owner on multiple tenant profiles.  Those
+    rows must remain quarantined instead of becoming a cross-tenant wildcard.
+    """
+
+    owners = tenant_owner_ids(tenant)
+    if tenant is None or getattr(tenant, "id", None) is None or len(owners) != 1:
+        return None
+    try:
+        resolution = resolve_unique_tenant_for_owner(owners[0])
+    except TicketTenantScopeError:
+        return None
+    if (
+        resolution.status != "unique"
+        or resolution.tenant is None
+        or int(resolution.tenant.id) != int(tenant.id)
+    ):
+        return None
+    return owners[0]
+
+
 def resolve_unique_tenant_for_owner(owner_id: Any) -> TenantOwnerResolution:
     """Resolve an owner without ever choosing an arbitrary first tenant."""
 
@@ -297,4 +322,5 @@ __all__ = [
     "resolve_unique_tenant_for_owner",
     "scoped_municipio_ticket_query",
     "tenant_owner_ids",
+    "tenant_unique_legacy_owner_id",
 ]

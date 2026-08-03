@@ -105,6 +105,19 @@ class VoiceConsentLifecycleTests(unittest.TestCase):
             "Direction": "inbound",
         }
 
+    def _whatsapp_payload(
+        self,
+        *,
+        call_sid="CA-whatsapp-consent-001",
+        to_number="whatsapp:+15551230001",
+    ):
+        return {
+            "CallSid": call_sid,
+            "From": "whatsapp:+5492613168608",
+            "To": to_number,
+            "Direction": "inbound",
+        }
+
     def test_initial_webhook_requires_dtmf_without_minting_stream(self):
         with patch("routes.voice_routes.create_voice_stream_envelope") as mint_envelope:
             response = self.client.post(
@@ -130,6 +143,31 @@ class VoiceConsentLifecycleTests(unittest.TestCase):
             [event.reason_code for event in VoiceCallLifecycleEvent.query.order_by(VoiceCallLifecycleEvent.id)],
             ["provider_call_received", "explicit_consent_required"],
         )
+
+    def test_whatsapp_business_call_uses_same_explicit_consent_boundary(self):
+        call_sid = "CA-whatsapp-inbound-001"
+        initial = self.client.post(
+            f"/twilio/voice/inbound?tenant={self.tenant_a.slug}",
+            data=self._whatsapp_payload(call_sid=call_sid),
+        )
+
+        initial_body = initial.get_data(as_text=True)
+        self.assertEqual(initial.status_code, 200)
+        self.assertIn("<Gather", initial_body)
+        self.assertNotIn("<Connect>", initial_body)
+
+        granted = self.client.post(
+            f"/twilio/voice/consent?tenant={self.tenant_a.slug}",
+            data={**self._whatsapp_payload(call_sid=call_sid), "Digits": "1"},
+        )
+
+        self.assertIn("<Connect>", granted.get_data(as_text=True))
+        lifecycle = VoiceCallLifecycle.query.filter_by(
+            provider_call_sid=call_sid
+        ).one()
+        self.assertEqual(lifecycle.tenant_id, self.tenant_a.id)
+        self.assertEqual(lifecycle.state, "stream_authorized")
+        self.assertTrue(lifecycle.ai_processing_allowed)
 
     def test_incomplete_tenant_policy_fails_closed_without_lifecycle(self):
         config = dict(self.tenant_a.configuracion or {})
@@ -471,6 +509,35 @@ class VoiceConsentLifecycleTests(unittest.TestCase):
 
         self.assertNotIn("<Dial", refused.get_data(as_text=True))
         self.assertIn("<Dial>+15559876543</Dial>", allowed.get_data(as_text=True))
+
+    def test_whatsapp_business_call_never_attempts_forbidden_pstn_transfer(self):
+        config = dict(self.tenant_a.configuracion or {})
+        config["human_handoff_number"] = "+15559876543"
+        self.tenant_a.configuracion = config
+        db.session.commit()
+        call_sid = "CA-whatsapp-transfer-001"
+        payload = self._whatsapp_payload(call_sid=call_sid)
+        self.client.post(
+            f"/twilio/voice/inbound?tenant={self.tenant_a.slug}",
+            data=payload,
+        )
+        self.client.post(
+            f"/twilio/voice/consent?tenant={self.tenant_a.slug}",
+            data={**payload, "Digits": "1"},
+        )
+
+        with self.assertLogs("routes.voice_routes", level="WARNING") as logs:
+            response = self.client.post(
+                f"/twilio/voice/transfer?tenant={self.tenant_a.slug}&target=%2B15559876543",
+                data=payload,
+            )
+
+        rendered_logs = "\n".join(logs.output)
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("<Dial", body)
+        self.assertIn("whatsapp_pstn_bridge_forbidden", rendered_logs)
+        self.assertNotIn("+5492613168608", rendered_logs)
 
     def test_provider_status_is_monotonic_and_does_not_invent_connected(self):
         policy = resolve_voice_consent_policy(self.tenant_a)

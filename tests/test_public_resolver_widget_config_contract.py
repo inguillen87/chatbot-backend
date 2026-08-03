@@ -214,7 +214,7 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(body["provider"], "openai_realtime")
         self.assertEqual(body["recommended_model"], "gpt-realtime-2.1")
         self.assertEqual(body["fallback_model"], "gpt-realtime-2.1")
-        self.assertEqual(body["live_transcription"]["model"], "gpt-realtime-whisper")
+        self.assertEqual(body["live_transcription"]["model"], "gpt-live-transcribe")
         self.assertTrue(body["features"]["semantic_vad"])
         self.assertFalse(body["features"]["server_vad"])
         self.assertTrue(body["support_channels"]["voice_call"]["enabled"])

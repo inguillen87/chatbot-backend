@@ -4,23 +4,43 @@ import logging
 import json
 
 from services.chatbot_prompts import get_system_prompt
+from services.llm_provider_network_policy import require_llm_provider_network
 
 logger = logging.getLogger(__name__)
 
-# It's a good practice to have the client instantiated once and reused if possible,
-# but for simplicity in this stateless function, we'll instantiate it on each call.
-# The API key is loaded automatically from the environment variable COHERE_API_KEY.
-try:
-    co = cohere.Client()
-except Exception as e:
-    logger.error(f"Failed to initialize Cohere client: {e}")
-    co = None
+co = None
+co_v2 = None
+_COHERE_CLIENTS_INITIALIZED = False
 
-try:
-    co_v2 = cohere.ClientV2()
-except Exception as e:
-    logger.warning(f"Failed to initialize Cohere ClientV2: {e}")
-    co_v2 = None
+
+def _get_cohere_clients(app=None):
+    """Initialize Cohere lazily, after the shared test-network gate."""
+
+    global co, co_v2, _COHERE_CLIENTS_INITIALIZED
+    require_llm_provider_network("cohere", app)
+    if _COHERE_CLIENTS_INITIALIZED:
+        return co, co_v2
+
+    try:
+        co = cohere.Client()
+    except Exception as exc:
+        logger.warning(
+            "LLM provider client initialization failed provider=cohere api=v1 error_type=%s",
+            type(exc).__name__,
+        )
+        co = None
+
+    try:
+        co_v2 = cohere.ClientV2()
+    except Exception as exc:
+        logger.warning(
+            "LLM provider client initialization failed provider=cohere api=v2 error_type=%s",
+            type(exc).__name__,
+        )
+        co_v2 = None
+
+    _COHERE_CLIENTS_INITIALIZED = True
+    return co, co_v2
 
 
 def _cohere_chat_model() -> str:
@@ -70,7 +90,8 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     """
     Calls the Cohere API and formats the response to be compatible with the application's structure.
     """
-    if not co and not co_v2:
+    cohere_v1, cohere_v2 = _get_cohere_clients(app)
+    if not cohere_v1 and not cohere_v2:
         raise ConnectionError("Cohere client is not initialized. Check API key.")
 
     # 1. Format the history for Cohere's chat endpoint
@@ -100,23 +121,23 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
     if instruccion_canal:
         preamble += f"\n\nCONTEXTO DEL CANAL: {instruccion_canal}"
 
-    logger.info(f"Sending to Cohere. Message: {message[:100]}...")
+    logger.info("LLM provider request started provider=cohere")
 
     try:
         model = _cohere_chat_model()
-        if co_v2 and os.getenv("COHERE_CHAT_API_VERSION", "v2").lower() == "v2":
+        if cohere_v2 and os.getenv("COHERE_CHAT_API_VERSION", "v2").lower() == "v2":
             messages = [{"role": "system", "content": preamble}]
             for item in chat_history:
                 role = "user" if item.get("role") == "USER" else "assistant"
                 messages.append({"role": role, "content": item.get("message", "")})
             messages.append({"role": "user", "content": message})
-            response = co_v2.chat(
+            response = cohere_v2.chat(
                 model=model,
                 messages=messages,
                 temperature=0.3,
             )
         else:
-            response = co.chat(
+            response = cohere_v1.chat(
                 message=message,
                 chat_history=chat_history,
                 preamble=preamble,
@@ -125,13 +146,16 @@ def llamar_cohere(app, mensaje_usuario: str, usuario: dict, historial: list, cha
             )
 
         raw_response_text = _extract_response_text(response)
-        logger.info(f"Response from Cohere (raw): {raw_response_text}")
+        logger.info("LLM provider response received provider=cohere")
 
         parsed_response = _parse_llm_json(raw_response_text)
 
         return parsed_response, {"model_used": model}
 
-    except Exception as e:
-        logger.error(f"Error calling Cohere API: {e}", exc_info=True)
+    except Exception as exc:
+        logger.error(
+            "LLM provider request failed provider=cohere error_type=%s",
+            type(exc).__name__,
+        )
         # To ensure fallback, we re-raise the exception.
         raise

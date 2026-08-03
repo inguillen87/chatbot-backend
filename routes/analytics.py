@@ -32,6 +32,10 @@ from services.analytics.ingestor import analytics_ingestor
 from services.analytics.models import AnalyticsModuleStatus
 from models import AnalyticsEventV2, TenantProfile
 from services.analytics.rbac import require_access
+from services.tenant_ticket_scope import (
+    TicketTenantScopeError,
+    resolve_unique_tenant_for_owner,
+)
 
 analytics_bp = Blueprint("analytics", __name__, url_prefix="/analytics")
 
@@ -138,76 +142,454 @@ def _requested_tenant_slug() -> str:
     return (request.args.get("tenant_slug") or request.args.get("tenant") or "").strip().lower()
 
 
-def _resolve_identity_event_tenant_id(filters: AnalyticsFilters) -> tuple[int | None, dict[str, Any]]:
-    """Resolve the numeric tenant_profile id used by analytics_events_v2.
+_ANALYTICS_SCOPE_ALIASES = {
+    "municipio": "municipio",
+    "municipal": "municipio",
+    "municipality": "municipio",
+    "pyme": "pyme",
+    "empresa": "pyme",
+    "business": "pyme",
+    "operaciones": "operaciones",
+    "operations": "operaciones",
+}
 
-    Some dashboards still authorize analytics with the owner user id, while
-    AnalyticsEventV2.tenant_id stores the TenantProfile id. When the frontend
-    sends a slug, prefer the profile id for the event-store query.
+
+def _analytics_tenant_resolution_error(
+    code: str,
+    message: str,
+    *,
+    status: int = 400,
+    **details: Any,
+) -> tuple[None, dict[str, Any]]:
+    return None, {
+        "error": message,
+        "code": code,
+        "status": status,
+        **details,
+    }
+
+
+def _positive_tenant_id(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_analytics_scope(value: Any) -> str | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    return _ANALYTICS_SCOPE_ALIASES.get(raw)
+
+
+def _tenant_owner_for_analytics_scope(
+    tenant: TenantProfile,
+    scope: str | None,
+) -> tuple[int | None, dict[str, Any] | None]:
+    declared_scope = _normalize_analytics_scope(getattr(tenant, "tipo", None))
+    if (
+        scope in {"municipio", "pyme"}
+        and declared_scope in {"municipio", "pyme"}
+        and declared_scope != scope
+    ):
+        return None, {
+            "code": "tenant_scope_incompatible",
+            "error": "El tipo declarado del tenant no es compatible con el scope solicitado.",
+            "status": 400,
+            "tenant_profile_id": int(tenant.id),
+            "tenant_type": getattr(tenant, "tipo", None),
+            "scope": scope,
+        }
+    if scope == "municipio":
+        owner_candidates = [getattr(tenant, "municipio_id", None)]
+    elif scope == "pyme":
+        owner_candidates = [getattr(tenant, "pyme_id", None)]
+    else:
+        owner_candidates = [
+            getattr(tenant, "municipio_id", None),
+            getattr(tenant, "pyme_id", None),
+        ]
+
+    owners = tuple(
+        dict.fromkeys(
+            parsed
+            for parsed in (_positive_tenant_id(value) for value in owner_candidates)
+            if parsed is not None
+        )
+    )
+    if len(owners) != 1:
+        return None, {
+            "code": "tenant_scope_incompatible" if scope in {"municipio", "pyme"} else "tenant_owner_ambiguous",
+            "error": "El tenant no tiene un propietario unico compatible con el scope solicitado.",
+            "status": 400,
+            "tenant_profile_id": int(tenant.id),
+            "scope": scope,
+        }
+
+    owner_id = owners[0]
+    try:
+        owner_resolution = resolve_unique_tenant_for_owner(owner_id)
+    except (TicketTenantScopeError, SQLAlchemyError):
+        current_app.logger.exception(
+            "[analytics] authoritative owner resolution failed owner_id=%s tenant_profile_id=%s",
+            owner_id,
+            getattr(tenant, "id", None),
+        )
+        return None, {
+            "code": "tenant_resolution_unavailable",
+            "error": "No se pudo validar el propietario del tenant de analytics.",
+            "status": 503,
+            "tenant_profile_id": int(tenant.id),
+            "owner_tenant_id": owner_id,
+        }
+
+    if (
+        owner_resolution.status != "unique"
+        or owner_resolution.tenant is None
+        or int(owner_resolution.tenant.id) != int(tenant.id)
+    ):
+        return None, {
+            "code": f"tenant_owner_{owner_resolution.status}",
+            "error": "El propietario legacy no identifica un unico tenant de analytics.",
+            "status": 409,
+            "tenant_profile_id": int(tenant.id),
+            "owner_tenant_id": owner_id,
+            "candidate_ids": list(owner_resolution.candidate_ids),
+        }
+    return owner_id, None
+
+
+def _tenant_profile_by_slug(slug: str) -> TenantProfile | None:
+    return TenantProfile.query.filter(TenantProfile.slug.ilike(slug)).one_or_none()
+
+
+def _tenant_from_generic_numeric_hint(
+    numeric_id: int,
+) -> tuple[TenantProfile | None, str | None, dict[str, Any] | None]:
+    """Resolve the legacy ``tenant_id`` dual namespace without guessing.
+
+    Older analytics clients sent the owner user id while newer surfaces often
+    sent ``TenantProfile.id``. Both remain readable only when they identify the
+    same profile or exactly one namespace has a match. Numeric collisions fail
+    closed; callers can disambiguate with ``tenant_profile_id`` or a slug.
     """
 
-    tenant_slug = _requested_tenant_slug()
-    if tenant_slug:
-        try:
-            tenant = TenantProfile.query.filter(TenantProfile.slug.ilike(tenant_slug)).first()
-        except SQLAlchemyError:
-            current_app.logger.exception("[analytics] identity coverage tenant resolution failed slug=%s", tenant_slug)
-            return None, {
-                "error": "No se pudo resolver el tenant de analytics",
-                "status": 503,
-                "tenant_slug": tenant_slug,
-            }
-        if not tenant:
-            return None, {
-                "error": f"tenant_slug '{tenant_slug}' no encontrado",
-                "status": 404,
-                "tenant_slug": tenant_slug,
-            }
-        return int(tenant.id), {
-            "tenant_slug": tenant.slug,
-            "tenant_profile_id": tenant.id,
-            "owner_tenant_id": tenant.municipio_id or tenant.pyme_id,
-        }
-
+    exact_profile = db.session.get(TenantProfile, numeric_id)
     try:
-        return int(filters.tenant_id), {"tenant_profile_id": int(filters.tenant_id)}
-    except (TypeError, ValueError):
-        return None, {
-            "error": "tenant_id debe ser numérico o debe enviarse un tenant_slug válido",
-            "status": 400,
-            "tenant_id": filters.tenant_id,
+        owner_resolution = resolve_unique_tenant_for_owner(numeric_id)
+    except (TicketTenantScopeError, SQLAlchemyError):
+        current_app.logger.exception(
+            "[analytics] numeric tenant resolution failed tenant_id=%s",
+            numeric_id,
+        )
+        return None, None, {
+            "code": "tenant_resolution_unavailable",
+            "error": "No se pudo validar el tenant de analytics.",
+            "status": 503,
+            "tenant_id": numeric_id,
         }
 
-def _resolve_tenant_id_from_event_payload(payload: dict) -> int | None:
-    """Resolve tenant id from JSON/body/query hints used by frontend trackers."""
+    if owner_resolution.status == "ambiguous":
+        return None, None, {
+            "code": "tenant_owner_ambiguous",
+            "error": "tenant_id coincide con un propietario asociado a varios tenants.",
+            "status": 409,
+            "tenant_id": numeric_id,
+            "candidate_ids": list(owner_resolution.candidate_ids),
+        }
 
-    tenant_candidates = [
-        payload.get("tenant_id"),
-        payload.get("tenant"),
-        request.args.get("tenant_id"),
-        request.args.get("tenant"),
-        request.args.get("tenant_slug"),
-    ]
-    for candidate in tenant_candidates:
-        if candidate is None:
-            continue
-        raw = str(candidate).strip()
-        if not raw:
-            continue
-        try:
-            return int(raw)
-        except (TypeError, ValueError):
-            tenant = (
-                db.session.query(TenantProfile)
-                .filter(TenantProfile.slug == raw)
-                .first()
+    owner_profile = owner_resolution.tenant if owner_resolution.status == "unique" else None
+    if exact_profile is not None and owner_profile is not None and int(exact_profile.id) != int(owner_profile.id):
+        return None, None, {
+            "code": "tenant_numeric_namespace_ambiguous",
+            "error": "tenant_id coincide con perfiles distintos en los namespaces profile y owner.",
+            "status": 409,
+            "tenant_id": numeric_id,
+            "candidate_ids": [int(exact_profile.id), int(owner_profile.id)],
+        }
+    if exact_profile is not None:
+        source = "tenant_id_profile" if owner_profile is None else "tenant_id_profile_and_owner"
+        return exact_profile, source, None
+    if owner_profile is not None:
+        return owner_profile, "tenant_id_owner", None
+    return None, None, {
+        "code": "tenant_not_found",
+        "error": "tenant_id no corresponde a un TenantProfile ni a un propietario unico.",
+        "status": 404,
+        "tenant_id": numeric_id,
+    }
+
+
+def _resolve_authoritative_analytics_tenant(
+    *,
+    tenant_profile_id: Any = None,
+    tenant_slug: Any = None,
+    tenant_id: Any = None,
+    owner_tenant_id: Any = None,
+    scope: Any = None,
+) -> tuple[int | None, dict[str, Any]]:
+    raw_scope = str(scope or "").strip().lower()
+    normalized_scope = _normalize_analytics_scope(raw_scope)
+    if raw_scope and normalized_scope is None:
+        return _analytics_tenant_resolution_error(
+            "tenant_scope_invalid",
+            f"Scope de analytics no soportado: {raw_scope}",
+            scope=raw_scope,
+        )
+
+    candidates: list[tuple[TenantProfile, str]] = []
+
+    if tenant_profile_id not in (None, ""):
+        profile_id = _positive_tenant_id(tenant_profile_id)
+        if profile_id is None:
+            return _analytics_tenant_resolution_error(
+                "tenant_profile_id_invalid",
+                "tenant_profile_id debe ser un entero positivo.",
             )
-            if tenant is not None:
-                owner_tenant_id = tenant.municipio_id or tenant.pyme_id
-                if owner_tenant_id is not None:
-                    return int(owner_tenant_id)
-                return int(tenant.id)
-    return None
+        tenant = db.session.get(TenantProfile, profile_id)
+        if tenant is None:
+            return _analytics_tenant_resolution_error(
+                "tenant_profile_not_found",
+                "tenant_profile_id no corresponde a un tenant existente.",
+                status=404,
+                tenant_profile_id=profile_id,
+            )
+        candidates.append((tenant, "tenant_profile_id"))
+
+    normalized_slug = str(tenant_slug or "").strip().lower()
+    if normalized_slug:
+        try:
+            tenant = _tenant_profile_by_slug(normalized_slug)
+        except SQLAlchemyError:
+            current_app.logger.exception(
+                "[analytics] tenant slug resolution failed slug=%s",
+                normalized_slug,
+            )
+            return _analytics_tenant_resolution_error(
+                "tenant_resolution_unavailable",
+                "No se pudo resolver el tenant de analytics.",
+                status=503,
+                tenant_slug=normalized_slug,
+            )
+        if tenant is None:
+            return _analytics_tenant_resolution_error(
+                "tenant_slug_not_found",
+                f"tenant_slug '{normalized_slug}' no encontrado",
+                status=404,
+                tenant_slug=normalized_slug,
+            )
+        candidates.append((tenant, "tenant_slug"))
+
+    if owner_tenant_id not in (None, ""):
+        owner_id = _positive_tenant_id(owner_tenant_id)
+        if owner_id is None:
+            return _analytics_tenant_resolution_error(
+                "owner_tenant_id_invalid",
+                "owner_tenant_id debe ser un entero positivo.",
+            )
+        try:
+            owner_resolution = resolve_unique_tenant_for_owner(owner_id)
+        except (TicketTenantScopeError, SQLAlchemyError):
+            current_app.logger.exception(
+                "[analytics] explicit owner resolution failed owner_id=%s",
+                owner_id,
+            )
+            return _analytics_tenant_resolution_error(
+                "tenant_resolution_unavailable",
+                "No se pudo validar el propietario del tenant de analytics.",
+                status=503,
+                owner_tenant_id=owner_id,
+            )
+        if owner_resolution.status != "unique" or owner_resolution.tenant is None:
+            return _analytics_tenant_resolution_error(
+                f"tenant_owner_{owner_resolution.status}",
+                "owner_tenant_id no identifica un unico tenant de analytics.",
+                status=409 if owner_resolution.status == "ambiguous" else 404,
+                owner_tenant_id=owner_id,
+                candidate_ids=list(owner_resolution.candidate_ids),
+            )
+        candidates.append((owner_resolution.tenant, "owner_tenant_id"))
+
+    if tenant_id not in (None, ""):
+        numeric_id = _positive_tenant_id(tenant_id)
+        if numeric_id is None:
+            return _analytics_tenant_resolution_error(
+                "tenant_id_invalid",
+                "tenant_id debe ser un entero positivo o debe enviarse un tenant_slug.",
+            )
+        tenant, source, error = _tenant_from_generic_numeric_hint(numeric_id)
+        if error is not None:
+            return None, error
+        assert tenant is not None and source is not None
+        candidates.append((tenant, source))
+
+    if not candidates:
+        return _analytics_tenant_resolution_error(
+            "tenant_unresolved",
+            "No se recibio un identificador de tenant valido.",
+        )
+
+    candidate_ids = {int(candidate.id) for candidate, _source in candidates}
+    if len(candidate_ids) != 1:
+        return _analytics_tenant_resolution_error(
+            "tenant_context_inconsistent",
+            "Los identificadores recibidos corresponden a tenants distintos.",
+            status=409,
+            candidate_ids=sorted(candidate_ids),
+        )
+
+    tenant = candidates[0][0]
+    owner_id, owner_error = _tenant_owner_for_analytics_scope(tenant, normalized_scope)
+    if owner_error is not None:
+        return None, owner_error
+    assert owner_id is not None
+
+    return int(tenant.id), {
+        "tenant_profile_id": int(tenant.id),
+        "owner_tenant_id": owner_id,
+        "tenant_slug": tenant.slug,
+        "tenant_type": getattr(tenant, "tipo", None),
+        "scope": normalized_scope,
+        "resolution_sources": list(dict.fromkeys(source for _tenant, source in candidates)),
+    }
+
+
+def _resolve_identity_event_tenant_id(filters: AnalyticsFilters) -> tuple[int | None, dict[str, Any]]:
+    """Resolve the authoritative TenantProfile key used by the event store."""
+
+    return _resolve_authoritative_analytics_tenant(
+        tenant_profile_id=getattr(filters, "tenant_profile_id", None),
+        tenant_slug=_requested_tenant_slug(),
+        tenant_id=getattr(filters, "tenant_id", None),
+        scope=getattr(filters, "scope", None),
+    )
+
+def _consistent_request_hint(values: list[Any], *, numeric: bool) -> tuple[Any, bool]:
+    normalized: list[Any] = []
+    for value in values:
+        if value in (None, ""):
+            continue
+        if numeric:
+            parsed = _positive_tenant_id(value)
+            if parsed is None:
+                return None, False
+            normalized.append(parsed)
+        else:
+            normalized.append(str(value).strip().lower())
+    unique = list(dict.fromkeys(normalized))
+    if len(unique) > 1:
+        return None, False
+    return (unique[0] if unique else None), True
+
+
+def _resolve_tenant_id_from_event_payload(payload: dict) -> tuple[int | None, dict[str, Any]]:
+    """Normalize event tenant hints to the authoritative TenantProfile id.
+
+    ``tenant_id`` remains a dual-namespace compatibility input (profile id or
+    legacy owner id), but collisions are rejected. New clients should send
+    ``tenant_profile_id`` or ``tenant_slug`` explicitly.
+    """
+
+    raw_tenant_values = [
+        payload.get("tenant_id"),
+        request.args.get("tenant_id"),
+        payload.get("tenant"),
+        request.args.get("tenant"),
+    ]
+    numeric_tenant_values: list[Any] = []
+    slug_values: list[Any] = [payload.get("tenant_slug"), request.args.get("tenant_slug")]
+    for value in raw_tenant_values:
+        if value in (None, ""):
+            continue
+        if _positive_tenant_id(value) is not None:
+            numeric_tenant_values.append(value)
+        else:
+            slug_values.append(value)
+
+    profile_id, profile_consistent = _consistent_request_hint(
+        [payload.get("tenant_profile_id"), request.args.get("tenant_profile_id")],
+        numeric=True,
+    )
+    owner_id, owner_consistent = _consistent_request_hint(
+        [payload.get("owner_tenant_id"), request.args.get("owner_tenant_id")],
+        numeric=True,
+    )
+    tenant_id, tenant_consistent = _consistent_request_hint(numeric_tenant_values, numeric=True)
+    tenant_slug, slug_consistent = _consistent_request_hint(slug_values, numeric=False)
+    if not all((profile_consistent, owner_consistent, tenant_consistent, slug_consistent)):
+        return _analytics_tenant_resolution_error(
+            "tenant_context_inconsistent",
+            "Los identificadores de tenant del body y la URL son invalidos o inconsistentes.",
+            status=409,
+        )
+
+    scope_values = [payload.get("scope"), request.args.get("scope"), request.args.get("entity")]
+    normalized_scopes = [
+        normalized
+        for normalized in (_normalize_analytics_scope(value) for value in scope_values if value not in (None, ""))
+        if normalized is not None
+    ]
+    raw_scopes = [str(value).strip() for value in scope_values if value not in (None, "")]
+    if raw_scopes and len(normalized_scopes) != len(raw_scopes):
+        return _analytics_tenant_resolution_error(
+            "tenant_scope_invalid",
+            "Se recibio un scope de tenant no soportado.",
+        )
+    if len(set(normalized_scopes)) > 1:
+        return _analytics_tenant_resolution_error(
+            "tenant_scope_inconsistent",
+            "Los scopes de tenant del body y la URL son inconsistentes.",
+            status=409,
+        )
+
+    tenant_type, tenant_type_consistent = _consistent_request_hint(
+        [payload.get("tenant_type"), request.args.get("tenant_type")],
+        numeric=False,
+    )
+    if not tenant_type_consistent:
+        return _analytics_tenant_resolution_error(
+            "tenant_type_inconsistent",
+            "Los tipos de tenant del body y la URL son inconsistentes.",
+            status=409,
+        )
+    tenant_type_scope = _normalize_analytics_scope(tenant_type)
+    explicit_scope = normalized_scopes[0] if normalized_scopes else None
+    if explicit_scope and tenant_type_scope and explicit_scope != tenant_type_scope:
+        return _analytics_tenant_resolution_error(
+            "tenant_scope_inconsistent",
+            "tenant_type y scope corresponden a tipos de tenant distintos.",
+            status=409,
+        )
+
+    profile_id, resolution = _resolve_authoritative_analytics_tenant(
+        tenant_profile_id=profile_id,
+        tenant_slug=tenant_slug,
+        tenant_id=tenant_id,
+        owner_tenant_id=owner_id,
+        scope=explicit_scope or tenant_type_scope,
+    )
+    if profile_id is None:
+        return None, resolution
+
+    # Vertical tenant types such as ``colegio`` use the PyME owner column but
+    # remain first-class classifications. Validate them against the profile
+    # instead of rejecting them as unknown analytics scopes.
+    if tenant_type and tenant_type_scope is None:
+        actual_tenant_type = str(resolution.get("tenant_type") or "").strip().lower()
+        if actual_tenant_type != tenant_type:
+            return _analytics_tenant_resolution_error(
+                "tenant_type_incompatible",
+                "tenant_type no coincide con el tipo del TenantProfile resuelto.",
+                status=409,
+                tenant_profile_id=profile_id,
+                tenant_type=tenant_type,
+                actual_tenant_type=actual_tenant_type,
+            )
+    return profile_id, resolution
 
 
 
@@ -957,14 +1339,14 @@ def analytics_templates():
 @analytics_bp.route("/identity/coverage", methods=["GET"])
 def analytics_identity_coverage():
     filters = parse_filters(request.args)
-    require_access(filters.tenant_id, "visor", required_capability="analytics.read")
-
     event_tenant_id, tenant_resolution = _resolve_identity_event_tenant_id(filters)
     if event_tenant_id is None:
         return _error_response(
             tenant_resolution.get("error", "tenant no resuelto"),
             status=int(tenant_resolution.get("status") or 400),
         )
+    access_tenant_id = str(tenant_resolution["owner_tenant_id"])
+    require_access(access_tenant_id, "visor", required_capability="analytics.read")
 
     try:
         limit = int(request.args.get("limit", 5000))
@@ -1040,7 +1422,7 @@ def analytics_identity_coverage():
     emit_alert_events = str(request.args.get("emit_alert_events", "0")).strip().lower() in {"1", "true", "yes"}
     alert_event_count = 0
     if emit_alert_events and alerts:
-        require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
+        require_access(access_tenant_id, "operador", required_capability="analytics.admin")
         event_payloads = _build_identity_alert_event_payloads(
             tenant_id=event_tenant_id,
             alerts=alerts,
@@ -1125,28 +1507,38 @@ def analytics_health():
 def analytics_event_ingest():
     payload = request.get_json(silent=True) or {}
     event_name = _resolve_event_name(payload)
-    tenant_id = _resolve_tenant_id_from_event_payload(payload)
-    if tenant_id is None:
-        current_app.logger.info("[analytics] ignored event without tenant context")
+    tenant_profile_id, tenant_resolution = _resolve_tenant_id_from_event_payload(payload)
+    if tenant_profile_id is None:
+        current_app.logger.info(
+            "[analytics] ignored event without authoritative tenant context code=%s",
+            tenant_resolution.get("code"),
+        )
         return _analytics_event_ignored_response("tenant_unresolved", event_name=event_name)
 
+    owner_tenant_id = int(tenant_resolution["owner_tenant_id"])
+
     try:
-        require_access(str(tenant_id), "operador", required_capability="analytics.admin")
+        require_access(str(owner_tenant_id), "operador", required_capability="analytics.admin")
     except HTTPException as exc:
         if exc.code not in {401, 403}:
             raise
         current_app.logger.info(
-            "[analytics] ignored event due to access guard tenant_id=%s status=%s",
-            tenant_id,
+            "[analytics] ignored event due to access guard owner_tenant_id=%s tenant_profile_id=%s status=%s",
+            owner_tenant_id,
+            tenant_profile_id,
             exc.code,
         )
-        return _analytics_event_ignored_response("access_denied", tenant_id=tenant_id, event_name=event_name)
+        return _analytics_event_ignored_response(
+            "access_denied",
+            tenant_id=owner_tenant_id,
+            event_name=event_name,
+        )
 
     identity = _current_contact_identity()
     payload_with_identity = _build_event_payload_with_identity(payload)
 
     analytics_ingestor.track(
-        tenant_id=tenant_id,
+        tenant_id=tenant_profile_id,
         event_name=event_name,
         payload=payload_with_identity,
         user_id=payload.get("user_id"),
@@ -1170,7 +1562,11 @@ def analytics_event_ingest():
             "accepted": True,
             "ignored": False,
             "contract_version": ANALYTICS_EVENT_INGEST_CONTRACT_VERSION,
-            "tenant_id": tenant_id,
+            # Keep the legacy owner-facing response field stable while making
+            # the event-store key explicit for new callers.
+            "tenant_id": owner_tenant_id,
+            "tenant_profile_id": tenant_profile_id,
+            "tenant_resolution": tenant_resolution,
             "event_name": event_name,
             "contact_key": payload_with_identity.get("contact_key"),
             "conversation_id": payload_with_identity.get("conversation_id"),

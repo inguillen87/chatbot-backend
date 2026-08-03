@@ -197,12 +197,12 @@ class TestAccessibilityAndMedia(unittest.TestCase):
 
     def test_web_audio_attachment_transcribes_and_updates_payload(self):
         chat_session = ChatSessionContext(
-            chat_session_id='web_audio_session', user_id=self.owner_user.id
+            chat_session_id='web_audio_session', user_id=self.viewer_user.id
         )
         db.session.add(chat_session)
 
         audio_adj = ArchivoAdjunto(
-            user_id=self.owner_user.id,
+            user_id=self.viewer_user.id,
             filename="nota.webm",
             nombre_original="nota.webm",
             mime="audio/webm",
@@ -242,12 +242,12 @@ class TestAccessibilityAndMedia(unittest.TestCase):
 
     def test_web_image_attachment_triggers_interpretation(self):
         chat_session = ChatSessionContext(
-            chat_session_id='web_image_session', user_id=self.owner_user.id
+            chat_session_id='web_image_session', user_id=self.viewer_user.id
         )
         db.session.add(chat_session)
 
         image_adj = ArchivoAdjunto(
-            user_id=self.owner_user.id,
+            user_id=self.viewer_user.id,
             filename="bache.jpg",
             nombre_original="bache.jpg",
             mime="image/jpeg",
@@ -285,6 +285,88 @@ class TestAccessibilityAndMedia(unittest.TestCase):
         self.assertIsInstance(interpreted, dict)
         self.assertEqual(interpreted.get("categoria_sugerida"), "bache")
         self.assertTrue(interpreted.get("es_reclamo"))
+
+    def test_web_attachment_rejects_a_different_authenticated_owner(self):
+        chat_session = ChatSessionContext(
+            chat_session_id="foreign_attachment_session",
+            user_id=self.viewer_user.id,
+        )
+        foreign_audio = ArchivoAdjunto(
+            user_id=self.owner_user.id,
+            filename="foreign.webm",
+            nombre_original="foreign.webm",
+            mime="audio/webm",
+            tamano=512,
+            url="https://cdn.example.com/foreign.webm",
+        )
+        db.session.add_all([chat_session, foreign_audio])
+        db.session.commit()
+
+        with patch(
+            "services.audio_transcription_service.transcribe_audio_from_url"
+        ) as mock_transcribe, patch(
+            "services.municipio_responder.responder_municipio"
+        ) as mock_responder_municipio:
+            response = responder_chatboc(
+                pregunta="",
+                owner_user=self.owner_user,
+                current_user=self.viewer_user,
+                rubro_obj=self.owner_user.rubro,
+                chat_db_context=chat_session,
+                uploaded_file_info={"id": foreign_audio.id},
+            )
+
+        self.assertEqual(response.get("fuente"), "attachment_identity_rejected")
+        mock_transcribe.assert_not_called()
+        mock_responder_municipio.assert_not_called()
+
+    def test_attachment_log_redacts_url_and_transcript(self):
+        chat_session = ChatSessionContext(
+            chat_session_id="redacted_attachment_log_session",
+            user_id=self.viewer_user.id,
+        )
+        sensitive_url = "https://cdn.example.com/audio.webm?token=secret-download-token"
+        sensitive_transcript = "DNI 32877851 vive en una direccion privada"
+        audio_adj = ArchivoAdjunto(
+            user_id=self.viewer_user.id,
+            filename="audio.webm",
+            nombre_original="audio.webm",
+            mime="audio/webm",
+            tamano=768,
+            url=sensitive_url,
+        )
+        db.session.add_all([chat_session, audio_adj])
+        db.session.commit()
+
+        uploaded_info = {
+            "id": audio_adj.id,
+            "source": "web",
+            "mime_type": "audio/webm",
+            "url": sensitive_url,
+            "transcribed_text": sensitive_transcript,
+        }
+        with self.assertLogs("services.logic", level="INFO") as captured, patch(
+            "services.municipio_responder.responder_municipio",
+            return_value={"message_body": "ok"},
+        ):
+            responder_chatboc(
+                pregunta="",
+                owner_user=self.owner_user,
+                current_user=self.viewer_user,
+                rubro_obj=self.owner_user.rubro,
+                chat_db_context=chat_session,
+                uploaded_file_info=uploaded_info,
+            )
+
+        rendered_logs = "\n".join(captured.output)
+        self.assertIn(f"id={audio_adj.id}", rendered_logs)
+        self.assertIn("source=web", rendered_logs)
+        self.assertIn("mime_category=audio", rendered_logs)
+        self.assertIn("has_transcript=True", rendered_logs)
+        self.assertIn(f"transcript_length={len(sensitive_transcript)}", rendered_logs)
+        self.assertNotIn(sensitive_url, rendered_logs)
+        self.assertNotIn("secret-download-token", rendered_logs)
+        self.assertNotIn(sensitive_transcript, rendered_logs)
 
     @unittest.skip("Test is flawed and needs to be rewritten. Mocks wrong handler.")
     @patch('services.pymes.llamar_gemini')

@@ -20,6 +20,7 @@ class _DummyHttpxClient:
 @pytest.fixture(autouse=True)
 def _base_patches(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_ALLOW_NETWORK_IN_TESTS", "1")
     monkeypatch.setattr(
         openai_maps_service,
         "httpx",
@@ -27,6 +28,7 @@ def _base_patches(monkeypatch):
     )
     yield
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ALLOW_NETWORK_IN_TESTS", raising=False)
 
 
 def _make_schema():

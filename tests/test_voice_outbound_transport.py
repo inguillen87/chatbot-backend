@@ -11,6 +11,7 @@ def _app():
     app.config.update(
         TWILIO_ACCOUNT_SID="AC-test",
         TWILIO_AUTH_TOKEN="auth-test",
+        TWILIO_ALLOW_NETWORK_IN_TESTS=True,
         BACKEND_URL="https://api.chatboc.ar",
         # A configured WhatsApp sender must not replace the explicit voice ID.
         TWILIO_PHONE_NUMBER="whatsapp:+14155550123",

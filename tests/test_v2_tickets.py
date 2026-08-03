@@ -39,6 +39,7 @@ class V2TicketsApiTest(unittest.TestCase):
         db.session.add(self.admin)
 
         self.employee = self._create_user("empleado@t1.test", "empleado", tenant_slug="tenant-1", tenant_id=self.tenant_1.id)
+        self.employee.ticket_categorias = "general"
         self.end_user = self._create_user("usuario@t1.test", "usuario", tenant_slug="tenant-1", tenant_id=self.tenant_1.id)
 
         self.admin_2 = self._create_user("admin@t2.test", "admin", tenant_slug="tenant-2", tenant_id=None)
@@ -84,6 +85,7 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 201)
         payload = resp.get_json()
         self.assertEqual(payload.get("tenant_id"), self.tenant_1.id)
+        self.assertEqual(payload.get("category"), "general")
 
     def test_create_ticket_without_tenant_fails(self):
         headers = self._auth_header(self.employee)
@@ -165,10 +167,17 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertIn("ticket.status_changed", types)
 
     def test_detail_endpoint_returns_tenant_ticket_contract(self):
+        self.employee.ticket_categorias = "general"
+        db.session.commit()
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
         created = self.client.post(
             "/api/v2/tickets",
-            json={"title": "Detalle", "description": "Contrato estable", "channel": "widget"},
+            json={
+                "title": "Detalle",
+                "description": "Contrato estable",
+                "channel": "widget",
+                "category": "general",
+            },
             headers=headers,
         ).get_json()
         ticket_id = created["id"]
@@ -192,6 +201,8 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual((cross_tenant.get_json() or {}).get("reason_code"), "ticket_not_found")
 
     def test_assisted_marketplace_ticket_promotes_operational_contract(self):
+        self.employee.ticket_categorias = "luminaria"
+        db.session.commit()
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
         ticket = TenantTicket(
             tenant_id=self.tenant_1.id,
@@ -288,6 +299,8 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(detail_ticket["recommended_next_action"], "Resolver faltantes y responder")
 
     def test_detail_messages_and_timeline_expose_source_attachments(self):
+        self.employee.ticket_categorias = "marketplace_assisted_order"
+        db.session.commit()
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
         attachment = {
             "id": 77,
@@ -612,6 +625,42 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         items = (resp.get_json() or {}).get("items") or []
         self.assertTrue(any(item.get("ticket_id") == ticket.id for item in items))
+        self.assertTrue((resp.get_json() or {}).get("read_only"))
+
+    def test_breach_detection_is_category_scoped_and_read_only_for_employee(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        past_due = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        restricted = TenantTicket(
+            tenant_id=self.tenant_1.id,
+            user_id=self.admin.id,
+            categoria="restricted",
+            descripcion="SLA fuera del alcance",
+            estado="nuevo",
+            origen="web",
+            datos_extra={
+                "title": "SLA restringido",
+                "priority": "urgent",
+                "sla": {
+                    "resolution_due_at": past_due,
+                    "next_update_due_at": past_due,
+                },
+            },
+        )
+        db.session.add(restricted)
+        db.session.commit()
+        before = copy.deepcopy(restricted.datos_extra)
+
+        response = self.client.get("/api/v2/sla/breaches", headers=headers)
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertNotIn(
+            restricted.id,
+            {item.get("ticket_id") for item in (response.get_json() or {}).get("items", [])},
+        )
+        db.session.expire_all()
+        refreshed = db.session.get(TenantTicket, restricted.id)
+        self.assertEqual(refreshed.datos_extra, before)
+        self.assertNotIn("sla_breach_event_emitted_at", refreshed.datos_extra or {})
 
     def test_sla_endpoints_require_operator_in_tenant(self):
         no_token = self.client.get("/api/v2/sla/policies", headers={"X-Tenant-Slug": "tenant-1"})

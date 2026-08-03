@@ -1,7 +1,7 @@
 import unittest
 from app import create_app, db
 from config import Config
-from models import User, MunicipioTicket
+from models import User, MunicipioTicket, TenantProfile
 from datetime import datetime
 from routes.ticket import get_tickets_del_usuario_logic
 
@@ -22,17 +22,28 @@ class TicketSearchTests(unittest.TestCase):
         self.neighbor = User(email='vecino@test.com', name='Juan Gomez')
         self.neighbor.set_password('password')
         db.session.add_all([self.admin, self.neighbor])
-        db.session.commit()
+        db.session.flush()
 
         self.admin.municipio_id = self.admin.id
+        self.tenant = TenantProfile(
+            slug='ticket-search-municipio',
+            nombre='Municipio Ticket Search',
+            tipo='municipio',
+            municipio_id=self.admin.id,
+            is_active=True,
+        )
+        db.session.add(self.tenant)
+        db.session.flush()
+        self.admin.tenant_id = self.tenant.id
+        self.admin.tenant_slug = self.tenant.slug
         db.session.commit()
 
         t1 = MunicipioTicket(id=1, nro_ticket='100', estado='nuevo', fecha=datetime.now(),
                              categoria='luminaria rota', municipio_id=self.admin.id, user_id=self.neighbor.id,
-                             nombre_vecino='Carlos Perez', dni_vecino='12345678')
+                             tenant_id=self.tenant.id, nombre_vecino='Carlos Perez', dni_vecino='12345678')
         t2 = MunicipioTicket(id=2, nro_ticket='101', estado='resuelto', fecha=datetime.now(),
                              categoria='bache', municipio_id=self.admin.id, user_id=self.neighbor.id,
-                             nombre_vecino='Juan Gomez')
+                             tenant_id=self.tenant.id, nombre_vecino='Juan Gomez')
         db.session.add_all([t1, t2])
         db.session.commit()
 
@@ -86,7 +97,7 @@ class TicketSearchTests(unittest.TestCase):
         self.assertEqual(data['dni'], '12345678')
         self.assertEqual(data['tenant_type'], 'municipio')
         self.assertEqual(data['municipio_id'], self.admin.id)
-        self.assertEqual(data['socket_room'], f'municipio_{self.admin.id}')
+        self.assertEqual(data['socket_room'], f'tenant_{self.tenant.id}')
 
     def test_dynamic_keyword_cache(self):
         from services.herramientas_municipio import recargar_cache_keywords_para_tests
@@ -94,7 +105,7 @@ class TicketSearchTests(unittest.TestCase):
 
         nuevo = MunicipioTicket(id=3, nro_ticket='102', estado='nuevo', fecha=datetime.now(),
                                  categoria='luminaria', municipio_id=self.admin.id, user_id=self.neighbor.id,
-                                 nombre_vecino='Ana Lopez', detalles='alumbrado publico apagado')
+                                 tenant_id=self.tenant.id, nombre_vecino='Ana Lopez', detalles='alumbrado publico apagado')
         db.session.add(nuevo)
         db.session.commit()
 

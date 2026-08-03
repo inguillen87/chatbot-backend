@@ -267,8 +267,43 @@ def responder_chatboc(
     procesamiento_archivo_en_curso = False # Nueva bandera
 
     if uploaded_file_info and isinstance(uploaded_file_info, dict):
+        raw_attachment_id = uploaded_file_info.get("id")
+        try:
+            safe_attachment_id = int(raw_attachment_id) if raw_attachment_id is not None else None
+        except (TypeError, ValueError):
+            safe_attachment_id = None
+
+        raw_source = str(uploaded_file_info.get("source") or "").strip().lower()
+        safe_source = {
+            "omnichannel": "omnichannel",
+            "twilio": "twilio",
+            "web": "web",
+            "web_upload": "web",
+            "whatsapp": "whatsapp",
+        }.get(raw_source, "other" if raw_source else "unspecified")
+        raw_mime = str(
+            uploaded_file_info.get("mime_type")
+            or uploaded_file_info.get("mimeType")
+            or ""
+        ).strip().lower()
+        raw_mime_category = raw_mime.partition("/")[0]
+        safe_mime_category = (
+            raw_mime_category
+            if raw_mime_category in {"application", "audio", "image", "text", "video"}
+            else "other" if raw_mime else "unspecified"
+        )
+        transcript_value = uploaded_file_info.get("transcribed_text")
+        has_transcript = isinstance(transcript_value, str) and bool(
+            transcript_value.strip()
+        )
         logger.info(
-            f"DEBUG: Processing uploaded_file_info in responder_chatboc: {uploaded_file_info}"
+            "Processing uploaded attachment id=%s source=%s mime_category=%s "
+            "has_transcript=%s transcript_length=%s",
+            safe_attachment_id,
+            safe_source,
+            safe_mime_category,
+            has_transcript,
+            len(transcript_value) if isinstance(transcript_value, str) else 0,
         )
         if uploaded_file_info.get("id"):
             try:

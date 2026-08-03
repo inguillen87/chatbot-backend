@@ -7,7 +7,7 @@ from functools import wraps
 from typing import Any, Mapping, Optional
 from flask_limiter.errors import RateLimitExceeded
 from werkzeug.utils import secure_filename
-from flask import Blueprint, g, request, jsonify, current_app, make_response, send_from_directory, render_template
+from flask import Blueprint, g, request, jsonify, current_app, make_response, render_template
 from socket_service import (
     emit_ticket_update,
     emit_ticket_comment,
@@ -33,6 +33,11 @@ from models import (
 )
 from datetime import datetime, timedelta
 from services.ticket_service import servicio_tickets
+from services.employee_ticket_access import (
+    apply_employee_ticket_category_scope,
+    employee_ticket_category_access_allows,
+    employee_ticket_category_scope,
+)
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     municipio_ticket_belongs_to_tenant,
@@ -1487,23 +1492,8 @@ def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[in
     el nuevo enrutamiento multi-tenant basado en categorías persistentes.
     """
 
-    nombres: list[str] = []
-    ids: list[int] = []
-    categorias_rel = getattr(user, "categorias_ticket", None) or getattr(user, "categorias", None) or []
-    for cat in categorias_rel:
-        nombre = getattr(cat, "nombre", None)
-        if nombre:
-            nombres.append(nombre.strip().lower())
-        if getattr(cat, "id", None):
-            ids.append(cat.id)
-
-    if not nombres and getattr(user, "ticket_categorias", None):
-        nombres.extend(
-            [c.strip().lower() for c in user.ticket_categorias.split(",") if c.strip()]
-        )
-
-    # Remover duplicados preservando orden
-    return list(dict.fromkeys(nombres)), list(dict.fromkeys(ids))
+    scope = employee_ticket_category_scope(user)
+    return sorted(scope.names), sorted(scope.ids)
 
 
 def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], Optional[int], Optional[int]]:
@@ -1638,7 +1628,7 @@ def _ticket_matches_tenant_scope(
 
 
 def _ticket_scope_access_allows(ticket_type: str, ticket_obj, current_user: Optional[User]) -> bool:
-    """Return whether the authenticated tenant context owns this ticket."""
+    """Return whether tenant and employee category scope allow this ticket."""
 
     if not current_user:
         return False
@@ -1646,12 +1636,17 @@ def _ticket_scope_access_allows(ticket_type: str, ticket_obj, current_user: Opti
     if not _authorized_for_tenant_scope(current_user, tenant):
         return False
     if ticket_type == "municipio":
-        return municipio_ticket_belongs_to_tenant(ticket_obj, tenant)
-    return _ticket_matches_tenant_scope(
-        ticket_obj,
-        tenant,
-        tenant_municipio_id if ticket_type == "municipio" else None,
-        tenant_pyme_id if ticket_type == "pyme" else None,
+        tenant_allows = municipio_ticket_belongs_to_tenant(ticket_obj, tenant)
+    else:
+        tenant_allows = _ticket_matches_tenant_scope(
+            ticket_obj,
+            tenant,
+            tenant_municipio_id if ticket_type == "municipio" else None,
+            tenant_pyme_id if ticket_type == "pyme" else None,
+        )
+    return bool(
+        tenant_allows
+        and employee_ticket_category_access_allows(current_user, ticket_obj)
     )
 
 
@@ -2464,16 +2459,11 @@ def get_tickets_del_usuario_logic(current_user: User):
         # Las facetas salen de scoped_query; summary y lista mantienen el filtro
         # legacy de categoria cuando se pide explicitamente.
         scoped_query = query_base
-        if _is_employee_user(current_user):
-            categorias_empleado, categorias_ids = _categorias_permitidas_para_empleado(current_user)
-            if categorias_ids:
-                scoped_query = scoped_query.filter(TicketModel.categoria_id.in_(categorias_ids))
-            elif categorias_empleado:
-                scoped_query = scoped_query.filter(
-                    func.lower(TicketModel.categoria).in_(categorias_empleado)
-                )
-            else:
-                scoped_query = scoped_query.filter(False)
+        scoped_query = apply_employee_ticket_category_scope(
+            scoped_query,
+            current_user,
+            TicketModel,
+        )
 
         query_base = _apply_ticket_category_filter(
             scoped_query,
@@ -3376,10 +3366,6 @@ def get_ticket_details(current_user: User, ticket_id: int):
     if not _ticket_scope_access_allows("municipio", ticket, current_user):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    error_response = _validar_asignacion_empleado(ticket, current_user)
-    if error_response:
-        return error_response
-
     ticket_data = _serialize_ticket_details(ticket, "municipio")
     return _ticket_json(ticket_data, request_id=request_id)
 
@@ -3399,22 +3385,8 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    tenant, tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
-
-    if tipo == "municipio":
-        tenant_scope_allows = (
-            _authorized_for_tenant_scope(current_user, tenant)
-            and _ticket_matches_tenant_scope(ticket_obj, tenant, tenant_municipio_id, None)
-        )
-        if not tenant_scope_allows:
-            return jsonify({"error": "Ticket no encontrado."}), 404
-    else:
-        tenant_scope_allows = (
-            _authorized_for_tenant_scope(current_user, tenant)
-            and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
-        )
-        if not tenant_scope_allows:
-            return jsonify({"error": "No tienes permiso para asignar este ticket."}), 403
+    if not _ticket_scope_access_allows(tipo, ticket_obj, current_user):
+        return jsonify({"error": "Ticket no encontrado."}), 404
 
     data = request.get_json(silent=True) or {}
     requested_user_id = (
@@ -3539,11 +3511,7 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
 
     tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket, current_user)
     if not tenant_scope_allows:
-        return jsonify({"error": "No tienes permiso para ver este ticket."}), 403
-
-    error_response = _validar_asignacion_empleado(ticket, current_user)
-    if error_response:
-        return error_response
+        return jsonify({"error": "Ticket no encontrado."}), 404
 
     ticket_data = _serialize_ticket_details(ticket, "pyme")
     return _ticket_json(ticket_data, request_id=request_id)
@@ -3591,17 +3559,11 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     if not ticket_obj:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
+    if not _ticket_scope_access_allows(tipo, ticket_obj, current_user):
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
     if ticket_obj.estado == "cerrado":
         return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
-
-    # Refuerzo de permisos:
-    if tipo == 'municipio':
-        if not _ticket_scope_access_allows("municipio", ticket_obj, current_user):
-            return jsonify({"error": "Ticket no encontrado."}), 404
-    elif tipo == 'pyme':
-        tenant_scope_allows = _ticket_scope_access_allows("pyme", ticket_obj, current_user)
-        if not tenant_scope_allows:
-            return jsonify({"error": "No tienes permiso para responder este ticket."}), 403
 
     error_response = _validar_asignacion_empleado(ticket_obj, current_user)
     if error_response:
@@ -3925,12 +3887,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
     # Refuerzo de permisos:
-    if tipo == 'municipio':
-        if not _ticket_scope_access_allows("municipio", ticket_obj, current_user):
-            return jsonify({"error": "Ticket no encontrado."}), 404
-    elif tipo == 'pyme':
-        if not _ticket_scope_access_allows("pyme", ticket_obj, current_user):
-            return jsonify({"error": "No tienes permiso para cambiar el estado de este ticket."}), 403
+    if not _ticket_scope_access_allows(tipo, ticket_obj, current_user):
+        return jsonify({"error": "Ticket no encontrado."}), 404
 
     error_response = _validar_asignacion_empleado(ticket_obj, current_user)
     if error_response:
@@ -4711,7 +4669,11 @@ def get_panel_por_categoria(current_user: User):
         if not _authorized_for_tenant_scope(current_user, tenant):
             return jsonify({"error": "Acceso denegado."}), 403
 
-        query = scoped_municipio_ticket_query(tenant)
+        query = apply_employee_ticket_category_scope(
+            scoped_municipio_ticket_query(tenant),
+            current_user,
+            MunicipioTicket,
+        )
 
         all_tickets_for_user_municipio = query.order_by(MunicipioTicket.fecha.desc()).all()
 
@@ -4721,18 +4683,6 @@ def get_panel_por_categoria(current_user: User):
         # Por ahora, las métricas serán por categoría, y el empleado solo verá las categorías asignadas.
 
         tickets_to_process = all_tickets_for_user_municipio
-        if _is_employee_user(current_user):
-            cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
-            nombres_set = set(cat_nombres)
-            ids_set = set(cat_ids)
-            tickets_to_process = [
-                t
-                for t in all_tickets_for_user_municipio
-                if (
-                    (t.categoria_id in ids_set if getattr(t, "categoria_id", None) is not None else False)
-                    or (t.categoria or "").strip().lower() in nombres_set
-                )
-            ]
 
         # Agrupar tickets por categoría
         tickets_grouped_by_cat = defaultdict(list)
@@ -4809,24 +4759,15 @@ def get_panel_pyme(current_user: User):
         if not _authorized_for_tenant_scope(current_user, tenant):
             return jsonify({"error": "No tienes un tenant verificable para ver este panel."}), 403
 
-        query = PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id)
+        query = apply_employee_ticket_category_scope(
+            PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id),
+            current_user,
+            PymeTicket,
+        )
 
         all_tickets_for_user_pyme = query.order_by(PymeTicket.fecha.desc()).all()
 
         tickets_to_process = all_tickets_for_user_pyme
-        if _is_employee_user(current_user):
-            cat_nombres, cat_ids = _categorias_permitidas_para_empleado(current_user)
-            nombres_set = set(cat_nombres)
-            ids_set = set(cat_ids)
-            tickets_to_process = [
-                t
-                for t in all_tickets_for_user_pyme
-                if (
-                    t.asignado_a_id == current_user.id
-                    or (getattr(t, "categoria_id", None) in ids_set)
-                    or (t.categoria or "").strip().lower() in nombres_set
-                )
-            ]
 
         tickets_grouped_by_cat = defaultdict(list)
         for t_obj in tickets_to_process:
@@ -5086,6 +5027,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
             tipo_ticket=tipo,
             municipio_id=getattr(tenant, "municipio_id", None),
             tenant_id=tenant.id,
+            actor=current_user,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
@@ -5099,6 +5041,7 @@ def mapa_de_tickets(current_user: User, tipo: str):
         datos = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa( # Asumiendo que se renombra/modifica el servicio
             tipo_ticket=tipo,
             tenant_id=tenant.id,
+            actor=current_user,
             fecha_inicio=fecha_inicio,
             fecha_fin=fecha_fin,
             categoria=categoria,
@@ -5171,6 +5114,13 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
     actor_user = _effective_ticket_actor(current_user, owner_user)
     pin = request.args.get("pin")
 
+    if (
+        actor_user
+        and _is_employee_user(actor_user)
+        and not _ticket_scope_access_allows(tipo, ticket_obj, actor_user)
+    ):
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
     if tipo == 'municipio':
         es_agente = bool(
             actor_user
@@ -5182,13 +5132,10 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
         if not (es_agente or es_dueno or es_anon or pin_valido):
             return jsonify({"error": MENSAJE_SIN_PERMISOS}), 403
     elif tipo == 'pyme':
-        tenant, _tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(actor_user) if actor_user else (None, None, None)
-        tenant_scope_allows = (
+        es_agente = bool(
             actor_user
-            and _authorized_for_tenant_scope(actor_user, tenant)
-            and _ticket_matches_tenant_scope(ticket_obj, tenant, None, tenant_pyme_id)
+            and _ticket_scope_access_allows("pyme", ticket_obj, actor_user)
         )
-        es_agente = actor_user and tenant_scope_allows
         es_dueno = actor_user and ticket_obj.user_id == actor_user.id
         es_anon = anon_id and ticket_obj.anon_id == anon_id
         pin_valido = pin and str(ticket_obj.consulta_pin) == str(pin)
@@ -5236,7 +5183,7 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
             "estado": ticket_obj.estado or "Sin estado",
             "fecha_creacion": _format_datetime_safe(getattr(ticket_obj, "fecha", None)),
             "ultima_actividad": _format_datetime_safe(getattr(ticket_obj, "ultima_actividad", None)),
-            "canal_ingreso": ticket_obj.canal_ingreso or None,
+            "canal_ingreso": getattr(ticket_obj, "canal_ingreso", None),
         }
 
         comentarios_info = []
@@ -5307,10 +5254,3 @@ def send_ticket_history(current_user: User, tipo: str, ticket_id: int, anon_id: 
 #     # or by ensuring GCS URLs are not easily guessable if direct access is allowed.
 #     # For simplicity, we rely on the main /archivos endpoint.
 #     return jsonify({"error": "This endpoint is deprecated."}), 410
-
-@ticket_bp.route('/tickets/panel', methods=['GET'])
-@token_requerido
-@admin_o_empleado_requerido
-def ticket_panel(current_user: User):
-    """Renderiza el panel de tickets."""
-    return send_from_directory('static', 'ticket_panel.html')

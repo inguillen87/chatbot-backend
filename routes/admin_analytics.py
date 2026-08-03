@@ -12,13 +12,17 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from flask import Blueprint, Response, abort, jsonify, request
-from sqlalchemy import func, or_
+from sqlalchemy import false, func, or_
 
 from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, db
 from services.analytics import get_geo_heatmap, get_summary
 from services.analytics.filters import parse_filters
 from services.analytics.rbac import require_access
-from services.tenant_ticket_scope import municipio_ticket_scope_filter
+from services.tenant_ticket_scope import (
+    municipio_ticket_scope_filter,
+    resolve_unique_tenant_for_owner,
+    tenant_owner_ids,
+)
 from utils.map_config import get_map_config
 
 admin_analytics_bp = Blueprint("admin_analytics", __name__, url_prefix="/admin/analytics")
@@ -67,6 +71,40 @@ def _tenant_id_as_int(value: str) -> int:
         return int(value)
     except (TypeError, ValueError):
         abort(400, description="tenant_id must be numeric")
+
+
+def _resolve_analytics_tenant_profile(filters) -> TenantProfile | None:
+    """Resolve the profile behind the legacy analytics owner identifier.
+
+    ``filters.tenant_id`` is still the owner id used by RBAC. Modern analytics,
+    survey and ticket tables store ``TenantProfile.id`` instead. Never treat the
+    raw owner value as a profile primary key: those integer domains can collide.
+    """
+
+    owner_id = _tenant_id_as_int(filters.tenant_id)
+    exact_profile_id = getattr(filters, "tenant_profile_id", None)
+    if exact_profile_id is not None:
+        tenant = db.session.get(TenantProfile, int(exact_profile_id))
+        if tenant is not None and owner_id in tenant_owner_ids(tenant):
+            return tenant
+        return None
+
+    try:
+        resolution = resolve_unique_tenant_for_owner(owner_id)
+    except ValueError:
+        return None
+    if resolution.status == "unique":
+        return resolution.tenant
+    return None
+
+
+def _analytics_event_tenant_id(filters) -> int | None:
+    tenant = _resolve_analytics_tenant_profile(filters)
+    return int(tenant.id) if tenant is not None else None
+
+
+def _tenant_profile_column_filter(column, tenant_profile_id: int | None):
+    return column == tenant_profile_id if tenant_profile_id is not None else false()
 
 
 def _ensure_total_interactions(payload: dict[str, Any]) -> dict[str, Any]:
@@ -130,7 +168,7 @@ def _dashboard_cache_key(filters) -> str:
 
 
 def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict[str, Any]:
-    tenant_id = _tenant_id_as_int(filters.tenant_id)
+    tenant_profile_id = _analytics_event_tenant_id(filters)
     try:
         window_minutes_int = max(1, int(window_minutes))
     except (TypeError, ValueError):
@@ -139,7 +177,7 @@ def _build_whatsapp_funnel_payload(filters, *, window_minutes: int = 60) -> dict
     cutoff = now - timedelta(minutes=window_minutes_int)
 
     query = AnalyticsEventV2.query.filter(
-        AnalyticsEventV2.tenant_id == tenant_id,
+        AnalyticsEventV2.tenant_id == tenant_profile_id,
         AnalyticsEventV2.ts >= cutoff,
         AnalyticsEventV2.event_name.in_([stage[0] for stage in _WHATSAPP_FUNNEL_STAGES]),
     )
@@ -838,13 +876,13 @@ def _compact_hotspots(hotspots: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _build_realtime_comments(
     *,
-    tenant_id: int,
+    tenant: TenantProfile | None,
     cutoff: datetime,
     events: list[Any],
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     comments: list[dict[str, Any]] = []
-    tenant = db.session.get(TenantProfile, tenant_id)
+    tenant_profile_id = int(tenant.id) if tenant is not None else None
 
     for row in events:
         metadata = row.metadata if isinstance(row.metadata, dict) else {}
@@ -871,7 +909,7 @@ def _build_realtime_comments(
 
     survey_rows = (
         EncComentario.query.join(EncEncuesta, EncComentario.encuesta_id == EncEncuesta.id)
-        .filter(EncEncuesta.tenant_id == tenant_id)
+        .filter(EncEncuesta.tenant_id == tenant_profile_id)
         .filter(EncComentario.created_at >= cutoff)
         .order_by(EncComentario.created_at.desc())
         .limit(limit)
@@ -898,7 +936,7 @@ def _build_realtime_comments(
         .filter(
             or_(
                 municipio_ticket_scope_filter(tenant),
-                PymeTicket.tenant_id == tenant_id,
+                _tenant_profile_column_filter(PymeTicket.tenant_id, tenant_profile_id),
             )
         )
         .order_by(TicketComentario.fecha.desc())
@@ -1134,8 +1172,8 @@ def admin_analytics_heatmap():
     tz = request.args.get("tz") or "UTC"
     base = get_geo_heatmap(filters)
 
-    tenant_id = _tenant_id_as_int(filters.tenant_id)
-    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_id)
+    tenant_profile_id = _analytics_event_tenant_id(filters)
+    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_profile_id)
     if filters.date_from:
         query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
     if filters.date_to:
@@ -1238,12 +1276,13 @@ def _coerce_window_minutes(value: Any, *, default: int = 30) -> int:
     return max(5, min(parsed, 24 * 60))
 
 def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[str, Any]:
-    tenant_id = _tenant_id_as_int(filters.tenant_id)
-    tenant = db.session.get(TenantProfile, tenant_id)
+    owner_id = _tenant_id_as_int(filters.tenant_id)
+    tenant = _resolve_analytics_tenant_profile(filters)
+    tenant_profile_id = int(tenant.id) if tenant is not None else None
     window_minutes = _coerce_window_minutes(window_minutes)
     cutoff = datetime.utcnow() - timedelta(minutes=window_minutes)
 
-    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_id).filter(AnalyticsEventV2.ts >= cutoff)
+    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_profile_id).filter(AnalyticsEventV2.ts >= cutoff)
     events = query.with_entities(
         AnalyticsEventV2.event_name.label("event_name"),
         AnalyticsEventV2.channel.label("channel"),
@@ -1268,10 +1307,10 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         if sent in sentiment:
             sentiment[sent] += 1
 
-    survey_responses = EncRespuesta.query.filter_by(tenant_id=tenant_id).filter(EncRespuesta.created_at >= cutoff).count()
+    survey_responses = EncRespuesta.query.filter_by(tenant_id=tenant_profile_id).filter(EncRespuesta.created_at >= cutoff).count()
     survey_comments = (
         EncComentario.query.join(EncEncuesta, EncComentario.encuesta_id == EncEncuesta.id)
-        .filter(EncEncuesta.tenant_id == tenant_id)
+        .filter(EncEncuesta.tenant_id == tenant_profile_id)
         .filter(EncComentario.created_at >= cutoff)
         .count()
     )
@@ -1284,7 +1323,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         .filter(
             or_(
                 municipio_ticket_scope_filter(tenant),
-                PymeTicket.tenant_id == tenant_id,
+                _tenant_profile_column_filter(PymeTicket.tenant_id, tenant_profile_id),
             )
         )
         .count()
@@ -1313,7 +1352,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
     geo_layers = _build_maplibre_heatmap_layers(filtered_events, style_url=style_url, source_limit=source_limit, bbox=bbox)
     geo_points = _geo_points_from_layers(geo_layers, limit=source_limit)
     hotspots = _compact_hotspots(_build_hotspots(filtered_events, limit=20))
-    comments = _build_realtime_comments(tenant_id=tenant_id, cutoff=cutoff, events=list(events), limit=20)
+    comments = _build_realtime_comments(tenant=tenant, cutoff=cutoff, events=list(events), limit=20)
     map_reading = _map_reading_contract(
         geo_layers=geo_layers,
         geo_points=geo_points,
@@ -1337,7 +1376,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
     return {
         "contract_version": "analytics.realtime_hub.v1",
         "request_id": _request_id(),
-        "tenant_id": tenant_id,
+        "tenant_id": owner_id,
         "scope": filters.scope,
         "window_minutes": window_minutes,
         "cutoff": cutoff.isoformat() + "Z",
@@ -1417,8 +1456,8 @@ def admin_analytics_export_pdf():
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
     overview = get_summary(filters)
 
-    tenant_id = _tenant_id_as_int(filters.tenant_id)
-    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_id)
+    tenant_profile_id = _analytics_event_tenant_id(filters)
+    query = AnalyticsEventV2.query.filter(AnalyticsEventV2.tenant_id == tenant_profile_id)
     if filters.date_from:
         query = query.filter(AnalyticsEventV2.ts >= filters.date_from)
     if filters.date_to:

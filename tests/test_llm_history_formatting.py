@@ -107,5 +107,52 @@ class LLMHistoryFormattingTest(unittest.TestCase):
         self.assertEqual(usuario_payload.get('demo_display_name'), "Demo Bodega")
         self.assertEqual(usuario_payload.get('demo_description'), "Flujo guiado")
 
+    def test_canonical_whatsapp_modality_is_forwarded_without_raw_provider_data(self):
+        contexto = {
+            "estado_conversacion": ConversationState.CONVERSACION_GENERAL_LLM.name,
+            "historial_conversacion_general_llm": [],
+            "datos_parciales_llm_reclamo": {},
+        }
+        inbound_context = {
+            "contract_version": "whatsapp.inbound_content.v1",
+            "kind": "emoji",
+            "durable_message_kind": "text",
+            "is_language_input": True,
+            "has_media": False,
+            "media_mime_type": None,
+            "evidence_policy": "not_applicable",
+            "reason": None,
+        }
+        context = {
+            "chat_session_uuid": "abc",
+            "whatsapp_inbound_content": inbound_context,
+        }
+        viewer = SimpleNamespace(nombre="Vecino", direccion=None, telefono=None, email=None)
+        owner = SimpleNamespace(municipio_id=1)
+
+        with patch('services.municipio_responder.llamar_gemini') as mock_llm:
+            mock_llm.return_value = ({
+                "message_body": "ok",
+                "accion_backend": "responder_directamente",
+                "datos_estructura": {},
+                "pedir_info": None,
+                "botones": [],
+            }, {})
+
+            handle_llm_interaction(
+                None,
+                "👍🏽",
+                context,
+                viewer,
+                owner,
+                None,
+                contexto,
+            )
+
+        usuario_payload = mock_llm.call_args.kwargs["usuario"]
+        self.assertEqual(usuario_payload["entrada_whatsapp"], inbound_context)
+        self.assertNotIn("provider_url", usuario_payload["entrada_whatsapp"])
+        self.assertNotIn("body", usuario_payload["entrada_whatsapp"])
+
 if __name__ == '__main__':
     unittest.main()

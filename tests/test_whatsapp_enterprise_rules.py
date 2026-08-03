@@ -4,10 +4,16 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import jwt
+import pytest
 
 from app import db
-from models import MessageTemplateRegistry, TenantProfile, User
+from models import MessageTemplateRegistry, Notification, TenantProfile, User
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
+
+
+@pytest.fixture(autouse=True)
+def _allow_explicit_mocked_twilio(monkeypatch):
+    monkeypatch.setenv("TWILIO_ALLOW_NETWORK_IN_TESTS", "1")
 
 
 def _auth_headers(app, user: User, tenant_slug: str) -> dict:
@@ -105,7 +111,17 @@ def test_whatsapp_rules_uses_contact_state_24h_window(client, app):
     dispatch = client.post("/api/workers/notifications/dispatch", headers=headers)
     assert dispatch.status_code == 200
     payload = dispatch.get_json()
-    assert payload["sent"] >= 1
+    assert payload["sent"] == 0
+    assert payload["blocked"] >= 1
+    assert payload["failed"] == 0
+
+    notification = Notification.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key="wa-rule-state-1",
+    ).one()
+    assert notification.status == "blocked"
+    assert notification.last_error == "whatsapp_transport_unavailable"
+    assert notification.next_retry_at is None
 
 
 def test_whatsapp_template_catalog_and_policy_test_endpoint(client, app):

@@ -122,6 +122,16 @@ def list_sla_breaches_v2():
     if role_error:
         return role_error
 
-    breaches = detect_sla_breaches_for_tenant(tenant, actor_user=getattr(g, "viewer", None))
-    db.session.commit()
-    return _json_response({"contract_version": "sla.v2.breaches", "items": breaches, "total": len(breaches)})
+    breaches = detect_sla_breaches_for_tenant(
+        tenant,
+        actor_user=getattr(g, "viewer", None),
+        materialize=False,
+    )
+    return _json_response(
+        {
+            "contract_version": "sla.v2.breaches",
+            "items": breaches,
+            "total": len(breaches),
+            "read_only": True,
+        }
+    )

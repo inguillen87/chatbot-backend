@@ -35,12 +35,32 @@ class EmpleadosRouteTests(unittest.TestCase):
         db.session.commit()
         self.admin_id = user.id
 
+    def _bind_admin_to_tenant(self, *, slug: str, tipo: str = 'municipio'):
+        """Give legacy route fixtures an explicit organization boundary."""
+
+        admin = db.session.get(User, self.admin_id)
+        admin.tipo_chat = tipo
+        tenant = TenantProfile(
+            slug=slug,
+            nombre=f'Tenant {slug}',
+            tipo=tipo,
+            municipio_id=admin.id if tipo == 'municipio' else None,
+            pyme_id=admin.id if tipo == 'pyme' else None,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        admin.tenant_id = tenant.id
+        admin.tenant_slug = tenant.slug
+        db.session.commit()
+        return admin, tenant
+
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
 
     def test_crear_empleado_email_existente(self):
+        self._bind_admin_to_tenant(slug='empleados-email-existente')
         existing_user = User(name='existing', email='emp@e.com', password_hash='test')
         db.session.add(existing_user)
         db.session.commit()
@@ -58,6 +78,7 @@ class EmpleadosRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
 
     def test_crear_empleado_con_categorias(self):
+        self._bind_admin_to_tenant(slug='empleados-con-categorias')
         data = {
             "name": "Nuevo",
             "email": "nuevo@e.com",
@@ -76,6 +97,7 @@ class EmpleadosRouteTests(unittest.TestCase):
             self.assertEqual(created_user.ticket_categorias, 'limpieza,luminaria')
 
     def test_crear_empleado_sin_categorias(self):
+        self._bind_admin_to_tenant(slug='empleados-sin-categorias')
         data = {
             "name": "Nuevo",
             "email": "nuevo2@e.com",
@@ -90,7 +112,10 @@ class EmpleadosRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
 
     def test_actualizar_empleado_no_permite_cambiar_email(self):
+        _admin, tenant = self._bind_admin_to_tenant(slug='empleados-update-email')
         empleado = User(name='Empleado', email='empleado@e.com', password_hash='test', empresa_id=self.admin_id, rol='empleado', ticket_categorias='Limpieza')
+        empleado.tenant_id = tenant.id
+        empleado.tenant_slug = tenant.slug
         db.session.add(empleado)
         db.session.commit()
         payload = {"email": "otro@e.com"}
@@ -102,6 +127,7 @@ class EmpleadosRouteTests(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
 
     def test_obtener_categorias_empleado(self):
+        self._bind_admin_to_tenant(slug='empleados-categorias')
         with self.client:
             login_response = self.client.post('/auth/login', json={'email': 'test@test.com', 'password': 'test'})
             token = login_response.get_json()['token']
@@ -121,9 +147,10 @@ class EmpleadosRouteTests(unittest.TestCase):
             self.assertIn('categorias', api_response.get_json())
 
     def test_obtener_categorias_incluye_catalogo_pyme(self):
-        admin_pyme = db.session.get(User, self.admin_id)
-        admin_pyme.tipo_chat = 'pyme'
-        db.session.commit()
+        admin_pyme, _tenant = self._bind_admin_to_tenant(
+            slug='empleados-catalogo-pyme',
+            tipo='pyme',
+        )
 
         db.session.add_all([
             CatalogoItem(user_id=admin_pyme.id, nombre='Producto', categoria='software'),

@@ -8,6 +8,11 @@ from flask import Blueprint, current_app, g, jsonify, request
 from extensions import db
 from models import AnalyticsEventV2, TenantTicket
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
+from services.employee_ticket_access import (
+    employee_ticket_category_access_allows,
+    employee_ticket_category_scope,
+    employee_ticket_category_values_allow,
+)
 from services.v2.ticket_event_service import list_ticket_events
 from services.v2.ticket_service import (
     add_comment,
@@ -77,6 +82,8 @@ def _is_operator() -> bool:
 
 def _ticket_access_error(ticket: TenantTicket):
     if _is_operator():
+        if not employee_ticket_category_access_allows(_viewer(), ticket):
+            return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
         return None
     viewer = _viewer()
     if viewer is not None and ticket.user_id and str(ticket.user_id) == str(getattr(viewer, "id", "")):
@@ -451,12 +458,39 @@ def create_ticket_v2():
     if access_error:
         return access_error
 
-    payload = request.get_json(silent=True) or {}
+    payload = dict(request.get_json(silent=True) or {})
+    if _viewer_role() == ROLE_EMPLEADO and payload.get("category") in (None, ""):
+        category_scope = employee_ticket_category_scope(_viewer())
+        if len(category_scope.names) == 1:
+            payload["category"] = next(iter(category_scope.names))
+        else:
+            return _error_response(
+                "category es obligatoria para crear un ticket como empleado",
+                400,
+                "category_required",
+                "choose_allowed_category",
+            )
+    if (
+        _is_operator()
+        and payload.get("category") not in (None, "")
+        and not employee_ticket_category_values_allow(
+            _viewer(),
+            category=payload.get("category"),
+        )
+    ):
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
     try:
         ticket = create_ticket(tenant=tenant, actor_user=_viewer(), payload=payload)
         db.session.commit()
     except ValueError as exc:
         db.session.rollback()
+        if str(exc) == "assignee_category_scope_mismatch":
+            return _error_response(
+                "El agente no tiene acceso a la categoria del ticket",
+                409,
+                "assignee_category_scope_mismatch",
+                "choose_compatible_assignee",
+            )
         return _error_response(str(exc), 400, "validation_failed", "fix_ticket_payload")
 
     serialized = _ticket_detail_payload(ticket, viewer=_viewer())
@@ -511,11 +545,16 @@ def patch_ticket_v2(ticket_id: int):
     if role_error:
         return role_error
 
-    ticket = TenantTicket.query.get(ticket_id)
-    if not ticket or ticket.tenant_id != tenant.id:
-        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
+    if error:
+        return error
 
     payload = request.get_json(silent=True) or {}
+    if payload.get("category") not in (None, "") and not employee_ticket_category_values_allow(
+        _viewer(),
+        category=payload.get("category"),
+    ):
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
     try:
         updated = patch_ticket(tenant=tenant, actor_user=_viewer(), ticket=ticket, payload=payload)
         db.session.commit()
@@ -526,6 +565,13 @@ def patch_ticket_v2(ticket_id: int):
         return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
     except ValueError as exc:
         db.session.rollback()
+        if str(exc) == "assignee_category_scope_mismatch":
+            return _error_response(
+                "El agente no tiene acceso a la categoria del ticket",
+                409,
+                "assignee_category_scope_mismatch",
+                "choose_compatible_assignee",
+            )
         return _error_response(str(exc), 400, "validation_failed", "fix_ticket_payload")
 
     serialized = _ticket_detail_payload(updated, viewer=_viewer())
@@ -548,12 +594,9 @@ def add_ticket_comment_v2(ticket_id: int):
     if access_error:
         return access_error
 
-    ticket = TenantTicket.query.get(ticket_id)
-    if not ticket or ticket.tenant_id != tenant.id:
-        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
-    ticket_error = _ticket_access_error(ticket)
-    if ticket_error:
-        return ticket_error
+    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
+    if error:
+        return error
 
     payload = request.get_json(silent=True) or {}
     if (payload.get("visibility") or "public").strip().lower() == "internal" and not _is_operator():
@@ -725,9 +768,9 @@ def list_ticket_events_v2(ticket_id: int):
     if role_error:
         return role_error
 
-    ticket = TenantTicket.query.get(ticket_id)
-    if not ticket or ticket.tenant_id != tenant.id:
-        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
+    ticket, error = _resolve_ticket_or_error(ticket_id, tenant)
+    if error:
+        return error
 
     events = list_ticket_events(tenant_id=tenant.id, ticket_id=ticket.id)
     items = [

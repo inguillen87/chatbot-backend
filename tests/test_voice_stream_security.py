@@ -387,6 +387,7 @@ class VoiceStreamPreflightTests(unittest.TestCase):
         self.app.config.update(
             TESTING=True,
             OPENAI_API_KEY="test-openai-key",
+            OPENAI_ALLOW_NETWORK_IN_TESTS=True,
             VOICE_STREAM_SIGNING_SECRET=SIGNING_SECRET,
             VOICE_STREAM_ENVELOPE_TTL_SECONDS=30,
             VOICE_STREAM_REPLAY_ALLOW_IN_MEMORY_TEST_STORE=True,
@@ -499,6 +500,28 @@ class VoiceStreamPreflightTests(unittest.TestCase):
         )
         mock_connect.assert_called_once()
         self.assertFalse(socket.closed)
+
+    @patch("services.voice_stream_service.ws_connect")
+    def test_valid_start_stays_offline_without_openai_test_opt_in(self, mock_connect):
+        self.app.config["OPENAI_ALLOW_NETWORK_IN_TESTS"] = False
+        params = _signed_parameters(self.app.config)
+        service, socket = self._service(params)
+        service._consent_authorized = True
+        service._consent_lifecycle_tenant_id = 1
+        service.tenant_profile = SimpleNamespace(id=1)
+
+        with patch.object(
+            service, "_authorize_durable_voice_consent", return_value=True
+        ), patch.object(
+            service, "_resolve_context", return_value=True
+        ), patch.object(
+            service, "_mark_authorized_lifecycle_failed"
+        ) as mark_failed:
+            service.run()
+
+        mock_connect.assert_not_called()
+        mark_failed.assert_called_once_with("openai_test_network_disabled")
+        self.assertTrue(socket.closed)
 
     @patch("services.voice_stream_service.ws_connect", side_effect=RuntimeError("handshake reached"))
     def test_same_envelope_cannot_open_a_second_handshake(self, mock_connect):
