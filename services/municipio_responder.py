@@ -549,11 +549,8 @@ def _has_valid_sugerencia_address(datos: Dict[str, Any]) -> bool:
 
 def _get_missing_sugerencia_contact_fields(datos: Dict[str, Any]) -> list[str]:
     missing: list[str] = []
-    for campo in ["nombre", "dni", "email", "direccion", "telefono"]:
-        if campo == "direccion":
-            if not _has_valid_sugerencia_address(datos):
-                missing.append(campo)
-            continue
+    # Direccion is optional for general citizen suggestions
+    for campo in ["nombre", "dni", "email", "telefono"]:
         if not datos.get(campo):
             missing.append(campo)
     return missing
@@ -571,7 +568,7 @@ def _format_sugerencia_address(datos: Dict[str, Any]) -> str:
                 return value
     elif isinstance(ubicacion, str) and ubicacion.strip():
         return ubicacion
-    return ""
+    return "No especificada"
 
 
 def _merge_contacto_usuario(contexto: Dict[str, Any], nuevos_datos: Dict[str, Any]) -> None:
@@ -6689,8 +6686,8 @@ def find_global_menu_action(user_input: str) -> str | None:
 
 
 def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actual: dict, context: dict, chat_db_context) -> dict | None:
-    """If the user mentions starting a complaint while in the suggestion flow,
-    abort the suggestion workflow and start the regular complaint flow."""
+    """If the user mentions starting a complaint or requests any global menu option
+    while in the suggestion flow, abort the suggestion workflow and transition."""
     normalized = normalizar_texto(pregunta_str or "")
     if "reclamo" in normalized:
         contexto_municipio_actual.pop('datos_sugerencia', None)
@@ -6701,6 +6698,16 @@ def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actu
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return response
+
+    global_action = find_global_menu_action(pregunta_str)
+    if global_action:
+        contexto_municipio_actual.pop('datos_sugerencia', None)
+        contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', None)
+        contexto_municipio_actual.pop('estado_conversacion', None)
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return handle_main_menu_action(global_action, context, chat_db_context)
+
     return None
 
 RECLAMO_KEYWORDS = {
@@ -11477,7 +11484,7 @@ def responder_municipio(
             if switch_response:
                 return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
-            campos_requeridos = ["nombre", "dni", "email", "direccion", "telefono"]
+            campos_requeridos = ["nombre", "dni", "email", "telefono"]
 
             # Primero intentamos extraer con regex para los campos aún faltantes.
             nuevos_datos = extract_multiple_contact_details_regex(
