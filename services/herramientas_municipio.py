@@ -368,9 +368,12 @@ def direccion_es_valida(texto: str) -> bool:
     if geocode_result is not None:
         return True
 
-    # Fallback heurístico: acepta intersecciones, referencias y direcciones sin número.
     texto_normalizado = normalizar_texto(texto)
     if not texto_normalizado:
+        return False
+
+    invalid_phrases = {"sin numero", "sin nro", "no tengo numero", "no se el numero", "hola", "menu", "cancelar", "confirmar"}
+    if texto_normalizado in invalid_phrases or any(p in texto_normalizado for p in {"sin numero", "sin nro", "no tengo numero"}):
         return False
 
     if re.search(r"\d+", texto):
