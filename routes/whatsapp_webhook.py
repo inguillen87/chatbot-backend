@@ -6190,6 +6190,8 @@ def whatsapp_webhook():
     tenant_id = None
     if tenant_profile:
         tenant_id = getattr(tenant_profile, "id", None) or getattr(tenant_profile, "tenant_id", None)
+    if not tenant_id and empresa_id:
+        tenant_id = empresa_id
     # ProviderSender/WhatsappNumero resolution and the matching Twilio
     # signature are authoritative. Provider form fields such as TenantId must
     # never influence whether this request crosses the durable boundary.
