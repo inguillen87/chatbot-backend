@@ -6667,8 +6667,8 @@ def _looks_like_availability_query(user_input: str) -> bool:
     )
 
 
-def find_global_menu_action(user_input: str) -> str | None:
-    """Attempts to resolve a menu action purely by keywords, ignoring menu context."""
+def find_global_menu_action(user_input: str, context: Optional[dict] = None) -> str | None:
+    """Attempts to resolve a menu action purely by keywords or numeric shortcut, ignoring menu context."""
     if _looks_like_availability_query(user_input):
         logger.info("Availability query bypasses global menu shortcuts.")
         return None
@@ -6679,6 +6679,14 @@ def find_global_menu_action(user_input: str) -> str | None:
         normalized,
     ):
         return "solicitar_turnos"
+
+    # Use standard main menu options for global resolution so single digits 1..8
+    # resolve consistently to the 8 main menu categories, NOT to arbitrary dictionary keys.
+    main_menu_options = _get_main_menu_payload(context or {}).get("options_list", [])
+    if main_menu_options:
+        action = find_menu_action_by_input(user_input, main_menu_options)
+        if action:
+            return action
 
     global_buttons = [{"texto": aid, "action_id": aid} for aid in MENU_KEYWORDS.keys()]
     action = find_menu_action_by_input(user_input, global_buttons)
@@ -6699,7 +6707,7 @@ def _detect_reclamo_during_sugerencia(pregunta_str: str, contexto_municipio_actu
             flag_modified(chat_db_context, "context_data")
         return response
 
-    global_action = find_global_menu_action(pregunta_str)
+    global_action = find_global_menu_action(pregunta_str, context)
     if global_action:
         contexto_municipio_actual.pop('datos_sugerencia', None)
         contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', None)
@@ -12875,7 +12883,7 @@ def responder_municipio(
 
         selected_action = payload_action or find_menu_action_by_input(pregunta_str_menu, buttons_for_finder)
         if not selected_action:
-            selected_action = find_global_menu_action(pregunta_str_menu)
+            selected_action = find_global_menu_action(pregunta_str_menu, context)
 
         if selected_action:
             logger_actual.info("User input matched to action=%s", selected_action)
@@ -12946,7 +12954,7 @@ def responder_municipio(
             return _finalize_response(submenu)
 
         if not selected_action:
-            selected_action = find_global_menu_action(pregunta_str_menu)
+            selected_action = find_global_menu_action(pregunta_str_menu, context)
 
         if selected_action:
             context["menu_opciones"] = menu_opciones
