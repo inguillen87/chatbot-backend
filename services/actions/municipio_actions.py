@@ -264,7 +264,7 @@ def _normalize_voice_e164(
         return None
 
     if raw_value.startswith("+"):
-        candidate = f"+{re.sub(r'\D', '', raw_value)}"
+        candidate = "+" + re.sub(r"\D", "", raw_value)
     else:
         country_code = re.sub(r"\D", "", str(default_country_code or "54")) or "54"
         candidate = formatear_telefono_e164(raw_value, cod_pais=country_code)
