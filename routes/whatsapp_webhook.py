@@ -2855,7 +2855,40 @@ def _handle_recent_municipal_ticket_followup(
         return None
 
     decision = classify_reclamo_confirmation_turn(message_body, action=action)
-    if decision.intent in {ReclamoTurnIntent.NEW_CLAIM, ReclamoTurnIntent.CANCEL}:
+    raw_msg = normalizar_texto(message_body or "")
+    navigation_keywords = {
+        "menu",
+        "menú",
+        "1",
+        "2",
+        "3",
+        "4",
+        "4. menú",
+        "4. menu",
+        "2. menú",
+        "2. menu",
+        "volver",
+        "inicio",
+        "principal",
+        "encuesta",
+        "encuestas",
+        "hola",
+        "buenas",
+        "buenos dias",
+        "buenas tardes",
+        "buenas noches",
+    }
+    is_nav_action = action in {
+        "menu_principal",
+        "mostrar_menu_reclamos",
+        "mostrar_menu_encuestas",
+        "consultar_estado_reclamo",
+    }
+    if (
+        decision.intent in {ReclamoTurnIntent.NEW_CLAIM, ReclamoTurnIntent.CANCEL}
+        or raw_msg in navigation_keywords
+        or is_nav_action
+    ):
         _clear_municipal_ticket_followup(context_data)
         context_data.pop("last_options_sent", None)
         context_data.pop("pending_sensitive_action", None)

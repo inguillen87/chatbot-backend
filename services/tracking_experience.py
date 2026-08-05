@@ -8,7 +8,7 @@ import secrets
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Mapping
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from flask import current_app, has_app_context
 
@@ -176,10 +176,18 @@ def _stage_payload(raw_status: Any, *, kind: str) -> dict[str, Any]:
 
 def _tracking_map(location: dict[str, Any]) -> dict[str, Any]:
     has_coordinates = location.get("lat") is not None and location.get("lng") is not None
+    address = location.get("address")
+    maps_search_url = None
+    if has_coordinates:
+        maps_search_url = f"https://maps.google.com/?q={location.get('lat')},{location.get('lng')}"
+    elif address:
+        maps_search_url = f"https://maps.google.com/?q={quote_plus(str(address))}"
+
     return {
         "enabled": True,
         "has_coordinates": bool(has_coordinates),
         "center": {"lat": location.get("lat"), "lng": location.get("lng")} if has_coordinates else None,
+        "maps_search_url": maps_search_url,
         "layers": ["origin", "current_status", "destination_or_claim_location", "timeline_events"],
         "animations": ["pulse_current_step", "route_progress", "status_transition"],
         "fallback_when_no_coordinates": "timeline_only",

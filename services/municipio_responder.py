@@ -1258,6 +1258,20 @@ class ReclamoFlowHandler:
         # same, so a citizen can intentionally file a later claim.
         self.flow_context["confirmation_id"] = uuid.uuid4().hex
 
+        # Clear leftover photo and file interpretation context from previous turns/claims
+        # unless the current turn explicitly supplied a new image.
+        current_message_has_image = bool(
+            datos_iniciales
+            and isinstance(datos_iniciales, dict)
+            and (datos_iniciales.get("foto_url") or datos_iniciales.get("image_url"))
+        )
+        if not current_message_has_image:
+            self.context.pop("foto_url", None)
+            self.context.pop("foto_url_directa", None)
+            self.context.pop("foto_url_adjunta", None)
+            self.context.pop("datos_interpretados_archivo", None)
+            self.municipal_ctx.pop("datos_parciales_llm_reclamo", None)
+
         # Merge incoming initial data with any data already extracted by the LLM
         # in previous turns (e.g. while in CONVERSACION_GENERAL_LLM state).
         merged_datos = {}

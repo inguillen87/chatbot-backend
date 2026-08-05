@@ -9,7 +9,7 @@ CLAIM_CREATED_TEMPLATE_VARIABLES = {
     "1": "claim_code",
     "2": "tracking_path",
 }
-CLAIM_FOLLOWUP_WINDOW_SECONDS = 24 * 60 * 60
+CLAIM_FOLLOWUP_WINDOW_SECONDS = 5 * 60
 
 
 def _normalize_ticket_code(ticket_nro: Any) -> tuple[str, str]:
