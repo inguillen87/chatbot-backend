@@ -373,7 +373,11 @@ def direccion_es_valida(texto: str) -> bool:
     if not texto_normalizado:
         return False
 
-    if re.search(r"[A-Za-zÁÉÍÓÚÑáéíóúñ ]+\s+\d+", texto):
+    if re.search(r"\d+", texto):
+        return True
+
+    # Si la dirección tiene al menos 2 palabras (ej: "Sarmiento, Junín" o "Av. San Martín"), es válida.
+    if len(texto_normalizado.split()) >= 2:
         return True
 
     if re.search(r"\b(esquina|interseccion|intersección|entre)\b", texto_normalizado):
@@ -391,7 +395,7 @@ def direccion_es_valida(texto: str) -> bool:
     if re.search(r"\b(barrio|distrito|manzana|mz|lote)\b", texto_normalizado):
         return True
 
-    return False
+    return len(texto_normalizado) >= 3
 
 
 def parse_direccion_completa(texto_direccion: str, municipio_config: dict = None) -> dict | None:

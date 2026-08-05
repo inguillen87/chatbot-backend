@@ -624,17 +624,17 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
         "buenas tardes",
         "buenos dias",
         "buenas noches",
+        "menu",
+        "menú",
+        "cancelar",
+        "confirmar",
     }
     if normalized in greeting_words:
         return False
     if re.search(r"-?\d{1,3}\.\d+", normalized):
         return True
-    # Stricter validation: Require a number if it looks like a street, or explicit intersection/barrio keywords
-    has_street_keyword = bool(re.search(r"\b(calle|av\.?|avenida|ruta|km)\b", normalized))
-    has_number = bool(re.search(r"\d", normalized))
 
-    if has_street_keyword and not has_number:
-        return False
+    has_number = bool(re.search(r"\d", normalized))
 
     if re.search(r"\b(esquina|interseccion|intersección|entre|altura|barrio|manzana|mz|lote|plaza|parque|monumento)\b", normalized):
         return True
@@ -643,8 +643,10 @@ def _ubicacion_es_valida(ubicacion: str | None) -> bool:
     if re.search(r"\b(rotonda|puente|terminal|hospital|escuela)\b", normalized):
         return True
 
+    if len(normalized.split()) <= 12 and len(normalized.split()) >= 2:
+        return True
+
     if has_number:
-        # Check if it's too long (likely a description)
         if len(normalized.split()) > 12:
             return False
         return True
