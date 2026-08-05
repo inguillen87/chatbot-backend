@@ -6332,8 +6332,29 @@ def whatsapp_webhook():
         )
         db.session.add(session_context_db_entry)
         db.session.commit()
-    elif tenant_id and not session_context_db_entry.tenant_id:
+    elif tenant_id and (
+        not session_context_db_entry.tenant_id
+        or session_identity is not None
+        or (
+            session_context_db_entry.user_id
+            and int(session_context_db_entry.user_id) == int(empresa_id)
+        )
+        or (
+            session_context_db_entry.anon_id
+            and str(session_context_db_entry.anon_id) == str(from_number_cleaned)
+        )
+    ):
+        if session_context_db_entry.tenant_id and int(session_context_db_entry.tenant_id) != int(tenant_id):
+            current_app.logger.info(
+                "[WHATSAPP_WEBHOOK] Updating session_context tenant_id from %s to %s for user_id=%s anon_id=%s",
+                session_context_db_entry.tenant_id,
+                tenant_id,
+                empresa_id,
+                from_number_cleaned,
+            )
         session_context_db_entry.tenant_id = tenant_id
+        if not session_context_db_entry.user_id:
+            session_context_db_entry.user_id = empresa_id
         db.session.add(session_context_db_entry)
         db.session.commit()
     elif (
