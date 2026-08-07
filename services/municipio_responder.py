@@ -602,6 +602,10 @@ def _merge_contacto_usuario(contexto: Dict[str, Any], nuevos_datos: Dict[str, An
             continue
         if campo == "direccion" and _is_placeholder_address(valor):
             continue
+        # Sprint 1 Fix: Reject long strings as addresses — they are likely
+        # suggestion descriptions that leaked into the address field.
+        if campo == "direccion" and isinstance(valor, str) and len(valor.strip()) > 80:
+            continue
         if campo == "telefono":
             valor = _normalize_phone_value(valor)
             if not valor:
@@ -773,7 +777,6 @@ def _build_sugerencia_datos(
 
     direccion = _prefer_contact_value(
         ubicacion if ubicacion and ubicacion != "N/A" else None,
-        contacto_prev.get("direccion"),
         getattr(viewer_user_obj, "direccion", None) if viewer_user_obj else None,
         placeholder_checker=_is_placeholder_address,
     )
@@ -4440,11 +4443,25 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
 
     if action_id == "enviar_sugerencia":
         contexto_municipio_actual = context.get("chat_db_context_data", {}).setdefault(CONTEXTO_MUNICIPIO, {})
+        # Sprint 1 Fix: Clean stale suggestion data to prevent contamination
+        contexto_municipio_actual.pop('datos_sugerencia', None)
+        contexto_municipio_actual.pop('ubicacion_contextual_sugerencia', None)
+        # Also clean contaminated direccion from contacto_usuario if it looks
+        # like a suggestion description rather than a real address
+        contacto = contexto_municipio_actual.get('contacto_usuario', {})
+        if isinstance(contacto, dict):
+            cached_dir = contacto.get('direccion', '')
+            if isinstance(cached_dir, str) and len(cached_dir) > 60:
+                contacto.pop('direccion', None)
         contexto_municipio_actual['estado_conversacion'] = ConversationState.ESPERANDO_TEXTO_SUGERENCIA.name
         if chat_db_context:
             flag_modified(chat_db_context, "context_data")
         return {
             "message_body": "¡Gracias por tu iniciativa! Por favor, escribí tu sugerencia o propuesta a continuación.",
+            "options_list": [
+                {"texto": "Menú", "action_id": "menu_principal"},
+                {"texto": "Cancelar", "action_id": "cancelar_sugerencia"},
+            ],
             "message_type": "text",
             "fuente": "handler_enviar_sugerencia"
         }
