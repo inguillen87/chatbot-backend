@@ -8,9 +8,10 @@ logger = logging.getLogger(__name__)
 # When Twilio hasn't approved interactive templates yet we fall back to
 # rendering every WhatsApp menu as plain text.  The environment variable
 # allows re‑enabling interactive components without touching the code.
-# Interactive WhatsApp components (buttons, list pickers) are enabled by
-# default.  Set WHATSAPP_FORCE_TEXT=true to fall back to numbered text menus.
-WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "false").lower() != "false"
+# Interactive WhatsApp components (buttons, list pickers) are DISABLED by
+# default because Twilio consistently rejects them with error 63019.
+# Set WHATSAPP_FORCE_TEXT=false to re-enable interactive once templates are approved.
+WHATSAPP_FORCE_TEXT = os.getenv("WHATSAPP_FORCE_TEXT", "true").lower() != "false"
 
 MOJIBAKE_REPLACEMENTS = {
     "Ã¡": "á",

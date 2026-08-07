@@ -6699,7 +6699,13 @@ def find_global_menu_action(user_input: str, context: Optional[dict] = None) -> 
 
     # Use standard main menu options for global resolution so single digits 1..8
     # resolve consistently to the 8 main menu categories, NOT to arbitrary dictionary keys.
-    main_menu_options = _get_main_menu_payload(context or {}).get("options_list", [])
+    # Force channel=whatsapp to always get the flat 8-item top-level menu,
+    # regardless of what the actual context channel is. The web channel expands
+    # sub-options which causes numeric indices to mismatch (e.g. "5" → licencia
+    # instead of encuestas).
+    menu_context = dict(context or {})
+    menu_context["channel"] = "whatsapp"
+    main_menu_options = _get_main_menu_payload(menu_context).get("options_list", [])
     if main_menu_options:
         action = find_menu_action_by_input(user_input, main_menu_options)
         if action:
