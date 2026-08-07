@@ -183,14 +183,32 @@ def _tracking_map(location: dict[str, Any]) -> dict[str, Any]:
     elif address:
         maps_search_url = f"https://maps.google.com/?q={quote_plus(str(address))}"
 
+    # Build the destination/claim_location point that the frontend TrackingMap expects
+    destination = None
+    if has_coordinates:
+        destination = {
+            "lat": location.get("lat"),
+            "lng": location.get("lng"),
+            "name": str(address) if address else "Ubicación del reclamo",
+            "role": "destination",
+        }
+
+    # can_render is True when we have coordinates OR at least a text address
+    # (frontend may geocode text addresses client-side via Nominatim)
+    can_render = has_coordinates or bool(address)
+
     return {
         "enabled": True,
+        "can_render": can_render,
         "has_coordinates": bool(has_coordinates),
         "center": {"lat": location.get("lat"), "lng": location.get("lng")} if has_coordinates else None,
+        "destination": destination,
+        "claim_location": destination,
         "maps_search_url": maps_search_url,
+        "address": str(address) if address else None,
         "layers": ["origin", "current_status", "destination_or_claim_location", "timeline_events"],
         "animations": ["pulse_current_step", "route_progress", "status_transition"],
-        "fallback_when_no_coordinates": "timeline_only",
+        "fallback_when_no_coordinates": "geocode_address" if (address and not has_coordinates) else "timeline_only",
     }
 
 
