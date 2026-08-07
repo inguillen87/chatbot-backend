@@ -11,6 +11,7 @@ from .common_utils import validar_telefono, formatear_telefono_e164, validar_ema
 from .config_loader import CONFIG_MUNICIPIO # Para fallback de config
 from services.llm_bridge import llamar_llm  # Necesario para el type hint, aunque no se usa en esta función
 from services.whatsapp_service import enviar_notificacion_whatsapp_con_plantilla
+from utils.whatsapp import enviar_template_whatsapp
 
 # Definición completa de accion_crear_reclamo_municipio
 def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
@@ -148,8 +149,34 @@ def accion_crear_reclamo_municipio(datos_llm: dict, context: dict) -> dict:
 
         if telefono_final_validado_e164:
             try:
-                enviar_notificacion_whatsapp_con_plantilla(telefono_final_validado_e164, nombre_vecino_final, str(ticket_creado.nro_ticket), categoria)
-                logger_func.info(f"Notificación WhatsApp enviada para ticket {nro_ticket_str}")
+                tracking_url = f"https://chatboc.ar/tracking/claim/{nro_ticket_str}"
+                # Use approved Twilio Content Template for enterprise notification
+                template_sent = enviar_template_whatsapp(
+                    telefono_final_validado_e164,
+                    "chatboc_claim_created_v2",
+                    variables={
+                        "1": nro_ticket_str,
+                        "2": categoria or "General",
+                        "3": ubicacion_str or "No especificada",
+                        "4": tracking_url,
+                    },
+                    fallback_body=(
+                        f"Reclamo registrado exitosamente.\n\n"
+                        f"Numero de ticket: {nro_ticket_str}\n"
+                        f"Categoria: {categoria}\n"
+                        f"Ubicacion: {ubicacion_str}\n\n"
+                        f"Segui el estado en: {tracking_url}"
+                    ),
+                )
+                if template_sent:
+                    logger_func.info(f"Template WhatsApp enviado para ticket {nro_ticket_str}")
+                else:
+                    # Legacy fallback
+                    enviar_notificacion_whatsapp_con_plantilla(
+                        telefono_final_validado_e164, nombre_vecino_final,
+                        str(ticket_creado.nro_ticket), categoria
+                    )
+                    logger_func.info(f"Notificación WhatsApp (legacy) enviada para ticket {nro_ticket_str}")
             except Exception as e_notify_wp:
                 logger_func.error(f"Error enviando notificación WhatsApp para {nro_ticket_str}: {e_notify_wp}")
         
