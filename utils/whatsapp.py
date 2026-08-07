@@ -178,7 +178,9 @@ import logging as _logging
 _template_logger = _logging.getLogger(__name__)
 
 # Known approved template SIDs — updated after Twilio/Meta approval
+# Organized by category. Override any SID via environment variable.
 TEMPLATE_SIDS = {
+    # --- ROUND 1: Core notifications (Quick Reply buttons) ---
     "chatboc_claim_created_v2": os.environ.get(
         "TWILIO_TEMPLATE_CLAIM_CREATED_SID", "HX1b9c5c594b09ae397dcd1167d69fef35"
     ),
@@ -193,6 +195,48 @@ TEMPLATE_SIDS = {
     ),
     "chatboc_order_update_v1": os.environ.get(
         "TWILIO_TEMPLATE_ORDER_UPDATE_SID", "HXa446274eeeb522090a59f8ae953d0257"
+    ),
+    # --- ROUND 2: Enterprise features ---
+    # Proactive status updates
+    "chatboc_claim_status_update_v1": os.environ.get(
+        "TWILIO_TEMPLATE_CLAIM_STATUS_SID", "HX2d9565b1dcb82b71cf3dcb41199f9b6e"
+    ),
+    # Re-engagement (MARKETING)
+    "chatboc_reengagement_v1": os.environ.get(
+        "TWILIO_TEMPLATE_REENGAGEMENT_SID", "HX12297af73093ff674b46c66b3133782a"
+    ),
+    # Payment confirmation
+    "chatboc_payment_confirmed_v1": os.environ.get(
+        "TWILIO_TEMPLATE_PAYMENT_CONFIRMED_SID", "HX6bf1e1a5b48b957fe1a02cb44579b054"
+    ),
+    # Document ready for pickup
+    "chatboc_document_ready_v1": os.environ.get(
+        "TWILIO_TEMPLATE_DOCUMENT_READY_SID", "HX7c54da3b6566613888caae9fde7ecdb6"
+    ),
+    # Satisfaction survey (3-option rating)
+    "chatboc_satisfaction_v1": os.environ.get(
+        "TWILIO_TEMPLATE_SATISFACTION_SID", "HX03a6733e34d1a162487a901725a32da1"
+    ),
+    # Parking expiry alert
+    "chatboc_parking_expiry_v1": os.environ.get(
+        "TWILIO_TEMPLATE_PARKING_SID", "HX1e639d88cb67e0a5dce1b1e354e33bc9"
+    ),
+    # --- CTA buttons (URL / Phone) ---
+    # Tracking link with dynamic ticket suffix
+    "chatboc_tracking_link_v2": os.environ.get(
+        "TWILIO_TEMPLATE_TRACKING_LINK_SID", "HXd6365d54b2942a34d8dbc2d0874aaaa9"
+    ),
+    # Payment link
+    "chatboc_payment_link_v2": os.environ.get(
+        "TWILIO_TEMPLATE_PAYMENT_LINK_SID", "HX1016524af588b4d932545a968bf51d93"
+    ),
+    # Catalog/Promo (MARKETING)
+    "chatboc_catalog_promo_v2": os.environ.get(
+        "TWILIO_TEMPLATE_CATALOG_PROMO_SID", "HXda6e306c0bdfa7192fd96b9223b9ff49"
+    ),
+    # Emergency contact with phone CTA
+    "chatboc_emergency_contact_v1": os.environ.get(
+        "TWILIO_TEMPLATE_EMERGENCY_SID", "HX4c5d4d59ba187fe4cad1a02de026d8c5"
     ),
 }
 
