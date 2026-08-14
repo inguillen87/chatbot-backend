@@ -118,7 +118,7 @@ def test_migration_physically_canonicalizes_unique_legacy_owner_scope(tmp_path):
     engine.dispose()
 
 
-def test_migration_fails_closed_on_canonical_owner_collision(tmp_path):
+def test_migration_prefers_canonical_id_over_legacy_owner_collision(tmp_path):
     engine = _engine(tmp_path, "survey-scope-collision.sqlite3")
     migration = _load_migration_module()
 
@@ -134,12 +134,87 @@ def test_migration_fails_closed_on_canonical_owner_collision(tmp_path):
             sa.text("INSERT INTO enc_encuesta (id, tenant_id) VALUES (1, 142)")
         )
 
-        with pytest.raises(RuntimeError, match="Ambiguous survey tenant namespace"):
-            migration._canonicalize_survey_tenant_scopes(connection)
+        migration._canonicalize_survey_tenant_scopes(connection)
 
         assert connection.execute(
             sa.text("SELECT tenant_id FROM enc_encuesta WHERE id = 1")
         ).scalar_one() == 142
+        assert connection.execute(
+            sa.text(
+                "SELECT encuestas_tenant_id FROM tenant_profile WHERE id = 6"
+            )
+        ).scalar_one() is None
+
+    engine.dispose()
+
+
+def test_canonical_id_precedence_preserves_existing_history_untouched(tmp_path):
+    engine = _engine(tmp_path, "survey-scope-canonical-history.sqlite3")
+    migration = _load_migration_module()
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO tenant_profile "
+                "(id, municipio_id, pyme_id, encuestas_tenant_id) VALUES "
+                "(20, 22, NULL, NULL), (22, 4, NULL, NULL)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO enc_encuesta (id, tenant_id) VALUES (1, 22)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO enc_respuesta (id, encuesta_id, tenant_id) "
+                "VALUES (10, 1, 22)"
+            )
+        )
+        connection.execute(
+            sa.text(
+                "INSERT INTO survey_governance_release "
+                "(id, survey_id, tenant_id) VALUES (50, 1, 22)"
+            )
+        )
+
+        migration._canonicalize_survey_tenant_scopes(connection)
+
+        assert connection.execute(
+            sa.text("SELECT tenant_id FROM enc_encuesta WHERE id = 1")
+        ).scalar_one() == 22
+        assert connection.execute(
+            sa.text("SELECT tenant_id FROM enc_respuesta WHERE id = 10")
+        ).scalar_one() == 22
+        assert connection.execute(
+            sa.text("SELECT tenant_id FROM survey_governance_release WHERE id = 50")
+        ).scalar_one() == 22
+
+    engine.dispose()
+
+
+def test_migration_fails_closed_on_conflicting_explicit_alias(tmp_path):
+    engine = _engine(tmp_path, "survey-scope-explicit-alias-collision.sqlite3")
+    migration = _load_migration_module()
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO tenant_profile "
+                "(id, municipio_id, pyme_id, encuestas_tenant_id) VALUES "
+                "(3, 30, NULL, NULL), (5, 50, NULL, 3)"
+            )
+        )
+        connection.execute(
+            sa.text("INSERT INTO enc_encuesta (id, tenant_id) VALUES (1, 3)")
+        )
+
+        with pytest.raises(RuntimeError, match="conflicting canonical and alias"):
+            migration._canonicalize_survey_tenant_scopes(connection)
+
+        assert connection.execute(
+            sa.text("SELECT tenant_id FROM enc_encuesta WHERE id = 1")
+        ).scalar_one() == 3
 
     engine.dispose()
 

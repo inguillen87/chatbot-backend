@@ -115,18 +115,42 @@ def _tenant_candidates(connection, scope_id: int) -> tuple[set[int], set[int], s
 
 def _resolve_canonical_tenant_id(connection, scope_id: int) -> int:
     direct_ids, alias_ids, owner_ids = _tenant_candidates(connection, scope_id)
-    candidates = direct_ids | alias_ids | owner_ids
-    if not candidates:
+
+    # A stored enc_encuesta.tenant_id is, by schema contract, a
+    # TenantProfile primary key.  Legacy owner ids were only a fallback used by
+    # older writers, so an exact primary-key match has precedence over that
+    # heuristic.  An explicit compatibility alias is also durable evidence and
+    # must agree with the primary key when both are present.
+    if direct_ids:
+        direct_id = next(iter(direct_ids))
+        conflicting_aliases = alias_ids - {direct_id}
+        if conflicting_aliases:
+            raise RuntimeError(
+                "Ambiguous survey tenant namespace has conflicting canonical "
+                f"and alias owners: scope={scope_id} direct={sorted(direct_ids)} "
+                f"aliases={sorted(alias_ids)} owners={sorted(owner_ids)}"
+            )
+        return direct_id
+
+    if alias_ids:
+        if len(alias_ids) != 1:
+            raise RuntimeError(
+                "Ambiguous survey tenant namespace has multiple explicit aliases: "
+                f"scope={scope_id} aliases={sorted(alias_ids)} "
+                f"owners={sorted(owner_ids)}"
+            )
+        return next(iter(alias_ids))
+
+    if not owner_ids:
         raise RuntimeError(
             f"Orphaned survey tenant namespace {scope_id}: no TenantProfile owner"
         )
-    if len(candidates) != 1:
+    if len(owner_ids) != 1:
         raise RuntimeError(
-            "Ambiguous survey tenant namespace "
-            f"{scope_id}: direct={sorted(direct_ids)} "
-            f"aliases={sorted(alias_ids)} owners={sorted(owner_ids)}"
+            "Ambiguous survey tenant namespace has multiple legacy owners: "
+            f"scope={scope_id} owners={sorted(owner_ids)}"
         )
-    return next(iter(candidates))
+    return next(iter(owner_ids))
 
 
 def _count(connection, sql: str, params: dict[str, int]) -> int:

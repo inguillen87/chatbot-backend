@@ -120,14 +120,23 @@ def resolve_survey_storage_tenant_profile(scope_id: Any) -> TenantProfile:
     """Resolve a persisted survey scope and prove it is canonical.
 
     Realtime workers and socket rooms consume identifiers read from survey
-    rows, not inbound compatibility references.  A unique owner/alias match is
-    therefore insufficient: the matching profile's primary key must equal the
-    stored value, and any alias/owner collision must fail closed.
+    rows, not inbound compatibility references.  A canonical primary-key match
+    is therefore authoritative and must not be made ambiguous by an unrelated
+    profile whose legacy owner id happens to use the same integer.  Alias/owner
+    lookup is used only to classify a non-canonical stored value and fail it
+    closed.
     """
 
     candidate = _positive_int(scope_id)
     if candidate is None:
         raise SurveyTenantScopeError("survey_tenant_scope_invalid")
+
+    canonical_profile = TenantProfile.query.filter(
+        TenantProfile.id == candidate
+    ).first()
+    if canonical_profile is not None:
+        return canonical_profile
+
     profile = resolve_survey_tenant_profile_reference(
         candidate,
         allow_legacy_owner=True,

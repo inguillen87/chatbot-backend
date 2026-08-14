@@ -73,40 +73,111 @@ def test_scope_keeps_canonical_id_when_legacy_alias_exists(client):
     assert resolve_survey_tenant_profile_reference(9702).id == tenant.id
 
 
-def test_persisted_scope_fails_closed_on_canonical_owner_collision(client):
+@pytest.mark.parametrize(
+    (
+        "canonical_tenant_id",
+        "canonical_owner_id",
+        "canonical_slug",
+        "colliding_tenant_id",
+        "colliding_slug",
+    ),
+    [
+        (3, 4, "ferreteria", 5, "clinica-horizonte"),
+        (22, 4, "junin", 20, "bodega"),
+    ],
+)
+def test_persisted_scope_uses_direct_profile_over_owner_collision(
+    client,
+    canonical_tenant_id,
+    canonical_owner_id,
+    canonical_slug,
+    colliding_tenant_id,
+    colliding_slug,
+):
     from routes.v2.surveys import _tenant_slug_for_resolved_survey
     from socket_service import _tenant_slug_for_survey_tenant_id
 
     canonical_owner = _owner(
-        user_id=7120,
-        email="scope-storage-canonical@example.com",
+        user_id=canonical_owner_id,
+        email=f"scope-storage-{canonical_slug}@example.com",
     )
     colliding_owner = _owner(
-        user_id=7260,
-        email="scope-storage-collision@example.com",
+        user_id=canonical_tenant_id,
+        email=f"scope-storage-{colliding_slug}@example.com",
     )
     canonical = _tenant(
-        tenant_id=7260,
-        slug="scope-storage-canonical",
+        tenant_id=canonical_tenant_id,
+        slug=canonical_slug,
         owner_id=canonical_owner.id,
     )
     _tenant(
-        tenant_id=7261,
-        slug="scope-storage-owner-collision",
+        tenant_id=colliding_tenant_id,
+        slug=colliding_slug,
+        owner_id=colliding_owner.id,
+    )
+    db.session.commit()
+
+    assert resolve_survey_storage_tenant_profile(canonical.id).id == canonical.id
+    assert _tenant_slug_for_survey_tenant_id(canonical.id) == canonical.slug
+    assert (
+        _tenant_slug_for_resolved_survey(
+            SimpleNamespace(tenant_id=canonical.id)
+        )
+        == canonical.slug
+    )
+
+
+@pytest.mark.parametrize("legacy_reference_kind", ["alias", "owner"])
+def test_persisted_scope_rejects_legacy_alias_or_owner_namespace(
+    client,
+    legacy_reference_kind,
+):
+    owner_id = 7310 if legacy_reference_kind == "alias" else 7311
+    legacy_scope_id = 7390 if legacy_reference_kind == "alias" else owner_id
+    tenant = _tenant(
+        tenant_id=7320 if legacy_reference_kind == "alias" else 7321,
+        slug=f"scope-storage-legacy-{legacy_reference_kind}",
+        owner_id=_owner(
+            user_id=owner_id,
+            email=f"scope-storage-legacy-{legacy_reference_kind}@example.com",
+        ).id,
+        survey_alias=legacy_scope_id if legacy_reference_kind == "alias" else None,
+    )
+    db.session.commit()
+
+    with pytest.raises(SurveyTenantScopeError) as exc_info:
+        resolve_survey_storage_tenant_profile(legacy_scope_id)
+
+    assert exc_info.value.reason_code == "survey_tenant_storage_scope_not_canonical"
+    assert exc_info.value.tenant_id == tenant.id
+    assert exc_info.value.candidate_scope_id == legacy_scope_id
+
+
+def test_inbound_legacy_owner_reference_remains_ambiguous_on_direct_collision(client):
+    canonical_owner = _owner(
+        user_id=7330,
+        email="scope-inbound-direct-owner@example.com",
+    )
+    colliding_owner = _owner(
+        user_id=3,
+        email="scope-inbound-legacy-owner@example.com",
+    )
+    _tenant(
+        tenant_id=3,
+        slug="scope-inbound-direct",
+        owner_id=canonical_owner.id,
+    )
+    _tenant(
+        tenant_id=5,
+        slug="scope-inbound-owner-collision",
         owner_id=colliding_owner.id,
     )
     db.session.commit()
 
     with pytest.raises(SurveyTenantScopeError) as exc_info:
-        resolve_survey_storage_tenant_profile(canonical.id)
+        resolve_survey_tenant_profile_reference(3, allow_legacy_owner=True)
+
     assert exc_info.value.reason_code == "survey_tenant_scope_ambiguous"
-    assert _tenant_slug_for_survey_tenant_id(canonical.id) == ""
-    assert (
-        _tenant_slug_for_resolved_survey(
-            SimpleNamespace(tenant_id=canonical.id)
-        )
-        is None
-    )
 
 
 def test_whatsapp_scope_uses_tenant_profile_and_never_owner_id(client):
