@@ -606,6 +606,13 @@ class WhatsAppWebhookTestCase(unittest.TestCase):
         self.assertTrue(payload["_force_whatsapp_interactive"])
         self.assertEqual(payload["message_type"], "interactive_buttons")
         self.assertEqual(payload["options_list"][0]["type"], "url")
+        self.assertTrue(
+            any(
+                option.get("texto") == "Consultar otro reclamo"
+                and option.get("action_id") == "consultar_estado_reclamo"
+                for option in payload["options_list"]
+            )
+        )
 
     def test_whatsapp_flow_contract_rejects_unsafe_webview_url(self):
         payload = {

@@ -676,6 +676,33 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     logger.info("Common utils placeholder script executed.")
 
+def _get_whatsapp_main_menu_options() -> List[Dict[str, str]]:
+    """Return the canonical numbered menu used by WhatsApp.
+
+    Keep this independent from viewer/profile state so numeric replies keep the
+    same meaning even during the anonymous onboarding turn.
+    """
+
+    options: List[Dict[str, str]] = [
+        {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
+        {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
+        {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
+        {"texto": "🛍️ Catálogo y Beneficios", "action_id": "mostrar_menu_catalogo"},
+    ]
+    if FEATURE_ENCUESTAS:
+        options.append(
+            {"texto": "🗳️ Participación Ciudadana", "action_id": "mostrar_menu_encuestas"}
+        )
+    options.extend(
+        [
+            {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
+            {"texto": "📞 Solicitar llamada", "action_id": "solicitar_llamada"},
+            {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
+        ]
+    )
+    return [dict(option) for option in options]
+
+
 def _get_main_menu_payload(
     context: dict,
     welcome_message_override: Optional[str] = None,
@@ -929,19 +956,7 @@ def _get_main_menu_payload(
     channel = context.get("channel", "web")
     if channel == "whatsapp":
         # Simplified menu for WhatsApp: only top-level categories
-        whatsapp_buttons = [
-            {"texto": "🗣️ Reclamos y Consultas", "action_id": "mostrar_menu_reclamos"},
-            {"texto": "🚗 Trámites y Turnos", "action_id": "mostrar_menu_tramites"},
-            {"texto": "📰 Información del Municipio", "action_id": "mostrar_menu_informacion"},
-        ]
-        whatsapp_buttons.append({"texto": "🛍️ Catálogo y Beneficios", "action_id": "mostrar_menu_catalogo"})
-        if FEATURE_ENCUESTAS:
-            whatsapp_buttons.append({"texto": "🗳️ Participación Ciudadana", "action_id": "mostrar_menu_encuestas"})
-        whatsapp_buttons.extend([
-            {"texto": "🅿️ Estacionamiento", "action_id": "mostrar_menu_estacionamiento"},
-            {"texto": "📞 Solicitar llamada", "action_id": "solicitar_llamada"},
-            {"texto": "❓ Ayuda", "action_id": "mostrar_menu_ayuda"},
-        ])
+        whatsapp_buttons = _get_whatsapp_main_menu_options()
 
         categorias = [{
             "titulo": "*Categorías*",

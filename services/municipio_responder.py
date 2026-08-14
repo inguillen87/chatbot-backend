@@ -81,6 +81,7 @@ from .common_utils import (
     construir_respuesta_sugerir_registro,
     extract_multiple_contact_details_regex,
     _get_main_menu_payload,
+    _get_whatsapp_main_menu_options,
     build_menu_tts_cache_namespace,
 )
 from utils.validators import extract_email, extract_phone, extract_dni, extract_name
@@ -122,6 +123,18 @@ from services.reclamo_turn_semantics import (
 )
 from services.demo_surveys import build_demo_survey_chat_menu
 from services.feature_flag_service import get_feature_toggle
+from services.survey_tenant_scope import (
+    SurveyTenantScopeError,
+    resolve_survey_tenant_scope_id,
+)
+from services.whatsapp_survey_conversation import (
+    ACTION_PREFIX as WHATSAPP_SURVEY_ACTION_PREFIX,
+    START_ACTION_PREFIX as WHATSAPP_SURVEY_START_ACTION_PREFIX,
+    WHATSAPP_SURVEY_CONVERSATION_STATE,
+    handle_whatsapp_survey_flow_turn,
+    has_active_whatsapp_survey_flow,
+    start_whatsapp_survey_flow,
+)
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TTS_MODEL,
     resolve_openai_model,
@@ -547,10 +560,18 @@ def _has_valid_sugerencia_address(datos: Dict[str, Any]) -> bool:
     return False
 
 
+_SUGERENCIA_REQUIRED_CONTACT_FIELDS = ("nombre", "dni", "email", "telefono")
+_SUGERENCIA_EXTRACTABLE_CONTACT_FIELDS = (
+    *_SUGERENCIA_REQUIRED_CONTACT_FIELDS,
+    "direccion",
+)
+
+
 def _get_missing_sugerencia_contact_fields(datos: Dict[str, Any]) -> list[str]:
     missing: list[str] = []
-    # Direccion is optional for general citizen suggestions
-    for campo in ["nombre", "dni", "email", "telefono"]:
+    # A suggestion may be general and not tied to one address. Location remains
+    # extractable when volunteered, but it is not a submission gate.
+    for campo in _SUGERENCIA_REQUIRED_CONTACT_FIELDS:
         if not datos.get(campo):
             missing.append(campo)
     return missing
@@ -1264,7 +1285,7 @@ class ReclamoFlowHandler:
             datos_iniciales
             and isinstance(datos_iniciales, dict)
             and (datos_iniciales.get("foto_url") or datos_iniciales.get("image_url"))
-        )
+        ) or bool(self.context.get("foto_url"))
         if not current_message_has_image:
             self.context.pop("foto_url", None)
             self.context.pop("foto_url_directa", None)
@@ -4284,6 +4305,23 @@ def handle_main_menu_action(action_id: str, context: dict, chat_db_context) -> d
             flag_modified(chat_db_context, "context_data")
         return submenu
 
+    if action_id.startswith(WHATSAPP_SURVEY_START_ACTION_PREFIX):
+        slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
+        tenant_slug = _resolve_tenant_slug(context)
+        base_url = _resolve_encuestas_base_url(context)
+        public_url = _scope_survey_public_url(
+            urljoin(f"{base_url}/", f"e/{slug_publico}"),
+            tenant_slug,
+        )
+        response = start_whatsapp_survey_flow(
+            context,
+            slug_publico,
+            public_url=public_url,
+        )
+        if chat_db_context:
+            flag_modified(chat_db_context, "context_data")
+        return response
+
     if action_id.startswith("encuesta_compartir::"):
         slug_publico = action_id.split("::", 1)[1] if "::" in action_id else ""
         return _build_encuesta_share_payload(slug_publico, context, chat_db_context)
@@ -6697,15 +6735,11 @@ def find_global_menu_action(user_input: str, context: Optional[dict] = None) -> 
     ):
         return "solicitar_turnos"
 
-    # Use standard main menu options for global resolution so single digits 1..8
-    # resolve consistently to the 8 main menu categories, NOT to arbitrary dictionary keys.
-    # Force channel=whatsapp to always get the flat 8-item top-level menu,
-    # regardless of what the actual context channel is. The web channel expands
-    # sub-options which causes numeric indices to mismatch (e.g. "5" → licencia
-    # instead of encuestas).
-    menu_context = dict(context or {})
-    menu_context["channel"] = "whatsapp"
-    main_menu_options = _get_main_menu_payload(menu_context).get("options_list", [])
+    # Resolve against the canonical WhatsApp menu without depending on whether
+    # the citizen already supplied a profile name. The previous implementation
+    # returned an onboarding payload without ``options_list`` for anonymous
+    # users and then interpreted "5" as the fifth dictionary key (suggestion).
+    main_menu_options = _get_whatsapp_main_menu_options()
     if main_menu_options:
         action = find_menu_action_by_input(user_input, main_menu_options)
         if action:
@@ -8370,8 +8404,9 @@ def _append_tracking_params(
     channel: Optional[str] = None,
     campaign: Optional[str] = None,
     session_id: Optional[str] = None,
+    tenant_slug: Optional[str] = None,
 ) -> Optional[str]:
-    """Attach lightweight attribution params to shared links."""
+    """Attach tenant scope and lightweight attribution to shared links."""
 
     if not raw_url or not isinstance(raw_url, str):
         return raw_url
@@ -8379,6 +8414,12 @@ def _append_tracking_params(
     parsed = urlparse(raw_url)
     query_params = parse_qs(parsed.query, keep_blank_values=True)
     normalized_channel = (channel or "").strip().lower()
+    normalized_tenant_slug = (tenant_slug or "").strip()
+
+    if normalized_tenant_slug and not any(
+        key in query_params for key in ("tenant", "tenant_slug")
+    ):
+        query_params["tenant_slug"] = [normalized_tenant_slug]
 
     if normalized_channel and "source" not in query_params:
         query_params["source"] = [normalized_channel]
@@ -8397,6 +8438,26 @@ def _append_tracking_params(
 
     new_query = urlencode(query_params, doseq=True)
     return parsed._replace(query=new_query).geturl()
+
+
+def _scope_survey_public_url(
+    raw_url: Optional[str], tenant_slug: Optional[str]
+) -> Optional[str]:
+    """Bind a public survey URL to its tenant without adding attribution noise."""
+
+    if not raw_url or not isinstance(raw_url, str):
+        return raw_url
+
+    normalized_tenant_slug = (tenant_slug or "").strip()
+    if not normalized_tenant_slug:
+        return raw_url
+
+    parsed = urlparse(raw_url)
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+    if not any(key in query_params for key in ("tenant", "tenant_slug")):
+        query_params["tenant_slug"] = [normalized_tenant_slug]
+
+    return parsed._replace(query=urlencode(query_params, doseq=True)).geturl()
 
 
 def _resolve_catalogo_banner_image(context: Optional[dict]) -> Optional[str]:
@@ -8563,11 +8624,25 @@ def _get_catalogo_menu(context: Optional[dict] = None):
 
 
 def _resolve_tenant_slug(context: Optional[dict]) -> str:
-    municipio_config = (context or {}).get("municipio_config_actual", {}) or {}
+    context = context or {}
+    tenant_profile = context.get("tenant_profile")
+    tenant_profile_slug = getattr(tenant_profile, "slug", None)
+    if tenant_profile_slug:
+        return str(tenant_profile_slug).strip()
+
+    explicit_tenant_slug = context.get("tenant_slug")
+    if explicit_tenant_slug:
+        return str(explicit_tenant_slug).strip()
+
+    municipio_config = context.get("municipio_config_actual", {}) or {}
     slug = municipio_config.get("slug") or municipio_config.get("nombre_slug")
     if slug:
         return str(slug).strip()
-    tenant_id = context.get("municipio_id") if context else None
+
+    # ``tenant_id`` is the tenant namespace. ``municipio_id`` is retained only
+    # as a compatibility fallback for old contexts that predate TenantProfile;
+    # it must never override an authoritative profile/slug.
+    tenant_id = context.get("tenant_id") or context.get("municipio_id")
     return str(tenant_id or "default").strip()
 
 
@@ -8844,29 +8919,35 @@ def _build_catalogo_cart_summary(context: dict) -> tuple[str, float, float, int]
 
 
 def _resolve_encuestas_tenant_id(context: dict) -> Optional[int]:
-    """Infer the tenant/municipio identifier for survey queries."""
+    """Resolve the authoritative survey namespace for this chat tenant.
 
-    owner = context.get("user_obj")
-    candidates = []
-    if owner is not None:
-        candidates.extend(
-            [
-                getattr(owner, "municipio_id", None),
-                getattr(owner, "empresa_id", None),
-                getattr(owner, "pyme_id", None),
-                getattr(owner, "id", None),
-            ]
-        )
-    candidates.append(context.get("municipio_id"))
+    Owner, municipio and user identifiers are intentionally excluded: they are
+    not tenant namespaces and can point WhatsApp at another organisation's
+    surveys. ``TenantProfile`` plus its explicit legacy alias is the only
+    supported contract.
+    """
 
-    for candidate in candidates:
-        if candidate is None:
-            continue
+    tenant = context.get("tenant_profile")
+    if tenant is None:
+        raw_tenant_id = context.get("tenant_id")
         try:
-            return int(candidate)
-        except (TypeError, ValueError):
-            continue
-    return None
+            tenant_id = int(raw_tenant_id)
+        except (TypeError, ValueError, OverflowError):
+            tenant_id = None
+        if tenant_id is not None and tenant_id > 0:
+            tenant = db.session.get(TenantProfile, tenant_id)
+
+    if tenant is None:
+        return None
+
+    try:
+        return resolve_survey_tenant_scope_id(tenant)
+    except SurveyTenantScopeError as error:
+        logger.error(
+            "[encuestas] Tenant scope rejected (%s)",
+            error.reason_code,
+        )
+        return None
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
@@ -9068,42 +9149,6 @@ def _resolve_encuestas_short_base_url(context: dict, base_url: str) -> str:
         return "http://" + short_base[len("http://www.") :].rstrip("/")
 
     return short_base.rstrip("/")
-
-
-def _build_fallback_encuestas_for_junin(
-    base_url: str, context: Optional[dict] = None
-) -> list[dict]:
-    """Return a curated list of encuestas for Junín with short share URLs."""
-
-    context = context or {}
-    cleaned_base = _clean_url_candidate(base_url) or "https://chatboc.ar"
-    cleaned_base = cleaned_base.rstrip("/")
-    short_base = _resolve_encuestas_short_base_url(context, cleaned_base)
-
-    titulo = "Participación Ciudadana Junín 2025"
-    descripcion = (
-        "Queremos conocer tus prioridades para planificar obras, seguridad y "
-        "actividades en todo Junín. Contanos qué es importante para tu barrio."
-    )
-    slug = "9df156"
-
-    share_url = urljoin(f"{cleaned_base}/", f"e/{slug}")
-    share_short_url = urljoin(f"{short_base}/", f"e/{slug}") if short_base else share_url
-    share_message = f"Participá en {titulo}: {share_short_url or share_url}"
-
-    return [
-        {
-            "data": {
-                "titulo": titulo,
-                "descripcion": descripcion,
-                "slug": slug,
-            },
-            "slug_publico": slug,
-            "share_url": share_url,
-            "share_short_url": share_short_url,
-            "share_message": share_message,
-        }
-    ]
 
 
 def _is_domain_mapped_base_url_for_tenant(
@@ -9733,11 +9778,6 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
     if not encuestas_data and is_demo_menu:
         return _demo_menu_payload()
 
-    if not encuestas_data and safe_page == 1:
-        encuestas_data = _build_fallback_encuestas_for_junin(
-            base_url or "https://chatboc.ar", context
-        )
-
     if not encuestas_data:
         return {
             "message_body": (
@@ -9774,13 +9814,17 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
             if len(descripcion) > 180:
                 descripcion = descripcion[:177].rstrip() + "…"
 
-        canonical_share_url = encuesta_entry.get("share_url") or urljoin(
-            f"{base_url}/", f"e/{slug_publico}"
+        canonical_share_url = _scope_survey_public_url(
+            encuesta_entry.get("share_url")
+            or urljoin(f"{base_url}/", f"e/{slug_publico}"),
+            tenant_slug,
         )
         short_slug = _extract_short_public_slug(slug_publico)
         short_base_url = _resolve_encuestas_short_base_url(context, base_url)
-        canonical_share_short_url = encuesta_entry.get("share_short_url") or urljoin(
-            f"{short_base_url}/", f"e/{short_slug}"
+        canonical_share_short_url = _scope_survey_public_url(
+            encuesta_entry.get("share_short_url")
+            or urljoin(f"{short_base_url}/", f"e/{short_slug}"),
+            tenant_slug,
         )
         qr_url: Optional[str] = None
         if api_base_url:
@@ -9792,12 +9836,14 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
             channel=channel_value,
             campaign=f"encuesta_{slug_publico}",
             session_id=session_id,
+            tenant_slug=tenant_slug,
         )
         share_short_url = _append_tracking_params(
             canonical_share_short_url,
             channel=channel_value,
             campaign=f"encuesta_short_{slug_publico}",
             session_id=session_id,
+            tenant_slug=tenant_slug,
         )
 
         share_message = encuesta_entry.get("share_message") or (
@@ -9812,8 +9858,10 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
                 f"https://wa.me/?text={quote_plus(share_target_for_display)}"
             )
         share_action_id = f"encuesta_compartir::{slug_publico}"
+        respond_action_id = f"{WHATSAPP_SURVEY_START_ACTION_PREFIX}{slug_publico}"
 
         short_title = _shorten_button_label(titulo)
+        respond_button_title = _shorten_button_label(titulo, max_length=14)
         share_button_title = _shorten_button_label(titulo, max_length=30)
 
         display_share_url = share_short_url or share_url
@@ -9894,6 +9942,14 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
                     "type": "url",
                 }
             )
+        else:
+            survey_buttons.append(
+                {
+                    # WhatsApp list row titles are capped at 24 characters.
+                    "texto": f"Responder {respond_button_title}",
+                    "action_id": respond_action_id,
+                }
+            )
 
         share_button: Dict[str, Any] = {
             "texto": f"Compartir {share_button_title}",
@@ -9904,7 +9960,13 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
             share_button["url"] = whatsapp_share_url
             share_button["type"] = "url"
 
-        survey_buttons.append(share_button)
+        # WhatsApp lists support at most 10 rows. With five surveys, keeping a
+        # separate Respond + Share row for every item would hide pagination and
+        # navigation in the provider fallback. The body already exposes the
+        # tenant-scoped copy/share link and metadata retains ``share_action_id``;
+        # reserve interactive rows for responding and navigation on WhatsApp.
+        if not is_whatsapp_channel:
+            survey_buttons.append(share_button)
 
         survey_metadata.append(
             {
@@ -9916,6 +9978,7 @@ def _get_encuestas_menu(context: dict, page: int = 1) -> dict:
                 "share_tracked_url": share_url,
                 "share_tracked_short_url": share_short_url,
                 "share_message": share_message,
+                "respond_action_id": respond_action_id,
                 "share_action_id": share_action_id,
                 "qr_url": qr_url,
                 "short_slug": short_slug,
@@ -10082,6 +10145,16 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
     share_widget_url = None
     titulo = "Encuesta ciudadana"
 
+    tenant_scope_id = _resolve_encuestas_tenant_id(context)
+    tenant_profile = context.get("tenant_profile")
+    try:
+        profile_id = int(getattr(tenant_profile, "id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        profile_id = 0
+    if tenant_scope_id is not None and profile_id != tenant_scope_id:
+        tenant_profile = db.session.get(TenantProfile, tenant_scope_id)
+    tenant_slug = str(getattr(tenant_profile, "slug", "") or "").strip()
+
     if share_meta:
         titulo = share_meta.get("titulo") or titulo
         share_url = share_meta.get("share_url")
@@ -10096,44 +10169,64 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         if isinstance(meta_media_urls, list) and meta_media_urls:
             share_media_urls = list(meta_media_urls)
 
-    if not share_url and normalized_slug:
+    if share_meta and not share_url and normalized_slug and tenant_slug:
         base_url = _resolve_encuestas_base_url(context)
-        share_url = urljoin(f"{base_url}/", f"e/{normalized_slug}")
+        share_url = _scope_survey_public_url(
+            urljoin(f"{base_url}/", f"e/{normalized_slug}"),
+            tenant_slug,
+        )
 
-    if not share_short_url and normalized_slug:
+    if share_meta and not share_short_url and normalized_slug and tenant_slug:
         canonical_base = _resolve_encuestas_base_url(context)
         short_base_url = _resolve_encuestas_short_base_url(context, canonical_base)
         short_slug = _extract_short_public_slug(normalized_slug)
-        share_short_url = urljoin(f"{short_base_url}/", f"e/{short_slug}")
+        share_short_url = _scope_survey_public_url(
+            urljoin(f"{short_base_url}/", f"e/{short_slug}"),
+            tenant_slug,
+        )
 
     if not share_meta and normalized_slug:
-        try:
-            encuesta = get_public_encuesta(normalized_slug)
-        except Exception:
-            logger.exception(
-                "[encuestas] No se pudo cargar la encuesta '%s' para compartir",
+        if tenant_scope_id is None or not tenant_slug:
+            logger.warning(
+                "[encuestas] Share fallback rechazado por tenant no resuelto slug=%s",
                 normalized_slug,
             )
+            encuesta = None
         else:
+            try:
+                encuesta = get_public_encuesta(
+                    normalized_slug,
+                    preferred_tenant_id=tenant_scope_id,
+                    require_tenant_match=True,
+                )
+            except Exception:
+                encuesta = None
+                logger.exception(
+                    "[encuestas] No se pudo cargar la encuesta '%s' para compartir "
+                    "en tenant=%s",
+                    normalized_slug,
+                    tenant_scope_id,
+                )
+
+        if encuesta is not None:
             data = serialize_public_encuesta(encuesta, slug_publico=normalized_slug)
             titulo = data.get("titulo") or titulo
             short_slug = _extract_short_public_slug(normalized_slug)
             canonical_base = _resolve_encuestas_base_url(context)
             short_base_url = _resolve_encuestas_short_base_url(context, canonical_base)
-            share_short_url = (
-                share_short_url
-                or urljoin(f"{short_base_url}/", f"e/{short_slug}")
-                if short_base_url
-                else share_short_url
+            share_url = _scope_survey_public_url(
+                urljoin(f"{canonical_base}/", f"e/{normalized_slug}"),
+                tenant_slug,
             )
-            share_message = share_message or (
-                f"Participá en {titulo}: {share_short_url or share_url}"
-                if (share_short_url or share_url)
-                else None
+            share_short_url = _scope_survey_public_url(
+                urljoin(f"{short_base_url}/", f"e/{short_slug}"),
+                tenant_slug,
             )
+            share_message = f"Participá en {titulo}: {share_short_url or share_url}"
             new_meta = {
                 "slug": normalized_slug,
                 "titulo": titulo,
+                "tenant_slug": tenant_slug,
                 "share_url": share_url,
                 "share_short_url": share_short_url or share_url,
                 "share_message": share_message,
@@ -10158,7 +10251,13 @@ def _build_encuesta_share_payload(slug_publico: str, context: dict, chat_db_cont
         share_whatsapp_url = f"https://wa.me/?text={quote_plus(share_message)}"
 
     if share_url and not share_widget_url:
-        share_widget_url = f"{share_url}?canal=widget_chat"
+        share_widget_url = _append_tracking_params(
+            share_url,
+            channel="widget_chat",
+            campaign=f"encuesta_{normalized_slug}",
+            session_id=context.get("chat_session_uuid"),
+            tenant_slug=tenant_slug,
+        )
 
     if share_meta is not None:
         if share_whatsapp_url:
@@ -10734,9 +10833,26 @@ def responder_municipio(
             pregunta_str = ""
             received_payload["pregunta"] = ""
 
+    # A governed survey owns every inbound turn until it finishes or the
+    # citizen explicitly navigates away. Detect that ownership before legacy
+    # ticket shortcuts can reinterpret a numeric survey response.
+    pre_dispatch_context_data = (
+        chat_db_context.context_data
+        if chat_db_context is not None
+        and isinstance(getattr(chat_db_context, "context_data", None), dict)
+        else None
+    )
+    active_whatsapp_survey_turn = bool(
+        pre_dispatch_context_data is not None
+        and has_active_whatsapp_survey_flow(
+            {"chat_db_context_data": pre_dispatch_context_data}
+        )
+    )
+
     # Detección temprana de números de ticket antes de cualquier otra lógica
     if (
-        isinstance(pregunta_str, str)
+        not active_whatsapp_survey_turn
+        and isinstance(pregunta_str, str)
         and pregunta_str.strip().isdigit()
         and len(pregunta_str.strip()) >= 6
         and chat_db_context is not None
@@ -10796,6 +10912,7 @@ def responder_municipio(
         ConversationState.ESPERANDO_SELECCION_DE_LISTA.name,
         ConversationState.ESPERANDO_SELECCION_MENU_PRINCIPAL.name,
         ConversationState.ESPERANDO_SELECCION_MENU_RECLAMOS.name,
+        WHATSAPP_SURVEY_CONVERSATION_STATE,
     }
 
     if (
@@ -10945,10 +11062,64 @@ def responder_municipio(
         "source_event_id": kwargs.get("source_event_id"),
         "durable_turn_id": kwargs.get("durable_turn_id"),
         "idempotency_key": kwargs.get("idempotency_key"),
+        # The webhook already places a voice-note transcript in ``pregunta``.
+        # Retain that exact text together with the safe modality metadata.
+        "user_input_raw": pregunta_str,
     }
     # --- FIN REFACTOR ---
 
     contexto_municipio_actual = chat_db_context_live_data.setdefault(CONTEXTO_MUNICIPIO, {})
+
+    # The native survey state has priority over greetings, global emoji
+    # shortcuts, proactive photo/location handlers, urgency routing and the
+    # LLM. Unsupported input is re-prompted by the governed survey service; it
+    # is never reinterpreted as a claim or another municipal intent.
+    whatsapp_survey_action = (
+        received_payload.get("action_id") or received_payload.get("action")
+    )
+    if has_active_whatsapp_survey_flow(context):
+        survey_response = handle_whatsapp_survey_flow_turn(
+            context,
+            text=pregunta_str,
+            action_id=whatsapp_survey_action,
+        )
+        if survey_response:
+            navigation_action = survey_response.pop(
+                "_survey_navigation_action", None
+            )
+            if navigation_action:
+                survey_response = handle_main_menu_action(
+                    navigation_action,
+                    context,
+                    chat_db_context,
+                )
+            if chat_db_context:
+                flag_modified(chat_db_context, "context_data")
+            return _finalize_response(survey_response)
+    elif str(whatsapp_survey_action or "").startswith(
+        WHATSAPP_SURVEY_ACTION_PREFIX
+    ):
+        # A stale or forged action id without its pinned server-side flow is
+        # never interpreted as natural language and never executes a write.
+        return _finalize_response(
+            {
+                "message_body": (
+                    "Esta participación ya no está activa. No registramos ninguna "
+                    "respuesta. Volvé al listado para comenzar de nuevo."
+                ),
+                "message_type": "interactive_buttons",
+                "options_list": [
+                    {
+                        "texto": "Volver a encuestas",
+                        "action_id": "mostrar_menu_encuestas",
+                    },
+                    {"texto": "Menú principal", "action_id": "menu_principal"},
+                ],
+                "fuente": "encuesta_whatsapp_sesion_inactiva_v1",
+                "generar_audio": True,
+                "response_persisted": False,
+            }
+        )
 
     if live_chat_cta_action:
         from services.actions.municipio_actions import DerivarHumanoActionHandler
@@ -11515,11 +11686,11 @@ def responder_municipio(
             if switch_response:
                 return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
-            campos_requeridos = ["nombre", "dni", "email", "telefono"]
+            campos_extraibles = list(_SUGERENCIA_EXTRACTABLE_CONTACT_FIELDS)
 
             # Primero intentamos extraer con regex para los campos aún faltantes.
             nuevos_datos = extract_multiple_contact_details_regex(
-                pregunta_str, campos_requeridos + ["telefono"]
+                pregunta_str, campos_extraibles
             )
             _update_sugerencia_contact_fields(datos_guardados, nuevos_datos)
 
@@ -11528,7 +11699,7 @@ def responder_municipio(
             if campos_faltantes:
                 try:
                     llm_datos = extract_multiple_contact_details_llm(
-                        pregunta_str, campos_requeridos + ["telefono"]
+                        pregunta_str, campos_extraibles
                     )
                     if llm_datos:
                         _update_sugerencia_contact_fields(datos_guardados, llm_datos)
@@ -11543,15 +11714,9 @@ def responder_municipio(
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
-                if campos_faltantes == ["direccion"]:
-                    message_body = (
-                        "Necesito la dirección o una ubicación aproximada para registrar la sugerencia. "
-                        "Podés escribirla en un solo mensaje."
-                    )
-                else:
-                    message_body = (
-                        f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos."
-                    )
+                message_body = (
+                    f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos."
+                )
                 return _finalize_response({
                     "message_body": message_body,
                     "fuente": "datos_contacto_sugerencia_incompletos"
@@ -12599,11 +12764,11 @@ def responder_municipio(
             if switch_response:
                 return _finalize_response(switch_response)
             datos_guardados = contexto_municipio_actual.get('datos_sugerencia', {})
-            campos_requeridos = ["nombre", "dni", "email", "direccion", "telefono"]
+            campos_extraibles = list(_SUGERENCIA_EXTRACTABLE_CONTACT_FIELDS)
 
             # Primero intentamos extraer con regex para los campos aún faltantes.
             nuevos_datos = extract_multiple_contact_details_regex(
-                pregunta_str, campos_requeridos + ["telefono"]
+                pregunta_str, campos_extraibles
             )
             _update_sugerencia_contact_fields(datos_guardados, nuevos_datos)
 
@@ -12613,7 +12778,7 @@ def responder_municipio(
             if campos_faltantes:
                 try:
                     llm_datos = extract_multiple_contact_details_llm(
-                        pregunta_str, campos_requeridos + ["telefono"]
+                        pregunta_str, campos_extraibles
                     )
                     if llm_datos:
                         _update_sugerencia_contact_fields(datos_guardados, llm_datos)
@@ -12629,15 +12794,9 @@ def responder_municipio(
             if campos_faltantes:
                 if chat_db_context:
                     flag_modified(chat_db_context, "context_data")
-                if campos_faltantes == ["direccion"]:
-                    message_body = (
-                        "Necesito la dirección o una ubicación aproximada para registrar la sugerencia. "
-                        "Podés escribirla en un solo mensaje."
-                    )
-                else:
-                    message_body = (
-                        f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos."
-                    )
+                message_body = (
+                    f"Aún necesito: {', '.join(campos_faltantes)}. Podés enviarlos todos juntos."
+                )
                 return _finalize_response({
                     "message_body": message_body,
                     "fuente": "datos_contacto_sugerencia_incompletos"

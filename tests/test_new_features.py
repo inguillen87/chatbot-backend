@@ -147,6 +147,22 @@ class TestNewFeatures(unittest.TestCase):
         self.assertEqual(tracking_button.get("texto"), "💬 Ver mi Ticket")
         self.assertNotIn("?pin=", tracking_button.get("url", ""))
 
+    def test_formatear_sugerencia_usa_seguimiento_publico_con_pin(self):
+        message, buttons = formatear_ticket_respuesta(
+            "sugerencia",
+            "Marcelo",
+            "Pintar los bancos de la plaza",
+            "Sugerencia",
+            "S-897013",
+            base_chat_url="https://www.chatboc.ar/chat",
+            consulta_pin="115474",
+        )
+
+        expected_url = "https://www.chatboc.ar/tracking/claim/897013#pin=115474"
+        self.assertIn(expected_url, message)
+        self.assertTrue(any(button.get("url") == expected_url for button in buttons))
+        self.assertNotIn("/chat/chat/", message)
+
     def test_formatear_ticket_respuesta_recorta_descripcion(self):
         message, _ = formatear_ticket_respuesta(
             "reclamo",

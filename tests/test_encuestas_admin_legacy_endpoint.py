@@ -153,7 +153,10 @@ def test_admin_encuestas_allows_owner_with_tenant_context(monkeypatch, client):
     assert isinstance(payload, dict)
     assert payload.get("resumen") is not None
 
-    public_resp = client.get("/public/encuestas")
+    public_resp = client.get(
+        "/public/encuestas",
+        query_string={"tenant_slug": tenant.slug},
+    )
     assert public_resp.status_code == 200
     public_data = public_resp.get_json()
     assert isinstance(public_data, list)
@@ -1081,6 +1084,76 @@ def test_admin_encuestas_seed_demo_endpoint(client, monkeypatch, admin_user):
             EncRespuesta.lat.isnot(None), EncRespuesta.lng.isnot(None)
         ).count()
         assert geo_count > 0
+
+def test_admin_encuestas_seed_demo_fails_closed_without_qa_capability(
+    client, monkeypatch, admin_user
+):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.delenv("ALLOW_SURVEY_DEMO_SEEDING", raising=False)
+    monkeypatch.setitem(
+        client.application.config,
+        "ALLOW_SURVEY_DEMO_SEEDING",
+        False,
+    )
+
+    headers = _auth_headers(client, admin_user)
+    response = client.post(
+        "/admin/encuestas/999999/seed-demo",
+        json={"cantidad": 100, "reset": True},
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert payload["reason_code"] == "survey_demo_seeding_disabled"
+    assert payload["retryable"] is False
+    assert payload["contract_version"] == "surveys.demo_seeding.v1"
+
+
+def test_admin_create_auto_seed_fails_before_persisting_survey(
+    client,
+    monkeypatch,
+    admin_user,
+):
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
+    monkeypatch.delenv("ALLOW_SURVEY_DEMO_SEEDING", raising=False)
+    monkeypatch.setitem(
+        client.application.config,
+        "ALLOW_SURVEY_DEMO_SEEDING",
+        False,
+    )
+    headers = _auth_headers(client, admin_user)
+    with client.application.app_context():
+        before = EncEncuesta.query.count()
+
+    response = client.post(
+        "/admin/encuestas",
+        json={
+            "titulo": "No debe persistirse si QA está deshabilitado",
+            "auto_seed_demo": {"enabled": True, "cantidad": 100},
+            "preguntas": [
+                {
+                    "orden": 1,
+                    "tipo": "opcion_unica",
+                    "texto": "¿Opción?",
+                    "obligatoria": True,
+                    "opciones": [
+                        {"orden": 1, "texto": "Sí", "valor": "si"},
+                        {"orden": 2, "texto": "No", "valor": "no"},
+                    ],
+                }
+            ],
+        },
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "survey_demo_seeding_disabled"
+    with client.application.app_context():
+        assert EncEncuesta.query.count() == before
+
 
 def test_admin_encuestas_seed_demo_invalid_scenario(client, monkeypatch, admin_user):
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)

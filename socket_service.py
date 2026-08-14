@@ -6,6 +6,10 @@ from services.ticket_service import servicio_tickets # Reutilizamos el servicio 
 from services.tts_orchestrator import generar_audio
 from services.conversation_stream import build_realtime_envelope
 from services.live_chat_access import LiveChatAccessError, build_ticket_room, verify_ticket_room_token
+from services.survey_tenant_scope import (
+    SurveyTenantScopeError,
+    resolve_survey_storage_tenant_profile,
+)
 from utils.auth_helpers import user_from_token
 from utils.response_utils import ensure_buttons_compatibility
 from utils.roles import canonical_role, is_authorized_superadmin_user
@@ -819,17 +823,16 @@ def _tenant_slug_for_survey_tenant_id(tenant_id: Any) -> str:
     except (TypeError, ValueError):
         return ""
 
-    mapped = TenantProfile.query.filter_by(encuestas_tenant_id=normalized_tenant_id).limit(2).all()
-    if len(mapped) == 1:
-        return str(mapped[0].slug or "").strip()
-    if len(mapped) > 1:
-        current_app.logger.warning(
-            "Dropped ambiguous survey socket tenant mapping encuestas_tenant_id=%s",
+    try:
+        tenant = resolve_survey_storage_tenant_profile(normalized_tenant_id)
+    except SurveyTenantScopeError:
+        current_app.logger.error(
+            "Dropped survey realtime event with non-canonical or ambiguous "
+            "tenant scope tenant_id=%s",
             normalized_tenant_id,
         )
         return ""
-    direct = db.session.get(TenantProfile, normalized_tenant_id)
-    return str(getattr(direct, "slug", "") or "").strip()
+    return str(getattr(tenant, "slug", "") or "").strip()
 
 
 def _is_valid_survey_room_segment(value: Any) -> bool:

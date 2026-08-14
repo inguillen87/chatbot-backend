@@ -597,7 +597,7 @@ def formatear_ticket_respuesta(
             })
 
     if id_ticket and base_chat_url:
-        if tipo == "reclamo":
+        if tipo in {"reclamo", "sugerencia"}:
             chat_url = build_claim_tracking_url(base_chat_url, id_ticket, consulta_pin)
         else:
             tracking_path = "/tracking/order" if tipo == "pedido" else "/chat"

@@ -28,6 +28,7 @@ from routes.catalogo import _formatear_producto
 from routes.carrito import _product_query_for_tenant
 from middleware.tenant_context import require_tenant
 from services.catalog_seed import ensure_seed_catalog
+from services.encuestas_service import list_public_encuestas_for_tenant
 from services.commerce_contracts import build_checkout_experience_payload
 from services.marketplace_analytics import track_marketplace_event
 from utils.roles import is_authorized_superadmin_user
@@ -1332,7 +1333,10 @@ def public_tenant_navigation(slug):
     owner = _resolve_catalog_owner(tenant)
     has_catalog = bool(owner and (tenant.pyme_id or (tenant.tipo or "").lower() == "pyme"))
     has_news = bool(owner and tenant.municipio_id)
-    has_surveys = bool(tenant.encuestas_tenant_id or tenant.municipio_id or tenant.pyme_id)
+    # Navigation must reflect the same citizen-visible publication predicate
+    # as the public survey API. Draft, future, closed or unlinked instruments
+    # must not advertise a route that is empty (or reveal their existence).
+    has_surveys = bool(list_public_encuestas_for_tenant(tenant.id, limit=1))
     base_route = f"/t/{tenant.slug}"
     items = [
         {"id": "home", "label": "Inicio", "route": base_route, "enabled": True},

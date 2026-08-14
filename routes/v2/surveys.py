@@ -62,6 +62,10 @@ from services.survey_response_effects import (
     dispatch_survey_response_effects,
     summarize_survey_response_effects,
 )
+from services.survey_tenant_scope import (
+    SurveyTenantScopeError,
+    resolve_survey_storage_tenant_profile,
+)
 from services.survey_access_policy import (
     SURVEY_ELIGIBILITY_MANAGE_CAPABILITY,
     SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
@@ -791,17 +795,16 @@ def _tenant_slug_for_resolved_survey(encuesta) -> str | None:
     except (TypeError, ValueError):
         return None
 
-    mapped = TenantProfile.query.filter_by(encuestas_tenant_id=normalized_tenant_id).limit(2).all()
-    if len(mapped) == 1:
-        return _tenant_slug_value(mapped[0])
-    if len(mapped) > 1:
-        current_app.logger.warning(
-            "Survey realtime contract has ambiguous tenant mapping encuestas_tenant_id=%s",
+    try:
+        tenant = resolve_survey_storage_tenant_profile(normalized_tenant_id)
+    except SurveyTenantScopeError:
+        current_app.logger.error(
+            "Rejected survey contract with non-canonical or ambiguous storage "
+            "scope tenant_id=%s",
             normalized_tenant_id,
         )
         return None
-
-    return _tenant_slug_value(db.session.get(TenantProfile, normalized_tenant_id))
+    return _tenant_slug_value(tenant)
 
 
 def _datetime_utc(value: Any) -> datetime | None:

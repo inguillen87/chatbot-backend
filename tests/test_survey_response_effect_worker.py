@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import secrets
 from types import SimpleNamespace
 from unittest.mock import call, patch
 
 from flask import Flask
+import pytest
 from sqlalchemy import text
 
 from database import db
@@ -18,6 +20,8 @@ from models import (
 )
 from services.survey_response_effect_worker import (
     SURVEY_RESPONSE_EFFECT_SWEEP_TASK_NAME,
+    SurveyResponseEffectWorkerConfigurationError,
+    assert_survey_response_effect_worker_schema_current,
     dispatch_survey_response_effect_batch,
     dispatch_survey_response_effect_batch_task,
     run_survey_response_effect_worker,
@@ -70,9 +74,9 @@ def _seed_analytics_effect(database_path: Path, *, status: str) -> int:
     with app.app_context():
         db.create_all()
         owner = User(name="Survey owner", email="owner@test.com", rol="admin")
-        owner.set_password("secret123")
+        owner.set_password(secrets.token_urlsafe(24))
         voter = User(name="Survey voter", email="voter@test.com", rol="usuario")
-        voter.set_password("secret123")
+        voter.set_password(secrets.token_urlsafe(24))
         db.session.add_all([owner, voter])
         db.session.flush()
         tenant = TenantProfile(
@@ -140,6 +144,58 @@ def _confirmed_analytics_event(*_args, **kwargs):
         entity_ref=kwargs["entity_ref"],
         metadata_payload=kwargs["payload"],
     )
+
+
+def test_worker_schema_gate_accepts_exact_repository_head():
+    app = _make_app()
+    app.config.update(
+        TESTING=False,
+        CHATBOC_PROCESS_ROLE="survey-effect-worker",
+    )
+    with app.app_context(), patch(
+        "services.survey_response_effect_worker._repository_schema_heads",
+        return_value=frozenset({"release-head"}),
+    ), patch(
+        "services.survey_response_effect_worker._database_schema_heads",
+        return_value=frozenset({"release-head"}),
+    ):
+        assert_survey_response_effect_worker_schema_current()
+
+
+def test_worker_schema_gate_rejects_database_before_release_head():
+    app = _make_app()
+    app.config.update(
+        TESTING=False,
+        CHATBOC_PROCESS_ROLE="survey-effect-worker",
+    )
+    with app.app_context(), patch(
+        "services.survey_response_effect_worker._repository_schema_heads",
+        return_value=frozenset({"release-head"}),
+    ), patch(
+        "services.survey_response_effect_worker._database_schema_heads",
+        return_value=frozenset({"previous-head"}),
+    ), pytest.raises(
+        SurveyResponseEffectWorkerConfigurationError,
+        match="survey_response_effect_worker_schema_not_current",
+    ):
+        assert_survey_response_effect_worker_schema_current()
+
+
+def test_worker_schema_gate_does_not_query_database_for_other_process_roles():
+    app = _make_app()
+    app.config.update(
+        TESTING=False,
+        CHATBOC_PROCESS_ROLE="web",
+    )
+    with app.app_context(), patch(
+        "services.survey_response_effect_worker._repository_schema_heads"
+    ) as repository_heads, patch(
+        "services.survey_response_effect_worker._database_schema_heads"
+    ) as database_heads:
+        assert_survey_response_effect_worker_schema_current()
+
+    repository_heads.assert_not_called()
+    database_heads.assert_not_called()
 
 
 def test_worker_rotates_tenants_and_divides_each_bounded_batch_fairly():

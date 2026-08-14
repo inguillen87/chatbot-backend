@@ -37,6 +37,7 @@ from models import (
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
 )
+from services.meta_flow_json import SURVEY_VOTE_DATA_CONTRACT
 from services.tts_orchestrator import reset_tts_cache_metrics
 
 
@@ -3031,7 +3032,10 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("consent_version", finance_flow_blueprint["data_contract"])
         survey_flow_blueprint = webview_flows["survey_vote"]["meta_flow_blueprint"]
         self.assertEqual(survey_flow_blueprint["completion_event"], "survey_response_saved")
-        self.assertEqual(survey_flow_blueprint["data_contract"], ["confirm_vote"])
+        self.assertEqual(
+            survey_flow_blueprint["data_contract"],
+            list(SURVEY_VOTE_DATA_CONTRACT),
+        )
         self.assertEqual(
             survey_flow_blueprint["native_limits"]["question_types"],
             ["opcion_unica"],

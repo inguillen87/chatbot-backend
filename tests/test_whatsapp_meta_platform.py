@@ -28,6 +28,7 @@ from models import (
 )
 from routes.whatsapp_rules import _flow_interaction_payload, _sync_status_from_approval
 from services.meta_flow_json import (
+    SURVEY_VOTE_DATA_CONTRACT,
     build_claim_evidence_flow,
     build_order_checkout_flow,
     build_survey_vote_flow,
@@ -215,7 +216,7 @@ def _prepare_ready_survey_flow_send(app, tenant: TenantProfile):
         **dict(registry.metadata_json or {}),
         "flow_id": "survey_vote",
         "flow_json_sha256": artifact.content_sha256,
-        "data_contract": ["confirm_vote"],
+        "data_contract": list(SURVEY_VOTE_DATA_CONTRACT),
     }
     survey = EncEncuesta(
         tenant_id=tenant.id,
@@ -1556,7 +1557,7 @@ def test_survey_flow_send_authorizes_published_context_and_persists_scope(client
         idempotency_key="flow-survey-context-001",
     ).one()
     assert interaction.flow_id == "survey_vote"
-    assert interaction.data_contract == ["confirm_vote"]
+    assert interaction.data_contract == list(SURVEY_VOTE_DATA_CONTRACT)
     assert interaction.metadata_json["survey_context"] == {
         "id": str(survey.id),
         "slug": survey.slug,

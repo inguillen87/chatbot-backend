@@ -4,6 +4,7 @@ from twilio.rest import Client  # For sending messages via Twilio
 from copy import deepcopy
 from contextlib import nullcontext
 import hashlib
+import hmac
 import logging
 import os  # For accessing environment variables
 import requests
@@ -44,6 +45,7 @@ from services.gcs_service import upload_to_gcs
 from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
+from services.categorias_municipio import normalizar_texto
 from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
@@ -93,6 +95,9 @@ from services.whatsapp_flow_submissions import (
     persistence_safe_flow_submission,
     safe_twilio_form_metadata,
 )
+from services.whatsapp_survey_conversation import (
+    WHATSAPP_REQUIRED_DISCLOSURE_CONTRACT_VERSION,
+)
 from services.whatsapp_flow_security import (
     WhatsAppFlowTokenError,
     consume_whatsapp_flow_interaction,
@@ -137,13 +142,15 @@ from services.education_case_service import (
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
 logger = logging.getLogger(__name__)
 
-# Twilio imposes a 1600 character limit on message bodies. When the bot
-# generates very long responses (e.g. large contact lists) the request can
-# fail with `HTTP 400: The concatenated message body exceeds the 1600 character
-# limit`.  To prevent this we define a helper that splits long texts into
-# chunks that comply with Twilio's limits and send them sequentially.
-
-MAX_TWILIO_BODY_LENGTH = 1600
+# Twilio accepts at most 1,600 GSM characters per API request, while WhatsApp
+# applies the stricter 1,024-character limit to non-template messages.  We use
+# a UTF-8 byte ceiling here as a conservative transport invariant so accented
+# text and emoji cannot slip past the provider limit.  Keep the historical
+# name as an import-compatible alias for existing tests/callers.
+MAX_TWILIO_REQUEST_LENGTH = 1600
+MAX_WHATSAPP_FREEFORM_BODY_LENGTH = 1024
+MAX_TWILIO_BODY_LENGTH = MAX_WHATSAPP_FREEFORM_BODY_LENGTH
+MAX_REQUIRED_WHATSAPP_DISCLOSURE_BYTES = 20_000
 TWILIO_STATUS_CALLBACK_CONNECTION_OVERRIDES = "rc=2&rp=5xx,ct,rt"
 LIVE_CHAT_STATES = {"esperando_agente_en_vivo", "en_proceso", "en_vivo"}
 ALLOWED_MEDIA_EXTENSIONS = {
@@ -3145,7 +3152,12 @@ def _prepare_media_param(params: Dict[str, Any]) -> Dict[str, Any]:
     return prepared
 
 
-def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
+def _split_message(
+    text: str,
+    limit: int = MAX_TWILIO_BODY_LENGTH,
+    *,
+    preserve_exact: bool = False,
+) -> list[str]:
     """Split ``text`` into chunks whose UTF-8 encoded length stays below ``limit``.
 
     Twilio enforces the limit using the number of *bytes* in the request body
@@ -3203,9 +3215,102 @@ def _split_message(text: str, limit: int = MAX_TWILIO_BODY_LENGTH) -> list[str]:
             split_idx = end
 
         parts.append(chunk)
-        remaining = remaining[split_idx:].lstrip()
+        remaining = remaining[split_idx:]
+        if not preserve_exact:
+            remaining = remaining.lstrip()
 
     return parts
+
+
+def _required_whatsapp_disclosure_chunks(payload: Optional[dict]) -> list[str]:
+    """Validate and split a mandatory disclosure declared by a bot response.
+
+    A governed survey may expose an acceptance action only after the exact
+    consent text has been queued ahead of it.  The SHA-256 pin prevents a
+    formatter or caller from silently changing that text between governance
+    validation and transport.
+    """
+
+    if not isinstance(payload, dict):
+        return []
+    disclosure = payload.get("_whatsapp_required_disclosure")
+    if disclosure is None:
+        return []
+    if not isinstance(disclosure, dict):
+        raise ValueError("whatsapp_required_disclosure_invalid")
+    if (
+        disclosure.get("contract_version")
+        != WHATSAPP_REQUIRED_DISCLOSURE_CONTRACT_VERSION
+    ):
+        raise ValueError("whatsapp_required_disclosure_contract_invalid")
+
+    body = str(disclosure.get("body") or "")
+    expected_sha256 = str(disclosure.get("sha256") or "").strip().lower()
+    body_bytes = body.encode("utf-8")
+    if not body.strip() or len(body_bytes) > MAX_REQUIRED_WHATSAPP_DISCLOSURE_BYTES:
+        raise ValueError("whatsapp_required_disclosure_body_invalid")
+    actual_sha256 = hashlib.sha256(body_bytes).hexdigest()
+    if len(expected_sha256) != 64 or not hmac.compare_digest(
+        actual_sha256,
+        expected_sha256,
+    ):
+        raise ValueError("whatsapp_required_disclosure_hash_mismatch")
+
+    chunks = _split_message(
+        body,
+        limit=MAX_WHATSAPP_FREEFORM_BODY_LENGTH,
+        preserve_exact=True,
+    )
+    if not chunks or any(
+        not chunk
+        or len(chunk.encode("utf-8")) > MAX_WHATSAPP_FREEFORM_BODY_LENGTH
+        for chunk in chunks
+    ):
+        raise ValueError("whatsapp_required_disclosure_chunk_invalid")
+    return chunks
+
+
+def _dispatch_required_whatsapp_disclosure(
+    client,
+    *,
+    to_number: str,
+    from_number: str,
+    payload: Optional[dict],
+) -> list[Any]:
+    """Queue every required disclosure chunk before the response action.
+
+    Unlike decorative pre-messages, failures are not swallowed: presenting
+    the acceptance buttons without the complete disclosure would invalidate
+    the conversational consent sequence.
+    """
+
+    chunks = _required_whatsapp_disclosure_chunks(payload)
+    sent: list[Any] = []
+    if not client:
+        return sent
+
+    disclosure = (
+        payload.get("_whatsapp_required_disclosure")
+        if isinstance(payload, dict)
+        else {}
+    ) or {}
+    disclosure_sha256 = str(disclosure.get("sha256") or "").strip().lower()
+    for index, chunk in enumerate(chunks, start=1):
+        sent.append(
+            _send_twilio_message(
+                client,
+                from_=to_number,
+                to=from_number,
+                body=chunk,
+                _chatboc_policy_metadata={
+                    "purpose": "required_governance_disclosure",
+                    "disclosure_sha256": disclosure_sha256,
+                    "disclosure_part": index,
+                    "disclosure_parts": len(chunks),
+                },
+            )
+        )
+    return sent
 
 
 def _resolve_public_url(url: Optional[str], base_url: str) -> Optional[str]:
@@ -3239,7 +3344,7 @@ WHATSAPP_FLOW_CONFIG: Dict[str, Dict[str, Any]] = {
         "kind": "claim_status_webview",
         "url_keys": ("ticket_status_url", "tracking_url", "ticket_url", "reclamo_url", "public_status_url"),
         "reply_options": (
-            {"texto": "Actualizar reclamo", "action_id": "consultar_estado_reclamo"},
+            {"texto": "Consultar otro reclamo", "action_id": "consultar_estado_reclamo"},
             {"texto": "Menú", "action_id": "menu_principal"},
         ),
     },
@@ -4301,6 +4406,13 @@ def _send_twilio_message(client, **params):
     sanitized = _sanitize_twilio_message_params(params)
     policy_metadata = sanitized.pop("_chatboc_policy_metadata", None)
     policy_metadata = dict(policy_metadata) if isinstance(policy_metadata, dict) else {}
+    if (
+        _is_whatsapp_twilio_message(sanitized)
+        and not sanitized.get("content_sid")
+        and len(str(sanitized.get("body") or "").encode("utf-8"))
+        > MAX_WHATSAPP_FREEFORM_BODY_LENGTH
+    ):
+        raise ValueError("whatsapp_freeform_body_limit_exceeded")
     durable_collector = (
         getattr(g, "whatsapp_outbound_collector", None)
         if has_app_context()
@@ -5564,6 +5676,47 @@ def _send_delayed_payload(client, to_number: str, from_number: str, payload: dic
                     else nullcontext()
                 )
                 with delay_context:
+                    _dispatch_required_whatsapp_disclosure(
+                        client,
+                        to_number=to_number,
+                        from_number=from_number,
+                        payload=payload,
+                    )
+
+                    main_chunks = _split_message(str(params.get("body") or ""))
+                    for prefix_chunk in main_chunks[:-1]:
+                        _send_twilio_message(
+                            client,
+                            from_=to_number,
+                            to=from_number,
+                            body=prefix_chunk,
+                        )
+                    params["body"] = main_chunks[-1] if main_chunks else ""
+
+                    if params.get("persistent_action"):
+                        try:
+                            encoded_action = params["persistent_action"][0]
+                            interactive_action = json.loads(
+                                encoded_action.removeprefix("whatsapp:")
+                            )
+                            interactive_action.setdefault("body", {})["text"] = params[
+                                "body"
+                            ]
+                            normalized_action = (
+                                "whatsapp:"
+                                + json.dumps(interactive_action, ensure_ascii=False)
+                            )
+                            if (
+                                len(normalized_action) > MAX_TWILIO_REQUEST_LENGTH
+                                or len(params["body"]) + len(normalized_action)
+                                > MAX_TWILIO_REQUEST_LENGTH
+                            ):
+                                params.pop("persistent_action", None)
+                            else:
+                                params["persistent_action"] = [normalized_action]
+                        except (AttributeError, IndexError, TypeError, ValueError):
+                            params.pop("persistent_action", None)
+
                     message = _send_twilio_message(client, **params)
 
                     if audio_url:
@@ -7962,7 +8115,7 @@ def whatsapp_webhook():
                     twilio_client,
                     from_=to_number_raw,
                     to=from_number_raw,
-                    body=ack_text[:MAX_TWILIO_BODY_LENGTH],
+                    body=_split_message(ack_text)[0],
                 )
             return "OK", 200
 
@@ -8785,6 +8938,12 @@ def whatsapp_webhook():
                 _resolve_pre_media_link,
                 tenant_profile=tenant_profile,
             )
+            _dispatch_required_whatsapp_disclosure(
+                twilio_client,
+                to_number=to_number_raw,
+                from_number=from_number_raw,
+                payload=bot_response_dict,
+            )
 
             interactive_payload = None
             interactive_body_dict = None
@@ -8815,8 +8974,13 @@ def whatsapp_webhook():
                     return True
 
                 encoded_payload = f"whatsapp:{json.dumps(payload, ensure_ascii=False)}"
-                body_len = len(params.get('body') or "")
-                if len(encoded_payload) > MAX_TWILIO_BODY_LENGTH or (body_len + len(encoded_payload)) > MAX_TWILIO_BODY_LENGTH:
+                body_len = len(str(params.get('body') or "").encode("utf-8"))
+                if (
+                    body_len > MAX_WHATSAPP_FREEFORM_BODY_LENGTH
+                    or len(encoded_payload) > MAX_TWILIO_REQUEST_LENGTH
+                    or (len(params.get('body') or "") + len(encoded_payload))
+                    > MAX_TWILIO_REQUEST_LENGTH
+                ):
                     current_app.logger.warning(
                         "Interactive payload exceeds Twilio character limit; falling back to plain text delivery."
                     )
@@ -8826,13 +8990,13 @@ def whatsapp_webhook():
                 params['persistent_action'] = [encoded_payload]
                 return True
 
-            # Send the main message. If the body exceeds Twilio's 1600 character
-            # limit we now split it into chunks. For interactive payloads we
+            # Send the main message. If the body exceeds WhatsApp's 1,024-byte
+            # free-form limit we split it into bounded chunks. For interactive payloads we
             # update the fallback text and deliver the remaining chunks as
             # separate plain messages. For regular text payloads we keep the
             # "Mostrar más" flow so the user can request the remaining chunks.
             body_text = message_params.get('body', '') or ''
-            if len(body_text) > MAX_TWILIO_BODY_LENGTH:
+            if len(body_text.encode("utf-8")) > MAX_WHATSAPP_FREEFORM_BODY_LENGTH:
                 chunks = _split_message(body_text)
                 first_chunk = chunks[0]
                 remaining_chunks = chunks[1:]

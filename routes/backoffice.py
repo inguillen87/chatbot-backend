@@ -217,10 +217,9 @@ def _parse_window(value: str | None) -> tuple[datetime, str]:
 
 
 def _tenant_id_candidates(tenant: TenantProfile) -> list[int]:
-    candidates = [tenant.id]
-    if tenant.encuestas_tenant_id:
-        candidates.append(int(tenant.encuestas_tenant_id))
-    return list(dict.fromkeys(candidates))
+    # Survey storage is canonicalized to TenantProfile.id. The legacy alias is
+    # accepted only at inbound boundaries and must never widen admin queries.
+    return [int(tenant.id)]
 
 
 def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -> dict[str, Any]:

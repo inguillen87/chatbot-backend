@@ -7,7 +7,7 @@ declare a legally binding result.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -18,6 +18,7 @@ from flask import current_app
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
+from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
 from database import db
 from models import AuditEvent, EncEncuesta, EncLink, EncRespuesta
 from models_survey_governance import (
@@ -35,6 +36,12 @@ CONSENT_TEXT_NORMALIZATION = "unicode_nfc_lf_trim_v1"
 CONSENT_TEXT_CONTENT_FORMAT = "plain_text"
 CONSENT_TEXT_MIN_CODEPOINTS = 1
 CONSENT_TEXT_MAX_CODEPOINTS = 4000
+RELEASE_SNAPSHOT_SCHEMA_V1 = "surveys.release_snapshot.v1"
+RELEASE_SNAPSHOT_SCHEMA_V2 = "surveys.release_snapshot.v2"
+_SUPPORTED_RELEASE_SNAPSHOT_SCHEMAS = {
+    RELEASE_SNAPSHOT_SCHEMA_V1,
+    RELEASE_SNAPSHOT_SCHEMA_V2,
+}
 
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$")
@@ -173,17 +180,58 @@ def _iso(value: Any) -> str | None:
     return str(value)
 
 
-def _survey_schedule_iso(value: Any) -> str | None:
-    """Pin the DB wall time independent of driver timezone round-tripping."""
+def _survey_schedule_timezone() -> timezone:
+    try:
+        offset_hours = int(
+            current_app.config.get("TIMEZONE_OFFSET", _CONFIG_TIMEZONE_OFFSET)
+        )
+    except (RuntimeError, TypeError, ValueError):
+        offset_hours = int(_CONFIG_TIMEZONE_OFFSET)
+    return timezone(timedelta(hours=max(-12, min(14, offset_hours))))
+
+
+def _survey_schedule_iso_v1(value: Any) -> str | None:
+    """Return the legacy wall-time representation used by snapshot v1."""
 
     if value is None:
         return None
     if not isinstance(value, datetime):
         return str(value)
-    # SQLite strips tzinfo while PostgreSQL normalizes it. The survey runtime
-    # already treats persisted schedule values as wall times; hashing the wall
-    # representation keeps the release stable across a commit/reload.
     return value.replace(tzinfo=None).isoformat()
+
+
+def _survey_schedule_iso_v1_local(value: Any) -> str | None:
+    """Rebuild the v1 auto-start wall time after a PostgreSQL UTC reload."""
+
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return str(value)
+    if value.tzinfo is None:
+        return value.isoformat()
+    return (
+        value.astimezone(_survey_schedule_timezone())
+        .replace(tzinfo=None)
+        .isoformat()
+    )
+
+
+def _survey_schedule_iso(value: Any) -> str | None:
+    """Canonicalize schedule instants for snapshot v2.
+
+    PostgreSQL returns ``TIMESTAMP WITH TIME ZONE`` values as aware datetimes,
+    while SQLite drops the offset and the survey runtime interprets those wall
+    values in ``TIMEZONE_OFFSET``. Normalizing both representations to UTC
+    keeps the immutable snapshot stable across a commit/reload.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return str(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=_survey_schedule_timezone())
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def _require_exact_keys(
@@ -496,8 +544,23 @@ def normalize_governance_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_release_snapshot(
-    encuesta: EncEncuesta, governance_policy: Mapping[str, Any]
+    encuesta: EncEncuesta,
+    governance_policy: Mapping[str, Any],
+    *,
+    schema_version: str = RELEASE_SNAPSHOT_SCHEMA_V2,
 ) -> dict[str, Any]:
+    if schema_version not in _SUPPORTED_RELEASE_SNAPSHOT_SCHEMAS:
+        raise SurveyGovernanceError(
+            "La version del snapshot de gobernanza no esta soportada",
+            status_code=500,
+            reason_code="survey_governance_snapshot_schema_unsupported",
+            action_hint="contact_support",
+        )
+    schedule_serializer = (
+        _survey_schedule_iso_v1
+        if schema_version == RELEASE_SNAPSHOT_SCHEMA_V1
+        else _survey_schedule_iso
+    )
     questions: list[dict[str, Any]] = []
     for question in sorted(
         list(encuesta.preguntas or []), key=lambda item: (int(item.orden), int(item.id or 0))
@@ -529,7 +592,7 @@ def build_release_snapshot(
             }
         )
     return {
-        "schema_version": "surveys.release_snapshot.v1",
+        "schema_version": schema_version,
         "instrument": {
             "survey_id": int(encuesta.id),
             "tenant_id": int(encuesta.tenant_id),
@@ -541,8 +604,8 @@ def build_release_snapshot(
             "questions": questions,
         },
         "collection_rules": {
-            "starts_at": _survey_schedule_iso(encuesta.inicio_at),
-            "ends_at": _survey_schedule_iso(encuesta.fin_at),
+            "starts_at": schedule_serializer(encuesta.inicio_at),
+            "ends_at": schedule_serializer(encuesta.fin_at),
             "requires_identity": bool(encuesta.requiere_identidad),
             "uniqueness_policy": encuesta.politica_unicidad,
             "anonymous_allowed": bool(encuesta.anonimo_permitido),
@@ -753,10 +816,49 @@ def create_release(
     return release, False
 
 
+def _legacy_v1_auto_start_matches(
+    survey: EncEncuesta,
+    governance: Mapping[str, Any],
+    stored: Mapping[str, Any],
+    stored_json: str,
+) -> bool:
+    """Accept only the known v1 PostgreSQL timezone round-trip.
+
+    Snapshot v1 removed the timezone offset from an auto-generated local
+    ``inicio_at`` before the transaction committed. PostgreSQL later returns
+    that same instant in UTC. The compatibility path substitutes only the
+    legacy local representation of ``starts_at``; every other byte of the
+    canonical snapshot still has to match.
+    """
+
+    stored_collection = stored.get("collection_rules")
+    if not isinstance(stored_collection, Mapping):
+        return False
+    legacy_local_start = _survey_schedule_iso_v1_local(survey.inicio_at)
+    if stored_collection.get("starts_at") != legacy_local_start:
+        return False
+
+    candidate = build_release_snapshot(
+        survey,
+        governance,
+        schema_version=RELEASE_SNAPSHOT_SCHEMA_V1,
+    )
+    candidate["collection_rules"]["starts_at"] = legacy_local_start
+    return _canonical_json(candidate) == stored_json
+
+
 def _assert_release_snapshot_integrity(
     survey: EncEncuesta, release: SurveyGovernanceRelease
 ) -> None:
-    stored = json.loads(release.snapshot_json)
+    try:
+        stored = json.loads(release.snapshot_json)
+    except (TypeError, ValueError) as exc:
+        raise SurveyGovernanceError(
+            "El snapshot de gobernanza esta corrupto",
+            status_code=500,
+            reason_code="survey_governance_snapshot_corrupt",
+            action_hint="contact_support",
+        ) from exc
     governance = stored.get("governance") if isinstance(stored, dict) else None
     if not isinstance(governance, dict):
         raise SurveyGovernanceError(
@@ -765,11 +867,38 @@ def _assert_release_snapshot_integrity(
             reason_code="survey_governance_snapshot_corrupt",
             action_hint="contact_support",
         )
-    current_json = _canonical_json(build_release_snapshot(survey, governance))
+    schema_version = stored.get("schema_version")
+    if schema_version not in _SUPPORTED_RELEASE_SNAPSHOT_SCHEMAS:
+        raise SurveyGovernanceError(
+            "La version del snapshot de gobernanza no esta soportada",
+            status_code=500,
+            reason_code="survey_governance_snapshot_schema_unsupported",
+            action_hint="contact_support",
+            extra={"release_id": release.id},
+        )
+
+    digest_matches = _sha256_text(release.snapshot_json) == release.snapshot_sha256
+    current_json = _canonical_json(
+        build_release_snapshot(
+            survey,
+            governance,
+            schema_version=schema_version,
+        )
+    )
+    snapshot_matches = current_json == release.snapshot_json
     if (
-        _sha256_text(release.snapshot_json) != release.snapshot_sha256
-        or current_json != release.snapshot_json
+        digest_matches
+        and not snapshot_matches
+        and schema_version == RELEASE_SNAPSHOT_SCHEMA_V1
     ):
+        snapshot_matches = _legacy_v1_auto_start_matches(
+            survey,
+            governance,
+            stored,
+            release.snapshot_json,
+        )
+
+    if not digest_matches or not snapshot_matches:
         raise SurveyGovernanceError(
             "El instrumento ya no coincide con su release inmutable",
             status_code=409,

@@ -21,6 +21,30 @@ from services.demo_surveys import build_demo_survey_chat_menu, build_demo_survey
 from services.response_formatter import build_interactive_response
 
 
+@pytest.fixture(autouse=True)
+def _canonical_public_tenant_profiles(client):
+    """Public contracts now resolve every numeric scope through TenantProfile."""
+
+    for tenant_id in (4, 5, 7, 11, 77):
+        owner = User(
+            id=10000 + tenant_id,
+            email=f"public-tenant-{tenant_id}@example.com",
+            name=f"Public Tenant {tenant_id}",
+            password_hash="hash",
+            rol="admin",
+            tipo_chat="municipio",
+        )
+        tenant = TenantProfile(
+            id=tenant_id,
+            slug=f"public-tenant-{tenant_id}",
+            nombre=f"Public Tenant {tenant_id}",
+            tipo="municipio",
+            municipio_id=owner.id,
+        )
+        db.session.add_all([owner, tenant])
+    db.session.commit()
+
+
 class _DummyRespuesta:
     def __init__(self, respuesta_id):
         self.id = respuesta_id
@@ -89,7 +113,10 @@ def test_public_urls_use_canonical_base(client, monkeypatch):
     response = client.get("/public/encuestas")
     assert response.status_code == 200
     data = response.get_json()
-    assert data[0]["url_publica"] == "https://www.chatboc.ar/e/slug-demo"
+    assert data[0]["url_publica"] == (
+        "https://www.chatboc.ar/e/slug-demo?tenant_slug=public-tenant-5"
+    )
+    assert data[0]["tenant_slug"] == "public-tenant-5"
 
 
 def test_public_urls_honor_custom_target_base(client, monkeypatch):
@@ -112,7 +139,9 @@ def test_public_urls_honor_custom_target_base(client, monkeypatch):
     response = client.get("/public/encuestas")
     assert response.status_code == 200
     data = response.get_json()
-    assert data[0]["url_publica"] == "https://participa.junin.ar/e/slug-demo"
+    assert data[0]["url_publica"] == (
+        "https://participa.junin.ar/e/slug-demo?tenant_slug=public-tenant-5"
+    )
 
 
 def test_public_demo_surveys_list_uses_seeded_contract(client):
@@ -457,7 +486,12 @@ def test_share_returns_payload_without_canonical(client, monkeypatch):
 
     response = client.get("/e/demo-slug", headers={"Accept": "application/json"})
     assert response.status_code == 200
-    assert response.get_json() == {"slug": "demo-slug"}
+    payload = response.get_json()
+    assert payload["slug"] == "demo-slug"
+    assert payload["tenant_slug"] == "public-tenant-5"
+    assert payload["url_publica"].endswith(
+        "/e/demo-slug?tenant_slug=public-tenant-5"
+    )
 
 
 def test_share_passes_tenant_preference_from_domain_map(client, monkeypatch):
@@ -583,8 +617,12 @@ def test_public_detail_reports_canonical_slug_when_loaded_from_base_slug(client)
     assert payload["canonical_slug"] == slug_publico
     assert payload["requested_slug"] == slug
     assert payload["slug_alias_used"] is True
-    assert payload["url_publica"].endswith(f"/e/{slug_publico}")
-    assert payload["public_api_endpoint"].endswith(slug_publico)
+    assert payload["url_publica"].endswith(
+        f"/e/{slug_publico}?tenant_slug=public-tenant-4"
+    )
+    assert payload["public_api_endpoint"].endswith(
+        f"/{slug_publico}?tenant_slug=public-tenant-4"
+    )
 
 
 def test_public_encuestas_v1_aliases_resolve_public_slug(client):
@@ -632,6 +670,27 @@ def test_public_encuestas_listing_does_not_bootstrap_demo_data(client, monkeypat
     payload = response.get_json()
     assert payload["contract_version"] == "encuestas.public_list.v1"
     assert payload["request_id"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "tenant_slug=no-existe",
+        "tenant_id=4&tenant_slug=public-tenant-5",
+    ],
+)
+def test_public_listing_rejects_invalid_or_contradictory_explicit_scope(
+    client,
+    query,
+):
+    client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"] = 5
+
+    response = client.get(f"/api/public/encuestas/v1?{query}")
+
+    assert response.status_code == 404
+    payload = response.get_json()
+    assert payload["reason_code"] == "survey_not_found"
+    assert payload["contract_version"] == "public.survey_resolution.v1"
 
 
 def test_public_encuestas_v1_missing_slug_returns_public_error_contract(client):
@@ -786,7 +845,11 @@ def test_public_encuestas_listing_uses_lightweight_summary(client, monkeypatch):
     item = next(item for item in data["items"] if item["slug"] == "consulta-liviana")
     assert item["contract_version"] == "encuestas.public.v1"
     assert item["titulo"] == "Consulta liviana"
-    assert item["url_publica"].endswith("/e/consulta-liviana")
+    assert item["tenant_slug"] == "public-tenant-4"
+    assert data["tenant_slug"] == "public-tenant-4"
+    assert item["url_publica"].endswith(
+        "/e/consulta-liviana?tenant_slug=public-tenant-4"
+    )
 
 
 def test_get_public_encuesta_prefers_active_published_when_link_slug_is_duplicated(client):
@@ -978,7 +1041,8 @@ def test_qr_endpoint_allows_preview_for_authorized_user(client):
         email="preview-admin@example.com",
         name="Preview Admin",
         rol="admin",
-        municipio_id=encuesta.tenant_id,
+        tenant_id=encuesta.tenant_id,
+        municipio_id=10000 + encuesta.tenant_id,
         tipo_chat="municipio",
     )
     admin.set_password("demo1234")
@@ -1011,7 +1075,8 @@ def test_qr_endpoint_allows_preview_with_session_user(client, monkeypatch):
         email="session-admin@example.com",
         name="Session Admin",
         rol="admin",
-        municipio_id=encuesta.tenant_id,
+        tenant_id=encuesta.tenant_id,
+        municipio_id=10000 + encuesta.tenant_id,
         tipo_chat="municipio",
     )
     session_admin.set_password("demo1234")

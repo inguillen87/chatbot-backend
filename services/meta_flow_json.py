@@ -26,6 +26,26 @@ MAX_FLOW_JSON_BYTES = 10 * 1024 * 1024
 MAX_SCREENS = 100
 MAX_ROUTING_BRANCHES = 10
 
+SURVEY_GOVERNANCE_ACK_CONTRACT_VERSION = "surveys.meta_flow_governance_ack.v1"
+SURVEY_GOVERNANCE_ACK_FIELDS = (
+    "confirm_vote",
+    "governance_ack_contract_version",
+    "governance_release_id",
+    "governance_snapshot_sha256",
+    "governance_eligibility_policy_version",
+    "governance_consent_policy_version",
+    "governance_consent_accepted",
+    "governance_eligibility_acknowledged",
+)
+SURVEY_PRIVACY_ACK_FIELDS = (
+    "privacy_consent",
+    "privacy_policy_version",
+)
+SURVEY_VOTE_DATA_CONTRACT = (
+    *SURVEY_GOVERNANCE_ACK_FIELDS,
+    *SURVEY_PRIVACY_ACK_FIELDS,
+)
+
 ALLOWED_ACTIONS = frozenset(
     {"navigate", "data_exchange", "complete", "open_url", "update_data"}
 )
@@ -1863,7 +1883,12 @@ def _survey_question_screen(screen_id: str) -> dict[str, Any]:
 
 
 def build_survey_vote_blueprint() -> FlowBlueprint:
-    """Build a tenant-bound quick vote with server-provided questions."""
+    """Build a tenant-bound vote with explicit governed acknowledgements.
+
+    Survey identity, questions, answers and release pins remain server-owned.
+    ``confirm_vote`` only confirms submission; the separate conditional OptIns
+    carry governance, eligibility and privacy acknowledgements when required.
+    """
 
     routing_model: dict[str, tuple[str, ...]] = {}
     screens: list[dict[str, Any]] = []
@@ -1894,6 +1919,50 @@ def build_survey_vote_blueprint() -> FlowBlueprint:
                     "type": "string",
                     "__example__": "Al finalizar recibiras el acceso a los resultados.",
                 },
+                "governance_required": {
+                    "type": "boolean",
+                    "__example__": False,
+                },
+                "governance_ack_contract_version": {
+                    "type": "string",
+                    "__example__": SURVEY_GOVERNANCE_ACK_CONTRACT_VERSION,
+                },
+                "governance_release_id": {
+                    "type": "string",
+                    "__example__": "42",
+                },
+                "governance_snapshot_sha256": {
+                    "type": "string",
+                    "__example__": "a" * 64,
+                },
+                "governance_eligibility_policy_version": {
+                    "type": "string",
+                    "__example__": "eligibility-v1",
+                },
+                "governance_consent_policy_version": {
+                    "type": "string",
+                    "__example__": "consent-v1",
+                },
+                "governance_consent_text": {
+                    "type": "string",
+                    "__example__": "Acepto participar bajo las reglas publicadas.",
+                },
+                "governance_eligibility_statement": {
+                    "type": "string",
+                    "__example__": "Requisito declarado: residencia habilitada.",
+                },
+                "privacy_required": {
+                    "type": "boolean",
+                    "__example__": False,
+                },
+                "privacy_policy_version": {
+                    "type": "string",
+                    "__example__": "privacy-v1",
+                },
+                "privacy_policy_url": {
+                    "type": "string",
+                    "__example__": "https://example.com/privacidad",
+                },
             },
             "layout": {
                 "type": "SingleColumnLayout",
@@ -1901,6 +1970,99 @@ def build_survey_vote_blueprint() -> FlowBlueprint:
                     {"type": "TextHeading", "text": "${data.survey_title}"},
                     {"type": "TextBody", "text": "${data.answer_summary}"},
                     {"type": "TextCaption", "text": "${data.results_note}"},
+                    {
+                        "type": "TextInput",
+                        "name": "governance_ack_contract_version",
+                        "label": "Contrato",
+                        "init-value": "${data.governance_ack_contract_version}",
+                        "visible": False,
+                    },
+                    {
+                        "type": "TextInput",
+                        "name": "governance_release_id",
+                        "label": "Version publicada",
+                        "init-value": "${data.governance_release_id}",
+                        "visible": False,
+                    },
+                    {
+                        "type": "TextInput",
+                        "name": "governance_snapshot_sha256",
+                        "label": "Integridad",
+                        "init-value": "${data.governance_snapshot_sha256}",
+                        "visible": False,
+                    },
+                    {
+                        "type": "TextInput",
+                        "name": "governance_eligibility_policy_version",
+                        "label": "Elegibilidad",
+                        "init-value": "${data.governance_eligibility_policy_version}",
+                        "visible": False,
+                    },
+                    {
+                        "type": "TextInput",
+                        "name": "governance_consent_policy_version",
+                        "label": "Consentimiento",
+                        "init-value": "${data.governance_consent_policy_version}",
+                        "visible": False,
+                    },
+                    {
+                        "type": "TextInput",
+                        "name": "privacy_policy_version",
+                        "label": "Privacidad",
+                        "init-value": "${data.privacy_policy_version}",
+                        "visible": False,
+                    },
+                    {
+                        "type": "TextSubheading",
+                        "text": "Consentimiento de participacion",
+                        "visible": "${data.governance_required}",
+                    },
+                    {
+                        "type": "TextBody",
+                        "text": "${data.governance_consent_text}",
+                        "visible": "${data.governance_required}",
+                    },
+                    {
+                        "type": "OptIn",
+                        "name": "governance_consent_accepted",
+                        "label": "Lei y acepto el consentimiento de esta consulta",
+                        "required": "${data.governance_required}",
+                        "visible": "${data.governance_required}",
+                    },
+                    {
+                        "type": "TextSubheading",
+                        "text": "Elegibilidad",
+                        "visible": "${data.governance_required}",
+                    },
+                    {
+                        "type": "TextBody",
+                        "text": "${data.governance_eligibility_statement}",
+                        "visible": "${data.governance_required}",
+                    },
+                    {
+                        "type": "OptIn",
+                        "name": "governance_eligibility_acknowledged",
+                        "label": "Declaro que cumplo las condiciones de elegibilidad",
+                        "required": "${data.governance_required}",
+                        "visible": "${data.governance_required}",
+                    },
+                    {
+                        "type": "TextSubheading",
+                        "text": "Privacidad",
+                        "visible": "${data.privacy_required}",
+                    },
+                    {
+                        "type": "TextCaption",
+                        "text": "${data.privacy_policy_url}",
+                        "visible": "${data.privacy_required}",
+                    },
+                    {
+                        "type": "OptIn",
+                        "name": "privacy_consent",
+                        "label": "Lei y acepto la politica de privacidad",
+                        "required": "${data.privacy_required}",
+                        "visible": "${data.privacy_required}",
+                    },
                     {
                         "type": "OptIn",
                         "name": "confirm_vote",
@@ -1914,6 +2076,15 @@ def build_survey_vote_blueprint() -> FlowBlueprint:
                             "name": "complete",
                             "payload": {
                                 "confirm_vote": "${form.confirm_vote}",
+                                "governance_ack_contract_version": "${form.governance_ack_contract_version}",
+                                "governance_release_id": "${form.governance_release_id}",
+                                "governance_snapshot_sha256": "${form.governance_snapshot_sha256}",
+                                "governance_eligibility_policy_version": "${form.governance_eligibility_policy_version}",
+                                "governance_consent_policy_version": "${form.governance_consent_policy_version}",
+                                "governance_consent_accepted": "${form.governance_consent_accepted}",
+                                "governance_eligibility_acknowledged": "${form.governance_eligibility_acknowledged}",
+                                "privacy_consent": "${form.privacy_consent}",
+                                "privacy_policy_version": "${form.privacy_policy_version}",
                             },
                         },
                     },
@@ -2025,6 +2196,10 @@ __all__ = [
     "DATA_API_VERSION",
     "FLOW_JSON_VERSION",
     "MAX_FLOW_JSON_BYTES",
+    "SURVEY_GOVERNANCE_ACK_CONTRACT_VERSION",
+    "SURVEY_GOVERNANCE_ACK_FIELDS",
+    "SURVEY_PRIVACY_ACK_FIELDS",
+    "SURVEY_VOTE_DATA_CONTRACT",
     "FlowBlueprint",
     "FlowJsonArtifact",
     "FlowJsonIssue",

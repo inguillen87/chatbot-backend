@@ -42,6 +42,11 @@ from services.meta_flow_data_exchange import (
     MetaFlowEndpointConfig,
     MetaFlowRequestContext,
 )
+from services.meta_flow_json import (
+    SURVEY_GOVERNANCE_ACK_CONTRACT_VERSION,
+    SURVEY_GOVERNANCE_ACK_FIELDS,
+    SURVEY_PRIVACY_ACK_FIELDS,
+)
 from services.attachment_service import create_attachment_with_thumbnail
 from services.gcs_service import guardar_adjunto_y_thumbnail
 from services.meta_flow_media import (
@@ -93,6 +98,16 @@ _SURVEY_QUESTION_SCREENS = (
 )
 _SURVEY_SCREENS = frozenset((*_SURVEY_QUESTION_SCREENS, "SURVEY_CONFIRM"))
 _MAX_NATIVE_SURVEY_OPTIONS = 20
+_SURVEY_GOVERNANCE_FLOW_ACK_CONTRACT_VERSION = (
+    SURVEY_GOVERNANCE_ACK_CONTRACT_VERSION
+)
+_SURVEY_GOVERNANCE_FLOW_ACK_FIELDS = frozenset(SURVEY_GOVERNANCE_ACK_FIELDS)
+_SURVEY_PRIVACY_FLOW_ACK_FIELDS = frozenset(SURVEY_PRIVACY_ACK_FIELDS)
+_NATIVE_SURVEY_DEMOGRAPHIC_FIELDS = {
+    "demographic:city": "ciudad",
+    "demographic:province": "provincia",
+}
+_MAX_NATIVE_SURVEY_DEMOGRAPHIC_VALUE_LENGTH = 120
 
 _STATUS_LABELS = {
     "nuevo": "Recibido",
@@ -579,7 +594,11 @@ class MetaFlowRuntime:
                 next_index,
                 interaction=interaction,
             )
-        return _survey_confirmation_response(survey, visible_after_answer)
+        return _survey_confirmation_response(
+            survey,
+            visible_after_answer,
+            interaction=interaction,
+        )
 
     def _store_claim_context(
         self,
@@ -669,6 +688,8 @@ class MetaFlowRuntime:
             int(endpoint.tenant.id),
             (interaction.metadata_json or {}).get("survey_context"),
             require_instrument_revision=True,
+            flow_data_contract=interaction.data_contract,
+            signed_flow_data_contract=invocation.data_contract,
         )
         return survey, questions, interaction
 
@@ -714,10 +735,19 @@ def authorize_order_context(tenant_id: int, raw_context: Any) -> dict[str, str]:
     return {"kind": canonical_kind, "id": identifier}
 
 
-def authorize_survey_context(tenant_id: int, raw_context: Any) -> dict[str, Any]:
+def authorize_survey_context(
+    tenant_id: int,
+    raw_context: Any,
+    *,
+    flow_data_contract: Any = None,
+) -> dict[str, Any]:
     """Validate one published quick vote before issuing a signed Flow token."""
 
-    _, _, context = _resolve_survey_context(int(tenant_id), raw_context)
+    _, _, context = _resolve_survey_context(
+        int(tenant_id),
+        raw_context,
+        flow_data_contract=flow_data_contract,
+    )
     return context
 
 
@@ -1465,6 +1495,7 @@ def _apply_survey_completion(
         tenant_id,
         metadata.get("survey_context"),
         require_instrument_revision=True,
+        flow_data_contract=interaction.data_contract,
     )
     staged_answers = _survey_staged_answers(metadata)
     visible_questions = _visible_native_survey_questions(survey, staged_answers)
@@ -1487,6 +1518,10 @@ def _apply_survey_completion(
         response_rows.append(
             {"pregunta_id": int(question.id), "opcion_id": selected_id}
         )
+    demographics = _native_survey_demographics(
+        visible_questions,
+        staged_answers,
+    )
 
     completion_metadata = dict(metadata)
     completion_metadata["survey_staged_answers"] = {
@@ -1529,6 +1564,15 @@ def _apply_survey_completion(
             ),
         },
     }
+    governance_ack = _validated_native_survey_governance_ack(
+        survey,
+        interaction.data_contract,
+        answers=answers,
+    )
+    if governance_ack is not None:
+        payload["governance"] = governance_ack["governance"]
+        payload.update(governance_ack["privacy"])
+    payload.update(demographics)
     request_context = {
         "anon_id": interaction.recipient_hash,
         "ip": None,
@@ -1570,6 +1614,13 @@ def _apply_survey_completion(
         elif reason in {"authentication_required", "identity_required"}:
             code = reason
         elif reason.startswith("survey_eligibility_"):
+            code = reason
+        elif reason.startswith("survey_governance_"):
+            code = reason
+        elif reason.startswith("survey_privacy_"):
+            # Native Flows must never turn the generic participation checkbox
+            # into privacy consent implicitly. Preserve the canonical reason so
+            # the caller can route to a web intake that presents the policy.
             code = reason
         else:
             code = "survey_submission_invalid"
@@ -1759,11 +1810,321 @@ def _completion_response_from_metadata(
     return response
 
 
+def _normalized_native_flow_data_contract(value: Any) -> frozenset[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(
+        field
+        for item in value
+        if (field := str(item or "").strip())
+        and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.\-]{0,79}", field)
+    )
+
+
+def _governance_flow_error(exc: Exception) -> MetaFlowActionError:
+    return _action_error(
+        str(getattr(exc, "reason_code", None) or "survey_governance_invalid"),
+        "The governed survey is unavailable for this Flow.",
+        int(getattr(exc, "status_code", None) or 409),
+    )
+
+
+def _validate_native_survey_governance_transport(
+    survey: EncEncuesta,
+    governance_contract: Mapping[str, Any],
+    *,
+    flow_data_contract: Any,
+    signed_flow_data_contract: Any = None,
+) -> dict[str, Any] | None:
+    """Authorize governed surveys only on an explicit, pinned Flow contract.
+
+    ``confirm_vote`` confirms submission only. It is deliberately insufficient
+    for governance consent or eligibility. A governed native Flow must declare
+    every release pin and both acknowledgements in its signed data contract
+    before the first question can be shown.
+    """
+
+    if str(governance_contract.get("mode") or "").strip().lower() != "governed_release":
+        return None
+
+    public_eligibility = governance_contract.get("eligibility")
+    if (
+        isinstance(public_eligibility, Mapping)
+        and public_eligibility.get("credential_required") is True
+    ):
+        raise _action_error(
+            "survey_eligibility_transport_unsupported",
+            "This governed survey requires the supported secure web intake.",
+            409,
+        )
+
+    if governance_contract.get("accepting_responses") is not True:
+        reason = str(
+            governance_contract.get("blocked_reason_code")
+            or "survey_governance_release_not_active"
+        ).strip()
+        if not reason.startswith("survey_"):
+            reason = "survey_governance_release_not_active"
+        raise _action_error(
+            reason,
+            "The governed survey is not accepting responses through this Flow.",
+            409,
+        )
+
+    active_release = governance_contract.get("active_release")
+    active_governance = (
+        active_release.get("governance")
+        if isinstance(active_release, Mapping)
+        else None
+    )
+    eligibility = (
+        active_governance.get("eligibility")
+        if isinstance(active_governance, Mapping)
+        else None
+    )
+    consent = (
+        active_governance.get("consent")
+        if isinstance(active_governance, Mapping)
+        else None
+    )
+    try:
+        release_id = int(active_release.get("release_id"))
+    except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+        raise _action_error(
+            "survey_governance_flow_ack_contract_invalid",
+            "The governed survey acknowledgement contract is invalid.",
+            500,
+        ) from exc
+    snapshot_sha256 = str(active_release.get("snapshot_sha256") or "").strip()
+    eligibility_policy_version = str(
+        eligibility.get("policy_version") if isinstance(eligibility, Mapping) else ""
+    ).strip()
+    consent_policy_version = str(
+        consent.get("policy_version") if isinstance(consent, Mapping) else ""
+    ).strip()
+    consent_public_text = str(
+        consent.get("public_text") if isinstance(consent, Mapping) else ""
+    )
+    if (
+        release_id <= 0
+        or not re.fullmatch(r"[a-f0-9]{64}", snapshot_sha256)
+        or not eligibility_policy_version
+        or not consent_policy_version
+        or not consent_public_text
+    ):
+        raise _action_error(
+            "survey_governance_flow_ack_contract_invalid",
+            "The governed survey acknowledgement contract is invalid.",
+            500,
+        )
+
+    privacy_required = bool(getattr(survey, "privacy_consent_required", False))
+    privacy_policy_version = str(
+        getattr(survey, "privacy_policy_version", None) or ""
+    ).strip()
+    if privacy_required and not privacy_policy_version:
+        raise _action_error(
+            "survey_privacy_policy_version_required",
+            "The survey privacy acknowledgement contract is invalid.",
+            409,
+        )
+
+    declared_fields = _normalized_native_flow_data_contract(flow_data_contract)
+    if not _SURVEY_GOVERNANCE_FLOW_ACK_FIELDS.issubset(declared_fields):
+        raise _action_error(
+            "survey_governance_flow_ack_contract_missing",
+            "This governed survey requires a Flow with explicit acknowledgements.",
+            409,
+        )
+    if privacy_required and not _SURVEY_PRIVACY_FLOW_ACK_FIELDS.issubset(
+        declared_fields
+    ):
+        raise _action_error(
+            "survey_privacy_flow_ack_contract_missing",
+            "This survey requires a Flow with explicit privacy consent.",
+            409,
+        )
+
+    if signed_flow_data_contract is not None:
+        signed_fields = _normalized_native_flow_data_contract(
+            signed_flow_data_contract
+        )
+        if not hmac.compare_digest(
+            "\n".join(sorted(declared_fields)),
+            "\n".join(sorted(signed_fields)),
+        ):
+            raise _action_error(
+                "survey_governance_flow_data_contract_mismatch",
+                "The signed Flow acknowledgement contract does not match.",
+                403,
+            )
+
+    declarations = (
+        eligibility.get("declarations")
+        if isinstance(eligibility, Mapping)
+        else None
+    )
+    eligibility_statement = ", ".join(
+        str(item).strip()
+        for item in (declarations if isinstance(declarations, list) else [])
+        if str(item).strip()
+    )
+    return {
+        "expected": {
+            "governance_ack_contract_version": (
+                _SURVEY_GOVERNANCE_FLOW_ACK_CONTRACT_VERSION
+            ),
+            "governance_release_id": release_id,
+            "governance_snapshot_sha256": snapshot_sha256,
+            "governance_eligibility_policy_version": eligibility_policy_version,
+            "governance_consent_policy_version": consent_policy_version,
+        },
+        "screen_data": {
+            "governance_required": True,
+            "governance_ack_contract_version": (
+                _SURVEY_GOVERNANCE_FLOW_ACK_CONTRACT_VERSION
+            ),
+            "governance_release_id": str(release_id),
+            "governance_snapshot_sha256": snapshot_sha256,
+            "governance_eligibility_policy_version": eligibility_policy_version,
+            "governance_consent_policy_version": consent_policy_version,
+            "governance_consent_text": consent_public_text,
+            "governance_eligibility_statement": eligibility_statement,
+            "privacy_required": privacy_required,
+            "privacy_policy_version": privacy_policy_version,
+            "privacy_policy_url": str(
+                getattr(survey, "privacy_policy_url", None) or ""
+            ).strip(),
+        },
+        "privacy_required": privacy_required,
+        "privacy_policy_version": privacy_policy_version,
+    }
+
+
+def _native_survey_governance_transport(
+    survey: EncEncuesta,
+    flow_data_contract: Any,
+) -> dict[str, Any] | None:
+    from services.survey_governance import (
+        SurveyGovernanceError,
+        survey_governance_contract,
+    )
+
+    try:
+        governance_contract = survey_governance_contract(
+            survey,
+            validate_integrity=True,
+        )
+    except SurveyGovernanceError as exc:
+        raise _governance_flow_error(exc) from exc
+    return _validate_native_survey_governance_transport(
+        survey,
+        governance_contract,
+        flow_data_contract=flow_data_contract,
+    )
+
+
+def _validated_native_survey_governance_ack(
+    survey: EncEncuesta,
+    flow_data_contract: Any,
+    *,
+    answers: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    transport = _native_survey_governance_transport(
+        survey,
+        flow_data_contract,
+    )
+    if transport is None:
+        return None
+
+    if answers.get("governance_consent_accepted") is not True:
+        raise _action_error(
+            "survey_governance_consent_missing",
+            "Explicit governance consent is required.",
+            422,
+        )
+    if answers.get("governance_eligibility_acknowledged") is not True:
+        raise _action_error(
+            "survey_governance_eligibility_ack_missing",
+            "Explicit eligibility acknowledgement is required.",
+            422,
+        )
+
+    expected = transport["expected"]
+    actual_release_id = answers.get("governance_release_id")
+    try:
+        actual_release_id = int(actual_release_id)
+    except (TypeError, ValueError, OverflowError):
+        actual_release_id = None
+    pinned_values_match = (
+        not isinstance(answers.get("governance_release_id"), bool)
+        and actual_release_id == expected["governance_release_id"]
+        and all(
+            hmac.compare_digest(
+                str(answers.get(field) or ""),
+                str(expected[field]),
+            )
+            for field in (
+                "governance_ack_contract_version",
+                "governance_snapshot_sha256",
+                "governance_eligibility_policy_version",
+                "governance_consent_policy_version",
+            )
+        )
+    )
+    if not pinned_values_match:
+        raise _action_error(
+            "survey_governance_ack_mismatch",
+            "The Flow acknowledgement does not match the active release.",
+            409,
+        )
+
+    privacy: dict[str, Any] = {}
+    if transport["privacy_required"]:
+        if answers.get("privacy_consent") is not True:
+            raise _action_error(
+                "survey_privacy_consent_required",
+                "Explicit privacy consent is required.",
+                400,
+            )
+        if not hmac.compare_digest(
+            str(answers.get("privacy_policy_version") or ""),
+            str(transport["privacy_policy_version"]),
+        ):
+            raise _action_error(
+                "survey_privacy_policy_version_mismatch",
+                "The Flow privacy acknowledgement does not match.",
+                409,
+            )
+        privacy = {
+            "privacy_consent": True,
+            "privacy_policy_version": transport["privacy_policy_version"],
+        }
+
+    return {
+        "governance": {
+            "release_id": expected["governance_release_id"],
+            "snapshot_sha256": expected["governance_snapshot_sha256"],
+            "eligibility_policy_version": expected[
+                "governance_eligibility_policy_version"
+            ],
+            "consent_policy_version": expected[
+                "governance_consent_policy_version"
+            ],
+            "consent_accepted": True,
+            "eligibility_acknowledged": True,
+        },
+        "privacy": privacy,
+    }
+
+
 def _resolve_survey_context(
     tenant_id: int,
     raw_context: Any,
     *,
     require_instrument_revision: bool = False,
+    flow_data_contract: Any = None,
+    signed_flow_data_contract: Any = None,
 ) -> tuple[EncEncuesta, tuple[Any, ...], dict[str, Any]]:
     if not isinstance(raw_context, Mapping):
         raise _action_error(
@@ -1815,12 +2176,22 @@ def _resolve_survey_context(
     # survey scope is proven, so policy details cannot be enumerated through a
     # mismatched signed context. Restricted surveys cannot be sent, navigated
     # or staged through Meta because the one-time header cannot survive screens.
-    from services.survey_governance import survey_governance_contract
-
-    governance_contract = survey_governance_contract(
-        survey,
-        validate_integrity=True,
+    from services.survey_governance import (
+        SurveyGovernanceError,
+        survey_governance_contract,
     )
+
+    try:
+        governance_contract = survey_governance_contract(
+            survey,
+            validate_integrity=True,
+        )
+    except SurveyGovernanceError as exc:
+        raise _action_error(
+            str(exc.reason_code or "survey_governance_invalid"),
+            "The governed survey is unavailable for this Flow.",
+            int(exc.status_code or 409),
+        ) from exc
     eligibility_contract = governance_contract.get("eligibility")
     if (
         isinstance(eligibility_contract, Mapping)
@@ -1831,6 +2202,12 @@ def _resolve_survey_context(
             "This governed survey requires the supported secure web intake.",
             409,
         )
+    _validate_native_survey_governance_transport(
+        survey,
+        governance_contract,
+        flow_data_contract=flow_data_contract,
+        signed_flow_data_contract=signed_flow_data_contract,
+    )
     supplied_revision = raw_context.get("instrument_revision")
     if supplied_revision in (None, ""):
         supplied_revision = raw_context.get("structure_revision")
@@ -1939,6 +2316,7 @@ def _resolve_survey_context(
                 "This survey contains an invalid option.",
                 409,
             )
+    _validate_native_survey_demographic_contract(questions)
     # Compile once before authorizing a send. This validates persisted v1/v2
     # references and proves that the native runtime can evaluate the same
     # visibility graph as canonical public responses.
@@ -2013,6 +2391,103 @@ def _prune_native_survey_answers(
     }
 
 
+def _normalize_native_survey_demographic_value(value: Any) -> str | None:
+    """Return one safe aggregate label from explicit persisted option metadata."""
+
+    if not isinstance(value, str):
+        return None
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        return None
+    normalized = " ".join(value.split())
+    if (
+        not normalized
+        or len(normalized) > _MAX_NATIVE_SURVEY_DEMOGRAPHIC_VALUE_LENGTH
+    ):
+        return None
+    return normalized
+
+
+def _validate_native_survey_demographic_contract(
+    questions: Sequence[Any],
+) -> None:
+    """Validate opt-in semantic bindings before a native survey is authorized.
+
+    Visible labels are intentionally excluded from this contract. A survey only
+    contributes aggregate geography when its question has a recognized stable
+    ``logical_ref`` and every option carries an explicit canonical ``valor``.
+    """
+
+    bound_fields: set[str] = set()
+    for question in questions:
+        field = _NATIVE_SURVEY_DEMOGRAPHIC_FIELDS.get(question.logical_ref)
+        if field is None:
+            continue
+        if field in bound_fields:
+            raise _action_error(
+                "survey_demographic_contract_invalid",
+                "This survey contains duplicate demographic bindings.",
+                409,
+            )
+        bound_fields.add(field)
+
+        normalized_values: set[str] = set()
+        for option in question.opciones:
+            normalized = _normalize_native_survey_demographic_value(option.valor)
+            if normalized is None:
+                raise _action_error(
+                    "survey_demographic_contract_invalid",
+                    "A demographic survey option is missing its canonical value.",
+                    409,
+                )
+            uniqueness_key = normalized.casefold()
+            if uniqueness_key in normalized_values:
+                raise _action_error(
+                    "survey_demographic_contract_invalid",
+                    "A demographic survey question contains duplicate values.",
+                    409,
+                )
+            normalized_values.add(uniqueness_key)
+
+
+def _native_survey_demographics(
+    visible_questions: Sequence[Any],
+    staged: Mapping[int, int],
+) -> dict[str, str]:
+    """Resolve city/province only from authorized semantic question metadata."""
+
+    demographics: dict[str, str] = {}
+    for question in visible_questions:
+        field = _NATIVE_SURVEY_DEMOGRAPHIC_FIELDS.get(question.logical_ref)
+        if field is None:
+            continue
+        selected_option_id = staged.get(int(question.id))
+        selected_option = next(
+            (
+                option
+                for option in question.opciones
+                if int(option.id) == selected_option_id
+            ),
+            None,
+        )
+        if selected_option is None:
+            raise _action_error(
+                "survey_option_invalid",
+                "Survey option is invalid.",
+                400,
+            )
+        normalized = _normalize_native_survey_demographic_value(
+            selected_option.valor
+        )
+        if normalized is None:
+            raise _action_error(
+                "survey_demographic_contract_invalid",
+                "A demographic survey option is missing its canonical value.",
+                409,
+            )
+        demographics[field] = normalized
+    return demographics
+
+
 def _survey_question_response(
     survey: EncEncuesta,
     questions: Sequence[Any],
@@ -2056,6 +2531,8 @@ def _survey_question_response(
 def _survey_confirmation_response(
     survey: EncEncuesta,
     visible_questions: Sequence[Any],
+    *,
+    interaction: WhatsAppFlowInteraction | None = None,
 ) -> dict[str, Any]:
     answer_count = len(visible_questions)
     answer_summary = (
@@ -2063,18 +2540,37 @@ def _survey_confirmation_response(
         if answer_count == 1
         else f"{answer_count} respuestas listas para enviar."
     )
-    return {
-        "screen": "SURVEY_CONFIRM",
-        "data": {
-            "survey_title": str(survey.titulo or "Votacion")[:120],
-            "answer_summary": answer_summary,
-            "results_note": (
-                "Al finalizar recibiras el acceso a los resultados en vivo."
-                if survey.mostrar_resultados_envivo
-                else "Tu participacion quedara registrada al finalizar."
-            ),
-        },
+    data = {
+        "survey_title": str(survey.titulo or "Votacion")[:120],
+        "answer_summary": answer_summary,
+        "results_note": (
+            "Al finalizar recibiras el acceso a los resultados en vivo."
+            if survey.mostrar_resultados_envivo
+            else "Tu participacion quedara registrada al finalizar."
+        ),
+        # Every terminal data field declared by the shared Flow JSON is present
+        # for legacy quick votes too. Conditional acknowledgement components
+        # remain hidden, and ``confirm_vote`` retains its original semantics.
+        "governance_required": False,
+        "governance_ack_contract_version": "",
+        "governance_release_id": "",
+        "governance_snapshot_sha256": "",
+        "governance_eligibility_policy_version": "",
+        "governance_consent_policy_version": "",
+        "governance_consent_text": "",
+        "governance_eligibility_statement": "",
+        "privacy_required": False,
+        "privacy_policy_version": "",
+        "privacy_policy_url": "",
     }
+    if interaction is not None:
+        governance_transport = _native_survey_governance_transport(
+            survey,
+            interaction.data_contract,
+        )
+        if governance_transport is not None:
+            data.update(governance_transport["screen_data"])
+    return {"screen": "SURVEY_CONFIRM", "data": data}
 
 
 def _normalize_endpoint_id(value: Any) -> str:

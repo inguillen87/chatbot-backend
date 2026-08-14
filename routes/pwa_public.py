@@ -34,6 +34,11 @@ from services.public_survey_intake import (
     public_survey_client_ip,
 )
 from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
+from services.survey_tenant_scope import (
+    SURVEY_TENANT_SCOPE_CONTRACT_VERSION,
+    SurveyTenantScopeError,
+    resolve_survey_tenant_scope_id,
+)
 from services.tenant_resolver import (
     TenantResolutionError,
     resolve_tenant_only,
@@ -55,6 +60,25 @@ from utils.turnstile import TURNSTILE_TOKEN_HEADER
 pwa_public_bp = Blueprint("pwa_public", __name__, url_prefix="/api/pwa/public")
 public_api_bp = Blueprint("public_api", __name__, url_prefix="/api/public")
 pwa_tenant_info_bp = Blueprint("pwa_tenant_info", __name__)
+
+
+@pwa_public_bp.errorhandler(SurveyTenantScopeError)
+def _handle_survey_tenant_scope_error(error: SurveyTenantScopeError):
+    request_id = _request_id()
+    response = jsonify(
+        {
+            "contract_version": SURVEY_TENANT_SCOPE_CONTRACT_VERSION,
+            "ok": False,
+            "reason_code": error.reason_code,
+            "retryable": False,
+            "action_hint": "contact_tenant_administrator",
+            "request_id": request_id,
+            "error": "La participacion ciudadana no esta disponible temporalmente.",
+        }
+    )
+    response.status_code = 503
+    response.headers["X-Request-Id"] = request_id
+    return response
 
 
 def _survey_response_cors_kwargs() -> dict:
@@ -382,16 +406,6 @@ def _build_public_cart_url(tenant: TenantProfile) -> Tuple[str, str, str]:
     path = _public_cart_path(tenant)
     full_url = f"{base_url}/{path}" if path else base_url
     return full_url, base_url, path
-
-
-def _resolve_encuestas_tenant_id(tenant: TenantProfile) -> int | None:
-    if tenant.encuestas_tenant_id:
-        return tenant.encuestas_tenant_id
-    if tenant.municipio_id:
-        return tenant.municipio_id
-    if tenant.pyme_id:
-        return tenant.pyme_id
-    return None
 
 
 def _posts_query_for_tenant(tenant: TenantProfile):
@@ -750,9 +764,7 @@ def tenant_info():
 @cross_origin(**_cors_kwargs(["GET"]))
 def list_surveys():
     tenant = _require_tenant()
-    tenant_id = _resolve_encuestas_tenant_id(tenant)
-    if not tenant_id:
-        return jsonify([])
+    tenant_id = resolve_survey_tenant_scope_id(tenant)
 
     encuestas: List[Tuple[object, str]] = list_public_encuestas_for_tenant(tenant_id, limit=25)
     payload = [
@@ -766,7 +778,7 @@ def list_surveys():
 @cross_origin(**_cors_kwargs(["GET"]))
 def get_survey(slug: str):
     tenant = _require_tenant()
-    tenant_id = _resolve_encuestas_tenant_id(tenant)
+    tenant_id = resolve_survey_tenant_scope_id(tenant)
     try:
         encuesta = get_public_encuesta(
             slug,
@@ -786,7 +798,6 @@ def get_survey(slug: str):
 @cross_origin(**_survey_response_cors_kwargs())
 def respond_survey(slug: str):
     tenant = _require_tenant()
-    tenant_id = _resolve_encuestas_tenant_id(tenant)
     payload = request.get_json(silent=True) or {}
     request_id = _request_id()
     try:
@@ -797,6 +808,7 @@ def respond_survey(slug: str):
         )
     except EncuestaError as exc:
         return jsonify(exc.to_dict()), exc.status_code
+    tenant_id = resolve_survey_tenant_scope_id(tenant)
     request_ctx = {
         "ip": public_survey_client_ip(),
         "user_agent": request.headers.get("User-Agent"),
