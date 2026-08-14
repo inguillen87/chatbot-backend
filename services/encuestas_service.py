@@ -35,11 +35,16 @@ from models import (
     EncOpcion,
     EncRespuesta,
     EncRespuestaDetalle,
+    EncAnchorSnapshot,
     EncLink,
     EncSegmento,
     EncComentario,
     PointsTransaction,
     SurveyDraftMaterialization,
+    SurveyEligibilityGrant,
+    SurveyEligibilityTerminal,
+    SurveyGovernanceRelease,
+    SurveyResponseEffect,
     SurveyResponseReceipt,
     TenantProfile,
     User,
@@ -673,6 +678,15 @@ _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=Fals
 
 _AUTO_SEED_SEGMENT_KEY = "auto_seed_demo"
 _AUTO_SEED_DEFAULT_LABEL = "Emular 100 respuestas demo"
+SURVEY_DEMO_SEEDING_CONTRACT_VERSION = "surveys.demo_seeding.v1"
+SURVEY_DEMO_SEED_MAX_RESPONSES = 500
+_SURVEY_DEMO_SAFE_ENVIRONMENTS = frozenset(
+    {"dev", "development", "local", "qa", "preview", "staging", "test", "testing"}
+)
+_SURVEY_DEMO_PRODUCTION_ENVIRONMENTS = frozenset({"prod", "production"})
+_SURVEY_DEMO_RESERVED_METADATA_KEYS = frozenset(
+    {"isdemoseed", "demobatchid", "demoseedcontractversion"}
+)
 
 
 _BOOTSTRAP_CONFIG_ENV_VAR = "ENCUESTAS_BOOTSTRAP_CONFIG_PATH"
@@ -684,15 +698,157 @@ _BOOTSTRAP_CONFIG_DEFAULT_PATH = (
 )
 
 
-def _demo_seed_runtime_allowed() -> bool:
+def _runtime_flag_enabled(value: Any) -> bool:
+    if value is True or value == 1:
+        return True
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _demo_seed_runtime_is_safe() -> bool:
+    """Allow destructive QA tooling only in an explicitly non-production runtime."""
+
     try:
-        if bool(current_app.config.get("ENABLE_DEMO_MODE", False)):
-            return True
-        if bool(current_app.config.get("ALLOW_SURVEY_DEMO_SEEDING", False)):
-            return True
+        app_config = current_app.config
+        testing = bool(app_config.get("TESTING", False))
+        configured_environments = {
+            str(app_config.get(name) or "").strip().lower()
+            for name in ("ENV", "FLASK_ENV", "APP_ENV", "ENVIRONMENT")
+            if app_config.get(name) is not None
+        }
+        configured_render = _runtime_flag_enabled(app_config.get("RENDER", False))
+        configured_render_url = bool(
+            str(app_config.get("RENDER_EXTERNAL_URL") or "").strip()
+        )
     except RuntimeError:
-        pass
-    return _env_flag("ALLOW_SURVEY_DEMO_SEEDING", default=False)
+        testing = _runtime_flag_enabled(os.getenv("TESTING"))
+        configured_environments = set()
+        configured_render = False
+        configured_render_url = False
+
+    environment_tokens = configured_environments | {
+        str(os.getenv(name) or "").strip().lower()
+        for name in ("ENV", "FLASK_ENV", "APP_ENV", "ENVIRONMENT")
+        if os.getenv(name) is not None
+    }
+    render_runtime = (
+        configured_render
+        or configured_render_url
+        or _runtime_flag_enabled(os.getenv("RENDER"))
+        or bool(str(os.getenv("RENDER_EXTERNAL_URL") or "").strip())
+    )
+    if (
+        testing
+        and not render_runtime
+        and configured_environments & {"test", "testing"}
+    ):
+        # The selected Flask config is authoritative for an isolated test app;
+        # this keeps CI deterministic even if its parent shell exports ENV=prod.
+        return True
+    if render_runtime or environment_tokens & _SURVEY_DEMO_PRODUCTION_ENVIRONMENTS:
+        return False
+    return bool(environment_tokens & _SURVEY_DEMO_SAFE_ENVIRONMENTS)
+
+
+def _demo_seed_explicitly_enabled() -> bool:
+    try:
+        return _runtime_flag_enabled(
+            current_app.config.get("ALLOW_SURVEY_DEMO_SEEDING", False)
+        )
+    except RuntimeError:
+        return _env_flag("ALLOW_SURVEY_DEMO_SEEDING", default=False)
+
+
+def _demo_seed_runtime_allowed() -> bool:
+    return _demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe()
+
+
+def _require_demo_seed_runtime_allowed() -> None:
+    if _demo_seed_runtime_allowed():
+        return
+    explicitly_enabled = _demo_seed_explicitly_enabled()
+    raise EncuestaError(
+        "La generación de respuestas sintéticas sólo está habilitada en entornos QA.",
+        status_code=403,
+        payload={
+            "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+            "reason_code": (
+                "survey_demo_seeding_unsafe_runtime"
+                if explicitly_enabled
+                else "survey_demo_seeding_disabled"
+            ),
+            "retryable": False,
+            "action_hint": (
+                "disable_capability_in_production"
+                if explicitly_enabled
+                else "enable_explicit_qa_capability"
+            ),
+        },
+    )
+
+
+def _validate_demo_seed_count(value: Any) -> int:
+    if isinstance(value, bool):
+        raise EncuestaError(
+            "Cantidad demo inválida",
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_seed_count_invalid",
+            },
+        )
+    try:
+        cantidad = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise EncuestaError(
+            "Cantidad demo inválida",
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_seed_count_invalid",
+            },
+        ) from exc
+    if cantidad <= 0:
+        raise EncuestaError(
+            "Debe solicitar al menos una respuesta demo",
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_seed_count_invalid",
+            },
+        )
+    if cantidad > SURVEY_DEMO_SEED_MAX_RESPONSES:
+        raise EncuestaError(
+            f"La cantidad demo no puede superar {SURVEY_DEMO_SEED_MAX_RESPONSES} respuestas por operación",
+            status_code=422,
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_seed_count_exceeds_limit",
+                "max_responses": SURVEY_DEMO_SEED_MAX_RESPONSES,
+                "retryable": False,
+            },
+        )
+    return cantidad
+
+
+def _reject_demo_seed_metadata_smuggling(metadata: Optional[Any]) -> None:
+    """Keep demo deletion markers server-owned and unavailable to public callers."""
+
+    if not isinstance(metadata, dict):
+        return
+    supplied_reserved_keys = sorted(
+        str(key)
+        for key in metadata
+        if re.sub(r"[^a-z0-9]", "", str(key).casefold())
+        in _SURVEY_DEMO_RESERVED_METADATA_KEYS
+    )
+    if not supplied_reserved_keys:
+        return
+    raise EncuestaError(
+        "Los marcadores internos de respuestas demo no se aceptan desde clientes públicos",
+        status_code=400,
+        payload={
+            "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+            "reason_code": "survey_demo_seed_metadata_reserved",
+            "retryable": False,
+        },
+    )
 
 
 def _bootstrap_config_path() -> Path:
@@ -3132,6 +3288,8 @@ def _normalize_auto_seed_config(
         cantidad = 100
     if cantidad < 0:
         cantidad = 0
+    if enabled and cantidad > 0:
+        cantidad = _validate_demo_seed_count(cantidad)
 
     municipality_value = (
         config.get("municipality_label")
@@ -3248,6 +3406,10 @@ def create_encuesta(
         slug_hint=slug_seed,
         tenant_id=tenant_id,
     )
+    if auto_seed_cfg:
+        # Fail before the ORM object is added or flushed. A disabled seed must
+        # never return an error after leaving a real survey committed behind.
+        _require_demo_seed_runtime_allowed()
     privacy_settings = _validated_privacy_settings(payload)
     if (
         auto_seed_cfg
@@ -3437,6 +3599,8 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
             slug_hint=candidate_slug or encuesta.slug,
             tenant_id=encuesta.tenant_id,
         )
+        if prepared_auto_seed_config:
+            _require_demo_seed_runtime_allowed()
 
     if candidate_slug is not None:
         encuesta.slug = candidate_slug
@@ -6242,6 +6406,7 @@ def save_respuesta(
     metadata = _normalize_metadata(metadata_raw)
     metadata_dict = metadata if isinstance(metadata, dict) else None
     metadata_payload = metadata if isinstance(metadata, (dict, list)) else None
+    _reject_demo_seed_metadata_smuggling(metadata_dict)
 
     tenant_id = encuesta.tenant_id
     _validate_required_identity(
@@ -6732,8 +6897,8 @@ def seed_encuesta_respuestas_demo(
     reset_data: bool = False,
     scenario: str = "balanced",
 ) -> Dict[str, Any]:
-    if cantidad <= 0:
-        raise EncuestaError("Debe solicitar al menos una respuesta demo")
+    _require_demo_seed_runtime_allowed()
+    cantidad = _validate_demo_seed_count(cantidad)
 
     encuesta = get_encuesta(encuesta_id, user=user)
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
@@ -6825,7 +6990,9 @@ def seed_encuesta_respuestas_demo(
     skipped = 0
     attempts = 0
     now = datetime.now(timezone.utc)
-    demo_batch_id = f"seed-{encuesta.id}-{int(now.timestamp())}"
+    demo_batch_id = (
+        f"seed-{encuesta.id}-{int(now.timestamp())}-{secrets.token_hex(6)}"
+    )
     analytics_counter = {
         "canales": Counter(),
         "utm_source": Counter(),
@@ -7042,6 +7209,7 @@ def seed_encuesta_respuestas_demo(
             metadata_payload={
                 "is_demo_seed": True,
                 "demo_batch_id": demo_batch_id,
+                "demo_seed_contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
                 "demo_scenario": scenario_normalized,
             },
             huella_unica=fingerprint,
@@ -7125,48 +7293,138 @@ def seed_encuesta_respuestas_demo(
 
 
 def _reset_encuesta_demo_data(encuesta: EncEncuesta) -> Dict[str, int]:
-    respuesta_ids = [
-        respuesta_id
-        for (respuesta_id,) in (
-            db.session.query(EncRespuesta.id)
+    """Delete only server-marked synthetic batches after a fail-closed preflight.
+
+    Comments do not currently carry a trustworthy demo-batch marker, so their
+    presence always blocks reset.  Governance and durable-response history are
+    likewise immutable evidence and must never be erased by QA tooling.
+    """
+
+    try:
+        dependency_counts = {
+            "releases": SurveyGovernanceRelease.query.filter_by(
+                survey_id=encuesta.id
+            ).count(),
+            "anchors": EncAnchorSnapshot.query.filter_by(
+                encuesta_id=encuesta.id
+            ).count(),
+            "receipts": SurveyResponseReceipt.query.filter_by(
+                survey_id=encuesta.id
+            ).count(),
+            "effects": SurveyResponseEffect.query.filter_by(
+                survey_id=encuesta.id
+            ).count(),
+            "eligibility_grants": SurveyEligibilityGrant.query.filter_by(
+                survey_id=encuesta.id
+            ).count(),
+            "eligibility_terminals": SurveyEligibilityTerminal.query.filter_by(
+                survey_id=encuesta.id
+            ).count(),
+        }
+        respuestas = (
+            EncRespuesta.query.options(
+                load_only(EncRespuesta.id, EncRespuesta.metadata_payload)
+            )
             .filter_by(encuesta_id=encuesta.id)
             .all()
         )
-    ]
-    respuestas_count = len(respuesta_ids)
-    comentarios_count = (
-        db.session.query(EncComentario.id)
-        .filter_by(encuesta_id=encuesta.id)
-        .count()
-    )
+        comentarios_count = EncComentario.query.filter_by(
+            encuesta_id=encuesta.id
+        ).count()
+    except Exception as exc:
+        current_app.logger.exception(
+            "[encuestas] No se pudo completar el preflight del reset demo para encuesta %s",
+            encuesta.id,
+        )
+        raise EncuestaError(
+            "No se pudo comprobar que el reset demo sea seguro",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_reset_preflight_failed",
+                "retryable": False,
+            },
+        ) from exc
 
-    if respuesta_ids:
+    durable_blockers = {
+        key: count for key, count in dependency_counts.items() if count > 0
+    }
+    if durable_blockers:
+        raise EncuestaError(
+            "El reset demo no puede borrar evidencia durable o de gobernanza",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_reset_durable_history_present",
+                "retryable": False,
+                "blockers": durable_blockers,
+            },
+        )
+
+    trusted_response_ids: List[int] = []
+    batch_ids: set[str] = set()
+    untrusted_responses = 0
+    expected_batch_prefix = f"seed-{encuesta.id}-"
+    for respuesta in respuestas:
+        metadata = respuesta.metadata_payload
+        batch_id = metadata.get("demo_batch_id") if isinstance(metadata, dict) else None
+        is_demo_seed = metadata.get("is_demo_seed") if isinstance(metadata, dict) else None
+        trusted_batch = (
+            is_demo_seed is True
+            and isinstance(batch_id, str)
+            and batch_id.startswith(expected_batch_prefix)
+            and re.fullmatch(
+                rf"seed-{encuesta.id}-[0-9]{{9,16}}(?:-[a-f0-9]{{12}})?",
+                batch_id,
+            )
+            is not None
+        )
+        if not trusted_batch:
+            untrusted_responses += 1
+            continue
+        trusted_response_ids.append(int(respuesta.id))
+        batch_ids.add(batch_id)
+
+    if untrusted_responses or comentarios_count:
+        raise EncuestaError(
+            "El reset demo encontró participación que no pertenece a un batch sintético verificable",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_reset_unclassified_data_present",
+                "retryable": False,
+                "unclassified_responses": untrusted_responses,
+                "unclassified_comments": comentarios_count,
+            },
+        )
+
+    respuestas_count = len(trusted_response_ids)
+
+    if trusted_response_ids:
         (
             db.session.query(EncRespuestaDetalle)
-            .filter(EncRespuestaDetalle.respuesta_id.in_(respuesta_ids))
+            .filter(EncRespuestaDetalle.respuesta_id.in_(trusted_response_ids))
             .delete(synchronize_session=False)
         )
         (
             db.session.query(EncRespuesta)
-            .filter(EncRespuesta.id.in_(respuesta_ids))
+            .filter(EncRespuesta.id.in_(trusted_response_ids))
             .delete(synchronize_session=False)
         )
 
-    db.session.query(EncComentario).filter_by(encuesta_id=encuesta.id).delete(
-        synchronize_session=False
-    )
     db.session.commit()
 
     current_app.logger.info(
-        "[encuestas] Reset demo datos encuesta %s (respuestas=%s comentarios=%s)",
+        "[encuestas] Reset demo seguro encuesta %s (respuestas=%s batches=%s)",
         encuesta.id,
         respuestas_count,
-        comentarios_count,
+        len(batch_ids),
     )
 
     return {
         "respuestas": respuestas_count,
-        "comentarios": comentarios_count,
+        "comentarios": 0,
+        "batches": len(batch_ids),
     }
 
 

@@ -19,7 +19,7 @@ from flask import (
     send_file,
 )
 from flask_login import current_user
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 
 from config import (
     ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS,
@@ -58,6 +58,11 @@ from services.public_survey_intake import (
     public_survey_client_ip,
 )
 from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
+from services.survey_tenant_scope import (
+    SurveyTenantScopeError,
+    resolve_survey_tenant_profile_reference,
+    resolve_survey_tenant_profile_slug,
+)
 from models import TenantProfile
 from utils.auth_helpers import obtener_token, user_from_token
 
@@ -287,10 +292,51 @@ def _isoformat_or_none(value: Any) -> Optional[str]:
     return None
 
 
+def _public_survey_url(base_url: str, slug: str, tenant_slug: Optional[str]) -> str:
+    url = f"{base_url.rstrip('/')}/e/{slug}"
+    if tenant_slug:
+        url = f"{url}?{urlencode({'tenant_slug': tenant_slug})}"
+    return url
+
+
+def _attach_public_tenant_scope(data: Dict[str, Any], tenant: TenantProfile) -> Dict[str, Any]:
+    """Attach canonical tenant identity to every citizen-facing share target."""
+
+    tenant_slug = str(getattr(tenant, "slug", "") or "").strip().lower()
+    canonical_slug = str(
+        data.get("canonical_slug")
+        or data.get("slug_publico")
+        or data.get("slug")
+        or ""
+    ).strip()
+    if not tenant_slug or not canonical_slug:
+        return data
+
+    public_url = _public_survey_url(
+        _public_target_base_url(),
+        canonical_slug,
+        tenant_slug,
+    )
+    data["tenant_id"] = int(tenant.id)
+    data["tenant_slug"] = tenant_slug
+    data["url_publica"] = public_url
+    data["share_url"] = public_url
+    data["public_api_endpoint"] = (
+        f"/api/public/encuestas/v1/{canonical_slug}?"
+        f"{urlencode({'tenant_slug': tenant_slug})}"
+    )
+    share_text = f"Participa en {data.get('titulo') or 'esta encuesta'}: {public_url}"
+    data["whatsapp_share_text"] = share_text
+    data["whatsapp_share_url"] = f"https://wa.me/?text={quote_plus(share_text)}"
+    data["share_whatsapp_url"] = data["whatsapp_share_url"]
+    return data
+
+
 def _serialize_public_encuesta_summary(
     encuesta: Any,
     slug_publico: str,
     base_url: str,
+    tenant: TenantProfile,
 ) -> Dict[str, Any]:
     """Build a lightweight list item without loading questions or live results."""
 
@@ -300,11 +346,11 @@ def _serialize_public_encuesta_summary(
         data["slug"] = slug
         data.setdefault("slug_publico", slug)
         data.setdefault("contract_version", "encuestas.public.v1")
-        data["url_publica"] = f"{base_url}/e/{slug}"
-        return data
+        data["url_publica"] = _public_survey_url(base_url, slug, tenant.slug)
+        return _attach_public_tenant_scope(data, tenant)
 
     slug = slug_publico or getattr(encuesta, "slug", None)
-    return {
+    data = {
         "contract_version": "encuestas.public.v1",
         "id": getattr(encuesta, "id", None),
         "tenant_id": getattr(encuesta, "tenant_id", None),
@@ -320,8 +366,9 @@ def _serialize_public_encuesta_summary(
         "es_votacion_envivo": bool(getattr(encuesta, "es_votacion_envivo", False)),
         "mostrar_resultados_envivo": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
         "permitir_comentarios": bool(getattr(encuesta, "permitir_comentarios", False)),
-        "url_publica": f"{base_url}/e/{slug}",
+        "url_publica": _public_survey_url(base_url, slug, tenant.slug),
     }
+    return _attach_public_tenant_scope(data, tenant)
 
 
 def _resolve_comment_social_providers() -> list[dict]:
@@ -499,6 +546,23 @@ def _load_public_encuesta_for_request(slug: str, *, preview_user=None):
     )
 
 
+def _tenant_profile_for_survey_record(encuesta: Any) -> Optional[TenantProfile]:
+    tenant_id = (
+        encuesta.get("tenant_id")
+        if isinstance(encuesta, Mapping)
+        else getattr(encuesta, "tenant_id", None)
+    )
+    if tenant_id not in (None, ""):
+        try:
+            normalized = int(tenant_id)
+        except (TypeError, ValueError):
+            return None
+        return TenantProfile.query.filter_by(id=normalized).one_or_none()
+    # Compatibility for mocked/lightweight records and legacy server-rendered
+    # surfaces. The request resolver still returns only a canonical profile.
+    return _resolve_tenant_profile_from_request()
+
+
 _SHARE_IMAGE_CANDIDATE_KEYS = (
     "share_image_url",
     "imagen_portada_url",
@@ -612,52 +676,106 @@ def _merge_header_values(response, header_name: str, values: list[str]) -> None:
         response.headers[header_name] = ", ".join(updated)
 
 
-def _resolve_tenant_from_request(*, explicit_only: bool = False) -> Optional[int]:
-    """Infer the tenant/municipio identifier for a public survey listing."""
+def _profile_from_numeric_reference(
+    raw_value: Any,
+    *,
+    allow_legacy_owner: bool = False,
+) -> Optional[TenantProfile]:
+    if raw_value in (None, "") or isinstance(raw_value, bool):
+        return None
+    try:
+        return resolve_survey_tenant_profile_reference(
+            raw_value,
+            allow_legacy_owner=allow_legacy_owner,
+        )
+    except SurveyTenantScopeError:
+        return None
 
-    arg_candidates = [
-        request.args.get("tenant_id", type=int),
-        request.args.get("tenant", type=int),
-        request.args.get("municipio_id", type=int),
-        request.args.get("owner_id", type=int),
-        request.args.get("owner", type=int),
-    ]
 
-    for candidate in arg_candidates:
-        if candidate is not None:
-            return candidate
+def _profile_from_slug(raw_value: Any) -> Optional[TenantProfile]:
+    if raw_value in (None, ""):
+        return None
+    try:
+        return resolve_survey_tenant_profile_slug(raw_value)
+    except SurveyTenantScopeError:
+        return None
 
-    header_candidates = [
+
+def _profile_from_config_reference(raw_value: Any) -> Optional[TenantProfile]:
+    profile = _profile_from_numeric_reference(raw_value, allow_legacy_owner=True)
+    if profile is not None:
+        return profile
+    return _profile_from_slug(raw_value)
+
+
+def _resolve_tenant_profile_from_request(
+    *,
+    explicit_only: bool = False,
+) -> Optional[TenantProfile]:
+    """Resolve every transport selector to one canonical ``TenantProfile``."""
+
+    explicit_profiles: list[TenantProfile] = []
+    canonical_numeric = (
+        request.args.get("tenant_id"),
         request.headers.get("X-Tenant-Id"),
-        request.headers.get("X-Tenant"),
+    )
+    for raw_value in canonical_numeric:
+        if raw_value not in (None, ""):
+            profile = _profile_from_numeric_reference(raw_value)
+            if profile is None:
+                return None
+            explicit_profiles.append(profile)
+
+    legacy_numeric = (
+        request.args.get("municipio_id"),
+        request.args.get("owner_id"),
+        request.args.get("owner"),
         request.headers.get("X-Municipio-Id"),
         request.headers.get("X-Owner-Id"),
-    ]
+    )
+    for raw_value in legacy_numeric:
+        if raw_value not in (None, ""):
+            profile = _profile_from_numeric_reference(
+                raw_value,
+                allow_legacy_owner=True,
+            )
+            if profile is None:
+                return None
+            explicit_profiles.append(profile)
 
-    for raw_value in header_candidates:
-        if not raw_value:
-            continue
-        try:
-            return int(raw_value)
-        except (TypeError, ValueError):
-            continue
-
-    slug_candidates = [
-        request.args.get("tenant_slug"),
+    generic_values = (
         request.args.get("tenant"),
-        request.headers.get("X-Tenant-Slug"),
         request.headers.get("X-Tenant"),
-    ]
-    for raw_slug in slug_candidates:
-        slug = str(raw_slug or "").strip().lower()
-        if not slug:
+    )
+    for raw_value in generic_values:
+        if raw_value in (None, ""):
             continue
-        tenant = TenantProfile.query.filter_by(slug=slug).first()
-        if tenant is not None:
-            try:
-                return int(tenant.id)
-            except (TypeError, ValueError):
-                continue
+        profile = _profile_from_numeric_reference(raw_value)
+        if profile is None and not str(raw_value).strip().isdecimal():
+            profile = _profile_from_slug(raw_value)
+        if profile is None:
+            return None
+        explicit_profiles.append(profile)
+
+    slug_values = (
+        request.args.get("tenant_slug"),
+        request.headers.get("X-Tenant-Slug"),
+    )
+    for raw_value in slug_values:
+        if raw_value not in (None, ""):
+            profile = _profile_from_slug(raw_value)
+            if profile is None:
+                return None
+            explicit_profiles.append(profile)
+
+    if explicit_profiles:
+        profiles_by_id = {int(profile.id): profile for profile in explicit_profiles}
+        if len(profiles_by_id) != 1:
+            current_app.logger.warning(
+                "[encuestas] Rejected contradictory public tenant selectors."
+            )
+            return None
+        return next(iter(profiles_by_id.values()))
 
     if explicit_only:
         return None
@@ -665,26 +783,31 @@ def _resolve_tenant_from_request(*, explicit_only: bool = False) -> Optional[int
     token = obtener_token()
     owner_candidate = getattr(g, "_obtener_token_owner", None)
     if owner_candidate is None and token:
-        user = user_from_token(token)
-        if user is not None:
-            owner_candidate = user
-
+        owner_candidate = user_from_token(token)
     if owner_candidate is not None:
-        for attr in ("municipio_id", "empresa_id", "pyme_id", "id"):
-            value = getattr(owner_candidate, attr, None)
-            if value is None:
-                continue
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                continue
+        direct_tenant_id = getattr(owner_candidate, "tenant_id", None)
+        if direct_tenant_id not in (None, ""):
+            profile = TenantProfile.query.filter_by(id=direct_tenant_id).one_or_none()
+            if profile is not None:
+                return profile
+        profile = _profile_from_slug(getattr(owner_candidate, "tenant_slug", None))
+        if profile is not None:
+            return profile
+        profile = _profile_from_numeric_reference(
+            getattr(owner_candidate, "id", None),
+            allow_legacy_owner=True,
+        )
+        if profile is not None:
+            return profile
 
     mapping = current_app.config.get("PUBLIC_ENCUESTAS_DOMAIN_MAP") or {}
     if mapping:
         host_candidates = []
         forwarded = request.headers.get("X-Forwarded-Host")
         if forwarded:
-            host_candidates.extend(part.strip() for part in forwarded.split(",") if part.strip())
+            host_candidates.extend(
+                part.strip() for part in forwarded.split(",") if part.strip()
+            )
         host_candidates.extend(
             [
                 request.headers.get("Host"),
@@ -693,41 +816,40 @@ def _resolve_tenant_from_request(*, explicit_only: bool = False) -> Optional[int
                 request.headers.get("Referer"),
             ]
         )
-
         for candidate in host_candidates:
             normalized = _normalize_host(candidate)
             if not normalized:
                 continue
             variants = [normalized]
-            if normalized.startswith("www."):
-                variants.append(normalized[4:])
-            else:
-                variants.append(f"www.{normalized}")
-
+            variants.append(
+                normalized[4:] if normalized.startswith("www.") else f"www.{normalized}"
+            )
             for variant in variants:
-                tenant_value = mapping.get(variant)
-                if tenant_value is None:
+                if variant not in mapping:
                     continue
-                try:
-                    return int(tenant_value)
-                except (TypeError, ValueError):
-                    current_app.logger.warning(
-                        "[encuestas] Invalid tenant id '%s' configured for domain '%s'.",
-                        tenant_value,
-                        variant,
-                    )
+                profile = _profile_from_config_reference(mapping.get(variant))
+                if profile is not None:
+                    return profile
+                current_app.logger.warning(
+                    "[encuestas] Invalid or ambiguous tenant configured for domain '%s'.",
+                    variant,
+                )
+                return None
 
     default_tenant = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID")
     if default_tenant not in (None, ""):
-        try:
-            return int(default_tenant)
-        except (TypeError, ValueError):
-            current_app.logger.warning(
-                "[encuestas] Invalid PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID value '%s'.",
-                default_tenant,
-            )
-
+        profile = _profile_from_config_reference(default_tenant)
+        if profile is not None:
+            return profile
+        current_app.logger.warning(
+            "[encuestas] Invalid or ambiguous PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID."
+        )
     return None
+
+
+def _resolve_tenant_from_request(*, explicit_only: bool = False) -> Optional[int]:
+    profile = _resolve_tenant_profile_from_request(explicit_only=explicit_only)
+    return int(profile.id) if profile is not None else None
 
 
 def _has_explicit_tenant_selector() -> bool:
@@ -862,9 +984,27 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 return response
             return jsonify(payload)
 
-        tenant_id = _resolve_tenant_from_request()
-        if tenant_id is None:
-            tenant_id = current_app.config.get("PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID") or 4
+        try:
+            tenant_id, _require_tenant_match = _resolve_public_survey_tenant_scope()
+        except EncuestaError as err:
+            return _public_error_response(err)
+        tenant = (
+            TenantProfile.query.filter_by(id=tenant_id).one_or_none()
+            if tenant_id is not None
+            else None
+        )
+        if tenant is None:
+            wrapped = EncuestaError(
+                "Seleccioná una organización para ver sus encuestas.",
+                status_code=400,
+                payload={
+                    "contract_version": "public.survey_resolution.v1",
+                    "reason_code": "tenant_scope_required",
+                    "retryable": False,
+                    "action_hint": "select_tenant",
+                },
+            )
+            return _public_error_response(wrapped)
 
         limit = request.args.get("limit", default=5, type=int) or 5
         if limit < 0:
@@ -888,7 +1028,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         payload = []
         for encuesta, slug in encuestas:
             data = _attach_comment_social_config(
-                _serialize_public_encuesta_summary(encuesta, slug, base_url)
+                _serialize_public_encuesta_summary(encuesta, slug, base_url, tenant)
             )
             payload.append(data)
 
@@ -897,9 +1037,11 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             response = jsonify(
                 {
                     "contract_version": "encuestas.public_list.v1",
-                    "items": payload,
-                    "count": len(payload),
-                    "request_id": request_id,
+                        "items": payload,
+                        "count": len(payload),
+                        "tenant_slug": tenant.slug,
+                        "tenant": {"id": tenant.id, "slug": tenant.slug},
+                        "request_id": request_id,
                 }
             )
             response.headers.setdefault("X-Request-Id", request_id)
@@ -928,7 +1070,21 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
         except EncuestaError as err:
             return _public_error_response(err)
-        payload = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
+        tenant = _tenant_profile_for_survey_record(encuesta)
+        if tenant is None:
+            return _public_error_response(
+                EncuestaError(
+                    "Encuesta no encontrada",
+                    status_code=404,
+                    payload={"reason_code": "survey_not_found"},
+                )
+            )
+        payload = _attach_comment_social_config(
+            _attach_public_tenant_scope(
+                serialize_public_encuesta(encuesta, slug_publico=slug),
+                tenant,
+            )
+        )
         payload.setdefault("contract_version", "encuestas.public.v1")
         request_id = _resolve_request_id()
         payload.setdefault("request_id", request_id)
@@ -1245,16 +1401,30 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     @bp.route("/v1/<slug>/qr")
     def qr(slug: str):
         preview_user = _resolve_preview_user()
+        tenant_slug = None
 
         if not is_demo_survey_slug(slug):
             try:
-                _load_public_encuesta_for_request(slug, preview_user=preview_user)
+                encuesta = _load_public_encuesta_for_request(
+                    slug,
+                    preview_user=preview_user,
+                )
             except EncuestaError as err:
                 return _public_error_response(err)
+            tenant = _tenant_profile_for_survey_record(encuesta)
+            if tenant is None:
+                return _public_error_response(
+                    EncuestaError(
+                        "Encuesta no encontrada",
+                        status_code=404,
+                        payload={"reason_code": "survey_not_found"},
+                    )
+                )
+            tenant_slug = tenant.slug
 
         size = request.args.get("size", default=320, type=int)
         base_url = _public_target_base_url()
-        url = f"{base_url}/e/{slug}"
+        url = _public_survey_url(base_url, slug, tenant_slug)
         try:
             png = build_qr_png(url, size=size)
         except ValueError as exc:
@@ -1298,6 +1468,8 @@ def share_redirect(slug: str):
     if canonical:
         canonical = canonical.rstrip("/")
         target = f"{canonical}/e/{slug}"
+        if request.query_string:
+            target = f"{target}?{request.query_string.decode('utf-8', errors='ignore')}"
         request_base = request.host_url.rstrip("/")
         if request_base != canonical:
             return redirect(target, code=302)
@@ -1356,12 +1528,45 @@ def share_redirect(slug: str):
             err.status_code,
         )
 
-    data = _attach_comment_social_config(serialize_public_encuesta(encuesta, slug_publico=slug))
+    tenant = _tenant_profile_for_survey_record(encuesta)
+    if tenant is None:
+        missing = EncuestaError(
+            "Encuesta no encontrada",
+            status_code=404,
+            payload={"reason_code": "survey_not_found"},
+        )
+        if wants_json:
+            return _public_error_response(missing)
+        return (
+            render_template(
+                "encuestas/share.html",
+                encuesta=None,
+                error=missing.to_dict(),
+                status_code=404,
+                share_url=None,
+                qr_url=None,
+                widget_url=None,
+                whatsapp_url=None,
+                whatsapp_message=None,
+                share_image_url=_resolve_share_image(None),
+            ),
+            404,
+        )
+    data = _attach_comment_social_config(
+        _attach_public_tenant_scope(
+            serialize_public_encuesta(encuesta, slug_publico=slug),
+            tenant,
+        )
+    )
     base_url = _public_target_base_url()
-    share_url = f"{base_url}/e/{slug}"
+    canonical_slug = data.get("canonical_slug") or slug
+    share_url = _public_survey_url(base_url, canonical_slug, tenant.slug)
     api_base_url = _public_api_base_url()
-    qr_url = f"{api_base_url}/api/public/encuestas/{slug}/qr"
-    widget_url = f"{share_url}?canal=widget_chat"
+    qr_url = (
+        f"{api_base_url}/api/public/encuestas/{canonical_slug}/qr?"
+        f"{urlencode({'tenant_slug': tenant.slug})}"
+    )
+    widget_url = f"{share_url}&canal=widget_chat"
     titulo = data.get("titulo") or "Encuesta ciudadana"
     whatsapp_message = f"Participá en '{titulo}' ingresando a {share_url}"
     whatsapp_url = f"https://wa.me/?text={quote_plus(whatsapp_message)}"

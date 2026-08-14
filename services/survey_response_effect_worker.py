@@ -11,12 +11,16 @@ import argparse
 import json
 import logging
 import os
+from pathlib import Path
 import signal
 import threading
 from typing import Any, Optional
 
 from flask import current_app, has_app_context
 from sqlalchemy import func
+from alembic.config import Config as AlembicConfig
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 
 from celery_utils import celery_app
 from models import SurveyResponseEffect, db
@@ -43,10 +47,43 @@ SURVEY_RESPONSE_EFFECT_WORKER_HEALTH_CONTRACT = (
 
 _ROUND_ROBIN_EXTENSION_KEY = "chatboc.survey_response_effect_worker.cursor"
 _ROUND_ROBIN_LOCK = threading.Lock()
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 class SurveyResponseEffectWorkerConfigurationError(RuntimeError):
     """Raised when a poller setting would make processing unsafe."""
+
+
+def _repository_schema_heads() -> frozenset[str]:
+    config = AlembicConfig(str(_REPOSITORY_ROOT / "alembic.ini"))
+    scripts = ScriptDirectory.from_config(config)
+    return frozenset(str(head) for head in scripts.get_heads())
+
+
+def _database_schema_heads() -> frozenset[str]:
+    with db.engine.connect() as connection:
+        context = MigrationContext.configure(connection)
+        return frozenset(str(head) for head in context.get_current_heads())
+
+
+def assert_survey_response_effect_worker_schema_current() -> None:
+    """Fail before polling when the database is not at this release's head."""
+
+    if bool(current_app.config.get("TESTING")):
+        return
+    process_role = str(
+        current_app.config.get("CHATBOC_PROCESS_ROLE")
+        or os.getenv("CHATBOC_PROCESS_ROLE", "")
+    ).strip().lower()
+    if process_role != "survey-effect-worker":
+        return
+
+    expected = _repository_schema_heads()
+    current = _database_schema_heads()
+    if not expected or current != expected:
+        raise SurveyResponseEffectWorkerConfigurationError(
+            "survey_response_effect_worker_schema_not_current"
+        )
 
 
 def _configured_int(
@@ -264,6 +301,7 @@ def run_survey_response_effect_worker(
     with app.app_context():
         # Validate every bound at startup. The first health query also fails
         # loudly if the migration/table is missing.
+        assert_survey_response_effect_worker_schema_current()
         _configured_batch_size()
         _configured_max_tenants()
         _configured_lease_seconds()
@@ -314,6 +352,7 @@ def main() -> int:
     app = create_app(Config)
     if args.health:
         with app.app_context():
+            assert_survey_response_effect_worker_schema_current()
             print(
                 json.dumps(
                     summarize_survey_response_effect_worker(),
@@ -345,6 +384,7 @@ def main() -> int:
 __all__ = [
     "SURVEY_RESPONSE_EFFECT_SWEEP_TASK_NAME",
     "SurveyResponseEffectWorkerConfigurationError",
+    "assert_survey_response_effect_worker_schema_current",
     "dispatch_survey_response_effect_batch",
     "dispatch_survey_response_effect_batch_task",
     "run_survey_response_effect_worker",

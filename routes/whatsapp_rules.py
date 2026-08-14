@@ -2520,6 +2520,9 @@ def send_twilio_native_flow(user: User):
             survey_context = authorize_survey_context(
                 tenant.id,
                 payload.get("survey_context"),
+                flow_data_contract=(
+                    registry_metadata.get("data_contract") if registry else None
+                ),
             )
         except MetaFlowActionError as exc:
             survey_context_error = exc

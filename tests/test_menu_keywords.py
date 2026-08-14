@@ -64,6 +64,17 @@ class TestMenuKeywords(unittest.TestCase):
         self.assertEqual(find_global_menu_action("encuesta"), "mostrar_menu_encuestas")
         self.assertEqual(find_global_menu_action("participacion ciudadana"), "mostrar_menu_encuestas")
 
+    def test_whatsapp_survey_typo_and_numeric_shortcut_are_profile_independent(self):
+        for phrase in ("encuetas", "encuestas", "encuestas quiero", "quiero ver encuestas"):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(find_global_menu_action(phrase), "mostrar_menu_encuestas")
+
+        self.assertEqual(find_global_menu_action("5"), "mostrar_menu_encuestas")
+        self.assertEqual(
+            find_global_menu_action("5", {"profile_name": "Marcelo"}),
+            "mostrar_menu_encuestas",
+        )
+
     def test_keyword_overrides_location_state(self):
         owner = SimpleNamespace(municipio_id="default", id=1)
         rubro = SimpleNamespace()

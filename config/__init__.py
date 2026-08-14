@@ -689,6 +689,12 @@ class Config:
         "ENABLE_DEMO_MODE",
         "FLASK_ENABLE_DEMO_MODE",
     )
+    # Synthetic survey responses are destructive QA tooling and require a
+    # separate, explicit opt-in. General demo content must not enable them.
+    ALLOW_SURVEY_DEMO_SEEDING = _env_flag(
+        False,
+        "ALLOW_SURVEY_DEMO_SEEDING",
+    )
     # Governance-sensitive interview/admission APIs require a deliberate
     # deployment opt-in after migrations, tenant policy and staging evidence.
     ENABLE_ASSESSMENT_INTERVIEWS_V1 = _env_strict_opt_in(
@@ -1294,6 +1300,18 @@ def validate_runtime_security(config: Any) -> list[str]:
     if not is_production:
         return errors
 
+    raw_demo_seed_flag = getattr(config, "get", lambda *_: None)(
+        "ALLOW_SURVEY_DEMO_SEEDING",
+        False,
+    )
+    demo_seed_enabled = raw_demo_seed_flag is True or str(
+        raw_demo_seed_flag or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if demo_seed_enabled:
+        errors.append(
+            "ALLOW_SURVEY_DEMO_SEEDING no puede habilitarse en produccion."
+        )
+
     secret_key = str(getattr(config, "get", lambda *_: None)("SECRET_KEY", "") or "").strip()
     if not secret_key or secret_key.lower() in INSECURE_SECRET_MARKERS or len(secret_key) < 24:
         errors.append("SECRET_KEY insegura para producción.")
@@ -1855,6 +1873,7 @@ def validate_runtime_security(config: Any) -> list[str]:
 
 
 class TestConfig(Config):
+    ENV = 'testing'
     TESTING = True
     SQLALCHEMY_DATABASE_URI = 'sqlite:///:memory:'
     SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 5}}
@@ -1867,6 +1886,7 @@ class TestConfig(Config):
     SESSION_COOKIE_DOMAIN = None
     SESSION_TYPE = 'null'
     CORS_ALLOW_LOCAL_DEV = True
+    ALLOW_SURVEY_DEMO_SEEDING = True
 
 class TestingConfig(TestConfig):
     pass

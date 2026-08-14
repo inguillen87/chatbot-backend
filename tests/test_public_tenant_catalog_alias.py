@@ -1,7 +1,7 @@
 from urllib.parse import unquote_plus, urlparse
 
 from app import db
-from models import AnalyticsEventV2, CatalogoItem, ChatSessionContext, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
+from models import AnalyticsEventV2, CatalogoItem, ChatSessionContext, EncEncuesta, EncLink, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
 from services.catalog_share import build_catalog_share_payload
 
 
@@ -471,6 +471,46 @@ def test_public_navigation_contract_disables_unavailable_items(client):
     assert items["catalog"]["enabled"] is True
     assert items["news"]["enabled"] is False
     assert items["news"]["empty_state"]
+
+
+def test_public_navigation_does_not_expose_draft_only_survey_module(client):
+    tenant = _seed_pyme_tenant_with_catalog()
+    draft = EncEncuesta(
+        tenant_id=tenant.id,
+        slug="consulta-interna-no-publicada",
+        titulo="Consulta interna",
+        descripcion="Todavía no disponible para ciudadanía",
+        tipo="opinion",
+        estado="borrador",
+    )
+    db.session.add(draft)
+    db.session.commit()
+
+    draft_response = client.get(
+        f"/api/public/tenants/{tenant.slug}/public-navigation"
+    )
+    draft_items = {
+        item["id"]: item for item in draft_response.get_json()["items"]
+    }
+    assert draft_items["surveys"]["enabled"] is False
+
+    draft.estado = "publicada"
+    db.session.add(
+        EncLink(
+            encuesta=draft,
+            slug_publico="consulta-ciudadana-publicada",
+            canal="web",
+        )
+    )
+    db.session.commit()
+
+    published_response = client.get(
+        f"/api/public/tenants/{tenant.slug}/public-navigation"
+    )
+    published_items = {
+        item["id"]: item for item in published_response.get_json()["items"]
+    }
+    assert published_items["surveys"]["enabled"] is True
 
 
 def test_public_domain_slug_alias_resolves_navigation_commerce_and_history(client):

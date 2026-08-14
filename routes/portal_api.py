@@ -22,8 +22,30 @@ from services.encuestas_service import (
     survey_response_receipt_contract,
 )
 from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
+from services.survey_tenant_scope import (
+    SURVEY_TENANT_SCOPE_CONTRACT_VERSION,
+    SurveyTenantScopeError,
+    resolve_survey_tenant_scope_id,
+)
 
 portal_api_bp = Blueprint('portal_api', __name__)
+
+
+@portal_api_bp.errorhandler(SurveyTenantScopeError)
+def _handle_survey_tenant_scope_error(error: SurveyTenantScopeError):
+    return (
+        jsonify(
+            {
+                "contract_version": SURVEY_TENANT_SCOPE_CONTRACT_VERSION,
+                "ok": False,
+                "reason_code": error.reason_code,
+                "retryable": False,
+                "action_hint": "contact_tenant_administrator",
+                "error": "La participacion ciudadana no esta disponible temporalmente.",
+            }
+        ),
+        503,
+    )
 
 def _resolve_context(tenant_slug):
     try:
@@ -38,6 +60,12 @@ def _resolve_context(tenant_slug):
 def _get_owner_id(tenant):
     owner = tenant.municipio or tenant.pyme
     return owner.id if owner else None
+
+
+def _survey_scope_ids(tenants: list[TenantProfile]) -> list[int]:
+    return list(
+        dict.fromkeys(resolve_survey_tenant_scope_id(tenant) for tenant in tenants)
+    )
 
 
 def _order_status_label(status: str | None) -> str:
@@ -501,15 +529,14 @@ def _portal_promotions(tenant: TenantProfile, *, limit: int = 6) -> list[dict]:
 
 
 def _portal_available_surveys(tenant: TenantProfile, user: User, *, limit: int = 6) -> list[dict]:
-    if not tenant.encuestas_tenant_id:
-        return []
-    surveys = list_public_encuestas_for_tenant(tenant.encuestas_tenant_id, limit=max(limit * 2, 10))
+    survey_scope_id = resolve_survey_tenant_scope_id(tenant)
+    surveys = list_public_encuestas_for_tenant(survey_scope_id, limit=max(limit * 2, 10))
     answered_ids = {
         enc_id
         for (enc_id,) in db.session.query(EncRespuesta.encuesta_id)
         .filter(
             EncRespuesta.user_id == user.id,
-            EncRespuesta.tenant_id == tenant.id,
+            EncRespuesta.tenant_id == survey_scope_id,
         )
         .all()
     }
@@ -725,14 +752,14 @@ def get_content(tenant_slug):
 
     # 7. Surveys
     surveys_data = []
-    if tenant.encuestas_tenant_id:
-        encuestas = list_public_encuestas_for_tenant(tenant.encuestas_tenant_id, limit=3)
-        for enc, slug in encuestas:
-            surveys_data.append({
-                "id": str(enc.id),
-                "title": enc.titulo,
-                "link": f"/portal/encuestas/{slug}"
-            })
+    survey_scope_id = resolve_survey_tenant_scope_id(tenant)
+    encuestas = list_public_encuestas_for_tenant(survey_scope_id, limit=3)
+    for enc, slug in encuestas:
+        surveys_data.append({
+            "id": str(enc.id),
+            "title": enc.titulo,
+            "link": f"/portal/encuestas/{slug}"
+        })
 
     # 8. Theme and Settings
     theme_config = _get_theme_config(tenant)
@@ -1136,9 +1163,10 @@ def get_surveys_history(tenant_slug):
     limit = _normalize_limit(request.args.get('limit'), default=20, max_limit=100)
     include_network = _is_truthy(request.args.get('include_network'))
 
-    _tenants, tenant_ids, _owner_ids = _resolve_portal_scope(user, tenant, include_network)
+    tenants, tenant_ids, _owner_ids = _resolve_portal_scope(user, tenant, include_network)
     if not tenant_ids:
         return jsonify([])
+    survey_scope_ids = _survey_scope_ids(tenants)
 
     encuestas = (
         db.session.query(EncRespuesta, EncEncuesta)
@@ -1146,7 +1174,7 @@ def get_surveys_history(tenant_slug):
         .filter(
             and_(
                 EncRespuesta.user_id == user.id,
-                EncRespuesta.tenant_id.in_(tenant_ids),
+                EncRespuesta.tenant_id.in_(survey_scope_ids),
             )
         )
         .order_by(EncRespuesta.submitted_at.desc())
@@ -1181,6 +1209,7 @@ def get_portal_history(tenant_slug):
 
     if not tenant_ids:
         return jsonify({"claims": [], "orders": [], "points": [], "surveys": [], "suggestions": [], "summary": {"counts": {}, "points_breakdown": {}}, "timeline": []})
+    survey_scope_ids = _survey_scope_ids(tenants)
 
     claims = TenantTicket.query.filter(
         TenantTicket.user_id == user.id,
@@ -1203,7 +1232,7 @@ def get_portal_history(tenant_slug):
         .filter(
             and_(
                 EncRespuesta.user_id == user.id,
-                EncRespuesta.tenant_id.in_(tenant_ids),
+                EncRespuesta.tenant_id.in_(survey_scope_ids),
             )
         )
         .order_by(EncRespuesta.submitted_at.desc())
@@ -1363,10 +1392,11 @@ def get_portal_dashboard(tenant_slug):
     tenant = _resolve_context(tenant_slug)
     user = g.viewer
     include_network = _is_truthy(request.args.get('include_network'))
-    _tenants, tenant_ids, _owner_ids = _resolve_portal_scope(user, tenant, include_network)
+    tenants, tenant_ids, _owner_ids = _resolve_portal_scope(user, tenant, include_network)
 
     if not tenant_ids:
         return jsonify({"summary": {}, "points": {"current": recompensas_service().obtener_saldo(user), "breakdown": {}}, "tenants_followed": 0})
+    survey_scope_ids = _survey_scope_ids(tenants)
 
     claims_count = TenantTicket.query.filter(
         TenantTicket.user_id == user.id,
@@ -1378,7 +1408,7 @@ def get_portal_dashboard(tenant_slug):
     )
     surveys_count = EncRespuesta.query.filter(
         EncRespuesta.user_id == user.id,
-        EncRespuesta.tenant_id.in_(tenant_ids),
+        EncRespuesta.tenant_id.in_(survey_scope_ids),
     ).count()
 
     points_tx = PointsTransaction.query.filter(
@@ -1411,6 +1441,7 @@ def get_portal_premium_bundle(tenant_slug):
     include_network = _is_truthy(request.args.get('include_network'))
     limit = _normalize_limit(request.args.get('limit'), default=6, max_limit=20)
     tenants, tenant_ids, owner_ids = _resolve_portal_scope(user, tenant, include_network)
+    survey_scope_ids = _survey_scope_ids(tenants)
     tenant_by_id = {item.id: item for item in tenants}
 
     claims = (
@@ -1446,7 +1477,7 @@ def get_portal_premium_bundle(tenant_slug):
         .filter(
             and_(
                 EncRespuesta.user_id == user.id,
-                EncRespuesta.tenant_id.in_(tenant_ids),
+                EncRespuesta.tenant_id.in_(survey_scope_ids),
             )
         )
         .order_by(EncRespuesta.submitted_at.desc())
@@ -1952,7 +1983,7 @@ def submit_portal_survey_response(tenant_slug, slug):
 
     try:
         # Note: save_respuesta expects PUBLIC SLUG.
-        preferred_tenant_id = tenant.encuestas_tenant_id or tenant.id
+        preferred_tenant_id = resolve_survey_tenant_scope_id(tenant)
         respuesta = save_respuesta(
             slug,
             data,

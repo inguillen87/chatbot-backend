@@ -43,7 +43,7 @@ if "qrcode" not in sys.modules:
 
 import models  # noqa: F401  # ensure models are registered
 from database import db
-from models import EncEncuesta, EncLink, EncRespuesta, EncSegmento
+from models import EncEncuesta, EncLink, EncRespuesta, EncSegmento, TenantProfile, User
 from services.encuestas_service import (
     EncuestaError,
     create_encuesta,
@@ -420,6 +420,23 @@ def test_municipio_encuestas_menu_lists_batches_of_five_with_share_links(client)
 
     with client.application.app_context():
         tenant_id = 814
+        owner = User(
+            id=1814,
+            name="Municipal survey owner",
+            email="municipal-survey-owner@example.com",
+            password_hash="hash",
+            rol="admin",
+            tipo_chat="municipio",
+        )
+        tenant = TenantProfile(
+            id=tenant_id,
+            slug="municipio-seguro",
+            nombre="Municipio Seguro",
+            tipo="municipio",
+            municipio_id=owner.id,
+        )
+        db.session.add_all([owner, tenant])
+        db.session.flush()
         for index in range(6):
             encuesta, _slug, _user = _create_active_encuesta(tenant_id=tenant_id)
             encuesta.titulo = f"Consulta ciudadana {index + 1}"
@@ -429,8 +446,12 @@ def test_municipio_encuestas_menu_lists_batches_of_five_with_share_links(client)
         context = {
             "municipio_id": tenant_id,
             "tenant_id": tenant_id,
+            "tenant_profile": tenant,
             "user_obj": DummyUser(tenant_id),
-            "municipio_config_actual": {"encuestas": {"enabled": True}},
+            "municipio_config_actual": {
+                "slug": "municipio-seguro",
+                "encuestas": {"enabled": True},
+            },
             "chat_db_context_data": {},
             "channel": "widget_chat",
         }
@@ -459,6 +480,70 @@ def test_municipio_encuestas_menu_lists_batches_of_five_with_share_links(client)
     assert len(whatsapp_page["surveys"]) == 5
     assert "https://wa.me/?text=" in whatsapp_page["message_body"]
     assert whatsapp_page["pagination"]["next_action_id"] == "mostrar_menu_encuestas::2"
+    assert all(
+        "tenant_slug=municipio-seguro" in survey["share_url"]
+        for survey in whatsapp_page["surveys"]
+    )
+    assert all(
+        "tenant_slug=municipio-seguro" in survey["share_short_url"]
+        for survey in whatsapp_page["surveys"]
+    )
+
+
+def test_encuesta_share_fallback_requires_current_tenant_scope(client, monkeypatch):
+    from services import municipio_responder
+
+    tenant = TenantProfile(
+        id=815,
+        slug="municipio-seguro",
+        nombre="Municipio Seguro",
+        tipo="municipio",
+        municipio_id=1815,
+    )
+    calls = []
+
+    def _strict_lookup(slug, **kwargs):
+        calls.append((slug, kwargs))
+        return SimpleNamespace(id=9915, tenant_id=tenant.id)
+
+    monkeypatch.setattr(
+        municipio_responder,
+        "get_public_encuesta",
+        _strict_lookup,
+    )
+    monkeypatch.setattr(
+        municipio_responder,
+        "serialize_public_encuesta",
+        lambda *_args, **_kwargs: {"titulo": "Consulta del tenant correcto"},
+    )
+
+    with client.application.app_context():
+        payload = municipio_responder._build_encuesta_share_payload(
+            "consulta-compartida",
+            {
+                "tenant_id": tenant.id,
+                "tenant_profile": tenant,
+                "municipio_config_actual": {"slug": tenant.slug},
+                "chat_db_context_data": {},
+                "channel": "widget_chat",
+            },
+            chat_db_context=None,
+        )
+
+    assert calls == [
+        (
+            "consulta-compartida",
+            {
+                "preferred_tenant_id": tenant.id,
+                "require_tenant_match": True,
+            },
+        )
+    ]
+    assert payload["fuente"] == "submenu_encuestas_share_v1"
+    assert "tenant_slug=municipio-seguro" in payload["share_url"]
+    assert "tenant_slug=municipio-seguro" in payload["share_short_url"]
+    assert "source=widget_chat" in payload["share_widget_url"]
+    assert payload["share_widget_url"].count("?") == 1
 
 
 def _request_ctx(anon: str) -> dict:

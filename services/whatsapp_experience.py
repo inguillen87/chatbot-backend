@@ -36,6 +36,7 @@ from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
 from services.meta_flow_json import (
     DATA_API_VERSION as META_FLOW_DATA_API_VERSION,
     FLOW_JSON_VERSION as META_FLOW_JSON_VERSION,
+    SURVEY_VOTE_DATA_CONTRACT,
     build_claim_evidence_flow,
     build_claim_tracking_flow,
     build_order_checkout_flow,
@@ -3091,12 +3092,24 @@ def _webview_blueprint_payload(
             "endpoint_mode": "data_exchange",
             "screens": [
                 {"id": "questions", "title": "Responder", "components": ["server_bound_single_choice"]},
-                {"id": "confirmation", "title": "Confirmar", "components": ["participation_receipt", "live_results_handoff"]},
+                {
+                    "id": "confirmation",
+                    "title": "Confirmar",
+                    "components": [
+                        "governance_consent",
+                        "eligibility_attestation",
+                        "privacy_consent",
+                        "participation_receipt",
+                        "live_results_handoff",
+                    ],
+                },
             ],
             "completion_event": "survey_response_saved",
             # Survey identity, questions and staged answers remain server-owned
-            # in WhatsAppFlowInteraction.metadata_json.
-            "data_contract": ["confirm_vote"],
+            # in WhatsAppFlowInteraction.metadata_json. Release pins are
+            # returned only so the runtime can verify the exact governance
+            # disclosure acknowledged by the participant.
+            "data_contract": list(SURVEY_VOTE_DATA_CONTRACT),
             "native_limits": {
                 "question_types": ["opcion_unica"],
                 "required_questions_only": True,

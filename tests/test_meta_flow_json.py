@@ -9,6 +9,9 @@ from services.meta_flow_json import (
     DATA_API_VERSION,
     FLOW_JSON_VERSION,
     MAX_FLOW_JSON_BYTES,
+    SURVEY_GOVERNANCE_ACK_FIELDS,
+    SURVEY_PRIVACY_ACK_FIELDS,
+    SURVEY_VOTE_DATA_CONTRACT,
     FlowBlueprint,
     FlowJsonArtifact,
     FlowJsonValidationError,
@@ -231,7 +234,7 @@ def test_example_builders_compile_publishable_endpoint_artifacts(builder):
     [build_claim_tracking_flow, build_order_checkout_flow, build_survey_vote_flow],
     ids=["claim_tracking", "order_checkout", "survey_vote"],
 )
-def test_example_complete_payloads_are_minimal_user_data_only(builder):
+def test_example_complete_payloads_are_minimal_declared_form_fields_only(builder):
     artifact = builder()
     terminal = next(
         screen for screen in artifact.document["screens"] if screen.get("terminal") is True
@@ -239,14 +242,14 @@ def test_example_complete_payloads_are_minimal_user_data_only(builder):
     payload = _footer_action(terminal)["payload"]
 
     assert payload
-    assert all(
-        value.startswith("${form.") or value.startswith("${screen.")
-        for value in payload.values()
-    )
-    assert not any("${data." in value for value in payload.values())
     assert not any(key in payload for key in ("flow_token", "order_id", "ticket_id", "status"))
 
     if artifact.blueprint_name == "order_checkout":
+        assert all(
+            value.startswith("${form.") or value.startswith("${screen.")
+            for value in payload.values()
+        )
+        assert not any("${data." in value for value in payload.values())
         assert set(payload) == {
             "full_name",
             "phone",
@@ -255,12 +258,35 @@ def test_example_complete_payloads_are_minimal_user_data_only(builder):
             "confirm_order",
         }
     elif artifact.blueprint_name == "claim_tracking":
+        assert all(
+            value.startswith("${form.") or value.startswith("${screen.")
+            for value in payload.values()
+        )
+        assert not any("${data." in value for value in payload.values())
         assert set(payload) == {"ticket_number", "follow_up_note"}
     else:
-        assert set(payload) == {"confirm_vote"}
+        assert set(payload) == set(SURVEY_VOTE_DATA_CONTRACT)
+        assert all(value.startswith("${form.") for value in payload.values())
+        assert payload["confirm_vote"] == "${form.confirm_vote}"
+        assert payload["governance_consent_accepted"] == (
+            "${form.governance_consent_accepted}"
+        )
+        assert payload["governance_eligibility_acknowledged"] == (
+            "${form.governance_eligibility_acknowledged}"
+        )
+        assert payload["privacy_consent"] == "${form.privacy_consent}"
+        server_pins = {
+            "governance_ack_contract_version",
+            "governance_release_id",
+            "governance_snapshot_sha256",
+            "governance_eligibility_policy_version",
+            "governance_consent_policy_version",
+            "privacy_policy_version",
+        }
+        assert all(payload[field] == f"${{form.{field}}}" for field in server_pins)
 
 
-def test_survey_vote_flow_uses_server_data_and_only_returns_final_consent():
+def test_survey_vote_flow_uses_server_pins_and_explicit_acknowledgements():
     blueprint = build_survey_vote_blueprint()
     artifact = build_survey_vote_flow()
 
@@ -276,10 +302,45 @@ def test_survey_vote_flow_uses_server_data_and_only_returns_final_consent():
     assert option_picker["data-source"] == "${data.options}"
     assert _footer_action(question)["name"] == "data_exchange"
     terminal = artifact.document["screens"][-1]
-    assert _footer_action(terminal) == {
-        "name": "complete",
-        "payload": {"confirm_vote": "${form.confirm_vote}"},
+    terminal_payload = _footer_action(terminal)["payload"]
+    assert set(terminal_payload) == set(SURVEY_VOTE_DATA_CONTRACT)
+    assert set(SURVEY_GOVERNANCE_ACK_FIELDS).issubset(terminal_payload)
+    assert set(SURVEY_PRIVACY_ACK_FIELDS).issubset(terminal_payload)
+    opt_ins = {
+        component["name"]: component
+        for component in terminal["layout"]["children"]
+        if component.get("type") == "OptIn"
     }
+    assert opt_ins["governance_consent_accepted"]["visible"] == (
+        "${data.governance_required}"
+    )
+    assert opt_ins["governance_consent_accepted"]["required"] == (
+        "${data.governance_required}"
+    )
+    assert opt_ins["governance_eligibility_acknowledged"]["visible"] == (
+        "${data.governance_required}"
+    )
+    assert opt_ins["governance_eligibility_acknowledged"]["required"] == (
+        "${data.governance_required}"
+    )
+    assert opt_ins["privacy_consent"]["visible"] == "${data.privacy_required}"
+    assert opt_ins["privacy_consent"]["required"] == "${data.privacy_required}"
+    assert "visible" not in opt_ins["confirm_vote"]
+    pinned_inputs = {
+        component["name"]: component
+        for component in terminal["layout"]["children"]
+        if component.get("type") == "TextInput"
+    }
+    for field in (
+        "governance_ack_contract_version",
+        "governance_release_id",
+        "governance_snapshot_sha256",
+        "governance_eligibility_policy_version",
+        "governance_consent_policy_version",
+        "privacy_policy_version",
+    ):
+        assert pinned_inputs[field]["visible"] is False
+        assert pinned_inputs[field]["init-value"] == f"${{data.{field}}}"
     serialized = artifact.canonical_json
     assert "survey_slug" not in serialized
     assert "question_id" not in serialized
