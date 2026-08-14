@@ -395,8 +395,8 @@ def test_outbox_migration_compiles_offline_for_sqlite_and_postgresql(url):
     assert "ALTER TABLE points_transaction DROP COLUMN idempotency_key" in downgrade_sql
 
 
-def test_survey_scope_canonicalization_is_the_single_alembic_head():
+def test_model_schema_drift_repair_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["20260814_survey_scope_canonical_v1"]
+    assert heads == ["20260814_model_schema_drift_v1"]
