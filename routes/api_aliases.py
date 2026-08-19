@@ -419,6 +419,34 @@ def api_gov_analytics_heatmap_alias():
     return civic_heatmap()
 
 
+@api_aliases_bp.route("/api/gov/analytics/traffic-light", methods=["GET", "OPTIONS"], strict_slashes=False)
+@api_aliases_bp.route("/api/v2/gov/analytics/traffic-light", methods=["GET", "OPTIONS"], strict_slashes=False)
+def api_gov_analytics_traffic_light_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    from routes.gov_analytics import civic_traffic_light
+    return civic_traffic_light()
+
+
+@api_aliases_bp.route("/api/gov/analytics/crisis-sentinel", methods=["GET", "OPTIONS"], strict_slashes=False)
+@api_aliases_bp.route("/api/v2/gov/analytics/crisis-sentinel", methods=["GET", "OPTIONS"], strict_slashes=False)
+def api_gov_analytics_crisis_sentinel_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    from routes.gov_analytics import civic_crisis_sentinel
+    return civic_crisis_sentinel()
+
+
+@api_aliases_bp.route("/api/gov/analytics/executive-summary", methods=["GET", "OPTIONS"], strict_slashes=False)
+@api_aliases_bp.route("/api/v2/gov/analytics/executive-summary", methods=["GET", "OPTIONS"], strict_slashes=False)
+def api_gov_analytics_executive_summary_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    from routes.gov_analytics import civic_executive_summary
+    return civic_executive_summary()
+
+
+
 @api_aliases_bp.route("/admin/analytics/export.csv", methods=["GET"], strict_slashes=False)
 def admin_analytics_export_csv_alias():
     return admin_analytics_export_csv()

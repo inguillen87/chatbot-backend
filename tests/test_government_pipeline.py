@@ -109,3 +109,38 @@ def test_plan_routes_orders_and_returns_distance():
     assert len(plan["stops"]) == 2
     assert plan["total_distance_km"] > 0
     assert plan["stops"][0]["orden"] == 1
+
+
+def test_build_secretarias_traffic_light():
+    from services.government_pipeline import build_secretarias_traffic_light
+
+    records = [
+        _record(id=1, categoria="Luminaria apagada", estado="resuelto", created_at=datetime(2024, 1, 1, 8, 0), ultima_actividad=datetime(2024, 1, 2, 8, 0)),
+        _record(id=2, categoria="Luminaria titilando", estado="resuelto", created_at=datetime(2024, 1, 1, 9, 0), ultima_actividad=datetime(2024, 1, 2, 9, 0)),
+        _record(id=3, categoria="Bache peligroso", estado="nuevo", created_at=datetime(2024, 1, 1, 10, 0), ultima_actividad=None),
+        _record(id=4, categoria="Poda de arbol", estado="en_proceso", created_at=datetime(2024, 1, 1, 11, 0), ultima_actividad=None),
+    ]
+
+    res = build_secretarias_traffic_light(records)
+
+    assert "resumen_general" in res
+    assert "ranking_secretarias" in res
+    assert res["resumen_general"]["total_reclamos"] == 4
+    assert res["resumen_general"]["total_resueltos"] == 2
+    assert len(res["ranking_secretarias"]) >= 3
+
+
+def test_detect_crisis_sentinel_anomalies():
+    from services.government_pipeline import detect_crisis_sentinel_anomalies
+
+    records = [
+        _record(id=i, distrito="Los Barriales", categoria="Luminarias") for i in range(12)
+    ]
+
+    sentinel = detect_crisis_sentinel_anomalies(records)
+
+    assert "estado_centinela" in sentinel
+    assert "alertas_activas" in sentinel
+    assert sentinel["total_alertas"] >= 1
+    assert any(a["distrito"] == "Los Barriales" for a in sentinel["alertas_activas"])
+

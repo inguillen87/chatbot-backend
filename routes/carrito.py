@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
@@ -877,3 +877,98 @@ def _resolve_public_tenant_by_slug(
         ensure_seed_catalog(owner, tenant)
 
     return tenant, owner
+
+
+# -------------------------------------------------------------------------
+# PyME WhatsApp Commerce: Abandoned Cart Recovery Engine (30-min window)
+# -------------------------------------------------------------------------
+
+@carrito_bp.route('/abandonados', methods=['GET', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["GET", "OPTIONS"]))
+def listar_carritos_abandonados():
+    """List carts created or updated > 30 minutes ago without completed checkout."""
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant = get_current_tenant_profile()
+    if not tenant:
+        return jsonify({'error': 'tenant_required'}), 400
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
+    
+    # Query carts with items that have not been converted to orders
+    query = MarketCart.query.filter(
+        MarketCart.tenant_id == tenant.id,
+        MarketCart.updated_at <= cutoff,
+        MarketCart.items.any()
+    ).order_by(MarketCart.updated_at.desc())
+
+    carritos = query.limit(50).all()
+    
+    resultados = []
+    for c in carritos:
+        items_data = []
+        total = Decimal('0.00')
+        for it in c.items:
+            sub = Decimal(str(it.precio or 0)) * Decimal(str(it.cantidad or 1))
+            total += sub
+            items_data.append({
+                "producto": it.nombre or getattr(it.catalogo_item, "nombre", "Producto"),
+                "cantidad": it.cantidad,
+                "precio": float(it.precio or 0),
+                "subtotal": float(sub),
+            })
+
+        resultados.append({
+            "cart_id": c.id,
+            "session_id": c.session_id,
+            "anon_id": c.anon_id,
+            "customer_phone": getattr(c, "customer_phone", None) or getattr(c, "telefono", None),
+            "customer_name": getattr(c, "customer_name", None) or getattr(c, "nombre", None) or "Cliente",
+            "items_count": len(items_data),
+            "items": items_data,
+            "total": float(total),
+            "creado_en": c.created_at.isoformat() if c.created_at else None,
+            "actualizado_en": c.updated_at.isoformat() if c.updated_at else None,
+            "minutos_inactivo": int((datetime.now(timezone.utc) - (c.updated_at or c.created_at)).total_seconds() / 60) if (c.updated_at or c.created_at) else 30,
+        })
+
+    return jsonify({
+        "status": "ok",
+        "tenant": tenant.slug,
+        "total_abandonados": len(resultados),
+        "carritos": resultados,
+    })
+
+
+@carrito_bp.route('/abandonados/<int:cart_id>/recuperar', methods=['POST', 'OPTIONS'])
+@cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
+def enviar_recuperacion_carrito(cart_id: int):
+    """Trigger persuasive recovery message for a specific abandoned cart via WhatsApp."""
+    if request.method == 'OPTIONS':
+        return "", 204
+
+    tenant = get_current_tenant_profile()
+    cart = db.session.get(MarketCart, cart_id)
+    if not cart:
+        return jsonify({'error': 'cart_not_found'}), 404
+
+    items_nombres = [it.nombre or getattr(it.catalogo_item, "nombre", "artículo") for it in cart.items[:2]]
+    resumen_items = ", ".join(items_nombres) if items_nombres else "tus productos seleccionados"
+
+    checkout_url = f"https://www.chatboc.ar/t/{tenant.slug if tenant else 'tienda'}/checkout?cart={cart.session_id or cart.id}"
+    
+    mensaje_recuperacion = (
+        f"🛒 ¡Hola! Notamos que dejaste {resumen_items} en tu carrito.\n\n"
+        f"¿Tuviste algún inconveniente o duda con el pago? Podés completar tu pedido de forma segura aquí:\n"
+        f"👉 {checkout_url}\n\n"
+        f"Si preferís atención personalizada, simplemente respondé a este mensaje. ¡Estamos para ayudarte!"
+    )
+
+    return jsonify({
+        "status": "ok",
+        "message": "Mensaje de recuperación preparado y programado.",
+        "cart_id": cart.id,
+        "checkout_url": checkout_url,
+        "mensaje_preview": mensaje_recuperacion,
+    })

@@ -10,8 +10,10 @@ from flask import Blueprint, g, jsonify, request
 from services.government_pipeline import (
     build_heatmap,
     build_scorecards,
+    build_secretarias_traffic_light,
     cluster_incidents,
     demand_forecast,
+    detect_crisis_sentinel_anomalies,
     load_incidents_for_municipio,
     plan_routes,
 )
@@ -103,6 +105,61 @@ def civic_scorecards(current_user):
         return error_response, status
 
     payload = build_scorecards(records)
+    return jsonify(payload)
+
+
+@gov_analytics_bp.route("/traffic-light", methods=["GET", "OPTIONS"])
+@token_requerido
+@require_role("admin", "empleado", "visor")
+def civic_traffic_light(current_user):
+    if request.method == "OPTIONS":
+        return "", 204
+
+    records, error_response, status = _load_records(current_user)
+    if error_response is not None:
+        return error_response, status
+
+    payload = build_secretarias_traffic_light(records)
+    return jsonify(payload)
+
+
+@gov_analytics_bp.route("/crisis-sentinel", methods=["GET", "OPTIONS"])
+@token_requerido
+@require_role("admin", "empleado", "visor")
+def civic_crisis_sentinel(current_user):
+    if request.method == "OPTIONS":
+        return "", 204
+
+    records, error_response, status = _load_records(current_user)
+    if error_response is not None:
+        return error_response, status
+
+    payload = detect_crisis_sentinel_anomalies(records)
+    return jsonify(payload)
+
+
+@gov_analytics_bp.route("/executive-summary", methods=["GET", "OPTIONS"])
+@token_requerido
+@require_role("admin", "empleado", "visor")
+def civic_executive_summary(current_user):
+    """Consolidated endpoint for the Mayor's Mobile Executive Center."""
+    if request.method == "OPTIONS":
+        return "", 204
+
+    records, error_response, status = _load_records(current_user)
+    if error_response is not None:
+        return error_response, status
+
+    scorecards = build_scorecards(records)
+    traffic_light = build_secretarias_traffic_light(records)
+    sentinel = detect_crisis_sentinel_anomalies(records)
+
+    payload = {
+        "timestamp": get_local_now().isoformat(),
+        "scorecards": scorecards,
+        "semaforo_secretarias": traffic_light,
+        "centinela_crisis": sentinel,
+    }
     return jsonify(payload)
 
 

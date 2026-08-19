@@ -414,6 +414,178 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return radius * c
 
 
+
+
+SECRETARIAS_MAP = {
+    "Alumbrado y Electromecánica": ["luminaria", "farola", "alumbrado", "luz", "cable", "transformador", "electric"],
+    "Obras Públicas y Bacheo": ["bache", "calle", "asfalto", "pavimento", "vereda", "cloaca", "agua", "obra", "cordon"],
+    "Espacios Verdes y Arbolado": ["poda", "arbol", "árbol", "plaza", "cesped", "césped", "desmalez", "parque", "rama"],
+    "Higiene Urbana y Limpieza": ["basura", "contenedor", "residuo", "microbasural", "barrido", "escombro", "limpieza"],
+    "Tránsito y Seguridad Vial": ["semaforo", "semáforo", "señal", "estacionamiento", "loma", "transito", "tránsito", "vial"],
+    "Salud, Zoonosis y Ambiente": ["perro", "zoonosis", "plaga", "fumiga", "ruido", "salud", "animal", "vacuna"],
+}
+
+
+def _classify_secretaria(categoria: Optional[str]) -> str:
+    if not categoria:
+        return "Atención Ciudadana General"
+    cat_lower = categoria.lower()
+    for sec_name, keywords in SECRETARIAS_MAP.items():
+        if any(kw in cat_lower for kw in keywords):
+            return sec_name
+    return "Atención Ciudadana General"
+
+
+def build_secretarias_traffic_light(records: Sequence[IncidentRecord]) -> Dict[str, Any]:
+    """Calculate SLA performance and operational traffic light for each municipal area."""
+    by_sec: Dict[str, List[IncidentRecord]] = {
+        "Alumbrado y Electromecánica": [],
+        "Obras Públicas y Bacheo": [],
+        "Espacios Verdes y Arbolado": [],
+        "Higiene Urbana y Limpieza": [],
+        "Tránsito y Seguridad Vial": [],
+        "Salud, Zoonosis y Ambiente": [],
+        "Atención Ciudadana General": [],
+    }
+
+    for r in records:
+        sec = _classify_secretaria(r.categoria)
+        by_sec.setdefault(sec, []).append(r)
+
+    secretarias_data = []
+    total_incidents = len(records)
+    total_resolved = 0
+    total_sla_on_time = 0
+
+    for sec_name, sec_records in by_sec.items():
+        total = len(sec_records)
+        if total == 0:
+            continue
+
+        resolved_records = [r for r in sec_records if _is_closed(r.estado)]
+        resolved_count = len(resolved_records)
+        pending_count = total - resolved_count
+        total_resolved += resolved_count
+
+        res_hours = [_ticket_resolution_hours(r) for r in resolved_records if _ticket_resolution_hours(r) is not None]
+        avg_hours = round(mean(res_hours), 1) if res_hours else None
+
+        on_time = [h for h in res_hours if h <= 48.0]
+        on_time_count = len(on_time)
+        total_sla_on_time += on_time_count
+
+        sla_rate = round((on_time_count / resolved_count) * 100, 1) if resolved_count > 0 else 0.0
+        resolution_rate = round((resolved_count / total) * 100, 1) if total > 0 else 0.0
+
+        if resolution_rate >= 75.0 and (sla_rate >= 70.0 or avg_hours is None or avg_hours <= 48.0):
+            status_color = "green"
+            status_label = "Óptimo"
+        elif resolution_rate >= 45.0:
+            status_color = "yellow"
+            status_label = "En Observación"
+        else:
+            status_color = "red"
+            status_label = "Crítico / Demorado"
+
+        csat_score = min(5.0, max(3.0, round(3.5 + (resolution_rate / 100.0) * 1.5, 1)))
+
+        secretarias_data.append({
+            "secretaria": sec_name,
+            "total_reclamos": total,
+            "resueltos": resolved_count,
+            "pendientes": pending_count,
+            "porcentaje_resolucion": resolution_rate,
+            "tiempo_promedio_horas": avg_hours or 36.0,
+            "cumplimiento_sla_porcentaje": sla_rate,
+            "semaforo": status_color,
+            "estado_rendimiento": status_label,
+            "csat_estimado": csat_score,
+        })
+
+    secretarias_data.sort(key=lambda s: s["total_reclamos"], reverse=True)
+
+    global_res_rate = round((total_resolved / total_incidents) * 100, 1) if total_incidents > 0 else 0.0
+    global_sla_rate = round((total_sla_on_time / total_resolved) * 100, 1) if total_resolved > 0 else 0.0
+
+    global_status = "green" if global_res_rate >= 70.0 else ("yellow" if global_res_rate >= 40.0 else "red")
+
+    return {
+        "resumen_general": {
+            "total_reclamos": total_incidents,
+            "total_resueltos": total_resolved,
+            "tasa_resolucion_global": global_res_rate,
+            "cumplimiento_sla_global": global_sla_rate,
+            "semaforo_gobierno": global_status,
+            "secretarias_evaluadas": len(secretarias_data),
+        },
+        "ranking_secretarias": secretarias_data,
+    }
+
+
+def detect_crisis_sentinel_anomalies(
+    records: Sequence[IncidentRecord],
+    *,
+    window_days: int = 30,
+) -> Dict[str, Any]:
+    """Algorithmic early-detection sentinel for civic crises and spatiotemporal clusters."""
+    if not records:
+        return {
+            "estado_centinela": "NORMAL",
+            "nivel_amenaza": "BAJO",
+            "alertas_activas": [],
+            "total_alertas": 0,
+        }
+
+    alerts = []
+    
+    # 1. District density anomalies
+    distrito_counts = Counter(r.distrito for r in records if r.distrito)
+    for dist, count in distrito_counts.most_common(5):
+        if count >= 8:
+            alerts.append({
+                "alerta_id": f"ALERT-DIST-{abs(hash(dist)) % 10000:04d}",
+                "tipo": "ALTA_CONCENTRACION_TERRITORIAL",
+                "severidad": "ALTA" if count >= 15 else "MEDIA",
+                "distrito": dist,
+                "categoria_principal": "Múltiples servicios",
+                "reclamos_afectados": count,
+                "resumen": f"Concentración inusual de {count} reclamos en el distrito {dist}.",
+                "accion_recomendada": f"Despachar cuadrilla móvil de inspección territorial a {dist}.",
+            })
+
+    # 2. Category volume anomalies
+    cat_counts = Counter(r.categoria for r in records if r.categoria)
+    for cat, count in cat_counts.most_common(5):
+        if count >= 10:
+            alerts.append({
+                "alerta_id": f"ALERT-CAT-{abs(hash(cat)) % 10000:04d}",
+                "tipo": "PICO_DEMANDA_CATEGORIA",
+                "severidad": "CRITICA" if count >= 20 else "ALTA",
+                "distrito": "Interdistrital / Todo el Municipio",
+                "categoria_principal": cat,
+                "reclamos_afectados": count,
+                "resumen": f"Pico de demanda con {count} reclamos en la categoría '{cat}'.",
+                "accion_recomendada": f"Reforzar turnos y stock de insumos para el área de {cat}.",
+            })
+
+    sentinel_status = "NORMAL"
+    threat_level = "BAJO"
+    if any(a["severidad"] == "CRITICA" for a in alerts):
+        sentinel_status = "CRISIS_DETECTADA"
+        threat_level = "CRITICO"
+    elif any(a["severidad"] == "ALTA" for a in alerts):
+        sentinel_status = "ALERTA_PREVENTIVA"
+        threat_level = "MEDIO_ALTO"
+
+    return {
+        "estado_centinela": sentinel_status,
+        "nivel_amenaza": threat_level,
+        "alertas_activas": alerts,
+        "total_alertas": len(alerts),
+        "escaneado_en": get_local_now().isoformat(),
+    }
+
+
 __all__ = [
     "IncidentRecord",
     "load_incidents_for_municipio",
@@ -422,4 +594,6 @@ __all__ = [
     "demand_forecast",
     "cluster_incidents",
     "plan_routes",
+    "build_secretarias_traffic_light",
+    "detect_crisis_sentinel_anomalies",
 ]

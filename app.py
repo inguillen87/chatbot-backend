@@ -695,6 +695,7 @@ def create_app(config_class=Config):
     from routes.education_routes import education_bp
     from routes.education_kb import education_kb_bp
     from routes.gov_analytics import gov_analytics_bp
+    from routes.cuadrillas import cuadrillas_bp
     from services.upload_processor import upload_bp
     from routes.archivos import archivos_bp
     from routes.rubros import rubros_bp
@@ -839,6 +840,8 @@ def create_app(config_class=Config):
     app.register_blueprint(education_bp)
     app.register_blueprint(education_kb_bp)
     app.register_blueprint(gov_analytics_bp)
+    app.register_blueprint(gov_analytics_bp, url_prefix="/api/gov/analytics", name="gov_analytics_bp_api")
+    app.register_blueprint(cuadrillas_bp)
     app.register_blueprint(upload_bp)
     app.register_blueprint(archivos_bp)
 
