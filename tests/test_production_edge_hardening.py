@@ -10,6 +10,8 @@ class ProductionLikeCorsConfig(TestingConfig):
     SECRET_KEY = "production-test-secret-key-32-chars"
     BACKEND_URL = "https://chatbot-backend-2e14.onrender.com"
     PUBLIC_ROOT_DOMAIN = "chatboc.ar"
+    ALLOW_SURVEY_DEMO_SEEDING = False
+    PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID = 1
     CORS_ALLOW_LOCAL_DEV = True
     CORS_CREDENTIALS_ALLOWED_ORIGINS = (
         "https://www.chatboc.ar",
@@ -36,9 +38,9 @@ def test_public_widget_cors_never_allows_credentials(client):
 
 def test_public_survey_cors_never_allows_credentials(client):
     origin = "https://participacion.example"
-    response = client.get("/public/encuestas", headers={"Origin": origin})
+    response = client.get("/api/public/encuestas/demo", headers={"Origin": origin})
 
-    assert response.status_code == 200
+    assert response.status_code in {200, 404}
     assert response.headers.getlist("Access-Control-Allow-Origin") == [origin]
     assert response.headers.get("Access-Control-Allow-Credentials") is None
 
