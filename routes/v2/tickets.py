@@ -706,7 +706,7 @@ def list_ticket_timeline_v2(ticket_id: int):
     )
 
 
-@v2_tickets_bp.route("/tickets/<int:ticket_id>/ai-enrichment", methods=["POST"])
+@v2_tickets_bp.route("/tickets/<int:ticket_id>/ai-enrichment", methods=["GET", "POST"])
 def ticket_ai_enrichment_v2(ticket_id: int):
     tenant, error = _resolve_tenant_or_error()
     if error:

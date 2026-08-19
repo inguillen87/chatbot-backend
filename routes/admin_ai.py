@@ -476,7 +476,7 @@ def ticket_ai_summary(ticket_id: int):
     return jsonify({"ticket_id": ticket.id, "scope": scope, "ai": summary})
 
 
-@admin_ai_bp.post("/tickets/<int:ticket_id>/ai-enrichment")
+@admin_ai_bp.route("/tickets/<int:ticket_id>/ai-enrichment", methods=["GET", "POST"])
 def ticket_ai_enrichment(ticket_id: int):
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):

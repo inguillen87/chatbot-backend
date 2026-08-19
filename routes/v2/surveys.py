@@ -3099,7 +3099,8 @@ def survey_live_results_v2(token: str):
             preferred_tenant_id=preferred_tenant_id,
             require_tenant_match=preferred_tenant_id is not None,
         )
-        if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
+        is_tenant_owner = preferred_tenant_id is not None and getattr(encuesta, "tenant_id", None) == preferred_tenant_id
+        if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)) and not is_tenant_owner:
             return _error_response(
                 "Los resultados en vivo no estan publicados para esta encuesta.",
                 403,

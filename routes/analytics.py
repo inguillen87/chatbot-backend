@@ -415,17 +415,28 @@ def _resolve_authoritative_analytics_tenant(
         candidates.append((owner_resolution.tenant, "owner_tenant_id"))
 
     if tenant_id not in (None, ""):
-        numeric_id = _positive_tenant_id(tenant_id)
-        if numeric_id is None:
-            return _analytics_tenant_resolution_error(
-                "tenant_id_invalid",
-                "tenant_id debe ser un entero positivo o debe enviarse un tenant_slug.",
-            )
-        tenant, source, error = _tenant_from_generic_numeric_hint(numeric_id)
-        if error is not None:
-            return None, error
-        assert tenant is not None and source is not None
-        candidates.append((tenant, source))
+        matching_candidate = next(
+            (
+                c
+                for c, _ in candidates
+                if str(c.id) == str(tenant_id)
+                or str(getattr(c, "municipio_id", "") or "") == str(tenant_id)
+                or str(getattr(c, "pyme_id", "") or "") == str(tenant_id)
+            ),
+            None,
+        )
+        if matching_candidate is None:
+            numeric_id = _positive_tenant_id(tenant_id)
+            if numeric_id is None:
+                return _analytics_tenant_resolution_error(
+                    "tenant_id_invalid",
+                    "tenant_id debe ser un entero positivo o debe enviarse un tenant_slug.",
+                )
+            tenant, source, error = _tenant_from_generic_numeric_hint(numeric_id)
+            if error is not None:
+                return None, error
+            assert tenant is not None and source is not None
+            candidates.append((tenant, source))
 
     if not candidates:
         return _analytics_tenant_resolution_error(
