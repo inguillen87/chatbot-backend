@@ -1559,7 +1559,8 @@ def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], 
 
 
 def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProfile]) -> bool:
-    if not tenant or canonical_role(getattr(current_user, "rol", None)) not in TICKET_BACKOFFICE_ROLES:
+    user_role = getattr(current_user, "role", None) or getattr(current_user, "rol", None)
+    if not tenant or canonical_role(user_role) not in TICKET_BACKOFFICE_ROLES:
         return False
     if current_user.tenant_id == tenant.id:
         return True
