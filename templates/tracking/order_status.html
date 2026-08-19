@@ -1,225 +1,230 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" class="h-full">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="referrer" content="no-referrer">
-    <title>Seguimiento de pedido</title>
+    <title>Seguimiento de Pedido - Chatboc Commerce</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"Plus Jakarta Sans"', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#f2fbf7',
+                            100: '#e1f7ec',
+                            500: '#10b981',
+                            600: '#059669',
+                            700: '#047857',
+                            900: '#064e3b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
     <style>
-        :root {
-            color-scheme: light;
-            --bg: #f5f7fa;
-            --panel: #ffffff;
-            --text: #172033;
-            --muted: #667085;
-            --line: #d9dee8;
-            --brand: #146c5a;
-            --brand-dark: #0d5144;
-            --warning: #8a4b08;
-            --warning-bg: #fff7e6;
-            --danger: #b42318;
-            --danger-bg: #fff1f0;
+        .glass-card {
+            background: rgba(255, 255, 255, 0.94);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(226, 232, 240, 0.8);
         }
-        * { box-sizing: border-box; }
-        body {
-            margin: 0;
-            min-height: 100vh;
-            background: var(--bg);
-            color: var(--text);
-            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        .chat-bubble-user {
+            background: linear-gradient(135deg, #059669 0%, #047857 100%);
+            color: #ffffff;
+            border-bottom-right-radius: 4px;
         }
-        button, input { font: inherit; }
-        button { cursor: pointer; }
-        button:disabled { cursor: not-allowed; opacity: .55; }
-        [hidden] { display: none !important; }
-        .shell { width: min(920px, calc(100% - 32px)); margin: 0 auto; }
-        .topbar { background: var(--panel); border-bottom: 1px solid var(--line); }
-        .topbar-inner { min-height: 72px; display: flex; align-items: center; gap: 12px; }
-        .tenant-logo { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; }
-        .tenant-mark {
-            width: 40px; height: 40px; border-radius: 6px; display: grid; place-items: center;
-            background: var(--brand); color: white; font-weight: 800;
-        }
-        .tenant-name { margin: 0; font-size: 17px; line-height: 1.25; }
-        .tenant-caption { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
-        main { padding: 28px 0 44px; display: grid; gap: 16px; }
-        .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 24px; }
-        .status-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
-        .eyebrow { margin: 0 0 5px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
-        h1 { margin: 0; font-size: 28px; line-height: 1.2; }
-        h2 { margin: 0 0 16px; font-size: 18px; }
-        .status-pill { border-radius: 999px; background: #e8f5f1; color: var(--brand-dark); padding: 8px 12px; font-size: 13px; font-weight: 800; text-transform: capitalize; }
-        .timeline { margin-top: 24px; display: grid; grid-template-columns: repeat(7, minmax(70px, 1fr)); gap: 8px; overflow-x: auto; padding-bottom: 4px; }
-        .step { min-width: 76px; border-top: 4px solid var(--line); padding-top: 9px; color: var(--muted); font-size: 12px; }
-        .step.complete { border-color: var(--brand); color: var(--brand-dark); }
-        .step.current { border-color: #1677ff; color: #1554ad; font-weight: 800; }
-        .notice { border: 1px solid #f0c36b; border-radius: 8px; background: var(--warning-bg); color: var(--warning); padding: 14px 16px; font-size: 14px; line-height: 1.5; }
-        .error { border-color: #f1a29b; background: var(--danger-bg); color: var(--danger); }
-        .details-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(250px, .8fr); gap: 16px; }
-        .item-list, .message-list { display: grid; gap: 10px; }
-        .item { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); }
-        .item:last-child { border-bottom: 0; }
-        .item-title { font-weight: 700; overflow-wrap: anywhere; }
-        .item-meta, .muted { color: var(--muted); font-size: 13px; }
-        .total { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-weight: 800; }
-        .address { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
-        .map-link { display: inline-block; margin-top: 14px; color: var(--brand-dark); font-weight: 700; }
-        .message-list { max-height: 320px; overflow-y: auto; margin-bottom: 14px; }
-        .message { max-width: 80%; padding: 10px 12px; border-radius: 8px; background: #eef1f5; line-height: 1.45; overflow-wrap: anywhere; }
-        .message.customer { justify-self: end; background: #e8f5f1; }
-        .message-meta { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; }
-        .chat-form { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-        .chat-form input { min-width: 0; border: 1px solid #aeb7c5; border-radius: 6px; padding: 11px 12px; color: var(--text); }
-        .chat-form input:focus { outline: 3px solid rgba(20, 108, 90, .16); border-color: var(--brand); }
-        .primary { border: 0; border-radius: 6px; background: var(--brand); color: white; padding: 10px 16px; font-weight: 800; }
-        .primary:hover { background: var(--brand-dark); }
-        footer { padding: 0 0 28px; text-align: center; color: var(--muted); font-size: 12px; }
-        @media (max-width: 700px) {
-            .shell { width: min(100% - 20px, 920px); }
-            main { padding-top: 16px; }
-            .panel { padding: 18px; }
-            .status-head { align-items: flex-start; flex-direction: column; gap: 12px; }
-            h1 { font-size: 23px; overflow-wrap: anywhere; }
-            .details-grid { grid-template-columns: 1fr; }
-            .chat-form { grid-template-columns: 1fr; }
-            .primary { min-height: 44px; }
+        .chat-bubble-merchant {
+            background: #f1f5f9;
+            color: #1e293b;
+            border-bottom-left-radius: 4px;
         }
     </style>
 </head>
-<body>
-    <header class="topbar">
-        <div class="shell topbar-inner">
-            <img id="tenantLogo" class="tenant-logo" alt="" hidden>
-            <div id="tenantMark" class="tenant-mark">C</div>
-            <div>
-                <p id="tenantName" class="tenant-name">Seguimiento de pedido</p>
-                <p class="tenant-caption">Estado actualizado de tu compra</p>
+<body class="bg-slate-50 text-slate-800 antialiased min-h-full flex flex-col font-sans selection:bg-emerald-500 selection:text-white">
+
+    <!-- Header -->
+    <header class="glass-card sticky top-0 z-40 border-b border-slate-200/80">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 py-3.5 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <img id="tenantLogo" class="h-10 w-10 rounded-xl object-cover shadow-sm ring-1 ring-slate-200 hidden" alt="Logo">
+                <div id="tenantMark" class="h-10 w-10 rounded-xl bg-gradient-to-tr from-emerald-700 to-emerald-500 text-white flex items-center justify-center font-black text-lg shadow-sm">
+                    C
+                </div>
+                <div>
+                    <h1 id="tenantName" class="text-base font-bold text-slate-900 leading-tight">Seguimiento de Pedido</h1>
+                    <p class="text-xs font-semibold text-slate-500">Actualización en tiempo real</p>
+                </div>
+            </div>
+            <div id="orderBadge" class="hidden sm:inline-flex items-center px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <span class="w-2 h-2 rounded-full bg-emerald-500 mr-2 animate-pulse"></span> Verificado
             </div>
         </div>
     </header>
 
-    <main class="shell">
-        <div id="loadingNotice" class="notice">Consultando el estado del pedido...</div>
-        <div id="errorNotice" class="notice error" role="alert" hidden></div>
-        <div id="privacyNotice" class="notice" hidden>
-            Vista publica protegida: los datos personales, el detalle de compra y la mensajeria requieren el enlace seguro del pedido.
+    <!-- Main -->
+    <main class="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
+
+        <div id="loadingNotice" class="text-center py-12 text-slate-400 text-sm">
+            <i class="fas fa-circle-notch fa-spin text-2xl mb-2 text-emerald-600 block"></i>
+            Cargando estado del pedido...
         </div>
 
-        <section id="statusPanel" class="panel" hidden>
-            <div class="status-head">
+        <div id="errorNotice" class="hidden bg-rose-50 border border-rose-200 text-rose-800 p-4 rounded-2xl text-xs font-bold">
+        </div>
+
+        <div id="privacyNotice" class="hidden bg-amber-50 border border-amber-200 text-amber-900 p-4 rounded-2xl text-xs leading-relaxed">
+            <i class="fas fa-lock mr-1.5 text-amber-600"></i> Por motivos de privacidad, los detalles completos del pedido están protegidos. Accedé al enlace recibido en tu WhatsApp para ver la información privada.
+        </div>
+
+        <!-- Hero Card -->
+        <section id="statusPanel" class="hidden glass-card rounded-3xl p-6 sm:p-8 shadow-xl shadow-slate-200/50">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-6 mb-6">
                 <div>
-                    <p class="eyebrow">Pedido</p>
-                    <h1 id="orderCode"></h1>
-                    <p id="orderDate" class="muted"></p>
+                    <div class="flex items-center space-x-2 mb-1">
+                        <span class="bg-emerald-50 text-emerald-700 border border-emerald-200/80 text-[11px] font-extrabold px-2.5 py-0.5 rounded-full uppercase tracking-wider">
+                            Compra Confirmada
+                        </span>
+                        <span id="orderDate" class="text-xs text-slate-400 font-medium"></span>
+                    </div>
+                    <h2 id="orderTitle" class="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+                        Pedido #
+                    </h2>
                 </div>
-                <span id="orderStatus" class="status-pill"></span>
+                <div>
+                    <span id="statusPill" class="inline-flex items-center px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-800">
+                        Recibido
+                    </span>
+                </div>
             </div>
-            <div id="timeline" class="timeline" aria-label="Progreso del pedido"></div>
-        </section>
 
-        <div id="privateDetails" class="details-grid" hidden>
-            <section class="panel">
-                <h2>Resumen de compra</h2>
-                <div id="itemList" class="item-list"></div>
-                <div id="totalRow" class="total" hidden>
-                    <span>Total</span>
-                    <span id="orderTotal"></span>
+            <!-- Stepper Timeline -->
+            <div class="pt-2">
+                <div id="timelineSteps" class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+                    <!-- Dynamic Steps injected by JS -->
                 </div>
-            </section>
-            <section id="deliveryPanel" class="panel" hidden>
-                <h2>Entrega</h2>
-                <p id="deliveryAddress" class="address"></p>
-                <a id="mapLink" class="map-link" target="_blank" rel="noopener noreferrer" hidden>Ver ubicacion</a>
-            </section>
-        </div>
-
-        <section id="chatPanel" class="panel" hidden>
-            <h2>Mensajes con la tienda</h2>
-            <div id="messageList" class="message-list"></div>
-            <form id="chatForm" class="chat-form">
-                <input id="chatInput" type="text" maxlength="2000" autocomplete="off" placeholder="Escribe un mensaje" required>
-                <button id="sendButton" class="primary" type="submit">Enviar</button>
-            </form>
+            </div>
         </section>
+
+        <!-- Order Items & Customer Details Grid -->
+        <div id="privateDetails" class="hidden grid grid-cols-1 md:grid-cols-3 gap-6">
+
+            <!-- Items Column (2 cols) -->
+            <div class="md:col-span-2 space-y-6">
+                <section class="glass-card rounded-3xl p-6 sm:p-7 shadow-lg shadow-slate-100">
+                    <h3 class="text-base font-bold text-slate-900 flex items-center mb-4">
+                        <span class="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center mr-2.5 text-sm">
+                            <i class="fas fa-shopping-bag"></i>
+                        </span>
+                        Artículos del Pedido
+                    </h3>
+
+                    <div id="itemsContainer" class="divide-y divide-slate-100">
+                        <!-- Items rendered dynamically -->
+                    </div>
+
+                    <div class="border-t-2 border-slate-100 pt-4 mt-4 flex items-center justify-between text-base font-extrabold text-slate-900">
+                        <span>Total Abonado</span>
+                        <span id="orderTotal" class="text-emerald-700 text-lg">$0.00</span>
+                    </div>
+                </section>
+
+                <section id="deliveryPanel" class="glass-card rounded-3xl p-6 sm:p-7 shadow-lg shadow-slate-100">
+                    <h3 class="text-base font-bold text-slate-900 flex items-center mb-3">
+                        <span class="w-8 h-8 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center mr-2.5 text-sm">
+                            <i class="fas fa-truck"></i>
+                        </span>
+                        Entrega / Retiro
+                    </h3>
+                    <p id="shippingAddress" class="text-sm text-slate-700 bg-slate-50 p-4 rounded-2xl border border-slate-100 leading-relaxed">
+                        Cargando información de entrega...
+                    </p>
+                    <div id="mapLinkContainer" class="mt-2 text-right hidden">
+                        <a id="mapLink" href="#" target="_blank" class="text-xs font-bold text-emerald-700 hover:underline">
+                            Ver en Google Maps <i class="fas fa-arrow-up-right-from-square ml-1 text-[10px]"></i>
+                        </a>
+                    </div>
+                </section>
+            </div>
+
+            <!-- Merchant Direct Chat Column (1 col) -->
+            <div class="space-y-6">
+                <section id="chatPanel" class="glass-card rounded-3xl shadow-xl shadow-slate-200/50 flex flex-col h-[480px] overflow-hidden border border-slate-200/80">
+                    <div class="px-5 py-4 border-b border-slate-100 bg-slate-50/90 flex items-center justify-between">
+                        <div class="flex items-center space-x-2">
+                            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            <span class="text-xs font-bold text-slate-900 uppercase tracking-wider">Chat con el Comercio</span>
+                        </div>
+                    </div>
+
+                    <div id="messageList" class="flex-1 p-4 overflow-y-auto space-y-3 bg-white/60 text-xs">
+                        <!-- Chat messages injected dynamically -->
+                    </div>
+
+                    <div class="p-3 bg-slate-50/90 border-t border-slate-100">
+                        <form id="chatForm" class="flex items-center space-x-2">
+                            <input type="text" id="chatInput" 
+                                   class="flex-1 bg-white border border-slate-200 rounded-xl text-xs px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-emerald-500" 
+                                   placeholder="Escribe un mensaje..." required>
+                            <button type="submit" id="sendButton" 
+                                    class="w-9 h-9 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center shadow-md">
+                                <i class="fas fa-paper-plane text-xs"></i>
+                            </button>
+                        </form>
+                    </div>
+                </section>
+            </div>
+        </div>
     </main>
 
-    <footer class="shell">&copy; {{ current_year }} Chatboc</footer>
+    <!-- Footer -->
+    <footer class="mt-auto border-t border-slate-200/80 bg-white/70 py-6 text-center text-xs text-slate-400">
+        <p>&copy; 2026 Chatboc Commerce OS. Todos los derechos reservados.</p>
+    </footer>
 
     <script>
         (() => {
-            const trackingCode = {{ tracking_code | tojson }};
-            const fragment = new URLSearchParams(window.location.hash.slice(1));
-            const currentUrl = new URL(window.location.href);
-            const queryToken = currentUrl.searchParams.get('token') || currentUrl.searchParams.get('access_token');
-            const trackingToken = fragment.get('token') || fragment.get('access_token') || queryToken || '';
+            const pathParts = window.location.pathname.split('/');
+            const trackingCode = decodeURIComponent(pathParts[pathParts.length - 1] || '');
+            const params = new URLSearchParams(window.location.search);
+            const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+            const trackingToken = params.get('token') || hash.get('token') || '';
 
-            if (queryToken) {
-                currentUrl.searchParams.delete('token');
-                currentUrl.searchParams.delete('access_token');
-                fragment.set('token', queryToken);
-                const safeQuery = currentUrl.searchParams.toString();
-                const safeLocation = `${currentUrl.pathname}${safeQuery ? `?${safeQuery}` : ''}#${fragment.toString()}`;
-                window.history.replaceState(null, '', safeLocation);
-            }
+            function byId(id) { return document.getElementById(id); }
+            function setText(id, text) { const el = byId(id); if (el) el.textContent = text; }
 
-            const byId = (id) => document.getElementById(id);
-            const setText = (id, value) => { byId(id).textContent = value == null ? '' : String(value); };
-            const formatDate = (value) => {
-                if (!value) return '';
-                const date = new Date(value);
-                return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('es-AR', { dateStyle: 'medium', timeStyle: 'short' });
-            };
-            const formatMoney = (value, currency) => {
-                if (value == null) return '';
-                return new Intl.NumberFormat('es-AR', { style: 'currency', currency: currency || 'ARS' }).format(value);
-            };
-
-            function renderTimeline(status) {
-                const container = byId('timeline');
-                container.replaceChildren();
-                (status.milestones || []).forEach((step) => {
-                    const node = document.createElement('div');
-                    node.className = `step ${step.state || ''}`;
-                    node.textContent = step.label || step.key || '';
-                    container.appendChild(node);
-                });
-            }
-
-            function renderItems(items, totals) {
-                const container = byId('itemList');
-                container.replaceChildren();
-                (items || []).forEach((item) => {
-                    const row = document.createElement('div');
-                    row.className = 'item';
-                    const description = document.createElement('div');
-                    const title = document.createElement('div');
-                    title.className = 'item-title';
-                    title.textContent = item.title || 'Item';
-                    const meta = document.createElement('div');
-                    meta.className = 'item-meta';
-                    meta.textContent = `Cantidad: ${item.quantity || 1}`;
-                    description.append(title, meta);
-                    const price = document.createElement('div');
-                    price.textContent = item.unit_price == null ? '' : formatMoney(item.unit_price, totals.currency);
-                    row.append(description, price);
-                    container.appendChild(row);
-                });
-                const hasTotal = totals && totals.monetary != null;
-                byId('totalRow').hidden = !hasTotal;
-                if (hasTotal) setText('orderTotal', formatMoney(totals.monetary, totals.currency));
+            function formatDate(iso) {
+                if (!iso) return '';
+                try {
+                    const d = new Date(iso);
+                    return d.toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+                } catch { return iso; }
             }
 
             function appendMessage(message) {
                 const bubble = document.createElement('div');
-                bubble.className = `message ${message.author === 'customer' ? 'customer' : ''}`;
-                const text = document.createElement('div');
-                text.textContent = message.message || message.comentario || '';
-                const meta = document.createElement('span');
-                meta.className = 'message-meta';
-                const label = message.author_label || (message.author === 'customer' ? 'Tu' : 'Equipo');
-                meta.textContent = `${label}${message.created_at ? ` - ${formatDate(message.created_at)}` : ''}`;
-                bubble.append(text, meta);
+                const isCustomer = message.author === 'customer';
+                bubble.className = `flex flex-col ${isCustomer ? 'items-end' : 'items-start'}`;
+                const label = message.author_label || (isCustomer ? 'Tú' : 'Comercio');
+                const time = message.created_at ? formatDate(message.created_at) : '';
+                
+                bubble.innerHTML = `
+                    <div class="${isCustomer ? 'chat-bubble-user' : 'chat-bubble-merchant'} px-4 py-2.5 text-xs max-w-[85%] rounded-2xl shadow-sm leading-relaxed">
+                        ${message.message || message.comentario || ''}
+                    </div>
+                    <span class="text-[10px] text-slate-400 mt-1 mx-1">${label} · ${time}</span>
+                `;
                 byId('messageList').appendChild(bubble);
+                byId('messageList').scrollTop = byId('messageList').scrollHeight;
             }
 
             function renderExperience(payload) {
@@ -229,36 +234,68 @@
                 const privacy = payload.privacy || {};
                 const authorized = privacy.authorized === true;
 
-                setText('tenantName', tenant.nombre || 'Seguimiento de pedido');
-                setText('tenantMark', (tenant.nombre || 'C').trim().charAt(0).toUpperCase());
+                setText('tenantName', tenant.nombre || 'Seguimiento de Pedido');
                 if (tenant.logo_url) {
                     byId('tenantLogo').src = tenant.logo_url;
-                    byId('tenantLogo').alt = tenant.nombre || 'Tienda';
-                    byId('tenantLogo').hidden = false;
-                    byId('tenantMark').hidden = true;
+                    byId('tenantLogo').classList.remove('hidden');
+                    byId('tenantMark').classList.add('hidden');
                 }
-                setText('orderCode', `#${resource.code || trackingCode}`);
+
+                setText('orderTitle', `Pedido #${resource.code || trackingCode}`);
                 setText('orderDate', formatDate(resource.created_at));
-                setText('orderStatus', (status.raw_status || status.current_stage || 'recibido').replaceAll('_', ' '));
-                renderTimeline(status);
+                
+                const rawStatus = (status.raw_status || status.current_stage || 'recibido').replace('_', ' ');
+                setText('statusPill', rawStatus);
+                byId('statusPill').className = "inline-flex items-center px-4 py-2 rounded-full text-xs font-bold uppercase tracking-wider bg-emerald-50 text-emerald-800 border border-emerald-200";
 
-                byId('loadingNotice').hidden = true;
-                byId('statusPanel').hidden = false;
-                byId('privacyNotice').hidden = authorized;
-                byId('privateDetails').hidden = !authorized;
-                byId('chatPanel').hidden = !authorized;
+                // Timeline
+                const steps = ['recibido', 'preparando', 'en_camino', 'entregado'];
+                const stepLabels = ['Recibido', 'Preparación', 'En Camino', 'Entregado'];
+                byId('timelineSteps').innerHTML = steps.map((s, idx) => `
+                    <div class="bg-white p-3 rounded-2xl border border-slate-100 shadow-sm">
+                        <span class="w-7 h-7 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto text-xs font-bold mb-1">${idx + 1}</span>
+                        <span class="text-xs font-bold text-slate-800">${stepLabels[idx]}</span>
+                    </div>
+                `).join('');
 
-                if (!authorized) return;
-                renderItems(payload.items || [], payload.totals || {});
-                const location = payload.location || {};
-                const hasLocation = Boolean(location.address || (location.lat != null && location.lng != null));
-                byId('deliveryPanel').hidden = !hasLocation;
-                setText('deliveryAddress', location.address || 'Ubicacion registrada');
-                if (location.lat != null && location.lng != null) {
-                    byId('mapLink').href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${location.lat},${location.lng}`)}`;
-                    byId('mapLink').hidden = false;
+                byId('loadingNotice').classList.add('hidden');
+                byId('statusPanel').classList.remove('hidden');
+
+                if (!authorized) {
+                    byId('privacyNotice').classList.remove('hidden');
+                    byId('privateDetails').classList.add('hidden');
+                    return;
                 }
-                byId('messageList').replaceChildren();
+
+                byId('privateDetails').classList.remove('hidden');
+
+                // Items
+                const items = payload.items || [];
+                const totals = payload.totals || {};
+                byId('orderTotal').textContent = totals.formatted_total || `$${totals.total || 0}`;
+
+                byId('itemsContainer').innerHTML = items.map(it => `
+                    <div class="py-3 flex justify-between items-center text-xs">
+                        <div>
+                            <span class="font-bold text-slate-900 block">${it.title || 'Producto'}</span>
+                            <span class="text-slate-400 text-[11px]">Cant: ${it.quantity || 1}</span>
+                        </div>
+                        <span class="font-bold text-slate-800">${it.formatted_subtotal || `$${it.subtotal || 0}`}</span>
+                    </div>
+                `).join('');
+
+                // Location
+                const loc = payload.location || {};
+                if (loc.address) {
+                    byId('shippingAddress').textContent = loc.address;
+                }
+                if (loc.lat != null && loc.lng != null) {
+                    byId('mapLink').href = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${loc.lat},${loc.lng}`)}`;
+                    byId('mapLinkContainer').classList.remove('hidden');
+                }
+
+                // Chat
+                byId('messageList').innerHTML = '';
                 ((payload.conversation || {}).messages || []).forEach(appendMessage);
             }
 
@@ -295,10 +332,10 @@
                     const payload = await response.json().catch(() => ({}));
                     if (!response.ok) throw new Error((payload.error && payload.error.message) || payload.error || 'No se pudo enviar el mensaje.');
                     input.value = '';
-                    appendMessage({ message, author: 'customer', author_label: 'Tu', created_at: new Date().toISOString() });
+                    appendMessage({ message, author: 'customer', author_label: 'Tú', created_at: new Date().toISOString() });
                 } catch (error) {
                     byId('errorNotice').textContent = error.message;
-                    byId('errorNotice').hidden = false;
+                    byId('errorNotice').classList.remove('hidden');
                 } finally {
                     button.disabled = false;
                     input.focus();
@@ -306,9 +343,9 @@
             });
 
             loadExperience().catch((error) => {
-                byId('loadingNotice').hidden = true;
+                byId('loadingNotice').classList.add('hidden');
                 byId('errorNotice').textContent = error.message;
-                byId('errorNotice').hidden = false;
+                byId('errorNotice').classList.remove('hidden');
             });
         })();
     </script>
