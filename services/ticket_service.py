@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Dict, Any, Literal, Union, Iterable, Optional
@@ -14,6 +15,8 @@ from models import (
     ArchivoAdjunto,
     MunicipioTicket,
     PymeTicket,
+    TenantTicket,
+    TenantTicketReplyEvent,
     TicketComentario,
     TicketDomainEffectReceipt,
     TicketSatisfaccion,
@@ -30,6 +33,7 @@ from services.employee_ticket_access import (
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm.attributes import flag_modified
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
 from utils.heatmap import enrich_heatmap_points
 from services.notification_dispatcher import notification_dispatcher
@@ -687,6 +691,96 @@ class ServicioTickets:
         )
         return comment
 
+    def _replay_tenant_reply_effect(
+        self,
+        receipt: TicketDomainEffectReceipt,
+        *,
+        payload_hash: str,
+        reply_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        self._verify_effect_receipt(
+            receipt,
+            effect_kind="ticket.comment.tenant",
+            payload_hash=payload_hash,
+            resource_type="tenant_ticket",
+        )
+        ticket = TenantTicket.query.filter_by(
+            id=receipt.resource_id,
+            tenant_id=receipt.tenant_id,
+        ).one_or_none()
+        if ticket is None:
+            raise TicketIdempotencyReplayUnavailable(
+                "The tenant ticket reply receipt exists but its ticket is unavailable."
+            )
+
+        result = receipt.result_json if isinstance(receipt.result_json, dict) else {}
+        event_id = str(result.get("event_id") or "").strip()
+        reply_record = None
+        reply_record_id = result.get("reply_event_record_id")
+        if reply_record_id is not None:
+            try:
+                normalized_reply_record_id = int(reply_record_id)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TicketIdempotencyReplayUnavailable(
+                    "The tenant ticket reply receipt has an invalid durable event."
+                ) from exc
+            reply_record = TenantTicketReplyEvent.query.filter_by(
+                id=normalized_reply_record_id,
+                tenant_id=receipt.tenant_id,
+                ticket_id=ticket.id,
+                event_id=event_id,
+            ).one_or_none()
+            if reply_record is None:
+                raise TicketIdempotencyReplayUnavailable(
+                    "The tenant ticket reply receipt exists but its durable event is unavailable."
+                )
+            event = reply_record.to_event_dict()
+        else:
+            # Compatibility for receipts written before durable reply events.
+            # Their bounded timeline remains the only historical source.
+            extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+            comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
+            event = next(
+                (
+                    dict(item)
+                    for item in comments
+                    if isinstance(item, dict) and str(item.get("id") or "") == event_id
+                ),
+                None,
+            )
+            if event is None:
+                event = {
+                    "id": event_id,
+                    "origin": "admin_panel",
+                    "action": "reply",
+                    "body": str(reply_data.get("body") or ""),
+                    "visibility": str(reply_data.get("visibility") or "public"),
+                    "created_at": (
+                        receipt.created_at.isoformat()
+                        if getattr(receipt, "created_at", None)
+                        else None
+                    ),
+                    "actor": {
+                        "id": reply_data.get("actor_user_id"),
+                        "name": reply_data.get("actor_name"),
+                        "role": reply_data.get("actor_role"),
+                    },
+                }
+        logger.info(
+            "Replaying TenantTicket reply receipt_id=%s tenant_id=%s ticket_id=%s",
+            receipt.id,
+            receipt.tenant_id,
+            ticket.id,
+        )
+        return {
+            "ticket": ticket,
+            "event": event,
+            "aggregate_ref": str(result.get("aggregate_ref") or f"{ticket.id}:{event_id}"),
+            "reply_record": reply_record,
+            "replayed": True,
+            "effects_queued": False,
+        }
+
     def crear_nuevo_ticket(
         self,
         tipo_ticket: Literal["municipio", "pyme"],
@@ -1288,6 +1382,225 @@ class ServicioTickets:
                 type(exc).__name__,
             )
             return None
+
+    def crear_respuesta_tenant(
+        self,
+        ticket: TenantTicket,
+        reply_data: Dict[str, Any],
+        *,
+        idempotency_key: str,
+        idempotency_tenant_id: int,
+    ) -> Dict[str, Any]:
+        """Persist one TenantTicket operator reply and its durable effects.
+
+        The timeline mutation, tenant-scoped receipt and optional outbox rows
+        share one transaction.  The receipt is global within the tenant, so a
+        retry cannot duplicate a reply or reuse the same client identity for a
+        different ticket.
+        """
+
+        if not isinstance(ticket, TenantTicket):
+            raise TicketIdempotencyValidationError(
+                "A TenantTicket reply requires a TenantTicket aggregate."
+            )
+        reply_data = dict(reply_data or {})
+        idempotency_identity = self._prepare_idempotency_identity(
+            idempotency_key,
+            idempotency_tenant_id,
+        )
+        if idempotency_identity is None:
+            raise TicketIdempotencyValidationError(
+                "A TenantTicket reply requires an idempotency identity."
+            )
+        normalized_key, normalized_tenant_id = idempotency_identity
+        if int(getattr(ticket, "tenant_id", 0) or 0) != normalized_tenant_id:
+            raise TicketIdempotencyValidationError(
+                "TenantTicket tenant_id does not match its reply idempotency tenant."
+            )
+
+        body = str(reply_data.get("body") or "").strip()
+        if not body:
+            raise TicketIdempotencyValidationError(
+                "A TenantTicket reply requires a non-empty body."
+            )
+        visibility = str(reply_data.get("visibility") or "public").strip().lower()
+        visibility = "internal" if visibility == "internal" else "public"
+        requested_channels = sorted(
+            {
+                str(channel or "").strip().lower()
+                for channel in (reply_data.get("requested_channels") or [])
+                if str(channel or "").strip().lower() in {"email", "whatsapp"}
+            }
+        )
+        emit_socket = bool(reply_data.get("emit_socket", True))
+        effect_kind = "ticket.comment.tenant"
+        payload_hash = canonical_ticket_payload_hash(
+            effect_kind,
+            {
+                "ticket_id": int(ticket.id),
+                "body": body,
+                "visibility": visibility,
+                "actor_user_id": reply_data.get("actor_user_id"),
+                "requested_channels": requested_channels,
+                "emit_socket": emit_socket,
+            },
+        )
+        existing_receipt = self._find_effect_receipt(
+            normalized_tenant_id,
+            normalized_key,
+        )
+        if existing_receipt is not None:
+            return self._replay_tenant_reply_effect(
+                existing_receipt,
+                payload_hash=payload_hash,
+                reply_data={
+                    **reply_data,
+                    "body": body,
+                    "visibility": visibility,
+                },
+            )
+
+        event_id = uuid.uuid4().hex
+        aggregate_ref = f"{ticket.id}:{event_id}"
+        event_created_at = get_local_now()
+        event = {
+            "id": event_id,
+            "origin": "admin_panel",
+            "action": "reply",
+            "body": body,
+            "visibility": visibility,
+            "created_at": datetime_to_iso_utc(event_created_at),
+            "actor": {
+                "id": reply_data.get("actor_user_id"),
+                "name": reply_data.get("actor_name"),
+                "role": reply_data.get("actor_role"),
+            },
+        }
+
+        effects_queued = False
+        reply_record = None
+        try:
+            from services.ticket_domain_effects import tenant_ticket_reply_contact
+            from utils.validators import normalize_phone
+
+            contact = tenant_ticket_reply_contact(ticket)
+            contact_email = str(contact.get("email") or "").strip().casefold()
+            contact_phone = str(contact.get("phone") or "").strip()
+            normalized_contact_phone = (
+                normalize_phone(contact_phone) if contact_phone else None
+            )
+            extra = dict(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
+            comments = list(extra.get("comments")) if isinstance(extra.get("comments"), list) else []
+            comments.append(event)
+            extra["comments"] = comments[-100:]
+            ticket.datos_extra = extra
+            flag_modified(ticket, "datos_extra")
+            if str(ticket.estado or "").strip().lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            ticket.updated_at = get_local_now()
+            db.session.add(ticket)
+            reply_record = TenantTicketReplyEvent(
+                tenant_id=normalized_tenant_id,
+                ticket_id=ticket.id,
+                event_id=event_id,
+                body=body,
+                visibility=visibility,
+                actor_user_id=reply_data.get("actor_user_id"),
+                actor_name=str(reply_data.get("actor_name") or "").strip() or None,
+                actor_role=str(reply_data.get("actor_role") or "").strip() or None,
+                recipient_email=(
+                    contact_email or None
+                    if "email" in requested_channels
+                    else None
+                ),
+                recipient_phone=(
+                    normalized_contact_phone
+                    if "whatsapp" in requested_channels
+                    else None
+                ),
+                created_at=event_created_at,
+            )
+            db.session.add(reply_record)
+            db.session.flush()
+            receipt = TicketDomainEffectReceipt(
+                tenant_id=normalized_tenant_id,
+                idempotency_key=normalized_key,
+                effect_kind=effect_kind,
+                payload_hash=payload_hash,
+                resource_type="tenant_ticket",
+                resource_id=ticket.id,
+                result_json={
+                    "ticket_id": ticket.id,
+                    "event_id": event_id,
+                    "reply_event_record_id": reply_record.id,
+                    "aggregate_ref": aggregate_ref,
+                    "source_model": "TenantTicket",
+                },
+            )
+            db.session.add(receipt)
+            db.session.flush()
+
+            from flask import has_app_context
+
+            if has_app_context():
+                from services.ticket_domain_effects import (
+                    stage_tenant_ticket_reply_effects,
+                )
+
+                effects_queued = stage_tenant_ticket_reply_effects(
+                    ticket,
+                    reply_record,
+                    requested_channels=requested_channels,
+                    emit_socket=emit_socket,
+                    session=db.session,
+                )
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            winning_receipt = self._find_effect_receipt(
+                normalized_tenant_id,
+                normalized_key,
+            )
+            if winning_receipt is not None:
+                return self._replay_tenant_reply_effect(
+                    winning_receipt,
+                    payload_hash=payload_hash,
+                    reply_data={
+                        **reply_data,
+                        "body": body,
+                        "visibility": visibility,
+                    },
+                )
+            raise
+        except Exception:
+            db.session.rollback()
+            logger.exception(
+                "TenantTicket reply persistence failed tenant_id=%s ticket_id=%s",
+                normalized_tenant_id,
+                getattr(ticket, "id", None),
+            )
+            raise
+
+        if effects_queued:
+            try:
+                from services.domain_effect_worker import enqueue_domain_effect_dispatch
+
+                enqueue_domain_effect_dispatch(tenant_id=normalized_tenant_id)
+            except Exception as exc:
+                logger.warning(
+                    "TenantTicket reply outbox wakeup failed tenant_id=%s ticket_id=%s error_type=%s",
+                    normalized_tenant_id,
+                    ticket.id,
+                    type(exc).__name__,
+                )
+        return {
+            "ticket": ticket,
+            "event": event,
+            "aggregate_ref": aggregate_ref,
+            "reply_record": reply_record,
+            "replayed": False,
+            "effects_queued": effects_queued,
+        }
 
     def guardar_encuesta(
         self,

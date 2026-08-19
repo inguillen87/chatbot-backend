@@ -31,6 +31,7 @@ from models import (
     TenantConfig,
     TenantProfile,
     TenantTicket,
+    TenantTicketReplyEvent,
     TicketComentario,
     TicketDomainEffectReceipt,
     User,
@@ -340,6 +341,15 @@ class V2SaasContractsTest(unittest.TestCase):
         self.app.config.update(
             DOMAIN_EFFECT_OUTBOX_MODE="queue",
             DOMAIN_EFFECT_OUTBOX_SECRET="v2-saas-domain-effect-secret-32-bytes-minimum",
+            DOMAIN_EFFECT_OUTBOX_TENANT_IDS=str(self.tenant.id),
+            DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES=4096,
+            DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS=8,
+        )
+
+    def _enable_tenant_domain_outbox(self):
+        self.app.config.update(
+            DOMAIN_EFFECT_OUTBOX_MODE="queue",
+            DOMAIN_EFFECT_OUTBOX_SECRET="v2-saas-tenant-reply-secret-32-bytes-minimum",
             DOMAIN_EFFECT_OUTBOX_TENANT_IDS=str(self.tenant.id),
             DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES=4096,
             DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS=8,
@@ -1745,9 +1755,20 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(item["source_metadata"]["lead_profile"]["tenant_slug"], self.tenant.slug)
         self.assertEqual(item["source_metadata"]["contact"]["phone"], "+5492611111111")
         reply_action = next(action for action in item["allowed_actions"] if action["id"] == "reply")
-        self.assertEqual(reply_action["delivery_mode"], "timeline_only")
-        self.assertEqual(reply_action["fallback"], "saved_to_crm_no_external_dispatch")
-        self.assertFalse(reply_action["external_dispatch"])
+        self.assertEqual(
+            reply_action["delivery_mode"],
+            "durable_queue_or_provider_acceptance",
+        )
+        self.assertEqual(reply_action["fallback"], "http_polling")
+        self.assertTrue(reply_action["external_dispatch"])
+        self.assertIn(
+            "client_message_id_or_idempotency_key",
+            reply_action["requires"],
+        )
+        self.assertEqual(
+            reply_action["idempotency"]["preferred_header"],
+            "Idempotency-Key",
+        )
 
     def test_omnichannel_inbox_reads_source_attachment_as_regular_attachment(self):
         self.ticket.datos_extra = {
@@ -2491,6 +2512,7 @@ class V2SaasContractsTest(unittest.TestCase):
                     "visibility": "internal",
                     "send_external": True,
                     "delivery_channels": ["whatsapp"],
+                    "client_message_id": "crm-reply:internal-note-0001",
                 },
                 headers=self._auth(self.owner),
             )
@@ -2517,6 +2539,7 @@ class V2SaasContractsTest(unittest.TestCase):
                     "body": "<Gracias>\nSeguimos con tu caso.",
                     "visibility": "public",
                     "delivery_channels": ["email"],
+                    "client_message_id": "crm-reply:email-profile-0001",
                 },
                 headers=self._auth(self.owner),
             )
@@ -2537,6 +2560,841 @@ class V2SaasContractsTest(unittest.TestCase):
             {"email": True, "sms": False, "whatsapp": False},
         )
         self.assertTrue(delivery["external_dispatch"])
+
+    def test_omnichannel_tenant_reply_retries_once_without_duplicate_dispatch(self):
+        client_message_id = "crm-reply:tenant-retry-0001"
+        request_payload = {
+            "action": "reply",
+            "body": "Estamos revisando tu solicitud.",
+            "visibility": "public",
+            "client_message_id": client_message_id,
+        }
+        headers = {
+            **self._auth(self.owner),
+            "Idempotency-Key": client_message_id,
+        }
+
+        with patch(
+            "utils.whatsapp.enviar_mensaje_whatsapp_con_fallback",
+            return_value=True,
+        ) as send_whatsapp, patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply",
+            return_value=True,
+        ) as emit_realtime:
+            first = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+            replay = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        send_whatsapp.assert_called_once()
+        emit_realtime.assert_called_once()
+        db.session.refresh(self.ticket)
+        matching_events = [
+            event
+            for event in self.ticket.datos_extra.get("comments", [])
+            if event.get("body") == request_payload["body"]
+        ]
+        self.assertEqual(len(matching_events), 1)
+        receipts = TicketDomainEffectReceipt.query.filter_by(
+            tenant_id=self.tenant.id,
+            effect_kind="ticket.comment.tenant",
+        ).all()
+        self.assertEqual(len(receipts), 1)
+        self.assertNotIn(client_message_id, receipts[0].idempotency_key)
+        self.assertEqual(first.get_json()["delivery"]["mode"], "real_message")
+        replay_delivery = replay.get_json()["delivery"]
+        self.assertEqual(replay_delivery["mode"], "idempotent_replay")
+        self.assertEqual(replay_delivery["status"], "already_recorded")
+        self.assertFalse(replay_delivery["timeline_updated"])
+        self.assertTrue(replay_delivery["idempotency"]["replayed"])
+        self.assertEqual(
+            len(self.ticket.datos_extra.get("reply_delivery_history", [])),
+            1,
+        )
+
+    def test_omnichannel_tenant_reply_rejects_key_reuse_for_another_body(self):
+        client_message_id = "crm-reply:tenant-conflict-0001"
+        headers = {
+            **self._auth(self.owner),
+            "Idempotency-Key": client_message_id,
+        }
+        common = {
+            "action": "reply",
+            "visibility": "public",
+            "send_external": False,
+            "client_message_id": client_message_id,
+        }
+
+        with patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply",
+            return_value=True,
+        ) as emit_realtime:
+            first = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={**common, "body": "Primera respuesta."},
+                headers=headers,
+            )
+            conflict = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={**common, "body": "Texto diferente."},
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(
+            conflict.get_json()["reason_code"],
+            "reply_idempotency_payload_conflict",
+        )
+        emit_realtime.assert_called_once()
+        db.session.refresh(self.ticket)
+        bodies = [
+            event.get("body")
+            for event in self.ticket.datos_extra.get("comments", [])
+        ]
+        self.assertIn("Primera respuesta.", bodies)
+        self.assertNotIn("Texto diferente.", bodies)
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            1,
+        )
+
+    def test_omnichannel_tenant_reply_provider_failure_is_durable_and_not_resent(self):
+        client_message_id = "crm-reply:tenant-provider-failure-0001"
+        request_payload = {
+            "action": "reply",
+            "body": "Tu caso quedo registrado para seguimiento.",
+            "visibility": "public",
+            "client_message_id": client_message_id,
+        }
+        headers = {
+            **self._auth(self.owner),
+            "Idempotency-Key": client_message_id,
+        }
+
+        with patch(
+            "utils.whatsapp.enviar_mensaje_whatsapp_con_fallback",
+            side_effect=RuntimeError("provider unavailable"),
+        ) as send_whatsapp, patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply",
+            return_value=True,
+        ):
+            first = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+            replay = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        send_whatsapp.assert_called_once()
+        first_delivery = first.get_json()["delivery"]
+        self.assertEqual(first_delivery["mode"], "timeline_only")
+        self.assertEqual(first_delivery["reason"], "external_dispatch_failed")
+        self.assertEqual(
+            first_delivery["delivery_skipped"],
+            {"whatsapp": "provider_error"},
+        )
+        self.assertFalse(first_delivery["external_dispatch"])
+        self.assertEqual(
+            replay.get_json()["delivery"]["reason"],
+            "idempotent_replay_no_redispatch",
+        )
+        db.session.refresh(self.ticket)
+        self.assertEqual(
+            sum(
+                1
+                for event in self.ticket.datos_extra.get("comments", [])
+                if event.get("body") == request_payload["body"]
+            ),
+            1,
+        )
+
+    def test_omnichannel_tenant_reply_outbox_stages_once_and_replays(self):
+        self._enable_tenant_domain_outbox()
+        client_message_id = "crm-reply:tenant-outbox-0001"
+        request_payload = {
+            "action": "reply",
+            "body": "La respuesta quedo encolada de forma durable.",
+            "visibility": "public",
+            "client_message_id": client_message_id,
+        }
+        headers = {
+            **self._auth(self.owner),
+            "Idempotency-Key": client_message_id,
+        }
+
+        with patch(
+            "routes.v2.saas._dispatch_tenant_ticket_reply"
+        ) as direct_dispatch, patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply"
+        ) as direct_realtime, patch(
+            "services.domain_effect_worker.enqueue_domain_effect_dispatch"
+        ) as enqueue_dispatch:
+            first = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+            replay = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        direct_dispatch.assert_not_called()
+        direct_realtime.assert_not_called()
+        enqueue_dispatch.assert_called_once_with(tenant_id=self.tenant.id)
+        rows = DomainEffectOutbox.query.filter_by(
+            tenant_id=self.tenant.id,
+            aggregate_type="tenant_ticket_reply",
+        ).all()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({row.channel for row in rows}, {"whatsapp", "realtime"})
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(
+                tenant_id=self.tenant.id,
+                effect_kind="ticket.comment.tenant",
+            ).count(),
+            1,
+        )
+        first_delivery = first.get_json()["delivery"]
+        self.assertEqual(first_delivery["mode"], "durable_queue")
+        self.assertEqual(first_delivery["outbox"]["effect_count"], 2)
+        self.assertTrue(first_delivery["realtime"]["queued"])
+        replay_delivery = replay.get_json()["delivery"]
+        self.assertEqual(replay_delivery["mode"], "idempotent_replay")
+        self.assertEqual(
+            replay_delivery["reason"],
+            "idempotent_replay_domain_effects_preserved",
+        )
+        self.assertEqual(replay_delivery["outbox"]["effect_count"], 2)
+
+    def test_tenant_reply_outbox_uses_pinned_event_after_timeline_pruning(self):
+        self._enable_tenant_domain_outbox()
+        original_email = "citizen-original@test.com"
+        original_phone = "+5491111111111"
+        current_extra = dict(self.ticket.datos_extra or {})
+        current_extra["contact"] = {
+            "name": "Familia original",
+            "email": original_email,
+            "phone": original_phone,
+        }
+        self.ticket.datos_extra = current_extra
+
+        token_ref = f"TWILIO_SUBACCOUNT_AUTH_TOKEN_REPLY_PIN_{self.tenant.id}"
+        account_sid = f"AC-reply-pin-{self.tenant.id}"
+        self.app.config[token_ref] = f"reply-pin-token-{self.tenant.id}"
+        self.tenant.configuracion = {
+            **(self.tenant.configuracion or {}),
+            "twilio_tech_provider": {
+                "twilio_account_sid": account_sid,
+                "twilio_subaccount_token_ref": token_ref,
+            },
+        }
+        connection = ProviderConnection(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            environment="production",
+            status="online",
+            external_account_id=account_sid,
+            credentials_ref=f"env:{token_ref}",
+        )
+        db.session.add(connection)
+        db.session.flush()
+        db.session.add(
+            ProviderSender(
+                tenant_id=self.tenant.id,
+                provider_connection_id=connection.id,
+                channel="whatsapp",
+                sender_type="whatsapp_business",
+                phone_number="+15005550006",
+                sender_id="whatsapp:+15005550006",
+                status="online",
+                status_callback_url="https://api.example.test/twilio/whatsapp/status",
+            )
+        )
+        db.session.commit()
+
+        first_body = "Respuesta que debe sobrevivir a la poda del timeline."
+        client_message_id = "crm-reply:pinned-pruned-0001"
+        request_payload = {
+            "action": "reply",
+            "body": first_body,
+            "visibility": "public",
+            "delivery_channels": ["email", "whatsapp"],
+            "client_message_id": client_message_id,
+        }
+        headers = {
+            **self._auth(self.owner),
+            "Idempotency-Key": client_message_id,
+        }
+        with patch(
+            "services.domain_effect_worker.enqueue_domain_effect_dispatch"
+        ) as enqueue_dispatch:
+            first = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+        self.assertEqual(first.status_code, 200, first.get_json())
+        enqueue_dispatch.assert_called_once_with(tenant_id=self.tenant.id)
+
+        from services.ticket_service import ServicioTickets
+
+        ticket = db.session.get(TenantTicket, self.ticket.id)
+        for index in range(100):
+            ServicioTickets().crear_respuesta_tenant(
+                ticket,
+                {
+                    "body": f"Respuesta posterior {index:03d}",
+                    "visibility": "internal",
+                    "actor_user_id": self.owner.id,
+                    "actor_name": self.owner.name,
+                    "actor_role": self.owner.rol,
+                    "requested_channels": [],
+                    "emit_socket": False,
+                },
+                idempotency_key=f"crm-reply:prune-{index:04d}",
+                idempotency_tenant_id=self.tenant.id,
+            )
+
+        db.session.refresh(ticket)
+        timeline = ticket.datos_extra.get("comments") or []
+        self.assertEqual(len(timeline), 100)
+        self.assertFalse(any(item.get("body") == first_body for item in timeline))
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            101,
+        )
+        pinned = TenantTicketReplyEvent.query.filter_by(
+            tenant_id=self.tenant.id,
+            ticket_id=self.ticket.id,
+            body=first_body,
+        ).one()
+        self.assertEqual(pinned.recipient_email, original_email)
+        self.assertEqual(pinned.recipient_phone, original_phone)
+
+        changed_extra = dict(ticket.datos_extra or {})
+        changed_extra["contact"] = {
+            "name": "Contacto reemplazado",
+            "email": "redirected@test.com",
+            "phone": "+5492222222222",
+        }
+        ticket.datos_extra = changed_extra
+        self.owner.email = "redirected-owner@test.com"
+        db.session.add_all([ticket, self.owner])
+        db.session.commit()
+
+        effects = DomainEffectOutbox.query.filter_by(
+            tenant_id=self.tenant.id,
+            aggregate_type="tenant_ticket_reply",
+            aggregate_ref=f"{self.ticket.id}:{pinned.event_id}",
+        ).all()
+        self.assertEqual(len(effects), 3)
+        for effect in effects:
+            self.assertTrue(effect.recipient_ref.startswith("recipient_hash:"))
+            serialized = json.dumps(effect.payload_json, sort_keys=True)
+            self.assertNotIn(first_body, serialized)
+            self.assertNotIn(original_email, serialized)
+            self.assertNotIn(original_phone, serialized)
+        receipt = next(
+            item
+            for item in TicketDomainEffectReceipt.query.filter_by(
+                tenant_id=self.tenant.id,
+                effect_kind="ticket.comment.tenant",
+                resource_id=self.ticket.id,
+            ).all()
+            if (item.result_json or {}).get("event_id") == pinned.event_id
+        )
+        receipt_result = json.dumps(receipt.result_json, sort_keys=True)
+        self.assertNotIn(first_body, receipt_result)
+        self.assertNotIn(original_email, receipt_result)
+        self.assertNotIn(original_phone, receipt_result)
+
+        from services.domain_effect_worker import dispatch_domain_effect_batch
+
+        with patch(
+            "services.ticket_domain_effects._email_preflight_error",
+            return_value=None,
+        ), patch(
+            "services.email_service.enviar_email",
+            return_value=True,
+        ) as send_email, patch(
+            "services.ticket_domain_effects.send_prepared_tenant_twilio_message",
+            return_value="SM-pinned-reply",
+        ) as send_whatsapp, patch(
+            "socket_service.emit_new_chat_message"
+        ) as emit_realtime:
+            batch = dispatch_domain_effect_batch(
+                tenant_id=self.tenant.id,
+                limit=10,
+            )
+            replay = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json=request_payload,
+                headers=headers,
+            )
+            empty_batch = dispatch_domain_effect_batch(
+                tenant_id=self.tenant.id,
+                limit=10,
+            )
+
+        self.assertEqual(batch["processed"], 3)
+        self.assertEqual(batch["succeeded"], 3)
+        self.assertEqual(empty_batch["processed"], 0)
+        send_email.assert_called_once()
+        self.assertEqual(send_email.call_args.args[0], original_email)
+        self.assertNotEqual(send_email.call_args.args[0], "redirected@test.com")
+        send_whatsapp.assert_called_once()
+        prepared = send_whatsapp.call_args.args[0]
+        self.assertEqual(prepared.params["to"], f"whatsapp:{original_phone}")
+        self.assertNotEqual(prepared.params["to"], "whatsapp:+5492222222222")
+        emit_realtime.assert_called_once()
+        self.assertEqual(
+            emit_realtime.call_args.args[0]["message"]["texto"],
+            first_body,
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertTrue(replay.get_json()["delivery"]["idempotency"]["replayed"])
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+                body=first_body,
+            ).count(),
+            1,
+        )
+
+    def test_tenant_reply_transaction_rolls_back_snapshot_receipt_and_timeline(self):
+        self._enable_tenant_domain_outbox()
+        original_timeline = list(self.ticket.datos_extra.get("comments") or [])
+        with patch(
+            "services.ticket_domain_effects.stage_tenant_ticket_reply_effects",
+            side_effect=RuntimeError("staging failed"),
+        ):
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "body": "No debe quedar parcialmente persistida.",
+                    "visibility": "public",
+                    "client_message_id": "crm-reply:rollback-0001",
+                },
+                headers=self._auth(self.owner),
+            )
+
+        self.assertEqual(response.status_code, 503, response.get_json())
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(
+                tenant_id=self.tenant.id,
+                effect_kind="ticket.comment.tenant",
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            DomainEffectOutbox.query.filter_by(
+                tenant_id=self.tenant.id,
+                aggregate_type="tenant_ticket_reply",
+            ).count(),
+            0,
+        )
+        db.session.refresh(self.ticket)
+        self.assertEqual(self.ticket.datos_extra.get("comments"), original_timeline)
+
+    def test_omnichannel_tenant_reply_ambiguous_provider_failure_is_not_auto_retried(self):
+        self._enable_tenant_domain_outbox()
+        token_ref = f"TWILIO_SUBACCOUNT_AUTH_TOKEN_TENANT_REPLY_{self.tenant.id}"
+        account_sid = f"AC-tenant-reply-{self.tenant.id}"
+        self.app.config[token_ref] = f"tenant-reply-token-{self.tenant.id}"
+        self.tenant.configuracion = {
+            **(self.tenant.configuracion or {}),
+            "twilio_tech_provider": {
+                "twilio_account_sid": account_sid,
+                "twilio_subaccount_token_ref": token_ref,
+            },
+        }
+        connection = ProviderConnection(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            environment="production",
+            status="online",
+            external_account_id=account_sid,
+            credentials_ref=f"env:{token_ref}",
+        )
+        db.session.add(connection)
+        db.session.flush()
+        sender = ProviderSender(
+            tenant_id=self.tenant.id,
+            provider_connection_id=connection.id,
+            channel="whatsapp",
+            sender_type="whatsapp_business",
+            phone_number="+15005550006",
+            sender_id="whatsapp:+15005550006",
+            status="online",
+            status_callback_url="https://api.example.test/twilio/whatsapp/status",
+        )
+        db.session.add(sender)
+        db.session.commit()
+
+        client_message_id = "crm-reply:tenant-provider-unknown-0001"
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={
+                "action": "reply",
+                "body": "Mensaje durable antes del proveedor.",
+                "visibility": "public",
+                "client_message_id": client_message_id,
+            },
+            headers={
+                **self._auth(self.owner),
+                "Idempotency-Key": client_message_id,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["delivery"]["mode"], "durable_queue")
+
+        from services.domain_effect_worker import dispatch_domain_effect_batch
+
+        with patch(
+            "services.ticket_domain_effects.send_prepared_tenant_twilio_message",
+            side_effect=RuntimeError("provider acknowledgement lost"),
+        ) as provider_send, patch("socket_service.emit_new_chat_message"):
+            first_batch = dispatch_domain_effect_batch(
+                tenant_id=self.tenant.id,
+                limit=1,
+            )
+            second_batch = dispatch_domain_effect_batch(
+                tenant_id=self.tenant.id,
+                limit=10,
+            )
+            third_batch = dispatch_domain_effect_batch(
+                tenant_id=self.tenant.id,
+                limit=10,
+            )
+
+        self.assertEqual(first_batch["unknown"], 1)
+        self.assertEqual(second_batch["succeeded"], 1)
+        self.assertEqual(third_batch["processed"], 0)
+        provider_send.assert_called_once()
+        whatsapp_effect = DomainEffectOutbox.query.filter_by(
+            tenant_id=self.tenant.id,
+            aggregate_type="tenant_ticket_reply",
+            channel="whatsapp",
+        ).one()
+        self.assertEqual(whatsapp_effect.status, DomainEffectOutbox.STATUS_UNKNOWN)
+        self.assertIsNotNone(whatsapp_effect.io_started_at)
+
+    def test_omnichannel_tenant_reply_rejects_cross_tenant_target_before_receipt(self):
+        foreign_owner = User(
+            name="Foreign reply owner",
+            email="foreign-reply@test.com",
+            rol="admin",
+            tenant_slug="foreign-reply",
+        )
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-reply",
+            nombre="Foreign reply",
+            tipo="pyme",
+            pyme_id=foreign_owner.id,
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_owner.tenant_id = foreign_tenant.id
+        foreign_ticket = TenantTicket(
+            tenant_id=foreign_tenant.id,
+            descripcion="Ticket aislado",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"comments": []},
+        )
+        db.session.add(foreign_ticket)
+        db.session.commit()
+
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{foreign_ticket.id}/actions",
+            json={
+                "action": "reply",
+                "body": "No debe cruzar tenants.",
+                "client_message_id": "crm-reply:cross-tenant-0001",
+            },
+            headers={
+                **self._auth(self.owner),
+                "Idempotency-Key": "crm-reply:cross-tenant-0001",
+            },
+        )
+
+        self.assertEqual(response.status_code, 404, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "ticket_not_found")
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(
+                tenant_id=self.tenant.id,
+                effect_kind="ticket.comment.tenant",
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+            ).count(),
+            0,
+        )
+        db.session.refresh(foreign_ticket)
+        self.assertEqual(foreign_ticket.datos_extra.get("comments"), [])
+
+    def test_tenant_reply_worker_rejects_cross_tenant_durable_event(self):
+        self._enable_tenant_domain_outbox()
+        foreign_owner = User(
+            name="Foreign event owner",
+            email="foreign-event-owner@test.com",
+            rol="admin",
+            tenant_slug="foreign-reply-event",
+        )
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-reply-event",
+            nombre="Foreign reply event",
+            tipo="pyme",
+            pyme_id=foreign_owner.id,
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_owner.tenant_id = foreign_tenant.id
+        injected_event = TenantTicketReplyEvent(
+            tenant_id=foreign_tenant.id,
+            ticket_id=self.ticket.id,
+            event_id="foreignreplyevent0000000000000001",
+            body="Contenido de otro tenant",
+            visibility="public",
+            recipient_email="foreign-citizen@test.com",
+        )
+        db.session.add(injected_event)
+        db.session.commit()
+
+        from services.domain_effect_outbox import (
+            DomainEffectClaim,
+            PermanentDomainEffectError,
+        )
+        from services.ticket_domain_effects import (
+            TENANT_REPLY_AGGREGATE,
+            TENANT_REPLY_EMAIL_HANDLER,
+            _prepare_tenant_reply_email,
+            _tenant_reply_binding,
+            _tenant_reply_recipient_ref,
+        )
+
+        secret = self.app.config["DOMAIN_EFFECT_OUTBOX_SECRET"]
+        claim = DomainEffectClaim(
+            effect_id=999,
+            tenant_id=self.tenant.id,
+            contract_version=DomainEffectOutbox.CONTRACT_VERSION,
+            aggregate_type=TENANT_REPLY_AGGREGATE,
+            aggregate_ref=f"{self.ticket.id}:{injected_event.event_id}",
+            effect_type="tenant_ticket.reply.email.requester",
+            handler_name=TENANT_REPLY_EMAIL_HANDLER,
+            channel="email",
+            recipient_ref=_tenant_reply_recipient_ref(
+                secret=secret,
+                reply_event=injected_event,
+                channel="email",
+            ),
+            effect_key="tenant-ticket-reply-cross-tenant-test",
+            intent_hmac="a" * 64,
+            payload={
+                "tenant_binding": _tenant_reply_binding(
+                    self.tenant.id,
+                    self.ticket.id,
+                )
+            },
+            attempt_count=0,
+            max_attempts=8,
+            lease_token="lease-cross-tenant",
+        )
+
+        with patch("services.email_service.enviar_email") as send_email:
+            with self.assertRaises(PermanentDomainEffectError) as raised:
+                _prepare_tenant_reply_email(claim)
+
+        self.assertEqual(str(raised.exception), "tenant_ticket_reply_event_missing")
+        send_email.assert_not_called()
+
+    def test_tenant_reply_worker_quarantines_unpinned_legacy_recipient(self):
+        legacy_event_id = "legacyreplyevent00000000000000001"
+        extra = dict(self.ticket.datos_extra or {})
+        comments = list(extra.get("comments") or [])
+        comments.append(
+            {
+                "id": legacy_event_id,
+                "origin": "admin_panel",
+                "action": "reply",
+                "body": "Respuesta pendiente anterior al pinning.",
+                "visibility": "public",
+                "created_at": "2026-08-15T12:00:00Z",
+                "actor": {"id": self.owner.id, "name": self.owner.name},
+            }
+        )
+        extra["comments"] = comments
+        self.ticket.datos_extra = extra
+        db.session.add(self.ticket)
+        db.session.commit()
+
+        from services.domain_effect_outbox import (
+            DomainEffectClaim,
+            PermanentDomainEffectError,
+        )
+        from services.ticket_domain_effects import (
+            TENANT_REPLY_AGGREGATE,
+            TENANT_REPLY_EMAIL_HANDLER,
+            _prepare_tenant_reply_email,
+            _tenant_reply_binding,
+        )
+
+        claim = DomainEffectClaim(
+            effect_id=998,
+            tenant_id=self.tenant.id,
+            contract_version=DomainEffectOutbox.CONTRACT_VERSION,
+            aggregate_type=TENANT_REPLY_AGGREGATE,
+            aggregate_ref=f"{self.ticket.id}:{legacy_event_id}",
+            effect_type="tenant_ticket.reply.email.requester",
+            handler_name=TENANT_REPLY_EMAIL_HANDLER,
+            channel="email",
+            recipient_ref="role:ticket.requester",
+            effect_key="tenant-ticket-reply-legacy-recipient-test",
+            intent_hmac="b" * 64,
+            payload={
+                "tenant_binding": _tenant_reply_binding(
+                    self.tenant.id,
+                    self.ticket.id,
+                )
+            },
+            attempt_count=0,
+            max_attempts=8,
+            lease_token="lease-legacy-recipient",
+        )
+
+        with patch("services.email_service.enviar_email") as send_email:
+            with self.assertRaises(PermanentDomainEffectError) as raised:
+                _prepare_tenant_reply_email(claim)
+
+        self.assertEqual(
+            str(raised.exception),
+            "tenant_ticket_reply_legacy_recipient_unpinned",
+        )
+        send_email.assert_not_called()
+
+    def test_omnichannel_tenant_reply_socket_failure_keeps_http_polling_fallback(self):
+        client_message_id = "crm-reply:tenant-polling-0001"
+        with patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply",
+            return_value=False,
+        ) as emit_realtime:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "body": "Respuesta visible por polling.",
+                    "visibility": "public",
+                    "send_external": False,
+                    "client_message_id": client_message_id,
+                },
+                headers={
+                    **self._auth(self.owner),
+                    "Idempotency-Key": client_message_id,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        emit_realtime.assert_called_once()
+        realtime = response.get_json()["delivery"]["realtime"]
+        self.assertFalse(realtime["emitted"])
+        self.assertFalse(realtime["queued"])
+        self.assertEqual(realtime["room"], f"tenant_{self.tenant.id}")
+        self.assertEqual(realtime["scope"], "authenticated_tenant_operators")
+        self.assertEqual(realtime["fallback"], "http_polling")
+        self.assertEqual(
+            realtime["polling"]["href"],
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+        )
+
+        detail = self.client.get(
+            realtime["polling"]["href"],
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        self.assertTrue(
+            any(
+                event.get("body") == "Respuesta visible por polling."
+                for event in detail.get_json()["item"]["timeline"]
+            )
+        )
+
+    def test_omnichannel_tenant_reply_realtime_payload_is_tenant_scoped(self):
+        client_message_id = "crm-reply:tenant-socket-scope-0001"
+        with patch("socket_service.emit_new_chat_message") as emit_realtime:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "body": "Evento seguro para operadores.",
+                    "visibility": "public",
+                    "send_external": False,
+                    "client_message_id": client_message_id,
+                },
+                headers={
+                    **self._auth(self.owner),
+                    "Idempotency-Key": client_message_id,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        emit_realtime.assert_called_once()
+        event = emit_realtime.call_args.args[0]
+        self.assertEqual(event["tenant_profile_id"], self.tenant.id)
+        self.assertEqual(event["ticket_id"], self.ticket.id)
+        self.assertEqual(event["source_model"], "TenantTicket")
+        self.assertEqual(event["tenant_type"], "tenant")
+        self.assertNotIn("contact", event)
+        self.assertNotIn("phone", event)
+        self.assertNotIn("email", event)
+        self.assertEqual(
+            response.get_json()["delivery"]["realtime"]["room"],
+            f"tenant_{self.tenant.id}",
+        )
 
     def test_tenant_admin_experience_contract_unifies_profile_operations_and_modules(self):
         response = self.client.get(

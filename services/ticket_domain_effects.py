@@ -1,16 +1,19 @@
 """Durable, privacy-safe external effects for newly created tickets.
 
-The outbox stores only tenant-scoped opaque references.  Every handler reloads
-the ticket and its current recipient from the database during preflight, before
-the generic runtime records ``io_started_at`` and invokes the provider closure.
+The outbox stores only tenant-scoped opaque references.  TenantTicket reply
+handlers reload an immutable reply event (including its pinned recipient) from
+the database during preflight, before the generic runtime records
+``io_started_at`` and invokes the provider closure.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
+from html import escape
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from urllib.parse import urljoin, urlparse
 
 from flask import current_app, has_app_context
@@ -19,6 +22,8 @@ from models import (
     ArchivoAdjunto,
     MunicipioTicket,
     PymeTicket,
+    TenantTicket,
+    TenantTicketReplyEvent,
     TenantProfile,
     TicketComentario,
     User,
@@ -54,6 +59,7 @@ MUNICIPAL_TICKET_AGGREGATE = "municipio_ticket"
 PYME_TICKET_AGGREGATE = "pyme_ticket"
 MUNICIPAL_COMMENT_AGGREGATE = "municipio_ticket_comment"
 PYME_COMMENT_AGGREGATE = "pyme_ticket_comment"
+TENANT_REPLY_AGGREGATE = "tenant_ticket_reply"
 
 SIGEM_HANDLER = "ticket.created.sigem.v1"
 ADMIN_EMAIL_HANDLER = "ticket.created.email.admin.v1"
@@ -63,6 +69,9 @@ COMMENT_REQUESTER_EMAIL_HANDLER = "ticket.comment.email.requester.v1"
 COMMENT_REQUESTER_SMS_HANDLER = "ticket.comment.sms.requester.v1"
 COMMENT_REQUESTER_WHATSAPP_HANDLER = "ticket.comment.whatsapp.requester.v1"
 COMMENT_REALTIME_HANDLER = "ticket.comment.realtime.v1"
+TENANT_REPLY_EMAIL_HANDLER = "tenant_ticket.reply.email.requester.v1"
+TENANT_REPLY_WHATSAPP_HANDLER = "tenant_ticket.reply.whatsapp.requester.v1"
+TENANT_REPLY_REALTIME_HANDLER = "tenant_ticket.reply.realtime.v1"
 
 TENANT_ADMIN_RECIPIENT = "role:tenant.admins"
 TICKET_REQUESTER_RECIPIENT = "role:ticket.requester"
@@ -128,6 +137,19 @@ def _validate_ticket_twilio_effect_payload(payload: dict[str, Any]) -> None:
     if set(payload) != {"owner_binding", "provider_sender_binding"}:
         raise DomainEffectValidationError("ticket_effect_payload_invalid")
     _validate_hex_binding(payload.get("owner_binding"))
+    _validate_hex_binding(payload.get("provider_sender_binding"))
+
+
+def _validate_tenant_reply_effect_payload(payload: dict[str, Any]) -> None:
+    if set(payload) != {"tenant_binding"}:
+        raise DomainEffectValidationError("tenant_ticket_reply_payload_invalid")
+    _validate_hex_binding(payload.get("tenant_binding"))
+
+
+def _validate_tenant_reply_twilio_effect_payload(payload: dict[str, Any]) -> None:
+    if set(payload) != {"tenant_binding", "provider_sender_binding"}:
+        raise DomainEffectValidationError("tenant_ticket_reply_payload_invalid")
+    _validate_hex_binding(payload.get("tenant_binding"))
     _validate_hex_binding(payload.get("provider_sender_binding"))
 
 
@@ -244,6 +266,215 @@ def _load_scoped_comment(
         if _positive_int(expected_fk) != ticket_id or opposite_fk is not None:
             raise PermanentDomainEffectError("ticket_comment_attachment_binding_invalid")
     return comment, ticket, ticket_type
+
+
+def _tenant_reply_binding(tenant_id: int, ticket_id: int) -> str:
+    material = f"tenant-ticket-reply.v1:{tenant_id}:{ticket_id}".encode("ascii")
+    return hashlib.sha256(material).hexdigest()
+
+
+def _tenant_reply_recipient_ref(
+    *,
+    secret: str,
+    reply_event: TenantTicketReplyEvent,
+    channel: str,
+) -> str:
+    """Bind one outbox row to an immutable reply and recipient without PII."""
+
+    normalized_channel = str(channel or "").strip().lower()
+    if normalized_channel not in {"email", "whatsapp", "realtime"}:
+        raise DomainEffectOutboxConfigurationError(
+            "tenant_ticket_reply_channel_invalid"
+        )
+    if not isinstance(secret, str) or len(secret.encode("utf-8")) < 32:
+        raise DomainEffectOutboxConfigurationError(
+            "tenant_ticket_reply_secret_invalid"
+        )
+    if normalized_channel == "email":
+        recipient = str(reply_event.recipient_email or "").strip().casefold()
+    elif normalized_channel == "whatsapp":
+        recipient = str(reply_event.recipient_phone or "").strip()
+    else:
+        recipient = f"tenant-room:{reply_event.tenant_id}"
+    material = json.dumps(
+        {
+            "contract_version": reply_event.contract_version,
+            "reply_event_id": reply_event.id,
+            "tenant_id": reply_event.tenant_id,
+            "ticket_id": reply_event.ticket_id,
+            "event_id": reply_event.event_id,
+            "channel": normalized_channel,
+            "recipient": recipient or "missing",
+            "body": reply_event.body,
+            "visibility": reply_event.visibility,
+            "actor_user_id": reply_event.actor_user_id,
+            "actor_name": reply_event.actor_name,
+            "actor_role": reply_event.actor_role,
+            "created_at": reply_event.to_event_dict().get("created_at"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), material, hashlib.sha256).hexdigest()
+    return f"recipient_hash:{digest}"
+
+
+def tenant_ticket_reply_contact(ticket: TenantTicket) -> dict[str, str]:
+    """Resolve reply contact data without crossing the ticket tenant boundary."""
+
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
+    assisted_request = (
+        extra.get("assisted_request")
+        if isinstance(extra.get("assisted_request"), Mapping)
+        else {}
+    )
+    public_follow_up = (
+        extra.get("public_follow_up")
+        if isinstance(extra.get("public_follow_up"), Mapping)
+        else {}
+    )
+    assisted_follow_up = (
+        assisted_request.get("public_follow_up")
+        if isinstance(assisted_request.get("public_follow_up"), Mapping)
+        else {}
+    )
+    crm_review_card = (
+        extra.get("crm_review_card")
+        if isinstance(extra.get("crm_review_card"), Mapping)
+        else {}
+    )
+    ticket_user = getattr(ticket, "user", None)
+    if ticket_user is not None and _positive_int(
+        getattr(ticket_user, "tenant_id", None)
+    ) != _positive_int(getattr(ticket, "tenant_id", None)):
+        ticket_user = None
+
+    candidates = [
+        extra.get("contact"),
+        extra.get("customer_profile"),
+        assisted_request.get("contact"),
+        crm_review_card.get("contact"),
+        public_follow_up.get("contact"),
+        assisted_follow_up.get("contact"),
+        extra,
+        {
+            "name": getattr(ticket_user, "name", None),
+            "phone": getattr(ticket_user, "telefono", None),
+            "email": getattr(ticket_user, "email", None),
+        },
+    ]
+    aliases = {
+        "name": ("name", "nombre", "contact_name"),
+        "phone": (
+            "phone",
+            "telefono",
+            "whatsapp",
+            "contact_phone",
+            "phone_number",
+            "wa_id",
+        ),
+        "email": ("email", "correo", "contact_email", "email_address"),
+    }
+    contact: dict[str, str] = {}
+    for field, keys in aliases.items():
+        for candidate in candidates:
+            if not isinstance(candidate, Mapping):
+                continue
+            value = next((candidate.get(key) for key in keys if candidate.get(key)), None)
+            if value is not None and str(value).strip():
+                contact[field] = str(value).strip()
+                break
+    return contact
+
+
+def _load_scoped_tenant_reply(
+    claim: DomainEffectClaim,
+) -> tuple[
+    TenantTicket,
+    dict[str, Any],
+    TenantProfile,
+    TenantTicketReplyEvent | None,
+] | None:
+    if claim.aggregate_type != TENANT_REPLY_AGGREGATE:
+        return None
+    tenant_id = _positive_int(claim.tenant_id)
+    ref_parts = str(claim.aggregate_ref or "").split(":", 1)
+    if tenant_id is None or len(ref_parts) != 2:
+        return None
+    ticket_id = _positive_int(ref_parts[0])
+    event_id = str(ref_parts[1] or "").strip()
+    if ticket_id is None or not event_id:
+        return None
+
+    ticket = TenantTicket.query.filter_by(
+        id=ticket_id,
+        tenant_id=tenant_id,
+    ).one_or_none()
+    if ticket is None:
+        return None
+    profile = db.session.get(TenantProfile, tenant_id)
+    if profile is None or not bool(getattr(profile, "is_active", False)):
+        raise PermanentDomainEffectError("tenant_ticket_reply_tenant_binding_invalid")
+    expected_binding = str(claim.payload.get("tenant_binding") or "")
+    if not hmac.compare_digest(
+        expected_binding,
+        _tenant_reply_binding(tenant_id, ticket_id),
+    ):
+        raise PermanentDomainEffectError("tenant_ticket_reply_tenant_binding_invalid")
+
+    reply_event = TenantTicketReplyEvent.query.filter_by(
+        tenant_id=tenant_id,
+        ticket_id=ticket_id,
+        event_id=event_id,
+    ).one_or_none()
+    if str(claim.recipient_ref or "").startswith("recipient_hash:"):
+        if reply_event is None:
+            raise PermanentDomainEffectError("tenant_ticket_reply_event_missing")
+        policy = resolve_domain_effect_outbox_policy(
+            current_app.config,
+            tenant_id=tenant_id,
+        )
+        if not policy.enabled or not policy.secret:
+            raise PermanentDomainEffectError(
+                "tenant_ticket_reply_recipient_binding_invalid"
+            )
+        expected_recipient_ref = _tenant_reply_recipient_ref(
+            secret=policy.secret,
+            reply_event=reply_event,
+            channel=claim.channel,
+        )
+        if not hmac.compare_digest(
+            str(claim.recipient_ref or ""),
+            expected_recipient_ref,
+        ):
+            raise PermanentDomainEffectError(
+                "tenant_ticket_reply_recipient_binding_invalid"
+            )
+        event = reply_event.to_event_dict()
+    else:
+        # Explicit legacy compatibility for already-staged rows created before
+        # durable reply events.  New rows always use recipient_hash references.
+        extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
+        comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
+        event = next(
+            (
+                dict(item)
+                for item in comments
+                if isinstance(item, Mapping) and str(item.get("id") or "") == event_id
+            ),
+            None,
+        )
+        if event is None:
+            return None
+        reply_event = None
+    if (
+        str(event.get("action") or "").strip().lower() != "reply"
+        or str(event.get("origin") or "").strip().lower() != "admin_panel"
+        or not str(event.get("body") or "").strip()
+    ):
+        raise PermanentDomainEffectError("tenant_ticket_reply_event_invalid")
+    return ticket, event, profile, reply_event
 
 
 def _load_scoped_ticket_user(
@@ -768,6 +999,162 @@ def _prepare_comment_realtime(
     return PreparedDomainEffect(deliver=deliver)
 
 
+def _prepare_tenant_reply_email(
+    claim: DomainEffectClaim,
+) -> PreparedDomainEffect | SkippedDomainEffect:
+    loaded = _load_scoped_tenant_reply(claim)
+    if loaded is None:
+        return _skip("tenant_ticket_reply_not_found")
+    ticket, event, profile, reply_event = loaded
+    if str(event.get("visibility") or "public").strip().lower() != "public":
+        raise PermanentDomainEffectError("tenant_ticket_reply_visibility_invalid")
+    if reply_event is None:
+        # Pre-v2 rows never pinned their destination. Re-resolving mutable
+        # ticket/User contact could redirect a delayed reply, so quarantine it
+        # for explicit operator review instead of performing provider I/O.
+        raise PermanentDomainEffectError(
+            "tenant_ticket_reply_legacy_recipient_unpinned"
+        )
+    recipient = reply_event.recipient_email
+    recipient_error = _email_recipient_preflight_error(
+        recipient,
+        recipient_type="requester",
+    )
+    if recipient_error:
+        return _skip(recipient_error)
+    preflight_error = _email_preflight_error()
+    if preflight_error:
+        return _skip(preflight_error)
+    body = str(event.get("body") or "").strip()
+    tenant_name = str(getattr(profile, "nombre", None) or "el equipo").strip()
+    subject = f"Respuesta de {tenant_name} - solicitud #{ticket.id}"
+    body_html = "<p>" + escape(body).replace("\n", "<br>") + "</p>"
+
+    def deliver() -> DeliveredDomainEffect:
+        from services.email_service import enviar_email
+
+        return _provider_accepted(
+            enviar_email(
+                recipient,
+                subject,
+                body_html,
+                cuerpo_texto=body,
+            )
+        )
+
+    return PreparedDomainEffect(deliver=deliver)
+
+
+def _prepare_tenant_reply_whatsapp(
+    claim: DomainEffectClaim,
+) -> PreparedDomainEffect | SkippedDomainEffect:
+    loaded = _load_scoped_tenant_reply(claim)
+    if loaded is None:
+        return _skip("tenant_ticket_reply_not_found")
+    ticket, event, _profile, reply_event = loaded
+    if str(event.get("visibility") or "public").strip().lower() != "public":
+        raise PermanentDomainEffectError("tenant_ticket_reply_visibility_invalid")
+    if reply_event is None:
+        raise PermanentDomainEffectError(
+            "tenant_ticket_reply_legacy_recipient_unpinned"
+        )
+    raw_phone = reply_event.recipient_phone
+    if not raw_phone:
+        return _skip("requester_phone_missing")
+    from utils.validators import normalize_phone
+
+    normalized_phone = normalize_phone(raw_phone)
+    if not normalized_phone:
+        return _skip("requester_phone_invalid")
+    try:
+        twilio_preflight = prepare_bound_tenant_twilio_message(
+            tenant_id=int(claim.tenant_id),
+            channel="whatsapp",
+            expected_sender_binding=_claim_provider_sender_binding(claim),
+            recipient=normalized_phone,
+            body=str(event.get("body") or "").strip(),
+        )
+    except TenantTwilioScopeError as exc:
+        raise PermanentDomainEffectError(exc.code) from exc
+    if twilio_preflight.reason_code:
+        return _skip(twilio_preflight.reason_code)
+    prepared_message = twilio_preflight.prepared
+    if prepared_message is None:
+        raise PermanentDomainEffectError("tenant_ticket_reply_twilio_preflight_invalid")
+
+    def deliver() -> DeliveredDomainEffect:
+        provider_ref = send_prepared_tenant_twilio_message(prepared_message)
+        if not provider_ref:
+            raise AmbiguousDomainEffectError("provider_acceptance_unknown")
+        return DeliveredDomainEffect(
+            provider_ref=provider_ref,
+            result={"delivery": "provider_accepted"},
+        )
+
+    return PreparedDomainEffect(deliver=deliver)
+
+
+def tenant_ticket_reply_realtime_payload(
+    ticket: TenantTicket,
+    event: Mapping[str, Any],
+) -> dict[str, Any]:
+    visibility = str(event.get("visibility") or "public").strip().lower()
+    body = str(event.get("body") or "").strip()
+    actor = event.get("actor") if isinstance(event.get("actor"), Mapping) else {}
+    return {
+        "contract_version": "tenant_ticket.reply.realtime.v1",
+        "tenant_type": "tenant",
+        "tipo": "tenant",
+        "tenant_profile_id": ticket.tenant_id,
+        "ticket_id": ticket.id,
+        "ticketId": ticket.id,
+        "source_model": "TenantTicket",
+        "estado": ticket.estado,
+        "message": {
+            "id": event.get("id"),
+            "comentario": body,
+            "texto": body,
+            "es_admin": True,
+            "origen": "agent" if visibility == "public" else "internal",
+            "visibility": visibility,
+            "estado_ticket": ticket.estado,
+            "fecha": event.get("created_at"),
+            "autor": actor.get("name") or "Equipo",
+        },
+    }
+
+
+def emit_tenant_ticket_reply_realtime(
+    ticket: TenantTicket,
+    event: Mapping[str, Any],
+) -> None:
+    from socket_service import emit_new_chat_message
+
+    emit_new_chat_message(tenant_ticket_reply_realtime_payload(ticket, event))
+
+
+def _prepare_tenant_reply_realtime(
+    claim: DomainEffectClaim,
+) -> PreparedDomainEffect | SkippedDomainEffect:
+    loaded = _load_scoped_tenant_reply(claim)
+    if loaded is None:
+        return _skip("tenant_ticket_reply_not_found")
+    ticket, event, _profile, _reply_event = loaded
+
+    try:
+        from socket_service import emit_new_chat_message
+    except (ImportError, RuntimeError):
+        return _skip("realtime_unavailable")
+    if not callable(emit_new_chat_message):
+        return _skip("realtime_unavailable")
+
+    def deliver() -> DeliveredDomainEffect:
+        emit_tenant_ticket_reply_realtime(ticket, event)
+        return DeliveredDomainEffect(result={"dispatch": "realtime_event_emitted"})
+
+    return PreparedDomainEffect(deliver=deliver)
+
+
 TICKET_DOMAIN_EFFECT_REGISTRY = DomainEffectRegistry()
 TICKET_DOMAIN_EFFECT_REGISTRY.register(
     SIGEM_HANDLER,
@@ -808,6 +1195,21 @@ TICKET_DOMAIN_EFFECT_REGISTRY.register(
     COMMENT_REALTIME_HANDLER,
     _prepare_comment_realtime,
     payload_validator=_validate_ticket_effect_payload,
+)
+TICKET_DOMAIN_EFFECT_REGISTRY.register(
+    TENANT_REPLY_EMAIL_HANDLER,
+    _prepare_tenant_reply_email,
+    payload_validator=_validate_tenant_reply_effect_payload,
+)
+TICKET_DOMAIN_EFFECT_REGISTRY.register(
+    TENANT_REPLY_WHATSAPP_HANDLER,
+    _prepare_tenant_reply_whatsapp,
+    payload_validator=_validate_tenant_reply_twilio_effect_payload,
+)
+TICKET_DOMAIN_EFFECT_REGISTRY.register(
+    TENANT_REPLY_REALTIME_HANDLER,
+    _prepare_tenant_reply_realtime,
+    payload_validator=_validate_tenant_reply_effect_payload,
 )
 
 
@@ -1112,6 +1514,127 @@ def stage_ticket_comment_effects(
     return True
 
 
+def stage_tenant_ticket_reply_effects(
+    ticket: TenantTicket,
+    reply_event: TenantTicketReplyEvent,
+    *,
+    requested_channels: list[str] | tuple[str, ...] = (),
+    emit_socket: bool = True,
+    session=None,
+    registry: DomainEffectRegistry | None = None,
+) -> bool:
+    """Stage TenantTicket reply delivery in the timeline transaction."""
+
+    if not has_app_context():
+        raise DomainEffectOutboxConfigurationError("domain_effect_app_context_required")
+    if not isinstance(ticket, TenantTicket) or not isinstance(
+        reply_event,
+        TenantTicketReplyEvent,
+    ):
+        raise ValueError("tenant_ticket_reply_aggregate_mismatch")
+    tenant_id = _positive_int(getattr(ticket, "tenant_id", None))
+    ticket_id = _positive_int(getattr(ticket, "id", None))
+    event_id = str(getattr(reply_event, "event_id", None) or "").strip()
+    reply_event_id = _positive_int(getattr(reply_event, "id", None))
+    if (
+        tenant_id is None
+        or ticket_id is None
+        or reply_event_id is None
+        or not event_id
+        or _positive_int(getattr(reply_event, "tenant_id", None)) != tenant_id
+        or _positive_int(getattr(reply_event, "ticket_id", None)) != ticket_id
+    ):
+        raise DomainEffectOutboxConfigurationError(
+            "tenant_ticket_reply_aggregate_invalid"
+        )
+    policy = resolve_domain_effect_outbox_policy(
+        current_app.config,
+        tenant_id=tenant_id,
+    )
+    if not policy.enabled:
+        return False
+
+    effect_session = session or db.session
+    profile = effect_session.get(TenantProfile, tenant_id)
+    if profile is None or not bool(getattr(profile, "is_active", False)):
+        raise DomainEffectOutboxConfigurationError(
+            "tenant_ticket_reply_tenant_binding_invalid"
+        )
+    visibility = str(reply_event.visibility or "public").strip().lower()
+    normalized_channels = []
+    for raw_channel in requested_channels or ():
+        channel = str(raw_channel or "").strip().lower()
+        if channel in {"email", "whatsapp"} and channel not in normalized_channels:
+            normalized_channels.append(channel)
+    if visibility != "public" and normalized_channels:
+        raise DomainEffectOutboxConfigurationError(
+            "tenant_ticket_reply_internal_external_dispatch_invalid"
+        )
+
+    aggregate_ref = f"{ticket_id}:{event_id}"
+    effect_registry = registry or TICKET_DOMAIN_EFFECT_REGISTRY
+    common = {
+        "tenant_id": tenant_id,
+        "aggregate_type": TENANT_REPLY_AGGREGATE,
+        "aggregate_ref": aggregate_ref,
+        "intent_secret": policy.secret,
+        "registry": effect_registry,
+        "max_attempts": policy.max_attempts,
+        "max_payload_bytes": policy.max_payload_bytes,
+        "session": effect_session,
+    }
+    specs: list[dict[str, str]] = []
+    if "email" in normalized_channels:
+        specs.append(
+            {
+                "effect_type": "tenant_ticket.reply.email.requester",
+                "handler_name": TENANT_REPLY_EMAIL_HANDLER,
+                "channel": "email",
+            }
+        )
+    if "whatsapp" in normalized_channels:
+        specs.append(
+            {
+                "effect_type": "tenant_ticket.reply.whatsapp.requester",
+                "handler_name": TENANT_REPLY_WHATSAPP_HANDLER,
+                "channel": "whatsapp",
+            }
+        )
+    if emit_socket:
+        specs.append(
+            {
+                "effect_type": "tenant_ticket.reply.realtime",
+                "handler_name": TENANT_REPLY_REALTIME_HANDLER,
+                "channel": "realtime",
+            }
+        )
+
+    tenant_binding = _tenant_reply_binding(tenant_id, ticket_id)
+    for spec in specs:
+        payload = {"tenant_binding": tenant_binding}
+        if spec["channel"] == "whatsapp":
+            payload["provider_sender_binding"] = build_tenant_twilio_sender_binding(
+                tenant_id=tenant_id,
+                channel="whatsapp",
+                session=effect_session,
+            )
+        stage_domain_effect(
+            **common,
+            **spec,
+            recipient_ref=_tenant_reply_recipient_ref(
+                secret=str(policy.secret or ""),
+                reply_event=reply_event,
+                channel=spec["channel"],
+            ),
+            payload=payload,
+            effect_key=(
+                f"{TENANT_REPLY_AGGREGATE}:{ticket_id}:{event_id}:"
+                f"{spec['handler_name']}"
+            ),
+        )
+    return bool(specs)
+
+
 __all__ = [
     "ADMIN_EMAIL_HANDLER",
     "COMMENT_ADMIN_EMAIL_HANDLER",
@@ -1125,8 +1648,16 @@ __all__ = [
     "PYME_TICKET_AGGREGATE",
     "REQUESTER_EMAIL_HANDLER",
     "SIGEM_HANDLER",
+    "TENANT_REPLY_AGGREGATE",
+    "TENANT_REPLY_EMAIL_HANDLER",
+    "TENANT_REPLY_REALTIME_HANDLER",
+    "TENANT_REPLY_WHATSAPP_HANDLER",
     "TICKET_DOMAIN_EFFECT_REGISTRY",
+    "emit_tenant_ticket_reply_realtime",
     "pyme_whatsapp_chat_enabled",
+    "stage_tenant_ticket_reply_effects",
     "stage_ticket_comment_effects",
     "stage_ticket_created_effects",
+    "tenant_ticket_reply_contact",
+    "tenant_ticket_reply_realtime_payload",
 ]

@@ -31,6 +31,7 @@ from models import (
     PymeTicket,
     TenantProfile,
     TenantTicket,
+    TenantTicketReplyEvent,
     TicketComentario,
     TicketDomainEffectReceipt,
     User,
@@ -4644,20 +4645,28 @@ def _apply_handoff_transition(
 def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
     base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
-    reply_delivery = {
-        "delivery_mode": "timeline_only",
-        "fallback": "saved_to_crm_no_external_dispatch",
-        "external_dispatch": False,
-        "operator_message": "Guarda la respuesta en el timeline CRM. No envia WhatsApp, email, SMS ni socket en tiempo real desde esta accion.",
-    }
     actions = [
         {
             "id": "reply",
             "label": "Responder",
             "method": "POST",
             "endpoint": base_endpoint,
-            "requires": ["body"],
-            **reply_delivery,
+            "requires": ["body", "client_message_id_or_idempotency_key"],
+            "idempotency": {
+                "contract_version": "inbox.reply_idempotency.v1",
+                "preferred_header": "Idempotency-Key",
+                "body_field": "client_message_id",
+                "retry_rule": "reuse_same_value",
+                "request_id_compatibility": True,
+            },
+            "delivery_contract_version": "inbox.action_delivery.v2",
+            "delivery_mode": "durable_queue_or_provider_acceptance",
+            "fallback": "http_polling",
+            "external_dispatch": True,
+            "operator_message": (
+                "La respuesta se guarda primero y usa el canal del ticket. "
+                "Los reintentos conservan la misma identidad sin duplicar el envio."
+            ),
         },
         {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
         {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
@@ -5400,46 +5409,9 @@ def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | 
 
 
 def _tenant_ticket_reply_contact(ticket: TenantTicket) -> dict[str, str]:
-    extra = _ticket_extra(ticket)
-    assisted_request = extra.get("assisted_request") if isinstance(extra.get("assisted_request"), Mapping) else {}
-    public_follow_up = extra.get("public_follow_up") if isinstance(extra.get("public_follow_up"), Mapping) else {}
-    assisted_follow_up = (
-        assisted_request.get("public_follow_up")
-        if isinstance(assisted_request.get("public_follow_up"), Mapping)
-        else {}
-    )
-    crm_review_card = extra.get("crm_review_card") if isinstance(extra.get("crm_review_card"), Mapping) else {}
-    ticket_user = getattr(ticket, "user", None)
-    candidates = [
-        extra.get("contact"),
-        extra.get("customer_profile"),
-        assisted_request.get("contact"),
-        crm_review_card.get("contact"),
-        public_follow_up.get("contact"),
-        assisted_follow_up.get("contact"),
-        extra,
-        {
-            "name": getattr(ticket_user, "name", None),
-            "phone": getattr(ticket_user, "telefono", None),
-            "email": getattr(ticket_user, "email", None),
-        },
-    ]
+    from services.ticket_domain_effects import tenant_ticket_reply_contact
 
-    contact: dict[str, str] = {}
-    aliases = {
-        "name": ("name", "nombre", "contact_name"),
-        "phone": ("phone", "telefono", "whatsapp", "contact_phone", "phone_number", "wa_id"),
-        "email": ("email", "correo", "contact_email", "email_address"),
-    }
-    for field, keys in aliases.items():
-        for candidate in candidates:
-            if not isinstance(candidate, Mapping):
-                continue
-            value = next((candidate.get(key) for key in keys if candidate.get(key)), None)
-            if value is not None and str(value).strip():
-                contact[field] = str(value).strip()
-                break
-    return contact
+    return tenant_ticket_reply_contact(ticket)
 
 
 def _tenant_ticket_delivery_channels(
@@ -5490,13 +5462,23 @@ def _dispatch_tenant_ticket_reply(
     ticket: TenantTicket,
     body: str,
     requested_channels: list[str],
+    reply_record: TenantTicketReplyEvent | None = None,
 ) -> tuple[dict[str, bool], str | None, dict[str, str]]:
     results = {"email": False, "sms": False, "whatsapp": False}
     skipped: dict[str, str] = {}
     if not requested_channels:
         return results, "external_dispatch_no_channel_requested", skipped
 
-    contact = _tenant_ticket_reply_contact(ticket)
+    contact = (
+        {
+            "email": str(reply_record.recipient_email or "").strip(),
+            "phone": str(reply_record.recipient_phone or "").strip(),
+        }
+        if reply_record is not None
+        else _tenant_ticket_reply_contact(ticket)
+    )
+    if reply_record is not None:
+        body = str(reply_record.body or "").strip()
     attempted = False
 
     if "whatsapp" in requested_channels:
@@ -5568,8 +5550,14 @@ def _record_tenant_ticket_delivery(
     *,
     delivery: Mapping[str, Any],
     actor: User,
-) -> None:
-    extra = deepcopy(_ticket_extra(ticket))
+) -> TenantTicket:
+    persisted_ticket = (
+        TenantTicket.query.filter_by(id=ticket.id, tenant_id=ticket.tenant_id)
+        .with_for_update()
+        .populate_existing()
+        .one()
+    )
+    extra = deepcopy(_ticket_extra(persisted_ticket))
     history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
     history.append(
         {
@@ -5589,9 +5577,31 @@ def _record_tenant_ticket_delivery(
         }
     )
     extra["reply_delivery_history"] = history[-100:]
-    ticket.datos_extra = extra
-    flag_modified(ticket, "datos_extra")
-    db.session.add(ticket)
+    persisted_ticket.datos_extra = extra
+    flag_modified(persisted_ticket, "datos_extra")
+    db.session.add(persisted_ticket)
+    return persisted_ticket
+
+
+def _emit_tenant_ticket_realtime_reply(
+    ticket: TenantTicket,
+    event: Mapping[str, Any],
+) -> bool:
+    """Emit only to the authenticated tenant room; HTTP detail stays authoritative."""
+
+    try:
+        from services.ticket_domain_effects import emit_tenant_ticket_reply_realtime
+
+        emit_tenant_ticket_reply_realtime(ticket, event)
+        return True
+    except Exception as exc:  # pragma: no cover - reply remains durable and pollable
+        current_app.logger.exception(
+            "Error emitting TenantTicket reply ticket=%s tenant=%s: %s",
+            getattr(ticket, "id", None),
+            getattr(ticket, "tenant_id", None),
+            exc,
+        )
+        return False
 
 
 def _dispatch_legacy_claim_reply(
@@ -6128,6 +6138,13 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     event_body = ""
     timeline_updated = False
     reply_visibility = "public"
+    requested_channels: list[str] | None = None
+    reply_event: dict[str, Any] | None = None
+    reply_record: TenantTicketReplyEvent | None = None
+    reply_replayed = False
+    reply_idempotency_source: str | None = None
+    reply_outbox_effect_count = 0
+    realtime_emitted = False
 
     if action == "assign":
         assignee_id = payload.get("assignee_id") or payload.get("user_id")
@@ -6187,14 +6204,108 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         event_body = f"Conversación devuelta a IA por {current_user.name}"
 
     elif action == "reply":
-        body = str(payload.get("body") or payload.get("message") or "").strip()
+        if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response(
+                "El ticket esta cerrado. Reabrilo antes de responder.",
+                403,
+                "ticket_closed",
+                "reopen_ticket",
+            )
+        body = str(
+            payload.get("body")
+            or payload.get("message")
+            or payload.get("comentario")
+            or ""
+        ).strip()
         if not body:
             return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
         visibility = str(payload.get("visibility") or "public").strip().lower()
         reply_visibility = "internal" if visibility == "internal" else "public"
         event_body = body
-        _append_ticket_event(extra, action=action, actor=current_user, body=body, visibility=reply_visibility)
-        timeline_updated = True
+        reply_idempotency_key, reply_idempotency_source, idempotency_error = (
+            _omnichannel_reply_idempotency_identity(payload, tenant_id=tenant.id)
+        )
+        if idempotency_error is not None:
+            return idempotency_error
+        requested_channels = _tenant_ticket_delivery_channels(
+            ticket,
+            payload,
+            visibility=reply_visibility,
+        )
+
+        from services.ticket_service import (
+            ServicioTickets,
+            TicketIdempotencyConflict,
+            TicketIdempotencyReplayUnavailable,
+            TicketIdempotencyValidationError,
+        )
+
+        try:
+            reply_result = ServicioTickets().crear_respuesta_tenant(
+                ticket,
+                {
+                    "body": body,
+                    "visibility": reply_visibility,
+                    "actor_user_id": current_user.id,
+                    "actor_name": current_user.name,
+                    "actor_role": current_user.rol,
+                    "requested_channels": requested_channels,
+                    "emit_socket": True,
+                },
+                idempotency_key=reply_idempotency_key,
+                idempotency_tenant_id=tenant.id,
+            )
+        except TicketIdempotencyConflict:
+            db.session.rollback()
+            return _error_response(
+                "La identidad idempotente ya fue usada con otra respuesta",
+                409,
+                "reply_idempotency_payload_conflict",
+                "reuse_key_only_for_identical_payload",
+            )
+        except TicketIdempotencyValidationError:
+            db.session.rollback()
+            return _error_response(
+                "La identidad idempotente o su alcance de tenant no es valido",
+                400,
+                "reply_idempotency_invalid",
+                "send_stable_client_message_id",
+            )
+        except TicketIdempotencyReplayUnavailable:
+            db.session.rollback()
+            return _error_response(
+                "La respuesta idempotente existe pero su ticket no esta disponible",
+                409,
+                "reply_idempotency_replay_unavailable",
+                "refresh_inbox",
+            )
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.exception(
+                "TenantTicket durable reply failed ticket=%s tenant=%s: %s",
+                ticket.id,
+                tenant.id,
+                exc,
+            )
+            return _error_response(
+                "No se pudo guardar la respuesta de forma durable",
+                503,
+                "reply_durability_unavailable",
+                "retry_with_same_idempotency_key",
+            )
+
+        ticket = reply_result["ticket"]
+        reply_event = dict(reply_result["event"])
+        reply_record = reply_result.get("reply_record")
+        reply_replayed = bool(reply_result.get("replayed"))
+        timeline_updated = not reply_replayed
+        aggregate_ref = str(reply_result.get("aggregate_ref") or "")
+        if aggregate_ref:
+            reply_outbox_effect_count = DomainEffectOutbox.query.filter_by(
+                tenant_id=tenant.id,
+                aggregate_type="tenant_ticket_reply",
+                aggregate_ref=aggregate_ref,
+            ).count()
 
     elif action == "close":
         ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
@@ -6219,30 +6330,45 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
         timeline_updated = True
 
-    ticket.datos_extra = extra
-    flag_modified(ticket, "datos_extra")
-    ticket.updated_at = now
-    db.session.add(ticket)
-    db.session.commit()
+    if action != "reply":
+        ticket.datos_extra = extra
+        flag_modified(ticket, "datos_extra")
+        ticket.updated_at = now
+        db.session.add(ticket)
+        db.session.commit()
 
     delivery_results: dict[str, bool] | None = None
     dispatch_reason: str | None = None
-    requested_channels: list[str] | None = None
     delivery_skipped: dict[str, str] | None = None
     external_dispatch = False
-    if action == "reply":
-        requested_channels = _tenant_ticket_delivery_channels(
-            ticket,
-            payload,
-            visibility=reply_visibility,
-        )
+    if (
+        action == "reply"
+        and not reply_replayed
+        and not reply_outbox_effect_count
+    ):
         delivery_results, dispatch_reason, delivery_skipped = _dispatch_tenant_ticket_reply(
             tenant=tenant,
             ticket=ticket,
             body=event_body,
-            requested_channels=requested_channels,
+            requested_channels=requested_channels or [],
+            reply_record=reply_record,
         )
         external_dispatch = any(delivery_results.values())
+        if reply_event is not None:
+            realtime_emitted = _emit_tenant_ticket_realtime_reply(ticket, reply_event)
+
+    delivery_reason = dispatch_reason
+    if action == "reply":
+        if reply_replayed:
+            delivery_reason = (
+                "idempotent_replay_domain_effects_preserved"
+                if reply_outbox_effect_count
+                else "idempotent_replay_no_redispatch"
+            )
+        elif reply_outbox_effect_count:
+            delivery_reason = "domain_effects_durably_staged"
+        elif external_dispatch:
+            delivery_reason = "provider_accepted"
 
     delivery = _inbox_action_delivery_payload(
         action=action,
@@ -6260,23 +6386,59 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         ),
         timeline_updated=timeline_updated,
         source_model="TenantTicket",
-        reason=("provider_accepted" if external_dispatch else dispatch_reason),
+        reason=delivery_reason,
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
         requested_channels=requested_channels,
         delivery_skipped=delivery_skipped,
+        durably_staged=(
+            action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
+        ),
+        idempotent_replay=action == "reply" and reply_replayed,
     )
     if action == "reply":
-        try:
-            _record_tenant_ticket_delivery(ticket, delivery=delivery, actor=current_user)
-            db.session.commit()
-        except Exception as exc:  # pragma: no cover - reply is already durable in the timeline
-            db.session.rollback()
-            current_app.logger.exception(
-                "Error recording TenantTicket reply delivery audit ticket=%s: %s",
-                ticket.id,
-                exc,
-            )
+        delivery["idempotency"] = {
+            "contract_version": "inbox.reply_idempotency.v1",
+            "replayed": reply_replayed,
+            "source": reply_idempotency_source,
+            "raw_value_persisted": False,
+        }
+        delivery["realtime"] = {
+            "contract_version": "tenant_ticket.reply.realtime.v1",
+            "emitted": realtime_emitted,
+            "queued": bool(reply_outbox_effect_count and not reply_replayed),
+            "event": "new_chat_message" if (realtime_emitted or reply_outbox_effect_count) else None,
+            "events": ["new_chat_message"] if (realtime_emitted or reply_outbox_effect_count) else [],
+            "room": f"tenant_{tenant.id}",
+            "scope": "authenticated_tenant_operators",
+            "fallback": "http_polling",
+            "polling": {
+                "method": "GET",
+                "href": f"/api/v2/inbox/omnichannel/{ticket.id}",
+            },
+        }
+        if reply_outbox_effect_count:
+            delivery["outbox"] = {
+                "durably_staged": True,
+                "effect_count": reply_outbox_effect_count,
+                "worker_authoritative": True,
+                "direct_dispatch_performed": False,
+            }
+        if not reply_replayed:
+            try:
+                ticket = _record_tenant_ticket_delivery(
+                    ticket,
+                    delivery=delivery,
+                    actor=current_user,
+                )
+                db.session.commit()
+            except Exception as exc:  # pragma: no cover - reply is already durable in the timeline
+                db.session.rollback()
+                current_app.logger.exception(
+                    "Error recording TenantTicket reply delivery audit ticket=%s: %s",
+                    ticket.id,
+                    exc,
+                )
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
     ticket_payload = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
 

@@ -497,6 +497,95 @@ class SurveyGovernanceV2Test(unittest.TestCase):
         )
         self.assertEqual(db.session.get(EncEncuesta, survey_id).inicio_at, original_start)
 
+    def test_publish_maps_missing_identity_hmac_preflight_to_stable_json(self):
+        survey_id = self._create_survey()
+        survey = db.session.get(EncEncuesta, survey_id)
+        survey.privacy_mode = "source_anonymous"
+        survey.privacy_policy_version = "privacy-2026.1"
+        survey.privacy_policy_url = "https://example.test/privacidad"
+        survey.privacy_consent_required = True
+        survey.response_retention_days = 365
+        survey.puntos_recompensa = 0
+        survey.politica_unicidad = "anon_id"
+        db.session.commit()
+
+        created = self._create_release(
+            survey_id,
+            key="release:hmac-missing:create:0001",
+        )
+        release_id = created.get_json()["release_id"]
+        snapshot_sha256 = created.get_json()["snapshot_sha256"]
+        audit_count_before = AuditEvent.query.filter_by(
+            tenant_id=self.tenant_1.id,
+            resource_type="survey_governance_release",
+        ).count()
+        self.app.config["SURVEY_IDENTITY_HMAC_SECRET_V1"] = ""
+
+        response = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/publish",
+            json={"expected_snapshot_sha256": snapshot_sha256},
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key="release:hmac-missing:publish:0001",
+            ),
+        )
+
+        self.assertEqual(response.status_code, 503, response.get_data(as_text=True))
+        self.assertEqual(response.content_type, "application/json")
+        payload = response.get_json()
+        self.assertEqual(
+            set(payload),
+            {
+                "action_hint",
+                "contract_version",
+                "error",
+                "message",
+                "reason_code",
+                "request_id",
+                "retryable",
+                "status_code",
+            },
+        )
+        self.assertEqual(payload["contract_version"], "surveys.privacy.v1")
+        self.assertEqual(payload["status_code"], 503)
+        self.assertEqual(
+            payload["reason_code"],
+            "survey_identity_hmac_secret_unavailable",
+        )
+        self.assertEqual(
+            payload["action_hint"],
+            "configure_survey_identity_hmac_secret_v1",
+        )
+        self.assertFalse(payload["retryable"])
+        self.assertEqual(
+            payload["error"],
+            {
+                "code": 503,
+                "message": "No se puede publicar: falta el secreto HMAC dedicado de encuestas.",
+            },
+        )
+        self.assertEqual(payload["message"], payload["error"]["message"])
+        self.assertTrue(payload["request_id"])
+
+        db.session.expire_all()
+        blocked_release = db.session.get(SurveyGovernanceRelease, release_id)
+        blocked_survey = db.session.get(EncEncuesta, survey_id)
+        self.assertEqual(blocked_release.status, "draft")
+        self.assertIsNone(blocked_release.published_at)
+        self.assertIsNone(blocked_release.published_by_user_id)
+        self.assertIsNone(blocked_release.publish_idempotency_key)
+        self.assertIsNone(blocked_release.publish_request_hash)
+        self.assertEqual(blocked_survey.estado, "borrador")
+        self.assertIsNone(EncLink.query.filter_by(encuesta_id=survey_id).first())
+        self.assertEqual(
+            AuditEvent.query.filter_by(
+                tenant_id=self.tenant_1.id,
+                resource_type="survey_governance_release",
+            ).count(),
+            audit_count_before,
+        )
+
     def test_public_consent_normalization_bounds_and_hash_are_fail_closed(self):
         survey_id = self._create_survey()
         cases = []

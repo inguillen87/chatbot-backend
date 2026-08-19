@@ -2355,6 +2355,12 @@ def publish_survey_governance_release_v2(
     except SurveyGovernanceError as exc:
         db.session.rollback()
         return _governance_error_response(exc)
+    except EncuestaError as exc:
+        # Publication reuses the survey service's privacy and instrument
+        # preflights.  Preserve their stable contract instead of letting a
+        # configuration/validation error escape as an empty HTTP 500.
+        db.session.rollback()
+        return _encuesta_error_response(exc)
     return _json_response(serialize_release(release, replayed=replayed), 200)
 
 

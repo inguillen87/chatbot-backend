@@ -31,6 +31,10 @@ from services.voice_consent_lifecycle import (
 
 from utils.auth_helpers import token_requerido
 from services.realtime_session_service import realtime_session_service
+from services.voice_transfer_policy import (
+    VoiceTransferPolicyError,
+    validate_pstn_voice_transfer,
+)
 from flask import jsonify
 
 voice_bp = Blueprint('voice', __name__)
@@ -138,18 +142,6 @@ def _twilio_gather_language() -> str:
 
 def _normalize_phone(value: str | None) -> str:
     return str(value or "").replace("whatsapp:", "").strip()
-
-
-def _is_whatsapp_voice_endpoint(value: str | None) -> bool:
-    """Return whether Twilio identified this call leg as WhatsApp VoIP."""
-
-    return str(value or "").strip().lower().startswith("whatsapp:")
-
-
-def _is_whatsapp_voice_call() -> bool:
-    return _is_whatsapp_voice_endpoint(
-        request.form.get("From")
-    ) or _is_whatsapp_voice_endpoint(request.form.get("To"))
 
 
 def _configured_chatboc_demo_numbers() -> set[str]:
@@ -746,23 +738,14 @@ def voice_transfer():
             tenant_config.get("human_handoff_number")
             or tenant_config.get("telefono_atencion")
         )
-        requested_target = _normalize_phone(target)
-        allowed_target = _normalize_phone(configured_target)
-        e164_pattern = re.compile(r"^\+[1-9]\d{7,14}$")
-        if (
-            not e164_pattern.fullmatch(requested_target)
-            or not e164_pattern.fullmatch(allowed_target)
-            or requested_target != allowed_target
-        ):
-            raise VoiceConsentLifecycleError("transfer_target_not_authorized")
-        # Twilio/Meta do not allow a WhatsApp Business Calling leg to be
-        # bridged to PSTN. The configured handoff target above is an E.164
-        # telephone number, so attempting this Dial would advertise a transfer
-        # that the provider must reject. A future SIP/Client handoff needs its
-        # own explicit, tenant-scoped transport contract.
-        if _is_whatsapp_voice_call():
-            raise VoiceConsentLifecycleError("whatsapp_pstn_bridge_forbidden")
-    except VoiceConsentLifecycleError as exc:
+        requested_target = validate_pstn_voice_transfer(
+            provider="twilio",
+            from_endpoint=request.form.get("From"),
+            to_endpoint=request.form.get("To"),
+            requested_target=target,
+            configured_target=configured_target,
+        )
+    except (VoiceConsentLifecycleError, VoiceTransferPolicyError) as exc:
         logger.warning("Twilio voice transfer refused reason=%s", exc.code)
         _voice_say(response, "La transferencia no esta disponible en este momento.")
         return Response(str(response), mimetype="text/xml")
@@ -843,8 +826,34 @@ def voice_process():
 
     if isinstance(result, dict):
         if result.get("type") == "handoff":
+            tenant_config = (
+                tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+            )
+            configured_target = (
+                tenant_config.get("human_handoff_number")
+                or tenant_config.get("telefono_atencion")
+            )
+            try:
+                transfer_target = validate_pstn_voice_transfer(
+                    provider="twilio",
+                    from_endpoint=from_number,
+                    to_endpoint=to_number,
+                    requested_target=result.get("target"),
+                    configured_target=configured_target,
+                )
+            except VoiceTransferPolicyError as exc:
+                logger.warning(
+                    "Twilio legacy voice handoff refused reason=%s",
+                    exc.code,
+                )
+                _voice_say(
+                    response,
+                    "La transferencia no esta disponible en este momento.",
+                )
+                return Response(str(response), mimetype='text/xml')
+
             _voice_say(response, result.get("text", "Transfiriendo..."))
-            response.dial(result.get("target"))
+            response.dial(transfer_target)
             return Response(str(response), mimetype='text/xml')
 
         bot_response_text = result.get("text")

@@ -539,6 +539,84 @@ class VoiceConsentLifecycleTests(unittest.TestCase):
         self.assertIn("whatsapp_pstn_bridge_forbidden", rendered_logs)
         self.assertNotIn("+5492613168608", rendered_logs)
 
+    def test_legacy_voice_process_blocks_whatsapp_handoff_before_dial(self):
+        config = dict(self.tenant_a.configuracion or {})
+        config["human_handoff_number"] = "+15559876543"
+        self.tenant_a.configuracion = config
+        db.session.commit()
+        call_sid = "CA-whatsapp-process-handoff"
+        payload = self._whatsapp_payload(call_sid=call_sid)
+        self.client.post(
+            f"/twilio/voice/inbound?tenant={self.tenant_a.slug}",
+            data=payload,
+        )
+        self.client.post(
+            f"/twilio/voice/consent?tenant={self.tenant_a.slug}",
+            data={**payload, "Digits": "1"},
+        )
+
+        handoff = {
+            "type": "handoff",
+            "text": "Te comunico con una persona.",
+            "target": "+15559876543",
+        }
+        with patch(
+            "routes.voice_routes.handle_voice_interaction",
+            return_value=handoff,
+        ), self.assertLogs("routes.voice_routes", level="WARNING") as logs:
+            response = self.client.post(
+                f"/voice/process?tenant={self.tenant_a.slug}",
+                data={
+                    **payload,
+                    "SpeechResult": "quiero hablar con alguien",
+                    "Confidence": "0.9",
+                },
+            )
+
+        rendered_logs = "\n".join(logs.output)
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("<Dial", body)
+        self.assertIn("whatsapp_pstn_bridge_forbidden", rendered_logs)
+        self.assertNotIn("+5492613168608", rendered_logs)
+
+    def test_legacy_voice_process_keeps_authorized_phone_handoff(self):
+        config = dict(self.tenant_a.configuracion or {})
+        config["human_handoff_number"] = "+15559876543"
+        self.tenant_a.configuracion = config
+        db.session.commit()
+        call_sid = "CA-phone-process-handoff"
+        payload = self._payload(call_sid=call_sid)
+        self.client.post(
+            f"/twilio/voice/inbound?tenant={self.tenant_a.slug}",
+            data=payload,
+        )
+        self.client.post(
+            f"/twilio/voice/consent?tenant={self.tenant_a.slug}",
+            data={**payload, "Digits": "1"},
+        )
+
+        handoff = {
+            "type": "handoff",
+            "text": "Te comunico con una persona.",
+            "target": "+15559876543",
+        }
+        with patch(
+            "routes.voice_routes.handle_voice_interaction",
+            return_value=handoff,
+        ):
+            response = self.client.post(
+                f"/voice/process?tenant={self.tenant_a.slug}",
+                data={
+                    **payload,
+                    "SpeechResult": "quiero hablar con alguien",
+                    "Confidence": "0.9",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<Dial>+15559876543</Dial>", response.get_data(as_text=True))
+
     def test_provider_status_is_monotonic_and_does_not_invent_connected(self):
         policy = resolve_voice_consent_policy(self.tenant_a)
         lifecycle = begin_voice_consent(

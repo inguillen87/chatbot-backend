@@ -738,6 +738,100 @@ class TenantTicket(db.Model, TimestampMixin):
         return f"<TenantTicket id={self.id} tenant={self.tenant_id} estado={self.estado}>"
 
 
+class TenantTicketReplyEvent(db.Model):
+    """Immutable delivery source for one operator reply to a TenantTicket.
+
+    ``TenantTicket.datos_extra.comments`` is intentionally presentation-only
+    and bounded.  Provider workers and idempotent replay use this append-only
+    row instead, including the recipient snapshot selected in the reply
+    transaction.  Outbox rows retain only an opaque HMAC of that snapshot.
+    """
+
+    __tablename__ = "tenant_ticket_reply_event"
+
+    CONTRACT_VERSION = "tenant_ticket.reply_event.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_ticket.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_id = db.Column(db.String(64), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    visibility = db.Column(
+        db.String(16),
+        nullable=False,
+        default="public",
+        server_default="public",
+    )
+    actor_user_id = db.Column(db.Integer, nullable=True)
+    actor_name = db.Column(db.String(255), nullable=True)
+    actor_role = db.Column(db.String(32), nullable=True)
+    recipient_email = db.Column(db.String(320), nullable=True)
+    recipient_phone = db.Column(db.String(64), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "event_id",
+            name="uq_tenant_ticket_reply_event_tenant_event",
+        ),
+        db.CheckConstraint(
+            "visibility IN ('public', 'internal')",
+            name="ck_tenant_ticket_reply_event_visibility",
+        ),
+        db.CheckConstraint(
+            "length(trim(body)) > 0",
+            name="ck_tenant_ticket_reply_event_body_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(trim(event_id)) > 0",
+            name="ck_tenant_ticket_reply_event_id_nonempty",
+        ),
+        db.Index(
+            "ix_tenant_ticket_reply_event_ticket",
+            "tenant_id",
+            "ticket_id",
+            "created_at",
+        ),
+    )
+
+    def to_event_dict(self) -> dict:
+        return {
+            "id": self.event_id,
+            "origin": "admin_panel",
+            "action": "reply",
+            "body": self.body,
+            "visibility": self.visibility,
+            "created_at": (
+                datetime_to_iso_utc(self.created_at) if self.created_at else None
+            ),
+            "actor": {
+                "id": self.actor_user_id,
+                "name": self.actor_name,
+                "role": self.actor_role,
+            },
+        }
+
+
 class WidgetConfig(db.Model):
     __tablename__ = "widget_config"
 
@@ -1207,11 +1301,13 @@ class TicketDomainEffectReceipt(db.Model):
         "ticket.create.pyme",
         "ticket.comment.municipio",
         "ticket.comment.pyme",
+        "ticket.comment.tenant",
     )
     RESOURCE_TYPES = (
         "municipio_ticket",
         "pyme_ticket",
         "ticket_comentario",
+        "tenant_ticket",
     )
 
     id = db.Column(db.Integer, primary_key=True)
@@ -1254,11 +1350,13 @@ class TicketDomainEffectReceipt(db.Model):
         ),
         db.CheckConstraint(
             "effect_kind IN ('ticket.create.municipio', 'ticket.create.pyme', "
-            "'ticket.comment.municipio', 'ticket.comment.pyme')",
+            "'ticket.comment.municipio', 'ticket.comment.pyme', "
+            "'ticket.comment.tenant')",
             name="ck_ticket_domain_effect_kind",
         ),
         db.CheckConstraint(
-            "resource_type IN ('municipio_ticket', 'pyme_ticket', 'ticket_comentario')",
+            "resource_type IN ('municipio_ticket', 'pyme_ticket', "
+            "'ticket_comentario', 'tenant_ticket')",
             name="ck_ticket_domain_effect_resource_type",
         ),
         db.CheckConstraint(

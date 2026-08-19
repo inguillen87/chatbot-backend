@@ -2592,11 +2592,32 @@ def _find_live_chat_ticket(
     end_user: Optional[User],
     anon_id: Optional[str],
     tenant_profile: Optional[TenantProfile] = None,
+    conversation_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], Optional[MunicipioTicket | PymeTicket]]:
     if not owner_user:
         return None, None
 
     tipo_chat = getattr(owner_user, "tipo_chat", None)
+    context_data = (
+        conversation_context if isinstance(conversation_context, dict) else {}
+    )
+    context_ticket_type = str(context_data.get("tipo_ticket") or "").strip().lower()
+    try:
+        context_ticket_id = int(str(context_data.get("ticket_id") or "").strip())
+    except (TypeError, ValueError):
+        context_ticket_id = 0
+
+    # A live-chat turn is authorized by the exact binding persisted when the
+    # handoff ticket was created. A room name or "latest open ticket" lookup is
+    # not an authorization boundary and becomes ambiguous as soon as the same
+    # contact has two active cases.
+    if (
+        tipo_chat not in {"municipio", "pyme"}
+        or context_ticket_type != tipo_chat
+        or context_ticket_id <= 0
+    ):
+        return tipo_chat if tipo_chat in {"municipio", "pyme"} else None, None
+
     if tipo_chat == "municipio":
         resolved_tenant = tenant_profile
         if resolved_tenant is None:
@@ -2614,13 +2635,19 @@ def _find_live_chat_ticket(
             )
             return "municipio", None
         query = scoped_municipio_ticket_query(resolved_tenant).filter(
+            MunicipioTicket.id == context_ticket_id,
             MunicipioTicket.estado.in_(LIVE_CHAT_STATES)
         )
         if end_user:
-            query = query.filter(or_(MunicipioTicket.user_id == end_user.id, MunicipioTicket.anon_id == anon_id))
+            identity_filters = [MunicipioTicket.user_id == end_user.id]
+            if anon_id:
+                identity_filters.append(MunicipioTicket.anon_id == anon_id)
+            query = query.filter(or_(*identity_filters))
         elif anon_id:
             query = query.filter(MunicipioTicket.anon_id == anon_id)
-        return "municipio", query.order_by(MunicipioTicket.fecha.desc()).first()
+        else:
+            return "municipio", None
+        return "municipio", query.first()
 
     if tipo_chat == "pyme":
         resolved_tenant = tenant_profile or _tenant_profile_for_user(owner_user)
@@ -2631,13 +2658,21 @@ def _find_live_chat_ticket(
                 getattr(owner_user, "id", None),
             )
             return "pyme", None
-        query = PymeTicket.query.filter(PymeTicket.estado.in_(LIVE_CHAT_STATES))
+        query = PymeTicket.query.filter(
+            PymeTicket.id == context_ticket_id,
+            PymeTicket.estado.in_(LIVE_CHAT_STATES),
+        )
         if end_user:
-            query = query.filter(or_(PymeTicket.user_id == end_user.id, PymeTicket.anon_id == anon_id))
+            identity_filters = [PymeTicket.user_id == end_user.id]
+            if anon_id:
+                identity_filters.append(PymeTicket.anon_id == anon_id)
+            query = query.filter(or_(*identity_filters))
         elif anon_id:
             query = query.filter(PymeTicket.anon_id == anon_id)
+        else:
+            return "pyme", None
         query = query.filter(PymeTicket.tenant_id == tenant_id)
-        return "pyme", query.order_by(PymeTicket.fecha.desc()).first()
+        return "pyme", query.first()
 
     return None, None
 
@@ -6594,7 +6629,11 @@ def whatsapp_webhook():
             "pending_sensitive_action",
             "awaiting_user_name",
             "human_chat_in_progress",
+            "ticket_id",
+            "tipo_ticket",
             "room",
+            "live_chat_socket_room",
+            "live_chat_status",
             "pending_chunks",
             "last_options_sent",
         ):
@@ -8258,6 +8297,7 @@ def whatsapp_webhook():
                 end_user,
                 from_number_cleaned,
                 tenant_profile,
+                session_context_db_entry.context_data,
             )
             if live_ticket:
                 comentario_text = (message_body or "").strip()
@@ -8377,14 +8417,18 @@ def whatsapp_webhook():
     # Legacy room relays are not a valid authorization boundary. If no exact
     # open ticket was resolved above, clear stale state and resume normal bot
     # handling instead of emitting to a client-controlled/stored room.
-    if session_context_db_entry.context_data.get("human_chat_in_progress"):
+    if human_chat_active:
         _log(
             "warning",
             "[WHATSAPP_WEBHOOK] Clearing stale live-chat state without exact ticket session_ref=%s",
             _safe_provider_reference(chat_session_id_internal),
         )
         session_context_db_entry.context_data.pop("human_chat_in_progress", None)
+        session_context_db_entry.context_data.pop("ticket_id", None)
+        session_context_db_entry.context_data.pop("tipo_ticket", None)
         session_context_db_entry.context_data.pop("room", None)
+        session_context_db_entry.context_data.pop("live_chat_socket_room", None)
+        session_context_db_entry.context_data.pop("live_chat_status", None)
         safe_flag_modified(session_context_db_entry, "context_data")
         db.session.add(session_context_db_entry)
         db.session.commit()

@@ -225,6 +225,143 @@ class VoiceStreamServiceMessageTests(unittest.TestCase):
         conflict = json.loads(output_items[2]["output"])
         self.assertEqual(conflict["error"]["code"], "tool_call_conflict")
 
+    def test_realtime_whatsapp_calling_transfer_is_blocked_and_replayed_without_pstn_effect(self):
+        app = create_app(TestConfig)
+        openai_ws = _FakeSocket()
+        service = VoiceStreamService(_FakeSocket(), app=app)
+        service.openai_ws = openai_ws
+        service.call_sid = "CA-whatsapp-realtime-handoff"
+        service.from_number = "whatsapp:+5491112345678"
+        service.to_number = "whatsapp:+15551234567"
+        service.tenant_profile = SimpleNamespace(
+            configuracion={"human_handoff_number": "+15559876543"}
+        )
+        blocked_output = (
+            "La transferencia no está disponible en este momento. "
+            "Podés seguir contándome qué necesitás."
+        )
+
+        with patch.object(
+            service,
+            "_claim_realtime_tool_call",
+            side_effect=[("execute", None), ("replay", blocked_output)],
+        ), patch.object(
+            service,
+            "_complete_realtime_tool_call",
+            side_effect=lambda *args, **kwargs: kwargs["output"],
+        ) as complete_receipt, patch(
+            "services.voice_stream_service.TwilioClient"
+        ) as twilio_client, patch(
+            "services.voice_stream_service.provider_network_allowed",
+            return_value=True,
+        ) as network_gate:
+            service.execute_tool(
+                "call-whatsapp-handoff",
+                "transferir_humano",
+                json.dumps({"motivo": "Necesito una persona"}),
+            )
+            service.execute_tool(
+                "call-whatsapp-handoff",
+                "transferir_humano",
+                json.dumps({"motivo": "Necesito una persona"}),
+            )
+
+        twilio_client.assert_not_called()
+        network_gate.assert_not_called()
+        complete_receipt.assert_called_once()
+        output_items = [
+            message["item"]["output"]
+            for message in openai_ws.messages
+            if message.get("type") == "conversation.item.create"
+        ]
+        self.assertEqual(output_items, [blocked_output, blocked_output])
+        self.assertNotIn("registr", output_items[0].lower())
+        self.assertNotIn("seguimiento", output_items[0].lower())
+
+    def test_realtime_missing_transfer_target_does_not_promise_unpersisted_followup(self):
+        app = create_app(TestConfig)
+        openai_ws = _FakeSocket()
+        service = VoiceStreamService(_FakeSocket(), app=app)
+        service.openai_ws = openai_ws
+        service.call_sid = "CA-realtime-handoff-without-target"
+        service.from_number = "+5491112345678"
+        service.to_number = "+15551234567"
+        service.tenant_profile = SimpleNamespace(configuracion={})
+
+        with patch.object(
+            service,
+            "_claim_realtime_tool_call",
+            return_value=("execute", None),
+        ), patch.object(
+            service,
+            "_complete_realtime_tool_call",
+            side_effect=lambda *args, **kwargs: kwargs["output"],
+        ), patch(
+            "services.voice_stream_service.TwilioClient"
+        ) as twilio_client:
+            service.execute_tool(
+                "call-handoff-without-target",
+                "transferir_humano",
+                json.dumps({"motivo": "Necesito una persona"}),
+            )
+
+        twilio_client.assert_not_called()
+        output = openai_ws.messages[0]["item"]["output"]
+        self.assertEqual(
+            output,
+            "La transferencia no está disponible en este momento. "
+            "Podés seguir contándome qué necesitás.",
+        )
+        self.assertNotIn("registr", output.lower())
+        self.assertNotIn("seguimiento", output.lower())
+
+    def test_realtime_regular_phone_transfer_keeps_authorized_pstn_handoff(self):
+        app = create_app(TestConfig)
+        openai_ws = _FakeSocket()
+        service = VoiceStreamService(_FakeSocket(), app=app)
+        service.openai_ws = openai_ws
+        service.call_sid = "CA-regular-realtime-handoff"
+        service.from_number = "+5491112345678"
+        service.to_number = "+15551234567"
+        service.tenant_profile = SimpleNamespace(
+            configuracion={"human_handoff_number": "+1 (555) 987-6543"}
+        )
+
+        with patch.object(
+            service,
+            "_claim_realtime_tool_call",
+            return_value=("execute", None),
+        ), patch.object(
+            service,
+            "_complete_realtime_tool_call",
+            side_effect=lambda *args, **kwargs: kwargs["output"],
+        ), patch(
+            "services.voice_stream_service._runtime_config_value",
+            side_effect=lambda name: {
+                "TWILIO_ACCOUNT_SID": "AC-authorized",
+                "TWILIO_AUTH_TOKEN": "authorized-secret",
+            }.get(name),
+        ), patch(
+            "services.voice_stream_service.provider_network_allowed",
+            return_value=True,
+        ), patch(
+            "services.voice_stream_service.TwilioClient"
+        ) as twilio_client:
+            service.execute_tool(
+                "call-regular-handoff",
+                "transferir_humano",
+                json.dumps({"motivo": "Necesito una persona"}),
+            )
+
+        twilio_client.assert_called_once_with("AC-authorized", "authorized-secret")
+        twilio_client.return_value.calls.assert_called_once_with(
+            "CA-regular-realtime-handoff"
+        )
+        update_kwargs = twilio_client.return_value.calls.return_value.update.call_args.kwargs
+        self.assertIn("<Dial>+15559876543</Dial>", update_kwargs["twiml"])
+        output = openai_ws.messages[0]["item"]["output"]
+        self.assertIn("transferencia fue aceptada", output)
+
     def test_realtime_create_actions_receive_stable_effect_idempotency_keys(self):
         app = create_app(TestConfig)
 
@@ -506,6 +643,173 @@ class VoiceStreamServiceTenantResolutionTests(unittest.TestCase):
                 }
             ),
         )
+
+    def test_transfer_receipt_is_terminal_per_tenant_provider_call_and_action(self):
+        owner, tenant, first_context = self._create_voice_scope(
+            "voice-terminal-transfer"
+        )
+        tenant.configuracion = {"human_handoff_number": "+15559876543"}
+        second_context = ChatSessionContext(
+            chat_session_id="voice-terminal-transfer-reconnect",
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            anon_id="+5491112345678",
+            context_data={},
+        )
+        db.session.add(second_context)
+        db.session.commit()
+
+        first_ws = _FakeSocket()
+        first = VoiceStreamService(_FakeSocket(), app=self.app)
+        first.openai_ws = first_ws
+        first.chat_session_id = first_context.chat_session_id
+        first.call_sid = "CA-terminal-transfer-001"
+        first.from_number = "+5491112345678"
+        first.to_number = "+15551234567"
+        first.tenant_profile = tenant
+
+        replay_ws = _FakeSocket()
+        replay = VoiceStreamService(_FakeSocket(), app=self.app)
+        replay.openai_ws = replay_ws
+        replay.chat_session_id = second_context.chat_session_id
+        replay.call_sid = first.call_sid
+        replay.from_number = first.from_number
+        replay.to_number = first.to_number
+        replay.tenant_profile = tenant
+
+        with patch(
+            "services.voice_stream_service._runtime_config_value",
+            side_effect=lambda name: {
+                "TWILIO_ACCOUNT_SID": "AC-terminal-transfer",
+                "TWILIO_AUTH_TOKEN": "terminal-transfer-secret",
+            }.get(name),
+        ), patch(
+            "services.voice_stream_service.provider_network_allowed",
+            return_value=True,
+        ), patch(
+            "services.voice_stream_service.TwilioClient"
+        ) as twilio_client:
+            first.execute_tool(
+                "llm-call-transfer-first",
+                "transferir_humano",
+                json.dumps({"motivo": "Primer pedido"}),
+            )
+            replay.execute_tool(
+                "llm-call-transfer-second",
+                "transferir_humano",
+                json.dumps({"motivo": "Segundo pedido"}),
+            )
+
+        twilio_client.assert_called_once_with(
+            "AC-terminal-transfer",
+            "terminal-transfer-secret",
+        )
+        twilio_client.return_value.calls.assert_called_once_with(first.call_sid)
+        twilio_client.return_value.calls.return_value.update.assert_called_once()
+        self.assertEqual(
+            first_ws.messages[0]["item"]["output"],
+            replay_ws.messages[0]["item"]["output"],
+        )
+        receipt = RealtimeToolCallReceipt.query.filter_by(
+            tenant_id=tenant.id,
+            tool_name="transferir_humano",
+        ).one()
+        self.assertEqual(receipt.status, RealtimeToolCallReceipt.STATUS_COMPLETED)
+
+    def test_transfer_unknown_provider_outcome_is_not_retried_with_new_llm_call_id(self):
+        owner, tenant, first_context = self._create_voice_scope(
+            "voice-unknown-transfer"
+        )
+        tenant.configuracion = {"human_handoff_number": "+15559876543"}
+        second_context = ChatSessionContext(
+            chat_session_id="voice-unknown-transfer-reconnect",
+            user_id=owner.id,
+            tenant_id=tenant.id,
+            anon_id="+5491112345678",
+            context_data={},
+        )
+        db.session.add(second_context)
+        db.session.commit()
+
+        services = []
+        for session_context, openai_ws in (
+            (first_context, _FakeSocket()),
+            (second_context, _FakeSocket()),
+        ):
+            service = VoiceStreamService(_FakeSocket(), app=self.app)
+            service.openai_ws = openai_ws
+            service.chat_session_id = session_context.chat_session_id
+            service.call_sid = "CA-unknown-transfer-001"
+            service.from_number = "+5491112345678"
+            service.to_number = "+15551234567"
+            service.tenant_profile = tenant
+            services.append(service)
+
+        with patch(
+            "services.voice_stream_service._runtime_config_value",
+            side_effect=lambda name: {
+                "TWILIO_ACCOUNT_SID": "AC-unknown-transfer",
+                "TWILIO_AUTH_TOKEN": "unknown-transfer-secret",
+            }.get(name),
+        ), patch(
+            "services.voice_stream_service.provider_network_allowed",
+            return_value=True,
+        ), patch(
+            "services.voice_stream_service.TwilioClient"
+        ) as twilio_client:
+            twilio_client.return_value.calls.return_value.update.side_effect = RuntimeError(
+                "provider timeout"
+            )
+            services[0].execute_tool(
+                "llm-call-unknown-transfer-first",
+                "transferir_humano",
+                json.dumps({"motivo": "Primer pedido"}),
+            )
+            services[1].execute_tool(
+                "llm-call-unknown-transfer-second",
+                "transferir_humano",
+                json.dumps({"motivo": "Reintento con otro ID"}),
+            )
+
+        twilio_client.assert_called_once_with(
+            "AC-unknown-transfer",
+            "unknown-transfer-secret",
+        )
+        twilio_client.return_value.calls.return_value.update.assert_called_once()
+        first_output = services[0].openai_ws.messages[0]["item"]["output"]
+        replay_output = services[1].openai_ws.messages[0]["item"]["output"]
+        self.assertEqual(first_output, replay_output)
+        self.assertIn("no voy a reintentarla automáticamente", first_output)
+        self.assertNotIn("registr", first_output.lower())
+        self.assertNotIn("seguimiento", first_output.lower())
+
+    def test_transfer_without_provider_call_sid_fails_closed_before_twilio(self):
+        _, tenant, session_context = self._create_voice_scope(
+            "voice-transfer-without-call-sid"
+        )
+        tenant.configuracion = {"human_handoff_number": "+15559876543"}
+        db.session.commit()
+        openai_ws = _FakeSocket()
+        service = VoiceStreamService(_FakeSocket(), app=self.app)
+        service.openai_ws = openai_ws
+        service.chat_session_id = session_context.chat_session_id
+        service.call_sid = None
+        service.from_number = "+5491112345678"
+        service.to_number = "+15551234567"
+        service.tenant_profile = tenant
+
+        with patch(
+            "services.voice_stream_service.TwilioClient"
+        ) as twilio_client:
+            service.execute_tool(
+                "llm-call-transfer-without-call-sid",
+                "transferir_humano",
+                json.dumps({"motivo": "Necesito una persona"}),
+            )
+
+        twilio_client.assert_not_called()
+        payload = json.loads(openai_ws.messages[0]["item"]["output"])
+        self.assertEqual(payload["error"]["code"], "tool_scope_unavailable")
 
     def test_reserved_realtime_call_is_never_reexecuted_blindly(self):
         _, tenant, session_context = self._create_voice_scope(

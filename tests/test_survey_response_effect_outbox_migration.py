@@ -399,4 +399,4 @@ def test_model_schema_drift_repair_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["20260814_model_schema_drift_v1"]
+    assert heads == ["20260815_tenant_reply_event_v1"]

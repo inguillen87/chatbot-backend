@@ -57,6 +57,10 @@ from services.voice_consent_lifecycle import (
     voice_phone_candidates,
     voice_consent_lifecycle_enabled,
 )
+from services.voice_transfer_policy import (
+    VoiceTransferPolicyError,
+    validate_pstn_voice_transfer,
+)
 from services.channel_session_identity import (
     channel_session_identity_enabled,
     resolve_channel_session_identity,
@@ -84,6 +88,15 @@ CHATBOC_DEMO_OWNER_EMAIL = os.environ.get("CHATBOC_DEMO_OWNER_EMAIL") or "marcel
 REALTIME_TOOL_RECEIPTS_KEY = "realtime_tool_call_receipts_v1"
 REALTIME_TOOL_RECEIPT_LIMIT = 32
 REALTIME_TOOL_OUTPUT_MAX_CHARS = 4096
+REALTIME_TERMINAL_PROVIDER_ACTIONS = frozenset({"transferir_humano"})
+VOICE_TRANSFER_UNAVAILABLE_OUTPUT = (
+    "La transferencia no está disponible en este momento. "
+    "Podés seguir contándome qué necesitás."
+)
+VOICE_TRANSFER_UNCONFIRMED_OUTPUT = (
+    "No pude confirmar la transferencia. Para evitar duplicarla, "
+    "no voy a reintentarla automáticamente."
+)
 
 # WhatsApp (para resumen post-llamada)
 
@@ -171,14 +184,6 @@ def _realtime_tool_arguments_hash(tool_name: str, arguments: dict) -> str:
         sort_keys=True,
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
-def _normalize_voice_e164(value: object) -> str | None:
-    raw = str(value or "").replace("whatsapp:", "").strip()
-    digits = re.sub(r"\D", "", raw)
-    if not 8 <= len(digits) <= 15:
-        return None
-    return f"+{digits}"
 
 
 def _realtime_audio_format(value: str | dict | None, *, default: str = "g711_ulaw") -> dict:
@@ -1247,11 +1252,35 @@ class VoiceStreamService:
         value = str(call_id or "").strip()
         return hashlib.sha256(value.encode("utf-8")).hexdigest() if value else ""
 
-    def _tool_effect_idempotency_key(self, call_id: object) -> str:
+    def _tool_effect_idempotency_key(
+        self,
+        call_id: object,
+        *,
+        tool_name: str | None = None,
+    ) -> str:
         tenant_id = getattr(self.tenant_profile, "id", None) or "unscoped"
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name in REALTIME_TERMINAL_PROVIDER_ACTIONS:
+            provider_call_id = str(self.call_sid or "missing").strip()
+            seed = (
+                f"voice-realtime-terminal\0{tenant_id}\0"
+                f"{provider_call_id}\0{normalized_tool_name}"
+            )
+            return f"voice:{hashlib.sha256(seed.encode('utf-8')).hexdigest()}"
+
         session_id = self.chat_session_id or self.call_sid or "missing"
         seed = f"voice-realtime\0{tenant_id}\0{session_id}\0{str(call_id or '')}"
         return f"voice:{hashlib.sha256(seed.encode('utf-8')).hexdigest()}"
+
+    @staticmethod
+    def _realtime_tool_receipt_call_id(call_id: object, tool_name: str) -> object:
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name in REALTIME_TERMINAL_PROVIDER_ACTIONS:
+            # The provider CallSid is part of the durable scope. Canonicalizing
+            # this component makes the reservation independent from OpenAI's
+            # function-call ID while keeping other tool calls unchanged.
+            return f"terminal-provider-action:{normalized_tool_name}"
+        return call_id
 
     def _find_tool_receipt(
         self,
@@ -1406,6 +1435,8 @@ class VoiceStreamService:
     def _realtime_tool_receipt_scope(
         self,
         session_context: ChatSessionContext | None,
+        *,
+        tool_name: str | None = None,
     ) -> tuple[int, str] | None:
         tenant_value = getattr(self.tenant_profile, "id", None)
         if tenant_value is None and session_context is not None:
@@ -1414,11 +1445,18 @@ class VoiceStreamService:
             tenant_id = int(tenant_value)
         except (TypeError, ValueError):
             return None
-        session_id = str(
-            self.chat_session_id
-            or getattr(session_context, "chat_session_id", "")
-            or ""
-        ).strip()
+        normalized_tool_name = str(tool_name or "").strip()
+        if normalized_tool_name in REALTIME_TERMINAL_PROVIDER_ACTIONS:
+            provider_call_id = str(self.call_sid or "").strip()
+            if not provider_call_id:
+                return None
+            session_id = f"provider-call:{provider_call_id}"
+        else:
+            session_id = str(
+                self.chat_session_id
+                or getattr(session_context, "chat_session_id", "")
+                or ""
+            ).strip()
         if tenant_id <= 0 or not session_id:
             return None
         return tenant_id, hashlib.sha256(session_id.encode("utf-8")).hexdigest()
@@ -1474,7 +1512,10 @@ class VoiceStreamService:
     ) -> tuple[str, str | None]:
         """Atomically reserve a call before any tool effect is attempted."""
 
-        scope = self._realtime_tool_receipt_scope(session_context)
+        scope = self._realtime_tool_receipt_scope(
+            session_context,
+            tool_name=tool_name,
+        )
         if scope is None:
             return "scope_error", None
         tenant_id, session_id_hash = scope
@@ -1554,7 +1595,10 @@ class VoiceStreamService:
         effect_idempotency_key: str,
         output: object,
     ) -> str:
-        scope = self._realtime_tool_receipt_scope(session_context)
+        scope = self._realtime_tool_receipt_scope(
+            session_context,
+            tool_name=tool_name,
+        )
         if scope is None:
             raise RuntimeError("realtime_tool_scope_unavailable")
         tenant_id, session_id_hash = scope
@@ -1615,7 +1659,10 @@ class VoiceStreamService:
                     if self.chat_session_id
                     else None
                 )
-                scope = self._realtime_tool_receipt_scope(session_context)
+                scope = self._realtime_tool_receipt_scope(
+                    session_context,
+                    tool_name=tool_name,
+                )
                 if scope is None:
                     return safe_output
                 tenant_id, session_id_hash = scope
@@ -2463,8 +2510,17 @@ class VoiceStreamService:
             self._send_tool_result(call_id, output)
             return
 
-        arguments_hash = _realtime_tool_arguments_hash(name, args)
-        effect_idempotency_key = self._tool_effect_idempotency_key(call_id)
+        receipt_call_id = self._realtime_tool_receipt_call_id(call_id, name)
+        receipt_arguments = (
+            {}
+            if name in REALTIME_TERMINAL_PROVIDER_ACTIONS
+            else args
+        )
+        arguments_hash = _realtime_tool_arguments_hash(name, receipt_arguments)
+        effect_idempotency_key = self._tool_effect_idempotency_key(
+            receipt_call_id,
+            tool_name=name,
+        )
         try:
             result = "No se pudo procesar la acción."
 
@@ -2503,7 +2559,7 @@ class VoiceStreamService:
 
                 receipt_state, receipt_output = self._claim_realtime_tool_call(
                     session_context,
-                    call_id=call_id,
+                    call_id=receipt_call_id,
                     tool_name=name,
                     arguments_hash=arguments_hash,
                     effect_idempotency_key=effect_idempotency_key,
@@ -3121,20 +3177,34 @@ class VoiceStreamService:
                 # Transferir humano
                 # ----------------------------
                 elif name == "transferir_humano":
-                    motivo = args.get("motivo", "General")
-                    target_number = None
-
-                    if self.tenant_profile and self.tenant_profile.configuracion:
-                        target_number = self.tenant_profile.configuracion.get("human_handoff_number")
-
-                    target_number = _normalize_voice_e164(target_number)
-                    if not target_number:
-                        result = (
-                            "No hay un número de atención humana configurado para esta organización. "
-                            "Dejo tu solicitud registrada para seguimiento."
+                    tenant_config = (
+                        self.tenant_profile.configuracion
+                        if self.tenant_profile
+                        and isinstance(self.tenant_profile.configuracion, dict)
+                        else {}
+                    )
+                    configured_target = (
+                        tenant_config.get("human_handoff_number")
+                        or tenant_config.get("telefono_atencion")
+                    )
+                    try:
+                        target_number = validate_pstn_voice_transfer(
+                            provider="twilio",
+                            from_endpoint=self.from_number,
+                            to_endpoint=self.to_number,
+                            requested_target=configured_target,
+                            configured_target=configured_target,
                         )
-                    else:
-                        result = "Voy a solicitar la transferencia con un agente."
+                    except VoiceTransferPolicyError as exc:
+                        logger.warning(
+                            "[VOICE] Realtime transfer refused provider=twilio reason=%s call_ref=%s",
+                            exc.code,
+                            _safe_reference(self.call_sid),
+                        )
+                        target_number = None
+                        result = (
+                            VOICE_TRANSFER_UNAVAILABLE_OUTPUT
+                        )
 
                     account_sid = _runtime_config_value("TWILIO_ACCOUNT_SID")
                     auth_token = _runtime_config_value("TWILIO_AUTH_TOKEN")
@@ -3144,8 +3214,7 @@ class VoiceStreamService:
                                 "[VOICE] Transfer blocked provider=twilio reason=test_network_disabled"
                             )
                             result = (
-                                "La transferencia no estÃ¡ disponible en este momento. "
-                                "Dejo tu solicitud registrada para seguimiento."
+                                VOICE_TRANSFER_UNAVAILABLE_OUTPUT
                             )
                         else:
                             try:
@@ -3171,14 +3240,12 @@ class VoiceStreamService:
                                     type(exc).__name__,
                                 )
                                 result = (
-                                    "No pude confirmar la transferencia. Para evitar duplicarla, "
-                                    "dejo tu solicitud registrada para seguimiento."
+                                    VOICE_TRANSFER_UNCONFIRMED_OUTPUT
                                 )
                     elif target_number:
                         logger.error("[VOICE] Transfer refused reason=provider_not_configured")
                         result = (
-                            "La transferencia no está disponible en este momento. "
-                            "Dejo tu solicitud registrada para seguimiento."
+                            VOICE_TRANSFER_UNAVAILABLE_OUTPUT
                         )
 
                 # ----------------------------
@@ -3190,7 +3257,7 @@ class VoiceStreamService:
 
                 result = self._complete_realtime_tool_call(
                     session_context,
-                    call_id=call_id,
+                    call_id=receipt_call_id,
                     tool_name=name,
                     arguments_hash=arguments_hash,
                     effect_idempotency_key=effect_idempotency_key,
@@ -3207,7 +3274,7 @@ class VoiceStreamService:
                 pass
             output = _realtime_tool_error_output("tool_execution_unknown")
             output = self._mark_realtime_tool_call_unknown_for_session(
-                call_id=call_id,
+                call_id=receipt_call_id,
                 tool_name=name or "unknown",
                 arguments_hash=arguments_hash,
                 effect_idempotency_key=effect_idempotency_key,

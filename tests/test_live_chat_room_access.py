@@ -1019,11 +1019,144 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             customer,
             "+5491111111111",
             first_tenant,
+            {
+                "human_chat_in_progress": True,
+                "ticket_id": first_ticket.id,
+                "tipo_ticket": "pyme",
+                "room": f"ticket_pyme_{first_ticket.id}",
+            },
         )
 
         self.assertEqual(ticket_type, "pyme")
         self.assertEqual(resolved_ticket.id, first_ticket.id)
         self.assertEqual(resolved_ticket.tenant_id, first_tenant.id)
+
+    def test_whatsapp_live_chat_uses_persisted_ticket_when_contact_has_two_active_cases(self):
+        owner = User(
+            name="Exact handoff business",
+            email="exact-handoff-business@example.com",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        customer = User(
+            name="Two active cases customer",
+            email="two-active-cases@example.com",
+            rol="usuario",
+        )
+        owner.set_password("pass")
+        customer.set_password("pass")
+        db.session.add_all([owner, customer])
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="exact-handoff-business",
+            nombre="Exact handoff business",
+            tipo="pyme",
+            pyme_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        persisted_ticket = PymeTicket(
+            tenant_id=tenant.id,
+            pregunta="Caso que originó el handoff",
+            estado="esperando_agente_en_vivo",
+            nro_ticket=931,
+            user_id=customer.id,
+            anon_id="+5491111111111",
+            fecha=datetime.now(timezone.utc) - timedelta(minutes=10),
+        )
+        newer_ticket = PymeTicket(
+            tenant_id=tenant.id,
+            pregunta="Segundo caso activo más reciente",
+            estado="esperando_agente_en_vivo",
+            nro_ticket=932,
+            user_id=customer.id,
+            anon_id="+5491111111111",
+            fecha=datetime.now(timezone.utc),
+        )
+        db.session.add_all([persisted_ticket, newer_ticket])
+        db.session.commit()
+
+        ticket_type, resolved_ticket = _find_live_chat_ticket(
+            owner,
+            customer,
+            "+5491111111111",
+            tenant,
+            {
+                "human_chat_in_progress": True,
+                "ticket_id": persisted_ticket.id,
+                "tipo_ticket": "pyme",
+                "room": f"ticket_pyme_{persisted_ticket.id}",
+            },
+        )
+        _unbound_type, unbound_ticket = _find_live_chat_ticket(
+            owner,
+            customer,
+            "+5491111111111",
+            tenant,
+            {"human_chat_in_progress": True, "room": f"ticket_pyme_{newer_ticket.id}"},
+        )
+
+        self.assertEqual(ticket_type, "pyme")
+        self.assertEqual(resolved_ticket.id, persisted_ticket.id)
+        self.assertNotEqual(resolved_ticket.id, newer_ticket.id)
+        self.assertIsNone(unbound_ticket)
+
+    def test_whatsapp_live_chat_context_cannot_select_another_contacts_ticket(self):
+        owner = User(
+            name="Contact scoped business",
+            email="contact-scoped-business@example.com",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        customer = User(
+            name="Expected contact",
+            email="expected-contact@example.com",
+            rol="usuario",
+        )
+        other_customer = User(
+            name="Other contact",
+            email="other-contact@example.com",
+            rol="usuario",
+        )
+        owner.set_password("pass")
+        customer.set_password("pass")
+        other_customer.set_password("pass")
+        db.session.add_all([owner, customer, other_customer])
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="contact-scoped-business",
+            nombre="Contact scoped business",
+            tipo="pyme",
+            pyme_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        foreign_contact_ticket = PymeTicket(
+            tenant_id=tenant.id,
+            pregunta="Caso privado de otro contacto",
+            estado="esperando_agente_en_vivo",
+            nro_ticket=933,
+            user_id=other_customer.id,
+            anon_id="+5491222222222",
+        )
+        db.session.add(foreign_contact_ticket)
+        db.session.commit()
+
+        ticket_type, resolved_ticket = _find_live_chat_ticket(
+            owner,
+            customer,
+            "+5491111111111",
+            tenant,
+            {
+                "human_chat_in_progress": True,
+                "ticket_id": foreign_contact_ticket.id,
+                "tipo_ticket": "pyme",
+            },
+        )
+
+        self.assertEqual(ticket_type, "pyme")
+        self.assertIsNone(resolved_ticket)
 
     def test_pyme_comment_emitter_uses_exact_tenant_room_not_rubro_owner_room(self):
         first_owner = User(
