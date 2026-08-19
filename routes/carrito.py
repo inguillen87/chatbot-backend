@@ -944,7 +944,12 @@ def listar_carritos_abandonados():
 @carrito_bp.route('/abandonados/<int:cart_id>/recuperar', methods=['POST', 'OPTIONS'])
 @cross_origin(**_cors_kwargs(["POST", "OPTIONS"]))
 def enviar_recuperacion_carrito(cart_id: int):
-    """Trigger persuasive recovery message for a specific abandoned cart via WhatsApp."""
+    """Trigger persuasive recovery message for a specific abandoned cart via WhatsApp.
+
+    Sends an approved Meta/Twilio template (chatboc_abandoned_cart_v1) if available,
+    with a professional plain-text fallback. Follows Jelou/Respond.io/ManyChat
+    best practices for abandoned cart recovery.
+    """
     if request.method == 'OPTIONS':
         return "", 204
 
@@ -953,22 +958,60 @@ def enviar_recuperacion_carrito(cart_id: int):
     if not cart:
         return jsonify({'error': 'cart_not_found'}), 404
 
-    items_nombres = [it.nombre or getattr(it.catalogo_item, "nombre", "artículo") for it in cart.items[:2]]
-    resumen_items = ", ".join(items_nombres) if items_nombres else "tus productos seleccionados"
+    data = request.get_json(silent=True) or {}
+    custom_message = data.get("mensaje")
 
-    checkout_url = f"https://www.chatboc.ar/t/{tenant.slug if tenant else 'tienda'}/checkout?cart={cart.session_id or cart.id}"
-    
-    mensaje_recuperacion = (
-        f"🛒 ¡Hola! Notamos que dejaste {resumen_items} en tu carrito.\n\n"
-        f"¿Tuviste algún inconveniente o duda con el pago? Podés completar tu pedido de forma segura aquí:\n"
+    # Build cart summary
+    items_nombres = [it.nombre or getattr(it.catalogo_item, "nombre", "artículo") for it in cart.items[:3]]
+    resumen_items = ", ".join(items_nombres) if items_nombres else "tus productos seleccionados"
+    customer_name = getattr(cart, "customer_name", None) or getattr(cart, "nombre", None) or "Cliente"
+    customer_phone = getattr(cart, "customer_phone", None) or getattr(cart, "telefono", None)
+    total = sum(float(it.precio or 0) * float(it.cantidad or 1) for it in cart.items)
+
+    tenant_slug = tenant.slug if tenant else "tienda"
+    checkout_url = f"https://www.chatboc.ar/t/{tenant_slug}/checkout?cart={cart.session_id or cart.id}"
+
+    # Default professional recovery message
+    fallback_body = custom_message or (
+        f"🛒 ¡Hola {customer_name}! Notamos que dejaste *{resumen_items}* en tu carrito "
+        f"(${total:,.0f}).\n\n"
+        f"¿Tuviste algún inconveniente o duda con el pago? "
+        f"Completá tu pedido de forma segura aquí:\n"
         f"👉 {checkout_url}\n\n"
-        f"Si preferís atención personalizada, simplemente respondé a este mensaje. ¡Estamos para ayudarte!"
+        f"Si preferís atención personalizada, simplemente respondé a este mensaje. "
+        f"¡Estamos para ayudarte! 💬"
     )
+
+    whatsapp_sent = False
+    if customer_phone:
+        try:
+            from utils.whatsapp import enviar_template_whatsapp, enviar_mensaje_whatsapp_con_fallback
+
+            # Try approved template first (enterprise standard)
+            whatsapp_sent = enviar_template_whatsapp(
+                numero_destino=customer_phone,
+                template_name="chatboc_abandoned_cart_v1",
+                variables={"1": customer_name, "2": resumen_items, "3": f"${total:,.0f}"},
+                fallback_body=fallback_body,
+            )
+
+            # If template failed, try plain text directly
+            if not whatsapp_sent:
+                whatsapp_sent = enviar_mensaje_whatsapp_con_fallback(
+                    numero_destino=customer_phone,
+                    cuerpo=fallback_body,
+                )
+        except Exception as e:
+            logger.warning(f"[ABANDONED_CART] WhatsApp send failed for cart {cart_id}: {e}")
 
     return jsonify({
         "status": "ok",
-        "message": "Mensaje de recuperación preparado y programado.",
+        "message": "Mensaje de recuperación enviado." if whatsapp_sent else "Mensaje preparado (sin teléfono del cliente).",
+        "whatsapp_sent": whatsapp_sent,
         "cart_id": cart.id,
+        "customer_name": customer_name,
+        "customer_phone": customer_phone,
         "checkout_url": checkout_url,
-        "mensaje_preview": mensaje_recuperacion,
+        "mensaje_preview": fallback_body,
     })
+

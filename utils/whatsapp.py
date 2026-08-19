@@ -238,6 +238,39 @@ TEMPLATE_SIDS = {
     "chatboc_emergency_contact_v1": os.environ.get(
         "TWILIO_TEMPLATE_EMERGENCY_SID", "HX4c5d4d59ba187fe4cad1a02de026d8c5"
     ),
+    # --- ROUND 3: Commerce & Fidelización (ManyChat/Jelou/Respond.io standard) ---
+    # Abandoned Cart Recovery (MARKETING) — "Hola {{1}}, dejaste {{2}} en tu carrito..."
+    "chatboc_abandoned_cart_v1": os.environ.get(
+        "TWILIO_TEMPLATE_ABANDONED_CART_SID", "HXabc_abandoned_cart_placeholder"
+    ),
+    # Welcome OPT-IN first message (MARKETING) — "¡Bienvenido/a {{1}} a {{2}}!"
+    "chatboc_welcome_optin_v1": os.environ.get(
+        "TWILIO_TEMPLATE_WELCOME_OPTIN_SID", "HXabc_welcome_optin_placeholder"
+    ),
+    # NPS / Satisfaction Survey with Quick Reply (UTILITY) — "¿Cómo fue tu experiencia?"
+    "chatboc_nps_survey_v1": os.environ.get(
+        "TWILIO_TEMPLATE_NPS_SURVEY_SID", "HXabc_nps_survey_placeholder"
+    ),
+    # Coupon / Discount Recovery (MARKETING) — "{{1}}, tenemos un cupón..."
+    "chatboc_coupon_recovery_v1": os.environ.get(
+        "TWILIO_TEMPLATE_COUPON_RECOVERY_SID", "HXabc_coupon_recovery_placeholder"
+    ),
+    # Appointment Reminder with Reschedule CTA (UTILITY) — "Recordatorio: turno el {{1}}"
+    "chatboc_appointment_reminder_v2": os.environ.get(
+        "TWILIO_TEMPLATE_APPOINTMENT_REMINDER_SID", "HXabc_appointment_reminder_placeholder"
+    ),
+    # Order Shipped with Tracking URL (UTILITY) — "Tu pedido #{{1}} fue despachado"
+    "chatboc_order_shipped_v1": os.environ.get(
+        "TWILIO_TEMPLATE_ORDER_SHIPPED_SID", "HXabc_order_shipped_placeholder"
+    ),
+    # Payment Request with Link (UTILITY) — "Hola {{1}}, tu link de pago está listo"
+    "chatboc_payment_request_v1": os.environ.get(
+        "TWILIO_TEMPLATE_PAYMENT_REQUEST_SID", "HXabc_payment_request_placeholder"
+    ),
+    # GovTech: Citizen Claim Escalation (UTILITY) — "Tu reclamo {{1}} fue derivado a {{2}}"
+    "chatboc_claim_escalation_v1": os.environ.get(
+        "TWILIO_TEMPLATE_CLAIM_ESCALATION_SID", "HXabc_claim_escalation_placeholder"
+    ),
 }
 
 
