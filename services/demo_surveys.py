@@ -118,6 +118,30 @@ def _templates_for_sector(sector: str) -> list[dict[str, Any]]:
     if normalized == "gobierno":
         return [
             {
+                "id": "votacion-gestion-tdf",
+                "tipo": "votacion",
+                "titulo": "Votacion Ciudadana: Conectividad y Polos de Innovacion TDF",
+                "descripcion": "Consulta publica sobre la expansion de fibra optica y polos tecnologicos en Ushuaia, Rio Grande y Tolhuin (Gestion Provincial TDF).",
+                "pregunta": "Esta de acuerdo con priorizar la inversion provincial en conectividad digital y centros de innovacion?",
+                "opciones": ["Si, totalmente prioritario", "No, priorizar otras areas"],
+            },
+            {
+                "id": "encuesta-innovacion-tdf",
+                "tipo": "encuesta",
+                "titulo": "Encuesta Provincial: Transformacion Digital y Tramites Publicos TDF",
+                "descripcion": "Relevamiento de la Agencia de Innovacion de Tierra del Fuego sobre digitalizacion de tramites, conectividad y atencion ciudadana.",
+                "pregunta": "Que servicio publico digital considera mas urgente optimizar en su ciudad?",
+                "opciones": ["Tramites provinciales 100% online", "Conectividad escolar y comunitaria", "Capacitaciones y Polos Tecnologicos", "Turnos de salud y hospitales"],
+            },
+            {
+                "id": "encuesta-obras-tdf",
+                "tipo": "votacion",
+                "titulo": "Consulta de Obras e Infraestructura: Ushuaia y Rio Grande",
+                "descripcion": "Priorizacion de infraestructura urbana y desarrollo productivo en Tierra del Fuego.",
+                "pregunta": "Cual es la obra de infraestructura mas necesaria para su localidad?",
+                "opciones": ["Ruta y accesos viales", "Infraestructura portuaria y logistica", "Vivienda y habitat sostenible", "Centros de formacion tecnologica"],
+            },
+            {
                 "id": "prioridades-barriales",
                 "tipo": "votacion",
                 "titulo": "Votacion de prioridades barriales",
@@ -242,8 +266,11 @@ def _sector_labels(sector: str) -> dict[str, str]:
     }
 
 
-def _geo_labels(sector: str) -> list[str]:
+def _geo_labels(sector: str, tenant_slug: str = "") -> list[str]:
     normalized = normalize_demo_sector(sector)
+    slug = _slug_part(tenant_slug)
+    if "tdf" in slug or "tierra" in slug or "ushuaia" in slug or "fuego" in slug:
+        return ["Ushuaia Centro", "Rio Grande Industrial", "Tolhuin", "Andorra", "Margen Sur"]
     if normalized == "educacion":
         return ["Inicial", "Primaria", "Secundaria", "Familias nuevas", "Egresados"]
     if normalized == "gobierno":
@@ -254,13 +281,17 @@ def _geo_labels(sector: str) -> list[str]:
 def _coordinate_base(sector: str, tenant_slug: str) -> tuple[float, float]:
     normalized = normalize_demo_sector(sector)
     slug = _slug_part(tenant_slug)
+    if "tdf" in slug or "tierra" in slug or "ushuaia" in slug or "fuego" in slug or "melella" in slug:
+        return -54.8019, -68.3030  # Ushuaia / Tierra del Fuego
+    if "rio-grande" in slug or "riogrande" in slug:
+        return -53.7877, -67.7095  # Río Grande, Tierra del Fuego
     if "junin" in slug:
-        return -34.5844, -60.9433
+        return -33.1412, -68.4839  # Junín, Mendoza
     if normalized == "empresas":
-        return -32.8895, -68.8458
+        return -32.8895, -68.8458  # Mendoza Ciudad
     if normalized == "educacion":
-        return -34.6037, -58.3816
-    return -34.5844, -60.9433
+        return -34.6037, -58.3816  # Buenos Aires
+    return -33.1412, -68.4839
 
 
 def _demo_public_state(*, is_live_vote: bool = True) -> dict[str, Any]:
@@ -395,7 +426,7 @@ def _results_for_template(template: dict[str, Any], *, sector: str, tenant_slug:
     option_counts = _split_counts(total, list(template.get("opciones") or []), f"{slug}:options")
     gender_counts = _split_counts(total, ["mujer", "varon", "otro_prefiere_no_decir"], f"{slug}:gender")
     age_counts = _split_counts(total, ["18-29", "30-44", "45-60", "60+"], f"{slug}:age")
-    zone_counts = _split_counts(total, _geo_labels(sector), f"{slug}:zone")
+    zone_counts = _split_counts(total, _geo_labels(sector, tenant_slug), f"{slug}:zone")
     channel_counts = _split_counts(total, ["whatsapp", "widget_chat", "web"], f"{slug}:channel")
     base_lat, base_lng = _coordinate_base(sector, tenant_slug)
     rng = _rng(slug, "heatmap")
