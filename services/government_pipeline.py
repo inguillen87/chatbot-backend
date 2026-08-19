@@ -113,10 +113,21 @@ def load_incidents_for_municipio(
         try:
             resolution = resolve_unique_tenant_for_owner(normalized_owner_id)
         except ValueError:
+            resolution = None
+        if resolution and resolution.status == "unique" and resolution.tenant is not None:
+            tenant = resolution.tenant
+        else:
+            tenant = (
+                db.session.get(TenantProfile, normalized_owner_id)
+                or TenantProfile.query.filter_by(municipio_id=normalized_owner_id).first()
+                or (
+                    actor
+                    and getattr(actor, "tenant_slug", None)
+                    and TenantProfile.query.filter_by(slug=str(actor.tenant_slug).strip().lower()).first()
+                )
+            )
+        if tenant is None:
             return []
-        if resolution.status != "unique" or resolution.tenant is None:
-            return []
-        tenant = resolution.tenant
 
     query = scoped_municipio_ticket_query(
         tenant,

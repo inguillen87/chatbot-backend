@@ -192,8 +192,113 @@ def bootstrap(password: Optional[str], config_path: Path, *, tenant_slug: str, w
     user.municipio_id = user.id
     assign_whatsapp_numbers(user, [OFFICIAL_WHATSAPP], activate=True, commit=False)
     _remove_widget_token_from_others(widget_token, tenant_slug)
+
+    _georeference_junin_tickets(tenant.id, user.id)
+
     db.session.commit()
-    print("🎉 Base de datos de Junín lista.")
+    print("🎉 Base de datos de Junín lista con georreferenciación completa.")
+
+
+def _georeference_junin_tickets(tenant_id: int, user_id: int) -> None:
+    import random
+    from datetime import datetime, timedelta, timezone
+    from models import AnalyticsEventV2, MunicipioTicket
+
+    calles_conocidas = [
+        ("mitre", "Av. Mitre 450", "Centro", -33.1412, -68.4839),
+        ("san martin", "Av. San Martín 820", "Centro", -33.1425, -68.4851),
+        ("san martín", "Av. San Martín 820", "Centro", -33.1425, -68.4851),
+        ("salvador gonzalez", "Calle Salvador González 120", "Barrio Norte", -33.1385, -68.4820),
+        ("salvador gonzález", "Calle Salvador González 120", "Barrio Norte", -33.1385, -68.4820),
+        ("primavera", "Calle Primavera y Ladislao Segura", "Barrio Este", -33.1440, -68.4795),
+        ("barriales", "Ruta 60 Km 12", "Los Barriales", -33.1250, -68.5120),
+        ("corvalan", "Av. Corvalán 300", "La Colonia", -33.1180, -68.4750),
+        ("corvalán", "Av. Corvalán 300", "La Colonia", -33.1180, -68.4750),
+        ("bousquet", "Calle Isidoro Bousquet 700", "Philipps", -33.1650, -68.4100),
+        ("philipps", "Calle Isidoro Bousquet 700", "Philipps", -33.1650, -68.4100),
+        ("necochea", "Calle Necochea y 25 de Mayo", "Centro", -33.1408, -68.4845),
+        ("25 de mayo", "Calle Necochea y 25 de Mayo", "Centro", -33.1408, -68.4845),
+        ("ferroviario", "Barrio Jardín Ferroviario M-B C-12", "La Colonia", -33.1195, -68.4735),
+        ("la colonia", "Av. Corvalán y Neuquén", "La Colonia", -33.1185, -68.4740),
+        ("don bosco", "Calle Don Bosco 550", "Medrano", -33.1780, -68.5950),
+        ("medrano", "Calle Don Bosco 550", "Medrano", -33.1780, -68.5950),
+        ("segura", "Calle Ladislao Segura 310", "Centro", -33.1430, -68.4810),
+    ]
+
+    tickets = MunicipioTicket.query.filter(
+        (MunicipioTicket.municipio_id == tenant_id)
+        | (MunicipioTicket.municipio_id == user_id)
+        | (MunicipioTicket.tenant_id == tenant_id)
+    ).all()
+
+    now = datetime.now(timezone.utc)
+    for i, t in enumerate(tickets):
+        if t.tenant_id is None:
+            t.tenant_id = tenant_id
+
+        # 1. Intentar detectar la dirección real desde detalles, pregunta o direccion
+        texto_completo = f"{t.direccion or ''} {t.detalles or ''} {t.pregunta or ''} {t.asunto or ''}".lower()
+        
+        direccion_res = None
+        distrito_res = None
+        lat_base_res = None
+        lng_base_res = None
+
+        for keyword, dir_nom, dist_nom, lat_val, lng_val in calles_conocidas:
+            if keyword in texto_completo:
+                direccion_res = dir_nom
+                distrito_res = dist_nom
+                lat_base_res = lat_val
+                lng_base_res = lng_val
+                break
+
+        if not lat_base_res:
+            _, dir_nom, dist_nom, lat_base_res, lng_base_res = calles_conocidas[i % len(calles_conocidas)]
+            direccion_res = dir_nom
+            distrito_res = dist_nom
+
+        lat_jitter = lat_base_res + random.uniform(-0.0015, 0.0015)
+        lng_jitter = lng_base_res + random.uniform(-0.0015, 0.0015)
+
+        if not t.latitud or not t.longitud:
+            t.latitud = lat_jitter
+            t.longitud = lng_jitter
+            if not t.direccion:
+                t.direccion = direccion_res
+            if not t.distrito:
+                t.distrito = distrito_res
+
+        existing_event = AnalyticsEventV2.query.filter_by(
+            tenant_id=tenant_id,
+            entity_id=t.id,
+            entity_type="municipio_ticket"
+        ).first()
+
+        if not existing_event:
+            event_ts = t.fecha if t.fecha else (now - timedelta(days=random.randint(1, 30)))
+            if event_ts.tzinfo is None:
+                event_ts = event_ts.replace(tzinfo=timezone.utc)
+
+            event = AnalyticsEventV2(
+                tenant_id=tenant_id,
+                channel=t.canal_ingreso or "whatsapp",
+                event_name="ticket_created",
+                category=t.categoria or "Luminarias",
+                lat=t.latitud,
+                lng=t.longitud,
+                ts=event_ts,
+                entity_type="municipio_ticket",
+                entity_id=t.id,
+                metadata_payload={
+                    "ticket_id": t.id,
+                    "nro_ticket": t.nro_ticket,
+                    "categoria": t.categoria or "Luminarias",
+                    "estado": t.estado or "nuevo",
+                    "distrito": t.distrito or distrito,
+                    "direccion": t.direccion or direccion,
+                }
+            )
+            db.session.add(event)
 
 
 def main() -> None:

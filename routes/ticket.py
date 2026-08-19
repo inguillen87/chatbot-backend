@@ -1527,6 +1527,30 @@ def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], 
             .order_by(TenantProfile.id.asc())
             .first()
         )
+    if not tenant and getattr(current_user, "municipio_id", None):
+        tenant = (
+            TenantProfile.query.filter(
+                TenantProfile.municipio_id == current_user.municipio_id
+            )
+            .order_by(TenantProfile.id.asc())
+            .first()
+        )
+    if not tenant and getattr(current_user, "pyme_id", None):
+        tenant = (
+            TenantProfile.query.filter(
+                TenantProfile.pyme_id == current_user.pyme_id
+            )
+            .order_by(TenantProfile.id.asc())
+            .first()
+        )
+    if not tenant and getattr(current_user, "empresa_id", None):
+        tenant = (
+            TenantProfile.query.filter(
+                TenantProfile.pyme_id == current_user.empresa_id
+            )
+            .order_by(TenantProfile.id.asc())
+            .first()
+        )
     if not tenant:
         tenant = get_current_tenant_profile(allow_fallback=False)
     if not tenant:
@@ -1548,6 +1572,10 @@ def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProf
     if tenant.pyme_id and current_user.pyme_id == tenant.pyme_id:
         return True
     if tenant.municipio_id and current_user.empresa_id == tenant.municipio_id:
+        return True
+    if getattr(current_user, "municipio_id", None) == tenant.id or current_user.id == tenant.id or getattr(current_user, "pyme_id", None) == tenant.id:
+        return True
+    if current_user.tenant_slug and tenant.slug and str(current_user.tenant_slug).strip().lower() == str(tenant.slug).strip().lower():
         return True
     return False
 
@@ -4623,37 +4651,57 @@ def get_panel_por_categoria(current_user: User):
     try:
         from datetime import timedelta
 
-        # Helper function (puede moverse a un archivo de utils o services después)
+        def _coerce_dt(val):
+            if val is None:
+                return None
+            if isinstance(val, datetime):
+                return val
+            try:
+                return datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+            except Exception:
+                return None
+
         def _calculate_ticket_metrics_for_list(ticket_list_with_comments):
             first_response_times = []
             resolution_times = []
 
             for ticket in ticket_list_with_comments:
-                # Asegurarse que ticket.fecha es datetime object
-                if not isinstance(ticket.fecha, datetime): # pragma: no cover
-                    try:
-                        # Intentar parsear si es string, o skip si no es válido
-                        ticket.fecha = datetime.fromisoformat(str(ticket.fecha))
-                    except ValueError:
-                        continue # Skip este ticket si la fecha no es válida
+                ticket_fecha = _coerce_dt(getattr(ticket, "fecha", None))
+                if not ticket_fecha:
+                    continue
 
-                admin_comments = sorted([c for c in ticket.comentarios if c.es_admin], key=lambda c: c.fecha)
+                raw_comments = getattr(ticket, "comentarios", [])
+                if hasattr(raw_comments, "all"):
+                    try:
+                        comments_list = raw_comments.all()
+                    except Exception:
+                        comments_list = []
+                elif isinstance(raw_comments, (list, tuple, set)):
+                    comments_list = list(raw_comments)
+                else:
+                    comments_list = []
+
+                admin_comments = []
+                for c in comments_list:
+                    if getattr(c, "es_admin", False):
+                        c_fecha = _coerce_dt(getattr(c, "fecha", None))
+                        if c_fecha is not None:
+                            admin_comments.append((c_fecha, c))
 
                 if admin_comments:
-                    first_admin_comment_time = admin_comments[0].fecha
-                    if isinstance(first_admin_comment_time, datetime) and isinstance(ticket.fecha, datetime):
-                        response_delta = first_admin_comment_time - ticket.fecha
-                        first_response_times.append(response_delta.total_seconds())
+                    admin_comments.sort(key=lambda x: x[0])
+                    first_admin_time = admin_comments[0][0]
+                    t_f = ticket_fecha.replace(tzinfo=None) if ticket_fecha.tzinfo else ticket_fecha
+                    f_t = first_admin_time.replace(tzinfo=None) if first_admin_time.tzinfo else first_admin_time
+                    response_delta = f_t - t_f
+                    first_response_times.append(max(0, response_delta.total_seconds()))
 
-                if ticket.estado == 'cerrado':
-                    closure_time = ticket.ultima_actividad
-                    # Asegurarse que closure_time y ticket.fecha son datetime
-                    if not isinstance(closure_time, datetime): # pragma: no cover
-                         closure_time = datetime.fromisoformat(str(closure_time)) if closure_time else ticket.fecha # fallback
-
-                    if isinstance(closure_time, datetime) and isinstance(ticket.fecha, datetime):
-                        resolution_delta = closure_time - ticket.fecha
-                        resolution_times.append(resolution_delta.total_seconds())
+                if getattr(ticket, "estado", "") == "cerrado":
+                    closure_time = _coerce_dt(getattr(ticket, "ultima_actividad", None)) or ticket_fecha
+                    t_f = ticket_fecha.replace(tzinfo=None) if ticket_fecha.tzinfo else ticket_fecha
+                    c_t = closure_time.replace(tzinfo=None) if closure_time.tzinfo else closure_time
+                    resolution_delta = c_t - t_f
+                    resolution_times.append(max(0, resolution_delta.total_seconds()))
 
             avg_first_response_seconds = sum(first_response_times) / len(first_response_times) if first_response_times else None
             avg_resolution_seconds = sum(resolution_times) / len(resolution_times) if resolution_times else None

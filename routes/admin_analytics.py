@@ -1179,13 +1179,20 @@ def admin_analytics_heatmap():
     if filters.date_to:
         query = query.filter(AnalyticsEventV2.ts <= filters.date_to)
 
+    if db.engine.dialect.name == "sqlite":
+        weekday_col = func.strftime("%w", AnalyticsEventV2.ts).label("weekday")
+        hour_col = func.strftime("%H", AnalyticsEventV2.ts).label("hour")
+    else:
+        weekday_col = func.extract("dow", AnalyticsEventV2.ts).label("weekday")
+        hour_col = func.extract("hour", AnalyticsEventV2.ts).label("hour")
+
     temporal_rows = (
         query.with_entities(
-            func.strftime("%w", AnalyticsEventV2.ts).label("weekday"),
-            func.strftime("%H", AnalyticsEventV2.ts).label("hour"),
+            weekday_col,
+            hour_col,
             func.count(AnalyticsEventV2.id).label("total"),
         )
-        .group_by("weekday", "hour")
+        .group_by(weekday_col, hour_col)
         .all()
     )
 
@@ -1196,7 +1203,6 @@ def admin_analytics_heatmap():
         AnalyticsEventV2.lat.label("lat"),
         AnalyticsEventV2.lng.label("lng"),
     ).all()
-
 
     temporal = [
         {"weekday": int(row.weekday), "hour": int(row.hour), "count": int(row.total)}

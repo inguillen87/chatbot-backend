@@ -388,6 +388,8 @@ def admin_analytics_hub_alias():
 
 
 @api_aliases_bp.route("/admin/analytics/whatsapp-funnel", methods=["GET", "OPTIONS"], strict_slashes=False)
+@api_aliases_bp.route("/v2/analytics/whatsapp-funnel", methods=["GET", "OPTIONS"], strict_slashes=False)
+@api_aliases_bp.route("/api/v2/analytics/whatsapp-funnel", methods=["GET", "OPTIONS"], strict_slashes=False)
 def admin_analytics_whatsapp_funnel_alias():
     if request.method == "OPTIONS":
         return _options_ok()
@@ -399,6 +401,22 @@ def admin_analytics_realtime_hub_alias():
     if request.method == "OPTIONS":
         return _options_ok()
     return admin_analytics_realtime_hub()
+
+
+@api_aliases_bp.route("/api/gov/analytics/scorecards", methods=["GET", "OPTIONS"], strict_slashes=False)
+def api_gov_analytics_scorecards_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    from routes.gov_analytics import civic_scorecards
+    return civic_scorecards()
+
+
+@api_aliases_bp.route("/api/gov/analytics/heatmap", methods=["GET", "OPTIONS"], strict_slashes=False)
+def api_gov_analytics_heatmap_alias():
+    if request.method == "OPTIONS":
+        return _options_ok()
+    from routes.gov_analytics import civic_heatmap
+    return civic_heatmap()
 
 
 @api_aliases_bp.route("/admin/analytics/export.csv", methods=["GET"], strict_slashes=False)
