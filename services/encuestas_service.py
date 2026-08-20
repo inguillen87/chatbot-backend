@@ -3513,9 +3513,9 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
 
-    from services.survey_governance import has_governance_release
+    from services.survey_governance import has_published_governance_release
 
-    if has_governance_release(encuesta):
+    if has_published_governance_release(encuesta):
         raise EncuestaError(
             "La encuesta tiene un release de gobernanza inmutable",
             status_code=409,
@@ -3526,6 +3526,13 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
                 "action_hint": "duplicate_as_new_draft",
             },
         )
+
+    if encuesta.estado == "borrador":
+        SurveyGovernanceRelease.query.filter_by(
+            tenant_id=encuesta.tenant_id,
+            survey_id=encuesta.id,
+            status="draft",
+        ).delete()
 
     expected_revision = _expected_structure_revision(data)
     if (

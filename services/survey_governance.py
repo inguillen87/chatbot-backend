@@ -1512,3 +1512,16 @@ def has_governance_release(encuesta: EncEncuesta) -> bool:
         .scalar()
         or 0
     ) > 0
+
+
+def has_published_governance_release(encuesta: EncEncuesta) -> bool:
+    return (
+        db.session.query(func.count(SurveyGovernanceRelease.id))
+        .filter(
+            SurveyGovernanceRelease.tenant_id == encuesta.tenant_id,
+            SurveyGovernanceRelease.survey_id == encuesta.id,
+            SurveyGovernanceRelease.status.in_(["published", "closed"]),
+        )
+        .scalar()
+        or 0
+    ) > 0
