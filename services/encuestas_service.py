@@ -756,16 +756,18 @@ def _demo_seed_explicitly_enabled() -> bool:
         return _env_flag("ALLOW_SURVEY_DEMO_SEEDING", default=False)
 
 
-def _demo_seed_runtime_allowed() -> bool:
+def _demo_seed_runtime_allowed(user: Any = None) -> bool:
+    if user is not None and getattr(user, "rol", None) in {"admin", "super_admin"}:
+        return True
     return _demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe()
 
 
-def _require_demo_seed_runtime_allowed() -> None:
-    if _demo_seed_runtime_allowed():
+def _require_demo_seed_runtime_allowed(user: Any = None) -> None:
+    if _demo_seed_runtime_allowed(user=user):
         return
     explicitly_enabled = _demo_seed_explicitly_enabled()
     raise EncuestaError(
-        "La generación de respuestas sintéticas sólo está habilitada en entornos QA.",
+        "La generación de respuestas sintéticas sólo está habilitada para administradores o entornos QA.",
         status_code=403,
         payload={
             "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
@@ -3428,7 +3430,7 @@ def create_encuesta(
     if auto_seed_cfg:
         # Fail before the ORM object is added or flushed. A disabled seed must
         # never return an error after leaving a real survey committed behind.
-        _require_demo_seed_runtime_allowed()
+        _require_demo_seed_runtime_allowed(user=user)
     privacy_settings = _validated_privacy_settings(payload)
     if (
         auto_seed_cfg
@@ -3626,7 +3628,7 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
             tenant_id=encuesta.tenant_id,
         )
         if prepared_auto_seed_config:
-            _require_demo_seed_runtime_allowed()
+            _require_demo_seed_runtime_allowed(user=user)
 
     if candidate_slug is not None:
         encuesta.slug = candidate_slug
@@ -6923,7 +6925,7 @@ def seed_encuesta_respuestas_demo(
     reset_data: bool = False,
     scenario: str = "balanced",
 ) -> Dict[str, Any]:
-    _require_demo_seed_runtime_allowed()
+    _require_demo_seed_runtime_allowed(user=user)
     cantidad = _validate_demo_seed_count(cantidad)
 
     encuesta = get_encuesta(encuesta_id, user=user)
