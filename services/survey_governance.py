@@ -38,9 +38,11 @@ CONSENT_TEXT_MIN_CODEPOINTS = 1
 CONSENT_TEXT_MAX_CODEPOINTS = 4000
 RELEASE_SNAPSHOT_SCHEMA_V1 = "surveys.release_snapshot.v1"
 RELEASE_SNAPSHOT_SCHEMA_V2 = "surveys.release_snapshot.v2"
+RELEASE_SNAPSHOT_SCHEMA_V3 = "surveys.release_snapshot.v3"
 _SUPPORTED_RELEASE_SNAPSHOT_SCHEMAS = {
     RELEASE_SNAPSHOT_SCHEMA_V1,
     RELEASE_SNAPSHOT_SCHEMA_V2,
+    RELEASE_SNAPSHOT_SCHEMA_V3,
 }
 
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
@@ -547,7 +549,7 @@ def build_release_snapshot(
     encuesta: EncEncuesta,
     governance_policy: Mapping[str, Any],
     *,
-    schema_version: str = RELEASE_SNAPSHOT_SCHEMA_V2,
+    schema_version: str = RELEASE_SNAPSHOT_SCHEMA_V3,
 ) -> dict[str, Any]:
     if schema_version not in _SUPPORTED_RELEASE_SNAPSHOT_SCHEMAS:
         raise SurveyGovernanceError(
@@ -591,7 +593,7 @@ def build_release_snapshot(
                 ],
             }
         )
-    return {
+    snapshot = {
         "schema_version": schema_version,
         "instrument": {
             "survey_id": int(encuesta.id),
@@ -628,6 +630,17 @@ def build_release_snapshot(
             "human_review_required": True,
         },
     }
+    if schema_version == RELEASE_SNAPSHOT_SCHEMA_V3:
+        from services.survey_jurisdiction import survey_content_sha256
+
+        snapshot["content_integrity"] = {
+            "contract_version": "surveys.jurisdiction_guard.v1",
+            "jurisdiction_ref": encuesta.jurisdiction_ref,
+            "content_origin": encuesta.content_origin or "legacy_unverified",
+            "content_origin_ref": encuesta.content_origin_ref,
+            "content_sha256": survey_content_sha256(encuesta),
+        }
+    return snapshot
 
 
 def _validate_idempotency_key(value: Any) -> str:
@@ -999,6 +1012,23 @@ def publish_release(
     _ensure_publication_window(survey)
     _ensure_privacy_publication_ready(survey)
 
+    from services.survey_jurisdiction import (
+        SurveyJurisdictionError,
+        assert_publication_allowed,
+        record_content_receipt,
+    )
+
+    try:
+        assert_publication_allowed(survey)
+    except SurveyJurisdictionError as exc:
+        raise SurveyGovernanceError(
+            exc.message,
+            status_code=exc.status_code,
+            reason_code=exc.reason_code,
+            action_hint=exc.action_hint,
+            extra=exc.extra,
+        ) from exc
+
     now = _utc_now()
     release.status = "published"
     release.published_at = now
@@ -1016,6 +1046,17 @@ def publish_release(
         release=release,
         details={"status": "published", "policy_sha256": release.policy_sha256},
         ip_address=ip_address,
+    )
+    record_content_receipt(
+        survey,
+        event_type="published",
+        decision="published",
+        actor_user_id=actor_user_id,
+        reason_code="survey_governance_release_published",
+        idempotency_key=(
+            "governance-publish:"
+            + _sha256_text(f"{tenant_id}:{survey_id}:{release.id}:{key}")
+        ),
     )
     _commit_or_governance_error("survey_governance_publish_conflict")
     return release, False

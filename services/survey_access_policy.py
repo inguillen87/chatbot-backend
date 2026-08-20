@@ -11,6 +11,8 @@ SURVEY_EXPORT_CAPABILITY = "survey.export"
 SURVEY_PII_READ_CAPABILITY = "survey.pii.read"
 SURVEY_GOVERNANCE_MANAGE_CAPABILITY = "survey.governance.manage"
 SURVEY_ELIGIBILITY_MANAGE_CAPABILITY = "survey.eligibility.manage"
+SURVEY_CONTENT_REVIEW_CAPABILITY = "survey.content.review"
+SURVEY_PUBLISH_CAPABILITY = "survey.publish"
 
 
 def _flatten_capability_values(raw: Any) -> set[str]:

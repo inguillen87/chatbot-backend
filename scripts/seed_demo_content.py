@@ -2,7 +2,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from flask import current_app
+from flask import current_app, has_app_context
 
 # Add project root to sys.path
 sys.path.insert(0, os.path.abspath(os.getcwd()))
@@ -42,12 +42,7 @@ def get_or_create_survey(tenant, title, slug, questions_data):
     # Surveys are linked via tenant_id directly in EncEncuesta
     existing = EncEncuesta.query.filter_by(tenant_id=tenant.id, slug=slug).first()
     if existing:
-        if existing.estado != "publicada":
-            existing.estado = "publicada"
-            db.session.add(existing)
-            print(f"  - Survey '{title}' updated to published.")
-        else:
-            print(f"  - Survey '{title}' already exists.")
+        print(f"  - Survey '{title}' already exists; seed leaves it unchanged.")
         return
 
     survey = EncEncuesta(
@@ -55,8 +50,10 @@ def get_or_create_survey(tenant, title, slug, questions_data):
         slug=slug,
         titulo=title,
         descripcion=f"Encuesta de demostración para {tenant.nombre}",
-        estado="publicada",
+        estado="borrador",
         tipo="opinion",
+        content_origin="seed_demo",
+        content_origin_ref="script:seed_demo_content:v1",
         inicio_at=datetime.now(timezone.utc) - timedelta(days=1),
         fin_at=datetime.now(timezone.utc) + timedelta(days=30),
     )
@@ -84,7 +81,23 @@ def get_or_create_survey(tenant, title, slug, questions_data):
                 )
                 db.session.add(opt)
 
-    print(f"  + Created Survey: {title}")
+    from services.survey_jurisdiction import (
+        bind_verified_tenant_jurisdiction,
+        record_content_receipt,
+    )
+
+    bind_verified_tenant_jurisdiction(survey, tenant=tenant)
+    record_content_receipt(
+        survey,
+        event_type="created",
+        decision="recorded",
+        # This script is a system actor. Tenant owner ids are not necessarily
+        # User ids and must never be misrepresented as the human reviewer FK.
+        actor_user_id=None,
+        reason_code="survey_demo_seed_created_as_draft",
+    )
+
+    print(f"  + Created draft survey: {title}")
 
 def get_or_create_catalog_item(tenant, name, price, category, image_url=None, description=""):
     owner = tenant.municipio or tenant.pyme
@@ -253,15 +266,24 @@ def _run_seed_logic():
     db.session.commit()
     print("\n✅ Seeding complete.")
 
+def _assert_demo_seed_allowed() -> None:
+    environment = str(current_app.config.get("ENV", "") or "").strip().lower()
+    if environment in {"prod", "production"}:
+        raise RuntimeError("Demo content seeding is forbidden in Production")
+    if current_app.config.get("ALLOW_SURVEY_DEMO_SEEDING") is not True:
+        raise RuntimeError("ALLOW_SURVEY_DEMO_SEEDING must be explicitly enabled")
+
+
 def seed_content():
-    if current_app:
-        # Use existing context (e.g., from init_tenants.py or flask shell)
+    if has_app_context():
+        _assert_demo_seed_allowed()
         _run_seed_logic()
-    else:
-        # Create new app (e.g., running this script directly)
-        app = create_app()
-        with app.app_context():
-            _run_seed_logic()
+        return
+
+    app = create_app()
+    with app.app_context():
+        _assert_demo_seed_allowed()
+        _run_seed_logic()
 
 if __name__ == "__main__":
     seed_content()

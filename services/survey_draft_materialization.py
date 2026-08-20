@@ -1206,7 +1206,16 @@ def materialize_survey_draft(
     )
 
     try:
-        survey = create_encuesta(payload, user, commit=False)
+        survey = create_encuesta(
+            payload,
+            user,
+            commit=False,
+            content_origin="draft_materialization",
+            content_origin_ref=(
+                f"draft:{draft.draft_id}:revision:{int(draft.revision)}:"
+                f"{draft.payload_hash}"
+            ),
+        )
         if survey.tenant_id != tenant_id:
             db.session.rollback()
             raise SurveyDraftMaterializationError(

@@ -645,8 +645,13 @@ class SurveyDraftMaterializationApiTest(unittest.TestCase):
         self.assertEqual(self._save_draft(draft_id).status_code, 200)
         real_create = materialization_service.create_encuesta
 
-        def create_for_wrong_tenant(payload, user, *, commit=True):
-            survey = real_create(payload, user, commit=commit)
+        def create_for_wrong_tenant(payload, user, *, commit=True, **server_metadata):
+            survey = real_create(
+                payload,
+                user,
+                commit=commit,
+                **server_metadata,
+            )
             survey.tenant_id = self.tenant_2.id
             db.session.flush()
             return survey

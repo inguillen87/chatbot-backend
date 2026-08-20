@@ -590,6 +590,20 @@ class EncuestaError(Exception):
         return data
 
 
+def _encuesta_jurisdiction_error(exc: Exception) -> EncuestaError:
+    """Preserve the jurisdiction gate's stable public error contract."""
+
+    return EncuestaError(
+        getattr(exc, "message", str(exc)),
+        status_code=int(getattr(exc, "status_code", 409)),
+        payload=(
+            exc.to_dict()
+            if callable(getattr(exc, "to_dict", None))
+            else {"reason_code": "survey_jurisdiction_guard_blocked"}
+        ),
+    )
+
+
 def _survey_concurrency_error(
     message: str = "La encuesta esta siendo actualizada. Intenta nuevamente.",
     *,
@@ -835,8 +849,10 @@ def _ensure_locked_public_encuesta(encuesta: EncEncuesta) -> None:
             status_code=403,
             payload={"reason_code": "survey_not_published"},
         )
-    if current_app.config.get("ENABLE_DEMO_MODE"):
-        _ensure_demo_public_window(encuesta)
+    from services.survey_jurisdiction import survey_is_publicly_visible
+
+    if not survey_is_publicly_visible(encuesta):
+        raise _public_survey_not_found_error()
     if not encuesta.esta_activa():
         raise EncuestaError(
             "La encuesta no esta en su ventana de participacion",
@@ -1022,9 +1038,6 @@ def _current_app_logger():
         return current_app.logger
     except RuntimeError:
         return None
-
-
-_BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=False)
 
 
 _AUTO_SEED_SEGMENT_KEY = "auto_seed_demo"
@@ -1401,35 +1414,13 @@ def _resolve_geo_metadata(
         candidates.append(_slugify(profile_key))
     if municipality:
         candidates.append(_slugify(municipality))
-    tdf_keys = {"tierra_del_fuego", "tdf", "ushuaia", "rio_grande", "tierradelfuego"}
+    exact_catalog = {
+        _slugify(str(key)): entry
+        for key, entry in catalog.items()
+        if isinstance(entry, dict)
+    }
     for candidate in candidates:
-        if candidate in tdf_keys or "tierra" in candidate or "fuego" in candidate:
-            return {
-                "key": "tierra_del_fuego",
-                "label": "Tierra del Fuego",
-                "center": {"lat": -54.8072, "lng": -68.3077},
-                "neighborhoods": [
-                    "Centro", "Río Pipo", "La Cantera", "Kaupen", "Malvinas Argentinas",
-                    "Chacra II", "Chacra IV", "Margen Sur", "Barrio AGP", "Mutual"
-                ],
-                "districts": ["Ushuaia", "Río Grande", "Tolhuin"],
-                "clusters": [
-                    {"lat": -54.8072, "lng": -68.3077, "barrio": "Centro", "ciudad": "Ushuaia", "provincia": "Tierra del Fuego"},
-                    {"lat": -54.8210, "lng": -68.3450, "barrio": "Río Pipo", "ciudad": "Ushuaia", "provincia": "Tierra del Fuego"},
-                    {"lat": -54.7950, "lng": -68.2880, "barrio": "La Cantera", "ciudad": "Ushuaia", "provincia": "Tierra del Fuego"},
-                    {"lat": -53.7877, "lng": -67.7000, "barrio": "Centro", "ciudad": "Río Grande", "provincia": "Tierra del Fuego"},
-                    {"lat": -53.7720, "lng": -67.7210, "barrio": "Chacra II", "ciudad": "Río Grande", "provincia": "Tierra del Fuego"},
-                    {"lat": -53.8050, "lng": -67.6890, "barrio": "Margen Sur", "ciudad": "Río Grande", "provincia": "Tierra del Fuego"},
-                    {"lat": -54.5100, "lng": -67.1950, "barrio": "Centro", "ciudad": "Tolhuin", "provincia": "Tierra del Fuego"},
-                ]
-            }
-        entry = catalog.get(candidate)
-        if isinstance(entry, dict):
-            return entry
-    # Fallback: return first catalog entry if available.
-    if catalog:
-        first_key = next(iter(catalog))
-        entry = catalog.get(first_key)
+        entry = exact_catalog.get(candidate)
         if isinstance(entry, dict):
             return entry
     return None
@@ -3881,9 +3872,41 @@ def create_encuesta(
     user: Any,
     *,
     commit: bool = True,
+    content_origin: str = "manual",
+    content_origin_ref: Optional[str] = None,
 ) -> EncEncuesta:
     if not data:
         raise EncuestaError("Payload vacío")
+
+    from models_survey_jurisdiction import SURVEY_CONTENT_ORIGINS
+    from services.survey_jurisdiction import SURVEY_JURISDICTION_RESERVED_FIELDS
+
+    reserved_fields = sorted(SURVEY_JURISDICTION_RESERVED_FIELDS.intersection(data))
+    if reserved_fields:
+        raise EncuestaError(
+            "Los metadatos de jurisdicción son administrados por el servidor.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.jurisdiction_guard.v1",
+                "reason_code": "survey_jurisdiction_server_owned_fields",
+                "fields": reserved_fields,
+                "action_hint": "remove_server_owned_fields",
+            },
+        )
+    normalized_origin = str(content_origin or "").strip().lower()
+    if normalized_origin not in SURVEY_CONTENT_ORIGINS:
+        raise EncuestaError(
+            "El origen interno de contenido no está soportado.",
+            status_code=500,
+            payload={"reason_code": "survey_content_origin_invalid"},
+        )
+    normalized_origin_ref = str(content_origin_ref or "").strip() or None
+    if normalized_origin_ref is not None and len(normalized_origin_ref) > 255:
+        raise EncuestaError(
+            "La referencia interna de origen excede el límite.",
+            status_code=500,
+            payload={"reason_code": "survey_content_origin_ref_invalid"},
+        )
 
     payload = _normalize_identity_aliases(deepcopy(data))
     raw_auto_seed_cfg = payload.pop("auto_seed_demo", None)
@@ -3949,6 +3972,8 @@ def create_encuesta(
             payload.get("document_ref"),
             field="document_ref",
         ),
+        content_origin=normalized_origin,
+        content_origin_ref=normalized_origin_ref,
         slug=slug,
         titulo=titulo,
         descripcion=payload.get("descripcion"),
@@ -3978,8 +4003,26 @@ def create_encuesta(
     db.session.add(encuesta)
     try:
         db.session.flush()
+        from services.survey_jurisdiction import (
+            SurveyJurisdictionError,
+            bind_verified_tenant_jurisdiction,
+            record_content_receipt,
+        )
+
+        bind_verified_tenant_jurisdiction(encuesta)
+        record_content_receipt(
+            encuesta,
+            event_type="created",
+            decision="recorded",
+            actor_user_id=getattr(user, "id", None),
+            reason_code="survey_content_created",
+        )
         if commit:
             db.session.commit()
+    except SurveyJurisdictionError as exc:
+        if commit:
+            db.session.rollback()
+        raise _encuesta_jurisdiction_error(exc) from exc
     except IntegrityError as exc:
         if commit:
             db.session.rollback()
@@ -4011,6 +4054,22 @@ def create_encuesta(
 
 
 def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEncuesta:
+    from services.survey_jurisdiction import SURVEY_JURISDICTION_RESERVED_FIELDS
+
+    reserved_fields = sorted(
+        SURVEY_JURISDICTION_RESERVED_FIELDS.intersection(data or {})
+    )
+    if reserved_fields:
+        raise EncuestaError(
+            "Los metadatos de jurisdicción son administrados por el servidor.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.jurisdiction_guard.v1",
+                "reason_code": "survey_jurisdiction_server_owned_fields",
+                "fields": reserved_fields,
+                "action_hint": "remove_server_owned_fields",
+            },
+        )
     data = _normalize_identity_aliases(data)
     encuesta = db.session.get(EncEncuesta, encuesta_id)
     if not encuesta:
@@ -4019,6 +4078,16 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
 
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
+
+    from services.survey_jurisdiction import (
+        SurveyJurisdictionError,
+        assert_content_mutation_allowed,
+    )
+
+    try:
+        assert_content_mutation_allowed(encuesta)
+    except SurveyJurisdictionError as exc:
+        raise _encuesta_jurisdiction_error(exc) from exc
 
     from services.survey_governance import has_published_governance_release
 
@@ -4139,7 +4208,26 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
         _persist_auto_seed_config(encuesta, prepared_auto_seed_config)
 
     try:
+        from services.survey_jurisdiction import (
+            SurveyJurisdictionError,
+            bind_verified_tenant_jurisdiction,
+            record_content_receipt,
+        )
+
+        encuesta.content_origin = "manual"
+        encuesta.content_origin_ref = None
+        bind_verified_tenant_jurisdiction(encuesta)
+        record_content_receipt(
+            encuesta,
+            event_type="updated",
+            decision="recorded",
+            actor_user_id=getattr(user, "id", None),
+            reason_code="survey_content_updated_review_invalidated",
+        )
         db.session.commit()
+    except SurveyJurisdictionError as exc:
+        db.session.rollback()
+        raise _encuesta_jurisdiction_error(exc) from exc
     except IntegrityError as exc:
         db.session.rollback()
         raise EncuestaError("Error al actualizar la encuesta") from exc
@@ -4173,6 +4261,8 @@ def duplicate_encuesta(encuesta_id: int, data: Optional[Dict[str, Any]], user: A
 
     cloned = EncEncuesta(
         tenant_id=source.tenant_id,
+        content_origin="duplicate",
+        content_origin_ref=f"survey:{int(source.id)}",
         slug=slug,
         titulo=title,
         descripcion=source.descripcion,
@@ -4221,7 +4311,24 @@ def duplicate_encuesta(encuesta_id: int, data: Optional[Dict[str, Any]], user: A
     db.session.add(cloned)
 
     try:
+        from services.survey_jurisdiction import (
+            SurveyJurisdictionError,
+            bind_verified_tenant_jurisdiction,
+            record_content_receipt,
+        )
+
+        bind_verified_tenant_jurisdiction(cloned)
+        record_content_receipt(
+            cloned,
+            event_type="created",
+            decision="recorded",
+            actor_user_id=getattr(user, "id", None),
+            reason_code="survey_content_duplicated",
+        )
         db.session.commit()
+    except SurveyJurisdictionError as exc:
+        db.session.rollback()
+        raise _encuesta_jurisdiction_error(exc) from exc
     except IntegrityError as exc:
         db.session.rollback()
         raise EncuestaError("No se pudo duplicar la encuesta", status_code=409) from exc
@@ -4316,6 +4423,17 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
             },
         )
 
+    from services.survey_jurisdiction import (
+        SurveyJurisdictionError,
+        assert_publication_allowed,
+        record_content_receipt,
+    )
+
+    try:
+        assert_publication_allowed(encuesta)
+    except SurveyJurisdictionError as exc:
+        raise _encuesta_jurisdiction_error(exc) from exc
+
     encuesta.estado = "publicada"
     if not encuesta.inicio_at:
         encuesta.inicio_at = _public_schedule_now()
@@ -4331,6 +4449,13 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
     slug_publico = link.slug_publico
 
     try:
+        record_content_receipt(
+            encuesta,
+            event_type="published",
+            decision="published",
+            actor_user_id=getattr(user, "id", None),
+            reason_code="survey_publication_committed",
+        )
         db.session.commit()
     except IntegrityError as exc:
         db.session.rollback()
@@ -4430,6 +4555,26 @@ def delete_encuesta(encuesta_id: int, user: Any) -> None:
                 "survey_id": encuesta.id,
                 "draft_id": materialization.draft_id,
                 "draft_revision": materialization.draft_revision,
+            },
+        )
+
+    from models_survey_jurisdiction import SurveyContentReceipt
+
+    content_receipt = SurveyContentReceipt.query.filter_by(
+        tenant_id=int(tenant_id),
+        survey_id=int(encuesta.id),
+    ).first()
+    if content_receipt is not None:
+        raise EncuestaError(
+            "Una encuesta con recibos institucionales inmutables no puede eliminarse",
+            status_code=409,
+            payload={
+                "contract_version": "surveys.jurisdiction_guard.v1",
+                "reason_code": "survey_content_receipt_delete_blocked",
+                "retryable": False,
+                "action_hint": "archive_or_close_survey",
+                "survey_id": int(encuesta.id),
+                "receipt_id": int(content_receipt.id),
             },
         )
 
@@ -4546,10 +4691,7 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
     # Safety net if migrations lag: ensure the reward column exists to avoid 500s
     ensure_enc_encuesta_schema(db.session)
 
-    if not (
-        _BOOTSTRAP_SAMPLE_ENABLED
-        or (_demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe())
-    ):
+    if not (_demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe()):
         return
 
     profile = _match_bootstrap_profile(tenant_id)
@@ -4586,7 +4728,12 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
     created = 0
     for payload in payloads:
         try:
-            encuesta = create_encuesta(payload, user)
+            encuesta = create_encuesta(
+                payload,
+                user,
+                content_origin="seed_demo",
+                content_origin_ref=f"bootstrap-profile:{profile.get('key', 'unknown')}",
+            )
         except EncuestaError:
             current_app.logger.exception(
                 "[encuestas] No se pudo crear la encuesta demo de %s",
@@ -4594,26 +4741,11 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
             )
             continue
 
-        if profile.get("auto_publish", True):
-            try:
-                encuesta, link = publicar_encuesta(encuesta.id, user)
-            except EncuestaError:
-                current_app.logger.exception(
-                    "[encuestas] No se pudo publicar la encuesta demo de %s",
-                    profile.get("key"),
-                )
-                continue
-            current_app.logger.info(
-                "[encuestas] Encuesta demo de %s publicada automáticamente con slug %s",
-                profile.get("key"),
-                link.slug_publico,
-            )
-        else:
-            current_app.logger.info(
-                "[encuestas] Encuesta demo de %s creada automáticamente con id %s",
-                profile.get("key"),
-                encuesta.id,
-            )
+        current_app.logger.info(
+            "[encuestas] Encuesta demo de %s creada como borrador con id %s",
+            profile.get("key"),
+            encuesta.id,
+        )
         created += 1
 
     if not created:
@@ -4918,7 +5050,6 @@ def list_encuestas_page(
 ) -> Dict[str, Any]:
     """Return a hard-bounded tenant page using stable descending ids."""
 
-    _bootstrap_sample_if_needed(tenant_id)
     safe_limit = _coerce_admin_list_limit(limit)
     cursor_id = _decode_survey_list_cursor(cursor)
     safe_page = _coerce_admin_list_page(page)
@@ -4996,29 +5127,9 @@ def list_encuestas(
 
 
 def _public_encuestas_list_options() -> List[Any]:
-    options: List[Any] = [joinedload(EncEncuesta.links)]
-    try:
-        options.append(
-            load_only(
-                EncEncuesta.id,
-                EncEncuesta.tenant_id,
-                EncEncuesta.slug,
-                EncEncuesta.titulo,
-                EncEncuesta.descripcion,
-                EncEncuesta.tipo,
-                EncEncuesta.estado,
-                EncEncuesta.inicio_at,
-                EncEncuesta.fin_at,
-                EncEncuesta.es_votacion_envivo,
-                EncEncuesta.mostrar_resultados_envivo,
-                EncEncuesta.permitir_comentarios,
-                EncEncuesta.created_at,
-                EncEncuesta.updated_at,
-            )
-        )
-    except (AttributeError, TypeError):
-        pass
-    return [option for option in options if option is not None]
+    # Visibility enforcement hashes the exact instrument, so load that bounded
+    # graph in select-in batches instead of triggering per-row lazy queries.
+    return _admin_encuesta_list_options()
 
 
 def list_public_encuestas_for_tenant(
@@ -5058,6 +5169,10 @@ def list_public_encuestas_for_tenant(
     for encuesta in encuestas:
         if not encuesta.esta_activa():
             continue
+        from services.survey_jurisdiction import survey_is_publicly_visible
+
+        if not survey_is_publicly_visible(encuesta):
+            continue
         slug_publico = _resolve_public_slug(encuesta)
         if not slug_publico:
             continue
@@ -5082,87 +5197,6 @@ def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = 
         _ensure_tenant_access(encuesta, user)
     return encuesta
 
-
-
-
-
-
-def _is_bootstrap_demo_survey(encuesta: EncEncuesta) -> bool:
-    """Return True when the survey can be identified as bootstrap demo content."""
-
-    if not encuesta:
-        return False
-
-    templates = _bootstrap_templates()
-    if not templates:
-        return False
-
-    titulo = (getattr(encuesta, "titulo", "") or "").strip().lower()
-    descripcion = (getattr(encuesta, "descripcion", "") or "").strip().lower()
-
-    for template in templates:
-        if not isinstance(template, dict):
-            continue
-        template_title = str(template.get("titulo") or "").strip().lower()
-        template_desc = str(template.get("descripcion") or "").strip().lower()
-
-        if template_title and titulo == template_title:
-            return True
-        if template_title and template_title in titulo:
-            return True
-        if template_desc and descripcion and template_desc == descripcion:
-            return True
-
-    return False
-
-def _ensure_demo_public_window(encuesta: EncEncuesta) -> None:
-    """Keep bootstrap demo surveys publicly accessible when their window expired."""
-
-    if not encuesta or encuesta.estado != "publicada":
-        return
-
-    profile = _match_bootstrap_profile(getattr(encuesta, "tenant_id", None) or 0)
-    if not profile:
-        return
-    if not _is_bootstrap_demo_survey(encuesta):
-        return
-
-    now = _public_schedule_now()
-    local_tz = now.tzinfo or timezone.utc
-    inicio_at = encuesta.inicio_at
-    if inicio_at and inicio_at.tzinfo is None:
-        inicio_at = inicio_at.replace(tzinfo=local_tz)
-    elif inicio_at:
-        inicio_at = inicio_at.astimezone(local_tz)
-
-    fin_at = encuesta.fin_at
-    if fin_at and fin_at.tzinfo is None:
-        fin_at = fin_at.replace(tzinfo=local_tz)
-    elif fin_at:
-        fin_at = fin_at.astimezone(local_tz)
-
-    should_update = False
-    if inicio_at and inicio_at > now:
-        encuesta.inicio_at = now - timedelta(minutes=5)
-        should_update = True
-
-    if fin_at and fin_at < now:
-        encuesta.fin_at = now + timedelta(days=365)
-        should_update = True
-
-    if should_update:
-        try:
-            db.session.add(encuesta)
-            db.session.commit()
-            current_app.logger.info(
-                "[encuestas] Refreshed public window for bootstrap demo survey %s", encuesta.id
-            )
-        except Exception:
-            db.session.rollback()
-            current_app.logger.exception(
-                "[encuestas] Failed to refresh public window for bootstrap demo survey %s",
-                getattr(encuesta, "id", None),
-            )
 
 def get_public_encuesta(
     slug_publico: str,
@@ -5317,6 +5351,11 @@ def get_public_encuesta(
     if allow_inactive_for_receipt_lookup:
         return encuesta
 
+    from services.survey_jurisdiction import survey_is_publicly_visible
+
+    if not survey_is_publicly_visible(encuesta):
+        raise _public_survey_not_found_error()
+
     # Final public results are a read-only surface. Accept either a durable
     # public link or the exact public survey slug retained by legacy published
     # instruments. Forged slug aliases and numeric database ids do not cross
@@ -5335,8 +5374,6 @@ def get_public_encuesta(
             payload={"reason_code": "survey_not_published"},
         )
 
-    if current_app.config.get("ENABLE_DEMO_MODE"):
-        _ensure_demo_public_window(encuesta)
     if not encuesta.esta_activa():
         raise EncuestaError(
             "La encuesta no está en su ventana de participación",
@@ -9422,10 +9459,25 @@ def serialize_encuesta(
         # boundary.  List callers must supply a bulk summary contract instead.
         governance = survey_governance_contract(encuesta, validate_integrity=True)
 
+    jurisdiction: Dict[str, Any] = {
+        "contract_version": "surveys.jurisdiction_guard.v1",
+        "readiness_included": False,
+        "jurisdiction_ref": encuesta.jurisdiction_ref,
+        "content_origin": encuesta.content_origin or "legacy_unverified",
+        "content_origin_ref": encuesta.content_origin_ref,
+    }
+    if not summary_only:
+        from services.survey_jurisdiction import jurisdiction_contract
+
+        jurisdiction = jurisdiction_contract(encuesta)
+
     return {
         "id": encuesta.id,
         "tenant_id": encuesta.tenant_id,
         "document_ref": encuesta.document_ref,
+        "jurisdiction_ref": encuesta.jurisdiction_ref,
+        "content_origin": encuesta.content_origin or "legacy_unverified",
+        "content_origin_ref": encuesta.content_origin_ref,
         "slug": encuesta.slug,
         "slug_publico": slug_publico,
         "canonical_slug": slug_publico or encuesta.slug,
@@ -9491,6 +9543,7 @@ def serialize_encuesta(
             ),
         },
         "governance": governance,
+        "jurisdiction": jurisdiction,
         "tags": _collect_encuesta_tags(encuesta),
         "preguntas_count": len(encuesta.preguntas),
         "preguntas": [
@@ -10018,4 +10071,8 @@ def get_public_encuesta_by_id(encuesta_id: int) -> EncEncuesta:
             status_code=403,
             payload={"reason_code": "survey_not_published"},
         )
+    from services.survey_jurisdiction import survey_is_publicly_visible
+
+    if not survey_is_publicly_visible(encuesta):
+        raise _public_survey_not_found_error()
     return encuesta

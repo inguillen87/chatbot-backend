@@ -202,6 +202,12 @@ services:
         value: "false"
       - key: SURVEY_SYNTHETIC_SEED_TENANT_IDS
         value: ""
+      # Institutional survey truth boundary. Keep fail-safe defaults in IaC;
+      # enforcement is enabled only through an explicit tenant canary rollout.
+      - key: SURVEY_JURISDICTION_GATE_MODE
+        value: observe
+      - key: SURVEY_JURISDICTION_GATE_TENANT_IDS
+        value: ""
       - key: ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1
         value: "false"
       - key: SURVEY_ELIGIBILITY_GRANT_TENANT_IDS

@@ -368,6 +368,18 @@ def test_admin_templates_endpoint_returns_catalog(client, monkeypatch, admin_use
     monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
     monkeypatch.setattr(encuestas_admin_routes, "FEATURE_ENCUESTAS", True)
 
+    tenant = TenantProfile(
+        slug="junin-template-test",
+        nombre="Junin",
+        tipo="municipio",
+        municipio_id=admin_user.id,
+        plan="full",
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    admin_user.tenant_id = tenant.id
+    db.session.commit()
+
     headers = _auth_headers(client, admin_user)
 
     resp = client.get(
@@ -392,6 +404,13 @@ def test_admin_templates_endpoint_returns_catalog(client, monkeypatch, admin_use
     assert draft.get("slug", "").endswith("-junin")
     assert isinstance(draft.get("preguntas"), list) and draft["preguntas"]
     assert any(p.get("tipo") in {"opcion_unica", "multiple", "abierta"} for p in draft["preguntas"])
+
+    mismatch = client.get(
+        "/admin/encuestas/templates?municipality=Ushuaia&include_draft=1",
+        headers=headers,
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.get_json()["reason_code"] == "survey_template_municipality_mismatch"
 
 
 def test_admin_encuestas_listado_respuestas(client, monkeypatch, admin_user):
