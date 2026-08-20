@@ -4824,7 +4824,7 @@ def _validate_privacy_submission(
                 "privacy_policy_version": policy_version,
             },
         )
-    if consent_required and submitted_policy_version != policy_version:
+    if consent_required and policy_version and submitted_policy_version and submitted_policy_version != policy_version:
         raise EncuestaError(
             "La politica de privacidad cambio; revisala antes de continuar.",
             status_code=409,
