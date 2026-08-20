@@ -217,7 +217,7 @@ def test_bootstrap_templates_match_frontend_config():
 
 
 
-def test_get_public_encuesta_refreshes_expired_bootstrap_window(survey_demo_seed_qa):
+def test_get_public_encuesta_never_mutates_expired_bootstrap_window(survey_demo_seed_qa):
     client = survey_demo_seed_qa
     with client.application.app_context():
         user = DummyUser(tenant_id=4)
@@ -229,15 +229,14 @@ def test_get_public_encuesta_refreshes_expired_bootstrap_window(survey_demo_seed
         encuesta.fin_at = datetime.now(timezone.utc) - timedelta(days=2)
         db.session.add(encuesta)
         db.session.commit()
+        original_end = encuesta.fin_at
 
-        fetched = get_public_encuesta(encuesta.slug)
-        assert fetched.id == encuesta.id
-        assert fetched.esta_activa() is True
-        assert fetched.fin_at is not None
-        fin_at = fetched.fin_at
-        if fin_at.tzinfo is None:
-            fin_at = fin_at.replace(tzinfo=timezone.utc)
-        assert fin_at > datetime.now(timezone.utc)
+        with pytest.raises(EncuestaError) as expired:
+            get_public_encuesta(encuesta.slug)
+        assert expired.value.payload["reason_code"] == "survey_outside_active_window"
+        db.session.expire_all()
+        persisted = db.session.get(EncEncuesta, encuesta.id)
+        assert persisted.fin_at == original_end
 
 def test_list_template_payloads_scope_all_returns_catalog(client):
     with client.application.app_context():

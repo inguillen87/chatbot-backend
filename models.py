@@ -543,6 +543,22 @@ class TenantProfile(db.Model, TimestampMixin):
     plan = db.Column(db.String(50), default="free")
     whatsapp_sender_id = db.Column(db.String(255), nullable=True)
     is_active = db.Column(db.Boolean, default=True, nullable=False)
+    # Institutional jurisdiction is a server-owned publishing boundary. It is
+    # never inferred from tenant names, survey copy or caller payloads.
+    jurisdiction_ref = db.Column(db.String(160), nullable=True)
+    jurisdiction_status = db.Column(
+        db.String(24),
+        nullable=False,
+        default="unverified",
+        server_default="unverified",
+    )
+    jurisdiction_evidence_ref = db.Column(db.String(255), nullable=True)
+    jurisdiction_verified_by_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    jurisdiction_verified_at = db.Column(db.DateTime(timezone=True), nullable=True)
 
     # Dispatch & Notification Configuration
     dispatch_email = db.Column(db.String(255), nullable=True)
@@ -597,6 +613,17 @@ class TenantProfile(db.Model, TimestampMixin):
         db.CheckConstraint(
             "NOT (municipio_id IS NOT NULL AND pyme_id IS NOT NULL)",
             name="ck_tenant_profile_single_owner",
+        ),
+        db.CheckConstraint(
+            "jurisdiction_status IN ('unverified', 'verified', 'not_applicable')",
+            name="ck_tenant_profile_jurisdiction_status",
+        ),
+        db.CheckConstraint(
+            "jurisdiction_status <> 'verified' OR "
+            "(jurisdiction_ref IS NOT NULL AND jurisdiction_evidence_ref IS NOT NULL "
+            "AND jurisdiction_verified_by_user_id IS NOT NULL "
+            "AND jurisdiction_verified_at IS NOT NULL)",
+            name="ck_tenant_profile_verified_jurisdiction_evidence",
         ),
     )
 
@@ -3021,11 +3048,25 @@ class EncEncuesta(db.Model, TimestampMixin):
             "AND coalesce(puntos_recompensa, 0) = 0)",
             name="ck_enc_encuesta_source_anonymous_policy",
         ),
+        db.CheckConstraint(
+            "content_origin IN ('manual', 'template_catalog', "
+            "'draft_materialization', 'duplicate', 'seed_demo', 'import', "
+            "'legacy_unverified')",
+            name="ck_enc_encuesta_content_origin",
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(db.Integer, nullable=False, index=True)
     document_ref = db.Column(db.String(160), nullable=True)
+    jurisdiction_ref = db.Column(db.String(160), nullable=True)
+    content_origin = db.Column(
+        db.String(32),
+        nullable=False,
+        default="legacy_unverified",
+        server_default="legacy_unverified",
+    )
+    content_origin_ref = db.Column(db.String(255), nullable=True)
     slug = db.Column(db.String(160), unique=True, nullable=False)
     titulo = db.Column(db.String(255), nullable=False)
     descripcion = db.Column(db.Text, nullable=True)
@@ -5079,6 +5120,7 @@ from models_education import (
     SchoolCaseAlias,
 )
 from models_survey_governance import SurveyGovernanceRelease
+from models_survey_jurisdiction import SurveyContentReceipt
 from models_survey_eligibility import (
     SurveyEligibilityGrant,
     SurveyEligibilityTerminal,

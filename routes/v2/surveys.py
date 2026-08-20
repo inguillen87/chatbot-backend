@@ -75,9 +75,11 @@ from services.survey_tenant_scope import (
     resolve_survey_storage_tenant_profile,
 )
 from services.survey_access_policy import (
+    SURVEY_CONTENT_REVIEW_CAPABILITY,
     SURVEY_ELIGIBILITY_MANAGE_CAPABILITY,
     SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
     SURVEY_PII_READ_CAPABILITY,
+    SURVEY_PUBLISH_CAPABILITY,
     missing_survey_capabilities,
 )
 from services.survey_eligibility import SURVEY_ELIGIBILITY_CREDENTIAL_HEADER
@@ -261,6 +263,29 @@ def _survey_governance_capability_error(missing: list[str]):
             "retryable": False,
             "action_hint": "request_capability_from_tenant_admin",
             "required_capabilities": [SURVEY_GOVERNANCE_MANAGE_CAPABILITY],
+            "missing_capabilities": list(missing),
+            "error": {"code": 403, "message": message},
+            "message": message,
+        },
+        403,
+    )
+
+
+def _survey_mutation_capability_error(
+    *,
+    required: list[str],
+    missing: list[str],
+    reason_code: str,
+    message: str,
+):
+    return _json_response(
+        {
+            "contract_version": "shared.error.v1",
+            "status_code": 403,
+            "reason_code": reason_code,
+            "retryable": False,
+            "action_hint": "request_capability_from_tenant_admin",
+            "required_capabilities": list(required),
             "missing_capabilities": list(missing),
             "error": {"code": 403, "message": message},
             "message": message,
@@ -1833,6 +1858,30 @@ def _normalize_admin_payload(payload: dict[str, Any], *, partial: bool = False) 
     return normalized
 
 
+def _assert_no_server_owned_jurisdiction_fields(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise EncuestaError(
+            "El instrumento debe ser un objeto JSON.",
+            status_code=400,
+            payload={"reason_code": "survey_payload_invalid"},
+        )
+    from services.survey_jurisdiction import SURVEY_JURISDICTION_RESERVED_FIELDS
+
+    reserved = sorted(SURVEY_JURISDICTION_RESERVED_FIELDS.intersection(payload))
+    if reserved:
+        raise EncuestaError(
+            "Los metadatos de jurisdicción son administrados por el servidor.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.jurisdiction_guard.v1",
+                "reason_code": "survey_jurisdiction_server_owned_fields",
+                "fields": reserved,
+                "action_hint": "remove_server_owned_fields",
+            },
+        )
+    return payload
+
+
 @v2_surveys_bp.route("/surveys", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
@@ -1917,7 +1966,10 @@ def create_survey_v2(current_user):
 
     g.tenant_profile = tenant
     try:
-        payload = _normalize_admin_payload(request.get_json(silent=True) or {})
+        raw_payload = _assert_no_server_owned_jurisdiction_fields(
+            request.get_json(silent=True) or {}
+        )
+        payload = _normalize_admin_payload(raw_payload)
         encuesta = create_encuesta(payload, current_user)
     except EncuestaError as exc:
         db.session.rollback()
@@ -2240,6 +2292,93 @@ def survey_detail_v2(current_user, survey_id: int):
     return jsonify(serialize_encuesta(encuesta))
 
 
+@v2_surveys_bp.route(
+    "/surveys/<int:survey_id>/content-review",
+    methods=["GET", "POST"],
+)
+@token_requerido
+@require_role("admin", "empleado", "super_admin")
+def survey_content_review_v2(current_user, survey_id: int):
+    """Read readiness or append a human decision for the exact content hash."""
+
+    tenant, error = _resolve_tenant_or_error(required=True)
+    if error:
+        return error
+    allowed, denied = _enforce_tenant_access(current_user, tenant)
+    if not allowed:
+        return denied
+    missing = missing_survey_capabilities(
+        current_user, SURVEY_CONTENT_REVIEW_CAPABILITY
+    )
+    if missing:
+        return _survey_mutation_capability_error(
+            required=[SURVEY_CONTENT_REVIEW_CAPABILITY],
+            missing=missing,
+            reason_code="survey_content_review_capability_required",
+            message="No tenes permisos para revisar contenido institucional.",
+        )
+
+    try:
+        encuesta = get_encuesta(survey_id, tenant_id=tenant.id)
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
+
+    from services.survey_jurisdiction import (
+        SurveyJurisdictionError,
+        jurisdiction_contract,
+        review_survey_content,
+        serialize_content_receipt,
+    )
+
+    if request.method == "GET":
+        return _no_store_response(
+            _json_response(
+                {
+                    "ok": True,
+                    "survey_id": int(survey_id),
+                    "jurisdiction": jurisdiction_contract(encuesta),
+                },
+                200,
+            )
+        )
+    if not _survey_writes_allowed(tenant):
+        return _survey_plan_required_response(tenant)
+
+    payload = request.get_json(silent=True)
+    allowed_fields = {"decision", "expected_content_sha256", "evidence_ref"}
+    if not isinstance(payload, dict) or set(payload) - allowed_fields:
+        return _error_response(
+            "La revisión sólo admite decision, expected_content_sha256 y evidence_ref",
+            400,
+            "survey_content_review_payload_invalid",
+            "send_exact_review_payload",
+        )
+    try:
+        receipt, replayed = review_survey_content(
+            tenant_id=int(tenant.id),
+            survey_id=int(survey_id),
+            actor_user_id=int(current_user.id),
+            decision=payload.get("decision"),
+            expected_content_sha256=payload.get("expected_content_sha256"),
+            evidence_ref=payload.get("evidence_ref"),
+            idempotency_key=request.headers.get("Idempotency-Key"),
+        )
+    except SurveyJurisdictionError as exc:
+        db.session.rollback()
+        return _no_store_response(_json_response(exc.to_dict(), exc.status_code))
+    return _no_store_response(
+        _json_response(
+            {
+                "ok": True,
+                "replayed": bool(replayed),
+                "receipt": serialize_content_receipt(receipt),
+                "jurisdiction": jurisdiction_contract(encuesta),
+            },
+            200 if replayed else 201,
+        )
+    )
+
+
 def _governance_error_response(exc):
     return _json_response(exc.to_dict(), exc.status_code)
 
@@ -2402,10 +2541,20 @@ def publish_survey_governance_release_v2(
     if not _survey_writes_allowed(tenant):
         return _survey_plan_required_response(tenant)
     missing = missing_survey_capabilities(
-        current_user, SURVEY_GOVERNANCE_MANAGE_CAPABILITY
+        current_user,
+        SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+        SURVEY_PUBLISH_CAPABILITY,
     )
     if missing:
-        return _survey_governance_capability_error(missing)
+        return _survey_mutation_capability_error(
+            required=[
+                SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+                SURVEY_PUBLISH_CAPABILITY,
+            ],
+            missing=missing,
+            reason_code="survey_publish_capability_required",
+            message="No tenes permisos para publicar releases de gobernanza.",
+        )
     payload = request.get_json(silent=True)
     if payload is None:
         payload = {}
@@ -2716,8 +2865,11 @@ def update_survey_v2(current_user, survey_id: int):
 
     g.tenant_profile = tenant
     try:
+        raw_payload = _assert_no_server_owned_jurisdiction_fields(
+            request.get_json(silent=True) or {}
+        )
         payload = _normalize_admin_payload(
-            request.get_json(silent=True) or {},
+            raw_payload,
             partial=True,
         )
         encuesta = update_encuesta(survey_id, payload, current_user)
@@ -2740,6 +2892,14 @@ def publish_survey_v2(current_user, survey_id: int):
         return denied
     if not _survey_writes_allowed(tenant):
         return _survey_plan_required_response(tenant)
+    missing = missing_survey_capabilities(current_user, SURVEY_PUBLISH_CAPABILITY)
+    if missing:
+        return _survey_mutation_capability_error(
+            required=[SURVEY_PUBLISH_CAPABILITY],
+            missing=missing,
+            reason_code="survey_publish_capability_required",
+            message="No tenes permisos para publicar encuestas.",
+        )
 
     g.tenant_profile = tenant
     try:

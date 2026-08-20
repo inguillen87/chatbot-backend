@@ -704,6 +704,16 @@ class Config:
         "SURVEY_SYNTHETIC_SEED_TENANT_IDS",
         "",
     )
+    # Staged jurisdiction rollout. ``observe`` preserves legacy reads/writes;
+    # enforcement is restricted to an explicit tenant-id canary allowlist.
+    SURVEY_JURISDICTION_GATE_MODE = os.getenv(
+        "SURVEY_JURISDICTION_GATE_MODE",
+        "observe",
+    ).strip().lower()
+    SURVEY_JURISDICTION_GATE_TENANT_IDS = os.getenv(
+        "SURVEY_JURISDICTION_GATE_TENANT_IDS",
+        "",
+    )
     # Governance-sensitive interview/admission APIs require a deliberate
     # deployment opt-in after migrations, tenant policy and staging evidence.
     ENABLE_ASSESSMENT_INTERVIEWS_V1 = _env_strict_opt_in(
@@ -1320,6 +1330,13 @@ def validate_runtime_security(config: Any) -> list[str]:
         errors.append(
             "ALLOW_SURVEY_DEMO_SEEDING no puede habilitarse en produccion."
         )
+    legacy_bootstrap_enabled = str(
+        os.getenv("ENCUESTAS_BOOTSTRAP_SAMPLE", "") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if legacy_bootstrap_enabled:
+        errors.append(
+            "ENCUESTAS_BOOTSTRAP_SAMPLE no puede habilitarse en produccion."
+        )
 
     synthetic_seed_enabled = getattr(config, "get", lambda *_: None)(
         "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1",
@@ -1355,6 +1372,43 @@ def validate_runtime_security(config: Any) -> list[str]:
     ):
         errors.append(
             "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 requiere tenants canarios explicitos."
+        )
+
+    jurisdiction_mode = str(
+        getattr(config, "get", lambda *_: None)(
+            "SURVEY_JURISDICTION_GATE_MODE",
+            "observe",
+        )
+        or "observe"
+    ).strip().lower()
+    jurisdiction_modes = {"observe", "enforce_publish", "enforce_visibility"}
+    if jurisdiction_mode not in jurisdiction_modes:
+        errors.append("SURVEY_JURISDICTION_GATE_MODE es invalido.")
+    raw_jurisdiction_tenants = str(
+        getattr(config, "get", lambda *_: None)(
+            "SURVEY_JURISDICTION_GATE_TENANT_IDS",
+            "",
+        )
+        or ""
+    ).strip()
+    jurisdiction_tenants: set[int] = set()
+    jurisdiction_allowlist_invalid = False
+    if raw_jurisdiction_tenants:
+        for raw_tenant_id in raw_jurisdiction_tenants.split(","):
+            normalized_tenant_id = raw_tenant_id.strip()
+            if not re.fullmatch(r"[1-9][0-9]*", normalized_tenant_id):
+                jurisdiction_allowlist_invalid = True
+                break
+            jurisdiction_tenants.add(int(normalized_tenant_id))
+    if jurisdiction_allowlist_invalid:
+        errors.append(
+            "SURVEY_JURISDICTION_GATE_TENANT_IDS contiene un tenant invalido."
+        )
+    if jurisdiction_mode in {"enforce_publish", "enforce_visibility"} and (
+        not jurisdiction_tenants or jurisdiction_allowlist_invalid
+    ):
+        errors.append(
+            "El enforcement de jurisdiccion requiere tenants canarios explicitos."
         )
 
     secret_key = str(getattr(config, "get", lambda *_: None)("SECRET_KEY", "") or "").strip()
@@ -1934,6 +1988,8 @@ class TestConfig(Config):
     ALLOW_SURVEY_DEMO_SEEDING = True
     ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 = False
     SURVEY_SYNTHETIC_SEED_TENANT_IDS = ""
+    SURVEY_JURISDICTION_GATE_MODE = "observe"
+    SURVEY_JURISDICTION_GATE_TENANT_IDS = ""
 
 class TestingConfig(TestConfig):
     pass

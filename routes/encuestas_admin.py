@@ -29,6 +29,10 @@ from services.encuestas_service import (
     survey_admin_write_rate_limit_key,
     survey_instrument_max_payload_bytes,
 )
+from services.survey_tenant_scope import (
+    SurveyTenantScopeError,
+    resolve_survey_storage_tenant_profile,
+)
 from utils.auth_helpers import token_requerido
 from routes.admin_tenant import _is_authorized_for_tenant
 from utils.permissions import require_role
@@ -234,7 +238,9 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
     @token_requerido
     @require_role("admin", "super_admin")
     def listar_plantillas_endpoint(current_user):
-        municipality = request.args.get("municipality") or request.args.get("municipio")
+        requested_municipality = (
+            request.args.get("municipality") or request.args.get("municipio")
+        )
         slugs_param = request.args.get("slugs")
         template_slugs = None
         if slugs_param:
@@ -248,16 +254,56 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         }
 
         try:
+            tenant_id = determine_tenant_id_for_user(current_user)
+            tenant_profile = resolve_survey_storage_tenant_profile(tenant_id)
+            tenant_config = (
+                tenant_profile.configuracion
+                if isinstance(tenant_profile.configuracion, dict)
+                else {}
+            )
+            municipality = str(
+                tenant_config.get("survey_municipality_label")
+                or tenant_profile.nombre
+                or ""
+            ).strip()
+            if not municipality:
+                raise EncuestaError(
+                    "El tenant no tiene una localidad configurada.",
+                    status_code=409,
+                    payload={
+                        "reason_code": "survey_template_municipality_unconfigured",
+                        "action_hint": "configure_server_owned_municipality_label",
+                    },
+                )
+            if (
+                requested_municipality
+                and str(requested_municipality).strip().casefold()
+                != municipality.casefold()
+            ):
+                raise EncuestaError(
+                    "La localidad solicitada contradice al tenant autenticado.",
+                    status_code=409,
+                    payload={
+                        "contract_version": "surveys.jurisdiction_guard.v1",
+                        "reason_code": "survey_template_municipality_mismatch",
+                        "action_hint": "remove_caller_controlled_municipality",
+                    },
+                )
             catalog = list_template_catalog(municipality=municipality, template_slugs=template_slugs)
+        except SurveyTenantScopeError:
+            return (
+                jsonify(
+                    {
+                        "error": "No se pudo resolver el tenant de encuestas.",
+                        "reason_code": "survey_tenant_scope_invalid",
+                    }
+                ),
+                403,
+            )
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
 
         if include_draft:
-            if not municipality:
-                return (
-                    jsonify({"error": "Debés indicar una localidad para generar borradores"}),
-                    400,
-                )
             start_at = request.args.get("start_at") or request.args.get("inicio_at")
             end_at = request.args.get("end_at") or request.args.get("fin_at")
             for template in catalog:

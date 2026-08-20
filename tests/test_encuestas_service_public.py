@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from services import encuestas_service
+from services import encuestas_service, survey_jurisdiction
 
 
 class _QueryStub:
@@ -65,7 +65,12 @@ def test_list_public_encuestas_respects_model_schedule(monkeypatch):
     _FakeEncuesta.query = _QueryStub([inactive, active])
 
     monkeypatch.setattr(encuestas_service, "EncEncuesta", _FakeEncuesta, raising=False)
-    monkeypatch.setattr(encuestas_service, "joinedload", lambda *_, **__: None, raising=False)
+    monkeypatch.setattr(encuestas_service, "_public_encuestas_list_options", lambda: [])
+    monkeypatch.setattr(
+        survey_jurisdiction,
+        "survey_is_publicly_visible",
+        lambda _survey: True,
+    )
 
     resultados = encuestas_service.list_public_encuestas_for_tenant(
         tenant_id=7, limit=5
@@ -82,7 +87,6 @@ def test_bootstrap_sample_is_disabled_by_default(client, monkeypatch):
         False,
     )
 
-    monkeypatch.setattr(encuestas_service, "_BOOTSTRAP_SAMPLE_ENABLED", False)
     monkeypatch.setattr(
         encuestas_service,
         "ensure_enc_encuesta_schema",

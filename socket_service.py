@@ -866,7 +866,19 @@ def _survey_candidates_for_slug(slug_publico: str) -> list[EncEncuesta]:
         ):
             if link.encuesta:
                 candidates[link.encuesta.id] = link.encuesta
-    return list(candidates.values())
+
+    # Socket rooms are a public visibility surface just like HTTP detail,
+    # listings and intake. Draft/inactive or jurisdiction-hidden instruments
+    # must not authorize a room or receive later admin/comment emissions.
+    from services.survey_jurisdiction import survey_is_publicly_visible
+
+    return [
+        survey
+        for survey in candidates.values()
+        if str(survey.estado or "").strip().lower() == "publicada"
+        and survey.esta_activa()
+        and survey_is_publicly_visible(survey)
+    ]
 
 
 def _resolve_survey_tenant_slug(slug_publico: str, data: Any, tenant_slug: str | None) -> str:

@@ -7,6 +7,7 @@ from models import EncEncuesta, EncOpcion, EncPregunta
 from services.survey_governance import (
     RELEASE_SNAPSHOT_SCHEMA_V1,
     RELEASE_SNAPSHOT_SCHEMA_V2,
+    RELEASE_SNAPSHOT_SCHEMA_V3,
     SurveyGovernanceError,
     _assert_release_snapshot_integrity,
     _canonical_json,
@@ -74,7 +75,7 @@ def _release(snapshot: dict, *, release_id: int = 44) -> SimpleNamespace:
     )
 
 
-def test_v2_snapshot_is_stable_for_same_instant_across_postgres_timezone_reload(
+def test_v3_snapshot_is_stable_for_same_instant_across_postgres_timezone_reload(
     client,
 ):
     client.application.config["TIMEZONE_OFFSET"] = -3
@@ -94,7 +95,7 @@ def test_v2_snapshot_is_stable_for_same_instant_across_postgres_timezone_reload(
     survey.inicio_at = local_start.astimezone(timezone.utc)
     after = build_release_snapshot(survey, _policy())
 
-    assert before["schema_version"] == RELEASE_SNAPSHOT_SCHEMA_V2
+    assert before["schema_version"] == RELEASE_SNAPSHOT_SCHEMA_V3
     assert before["collection_rules"]["starts_at"] == "2026-08-14T12:30:00.123456+00:00"
     assert _canonical_json(before) == _canonical_json(after)
     assert _sha256_text(_canonical_json(before)) == _sha256_text(_canonical_json(after))

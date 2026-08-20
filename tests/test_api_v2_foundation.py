@@ -1197,6 +1197,8 @@ class ApiV2FoundationTest(unittest.TestCase):
         payload = resp.get_json()
         self.assertEqual(payload.get("fuente"), "demo_encuestas_menu_v1")
         self.assertEqual(len(payload.get("demo_surveys") or []), 5)
+        survey_contract = (payload.get("data") or {}).get("surveys_votings") or {}
+        self.assertEqual(survey_contract.get("total_available"), 6)
         self.assertIn("Abrir: https://www.chatboc.ar/e/", payload.get("message_body") or "")
         self.assertIn("Compartir por WhatsApp: https://wa.me/", payload.get("message_body") or "")
         self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in payload.get("demo_surveys") or []))
@@ -1217,7 +1219,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp_page_2.status_code, 200)
         payload_page_2 = resp_page_2.get_json()
         self.assertEqual((payload_page_2.get("pagination") or {}).get("page"), 2)
-        self.assertEqual(len(payload_page_2.get("demo_surveys") or []), 4)
+        self.assertEqual(len(payload_page_2.get("demo_surveys") or []), 1)
         self.assertIn("Encuesta de espacios verdes", payload_page_2.get("message_body") or "")
         self.assertFalse((payload_page_2.get("pagination") or {}).get("has_more"))
         self.assertIsNone((payload_page_2.get("pagination") or {}).get("next_action_id"))
