@@ -35,6 +35,7 @@ _BATCH_PATTERN = re.compile(
     r"^seed-(?P<survey_id>[1-9][0-9]*)-(?P<timestamp>[0-9]{9,16})"
     r"(?:-(?P<nonce>[a-f0-9]{12}))?$"
 )
+_SQL_STRING_LITERAL_PATTERN = re.compile(r"'(?:''|[^'])*'")
 _SURVEY_INDEX = "ix_enc_respuesta_survey_origin_submitted_id"
 _TENANT_INDEX = "ix_enc_respuesta_tenant_origin_submitted_id"
 _PUBLIC_RESPONSE_SURVEY_INDEX = "ix_public_survey_response_survey_id"
@@ -92,12 +93,14 @@ def _backfill_seed_origins() -> None:
         sa.column("metadata_payload", sa.JSON()),
         sa.column("response_origin", sa.String(length=32)),
     )
-    result = bind.execution_options(stream_results=True).execute(
+    result = bind.execute(
         sa.select(
             response_table.c.id,
             response_table.c.encuesta_id,
             response_table.c.metadata_payload,
-        ).where(response_table.c.metadata_payload.is_not(None))
+        )
+        .where(response_table.c.metadata_payload.is_not(None))
+        .execution_options(stream_results=True)
     )
     while True:
         rows = result.fetchmany(500)
@@ -202,7 +205,7 @@ def _assert_index_absent_or_exact(
     name: str,
     columns: tuple[str, ...],
     unique: bool,
-    required_predicate_terms: tuple[str, ...] = (),
+    expected_predicate: str | None = None,
 ) -> bool:
     current = {
         str(item.get("name") or ""): item
@@ -223,18 +226,86 @@ def _assert_index_absent_or_exact(
         or current.get("postgresql_where")
         or current.get("sqlite_where")
         or ""
-    ).lower()
-    if any(term.lower() not in predicate for term in required_predicate_terms):
+    )
+    if _normalized_index_predicate(predicate) != _normalized_index_predicate(
+        expected_predicate
+    ):
         raise RuntimeError(
-            f"conflicting index {name}: missing required partial predicate"
+            f"conflicting index {name}: unexpected partial predicate"
         )
     return True
 
 
-def _assert_postgresql_index_valid(bind: Any, *, table_name: str, name: str) -> None:
+def _protect_sql_string_literals(raw: Any) -> tuple[str, list[tuple[str, str]]]:
+    literals: list[tuple[str, str]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        token = f"__chatboc_sql_literal_{len(literals)}__"
+        literals.append((token, match.group(0)))
+        return token
+
+    return _SQL_STRING_LITERAL_PATTERN.sub(_replace, str(raw)), literals
+
+
+def _restore_sql_string_literals(
+    normalized: str,
+    literals: list[tuple[str, str]],
+) -> str:
+    for token, literal in literals:
+        normalized = normalized.replace(token, literal)
+    return normalized
+
+
+def _normalized_index_predicate(raw: Any) -> str:
+    if raw is None:
+        return ""
+    protected, literals = _protect_sql_string_literals(raw)
+    predicate = protected.strip().lower().replace('"', "")
+    predicate = re.sub(
+        r"::(?:pg_catalog\.)?(?:text|character\s+varying|varchar)(?:\(\d+\))?",
+        "",
+        predicate,
+    )
+    return _restore_sql_string_literals(
+        re.sub(r"[\s()]", "", predicate),
+        literals,
+    )
+
+
+def _normalized_postgresql_index_definition(raw: Any) -> str:
+    if raw is None:
+        return ""
+    protected, literals = _protect_sql_string_literals(raw)
+    definition = protected.strip().lower().replace('"', "")
+    definition = re.sub(
+        r"::(?:pg_catalog\.)?(?:text|character\s+varying|varchar)(?:\(\d+\))?",
+        "",
+        definition,
+    )
+    definition = re.sub(r"\bconcurrently\b", "", definition)
+    definition = re.sub(r"\bif\s+not\s+exists\b", "", definition)
+    definition = re.sub(r"\busing\s+btree\b", "", definition)
+    definition = re.sub(
+        r"\bon\s+(?:[a-z_][a-z0-9_$]*\.)+([a-z_][a-z0-9_$]*)",
+        r"on \1",
+        definition,
+    )
+    return _restore_sql_string_literals(
+        re.sub(r"[\s()]", "", definition),
+        literals,
+    )
+
+
+def _postgresql_index_catalog_state(
+    bind: Any,
+    *,
+    table_name: str,
+    name: str,
+) -> tuple[bool | None, str | None]:
     row = bind.execute(
         sa.text(
-            "SELECT idx.indisvalid, idx.indisready "
+            "SELECT idx.indisvalid, idx.indisready, "
+            "pg_get_indexdef(idx.indexrelid) AS index_definition "
             "FROM pg_index idx "
             "JOIN pg_class index_class ON index_class.oid = idx.indexrelid "
             "JOIN pg_class table_class ON table_class.oid = idx.indrelid "
@@ -245,7 +316,99 @@ def _assert_postgresql_index_valid(bind: Any, *, table_name: str, name: str) -> 
         ),
         {"table_name": table_name, "index_name": name},
     ).first()
-    if row is None or not bool(row.indisvalid) or not bool(row.indisready):
+    if row is None:
+        return None, None
+    return (
+        bool(row.indisvalid) and bool(row.indisready),
+        str(row.index_definition or ""),
+    )
+
+
+def _postgresql_index_state(
+    bind: Any,
+    *,
+    table_name: str,
+    name: str,
+    columns: tuple[str, ...],
+    unique: bool,
+    expected_predicate: str | None = None,
+    expected_definition: str,
+) -> str:
+    exists = _assert_index_absent_or_exact(
+        bind,
+        table_name=table_name,
+        name=name,
+        columns=columns,
+        unique=unique,
+        expected_predicate=expected_predicate,
+    )
+    if not exists:
+        return "absent"
+    validity, current_definition = _postgresql_index_catalog_state(
+        bind,
+        table_name=table_name,
+        name=name,
+    )
+    if validity is None:
+        raise RuntimeError(
+            f"postgresql index {name} disappeared during migration preflight"
+        )
+    if _normalized_postgresql_index_definition(
+        current_definition
+    ) != _normalized_postgresql_index_definition(expected_definition):
+        raise RuntimeError(
+            f"conflicting index {name}: unexpected postgresql definition"
+        )
+    return "valid" if validity else "invalid"
+
+
+def _plan_postgresql_index_ddl(
+    bind: Any,
+    *,
+    table_name: str,
+    name: str,
+    columns: tuple[str, ...],
+    unique: bool,
+    expected_predicate: str | None,
+    drop_sql: str,
+    create_sql: str,
+) -> tuple[str | None, str | None]:
+    state = _postgresql_index_state(
+        bind,
+        table_name=table_name,
+        name=name,
+        columns=columns,
+        unique=unique,
+        expected_predicate=expected_predicate,
+        expected_definition=create_sql,
+    )
+    if state == "valid":
+        return None, None
+    if state == "invalid":
+        return drop_sql, create_sql
+    return None, create_sql
+
+
+def _assert_postgresql_index_exact_and_valid(
+    bind: Any,
+    *,
+    table_name: str,
+    name: str,
+    columns: tuple[str, ...],
+    unique: bool,
+    expected_predicate: str | None,
+    expected_definition: str,
+) -> None:
+    state = _postgresql_index_state(
+        bind,
+        table_name=table_name,
+        name=name,
+        columns=columns,
+        unique=unique,
+        expected_predicate=expected_predicate,
+        expected_definition=expected_definition,
+    )
+    if state != "valid":
         raise RuntimeError(f"postgresql index {name} is missing or invalid")
 
 
@@ -319,87 +482,109 @@ def _upgrade_postgresql() -> None:
             _REAL_FINGERPRINT_INDEX,
             ("encuesta_id", "huella_unica"),
             True,
-            ("response_origin", "real", "huella_unica", "is not null"),
+            "response_origin = 'real' AND huella_unica IS NOT NULL",
             "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "
             "uq_enc_respuesta_real_huella ON enc_respuesta "
             "(encuesta_id, huella_unica) WHERE "
             "response_origin = 'real' AND huella_unica IS NOT NULL",
+            "DROP INDEX CONCURRENTLY IF EXISTS uq_enc_respuesta_real_huella",
         ),
         (
             _SURVEY_INDEX,
             ("encuesta_id", "response_origin", "submitted_at", "id"),
             False,
-            (),
+            None,
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
             "ix_enc_respuesta_survey_origin_submitted_id ON enc_respuesta "
             "(encuesta_id, response_origin, submitted_at, id)",
+            "DROP INDEX CONCURRENTLY IF EXISTS "
+            "ix_enc_respuesta_survey_origin_submitted_id",
         ),
         (
             _TENANT_INDEX,
             ("tenant_id", "response_origin", "submitted_at", "id"),
             False,
-            (),
+            None,
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
             "ix_enc_respuesta_tenant_origin_submitted_id ON enc_respuesta "
             "(tenant_id, response_origin, submitted_at, id)",
+            "DROP INDEX CONCURRENTLY IF EXISTS "
+            "ix_enc_respuesta_tenant_origin_submitted_id",
         ),
     )
-    pending_sql: list[str] = []
-    for name, columns, unique, predicate_terms, sql in index_specs:
-        exists = _assert_index_absent_or_exact(
+    # A failed CREATE INDEX CONCURRENTLY can leave an exact but invalid
+    # pg_index entry. Plan every expected definition before executing DDL so
+    # any name/shape conflict fails closed without dropping another index.
+    pending_drop_sql: list[str] = []
+    pending_create_sql: list[str] = []
+    for name, columns, unique, expected_predicate, create_sql, drop_sql in index_specs:
+        planned_drop, planned_create = _plan_postgresql_index_ddl(
             bind,
+            table_name="enc_respuesta",
             name=name,
             columns=columns,
             unique=unique,
-            required_predicate_terms=predicate_terms,
+            expected_predicate=expected_predicate,
+            drop_sql=drop_sql,
+            create_sql=create_sql,
         )
-        if exists:
-            _assert_postgresql_index_valid(
-                bind,
-                table_name="enc_respuesta",
-                name=name,
-            )
-        else:
-            pending_sql.append(sql)
+        if planned_drop is not None:
+            pending_drop_sql.append(planned_drop)
+        if planned_create is not None:
+            pending_create_sql.append(planned_create)
 
-    public_index_exists = _assert_index_absent_or_exact(
+    public_create_sql = (
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+        "ix_public_survey_response_survey_id ON "
+        "public_survey_response (survey_id)"
+    )
+    public_drop_sql = (
+        "DROP INDEX CONCURRENTLY IF EXISTS "
+        "ix_public_survey_response_survey_id"
+    )
+    planned_drop, planned_create = _plan_postgresql_index_ddl(
         bind,
         table_name="public_survey_response",
         name=_PUBLIC_RESPONSE_SURVEY_INDEX,
         columns=("survey_id",),
         unique=False,
+        expected_predicate=None,
+        drop_sql=public_drop_sql,
+        create_sql=public_create_sql,
     )
-    if public_index_exists:
-        _assert_postgresql_index_valid(
-            bind,
-            table_name="public_survey_response",
-            name=_PUBLIC_RESPONSE_SURVEY_INDEX,
-        )
+    if planned_drop is not None:
+        pending_drop_sql.append(planned_drop)
+    if planned_create is not None:
+        pending_create_sql.append(planned_create)
 
     context = op.get_context()
     with context.autocommit_block():
         op.execute(sa.text("SET lock_timeout = '5s'"))
         op.execute(sa.text("SET statement_timeout = '15min'"))
-        for sql in pending_sql:
-            op.execute(sa.text(sql))
-        if not public_index_exists:
-            op.execute(
-                sa.text(
-                    "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
-                    "ix_public_survey_response_survey_id ON "
-                    "public_survey_response (survey_id)"
-                )
-            )
-    for name, _columns, _unique, _predicate_terms, _sql in index_specs:
-        _assert_postgresql_index_valid(
+        # DROP INDEX CONCURRENTLY is only planned for an expected definition
+        # whose pg_index row is present but not both ready and valid.
+        for drop_sql in pending_drop_sql:
+            op.execute(sa.text(drop_sql))
+        for create_sql in pending_create_sql:
+            op.execute(sa.text(create_sql))
+    for name, columns, unique, predicate, create_sql, _drop_sql in index_specs:
+        _assert_postgresql_index_exact_and_valid(
             bind,
             table_name="enc_respuesta",
             name=name,
+            columns=columns,
+            unique=unique,
+            expected_predicate=predicate,
+            expected_definition=create_sql,
         )
-    _assert_postgresql_index_valid(
+    _assert_postgresql_index_exact_and_valid(
         bind,
         table_name="public_survey_response",
         name=_PUBLIC_RESPONSE_SURVEY_INDEX,
+        columns=("survey_id",),
+        unique=False,
+        expected_predicate=None,
+        expected_definition=public_create_sql,
     )
     if _LEGACY_FINGERPRINT_CONSTRAINT in existing_unique_constraints:
         op.execute(sa.text("SET LOCAL lock_timeout = '5s'"))

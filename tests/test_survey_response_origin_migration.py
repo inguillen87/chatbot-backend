@@ -5,6 +5,7 @@ import inspect
 import json
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from alembic.config import Config
 from alembic.migration import MigrationContext
@@ -349,12 +350,381 @@ def test_postgresql_online_migration_contains_low_lock_two_phase_contract():
     assert "NOT VALID" in source
     assert "VALIDATE CONSTRAINT" in source
     assert source.count("CONCURRENTLY IF NOT EXISTS") >= 4
+    assert source.count("DROP INDEX CONCURRENTLY IF EXISTS") >= 4
     assert "autocommit_block" in source
 
     postgres_upgrade = inspect.getsource(_load_migration()._upgrade_postgresql)
+    autocommit_position = postgres_upgrade.index("with context.autocommit_block()")
+    drop_position = postgres_upgrade.index("for drop_sql in pending_drop_sql")
+    create_position = postgres_upgrade.index("for create_sql in pending_create_sql")
+    assert autocommit_position < drop_position < create_position
+    post_ddl_validation = postgres_upgrade.index(
+        "_assert_postgresql_index_exact_and_valid",
+        create_position,
+    )
+    legacy_constraint_drop = postgres_upgrade.rindex(
+        "ALTER TABLE enc_respuesta DROP CONSTRAINT"
+    )
+    assert create_position < post_ddl_validation < legacy_constraint_drop
     assert postgres_upgrade.index(
         "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS"
     ) < postgres_upgrade.rindex('"uq_enc_respuesta_huella"')
+
+
+def test_postgresql_invalid_exact_index_plans_concurrent_drop_and_recreate(
+    monkeypatch,
+):
+    migration = _load_migration()
+    index_name = "uq_enc_respuesta_real_huella"
+    inspector = SimpleNamespace(
+        get_indexes=lambda table_name: [
+            {
+                "name": index_name,
+                "column_names": ["encuesta_id", "huella_unica"],
+                "unique": True,
+                "dialect_options": {
+                    "postgresql_where": (
+                        "((\"response_origin\")::text = 'real'::text) AND "
+                        "(\"huella_unica\" IS NOT NULL)"
+                    )
+                },
+            }
+        ]
+    )
+
+    class _CatalogBind:
+        def __init__(self):
+            self.executions = []
+
+        def execute(self, statement, parameters=None):
+            self.executions.append(
+                (
+                    str(statement.compile(dialect=postgresql.dialect())),
+                    parameters,
+                )
+            )
+            return SimpleNamespace(
+                first=lambda: SimpleNamespace(
+                    indisvalid=False,
+                    indisready=True,
+                    index_definition=(
+                        "CREATE UNIQUE INDEX uq_enc_respuesta_real_huella "
+                        "ON public.enc_respuesta USING btree "
+                        "(encuesta_id, huella_unica) WHERE "
+                        "(((response_origin)::text = 'real'::text) AND "
+                        "(huella_unica IS NOT NULL))"
+                    ),
+                )
+            )
+
+    bind = _CatalogBind()
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: inspector)
+    expected_drop = (
+        "DROP INDEX CONCURRENTLY IF EXISTS uq_enc_respuesta_real_huella"
+    )
+    expected_create = (
+        "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "
+        "uq_enc_respuesta_real_huella ON enc_respuesta "
+        "(encuesta_id, huella_unica) WHERE "
+        "response_origin = 'real' AND huella_unica IS NOT NULL"
+    )
+
+    planned = migration._plan_postgresql_index_ddl(
+        bind,
+        table_name="enc_respuesta",
+        name=index_name,
+        columns=("encuesta_id", "huella_unica"),
+        unique=True,
+        expected_predicate=(
+            "response_origin = 'real' AND huella_unica IS NOT NULL"
+        ),
+        drop_sql=expected_drop,
+        create_sql=expected_create,
+    )
+
+    assert planned == (expected_drop, expected_create)
+    assert len(bind.executions) == 1
+    catalog_sql, catalog_parameters = bind.executions[0]
+    assert "FROM pg_index" in catalog_sql
+    assert catalog_parameters == {
+        "table_name": "enc_respuesta",
+        "index_name": index_name,
+    }
+
+
+def test_postgresql_valid_exact_index_plans_no_ddl(monkeypatch):
+    migration = _load_migration()
+    index_name = "ix_public_survey_response_survey_id"
+    inspector = SimpleNamespace(
+        get_indexes=lambda table_name: [
+            {
+                "name": index_name,
+                "column_names": ["survey_id"],
+                "unique": False,
+            }
+        ]
+    )
+
+    class _CatalogBind:
+        def execute(self, statement, parameters=None):
+            return SimpleNamespace(
+                first=lambda: SimpleNamespace(
+                    indisvalid=True,
+                    indisready=True,
+                    index_definition=(
+                        "CREATE INDEX ix_public_survey_response_survey_id "
+                        "ON public.public_survey_response USING btree "
+                        "(survey_id)"
+                    ),
+                )
+            )
+
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: inspector)
+    planned = migration._plan_postgresql_index_ddl(
+        _CatalogBind(),
+        table_name="public_survey_response",
+        name=index_name,
+        columns=("survey_id",),
+        unique=False,
+        expected_predicate=None,
+        drop_sql=(
+            "DROP INDEX CONCURRENTLY IF EXISTS "
+            "ix_public_survey_response_survey_id"
+        ),
+        create_sql=(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+            "ix_public_survey_response_survey_id ON "
+            "public_survey_response (survey_id)"
+        ),
+    )
+
+    assert planned == (None, None)
+
+
+@pytest.mark.parametrize(
+    "conflicting_predicate",
+    [
+        "response_origin <> 'real' AND huella_unica IS NOT NULL",
+        "response_origin = 'REAL' AND huella_unica IS NOT NULL",
+        "response_origin = 'real::text' AND huella_unica IS NOT NULL",
+    ],
+)
+def test_postgresql_conflicting_index_predicate_fails_before_repair(
+    monkeypatch,
+    conflicting_predicate,
+):
+    migration = _load_migration()
+    index_name = "uq_enc_respuesta_real_huella"
+    inspector = SimpleNamespace(
+        get_indexes=lambda table_name: [
+            {
+                "name": index_name,
+                "column_names": ["encuesta_id", "huella_unica"],
+                "unique": True,
+                "dialect_options": {
+                    "postgresql_where": conflicting_predicate
+                },
+            }
+        ]
+    )
+
+    class _ValidCatalogBind:
+        def __init__(self):
+            self.execute_calls = 0
+
+        def execute(self, statement, parameters=None):
+            self.execute_calls += 1
+            return SimpleNamespace(
+                first=lambda: SimpleNamespace(indisvalid=True, indisready=True)
+            )
+
+    bind = _ValidCatalogBind()
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: inspector)
+
+    with pytest.raises(RuntimeError, match="conflicting index"):
+        migration._plan_postgresql_index_ddl(
+            bind,
+            table_name="enc_respuesta",
+            name=index_name,
+            columns=("encuesta_id", "huella_unica"),
+            unique=True,
+            expected_predicate=(
+                "response_origin = 'real' AND huella_unica IS NOT NULL"
+            ),
+            drop_sql=(
+                "DROP INDEX CONCURRENTLY IF EXISTS "
+                "uq_enc_respuesta_real_huella"
+            ),
+            create_sql=(
+                "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "
+                "uq_enc_respuesta_real_huella ON enc_respuesta "
+                "(encuesta_id, huella_unica) WHERE "
+                "response_origin = 'real' AND huella_unica IS NOT NULL"
+            ),
+        )
+
+    assert bind.execute_calls == 0
+
+
+@pytest.mark.parametrize(
+    "actual_definition",
+    [
+        (
+            "CREATE INDEX ix_enc_respuesta_survey_origin_submitted_id "
+            "ON public.enc_respuesta USING hash "
+            "(encuesta_id, response_origin, submitted_at, id)"
+        ),
+        (
+            "CREATE INDEX ix_enc_respuesta_survey_origin_submitted_id "
+            "ON public.enc_respuesta USING btree "
+            "(encuesta_id DESC, response_origin, submitted_at, id)"
+        ),
+        (
+            "CREATE INDEX ix_enc_respuesta_survey_origin_submitted_id "
+            "ON public.enc_respuesta USING btree "
+            "(encuesta_id, response_origin, submitted_at, id) "
+            "INCLUDE (tenant_id)"
+        ),
+        (
+            "CREATE INDEX ix_enc_respuesta_survey_origin_submitted_id "
+            "ON public.enc_respuesta USING btree "
+            "(encuesta_id int4_ops, response_origin, submitted_at, id)"
+        ),
+    ],
+)
+def test_postgresql_valid_noncanonical_definition_fails_closed(
+    monkeypatch,
+    actual_definition,
+):
+    migration = _load_migration()
+    index_name = "ix_enc_respuesta_survey_origin_submitted_id"
+    inspector = SimpleNamespace(
+        get_indexes=lambda table_name: [
+            {
+                "name": index_name,
+                "column_names": [
+                    "encuesta_id",
+                    "response_origin",
+                    "submitted_at",
+                    "id",
+                ],
+                "unique": False,
+            }
+        ]
+    )
+
+    class _CatalogBind:
+        def execute(self, statement, parameters=None):
+            return SimpleNamespace(
+                first=lambda: SimpleNamespace(
+                    indisvalid=True,
+                    indisready=True,
+                    index_definition=actual_definition,
+                )
+            )
+
+    monkeypatch.setattr(migration.sa, "inspect", lambda _bind: inspector)
+    expected_create = (
+        "CREATE INDEX CONCURRENTLY IF NOT EXISTS "
+        "ix_enc_respuesta_survey_origin_submitted_id ON enc_respuesta "
+        "(encuesta_id, response_origin, submitted_at, id)"
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected postgresql definition"):
+        migration._plan_postgresql_index_ddl(
+            _CatalogBind(),
+            table_name="enc_respuesta",
+            name=index_name,
+            columns=("encuesta_id", "response_origin", "submitted_at", "id"),
+            unique=False,
+            expected_predicate=None,
+            drop_sql=(
+                "DROP INDEX CONCURRENTLY IF EXISTS "
+                "ix_enc_respuesta_survey_origin_submitted_id"
+            ),
+            create_sql=expected_create,
+        )
+
+
+def test_postgresql_backfill_streaming_select_does_not_contaminate_updates(
+    monkeypatch,
+):
+    migration = _load_migration()
+
+    class _BatchResult:
+        def __init__(self):
+            self._batches = [
+                [
+                    SimpleNamespace(
+                        id=41,
+                        encuesta_id=7,
+                        metadata_payload=_trusted_metadata(7),
+                    )
+                ],
+                [],
+            ]
+
+        def fetchmany(self, size):
+            assert size == 500
+            return self._batches.pop(0)
+
+    class _PostgresExecutionSpy:
+        """Model SQLAlchemy's in-place connection execution options.
+
+        Render uses one Alembic connection for the streaming SELECT and the
+        batched UPDATE.  If the SELECT sets ``stream_results`` on that shared
+        connection, Psycopg attempts ``DECLARE ... CURSOR FOR UPDATE``.
+        """
+
+        dialect = postgresql.dialect()
+
+        def __init__(self):
+            self.connection_options = {}
+            self.connection_option_calls = []
+            self.executions = []
+
+        def execution_options(self, **options):
+            self.connection_option_calls.append(dict(options))
+            self.connection_options.update(options)
+            return self
+
+        def execute(self, statement, parameters=None):
+            statement_options = dict(statement.get_execution_options())
+            effective_options = {
+                **self.connection_options,
+                **statement_options,
+            }
+            sql = str(statement.compile(dialect=self.dialect))
+            execution = {
+                "sql": sql,
+                "statement_options": statement_options,
+                "effective_options": effective_options,
+            }
+            self.executions.append(execution)
+            if statement.is_update and effective_options.get("stream_results"):
+                raise AssertionError("DECLARE CURSOR inherited by UPDATE")
+            if statement.is_select:
+                return _BatchResult()
+            return SimpleNamespace()
+
+    bind = _PostgresExecutionSpy()
+    monkeypatch.setattr(
+        migration.op,
+        "get_context",
+        lambda: SimpleNamespace(as_sql=False),
+    )
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+
+    migration._backfill_seed_origins()
+
+    assert bind.connection_option_calls == []
+    assert len(bind.executions) == 2
+    select_execution, update_execution = bind.executions
+    assert select_execution["statement_options"]["stream_results"] is True
+    assert select_execution["effective_options"]["stream_results"] is True
+    assert update_execution["statement_options"].get("stream_results") is not True
+    assert update_execution["effective_options"].get("stream_results") is not True
+    assert "UPDATE enc_respuesta" in update_execution["sql"]
 
 
 def test_preflight_rejects_incomplete_legacy_schema_before_mutation():
