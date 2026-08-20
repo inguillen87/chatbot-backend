@@ -16,6 +16,8 @@ from utils.tenant import (
     require_tenant as _decorator_require_tenant,
 )
 
+_TENANT_HINT_BODY_MAX_BYTES = 65_536
+
 
 def _normalize_slug(value: Optional[str]) -> Optional[str]:
     if not value:
@@ -32,6 +34,18 @@ def _tenant_slug_from_body() -> Optional[str]:
     resolve a tenant without returning a 400 even when no query args are
     present.
     """
+
+    # Tenant hints are tiny. Never materialize unknown-length or large request
+    # bodies inside global middleware; the owning endpoint must apply its own
+    # bounded parser and can resolve tenant identity from authenticated context,
+    # headers, or query parameters.
+    content_length = request.content_length
+    if (
+        content_length is None
+        or content_length < 0
+        or content_length > _TENANT_HINT_BODY_MAX_BYTES
+    ):
+        return None
 
     json_payload = request.get_json(silent=True) or {}
     if isinstance(json_payload, dict):
