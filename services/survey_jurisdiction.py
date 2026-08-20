@@ -599,15 +599,20 @@ def review_survey_content(
     evidence_ref: str,
     idempotency_key: str,
 ) -> tuple[SurveyContentReceipt, bool]:
-    """Approve or block the exact current server-side content document."""
+    """Bind or review one exact server-side content document.
+
+    Binding is deliberately a separate request from approval.  A reviewer must
+    reload the post-bind document and explicitly submit that new hash before an
+    approval receipt can be appended.
+    """
 
     normalized_decision = str(decision or "").strip().lower()
-    if normalized_decision not in {"approve", "block"}:
+    if normalized_decision not in {"bind", "approve", "block"}:
         raise SurveyJurisdictionError(
-            "decision debe ser approve o block",
+            "decision debe ser bind, approve o block",
             status_code=400,
             reason_code="survey_content_review_decision_invalid",
-            action_hint="send_approve_or_block",
+            action_hint="send_bind_approve_or_block",
         )
     expected_hash = str(expected_content_sha256 or "").strip().lower()
     if not _SHA256_RE.fullmatch(expected_hash):
@@ -640,9 +645,11 @@ def review_survey_content(
         tenant_id=int(tenant_id), idempotency_key=key
     ).first()
     if replay is not None:
-        expected_event = (
-            "review_approved" if normalized_decision == "approve" else "review_blocked"
-        )
+        expected_event = {
+            "bind": "rebound",
+            "approve": "review_approved",
+            "block": "review_blocked",
+        }[normalized_decision]
         if (
             int(replay.survey_id) == int(survey_id)
             and replay.event_type == expected_event
@@ -664,7 +671,7 @@ def review_survey_content(
             extra={"current_content_sha256": current_hash},
         )
 
-    if normalized_decision == "approve":
+    if normalized_decision in {"bind", "approve"}:
         verified_ref = tenant_verified_jurisdiction(tenant)
         if verified_ref is None:
             raise SurveyJurisdictionError(
@@ -672,22 +679,39 @@ def review_survey_content(
                 reason_code="survey_tenant_jurisdiction_unverified",
                 action_hint="verify_tenant_jurisdiction_with_evidence",
             )
-        before_ref = _normalized_ref(survey.jurisdiction_ref)
+        current_ref = _normalized_ref(survey.jurisdiction_ref)
+        if current_ref is not None and current_ref != verified_ref:
+            raise SurveyJurisdictionError(
+                "La jurisdicción vinculada a la encuesta contradice al tenant verificado",
+                reason_code="survey_jurisdiction_binding_conflict",
+                action_hint="duplicate_and_review_for_verified_jurisdiction",
+            )
+
+    if normalized_decision == "bind":
+        if _normalized_ref(survey.jurisdiction_ref) is not None:
+            raise SurveyJurisdictionError(
+                "La encuesta ya tiene una jurisdicción verificada vinculada",
+                reason_code="survey_jurisdiction_already_bound",
+                action_hint="reload_jurisdiction_readiness_then_review",
+            )
         bind_verified_tenant_jurisdiction(survey, tenant=tenant)
-        if before_ref is None:
-            record_content_receipt(
-                survey,
-                event_type="rebound",
-                decision="recorded",
-                actor_user_id=actor_user_id,
-                evidence_ref=evidence,
-                reason_code="survey_jurisdiction_bound_by_review",
+        event_type = "rebound"
+        receipt_decision = "recorded"
+        receipt_reason_code = "survey_jurisdiction_bound_before_review"
+    elif normalized_decision == "approve":
+        if _normalized_ref(survey.jurisdiction_ref) is None:
+            raise SurveyJurisdictionError(
+                "La jurisdicción verificada debe vincularse antes de aprobar",
+                reason_code="survey_jurisdiction_binding_required",
+                action_hint="bind_verified_jurisdiction_then_reload",
             )
         event_type = "review_approved"
         receipt_decision = "approved"
+        receipt_reason_code = "survey_content_human_review"
     else:
         event_type = "review_blocked"
         receipt_decision = "blocked"
+        receipt_reason_code = "survey_content_human_review"
 
     receipt, replayed = record_content_receipt(
         survey,
@@ -695,7 +719,7 @@ def review_survey_content(
         decision=receipt_decision,
         actor_user_id=actor_user_id,
         evidence_ref=evidence,
-        reason_code="survey_content_human_review",
+        reason_code=receipt_reason_code,
         idempotency_key=key,
         request_content_sha256=expected_hash,
     )
@@ -705,6 +729,17 @@ def review_survey_content(
             status_code=500,
             reason_code="survey_content_review_receipt_missing",
             action_hint="contact_support",
+        )
+    if event_type in _REVIEW_EVENTS and (
+        receipt.content_sha256 != expected_hash
+        or receipt.request_content_sha256 != expected_hash
+    ):
+        db.session.rollback()
+        raise SurveyJurisdictionError(
+            "La revisión no coincide con el hash exacto solicitado",
+            status_code=500,
+            reason_code="survey_content_review_hash_invariant_failed",
+            action_hint="reload_jurisdiction_readiness",
         )
     try:
         db.session.commit()

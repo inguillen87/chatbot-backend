@@ -2348,7 +2348,8 @@ def survey_content_review_v2(current_user, survey_id: int):
     allowed_fields = {"decision", "expected_content_sha256", "evidence_ref"}
     if not isinstance(payload, dict) or set(payload) - allowed_fields:
         return _error_response(
-            "La revisión sólo admite decision, expected_content_sha256 y evidence_ref",
+            "La revisión sólo admite decision (bind, approve o block), "
+            "expected_content_sha256 y evidence_ref",
             400,
             "survey_content_review_payload_invalid",
             "send_exact_review_payload",
@@ -2371,6 +2372,15 @@ def survey_content_review_v2(current_user, survey_id: int):
             {
                 "ok": True,
                 "replayed": bool(replayed),
+                "review_completed": receipt.event_type in {
+                    "review_approved",
+                    "review_blocked",
+                },
+                "action_hint": (
+                    "reload_jurisdiction_readiness_then_review"
+                    if receipt.event_type == "rebound"
+                    else "review_recorded"
+                ),
                 "receipt": serialize_content_receipt(receipt),
                 "jurisdiction": jurisdiction_contract(encuesta),
             },

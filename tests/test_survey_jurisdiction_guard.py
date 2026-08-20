@@ -198,31 +198,69 @@ def test_enforce_publish_requires_verified_binding_and_exact_human_review(client
         db.session.commit()
 
         expected_before_binding = jurisdiction_contract(survey)["content_sha256"]
+        with pytest.raises(SurveyJurisdictionError) as binding_required:
+            review_survey_content(
+                tenant_id=tenant.id,
+                survey_id=survey.id,
+                actor_user_id=user.id,
+                decision="approve",
+                expected_content_sha256=expected_before_binding,
+                evidence_ref="ticket:JUR-001-review",
+                idempotency_key="legacy-review-premature-001",
+            )
+        assert binding_required.value.reason_code == (
+            "survey_jurisdiction_binding_required"
+        )
+        assert survey.jurisdiction_ref is None
+        assert SurveyContentReceipt.query.filter_by(
+            event_type="review_approved"
+        ).count() == 0
+
+        bind_receipt, bind_replayed = review_survey_content(
+            tenant_id=tenant.id,
+            survey_id=survey.id,
+            actor_user_id=user.id,
+            decision="bind",
+            expected_content_sha256=expected_before_binding,
+            evidence_ref="ticket:JUR-001-review",
+            idempotency_key="legacy-review-bind-001",
+        )
+        assert bind_replayed is False
+        assert bind_receipt.event_type == "rebound"
+        assert bind_receipt.request_content_sha256 == expected_before_binding
+        assert bind_receipt.content_sha256 != expected_before_binding
+        assert survey.jurisdiction_ref == tenant.jurisdiction_ref
+        rebound_contract = jurisdiction_contract(survey)
+        assert rebound_contract["ready"] is False
+        assert rebound_contract["reason_code"] == "survey_content_review_required"
+        expected_after_binding = rebound_contract["content_sha256"]
+        assert expected_after_binding == bind_receipt.content_sha256
+
+        bind_replay, bind_replayed = review_survey_content(
+            tenant_id=tenant.id,
+            survey_id=survey.id,
+            actor_user_id=user.id,
+            decision="bind",
+            expected_content_sha256=expected_before_binding,
+            evidence_ref="ticket:JUR-001-review",
+            idempotency_key="legacy-review-bind-001",
+        )
+        assert bind_replayed is True
+        assert bind_replay.id == bind_receipt.id
+
         receipt, replayed = review_survey_content(
             tenant_id=tenant.id,
             survey_id=survey.id,
             actor_user_id=user.id,
             decision="approve",
-            expected_content_sha256=expected_before_binding,
+            expected_content_sha256=expected_after_binding,
             evidence_ref="ticket:JUR-001-review",
             idempotency_key="legacy-review-approved-001",
         )
         assert replayed is False
-        assert receipt.request_content_sha256 == expected_before_binding
-        assert survey.jurisdiction_ref == tenant.jurisdiction_ref
+        assert receipt.content_sha256 == expected_after_binding
+        assert receipt.request_content_sha256 == expected_after_binding
         assert jurisdiction_contract(survey)["ready"] is True
-
-        replay, replayed = review_survey_content(
-            tenant_id=tenant.id,
-            survey_id=survey.id,
-            actor_user_id=user.id,
-            decision="approve",
-            expected_content_sha256=expected_before_binding,
-            evidence_ref="ticket:JUR-001-review",
-            idempotency_key="legacy-review-approved-001",
-        )
-        assert replayed is True
-        assert replay.id == receipt.id
 
         survey, _ = publicar_encuesta(survey.id, user)
         assert survey.estado == "publicada"
@@ -491,3 +529,107 @@ def test_v2_review_route_is_read_only_on_get_and_rejects_reserved_create_fields(
     assert rejected.get_json()["reason_code"] == (
         "survey_jurisdiction_server_owned_fields"
     )
+
+
+def test_bind_requires_reload_and_route_never_approves_post_bind_hash_implicitly(client):
+    with client.application.app_context():
+        user, tenant = _user_and_tenant(verified=False)
+        client.application.config["SURVEY_JURISDICTION_GATE_MODE"] = "enforce_publish"
+        client.application.config["SURVEY_JURISDICTION_GATE_TENANT_IDS"] = str(
+            tenant.id
+        )
+        survey = create_encuesta(_payload("Flujo bind y reload"), user)
+        tenant.jurisdiction_status = "verified"
+        tenant.jurisdiction_ref = "ar:ba:junin"
+        tenant.jurisdiction_evidence_ref = "registry:municipal-jurisdiction:junin"
+        tenant.jurisdiction_verified_by_user_id = user.id
+        tenant.jurisdiction_verified_at = datetime.now(timezone.utc)
+        db.session.commit()
+        token = jwt.encode(
+            {
+                "user_id": user.id,
+                "rol": user.rol,
+                "tenant_slug": tenant.slug,
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+            client.application.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Tenant-Slug": tenant.slug,
+        }
+        survey_id = int(survey.id)
+
+    before = client.get(
+        f"/api/v2/surveys/{survey_id}/content-review",
+        headers=headers,
+    )
+    before_hash = before.get_json()["jurisdiction"]["content_sha256"]
+
+    premature = client.post(
+        f"/api/v2/surveys/{survey_id}/content-review",
+        json={
+            "decision": "approve",
+            "expected_content_sha256": before_hash,
+            "evidence_ref": "ticket:JUR-003-route-review",
+        },
+        headers={**headers, "Idempotency-Key": "route-review-premature-001"},
+    )
+    assert premature.status_code == 409
+    assert premature.get_json()["reason_code"] == (
+        "survey_jurisdiction_binding_required"
+    )
+
+    bound = client.post(
+        f"/api/v2/surveys/{survey_id}/content-review",
+        json={
+            "decision": "bind",
+            "expected_content_sha256": before_hash,
+            "evidence_ref": "ticket:JUR-003-route-review",
+        },
+        headers={**headers, "Idempotency-Key": "route-review-bind-001"},
+    )
+    assert bound.status_code == 201, bound.get_json()
+    bound_payload = bound.get_json()
+    assert bound_payload["review_completed"] is False
+    assert bound_payload["action_hint"] == (
+        "reload_jurisdiction_readiness_then_review"
+    )
+    assert bound_payload["receipt"]["event_type"] == "rebound"
+    assert bound_payload["receipt"]["request_content_sha256"] == before_hash
+    assert bound_payload["receipt"]["content_sha256"] != before_hash
+    assert bound_payload["jurisdiction"]["ready"] is False
+
+    stale = client.post(
+        f"/api/v2/surveys/{survey_id}/content-review",
+        json={
+            "decision": "approve",
+            "expected_content_sha256": before_hash,
+            "evidence_ref": "ticket:JUR-003-route-review",
+        },
+        headers={**headers, "Idempotency-Key": "route-review-stale-001"},
+    )
+    assert stale.status_code == 409
+    assert stale.get_json()["reason_code"] == "survey_content_review_hash_conflict"
+
+    reloaded = client.get(
+        f"/api/v2/surveys/{survey_id}/content-review",
+        headers=headers,
+    )
+    reloaded_hash = reloaded.get_json()["jurisdiction"]["content_sha256"]
+    approved = client.post(
+        f"/api/v2/surveys/{survey_id}/content-review",
+        json={
+            "decision": "approve",
+            "expected_content_sha256": reloaded_hash,
+            "evidence_ref": "ticket:JUR-003-route-review",
+        },
+        headers={**headers, "Idempotency-Key": "route-review-approved-003"},
+    )
+    assert approved.status_code == 201, approved.get_json()
+    approved_payload = approved.get_json()
+    assert approved_payload["review_completed"] is True
+    assert approved_payload["receipt"]["content_sha256"] == reloaded_hash
+    assert approved_payload["receipt"]["request_content_sha256"] == reloaded_hash
+    assert approved_payload["jurisdiction"]["ready"] is True
