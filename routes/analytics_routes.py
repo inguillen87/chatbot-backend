@@ -1,6 +1,6 @@
 from functools import wraps
 
-from flask import Blueprint, current_app, request, jsonify
+from flask import Blueprint, current_app, g, request, jsonify
 from flask_login import current_user, login_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
@@ -14,6 +14,14 @@ from extensions import db
 from models import TenantProfile
 from extensions import limiter
 from utils.auth_helpers import obtener_token, user_from_token
+from utils.auth_decorators import _is_authorized_for_tenant
+from utils.roles import (
+    ROLE_EMPLEADO,
+    ROLE_SUPERADMIN,
+    ROLE_TENANT_ADMIN,
+    canonical_role,
+    is_authorized_superadmin_user,
+)
 
 analytics_v2_bp = Blueprint('analytics_v2_bp', __name__, url_prefix='/api/analytics')
 
@@ -98,6 +106,99 @@ def _tenant_from_id(tenant_id) -> TenantProfile | None:
         return None
 
 
+def _positive_tenant_id(value) -> int | None:
+    try:
+        tenant_id = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return tenant_id if tenant_id > 0 else None
+
+
+def _resolve_authorized_analytics_tenant(
+    explicit_value=None,
+    *,
+    explicit_provided: bool | None = None,
+):
+    """Resolve analytics scope without granting tenant admins globally."""
+
+    role = canonical_role(getattr(current_user, "rol", None))
+    if role not in {ROLE_TENANT_ADMIN, ROLE_EMPLEADO, ROLE_SUPERADMIN}:
+        return None, _api_error("Unauthorized", status=403, code="forbidden")
+
+    if explicit_provided is None:
+        explicit_provided = "tenant_id" in request.args
+        explicit_value = request.args.get("tenant_id")
+    actor_tenant_id = _positive_tenant_id(getattr(current_user, "tenant_id", None))
+
+    if role == ROLE_SUPERADMIN:
+        if not is_authorized_superadmin_user(current_user):
+            return None, _api_error("Unauthorized", status=403, code="forbidden")
+        if not explicit_provided and actor_tenant_id is None:
+            return None, _api_error(
+                "Missing tenant_id",
+                status=400,
+                code="missing_tenant_id",
+            )
+        target_tenant_id = (
+            _positive_tenant_id(explicit_value)
+            if explicit_provided
+            else actor_tenant_id
+        )
+    else:
+        # Legacy owner/slug fallbacks are intentionally not accepted here:
+        # analytics must have one canonical tenant identity on the actor.
+        if actor_tenant_id is None:
+            return None, _api_error("Unauthorized", status=403, code="forbidden")
+        if explicit_provided:
+            explicit_tenant_id = _positive_tenant_id(explicit_value)
+            if explicit_tenant_id is None:
+                return None, _api_error(
+                    "Invalid tenant_id",
+                    status=400,
+                    code="invalid_tenant_id",
+                )
+            if explicit_tenant_id != actor_tenant_id:
+                # Compare before database lookup to avoid a tenant existence oracle.
+                return None, _api_error("Unauthorized", status=403, code="forbidden")
+        target_tenant_id = actor_tenant_id
+
+    if target_tenant_id is None:
+        return None, _api_error(
+            "Invalid tenant_id",
+            status=400,
+            code="invalid_tenant_id",
+        )
+
+    tenant = db.session.get(TenantProfile, target_tenant_id)
+    if tenant is None:
+        return None, _api_error(
+            "Tenant not found",
+            status=404,
+            code="tenant_not_found",
+        )
+    if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id):
+        return None, _api_error("Unauthorized", status=403, code="forbidden")
+    return tenant, None
+
+
+def _report_tenant_authorized(fn):
+    """Authorize report tenant before consuming the per-user generation quota."""
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        data = request.get_json(silent=True) or {}
+        tenant, error_response = _resolve_authorized_analytics_tenant(
+            data.get("tenant_id"),
+            explicit_provided="tenant_id" in data,
+        )
+        if error_response is not None:
+            return error_response
+        g.authorized_analytics_tenant = tenant
+        return fn(*args, **kwargs)
+
+    return _wrapped
+
+
 def _integration_access_for_tenant_id(tenant_id) -> dict:
     return integration_access_payload(_tenant_from_id(tenant_id))
 
@@ -156,17 +257,10 @@ def _get_date_range():
 @analytics_v2_bp.route('/summary', methods=['GET'])
 @api_login_required
 def get_summary():
-    # Verify tenant access
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    # Simple permission check
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
 
     start_date, end_date = _get_date_range()
     context = request.args.get('context', 'overview')
@@ -179,7 +273,7 @@ def get_summary():
 
     try:
         data = analytics_service.get_summary(
-            tenant_id=int(tenant_id),
+            tenant_id=tenant_id,
             start_date=start_date,
             end_date=end_date,
             context=context,
@@ -193,18 +287,10 @@ def get_summary():
 @analytics_v2_bp.route('/heatmap', methods=['GET'])
 @api_login_required
 def get_heatmap():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return _api_error("Unauthorized", status=403, code="forbidden")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "heatmaps"):
         return _integration_plan_required_response(tenant_id, "heatmaps")
 
@@ -212,7 +298,7 @@ def get_heatmap():
 
     try:
         points = analytics_service.get_heatmap_data(
-            tenant_id=int(tenant_id),
+            tenant_id=tenant_id,
             start_date=start_date,
             end_date=end_date
         )
@@ -224,18 +310,13 @@ def get_heatmap():
 @analytics_v2_bp.route('/surveys/summary', methods=['GET'])
 @api_login_required
 def get_survey_summary():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
 
     try:
-        data = analytics_service.get_survey_summary(tenant_id=int(tenant_id))
+        data = analytics_service.get_survey_summary(tenant_id=tenant_id)
         return jsonify(_attach_access(data, tenant_id))
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
@@ -244,15 +325,10 @@ def get_survey_summary():
 @analytics_v2_bp.route('/surveys/sentiment', methods=['GET'])
 @api_login_required
 def get_survey_sentiment():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
         return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
@@ -281,20 +357,15 @@ def get_survey_sentiment():
 @analytics_v2_bp.route('/surveys/geo', methods=['GET'])
 @api_login_required
 def get_survey_geo():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "heatmaps"):
         return _integration_plan_required_response(tenant_id, "heatmaps")
 
     try:
-        points = analytics_service.get_survey_geo(tenant_id=int(tenant_id))
+        points = analytics_service.get_survey_geo(tenant_id=tenant_id)
         return jsonify({"points": points})
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
@@ -303,20 +374,15 @@ def get_survey_geo():
 @analytics_v2_bp.route('/insights', methods=['GET'])
 @api_login_required
 def get_insights():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
         return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
     try:
-        insights = analytics_service.get_insights(tenant_id=int(tenant_id))
+        insights = analytics_service.get_insights(tenant_id=tenant_id)
         return jsonify({"insights": insights})
     except Exception as e:
         current_app.logger.error(f"Analytics Error: {e}", exc_info=True)
@@ -325,15 +391,10 @@ def get_insights():
 @analytics_v2_bp.route('/sales', methods=['GET'])
 @api_login_required
 def get_sales_analytics():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
         return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
@@ -341,7 +402,7 @@ def get_sales_analytics():
 
     try:
         data = analytics_service.get_commerce_analytics(
-            tenant_id=int(tenant_id),
+            tenant_id=tenant_id,
             start_date=start_date,
             end_date=end_date
         )
@@ -353,15 +414,10 @@ def get_sales_analytics():
 @analytics_v2_bp.route('/benchmarks', methods=['GET'])
 @api_login_required
 def get_benchmarks():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
         return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
@@ -369,7 +425,7 @@ def get_benchmarks():
 
     try:
         data = analytics_service.get_benchmarks(
-            tenant_id=int(tenant_id),
+            tenant_id=tenant_id,
             start_date=start_date,
             end_date=end_date
         )
@@ -381,15 +437,10 @@ def get_benchmarks():
 @analytics_v2_bp.route('/funnel', methods=['GET'])
 @api_login_required
 def get_funnel():
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != "admin":
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
         return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
@@ -397,7 +448,7 @@ def get_funnel():
 
     try:
         data = analytics_service.get_funnel_analytics(
-            tenant_id=int(tenant_id),
+            tenant_id=tenant_id,
             start_date=start_date,
             end_date=end_date
         )
@@ -412,15 +463,10 @@ def get_latest_report():
     """
     Returns the most recent valid cached report without triggering generation.
     """
-    tenant_id = request.args.get('tenant_id')
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-            return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant, error_response = _resolve_authorized_analytics_tenant()
+    if error_response is not None:
+        return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
         return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
@@ -453,6 +499,7 @@ def get_latest_report():
 
 @analytics_v2_bp.route('/report/generate', methods=['POST'])
 @api_login_required
+@_report_tenant_authorized
 @limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def trigger_generate_report():
     """
@@ -460,29 +507,32 @@ def trigger_generate_report():
     Wraps the logic of `generate_report` but dedicated routing.
     Rate limited to 1 per hour per admin.
     """
-    # Simply forward to the existing function logic
-    return generate_report()
+    return _generate_report_impl()
 
 @analytics_v2_bp.route('/generate-report', methods=['POST'])
 @api_login_required
+@_report_tenant_authorized
 @limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
 def generate_report():
+    return _generate_report_impl()
+
+
+def _generate_report_impl():
     data = request.get_json(silent=True) or {}
-    tenant_id = data.get('tenant_id')
     segment = data.get('segment', 'pyme') # pyme or municipio
-
-    if not tenant_id:
-        if current_user.tenant_id:
-            tenant_id = current_user.tenant_id
-        else:
-             return _api_error("Missing tenant_id", status=400, code="missing_tenant_id")
-
-    if current_user.tenant_id and str(current_user.tenant_id) != str(tenant_id) and current_user.rol != 'admin':
-        return _api_error("Unauthorized", status=403, code="forbidden")
+    tenant = getattr(g, "authorized_analytics_tenant", None)
+    if tenant is None:
+        tenant, error_response = _resolve_authorized_analytics_tenant(
+            data.get('tenant_id'),
+            explicit_provided='tenant_id' in data,
+        )
+        if error_response is not None:
+            return error_response
+    tenant_id = tenant.id
     if not _feature_enabled_for_tenant_id(tenant_id, "analytics_dashboard"):
         return _integration_plan_required_response(tenant_id, "analytics_dashboard")
 
-    tid = int(tenant_id)
+    tid = tenant_id
 
     # 0. Check Cache (e.g. 7 days for weekly reports)
     # The cache key should ideally include date range, but for simplicity we check if *any* report was generated recently

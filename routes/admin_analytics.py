@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from flask import Blueprint, Response, abort, jsonify, request
-from sqlalchemy import false, func, or_
+from sqlalchemy import case, false, func, or_
 
 from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, db
 from services.analytics import get_geo_heatmap, get_summary
@@ -22,6 +22,12 @@ from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     resolve_unique_tenant_for_owner,
     tenant_owner_ids,
+)
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    build_survey_response_provenance,
 )
 from utils.map_config import get_map_config
 
@@ -1313,7 +1319,54 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         if sent in sentiment:
             sentiment[sent] += 1
 
-    survey_responses = EncRespuesta.query.filter_by(tenant_id=tenant_profile_id).filter(EncRespuesta.created_at >= cutoff).count()
+    survey_responses, unverified_survey_responses, synthetic_survey_responses = db.session.query(
+        func.coalesce(
+            func.sum(
+                case(
+                    (EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL, 1),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        EncRespuesta.response_origin
+                        == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        EncRespuesta.response_origin
+                        == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+    ).filter(
+        EncRespuesta.tenant_id == tenant_profile_id,
+        EncRespuesta.submitted_at >= cutoff,
+    ).one()
+    survey_responses = int(survey_responses or 0)
+    synthetic_survey_responses = int(synthetic_survey_responses or 0)
+    unverified_survey_responses = int(unverified_survey_responses or 0)
+    response_provenance = build_survey_response_provenance(
+        real_count=survey_responses,
+        synthetic_count=synthetic_survey_responses,
+        unverified_count=unverified_survey_responses,
+    )
     survey_comments = (
         EncComentario.query.join(EncEncuesta, EncComentario.encuesta_id == EncEncuesta.id)
         .filter(EncEncuesta.tenant_id == tenant_profile_id)
@@ -1398,6 +1451,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
         "events": top_events,
         "sentiment": sentiment,
         "survey_operations": survey_operations,
+        "response_provenance": response_provenance,
         "comments": comments,
         "recommendations": recommendations,
         "hotspots": hotspots,

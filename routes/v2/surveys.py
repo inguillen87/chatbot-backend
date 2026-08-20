@@ -12,25 +12,32 @@ import uuid
 from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy.exc import IntegrityError
 
-from extensions import db
-from models import SurveyDraft, SurveyDraftIdempotency, TenantProfile
+from extensions import db, limiter
+from models import EncRespuesta, SurveyDraft, SurveyDraftIdempotency, TenantProfile
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
-from services.encuestas_analytics_service import get_dashboard_bundle
-from services.encuestas_analytics_service import calculate_live_results
+from services.encuestas_analytics_service import (
+    calculate_live_results,
+    get_dashboard_bundle,
+    live_results_http_etag,
+)
 from services.encuestas_service import (
     EncuestaError,
+    build_admin_list_payload,
     cerrar_encuesta,
     create_encuesta,
     find_survey_response_replay,
     get_encuesta,
     get_public_encuesta,
-    list_encuestas,
+    list_encuestas_page,
     publicar_encuesta,
+    public_survey_response_count_contract,
     resolve_survey_submission_id,
     resolve_optional_survey_bearer_user,
     save_respuesta,
     serialize_encuesta,
     serialize_public_encuesta,
+    survey_admin_write_rate_limit_key,
+    survey_instrument_max_payload_bytes,
     survey_response_receipt_contract,
     update_encuesta,
 )
@@ -62,6 +69,7 @@ from services.survey_response_effects import (
     dispatch_survey_response_effects,
     summarize_survey_response_effects,
 )
+from services.survey_response_provenance import SURVEY_RESPONSE_ORIGIN_REAL
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
@@ -204,6 +212,12 @@ def _coerce_positive_int(value: Any, default: int) -> int:
 
 
 def _public_client_ip() -> str:
+    return public_survey_client_ip()
+
+
+def _public_live_results_rate_limit_key() -> str:
+    """Share the trusted-edge client resolver with response intake."""
+
     return public_survey_client_ip()
 
 
@@ -850,6 +864,17 @@ def _survey_public_state(encuesta) -> dict[str, Any]:
 
 
 def _survey_response_count(encuesta) -> int:
+    survey_id = getattr(encuesta, "id", None)
+    if survey_id is not None:
+        return int(
+            db.session.query(db.func.count(EncRespuesta.id))
+            .filter(
+                EncRespuesta.encuesta_id == survey_id,
+                EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
+            )
+            .scalar()
+            or 0
+        )
     respuestas = getattr(encuesta, "respuestas", None)
     if respuestas is None:
         return 0
@@ -1101,7 +1126,9 @@ def _build_survey_operations_contract(
         "is_live_vote": bool(state.get("is_live_vote")),
         "live_results_enabled": bool(live_results_enabled),
         "comments_enabled": comments_enabled,
-        "responses_count": int(responses_count or 0),
+        "responses_count": (
+            None if responses_count is None else int(responses_count or 0)
+        ),
         "admin_surface": {
             "id": "survey_live_ops",
             "label": "Centro operativo de encuesta",
@@ -1256,20 +1283,25 @@ def _attach_public_contract(
     live_results_enabled = bool(getattr(encuesta, "mostrar_resultados_envivo", False))
     links = _build_survey_links(token, tenant_slug=tenant_slug)
     realtime = _build_realtime_contract(token, tenant_slug=tenant_slug, enabled=live_results_enabled)
+    count_privacy = public_survey_response_count_contract(
+        encuesta,
+        responses_count,
+    )
+    public_responses_count = count_privacy["count"]
     operations = _build_survey_operations_contract(
         encuesta,
         token,
         tenant_slug=tenant_slug,
         live_results_enabled=live_results_enabled,
         public_state=public_state,
-        responses_count=responses_count,
+        responses_count=public_responses_count,
     )
     next_steps = _build_operational_next_steps(
         token,
         tenant_slug=tenant_slug,
         live_results_enabled=live_results_enabled,
         public_state=public_state,
-        responses_count=responses_count,
+        responses_count=public_responses_count,
         operations=operations,
     )
 
@@ -1281,6 +1313,7 @@ def _attach_public_contract(
     payload["realtime"] = realtime
     payload["operations"] = operations
     payload["admin_operations"] = operations
+    payload["response_count_privacy"] = count_privacy
     payload["operational_next_steps"] = next_steps
     payload["next_steps"] = next_steps["items"]
     security = _survey_security_contract(
@@ -1812,17 +1845,43 @@ def list_surveys_v2(current_user):
         return denied
 
     estado = (request.args.get("estado") or request.args.get("status") or "").strip() or None
-    encuestas = list_encuestas(tenant_id=tenant.id, estado=estado)
+    try:
+        page_data = list_encuestas_page(
+            tenant_id=tenant.id,
+            estado=estado,
+            limit=request.args.get("limit"),
+            cursor=request.args.get("cursor"),
+            page=request.args.get("page"),
+        )
+        admin_payload = build_admin_list_payload(
+            page_data["items"],
+            tenant_id=tenant.id,
+            tenant_slug=getattr(tenant, "slug", None),
+            pagination=page_data["pagination"],
+        )
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
+    pagination = page_data["pagination"]
     return jsonify(
         {
-            "items": [serialize_encuesta(encuesta) for encuesta in encuestas],
-            "total": len(encuestas),
+            "contract_version": "surveys.list.v2",
+            "items": admin_payload["encuestas"],
+            "total": pagination["total_items"],
+            "limit": pagination["limit"],
+            "next_cursor": pagination["next_cursor"],
+            "has_more": pagination["has_more"],
+            "pagination": pagination,
             "access": integration_access_payload(tenant),
         }
     )
 
 
 @v2_surveys_bp.route("/surveys", methods=["POST"])
+@limiter.shared_limit(
+    "120 per minute",
+    scope="survey-admin-create",
+    key_func=survey_admin_write_rate_limit_key,
+)
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def create_survey_v2(current_user):
@@ -1834,6 +1893,27 @@ def create_survey_v2(current_user):
         return denied
     if not _survey_writes_allowed(tenant):
         return _survey_plan_required_response(tenant)
+
+    max_payload_bytes = survey_instrument_max_payload_bytes()
+    if (
+        request.content_length is not None
+        and request.content_length > max_payload_bytes
+    ):
+        return _encuesta_error_response(
+            EncuestaError(
+                "El instrumento supera el tamaño máximo permitido.",
+                status_code=413,
+                payload={
+                    "contract_version": "surveys.instrument_limits.v1",
+                    "reason_code": "survey_instrument_too_large",
+                    "retryable": False,
+                    "action_hint": "reduce_instrument_size",
+                    "field": "payload_bytes",
+                    "actual": int(request.content_length),
+                    "maximum": max_payload_bytes,
+                },
+            )
+        )
 
     g.tenant_profile = tenant
     try:
@@ -2746,6 +2826,7 @@ def survey_public_by_token_v2(token: str):
             token,
             preferred_tenant_id=preferred_tenant_id,
             require_tenant_match=preferred_tenant_id is not None,
+            allow_closed_for_read=True,
         )
     except EncuestaError as exc:
         return _encuesta_error_response(exc)
@@ -2775,6 +2856,14 @@ def _build_public_survey_response_ack(
     links = _build_survey_links(token, tenant_slug=tenant_slug)
     public_state = _survey_public_state(encuesta) if encuesta is not None else None
     responses_count = _survey_response_count(encuesta) if encuesta is not None else None
+    count_privacy = (
+        public_survey_response_count_contract(encuesta, responses_count)
+        if encuesta is not None
+        else None
+    )
+    public_responses_count = (
+        count_privacy.get("count") if isinstance(count_privacy, Mapping) else None
+    )
     operations = (
         _build_survey_operations_contract(
             encuesta,
@@ -2782,7 +2871,7 @@ def _build_public_survey_response_ack(
             tenant_slug=tenant_slug,
             live_results_enabled=live_results_enabled,
             public_state=public_state,
-            responses_count=responses_count,
+            responses_count=public_responses_count,
         )
         if encuesta is not None
         else None
@@ -2792,7 +2881,7 @@ def _build_public_survey_response_ack(
         tenant_slug=tenant_slug,
         live_results_enabled=live_results_enabled,
         public_state=public_state,
-        responses_count=responses_count,
+        responses_count=public_responses_count,
         operations=operations,
     )
     resolved_security = dict(
@@ -2831,6 +2920,7 @@ def _build_public_survey_response_ack(
         ),
         "operations": operations,
         "admin_operations": operations,
+        "response_count_privacy": count_privacy,
         "operational_next_steps": next_steps,
         "next_steps": next_steps["items"],
         "security": resolved_security,
@@ -3059,6 +3149,11 @@ def respond_public_survey_v2(token: str):
 
 
 @v2_public_surveys_bp.route("/<string:token>/live-results", methods=["GET"])
+@limiter.shared_limit(
+    "60 per minute",
+    scope="public-survey-live-results-v2",
+    key_func=_public_live_results_rate_limit_key,
+)
 def survey_live_results_v2(token: str):
     tenant, error = _resolve_tenant_or_error(required=False)
     if error:
@@ -3091,13 +3186,24 @@ def survey_live_results_v2(token: str):
         public_base_url=_public_frontend_base_url(),
     )
     if demo_results:
-        return _json_response(_attach_demo_live_results_contract(demo_results, token))
+        demo_payload = _attach_demo_live_results_contract(demo_results, token)
+        etag = live_results_http_etag(demo_payload)
+        response = (
+            current_app.response_class(status=304)
+            if request.if_none_match.contains(etag)
+            else _json_response(demo_payload)
+        )
+        response.set_etag(etag)
+        response.headers["Cache-Control"] = "public, max-age=3, stale-while-revalidate=5"
+        response.headers["Vary"] = "X-Tenant-Slug, X-Tenant, Origin"
+        return response
 
     try:
         encuesta = get_public_encuesta(
             token,
             preferred_tenant_id=preferred_tenant_id,
             require_tenant_match=preferred_tenant_id is not None,
+            allow_closed_for_read=True,
         )
         is_tenant_owner = preferred_tenant_id is not None and getattr(encuesta, "tenant_id", None) == preferred_tenant_id
         if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)) and not is_tenant_owner:
@@ -3111,6 +3217,7 @@ def survey_live_results_v2(token: str):
             token,
             preferred_tenant_id=preferred_tenant_id,
             require_tenant_match=preferred_tenant_id is not None,
+            allow_closed_for_read=True,
             include_heatmap=include_heatmap,
             max_points=max(100, min(max_points, 5000)),
             max_cells=max(50, min(max_cells, 1000)),
@@ -3138,4 +3245,13 @@ def survey_live_results_v2(token: str):
         token,
         tenant_slug=_tenant_slug_for_resolved_survey(encuesta),
     )
-    return _json_response(results)
+    etag = str(results.get("cache_etag") or live_results_http_etag(results))
+    response = (
+        current_app.response_class(status=304)
+        if request.if_none_match.contains(etag)
+        else _json_response(results)
+    )
+    response.set_etag(etag)
+    response.headers["Cache-Control"] = "public, max-age=3, stale-while-revalidate=5"
+    response.headers["Vary"] = "X-Tenant-Slug, X-Tenant, Origin"
+    return response

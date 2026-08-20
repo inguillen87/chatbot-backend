@@ -827,6 +827,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         live_results = self.client.get(first_ack["live_results_url"])
         self.assertEqual(live_results.status_code, 200, live_results.get_json())
         results_payload = live_results.get_json()
+        active_results_etag = live_results.headers["ETag"]
         self.assertEqual(results_payload["contract_version"], "surveys.live_results.v2")
         self.assertEqual(results_payload["total_respuestas"], 1)
         self.assertEqual(results_payload["preguntas"][0]["total_votos"], 1)
@@ -902,8 +903,10 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertEqual(socket_client.get_received(), [])
 
         closed_results = self.client.get(first_ack["live_results_url"])
-        self.assertEqual(closed_results.status_code, 403, closed_results.get_json())
-        self.assertEqual(closed_results.get_json()["reason_code"], "survey_not_published")
+        self.assertEqual(closed_results.status_code, 200, closed_results.get_json())
+        self.assertNotEqual(closed_results.headers["ETag"], active_results_etag)
+        self.assertEqual(closed_results.get_json()["total_respuestas"], 1)
+        self.assertEqual(closed_results.get_json()["preguntas"][0]["total_votos"], 1)
 
 
 if __name__ == "__main__":

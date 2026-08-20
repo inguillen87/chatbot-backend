@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
+from app import db
+from models import TenantProfile, User
 from services.municipio_responder import responder_municipio
 
 
@@ -46,9 +48,43 @@ def test_reclamo_handler_categoria_buttons(client):
 
 def test_reclamo_handler_share_location_button(client):
     with patch("services.municipio_responder.find_global_menu_action", return_value=None):
-        with patch("services.municipio_responder.llamar_llm_con_fallback"):
-            owner_user = MagicMock()
-            owner_user.id = 1
+        with patch(
+            "services.municipio_responder.llamar_gemini",
+            return_value=(
+                {
+                    "message_body": "Reclamo por *Luminaria*. ¿Cuál es la dirección exacta?",
+                    "accion_backend": "crear_reclamo",
+                    "datos_estructura": {
+                        "target": "municipio",
+                        "categoria": "Luminaria",
+                        "descripcion": "Poste de luz roto",
+                    },
+                    "pedir_info": "ubicacion",
+                    "botones": [],
+                },
+                {},
+            ),
+        ):
+            owner_user = User(
+                email="whatsapp-location-owner@example.com",
+                name="WhatsApp location owner",
+                rol="admin",
+                tipo_chat="municipio",
+            )
+            owner_user.set_password("whatsapp-location-test-only")
+            db.session.add(owner_user)
+            db.session.flush()
+            tenant = TenantProfile(
+                slug="whatsapp-location-owner",
+                nombre="WhatsApp location owner",
+                tipo="municipio",
+                municipio_id=owner_user.id,
+            )
+            db.session.add(tenant)
+            db.session.flush()
+            owner_user.tenant_id = tenant.id
+            owner_user.tenant_slug = tenant.slug
+            db.session.commit()
             chat_db_context = MagicMock()
             chat_db_context.context_data = {}
 

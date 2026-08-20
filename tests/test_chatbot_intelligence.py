@@ -121,7 +121,11 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
         {
             "message_body": "Entendido, iniciando un reclamo. ¿Cuál es la dirección del problema?",
             "accion_backend": "crear_reclamo",
-            "datos_estructura": {"target": "municipio"},
+            "datos_estructura": {
+                "target": "municipio",
+                "categoria": "Arreglo de calle",
+                "descripcion": "Hay un bache en mi calle",
+            },
             "pedir_info": "ubicacion",
             "botones": []
         },
@@ -145,21 +149,13 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
     assert response1 is not None
     assert "dirección" in response1.get("message_body", "")
     municipal_context = chat_context.context_data['contexto_municipio_v2']
-    assert municipal_context['estado_conversacion'] == 'EN_FLUJO_RECLAMO'
-    assert municipal_context['reclamo_flow_v2']['state'] == 'ESPERANDO_DIRECCION'
-    assert municipal_context['reclamo_flow_v2']['datos_reclamo']['categoria'] == 'Arreglo de calle'
+    assert municipal_context['estado_conversacion'] == 'ESPERANDO_INFO_RECLAMO_LLM'
+    assert municipal_context['esperando_info_llm_reclamo'] == 'ubicacion'
+    assert municipal_context['datos_parciales_llm_reclamo']['categoria'] == 'Arreglo de calle'
+    assert municipal_context['datos_parciales_llm_reclamo']['descripcion'] == 'Hay un bache en mi calle'
 
     # 2. User provides the location
-    mock_llamar_gemini.return_value = (
-        {
-            "message_body": "Gracias. Ahora necesito tu nombre completo.",
-            "accion_backend": "crear_reclamo",
-            "datos_estructura": {"target": "municipio", "ubicacion": "Calle Falsa 123"},
-            "pedir_info": "nombre_completo",
-            "botones": []
-        },
-        {}
-    )
+    mock_llamar_gemini.reset_mock()
 
     response2 = responder_municipio(
         pregunta_original="Calle Falsa 123",
@@ -170,11 +166,8 @@ def test_information_gathering_reclamo_municipio(mock_llamar_gemini, client, moc
     )
 
     assert response2 is not None
-    assert response2.get("message_type") == "interactive_buttons"
-    assert {option["action_id"] for option in response2["options_list"]} == {
-        "reclamo_adjuntar_foto_si",
-        "reclamo_adjuntar_foto_no",
-    }
-    assert municipal_context['reclamo_flow_v2']['state'] == 'ESPERANDO_FOTO'
-    assert municipal_context['reclamo_flow_v2']['datos_reclamo']['direccion'] == 'Calle Falsa 123'
+    assert "datos" in response2.get("message_body", "").lower()
+    assert municipal_context['estado_conversacion'] == 'ESPERANDO_INFO_RECLAMO_LLM'
+    assert municipal_context['datos_parciales_llm_reclamo']['ubicacion'] == 'Calle Falsa 123'
+    assert set(municipal_context['expected_fields_llm_reclamo']) == {'email', 'telefono'}
     mock_llamar_gemini.assert_not_called()

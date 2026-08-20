@@ -193,6 +193,14 @@ class TestMenuKeywords(unittest.TestCase):
             "limpiar_contexto",
         )
 
+    def test_declared_action_ids_win_before_colliding_keyword_fallbacks(self):
+        for action_id in (
+            "consultar_estado_reclamo",
+            "mostrar_menu_reclamos",
+        ):
+            with self.subTest(action_id=action_id):
+                self.assertEqual(find_global_menu_action(action_id), action_id)
+
     def test_declared_intents_accept_controlled_natural_phrases(self):
         cases = {
             "Necesito defensa del consumidor": "defensa_del_consumidor",

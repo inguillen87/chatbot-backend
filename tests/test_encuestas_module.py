@@ -75,6 +75,17 @@ if app_module is not None:
     app_module.FEATURE_ENCUESTAS = True
 
 
+@pytest.fixture
+def survey_demo_seed_qa(client, monkeypatch):
+    """Opt in to the synthetic QA control plane for tests that request seeds."""
+
+    monkeypatch.setitem(client.application.config, "ENV", "testing")
+    monkeypatch.setitem(client.application.config, "ALLOW_SURVEY_DEMO_SEEDING", True)
+    monkeypatch.setitem(client.application.config, "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1", False)
+    monkeypatch.setitem(client.application.config, "SURVEY_SYNTHETIC_SEED_TENANT_IDS", "")
+    return client
+
+
 def test_bootstrap_templates_match_frontend_config():
     inicio = datetime(2025, 1, 1, tzinfo=timezone.utc)
     fin = inicio + timedelta(days=45)
@@ -206,7 +217,8 @@ def test_bootstrap_templates_match_frontend_config():
 
 
 
-def test_get_public_encuesta_refreshes_expired_bootstrap_window(client):
+def test_get_public_encuesta_refreshes_expired_bootstrap_window(survey_demo_seed_qa):
+    client = survey_demo_seed_qa
     with client.application.app_context():
         user = DummyUser(tenant_id=4)
         draft_payload = build_template_draft_from_slug("movilidad-y-transporte", "Junín")
@@ -249,7 +261,8 @@ def test_list_template_payloads_scope_all_returns_catalog(client):
         assert demo_seed.get("geo_profile_key") == "lavalle"
 
 
-def test_create_encuesta_auto_seed_demo_creates_responses(client):
+def test_create_encuesta_auto_seed_demo_creates_responses(survey_demo_seed_qa):
+    client = survey_demo_seed_qa
     with client.application.app_context():
         user = DummyUser(tenant_id=4)
         draft_payload = build_template_draft_from_slug("servicios-publicos", "Junín")
@@ -272,7 +285,11 @@ def test_create_encuesta_auto_seed_demo_creates_responses(client):
         assert seed_cfg["municipality_label"] == "Junín"
 
 
-def test_publicar_encuesta_auto_seed_when_no_responses(monkeypatch, client):
+def test_template_auto_seed_is_an_exclusive_sandbox_and_cannot_publish(
+    monkeypatch,
+    survey_demo_seed_qa,
+):
+    client = survey_demo_seed_qa
     with client.application.app_context():
         user = DummyUser(tenant_id=4)
         draft_payload = build_template_draft_from_slug("servicios-publicos", "Junín")
@@ -301,17 +318,22 @@ def test_publicar_encuesta_auto_seed_when_no_responses(monkeypatch, client):
         assert len(calls) == 1, "Debe invocar seed al crear la encuesta"
         assert EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count() == 0
 
-        encuesta, _ = publicar_encuesta(encuesta.id, user)
-        assert len(calls) == 2, "Debe invocar seed nuevamente al publicar"
-        publish_call = calls[-1]
-        assert publish_call["cantidad"] == draft_payload["auto_seed_demo"]["cantidad"]
-        assert publish_call["geo_profile_key"] == "junin"
-        assert publish_call["municipality_label"] == "Junín"
+        with pytest.raises(EncuestaError) as exc_info:
+            publicar_encuesta(encuesta.id, user)
+        assert (
+            exc_info.value.payload["reason_code"]
+            == "survey_synthetic_sandbox_publish_forbidden"
+        )
+        assert exc_info.value.payload["auto_seed_configured"] is True
+        assert len(calls) == 1
+        assert db.session.get(EncEncuesta, encuesta.id).estado == "borrador"
 
 
 class DummyUser:
     def __init__(self, tenant_id: int = 1):
         self.id = None
+        self.rol = "admin"
+        self.tenant_id = tenant_id
         self.municipio_id = tenant_id
 
 
@@ -871,6 +893,38 @@ def test_list_respuestas_paginadas_y_serializadas(client):
 
         assert offset_dos == 2
         assert len(restantes) == 1
+
+
+def test_list_respuestas_legacy_excludes_only_trusted_synthetic_rows(client):
+    with client.application.app_context():
+        encuesta, slug, user = _create_active_encuesta()
+        real_response = save_respuesta(
+            slug,
+            _respuesta_payload(encuesta, texto="Respuesta ciudadana"),
+            _request_ctx("anon-real-list"),
+        )
+        synthetic_response = save_respuesta(
+            slug,
+            _respuesta_payload(encuesta, texto="Respuesta sintetica"),
+            _request_ctx("anon-synthetic-list"),
+        )
+        synthetic_response.metadata_payload = {
+            "is_demo_seed": True,
+            "demo_seed_contract_version": "surveys.demo_seeding.v1",
+            "demo_batch_id": f"seed-{encuesta.id}-1720000000",
+        }
+        synthetic_response.response_origin = "synthetic_demo"
+        db.session.commit()
+
+        _survey, responses, total, _limit, _offset = list_respuestas(
+            encuesta.id,
+            user,
+            limit=10,
+            offset=0,
+        )
+
+        assert total == 1
+        assert [response.id for response in responses] == [real_response.id]
 
 
 def test_get_summary_returns_metrics(client):

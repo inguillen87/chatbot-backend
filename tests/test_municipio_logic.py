@@ -156,8 +156,23 @@ class MunicipioLogicTests(unittest.TestCase):
         mock_start_flow.assert_called_once()
         self.assertEqual(resp["message_body"], "flujoiniciado")
 
+    @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
+    @patch(
+        'services.municipio_responder.extract_complaint_details_llm',
+        return_value={
+            "intencion": "crear_reclamo",
+            "es_reclamo": True,
+            "tipo_problema": "Luminaria",
+            "descripcion_problema": "hay un poste caido",
+        },
+    )
     @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
-    def test_auto_category_from_text(self, mock_start_flow):
+    def test_auto_category_from_text(
+        self,
+        mock_start_flow,
+        _mock_complaint_extraction,
+        _mock_contact_extraction,
+    ):
         mock_start_flow.return_value = {"message_body": "flujoiniciado"}
 
         from models import ChatSessionContext, db
@@ -183,7 +198,16 @@ class MunicipioLogicTests(unittest.TestCase):
         self.assertEqual(kwargs.get("categoria_inicial"), "Luminaria")
         self.assertEqual(resp["message_body"], "flujoiniciado")
 
-    @patch('services.municipio_responder.extract_complaint_details_llm', return_value={})
+    @patch(
+        'services.municipio_responder.extract_complaint_details_llm',
+        return_value={
+            "intencion": "crear_reclamo",
+            "es_reclamo": True,
+            "tipo_problema": "Luminaria",
+            "descripcion_problema": "hay un poste caído",
+            "ubicacion_problema": "calle Sarmiento 125",
+        },
+    )
     @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
     @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
     def test_auto_description_and_address(

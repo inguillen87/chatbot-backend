@@ -34,6 +34,7 @@ from services.survey_access_policy import (
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
+from utils.roles import ROLE_EMPLEADO, canonical_role
 
 
 SURVEY_ANALYTICS_ERROR_CONTRACT = "surveys.analytics.error.v1"
@@ -46,9 +47,18 @@ def _feature_guard():
     return None
 
 
-def _parse_filtros() -> dict:
+def _parse_filtros(current_user=None) -> dict:
     filtros = {}
-    for key in ("desde", "hasta", "canal", "utm_source", "utm_campaign", "bbox", "include_demo", "exclude_demo"):
+    for key in (
+        "desde",
+        "hasta",
+        "canal",
+        "utm_source",
+        "utm_campaign",
+        "bbox",
+        "data_mode",
+        "exclude_demo",
+    ):
         value = request.args.get(key)
         if value:
             filtros[key] = value
@@ -61,6 +71,12 @@ def _parse_filtros() -> dict:
         if not parts:
             continue
         filtros[key] = parts if len(parts) > 1 else parts[0]
+
+    # Synthetic scenarios are an explicit administrative analysis mode. An
+    # employee can inspect real analytics but cannot opt in via query params.
+    if current_user is not None and canonical_role(getattr(current_user, "rol", None)) == ROLE_EMPLEADO:
+        filtros.pop("data_mode", None)
+        filtros["exclude_demo"] = "true"
     return filtros
 
 
@@ -320,7 +336,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def summary(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         try:
             _authorize_encuesta(current_user, encuesta_id)
             denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
@@ -338,7 +354,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def timeseries(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         granularity = request.args.get("granularity", "day")
         try:
             _authorize_encuesta(current_user, encuesta_id)
@@ -356,7 +372,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     def heatmap(current_user, encuesta_id: int):
         request_started = time.perf_counter()
         request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         resolution = request.args.get("resolution", type=int)
         try:
             _authorize_encuesta(current_user, encuesta_id)
@@ -387,7 +403,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def forecast(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
         horizon_minutes = request.args.get("horizon_minutes", default=60, type=int) or 60
         try:
@@ -407,7 +423,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def alerts(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         window_minutes = request.args.get("window_minutes", default=10, type=int) or 10
         min_activity = request.args.get("min_activity", default=5, type=int) or 5
         try:
@@ -427,7 +443,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def brief(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         try:
             _authorize_encuesta(current_user, encuesta_id)
             denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
@@ -447,7 +463,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     def dashboard(current_user, encuesta_id: int):
         request_started = time.perf_counter()
         request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         granularity = request.args.get("granularity", "day")
         use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
         fast_mode = str(request.args.get("fast") or request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -509,7 +525,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def segment_compare(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
 
         def _parse_segment_value(raw_value: str | None):
             if not raw_value:
@@ -546,7 +562,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def segment_suggestions(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         limit = request.args.get("limit", default=5, type=int) or 5
         try:
             _authorize_encuesta(current_user, encuesta_id)
@@ -560,7 +576,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def anomalies(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         burst_window = request.args.get("burst_window_minutes", default=5, type=int) or 5
         burst_threshold = request.args.get("burst_threshold", default=10, type=int) or 10
         try:
@@ -583,7 +599,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def export_view(current_user, encuesta_id: int):
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         try:
             encuesta = _authorize_encuesta(current_user, encuesta_id)
             denied = _require_survey_capabilities(
@@ -621,7 +637,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     @require_role("admin", "empleado", "super_admin")
     def export_pdf_view(current_user, encuesta_id: int):
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
-        filtros = _parse_filtros()
+        filtros = _parse_filtros(current_user)
         try:
             encuesta = _authorize_encuesta(current_user, encuesta_id)
             denied = _require_survey_capabilities(

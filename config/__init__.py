@@ -695,6 +695,15 @@ class Config:
         False,
         "ALLOW_SURVEY_DEMO_SEEDING",
     )
+    # Production synthetic seeding is a separate, tenant-scoped canary.  The
+    # legacy flag above remains limited to safe QA/test runtimes.
+    ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 = _env_strict_opt_in(
+        "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1"
+    )
+    SURVEY_SYNTHETIC_SEED_TENANT_IDS = os.getenv(
+        "SURVEY_SYNTHETIC_SEED_TENANT_IDS",
+        "",
+    )
     # Governance-sensitive interview/admission APIs require a deliberate
     # deployment opt-in after migrations, tenant policy and staging evidence.
     ENABLE_ASSESSMENT_INTERVIEWS_V1 = _env_strict_opt_in(
@@ -1312,6 +1321,42 @@ def validate_runtime_security(config: Any) -> list[str]:
             "ALLOW_SURVEY_DEMO_SEEDING no puede habilitarse en produccion."
         )
 
+    synthetic_seed_enabled = getattr(config, "get", lambda *_: None)(
+        "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1",
+        False,
+    )
+    raw_synthetic_seed_tenants = str(
+        getattr(config, "get", lambda *_: None)(
+            "SURVEY_SYNTHETIC_SEED_TENANT_IDS",
+            "",
+        )
+        or ""
+    ).strip()
+    synthetic_seed_tenants: set[int] = set()
+    synthetic_seed_allowlist_invalid = False
+    if raw_synthetic_seed_tenants:
+        for raw_tenant_id in raw_synthetic_seed_tenants.split(","):
+            normalized_tenant_id = raw_tenant_id.strip()
+            try:
+                tenant_id = int(normalized_tenant_id)
+            except (TypeError, ValueError):
+                synthetic_seed_allowlist_invalid = True
+                break
+            if tenant_id <= 0 or str(tenant_id) != normalized_tenant_id:
+                synthetic_seed_allowlist_invalid = True
+                break
+            synthetic_seed_tenants.add(tenant_id)
+    if synthetic_seed_allowlist_invalid:
+        errors.append(
+            "SURVEY_SYNTHETIC_SEED_TENANT_IDS contiene un tenant invalido."
+        )
+    if synthetic_seed_enabled is True and (
+        not synthetic_seed_tenants or synthetic_seed_allowlist_invalid
+    ):
+        errors.append(
+            "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 requiere tenants canarios explicitos."
+        )
+
     secret_key = str(getattr(config, "get", lambda *_: None)("SECRET_KEY", "") or "").strip()
     if not secret_key or secret_key.lower() in INSECURE_SECRET_MARKERS or len(secret_key) < 24:
         errors.append("SECRET_KEY insegura para producción.")
@@ -1887,6 +1932,8 @@ class TestConfig(Config):
     SESSION_TYPE = 'null'
     CORS_ALLOW_LOCAL_DEV = True
     ALLOW_SURVEY_DEMO_SEEDING = True
+    ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 = False
+    SURVEY_SYNTHETIC_SEED_TENANT_IDS = ""
 
 class TestingConfig(TestConfig):
     pass

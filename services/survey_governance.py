@@ -1316,6 +1316,80 @@ def serialize_release(
     }
 
 
+def _public_release_projection(
+    release: SurveyGovernanceRelease,
+    encuesta: EncEncuesta,
+) -> dict[str, Any]:
+    """Project a release without exposing a reconstructable small cohort.
+
+    The durable closure manifest remains the audit source of truth.  Public
+    source-anonymous contracts expose that manifest only once the final real
+    response cohort reaches the configured disclosure threshold.  Synthetic
+    and quarantined historical rows never satisfy that threshold.
+    """
+
+    payload = serialize_release(release)
+    privacy_mode = str(getattr(encuesta, "privacy_mode", "legacy") or "legacy")
+    if (
+        release.status != "closed"
+        or privacy_mode.strip().lower() != "source_anonymous"
+    ):
+        return payload
+
+    origin_counts = {
+        str(origin or "legacy_unverified"): int(count or 0)
+        for origin, count in (
+            db.session.query(
+                EncRespuesta.response_origin,
+                func.count(EncRespuesta.id),
+            )
+            .filter(
+                EncRespuesta.tenant_id == release.tenant_id,
+                EncRespuesta.encuesta_id == release.survey_id,
+                EncRespuesta.governance_release_id == release.id,
+            )
+            .group_by(EncRespuesta.response_origin)
+            .all()
+        )
+    }
+    real_response_count = int(origin_counts.get("real", 0))
+    excluded_counts = {
+        "synthetic_demo": int(origin_counts.get("synthetic_demo", 0)),
+        "legacy_unverified": int(origin_counts.get("legacy_unverified", 0)),
+    }
+    excluded_total = sum(excluded_counts.values())
+    # Import locally to keep the governance persistence layer independent
+    # while sharing the canonical public k-anonymity contract and bounds.
+    from services.encuestas_service import public_survey_response_count_contract
+
+    privacy = public_survey_response_count_contract(encuesta, real_response_count)
+    if privacy.get("suppressed") is not True and excluded_total == 0:
+        return payload
+
+    closure = payload.get("closure")
+    manifest_sha256 = (
+        closure.get("manifest_sha256") if isinstance(closure, Mapping) else None
+    )
+    payload["closure"] = {
+        "manifest_sha256": manifest_sha256,
+        "manifest": None,
+        "redacted": True,
+        "privacy": privacy,
+        "public_summary": {
+            "contract_version": "surveys.public_release_summary.v1",
+            "response_origin": "real",
+            "response_count": privacy.get("count"),
+            "response_count_bucket": privacy.get("bucket"),
+            "excluded_non_real": {
+                **excluded_counts,
+                "total": excluded_total,
+            },
+            "truth_label": "citizen_responses_real_only",
+        },
+    }
+    return payload
+
+
 def _survey_releases(encuesta: EncEncuesta) -> list[SurveyGovernanceRelease]:
     return (
         SurveyGovernanceRelease.query.filter_by(
@@ -1379,8 +1453,12 @@ def survey_governance_contract(
         "contract_version": GOVERNANCE_PUBLIC_CONTRACT_VERSION,
         "mode": "governed_release",
         "release_required": True,
-        "active_release": serialize_release(active) if active is not None else None,
-        "latest_release": serialize_release(latest),
+        "active_release": (
+            _public_release_projection(active, encuesta)
+            if active is not None
+            else None
+        ),
+        "latest_release": _public_release_projection(latest, encuesta),
         "eligibility": active_eligibility,
         "accepting_responses": bool(
             active is not None

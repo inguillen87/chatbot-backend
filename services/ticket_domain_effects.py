@@ -1098,29 +1098,15 @@ def tenant_ticket_reply_realtime_payload(
     ticket: TenantTicket,
     event: Mapping[str, Any],
 ) -> dict[str, Any]:
-    visibility = str(event.get("visibility") or "public").strip().lower()
-    body = str(event.get("body") or "").strip()
-    actor = event.get("actor") if isinstance(event.get("actor"), Mapping) else {}
+    # Tenant rooms contain every operator for the tenant, including employees
+    # with narrower ticket-category scopes.  This payload therefore carries
+    # routing data only; authorized clients refetch through the HTTP boundary.
     return {
         "contract_version": "tenant_ticket.reply.realtime.v1",
         "tenant_type": "tenant",
         "tipo": "tenant",
         "tenant_profile_id": ticket.tenant_id,
-        "ticket_id": ticket.id,
-        "ticketId": ticket.id,
-        "source_model": "TenantTicket",
-        "estado": ticket.estado,
-        "message": {
-            "id": event.get("id"),
-            "comentario": body,
-            "texto": body,
-            "es_admin": True,
-            "origen": "agent" if visibility == "public" else "internal",
-            "visibility": visibility,
-            "estado_ticket": ticket.estado,
-            "fecha": event.get("created_at"),
-            "autor": actor.get("name") or "Equipo",
-        },
+        "delivery": "tenant_collection_invalidation",
     }
 
 

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import jwt
+import pytest
 
 from app import db
 from models import (
@@ -645,6 +646,234 @@ def test_tenant_dashboard_bundle_counts_full_backlog_even_when_items_are_limited
     assert body["summary"]["sla_breached"] == 1
     assert len(body["leads"]["items"]) == 1
     assert any(action["kind"] == "review_sla" for action in body["recommended_actions"])
+
+
+@pytest.mark.parametrize(
+    "role",
+    ["usuario", "cliente"],
+)
+@pytest.mark.parametrize(
+    "path",
+    ["encuestas/overview", "dashboard-bundle", "heatmap-summary"],
+)
+def test_tenant_admin_experience_routes_reject_customer_roles(client, app, role, path):
+    owner = User(
+        email=f"owner-{role}-{path.replace('/', '-')}@test.com",
+        name="Owner role gate",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug=f"role-gate-{role}-{path.replace('/', '-')}",
+        nombre="Role gate",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    actor = User(
+        email=f"{role}-{path.replace('/', '-')}@test.com",
+        name="Customer actor",
+        rol=role,
+        tipo_chat="pyme",
+        tenant_id=tenant.id,
+    )
+    actor.set_password("pass")
+    db.session.add(actor)
+    db.session.commit()
+
+    response = client.get(
+        f"/api/admin/tenants/{tenant.slug}/{path}",
+        headers=_headers(app, actor),
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json() or {}
+    assert payload.get("reason_code") == "insufficient_permissions"
+
+
+def test_employee_admin_experience_is_category_scoped_and_empty_scope_fails_closed(client, app):
+    owner = User(
+        email="owner-category-scope@test.com",
+        name="Owner category scope",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="employee-category-scope",
+        nombre="Employee category scope",
+        tipo="pyme",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+
+    scoped_employee = User(
+        email="scoped-employee@test.com",
+        name="Scoped employee",
+        rol="empleado",
+        es_empleado=True,
+        tipo_chat="pyme",
+        tenant_id=tenant.id,
+        accesibilidad={"employee_scope": {"categorias": ["luminaria"]}},
+    )
+    scoped_employee.set_password("pass")
+    empty_employee = User(
+        email="empty-employee@test.com",
+        name="Empty employee",
+        rol="empleado",
+        es_empleado=True,
+        tipo_chat="pyme",
+        tenant_id=tenant.id,
+        accesibilidad={"employee_scope": {"categorias": []}},
+    )
+    empty_employee.set_password("pass")
+    db.session.add_all([scoped_employee, empty_employee])
+    db.session.flush()
+
+    allowed_ticket = MunicipioTicket(
+        tenant_id=tenant.id,
+        pregunta="Luminaria sin funcionar",
+        asunto="Caso permitido",
+        categoria="Luminaria",
+        distrito="centro",
+        latitud=-32.90,
+        longitud=-68.80,
+        estado="nuevo",
+        nombre_vecino="Vecino permitido",
+    )
+    denied_ticket = MunicipioTicket(
+        tenant_id=tenant.id,
+        pregunta="Bache profundo",
+        asunto="Caso restringido",
+        categoria="Baches",
+        distrito="norte",
+        latitud=-32.91,
+        longitud=-68.81,
+        estado="nuevo",
+        nombre_vecino="Vecino restringido",
+    )
+    allowed_tickets = [allowed_ticket]
+    for index in range(4):
+        allowed_tickets.append(
+            MunicipioTicket(
+                tenant_id=tenant.id,
+                pregunta=f"Luminaria sin funcionar {index}",
+                asunto=f"Caso permitido {index}",
+                categoria="Luminaria",
+                distrito="centro",
+                latitud=-32.9001,
+                longitud=-68.8001,
+                estado="nuevo",
+                nombre_vecino=f"Vecino permitido {index}",
+            )
+        )
+    survey = EncEncuesta(
+        tenant_id=tenant.id,
+        slug="employee-hidden-survey",
+        titulo="Encuesta territorial reservada",
+        estado="publicada",
+        tipo="opinion",
+    )
+    db.session.add_all([*allowed_tickets, denied_ticket, survey])
+    db.session.flush()
+    survey_response = EncRespuesta(
+        encuesta_id=survey.id,
+        tenant_id=tenant.id,
+        response_origin="real",
+        canal="whatsapp",
+        barrio="Barrio confidencial",
+        ciudad="Ushuaia",
+        lat=-54.812345,
+        lng=-68.312345,
+    )
+    db.session.add(survey_response)
+    db.session.commit()
+
+    scoped_bundle = client.get(
+        f"/api/admin/tenants/{tenant.slug}/dashboard-bundle",
+        headers=_headers(app, scoped_employee),
+    )
+    assert scoped_bundle.status_code == 200
+    scoped_bundle_body = scoped_bundle.get_json()
+    scoped_lead_ids = {
+        item["ticket_id"] for item in scoped_bundle_body["leads"]["items"]
+    }
+    allowed_ticket_ids = {ticket.id for ticket in allowed_tickets}
+    assert scoped_lead_ids == allowed_ticket_ids
+    assert scoped_bundle_body["summary"]["total_leads"] == 5
+
+    scoped_heatmap = client.get(
+        f"/api/admin/tenants/{tenant.slug}/heatmap-summary",
+        headers=_headers(app, scoped_employee),
+    )
+    assert scoped_heatmap.status_code == 200
+    scoped_heatmap_body = scoped_heatmap.get_json()
+    scoped_points = scoped_heatmap_body["heatmap_points"]
+    assert (scoped_heatmap_body.get("privacy") or {}).get("mode") == "employee_aggregated"
+    assert (scoped_heatmap_body.get("privacy") or {}).get("k_min") == 5
+    assert len(scoped_points) == 1
+    assert scoped_points[0]["source"] == "ticket_aggregate"
+    assert scoped_points[0]["count"] == 5
+    assert scoped_points[0]["lat"] == -32.9
+    assert scoped_points[0]["lng"] == -68.8
+    assert "ticket_id" not in scoped_points[0]
+    assert "survey_id" not in scoped_points[0]
+    assert scoped_heatmap_body["response_provenance"]["real_responses_included"] == 0
+    assert "Encuesta territorial reservada" not in str(scoped_heatmap_body)
+    assert "Barrio confidencial" not in str(scoped_heatmap_body)
+    assert "-54.812345" not in str(scoped_heatmap_body)
+
+    # A second test client avoids reusing the first actor's Flask-Login cookie.
+    with app.test_client() as empty_client:
+        empty_bundle = empty_client.get(
+            f"/api/admin/tenants/{tenant.slug}/dashboard-bundle",
+            headers=_headers(app, empty_employee),
+        )
+        empty_heatmap = empty_client.get(
+            f"/api/admin/tenants/{tenant.slug}/heatmap-summary",
+            headers=_headers(app, empty_employee),
+        )
+    assert empty_bundle.status_code == 200
+    assert empty_bundle.get_json()["summary"]["total_leads"] == 0
+    assert empty_bundle.get_json()["leads"]["items"] == []
+    assert empty_heatmap.status_code == 200
+    assert [
+        point
+        for point in empty_heatmap.get_json()["heatmap_points"]
+        if point.get("source") == "ticket"
+    ] == []
+
+    with app.test_client() as admin_client:
+        admin_bundle = admin_client.get(
+            f"/api/admin/tenants/{tenant.slug}/dashboard-bundle",
+            headers=_headers(app, owner),
+        )
+        admin_heatmap = admin_client.get(
+            f"/api/admin/tenants/{tenant.slug}/heatmap-summary",
+            headers=_headers(app, owner),
+        )
+    assert admin_bundle.status_code == 200
+    assert admin_bundle.get_json()["summary"]["total_leads"] == 6
+    assert admin_heatmap.status_code == 200
+    admin_heatmap_body = admin_heatmap.get_json()
+    assert {
+        point["ticket_id"]
+        for point in admin_heatmap_body["heatmap_points"]
+        if point.get("source") == "ticket"
+    } == {*allowed_ticket_ids, denied_ticket.id}
+    assert any(
+        point.get("source") == "survey_response"
+        and point.get("response_id") == survey_response.id
+        for point in admin_heatmap_body["heatmap_points"]
+    )
 
 
 def test_admin_tenant_catalog_supports_commercial_filters(client, app):

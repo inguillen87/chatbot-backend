@@ -21,6 +21,7 @@ from flask import (
 from flask_login import current_user
 from urllib.parse import quote_plus, urlencode
 
+from extensions import limiter
 from config import (
     ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS,
     ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH,
@@ -43,7 +44,10 @@ from services.encuestas_service import (
     survey_response_receipt_contract,
     verify_social_comment_token,
 )
-from services.encuestas_analytics_service import calculate_live_results
+from services.encuestas_analytics_service import (
+    calculate_live_results,
+    live_results_http_etag,
+)
 from services.demo_surveys import (
     build_demo_live_results_payload,
     build_demo_public_survey_payload,
@@ -536,13 +540,19 @@ def _public_error_response(err: EncuestaError, *, fallback_reason: Optional[str]
     return response, status_code
 
 
-def _load_public_encuesta_for_request(slug: str, *, preview_user=None):
+def _load_public_encuesta_for_request(
+    slug: str,
+    *,
+    preview_user=None,
+    allow_closed_for_read: bool = False,
+):
     tenant_id, require_tenant_match = _resolve_public_survey_tenant_scope()
     return get_public_encuesta(
         slug,
         allow_inactive_for_user=preview_user,
         preferred_tenant_id=tenant_id,
         require_tenant_match=require_tenant_match,
+        allow_closed_for_read=allow_closed_for_read,
     )
 
 
@@ -614,6 +624,12 @@ def _resolve_share_image(encuesta: Optional[dict]) -> Optional[str]:
 
 
 def _extract_ip() -> str:
+    return public_survey_client_ip()
+
+
+def _public_live_results_rate_limit_key() -> str:
+    """Share the trusted-edge client resolver with response intake."""
+
     return public_survey_client_ip()
 
 
@@ -1067,7 +1083,11 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
         preview_user = _resolve_preview_user()
         try:
-            encuesta = _load_public_encuesta_for_request(slug, preview_user=preview_user)
+            encuesta = _load_public_encuesta_for_request(
+                slug,
+                preview_user=preview_user,
+                allow_closed_for_read=True,
+            )
         except EncuestaError as err:
             return _public_error_response(err)
         tenant = _tenant_profile_for_survey_record(encuesta)
@@ -1252,6 +1272,12 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
 
     @bp.route("/<slug>/live-results", methods=["GET", "OPTIONS"])
     @bp.route("/v1/<slug>/live-results", methods=["GET", "OPTIONS"])
+    @limiter.shared_limit(
+        "60 per minute",
+        scope="public-survey-live-results",
+        key_func=_public_live_results_rate_limit_key,
+        exempt_when=lambda: request.method == "OPTIONS",
+    )
     def live_results(slug: str):
         if request.method == "OPTIONS":
             return "", 204
@@ -1263,7 +1289,15 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         if demo_results:
             request_id = _resolve_request_id()
             demo_results.setdefault("request_id", request_id)
-            response = jsonify(demo_results)
+            etag = live_results_http_etag(demo_results)
+            response = (
+                current_app.response_class(status=304)
+                if request.if_none_match.contains(etag)
+                else jsonify(demo_results)
+            )
+            response.set_etag(etag)
+            response.headers["Cache-Control"] = "public, max-age=3, stale-while-revalidate=5"
+            response.headers["Vary"] = "X-Tenant-Slug, X-Tenant, Origin"
             response.headers.setdefault("X-Request-Id", request_id)
             return response
 
@@ -1294,6 +1328,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 slug,
                 preferred_tenant_id=tenant_id,
                 require_tenant_match=require_tenant_match,
+                allow_closed_for_read=True,
                 include_heatmap=include_heatmap,
                 max_points=max(100, min(max_points, 5000)),
                 max_cells=max(50, min(max_cells, 1000)),
@@ -1302,7 +1337,15 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             )
             request_id = _resolve_request_id()
             results.setdefault("request_id", request_id)
-            response = jsonify(results)
+            etag = str(results.get("cache_etag") or live_results_http_etag(results))
+            response = (
+                current_app.response_class(status=304)
+                if request.if_none_match.contains(etag)
+                else jsonify(results)
+            )
+            response.set_etag(etag)
+            response.headers["Cache-Control"] = "public, max-age=3, stale-while-revalidate=5"
+            response.headers["Vary"] = "X-Tenant-Slug, X-Tenant, Origin"
             response.headers.setdefault("X-Request-Id", request_id)
             return response
         except EncuestaError as err:

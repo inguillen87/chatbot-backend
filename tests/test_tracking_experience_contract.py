@@ -190,7 +190,16 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(payload["support"]["ui"]["channel_binding_label"], "Canal interno del ticket")
         self.assertEqual(payload["support"]["ui"]["no_external_redirect_label"], "Sin redireccion externa")
         self.assertIn("Actualizacion cada", payload["support"]["ui"]["polling_label"])
-        self.assertIn("SLA objetivo", payload["support"]["ui"]["response_expectation_label"])
+        sla_target_minutes = payload["support"]["operator_queue"]["sla_target_minutes"]
+        expected_response_label = (
+            f"Respuesta esperada en hasta {sla_target_minutes} min"
+            if payload["support"]["mode"] == "live"
+            else f"El equipo lo ve en el CRM. SLA objetivo {sla_target_minutes} min"
+        )
+        self.assertEqual(
+            payload["support"]["ui"]["response_expectation_label"],
+            expected_response_label,
+        )
         action_by_id = {item["id"]: item for item in payload["actions"]}
         self.assertEqual(
             action_by_id["send_message"]["endpoint"],

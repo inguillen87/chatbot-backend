@@ -160,6 +160,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
 
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='municipio',
+            actor=current_user,
             municipio_id=3,
             rubro_id=None,
             tenant_id=None,
@@ -250,6 +251,7 @@ class EstadisticasDashboardRouteTest(unittest.TestCase):
         mock_build_stats.assert_not_called()
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
             tipo_ticket='pyme',
+            actor=current_user,
             municipio_id=None,
             rubro_id=9,
             tenant_id=None,

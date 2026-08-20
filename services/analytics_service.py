@@ -1,11 +1,17 @@
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
-from sqlalchemy import func, text, desc, and_
+from sqlalchemy import case, func, text, desc, and_
 from database import db
 from models import (
     AnalyticsEvent, User, MunicipioTicket, PymePedido, MarketOrder,
     EncEncuesta, EncRespuesta, EncRespuestaDetalle, EncPregunta, EncOpcion
+)
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    build_survey_response_provenance,
 )
 
 try:
@@ -499,10 +505,49 @@ class AnalyticsService:
         if not survey:
             return {"active_survey": None, "stats": {}}
 
-        # Total votes
-        total_votes = db.session.query(func.count(EncRespuesta.id)).filter(
-            EncRespuesta.encuesta_id == survey.id
-        ).scalar() or 0
+        total_votes, unverified_votes, synthetic_votes = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).filter(
+            EncRespuesta.encuesta_id == survey.id,
+            EncRespuesta.tenant_id == tenant_id,
+        ).one()
+        total_votes = int(total_votes or 0)
+        synthetic_votes = int(synthetic_votes or 0)
+        unverified_votes = int(unverified_votes or 0)
 
         # Results by option (Histogram)
         # Join Response -> Detalle -> Opcion
@@ -510,11 +555,15 @@ class AnalyticsService:
             EncOpcion.texto, func.count(EncRespuestaDetalle.id)
         ).join(
             EncRespuestaDetalle, EncRespuestaDetalle.opcion_id == EncOpcion.id
+        ).join(
+            EncRespuesta, EncRespuesta.id == EncRespuestaDetalle.respuesta_id
+        ).join(
+            EncPregunta, EncPregunta.id == EncOpcion.pregunta_id
         ).filter(
-            EncOpcion.pregunta_id.in_([p.id for p in survey.preguntas]), # Just to be safe
-            EncRespuestaDetalle.respuesta_id.in_(
-                db.session.query(EncRespuesta.id).filter(EncRespuesta.encuesta_id == survey.id)
-            )
+            EncPregunta.encuesta_id == survey.id,
+            EncRespuesta.encuesta_id == survey.id,
+            EncRespuesta.tenant_id == tenant_id,
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
         ).group_by(EncOpcion.texto).all()
 
         histogram = [{"option": r[0], "count": r[1]} for r in results]
@@ -533,7 +582,12 @@ class AnalyticsService:
             "stats": {
                 "total_votes": total_votes,
                 "participation_rate": round(participation_rate, 2),
-                "results_by_option": histogram
+                "results_by_option": histogram,
+                "response_provenance": build_survey_response_provenance(
+                    real_count=total_votes,
+                    synthetic_count=synthetic_votes,
+                    unverified_count=unverified_votes,
+                ),
             }
         }
 
@@ -541,11 +595,12 @@ class AnalyticsService:
         """
         Fetches open-ended text responses from surveys for sentiment analysis.
         """
-        # Get recent text answers
+        # Get recent text answers from citizen/real responses only.
         texts = db.session.query(EncRespuestaDetalle.texto_libre).join(
             EncRespuesta, EncRespuestaDetalle.respuesta_id == EncRespuesta.id
         ).filter(
             EncRespuesta.tenant_id == tenant_id,
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
             EncRespuestaDetalle.texto_libre.isnot(None),
             EncRespuestaDetalle.texto_libre != ""
         ).order_by(desc(EncRespuesta.submitted_at)).limit(limit).all()
@@ -556,15 +611,23 @@ class AnalyticsService:
         """
         Returns geo-tagged votes.
         """
-        votes = db.session.query(
-            EncRespuesta.lat, EncRespuesta.lng
+        vote_rows = db.session.query(
+            EncRespuesta.lat,
+            EncRespuesta.lng,
         ).filter(
             EncRespuesta.tenant_id == tenant_id,
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
             EncRespuesta.lat.isnot(None),
             EncRespuesta.lng.isnot(None)
+        ).order_by(
+            EncRespuesta.submitted_at.desc(),
+            EncRespuesta.id.desc(),
         ).limit(500).all()
 
-        return [{"lat": v.lat, "lng": v.lng, "weight": 1} for v in votes]
+        return [
+            {"lat": vote.lat, "lng": vote.lng, "weight": 1}
+            for vote in vote_rows
+        ]
 
     def get_cached_report(self, tenant_id: int, report_type: str, max_age_hours: int = 24) -> Optional[Dict]:
         """

@@ -23,6 +23,7 @@ from services.operational_intelligence import (
     build_operational_freshness,
     build_operational_heatmap,
 )
+from services.operational_heatmap_access import heatmap_viewer_cache_signature
 from services.plan_access import (
     integration_access_payload,
     integration_feature_payload,
@@ -68,7 +69,14 @@ def _operation_cache_datetime(value: datetime) -> str:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-def _operations_dashboard_cache_key(tenant, start_date: datetime, end_date: datetime) -> tuple[Any, ...]:
+def _operations_dashboard_cache_key(
+    tenant,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    viewer: Any = None,
+) -> tuple[Any, ...]:
+    viewer_signature = heatmap_viewer_cache_signature(viewer)
     if has_request_context():
         range_signature = tuple(
             (name, tuple(request.args.getlist(name)))
@@ -78,6 +86,7 @@ def _operations_dashboard_cache_key(tenant, start_date: datetime, end_date: date
         return (
             getattr(tenant, "id", None),
             getattr(tenant, "slug", None),
+            viewer_signature,
             "request_range",
             range_signature or (("default_days", "7"),),
         )
@@ -85,6 +94,7 @@ def _operations_dashboard_cache_key(tenant, start_date: datetime, end_date: date
     return (
         getattr(tenant, "id", None),
         getattr(tenant, "slug", None),
+        viewer_signature,
         _operation_cache_datetime(start_date),
         _operation_cache_datetime(end_date),
     )
@@ -111,18 +121,24 @@ def _clear_operations_dashboard_cache_for_tests() -> None:
     _OPERATIONS_DASHBOARD_CACHE.clear()
 
 
-def _cached_operational_dashboard(tenant, start_date: datetime, end_date: datetime) -> dict[str, Any]:
+def _cached_operational_dashboard(
+    tenant,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    viewer: Any = None,
+) -> dict[str, Any]:
     if not _operations_dashboard_cache_enabled():
-        return build_operational_dashboard(tenant, start_date, end_date)
+        return build_operational_dashboard(tenant, start_date, end_date, viewer=viewer)
 
     now = monotonic()
     _prune_operations_dashboard_cache(now)
-    key = _operations_dashboard_cache_key(tenant, start_date, end_date)
+    key = _operations_dashboard_cache_key(tenant, start_date, end_date, viewer=viewer)
     cached = _OPERATIONS_DASHBOARD_CACHE.get(key)
     if cached and now - cached[0] < _OPERATIONS_DASHBOARD_CACHE_TTL_SECONDS:
         return deepcopy(cached[1])
 
-    payload = build_operational_dashboard(tenant, start_date, end_date)
+    payload = build_operational_dashboard(tenant, start_date, end_date, viewer=viewer)
     _OPERATIONS_DASHBOARD_CACHE[key] = (now, deepcopy(payload))
     return payload
 
@@ -539,7 +555,7 @@ def operations_dashboard_v2(current_user):
         return error
 
     start_date, end_date = _date_range()
-    payload = _cached_operational_dashboard(tenant, start_date, end_date)
+    payload = _cached_operational_dashboard(tenant, start_date, end_date, viewer=current_user)
     return _json_response(_with_access(payload, tenant))
 
 
@@ -560,11 +576,14 @@ def operations_heatmap_v2(current_user):
         tenant,
         start_date,
         end_date,
+        viewer=current_user,
         segment_filters=_heatmap_segment_filters(),
         include_ai=include_ai,
         max_points=max_points,
         bbox=_heatmap_bbox_filter(),
     )
+    if (payload.get("privacy") or {}).get("mode") == "employee_aggregated":
+        return _json_response(payload)
     return _json_response(_with_access(payload, tenant))
 
 
@@ -579,7 +598,7 @@ def operations_action_center_v2(current_user):
         return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
-    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date, viewer=current_user)
     payload = build_action_center(tenant, start_date, end_date, dashboard=dashboard)
     return _json_response(_with_access(payload, tenant))
 
@@ -595,7 +614,7 @@ def operations_ai_brief_v2(current_user):
         return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
-    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date, viewer=current_user)
     brief = dict(dashboard.get("ai_brief") or {})
     brief.setdefault("contract_version", "operations.ai_brief.v1")
     brief.update(
@@ -691,7 +710,7 @@ def operations_ai_ops_queue_v2(current_user):
         limit = 15
 
     start_date, end_date = _date_range()
-    payload = build_ai_ops_queue(tenant, start_date, end_date, limit=limit)
+    payload = build_ai_ops_queue(tenant, start_date, end_date, limit=limit, viewer=current_user)
     payload["enabled"] = True
     payload["model_policy"] = build_llm_task_policy("analytics")
     return _json_response(_with_access(payload, tenant))
@@ -706,7 +725,12 @@ def operations_freshness_v2(current_user):
         return error
 
     start_date, end_date = _date_range()
-    payload = build_operational_freshness(tenant, start_date, end_date)
+    payload = build_operational_freshness(
+        tenant,
+        start_date,
+        end_date,
+        viewer=current_user,
+    )
     return _json_response(_with_access(payload, tenant))
 
 
@@ -721,7 +745,7 @@ def operations_executive_summary_v2(current_user):
         return _integration_plan_required_response(tenant, "analytics_dashboard")
 
     start_date, end_date = _date_range()
-    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date, viewer=current_user)
     summary = dashboard.get("summary") or {}
     has_data = any(
         int(summary.get(key) or 0) > 0
@@ -788,7 +812,7 @@ def operations_export_pdf_v2(current_user):
 
     request_id = _request_id()
     start_date, end_date = _date_range()
-    dashboard = _cached_operational_dashboard(tenant, start_date, end_date)
+    dashboard = _cached_operational_dashboard(tenant, start_date, end_date, viewer=current_user)
     body = _build_simple_text_pdf(_dashboard_report_lines(dashboard))
     response = Response(
         body,

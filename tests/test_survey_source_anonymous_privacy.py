@@ -301,7 +301,11 @@ def test_source_anonymous_public_live_results_hide_a_small_cohort(client, monkey
         assert live["privacy"]["detailed_results_suppressed"] is True
         assert live["privacy"]["minimum_cell_size"] == 5
         assert live["total_respuestas"] is None
-        assert live["total_respuestas_bucket"] == "<5"
+        assert live["total_respuestas_bucket"] == "withheld_until_close"
+        assert (
+            live["privacy"]["reason_code"]
+            == "source_anonymous_results_withheld_until_close"
+        )
         assert live["preguntas"][0]["total_votos"] is None
         assert live["preguntas"][0]["opciones"][0]["votos"] is None
         assert live["timeline_minute"] == []

@@ -107,7 +107,7 @@ def test_customer_roles_cannot_read_tenant_analytics(
     analytics_call.assert_not_called()
 
 
-def test_costs_require_tenant_id(client, analytics_tenant):
+def test_costs_infer_authenticated_actor_tenant(client, analytics_tenant):
     owner, tenant = analytics_tenant
     _actor, token = _create_actor(
         email="cost-admin@analytics.test",
@@ -116,9 +116,15 @@ def test_costs_require_tenant_id(client, analytics_tenant):
         owner=owner,
     )
 
-    response = client.get(
-        "/api/analytics/costs",
-        headers={"Authorization": f"Bearer {token}"},
-    )
+    with patch(
+        "routes.analytics_kpis.analytics_kpi_service.get_cost_metrics",
+        return_value={"total_cost": 12.5},
+    ) as get_cost_metrics:
+        response = client.get(
+            "/api/analytics/costs",
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.get_json() == {"total_cost": 12.5}
+    get_cost_metrics.assert_called_once_with(tenant.id)

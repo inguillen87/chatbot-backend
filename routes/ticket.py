@@ -3979,7 +3979,6 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     # Notificación por Websocket
     ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
     emit_ticket_status_changed(ticket_json)
-    emit_ticket_update(ticket_json)
 
     comentarios = [
         {

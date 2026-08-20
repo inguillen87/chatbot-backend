@@ -32,6 +32,7 @@ from services.constants import CONTEXTO_MUNICIPIO
 from services.encuestas_service import (
     EncuestaError,
     get_public_encuesta,
+    public_survey_response_count_contract,
     save_respuesta,
     survey_response_receipt_contract,
 )
@@ -42,6 +43,12 @@ from services.survey_governance import (
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_tenant_scope_id,
+)
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    build_survey_response_provenance,
 )
 from models_survey_governance import SurveyGovernanceRelease
 
@@ -838,49 +845,162 @@ def _build_submission_payload(
 def _live_results(instrument: _LoadedInstrument) -> Optional[dict[str, Any]]:
     if not instrument.survey.mostrar_resultados_envivo:
         return None
-    total = EncRespuesta.query.filter_by(
-        tenant_id=instrument.tenant_id,
-        encuesta_id=instrument.survey.id,
-    ).count()
-    questions: list[dict[str, Any]] = []
-    for question in instrument.questions:
-        counts = dict(
+    response_count_query = db.session.query(db.func.count(EncRespuesta.id)).filter(
+        EncRespuesta.tenant_id == instrument.tenant_id,
+        EncRespuesta.encuesta_id == instrument.survey.id,
+    )
+    total = int(
+        response_count_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL
+        ).scalar()
+        or 0
+    )
+    count_privacy = public_survey_response_count_contract(
+        instrument.survey,
+        total,
+    )
+    source_anonymous = count_privacy.get("privacy_mode") == "source_anonymous"
+    if bool(count_privacy.get("suppressed")):
+        # This is deliberately the complete public representation for every
+        # source-anonymous cohort from zero through k-1.  Do not add aggregate,
+        # option, provenance or origin counts here: WhatsApp acknowledgements
+        # and duplicate/replay paths would otherwise become count oracles.
+        return {
+            "results_available": False,
+            "privacy": count_privacy,
+        }
+
+    synthetic_count = int(
+        response_count_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO
+        ).scalar()
+        or 0
+    )
+    unverified_count = int(
+        response_count_query.filter(
+            EncRespuesta.response_origin
+            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED
+        ).scalar()
+        or 0
+    )
+    question_ids = [int(question.id) for question in instrument.questions]
+    counts_by_question: dict[int, dict[int, int]] = {
+        question_id: {} for question_id in question_ids
+    }
+    if question_ids:
+        grouped_counts = (
             db.session.query(
+                EncRespuestaDetalle.pregunta_id,
                 EncRespuestaDetalle.opcion_id,
                 db.func.count(EncRespuestaDetalle.id),
             )
-            .join(EncRespuesta, EncRespuesta.id == EncRespuestaDetalle.respuesta_id)
+            .join(
+                EncRespuesta,
+                EncRespuesta.id == EncRespuestaDetalle.respuesta_id,
+            )
             .filter(
                 EncRespuesta.tenant_id == instrument.tenant_id,
                 EncRespuesta.encuesta_id == instrument.survey.id,
-                EncRespuestaDetalle.pregunta_id == question.id,
+                EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
+                EncRespuestaDetalle.pregunta_id.in_(question_ids),
+                EncRespuestaDetalle.opcion_id.isnot(None),
             )
-            .group_by(EncRespuestaDetalle.opcion_id)
+            .group_by(
+                EncRespuestaDetalle.pregunta_id,
+                EncRespuestaDetalle.opcion_id,
+            )
             .all()
         )
+        for question_id, option_id, count in grouped_counts:
+            counts_by_question.setdefault(int(question_id), {})[
+                int(option_id)
+            ] = int(count or 0)
+
+    questions: list[dict[str, Any]] = []
+    for question in instrument.questions:
+        counts = counts_by_question.get(int(question.id), {})
         question_total = sum(int(value or 0) for value in counts.values())
-        questions.append(
+        question_privacy = (
+            public_survey_response_count_contract(
+                instrument.survey,
+                question_total,
+            )
+            if source_anonymous
+            else None
+        )
+        if question_privacy and bool(question_privacy.get("suppressed")):
+            questions.append(
+                {
+                    "question_id": int(question.id),
+                    "text": question.texto,
+                    "total": None,
+                    "options": [],
+                    "privacy": question_privacy,
+                }
+            )
+            continue
+
+        minimum = int((question_privacy or {}).get("minimum_cell_size") or 0)
+        has_positive_small_option = minimum > 0 and any(
+            0 < int(counts.get(option.id, 0) or 0) < minimum
+            for option in question.opciones
+        )
+        if has_positive_small_option:
+            questions.append(
+                {
+                    "question_id": int(question.id),
+                    "text": question.texto,
+                    "total": question_total,
+                    "options": [],
+                    "privacy": {
+                        **(question_privacy or {}),
+                        "suppressed": True,
+                        "reason_code": "minimum_cell_size_not_met",
+                    },
+                }
+            )
+            continue
+
+        question_payload = {
+            "question_id": int(question.id),
+            "text": question.texto,
+            "total": question_total,
+            "options": [
+                {
+                    "option_id": int(option.id),
+                    "text": option.texto,
+                    "votes": int(counts.get(option.id, 0) or 0),
+                    "percentage": round(
+                        (int(counts.get(option.id, 0) or 0) / question_total * 100),
+                        2,
+                    )
+                    if question_total
+                    else 0.0,
+                }
+                for option in question.opciones
+            ],
+        }
+        if question_privacy is not None:
+            question_payload["privacy"] = question_privacy
+        questions.append(question_payload)
+    results = {
+        "total_responses": total,
+        "questions": questions,
+        "data_provenance": build_survey_response_provenance(
+            real_count=total,
+            synthetic_count=synthetic_count,
+            unverified_count=unverified_count,
+            mode="real",
+        ),
+    }
+    if source_anonymous:
+        results.update(
             {
-                "question_id": int(question.id),
-                "text": question.texto,
-                "total": question_total,
-                "options": [
-                    {
-                        "option_id": int(option.id),
-                        "text": option.texto,
-                        "votes": int(counts.get(option.id, 0) or 0),
-                        "percentage": round(
-                            (int(counts.get(option.id, 0) or 0) / question_total * 100),
-                            2,
-                        )
-                        if question_total
-                        else 0.0,
-                    }
-                    for option in question.opciones
-                ],
+                "results_available": True,
+                "privacy": count_privacy,
             }
         )
-    return {"total_responses": total, "questions": questions}
+    return results
 
 
 def _completion_payload(
@@ -897,7 +1017,21 @@ def _completion_payload(
         f"Encuesta: {instrument.survey.titulo}",
         f"Recibo de participación: {receipt_id}",
     ]
-    if results is not None:
+    if results is not None and bool(
+        (results.get("privacy") or {}).get("suppressed")
+    ):
+        privacy_reason = str(
+            (results.get("privacy") or {}).get("reason_code") or ""
+        ).strip()
+        if privacy_reason == "source_anonymous_results_withheld_until_close":
+            body_lines.append(
+                "Los resultados agregados estarán disponibles cuando cierre la encuesta."
+            )
+        else:
+            body_lines.append(
+                "Los resultados agregados se mostrarán cuando alcancen el umbral mínimo de privacidad."
+            )
+    elif results is not None:
         body_lines.append(f"Respuestas registradas: {results['total_responses']}")
     else:
         body_lines.append("Los resultados no están publicados en vivo.")

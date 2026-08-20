@@ -5,6 +5,7 @@ import hashlib
 import secrets
 import unittest
 from unittest.mock import patch
+from sqlalchemy import event
 
 from app import create_app, db
 from config import Config
@@ -13,6 +14,7 @@ from models import (
     EncOpcion,
     EncPregunta,
     EncRespuesta,
+    EncRespuestaDetalle,
     ChatSessionContext,
     Rubro,
     TenantProfile,
@@ -21,6 +23,10 @@ from models import (
 from services.constants import CONTEXTO_MUNICIPIO
 from services.encuestas_service import EncuestaError, save_respuesta as real_save_respuesta
 from services.survey_governance import create_release, publish_release
+from services.survey_response_provenance import (
+    SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+    is_trusted_demo_seed_response,
+)
 from services.municipio_responder import (
     MUNICIPIO_RESPONSE_CACHE,
     _get_encuestas_menu,
@@ -30,6 +36,8 @@ from services.municipio_responder import (
 from services.response_formatter import build_interactive_response
 from services.whatsapp_survey_conversation import (
     WHATSAPP_SURVEY_FLOW_STATE_KEY,
+    _live_results,
+    _load_instrument,
     handle_whatsapp_survey_flow_turn,
     start_whatsapp_survey_flow,
 )
@@ -137,9 +145,15 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         eligibility_mode: str = "open",
         incompatible: bool = False,
         vote_option_count: int = 2,
+        privacy_mode: str = "legacy",
     ) -> EncEncuesta:
         scoped_tenant = tenant or self.tenant
         now = datetime.now(timezone.utc)
+        source_anonymous = privacy_mode == "source_anonymous"
+        if source_anonymous:
+            self.app.config["SURVEY_IDENTITY_HMAC_SECRET_V1"] = (
+                "whatsapp-source-anonymous-test-secret-v1"
+            )
         survey = EncEncuesta(
             tenant_id=scoped_tenant.id,
             slug=slug,
@@ -158,7 +172,18 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             anonimo_permitido=True,
             es_votacion_envivo=True,
             mostrar_resultados_envivo=True,
-            privacy_mode="legacy",
+            privacy_mode=privacy_mode,
+            privacy_policy_version=(
+                "privacy-whatsapp-2026.1" if source_anonymous else None
+            ),
+            privacy_policy_url=(
+                "https://www.chatboc.ar/privacidad/privacy-whatsapp-2026.1"
+                if source_anonymous
+                else None
+            ),
+            privacy_consent_required=source_anonymous,
+            response_retention_days=365 if source_anonymous else None,
+            puntos_recompensa=0,
         )
         if incompatible:
             survey.preguntas = [
@@ -631,9 +656,247 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             action_id=city_action,
         )
 
+    def _add_source_anonymous_result_row(
+        self,
+        survey: EncEncuesta,
+        *,
+        origin: str = "real",
+        sequence: int,
+    ) -> EncRespuesta:
+        submitted_at = datetime.now(timezone.utc) + timedelta(seconds=sequence)
+        response = EncRespuesta(
+            encuesta_id=survey.id,
+            tenant_id=survey.tenant_id,
+            canal="whatsapp_chat",
+            response_origin=origin,
+            submitted_at=submitted_at,
+            privacy_mode="source_anonymous",
+            privacy_policy_version=survey.privacy_policy_version,
+            privacy_consent_recorded_at=submitted_at,
+            retention_expires_at=submitted_at + timedelta(days=365),
+        )
+        response.detalles = [
+            EncRespuestaDetalle(
+                pregunta_id=question.id,
+                opcion_id=question.opciones[0].id,
+            )
+            for question in survey.preguntas
+        ]
+        db.session.add(response)
+        db.session.commit()
+        return response
+
+    def _assert_source_anonymous_small_cohort_hidden(self, payload: dict) -> None:
+        self.assertEqual(
+            payload,
+            {
+                "results_available": False,
+                "privacy": {
+                    "contract_version": "surveys.public_count_privacy.v1",
+                    "privacy_mode": "source_anonymous",
+                    "minimum_cell_size": 5,
+                    "results_final": False,
+                    "count": None,
+                    "bucket": "withheld_until_close",
+                    "suppressed": True,
+                    "reason_code": "source_anonymous_results_withheld_until_close",
+                },
+            },
+        )
+        self.assertNotIn("total_responses", payload)
+        self.assertNotIn("questions", payload)
+        self.assertNotIn("data_provenance", payload)
+
+    def test_source_anonymous_live_snapshot_is_identical_from_zero_through_four(self):
+        survey = self._create_governed_survey(
+            slug="gestion-source-anonymous-small-cohort",
+            privacy_mode="source_anonymous",
+        )
+        instrument = _load_instrument(self._context(), survey.slug)
+
+        snapshots = [_live_results(instrument)]
+        for sequence in range(1, 5):
+            self._add_source_anonymous_result_row(
+                survey,
+                sequence=sequence,
+            )
+            snapshots.append(_live_results(instrument))
+        self._add_source_anonymous_result_row(
+            survey,
+            origin="synthetic_demo",
+            sequence=5,
+        )
+        self._add_source_anonymous_result_row(
+            survey,
+            origin="legacy_unverified",
+            sequence=6,
+        )
+        snapshots.append(_live_results(instrument))
+
+        for snapshot in snapshots:
+            self._assert_source_anonymous_small_cohort_hidden(snapshot)
+        self.assertTrue(all(snapshot == snapshots[0] for snapshot in snapshots))
+
+    def test_source_anonymous_k_five_releases_only_real_safe_snapshot(self):
+        survey = self._create_governed_survey(
+            slug="gestion-source-anonymous-k-five",
+            privacy_mode="source_anonymous",
+        )
+        instrument = _load_instrument(self._context(), survey.slug)
+        for sequence in range(1, 6):
+            self._add_source_anonymous_result_row(
+                survey,
+                sequence=sequence,
+            )
+        self._add_source_anonymous_result_row(
+            survey,
+            origin="synthetic_demo",
+            sequence=6,
+        )
+        self._add_source_anonymous_result_row(
+            survey,
+            origin="legacy_unverified",
+            sequence=7,
+        )
+        survey.estado = "cerrada"
+        db.session.commit()
+
+        snapshot = _live_results(instrument)
+
+        self.assertTrue(snapshot["results_available"])
+        self.assertEqual(snapshot["total_responses"], 5)
+        self.assertEqual(snapshot["questions"][0]["total"], 5)
+        self.assertEqual(snapshot["questions"][0]["options"][0]["votes"], 5)
+        self.assertEqual(snapshot["questions"][0]["options"][0]["percentage"], 100.0)
+        provenance = snapshot["data_provenance"]
+        self.assertEqual(provenance["real_responses_included"], 5)
+        self.assertEqual(provenance["synthetic_responses_excluded"], 1)
+        self.assertEqual(provenance["unverified_responses_excluded"], 1)
+        self.assertFalse(provenance["contains_synthetic"])
+
+        first_real = EncRespuesta.query.filter_by(
+            encuesta_id=survey.id,
+            response_origin="real",
+        ).order_by(EncRespuesta.id.asc()).first()
+        first_real.detalles[0].opcion_id = survey.preguntas[0].opciones[1].id
+        db.session.commit()
+        split_snapshot = _live_results(instrument)
+        self.assertEqual(split_snapshot["total_responses"], 5)
+        self.assertEqual(split_snapshot["questions"][0]["total"], 5)
+        self.assertEqual(split_snapshot["questions"][0]["options"], [])
+        self.assertTrue(split_snapshot["questions"][0]["privacy"]["suppressed"])
+
+    def test_source_anonymous_completion_duplicate_and_replay_hide_small_cohort(self):
+        survey = self._create_governed_survey(
+            slug="gestion-source-anonymous-receipt",
+            privacy_mode="source_anonymous",
+        )
+        context = self._context()
+        with patch("services.encuestas_service.emit_survey_response_update"):
+            completion = self._complete_vote(context, survey)
+
+        self.assertTrue(completion["response_persisted"])
+        self.assertIsInstance(completion["receipt_id"], int)
+        self.assertIn("Recibo de participación:", completion["message_body"])
+        self.assertNotIn("Respuestas registradas:", completion["message_body"])
+        self._assert_source_anonymous_small_cohort_hidden(completion["results"])
+
+        saved = EncRespuesta.query.filter_by(
+            encuesta_id=survey.id,
+            response_origin="real",
+        ).one()
+        for field in (
+            "user_id",
+            "dni",
+            "phone",
+            "ip",
+            "ua",
+            "lat",
+            "lng",
+            "utm_source",
+            "utm_campaign",
+            "edad",
+            "anio_nacimiento",
+            "metadata_payload",
+        ):
+            self.assertIsNone(getattr(saved, field), field)
+
+        duplicate = self._complete_vote(self._context(), survey)
+        self.assertTrue(duplicate["duplicate_prevented"])
+        self.assertNotIn("Respuestas registradas:", duplicate["message_body"])
+        self._assert_source_anonymous_small_cohort_hidden(duplicate["results"])
+
+        replay_survey = self._create_governed_survey(
+            slug="gestion-source-anonymous-replay",
+            privacy_mode="source_anonymous",
+        )
+        replay_context = self._context(phone="+5492901123499")
+        start = start_whatsapp_survey_flow(replay_context, replay_survey.slug)
+        consent_action = self._action(start, "encuesta_wa::consent_accept::")
+        handle_whatsapp_survey_flow_turn(
+            replay_context,
+            text="",
+            action_id=consent_action,
+        )
+        city_question = handle_whatsapp_survey_flow_turn(replay_context, text="1")
+        city_action = self._action(city_question, "encuesta_wa::answer::")
+
+        def commit_then_report_uncertain(*args, **kwargs):
+            real_save_respuesta(*args, **kwargs)
+            raise EncuestaError(
+                "confirmación incierta",
+                status_code=503,
+                payload={"reason_code": "provider_confirmation_uncertain"},
+            )
+
+        with patch(
+            "services.whatsapp_survey_conversation.save_respuesta",
+            side_effect=commit_then_report_uncertain,
+        ), patch("services.encuestas_service.emit_survey_response_update"):
+            uncertain = handle_whatsapp_survey_flow_turn(
+                replay_context,
+                text="",
+                action_id=city_action,
+            )
+        retry_action = self._action(uncertain, "encuesta_wa::retry::")
+        replay = handle_whatsapp_survey_flow_turn(
+            replay_context,
+            text="",
+            action_id=retry_action,
+        )
+
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["idempotency"]["disposition"], "replayed")
+        self.assertNotIn("Respuestas registradas:", replay["message_body"])
+        self._assert_source_anonymous_small_cohort_hidden(replay["results"])
+        for payload in (completion, duplicate, replay):
+            rendered = repr(payload)
+            self.assertNotIn("+5492901123456", rendered)
+            self.assertNotIn("+5492901123499", rendered)
+            self.assertNotIn(self.viewer.email, rendered)
+
     def test_governed_yes_no_and_city_vote_pins_release_and_emits_realtime(self):
         survey = self._create_governed_survey(eligibility_mode="self_attested")
         context = self._context()
+        db.session.add(
+            EncRespuesta(
+                encuesta_id=survey.id,
+                tenant_id=self.tenant.id,
+                canal="seed",
+                response_origin="synthetic_demo",
+                metadata_payload={
+                    "is_demo_seed": True,
+                    "demo_seed_contract_version": (
+                        SURVEY_DEMO_SEEDING_CONTRACT_VERSION
+                    ),
+                    "demo_batch_id": (
+                        f"seed-{survey.id}-1755680400000-abcdef123456"
+                    ),
+                },
+                submitted_at=datetime.now(timezone.utc),
+            )
+        )
+        db.session.commit()
 
         with patch(
             "services.encuestas_service.emit_survey_response_update"
@@ -643,13 +906,24 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         self.assertTrue(receipt["success"])
         self.assertTrue(receipt["response_persisted"])
         self.assertEqual(receipt["results"]["total_responses"], 1)
+        self.assertEqual(receipt["results"]["data_provenance"]["mode"], "real")
+        self.assertEqual(
+            receipt["results"]["data_provenance"][
+                "synthetic_responses_excluded"
+            ],
+            1,
+        )
         self.assertIn("tenant_slug=tierra-del-fuego-wa-qa", receipt["share_url"])
         self.assertNotIn(
             WHATSAPP_SURVEY_FLOW_STATE_KEY,
             context["chat_db_context_data"][CONTEXTO_MUNICIPIO],
         )
 
-        saved = EncRespuesta.query.filter_by(encuesta_id=survey.id).one()
+        saved = next(
+            row
+            for row in EncRespuesta.query.filter_by(encuesta_id=survey.id).all()
+            if not is_trusted_demo_seed_response(row)
+        )
         self.assertEqual(saved.tenant_id, self.tenant.id)
         self.assertEqual(saved.phone, "+5492901123456")
         self.assertEqual(saved.ciudad, "ushuaia")
@@ -665,6 +939,41 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         )
         self.assertTrue(receipt["idempotency"]["persisted"])
         emit_update.assert_called_once()
+
+        instrument = _load_instrument(context, survey.slug)
+        statements = []
+
+        def _capture_sql(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement.lower())
+
+        event.listen(db.engine, "before_cursor_execute", _capture_sql)
+        try:
+            live_results = _live_results(instrument)
+        finally:
+            event.remove(db.engine, "before_cursor_execute", _capture_sql)
+
+        self.assertEqual(live_results["total_responses"], 1)
+        survey_sql = [
+            statement
+            for statement in statements
+            if "enc_respuesta" in statement
+        ]
+        self.assertTrue(survey_sql, statements)
+        self.assertTrue(
+            all("response_origin" in statement for statement in survey_sql),
+            survey_sql,
+        )
+        self.assertFalse(
+            any(
+                "enc_respuesta_detalle.respuesta_id in" in statement
+                for statement in survey_sql
+            ),
+            survey_sql,
+        )
+        self.assertFalse(
+            any("metadata_payload" in statement for statement in survey_sql),
+            survey_sql,
+        )
 
     def test_rejecting_consent_records_nothing(self):
         survey = self._create_governed_survey()

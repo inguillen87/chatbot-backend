@@ -34,6 +34,7 @@ from models import (
     TenantProfile,
     User,
 )
+from services.survey_response_provenance import SURVEY_RESPONSE_ORIGIN_REAL
 
 
 EFFECT_ANALYTICS = "analytics.v1"
@@ -346,6 +347,8 @@ def stage_survey_response_effects(
     tenant_id = _positive_int(getattr(encuesta, "tenant_id", None), field="tenant_id")
     survey_id = _positive_int(getattr(encuesta, "id", None), field="survey_id")
     response_id = _positive_int(getattr(respuesta, "id", None), field="response_id")
+    if getattr(respuesta, "response_origin", None) != SURVEY_RESPONSE_ORIGIN_REAL:
+        raise ValueError("survey response effects require a verified real response")
     if int(getattr(respuesta, "tenant_id", 0) or 0) != tenant_id:
         raise ValueError("response tenant does not match survey tenant")
     if int(getattr(respuesta, "encuesta_id", 0) or 0) != survey_id:
@@ -449,6 +452,11 @@ def _load_scoped_source(
         or int(respuesta.encuesta_id) != int(effect.survey_id)
     ):
         raise _PermanentEffectError("source_scope_mismatch")
+    if getattr(respuesta, "response_origin", None) != SURVEY_RESPONSE_ORIGIN_REAL:
+        # Existing outbox rows may predate the provenance migration. Re-check
+        # at execution time so a quarantined/backfilled source can never emit
+        # analytics, realtime updates or rewards through a legacy receipt.
+        raise _PermanentEffectError("source_response_origin_unverified")
     return encuesta, respuesta
 
 

@@ -263,6 +263,9 @@ def test_demo_survey_chat_menu_lists_five_with_whatsapp_vote_actions():
 
 def test_respuestas_alias_reuses_handler(client, monkeypatch):
     saved_calls = {}
+    trusted_peer = "192.0.2.41"
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("RENDER_SERVICE_TYPE", raising=False)
 
     def fake_save(slug, payload, ctx, **kwargs):
         saved_calls["slug"] = slug
@@ -280,7 +283,12 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     response = client.post(
         "/public/encuestas/demo-encuesta/respuestas",
         json=payload,
-        headers={**idempotency_headers, "X-Forwarded-For": "1.1.1.1"},
+        headers={
+            **idempotency_headers,
+            "X-Forwarded-For": "198.51.100.10",
+            "CF-Connecting-IP": "203.0.113.10",
+        },
+        environ_overrides={"REMOTE_ADDR": trusted_peer},
     )
     assert response.status_code == 201
     body = response.get_json()
@@ -291,12 +299,15 @@ def test_respuestas_alias_reuses_handler(client, monkeypatch):
     assert body["request_id"]
     assert saved_calls["slug"] == "demo-encuesta"
     assert saved_calls["payload"] == payload
-    assert saved_calls["ctx"]["ip"] == "1.1.1.1"
+    assert saved_calls["ctx"]["ip"] == trusted_peer
     assert saved_calls["preferred_tenant_id"] == client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"]
 
 
 def test_responder_accepts_form_payload(client, monkeypatch):
     captured: dict = {}
+    trusted_peer = "192.0.2.42"
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("RENDER_SERVICE_TYPE", raising=False)
 
     def fake_save(slug, payload, ctx, **kwargs):
         captured["slug"] = slug
@@ -315,7 +326,12 @@ def test_responder_accepts_form_payload(client, monkeypatch):
     response = client.post(
         "/public/encuestas/demo-encuesta/responder",
         data=form_data,
-        headers={**idempotency_headers, "X-Forwarded-For": "2.2.2.2"},
+        headers={
+            **idempotency_headers,
+            "X-Forwarded-For": "198.51.100.20",
+            "CF-Connecting-IP": "203.0.113.20",
+        },
+        environ_overrides={"REMOTE_ADDR": trusted_peer},
     )
 
     assert response.status_code == 201
@@ -327,8 +343,43 @@ def test_responder_accepts_form_payload(client, monkeypatch):
     assert body["request_id"]
     assert captured["slug"] == "demo-encuesta"
     assert captured["payload"]["respuestas"] == respuestas
-    assert captured["ctx"]["ip"] == "2.2.2.2"
+    assert captured["ctx"]["ip"] == trusted_peer
     assert captured["preferred_tenant_id"] == client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"]
+
+
+def test_public_response_ip_ignores_rotated_forwarding_headers_outside_render(client, monkeypatch):
+    trusted_peer = "192.0.2.43"
+    captured_ips: list[str] = []
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("RENDER_SERVICE_TYPE", raising=False)
+
+    def fake_save(_slug, _payload, ctx, **_kwargs):
+        captured_ips.append(ctx["ip"])
+        return _DummyRespuesta(800 + len(captured_ips))
+
+    monkeypatch.setattr("routes.encuestas_public.save_respuesta", fake_save)
+
+    for suffix, forwarded_ip, cloudflare_ip in (
+        ("rotated-0001", "198.51.100.31", "203.0.113.31"),
+        ("rotated-0002", "198.51.100.32", "203.0.113.32"),
+    ):
+        payload, idempotency_headers = _submission_contract(
+            {"respuesta": "ok"},
+            suffix,
+        )
+        response = client.post(
+            "/public/encuestas/demo-encuesta/respuestas",
+            json=payload,
+            headers={
+                **idempotency_headers,
+                "X-Forwarded-For": forwarded_ip,
+                "CF-Connecting-IP": cloudflare_ip,
+            },
+            environ_overrides={"REMOTE_ADDR": trusted_peer},
+        )
+        assert response.status_code == 201
+
+    assert captured_ips == [trusted_peer, trusted_peer]
 
 
 def test_responder_parses_respuestas_field_from_form(client, monkeypatch):

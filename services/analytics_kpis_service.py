@@ -1,7 +1,14 @@
 import models_analytics_k
 import logging
 from datetime import datetime, timezone, timedelta
+from sqlalchemy import case, func
 from extensions import db
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    build_survey_response_provenance,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -32,10 +39,49 @@ class AnalyticsKPIService:
         resolution_rate = (resolved_tickets / total_tickets * 100) if total_tickets > 0 else 0
 
         # 2. Survey Participation
-        total_responses = db.session.query(EncRespuesta).filter(
+        total_responses, unverified_responses, synthetic_responses = db.session.query(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+        ).filter(
             EncRespuesta.tenant_id == tenant_id,
-            EncRespuesta.fecha >= since_date
-        ).count()
+            EncRespuesta.submitted_at >= since_date,
+        ).one()
+        total_responses = int(total_responses or 0)
+        synthetic_responses = int(synthetic_responses or 0)
+        unverified_responses = int(unverified_responses or 0)
 
         # 3. Handoff Rate (derivar a humano)
         total_bot_messages = db.session.query(Message).filter(
@@ -64,7 +110,12 @@ class AnalyticsKPIService:
                 "resolution_rate_percent": round(resolution_rate, 2)
             },
             "surveys": {
-                "total_responses": total_responses
+                "total_responses": total_responses,
+                "response_provenance": build_survey_response_provenance(
+                    real_count=total_responses,
+                    synthetic_count=synthetic_responses,
+                    unverified_count=unverified_responses,
+                ),
             },
             "chat": {
                 "total_bot_messages": total_bot_messages,

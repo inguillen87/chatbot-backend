@@ -352,8 +352,10 @@ class PublicSurveyFlowTests(unittest.TestCase):
             payload = {
                 "submission_id": submission_id,
                 "anon_id": f"seed-live-{i}",
-                "lat": -32.889 + (i * 0.001),
-                "lng": -68.845 + (i * 0.001),
+                # Keep the six submissions in one privacy-safe aggregate cell
+                # (public coordinates are hidden until k >= 5).
+                "lat": -32.889 + (i * 0.00001),
+                "lng": -68.845 + (i * 0.00001),
                 "respuestas": [{"pregunta_id": pregunta_id, "opcion_ids": [seguridad_id]}],
             }
             submit_resp = self.client.post(

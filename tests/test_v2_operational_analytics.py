@@ -14,6 +14,7 @@ import config.feature_flags as feature_flags
 from models import (
     AnalyticsEventV2,
     ChatSessionContext,
+    CategoriaTicket,
     EncEncuesta,
     EncLink,
     EncRespuesta,
@@ -221,17 +222,35 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.ctx.pop()
 
     def _auth(self):
+        return self._auth_for(self.admin, tenant_slug=self.tenant.slug)
+
+    def _auth_for(self, user, *, tenant_slug=None):
+        payload = {
+            "user_id": user.id,
+            "rol": user.rol,
+            "tenant_slug": user.tenant_slug,
+            "exp": datetime.utcnow() + timedelta(hours=1),
+        }
+        if user.rol == "super_admin":
+            payload.update(
+                {
+                    "auth_provider": "clerk",
+                    "session_kind": "clerk",
+                    "sid": "sess_operational_gis_superadmin",
+                    "clerk_sid": "sess_operational_gis_superadmin",
+                    "jti": "jti_operational_gis_superadmin",
+                    "sv": 1,
+                }
+            )
         token = jwt.encode(
-            {
-                "user_id": self.admin.id,
-                "rol": self.admin.rol,
-                "tenant_slug": self.admin.tenant_slug,
-                "exp": datetime.utcnow() + timedelta(hours=1),
-            },
+            payload,
             self.app.config["SECRET_KEY"],
             algorithm="HS256",
         )
-        return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": self.tenant.slug}
+        headers = {"Authorization": f"Bearer {token}"}
+        if tenant_slug is not None:
+            headers["X-Tenant-Slug"] = tenant_slug
+        return headers
 
     def test_operations_dashboard_unifies_operational_metrics(self):
         response = self.client.get(
@@ -264,6 +283,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(monitor.get("live_results_endpoint"), "/api/v2/public/surveys/voto-plaza-publica/live-results")
         self.assertEqual(monitor.get("whatsapp_template_id"), "gov_survey_invite")
         live_response = self.client.get(f"{monitor.get('live_results_endpoint')}?include_heatmap=0")
+
         self.assertEqual(live_response.status_code, 200)
         self.assertEqual(live_response.get_json().get("contract_version"), "surveys.live_results.v2")
         self.assertTrue(any(action.get("id") == "sync_whatsapp_survey_template" for action in live_control.get("actions") or []))
@@ -308,6 +328,81 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         self.assertTrue(any(alert.get("reason_code") == "tickets_overdue" for alert in payload.get("alerts") or []))
         self.assertTrue(any(alert.get("reason_code") == "assisted_orders_need_review" for alert in payload.get("alerts") or []))
+
+    def test_operational_surfaces_exclude_trusted_synthetic_responses(self):
+        encuesta = EncEncuesta.query.filter_by(
+            tenant_id=self.tenant.id,
+            slug="voto-plaza",
+        ).one()
+        synthetic = EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=self.tenant.id,
+            huella_unica="trusted-synthetic-operational",
+            lat=-34.704,
+            lng=-58.482,
+            canal="demo_seed",
+            barrio="Escenario sintético",
+            response_origin="synthetic_demo",
+            metadata_payload={
+                "is_demo_seed": True,
+                "demo_seed_contract_version": "surveys.demo_seeding.v1",
+                "demo_batch_id": f"seed-{encuesta.id}-1770000000000-deadbeefcafe",
+                "categoria": "synthetic_marker_category",
+            },
+            submitted_at=datetime.now(timezone.utc),
+        )
+        db.session.add(synthetic)
+        db.session.commit()
+
+        dashboard_response = self.client.get(
+            "/api/v2/analytics/operations/dashboard",
+            headers=self._auth(),
+        )
+        freshness_response = self.client.get(
+            "/api/v2/analytics/operations/freshness",
+            headers=self._auth(),
+        )
+        heatmap_response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(dashboard_response.status_code, 200, dashboard_response.get_json())
+        self.assertEqual(freshness_response.status_code, 200, freshness_response.get_json())
+        self.assertEqual(heatmap_response.status_code, 200, heatmap_response.get_json())
+
+        surveys = dashboard_response.get_json().get("surveys") or {}
+        self.assertEqual((surveys.get("summary") or {}).get("responses"), 1)
+        self.assertEqual(
+            (surveys.get("response_provenance") or {}).get("synthetic_responses_excluded"),
+            1,
+        )
+        self.assertFalse((surveys.get("response_provenance") or {}).get("contains_synthetic"))
+
+        freshness = freshness_response.get_json()
+        survey_source = next(
+            item for item in freshness.get("sources") or []
+            if item.get("key") == "surveys"
+        )
+        self.assertEqual(survey_source.get("period_count"), 1)
+        self.assertEqual(
+            (freshness.get("response_provenance") or {}).get("synthetic_responses_excluded"),
+            1,
+        )
+
+        heatmap = heatmap_response.get_json()
+        survey_point_ids = {
+            item.get("id")
+            for item in heatmap.get("points") or []
+            if item.get("source") == "survey"
+        }
+        self.assertNotIn(f"survey_response:{synthetic.id}", survey_point_ids)
+        self.assertEqual(len(survey_point_ids), 1)
+        self.assertEqual(
+            (heatmap.get("response_provenance") or {}).get("synthetic_responses_excluded"),
+            1,
+        )
+        self.assertNotIn("synthetic_marker_category", json.dumps(heatmap))
 
     def test_queue_truth_keeps_full_backlog_and_reports_sla_unknowns(self):
         now = datetime.now(timezone.utc)
@@ -732,6 +827,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "operations.heatmap.v1")
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "privileged_exact")
         self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 2)
         self.assertGreaterEqual((payload.get("summary") or {}).get("points"), 4)
         self.assertTrue(payload.get("cells"))
@@ -847,6 +943,266 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("25_34", age_ranges)
         self.assertIn("45_59", age_ranges)
         self.assertIn("60_plus", age_ranges)
+
+    def test_operations_heatmap_employee_is_category_scoped_and_k_aggregated(self):
+        allowed_lat = -34.612345
+        allowed_lng = -58.398765
+        restricted_centroids = {
+            (-34.622, -58.412),
+            (-34.632, -58.422),
+            (-34.642, -58.432),
+            (-34.652, -58.442),
+        }
+
+        for index in range(5):
+            db.session.add(
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="reclamos",
+                    descripcion=f"Reclamo permitido {index}",
+                    estado="nuevo",
+                    origen="web",
+                    latitud=allowed_lat,
+                    longitud=allowed_lng,
+                    datos_extra={
+                        "title": f"Permitido {index}",
+                        "address": f"Direccion permitida exacta {index}",
+                    },
+                )
+            )
+            db.session.add(
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="secreto_tenant",
+                    descripcion=f"tenant restricted secret {index}",
+                    estado="nuevo",
+                    origen="web",
+                    latitud=-34.622345,
+                    longitud=-58.411765,
+                    datos_extra={"address": f"Tenant restringido {index}"},
+                )
+            )
+            db.session.add(
+                MunicipioTicket(
+                    municipio_id=self.admin.id,
+                    tenant_id=self.tenant.id,
+                    pregunta=f"municipio restricted secret {index}",
+                    asunto=f"Municipio restringido {index}",
+                    categoria="secreto_municipio",
+                    estado="nuevo",
+                    direccion=f"Municipio restringido {index}",
+                    latitud=-34.632345,
+                    longitud=-58.421765,
+                    fecha=datetime.now(timezone.utc),
+                )
+            )
+            db.session.add(
+                PymeTicket(
+                    tenant_id=self.tenant.id,
+                    pregunta=f"pyme restricted secret {index}",
+                    asunto=f"Pyme restringido {index}",
+                    categoria="secreto_pyme",
+                    estado="nuevo",
+                    nro_ticket=910000 + index,
+                    direccion=f"Pyme restringido {index}",
+                    latitud=-34.642345,
+                    longitud=-58.431765,
+                    fecha=datetime.now(timezone.utc),
+                )
+            )
+            db.session.add(
+                AnalyticsEventV2(
+                    tenant_id=self.tenant.id,
+                    tenant_type="municipio",
+                    channel="web",
+                    event_name=f"non_ticket_restricted_{index}",
+                    metadata_payload={"categoria": "fuente_sin_scope"},
+                    lat=-34.652345,
+                    lng=-58.441765,
+                    ts=datetime.now(timezone.utc),
+                )
+            )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0",
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        privacy = payload.get("privacy") or {}
+        self.assertEqual(privacy.get("mode"), "employee_aggregated")
+        self.assertEqual(privacy.get("k_min"), 5)
+        self.assertEqual(privacy.get("coordinate_precision_decimals"), 3)
+        self.assertIsInstance(privacy.get("suppressed"), dict)
+        self.assertGreaterEqual((privacy.get("suppressed") or {}).get("low_cardinality_cells") or 0, 1)
+        self.assertGreaterEqual((privacy.get("suppressed") or {}).get("cells") or 0, 1)
+        self.assertGreaterEqual((privacy.get("suppressed") or {}).get("records") or 0, 1)
+        self.assertGreaterEqual((payload.get("summary") or {}).get("suppressed_records") or 0, 1)
+        self.assertEqual(privacy.get("category_scope"), "scoped")
+        self.assertNotIn("points", payload)
+        self.assertNotIn("category_layers", payload)
+        self.assertNotIn("geocoding", payload)
+        self.assertNotIn("actions", json.dumps(payload))
+
+        def assert_no_sensitive_keys(value):
+            if isinstance(value, dict):
+                self.assertNotIn("id", value)
+                self.assertNotIn("address", value)
+                self.assertNotIn("actions", value)
+                for nested in value.values():
+                    assert_no_sensitive_keys(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    assert_no_sensitive_keys(nested)
+
+        assert_no_sensitive_keys(payload)
+
+        cells = payload.get("cells") or []
+        self.assertEqual(len(cells), 1)
+        cell = cells[0]
+        self.assertEqual((cell.get("lat"), cell.get("lng")), (-34.612, -58.399))
+        self.assertEqual(cell.get("count"), 5)
+        self.assertGreaterEqual(cell.get("count"), privacy.get("k_min"))
+        self.assertNotIn((cell.get("lat"), cell.get("lng")), restricted_centroids)
+        self.assertNotIn("id", cell)
+        self.assertNotIn("address", cell)
+
+        features = (((payload.get("geo_layers") or {}).get("cells") or {}).get("features") or [])
+        self.assertEqual(len(features), 1)
+        self.assertEqual((features[0].get("geometry") or {}).get("coordinates"), [-58.399, -34.612])
+        self.assertEqual((features[0].get("properties") or {}).get("count"), 5)
+        self.assertNotIn("id", features[0].get("properties") or {})
+
+        serialized = json.dumps(payload)
+        for forbidden in (
+            "tenant restricted secret",
+            "municipio restricted secret",
+            "pyme restricted secret",
+            "non_ticket_restricted",
+            "fuente_sin_scope",
+            "Direccion permitida exacta",
+            "Tenant restringido",
+            "Municipio restringido",
+            "Pyme restringido",
+            f"tenant_ticket:{self.ticket.id}",
+        ):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_operations_heatmap_preserves_id_only_category_scope_at_second_boundary(self):
+        category = CategoriaTicket(
+            tenant_id=self.tenant.id,
+            nombre="categoria_por_id",
+            tipo="ticket",
+        )
+        db.session.add(category)
+        db.session.flush()
+        self.employee.categorias_ticket.append(category)
+        allowed_lat = -34.712345
+        allowed_lng = -58.498765
+        for index in range(5):
+            db.session.add(
+                MunicipioTicket(
+                    municipio_id=self.admin.id,
+                    tenant_id=self.tenant.id,
+                    pregunta=f"Permitido por id {index}",
+                    asunto=f"Permitido por id {index}",
+                    categoria="etiqueta_desincronizada",
+                    categoria_id=category.id,
+                    estado="nuevo",
+                    latitud=allowed_lat,
+                    longitud=allowed_lng,
+                    fecha=datetime.now(timezone.utc),
+                )
+            )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0",
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        cell = next(
+            item
+            for item in payload.get("cells") or []
+            if (item.get("lat"), item.get("lng")) == (-34.712, -58.499)
+        )
+        self.assertEqual(cell.get("count"), 5)
+
+    def test_operations_heatmap_employee_empty_scope_fails_closed_before_aggregation(self):
+        empty_scope_employee = User(
+            name="Operador sin categorias",
+            email="operador-sin-categorias@test.com",
+            password_hash="hash",
+            rol="empleado",
+            tenant_id=self.tenant.id,
+            tenant_slug=self.tenant.slug,
+            es_empleado=True,
+            accesibilidad={"employee_scope": {"categorias": []}},
+        )
+        db.session.add(empty_scope_employee)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            headers=self._auth_for(empty_scope_employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        privacy = payload.get("privacy") or {}
+        self.assertEqual(privacy.get("mode"), "employee_aggregated")
+        self.assertEqual(privacy.get("category_scope"), "empty_fail_closed")
+        self.assertEqual(payload.get("cells"), [])
+        self.assertEqual((((payload.get("geo_layers") or {}).get("cells") or {}).get("features")), [])
+        self.assertFalse((payload.get("render_contract") or {}).get("can_render_heatmap"))
+        self.assertEqual(
+            (payload.get("render_contract") or {}).get("empty_reason"),
+            "employee_category_scope_empty",
+        )
+        self.assertNotIn("points", payload)
+        self.assertNotIn("geocoding", payload)
+        self.assertNotIn("category_layers", payload)
+
+    def test_operations_heatmap_superadmin_requires_explicit_tenant_and_keeps_exact_mode(self):
+        super_admin = User(
+            name="Platform GIS",
+            email="guillen.marce@gmail.com",
+            rol="super_admin",
+            accesibilidad={
+                "auth": {
+                    "provider": "clerk",
+                    "session_version": 1,
+                    "clerk": {"user_id": "user_operational_gis_superadmin"},
+                }
+            },
+        )
+        super_admin.set_password("123456")
+        db.session.add(super_admin)
+        db.session.commit()
+
+        missing_tenant = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            headers=self._auth_for(super_admin),
+        )
+        self.assertEqual(missing_tenant.status_code, 400)
+        self.assertEqual(missing_tenant.get_json().get("reason_code"), "missing_tenant")
+
+        explicit_tenant = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0",
+            headers=self._auth_for(super_admin, tenant_slug=self.tenant.slug),
+        )
+        self.assertEqual(explicit_tenant.status_code, 200)
+        payload = explicit_tenant.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "privileged_exact")
+        self.assertTrue(payload.get("points"))
+        self.assertTrue(any(point.get("id") for point in payload.get("points") or []))
 
     def test_operations_heatmap_supports_limit_and_bbox(self):
         limited_response = self.client.get(
@@ -1237,6 +1593,33 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             analytics_routes._clear_operations_dashboard_cache_for_tests()
             self.app.config["ENABLE_OPERATIONS_DASHBOARD_CACHE_FOR_TESTS"] = False
 
+    def test_operations_dashboard_cache_separates_admin_and_employee_heatmap_privacy(self):
+        from routes.v2 import analytics as analytics_routes
+
+        self.app.config["ENABLE_OPERATIONS_DASHBOARD_CACHE_FOR_TESTS"] = True
+        analytics_routes._clear_operations_dashboard_cache_for_tests()
+
+        try:
+            admin_response = self.client.get(
+                "/api/v2/analytics/operations/dashboard",
+                headers=self._auth(),
+            )
+            employee_response = self.client.get(
+                "/api/v2/analytics/operations/dashboard",
+                headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+            )
+
+            self.assertEqual(admin_response.status_code, 200)
+            self.assertEqual(employee_response.status_code, 200)
+            admin_heatmap = ((admin_response.get_json().get("maps") or {}).get("heatmap") or {})
+            employee_heatmap = ((employee_response.get_json().get("maps") or {}).get("heatmap") or {})
+            self.assertEqual((admin_heatmap.get("privacy") or {}).get("mode"), "privileged_exact")
+            self.assertEqual((employee_heatmap.get("privacy") or {}).get("mode"), "employee_aggregated")
+            self.assertEqual(employee_heatmap.get("hotspots"), [])
+        finally:
+            analytics_routes._clear_operations_dashboard_cache_for_tests()
+            self.app.config["ENABLE_OPERATIONS_DASHBOARD_CACHE_FOR_TESTS"] = False
+
     def test_operations_ai_ops_queue_disabled_by_feature_flag(self):
         with patch.object(feature_flags, "FEATURE_AI_OPS_QUEUE", False):
             response = self.client.get(
@@ -1320,6 +1703,54 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(self.ticket.estado, before_ticket_state)
         self.assertEqual(self.assisted_order.estado, before_order_state)
 
+    def test_operations_ai_ops_queue_employee_cannot_receive_out_of_scope_ticket_items(self):
+        restricted = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="finanzas_restringidas",
+            descripcion="Caso financiero reservado",
+            estado="nuevo",
+            origen="web",
+            datos_extra={
+                "title": "Caso financiero reservado",
+                "priority": "high",
+                "address": "Direccion financiera reservada",
+            },
+        )
+        db.session.add(restricted)
+        db.session.commit()
+
+        with patch.object(feature_flags, "FEATURE_AI_OPS_QUEUE", True):
+            employee_response = self.client.get(
+                "/api/v2/analytics/operations/ai-ops-queue?limit=50",
+                headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+            )
+            admin_response = self.client.get(
+                "/api/v2/analytics/operations/ai-ops-queue?limit=50",
+                headers=self._auth(),
+            )
+
+        self.assertEqual(employee_response.status_code, 200)
+        self.assertEqual(admin_response.status_code, 200)
+        restricted_item_id = f"ticket:tenant_ticket:{restricted.id}"
+        allowed_item_id = f"ticket:tenant_ticket:{self.ticket.id}"
+        employee_items = employee_response.get_json().get("items") or []
+        admin_items = admin_response.get_json().get("items") or []
+        employee_ticket_ids = {item.get("id") for item in employee_items if item.get("source") == "ticket"}
+        admin_ticket_ids = {item.get("id") for item in admin_items if item.get("source") == "ticket"}
+
+        self.assertIn(allowed_item_id, employee_ticket_ids)
+        self.assertNotIn(restricted_item_id, employee_ticket_ids)
+        self.assertIn(restricted_item_id, admin_ticket_ids)
+        employee_ticket_categories = {
+            (item.get("signals") or {}).get("category")
+            for item in employee_items
+            if item.get("source") == "ticket"
+        }
+        self.assertEqual(employee_ticket_categories, {"reclamos"})
+        self.assertNotIn("Caso financiero reservado", str(employee_response.get_json()))
+        self.assertNotIn("Direccion financiera reservada", str(employee_response.get_json()))
+
     def test_operations_freshness_returns_source_diagnostics(self):
         response = self.client.get(
             "/api/v2/analytics/operations/freshness",
@@ -1342,6 +1773,58 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(sources["commerce"].get("period_count"), 1)
         self.assertGreaterEqual(sources["heatmap"].get("period_count"), 1)
         self.assertEqual((payload.get("frontend_contract") or {}).get("render_as"), "analytics_freshness")
+
+    def test_operations_freshness_scopes_ticket_count_and_latest_before_aggregation(self):
+        now = datetime.now(timezone.utc)
+        self.ticket.created_at = now - timedelta(hours=3)
+        allowed = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="reclamos",
+            descripcion="Caso permitido freshness",
+            estado="nuevo",
+            origen="web",
+            created_at=now - timedelta(hours=2),
+        )
+        restricted = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="finanzas_reservadas",
+            descripcion="Caso restringido freshness",
+            estado="nuevo",
+            origen="web",
+            created_at=now - timedelta(hours=1),
+        )
+        db.session.add_all([allowed, restricted])
+        db.session.commit()
+
+        admin_response = self.client.get(
+            "/api/v2/analytics/operations/freshness",
+            headers=self._auth(),
+        )
+        employee_response = self.client.get(
+            "/api/v2/analytics/operations/freshness",
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(admin_response.status_code, 200, admin_response.get_json())
+        self.assertEqual(employee_response.status_code, 200, employee_response.get_json())
+        admin_tickets = next(
+            item for item in admin_response.get_json().get("sources") or []
+            if item.get("key") == "tickets"
+        )
+        employee_tickets = next(
+            item for item in employee_response.get_json().get("sources") or []
+            if item.get("key") == "tickets"
+        )
+        self.assertGreater(admin_tickets.get("period_count"), employee_tickets.get("period_count"))
+        self.assertEqual(employee_tickets.get("period_count"), 2)
+        employee_latest = datetime.fromisoformat(employee_tickets.get("latest_at"))
+        allowed_created_at = allowed.created_at
+        if allowed_created_at.tzinfo is None:
+            allowed_created_at = allowed_created_at.replace(tzinfo=timezone.utc)
+        self.assertEqual(employee_latest, allowed_created_at)
+        self.assertNotEqual(admin_tickets.get("latest_at"), employee_tickets.get("latest_at"))
 
 
 if __name__ == "__main__":

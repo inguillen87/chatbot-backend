@@ -2268,7 +2268,12 @@ class PublicSurveyResponse(db.Model):
     __tablename__ = "public_survey_response"
 
     id = db.Column(db.Integer, primary_key=True)
-    survey_id = db.Column(db.Integer, db.ForeignKey("public_survey.id"), nullable=False)
+    survey_id = db.Column(
+        db.Integer,
+        db.ForeignKey("public_survey.id"),
+        nullable=False,
+        index=True,
+    )
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
     anon_id = db.Column(db.String(80), nullable=True, index=True)
     metadata_json = db.Column(JSONType, nullable=True)
@@ -3160,10 +3165,13 @@ class EncOpcion(db.Model, TimestampMixin):
 class EncRespuesta(db.Model, TimestampMixin):
     __tablename__ = "enc_respuesta"
     __table_args__ = (
-        UniqueConstraint("encuesta_id", "huella_unica", name="uq_enc_respuesta_huella"),
         db.CheckConstraint(
             "privacy_mode IN ('legacy', 'source_anonymous')",
             name="ck_enc_respuesta_privacy_mode",
+        ),
+        db.CheckConstraint(
+            "response_origin IN ('real', 'synthetic_demo', 'legacy_unverified')",
+            name="ck_enc_respuesta_response_origin",
         ),
         db.CheckConstraint(
             "privacy_mode <> 'source_anonymous' OR "
@@ -3206,6 +3214,32 @@ class EncRespuesta(db.Model, TimestampMixin):
             name="fk_enc_respuesta_governance_release_tenant",
         ),
         Index("ix_enc_respuesta_encuesta_submitted", "encuesta_id", "submitted_at"),
+        Index(
+            "uq_enc_respuesta_real_huella",
+            "encuesta_id",
+            "huella_unica",
+            unique=True,
+            postgresql_where=db.text(
+                "response_origin = 'real' AND huella_unica IS NOT NULL"
+            ),
+            sqlite_where=db.text(
+                "response_origin = 'real' AND huella_unica IS NOT NULL"
+            ),
+        ),
+        Index(
+            "ix_enc_respuesta_survey_origin_submitted_id",
+            "encuesta_id",
+            "response_origin",
+            "submitted_at",
+            "id",
+        ),
+        Index(
+            "ix_enc_respuesta_tenant_origin_submitted_id",
+            "tenant_id",
+            "response_origin",
+            "submitted_at",
+            "id",
+        ),
     )
 
     id = db.Column(db.Integer, primary_key=True)
@@ -3231,6 +3265,14 @@ class EncRespuesta(db.Model, TimestampMixin):
     provincia = db.Column(db.String(120), nullable=True)
     pais = db.Column(db.String(120), nullable=True)
     metadata_payload = db.Column(JSONType, nullable=True)
+    # Server-owned provenance. Public payload metadata never controls this
+    # field; synthetic rows are written only by the guarded seed engine.
+    response_origin = db.Column(
+        db.String(32),
+        nullable=False,
+        default="real",
+        server_default="real",
+    )
     submitted_at = db.Column(db.DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     content_hash = db.Column(db.String(128), nullable=True)
     snapshot_id = db.Column(db.Integer, db.ForeignKey("enc_anchor_snapshot.id"), nullable=True)

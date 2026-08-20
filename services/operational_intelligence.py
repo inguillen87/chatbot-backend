@@ -6,7 +6,7 @@ from typing import Any
 import json
 from urllib.parse import quote
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, case, func, or_
 
 from models import (
     AnalyticsEventV2,
@@ -27,7 +27,21 @@ from models import (
     User,
 )
 from services.commerce_unified import dedupe_unified_orders
+from services.employee_ticket_access import apply_employee_ticket_category_scope
 from services.huggingface_ai_insights import build_collection_ai_insights, build_map_ai_layers
+from services.operational_heatmap_access import (
+    build_employee_aggregated_heatmap,
+    employee_heatmap_scope_empty,
+    filter_ticket_records_for_heatmap,
+    is_employee_heatmap_viewer,
+    privileged_heatmap_privacy,
+)
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    build_survey_response_provenance,
+)
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 
 
@@ -604,6 +618,7 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
         "priority": priority,
         "channel": channel,
         "category": _norm(ticket.categoria, "sin_categoria"),
+        "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": extra.get("assignee_id"),
         "zone": _norm(extra.get("zone") or extra.get("zona") or address, "sin_zona"),
         "address": address,
@@ -633,6 +648,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         "priority": "normal",
         "channel": channel,
         "category": _norm(ticket.categoria, "sin_categoria"),
+        "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
         "zone": _norm(ticket.distrito or address, "sin_zona"),
         "address": address,
@@ -663,6 +679,7 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
         "priority": "normal",
         "channel": "web",
         "category": _norm(ticket.categoria, "sin_categoria"),
+        "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
         "zone": _norm(address, "sin_zona"),
         "address": address,
@@ -683,16 +700,33 @@ def _collect_ticket_records(
     end_date: datetime,
     *,
     as_of: datetime | None = None,
+    viewer: Any = None,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
 
-    tenant_tickets = _between(TenantTicket.query.filter_by(tenant_id=tenant.id), TenantTicket.created_at, start_date, end_date).all()
+    tenant_ticket_query = _between(
+        TenantTicket.query.filter_by(tenant_id=tenant.id),
+        TenantTicket.created_at,
+        start_date,
+        end_date,
+    )
+    tenant_ticket_query = apply_employee_ticket_category_scope(tenant_ticket_query, viewer, TenantTicket)
+    tenant_tickets = tenant_ticket_query.all()
     records.extend(_tenant_ticket_record(ticket, as_of=as_of) for ticket in tenant_tickets)
 
-    municipio_tickets = _between(_municipio_ticket_query(tenant), MunicipioTicket.fecha, start_date, end_date).all()
+    municipio_ticket_query = _between(_municipio_ticket_query(tenant), MunicipioTicket.fecha, start_date, end_date)
+    municipio_ticket_query = apply_employee_ticket_category_scope(municipio_ticket_query, viewer, MunicipioTicket)
+    municipio_tickets = municipio_ticket_query.all()
     records.extend(_municipio_ticket_record(ticket, as_of=as_of) for ticket in municipio_tickets)
 
-    pyme_tickets = _between(PymeTicket.query.filter_by(tenant_id=tenant.id), PymeTicket.fecha, start_date, end_date).all()
+    pyme_ticket_query = _between(
+        PymeTicket.query.filter_by(tenant_id=tenant.id),
+        PymeTicket.fecha,
+        start_date,
+        end_date,
+    )
+    pyme_ticket_query = apply_employee_ticket_category_scope(pyme_ticket_query, viewer, PymeTicket)
+    pyme_tickets = pyme_ticket_query.all()
     records.extend(_pyme_ticket_record(ticket, as_of=as_of) for ticket in pyme_tickets)
 
     return records
@@ -713,43 +747,43 @@ def _collect_open_ticket_records(
     tenant: TenantProfile,
     *,
     as_of: datetime,
+    viewer: Any = None,
 ) -> list[dict[str, Any]]:
     """Collect the complete current queue without a created-at window."""
 
     records: list[dict[str, Any]] = []
-    records.extend(
-        _tenant_ticket_record(ticket, as_of=as_of)
-        for ticket in _created_at_membership_query(
-            _open_status_query(
-                TenantTicket.query.filter_by(tenant_id=tenant.id),
-                TenantTicket.estado,
-            ),
-            TenantTicket.created_at,
-            as_of=as_of,
-        ).all()
+    tenant_ticket_query = _created_at_membership_query(
+        _open_status_query(
+            TenantTicket.query.filter_by(tenant_id=tenant.id),
+            TenantTicket.estado,
+        ),
+        TenantTicket.created_at,
+        as_of=as_of,
     )
-    records.extend(
-        _municipio_ticket_record(ticket, as_of=as_of)
-        for ticket in _created_at_membership_query(
-            _open_status_query(
-                _municipio_ticket_query(tenant),
-                MunicipioTicket.estado,
-            ),
-            MunicipioTicket.fecha,
-            as_of=as_of,
-        ).all()
+    tenant_ticket_query = apply_employee_ticket_category_scope(tenant_ticket_query, viewer, TenantTicket)
+    records.extend(_tenant_ticket_record(ticket, as_of=as_of) for ticket in tenant_ticket_query.all())
+
+    municipio_ticket_query = _created_at_membership_query(
+        _open_status_query(
+            _municipio_ticket_query(tenant),
+            MunicipioTicket.estado,
+        ),
+        MunicipioTicket.fecha,
+        as_of=as_of,
     )
-    records.extend(
-        _pyme_ticket_record(ticket, as_of=as_of)
-        for ticket in _created_at_membership_query(
-            _open_status_query(
-                PymeTicket.query.filter_by(tenant_id=tenant.id),
-                PymeTicket.estado,
-            ),
-            PymeTicket.fecha,
-            as_of=as_of,
-        ).all()
+    municipio_ticket_query = apply_employee_ticket_category_scope(municipio_ticket_query, viewer, MunicipioTicket)
+    records.extend(_municipio_ticket_record(ticket, as_of=as_of) for ticket in municipio_ticket_query.all())
+
+    pyme_ticket_query = _created_at_membership_query(
+        _open_status_query(
+            PymeTicket.query.filter_by(tenant_id=tenant.id),
+            PymeTicket.estado,
+        ),
+        PymeTicket.fecha,
+        as_of=as_of,
     )
+    pyme_ticket_query = apply_employee_ticket_category_scope(pyme_ticket_query, viewer, PymeTicket)
+    records.extend(_pyme_ticket_record(ticket, as_of=as_of) for ticket in pyme_ticket_query.all())
     return records
 
 
@@ -758,6 +792,7 @@ def _queue_membership_quality(
     *,
     as_of: datetime,
     included_records: list[dict[str, Any]],
+    viewer: Any = None,
 ) -> dict[str, Any]:
     """Report records quarantined by the queue creation-time boundary."""
 
@@ -769,6 +804,7 @@ def _queue_membership_quality(
                 TenantTicket.estado,
             ),
             TenantTicket.created_at,
+            TenantTicket,
         ),
         (
             "MunicipioTicket",
@@ -777,6 +813,7 @@ def _queue_membership_quality(
                 MunicipioTicket.estado,
             ),
             MunicipioTicket.fecha,
+            MunicipioTicket,
         ),
         (
             "PymeTicket",
@@ -785,14 +822,19 @@ def _queue_membership_quality(
                 PymeTicket.estado,
             ),
             PymeTicket.fecha,
+            PymeTicket,
         ),
     )
     future_by_source = [
         {
             "source_model": source_model,
-            "excluded_records": int(query.filter(created_column > as_of).count()),
+            "excluded_records": int(
+                apply_employee_ticket_category_scope(query, viewer, ticket_model)
+                .filter(created_column > as_of)
+                .count()
+            ),
         }
-        for source_model, query, created_column in source_queries
+        for source_model, query, created_column, ticket_model in source_queries
     ]
     future_total = sum(item["excluded_records"] for item in future_by_source)
     null_created_at = len(
@@ -1080,43 +1122,112 @@ def _build_queue_truth(
 
 
 def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
-    encuestas = EncEncuesta.query.filter_by(tenant_id=tenant.id).all()
-    enc_respuestas = _between(EncRespuesta.query.filter_by(tenant_id=tenant.id), EncRespuesta.submitted_at, start_date, end_date).all()
-    public_surveys = PublicSurvey.query.filter_by(tenant_id=tenant.id).all()
-    public_survey_ids = [survey.id for survey in public_surveys]
-    public_response_count = 0
-    if public_survey_ids:
-        public_response_count = (
-            _between(PublicSurveyResponse.query.filter(PublicSurveyResponse.survey_id.in_(public_survey_ids)), PublicSurveyResponse.created_at, start_date, end_date)
-            .count()
-        )
+    encuestas_query = EncEncuesta.query.filter_by(tenant_id=tenant.id)
+    survey_count = encuestas_query.count()
+    live_vote_predicate = or_(
+        EncEncuesta.es_votacion_envivo.is_(True),
+        func.lower(func.coalesce(EncEncuesta.tipo, "")).like("%vot%"),
+        func.lower(func.coalesce(EncEncuesta.titulo, "")).like("%vot%"),
+    )
+    live_vote_query = encuestas_query.filter(live_vote_predicate)
+    live_vote_count = live_vote_query.count()
+    live_votaciones = live_vote_query.order_by(EncEncuesta.id.asc()).limit(10).all()
+    active_survey_count = encuestas_query.filter(
+        func.lower(func.coalesce(EncEncuesta.estado, "")).in_(_LIVE_SURVEY_STATES)
+    ).count()
 
-    live_votaciones = [
-        encuesta
-        for encuesta in encuestas
-        if bool(encuesta.es_votacion_envivo)
-        or "vot" in _norm(encuesta.tipo, "")
-        or "vot" in _norm(encuesta.titulo, "")
-    ]
-    active_encuestas = [encuesta for encuesta in encuestas if _norm(encuesta.estado, "") in _LIVE_SURVEY_STATES]
-    responses_by_channel = Counter(_norm(respuesta.canal, "unknown") for respuesta in enc_respuestas)
-    responses_with_geo = [respuesta for respuesta in enc_respuestas if respuesta.lat is not None and respuesta.lng is not None]
+    period_response_query = _between(
+        EncRespuesta.query.filter_by(tenant_id=tenant.id),
+        EncRespuesta.submitted_at,
+        start_date,
+        end_date,
+    )
+    real_period_response_query = period_response_query.filter(
+        EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL
+    )
+    real_response_count = real_period_response_query.count()
+    synthetic_response_count = period_response_query.filter(
+        EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO
+    ).count()
+    unverified_response_count = period_response_query.filter(
+        EncRespuesta.response_origin
+        == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED
+    ).count()
+    response_with_geo_count = real_period_response_query.filter(
+        EncRespuesta.lat.isnot(None),
+        EncRespuesta.lng.isnot(None),
+    ).count()
+
+    responses_by_channel: Counter = Counter()
+    for channel, count in (
+        real_period_response_query.with_entities(
+            EncRespuesta.canal,
+            func.count(EncRespuesta.id),
+        )
+        .group_by(EncRespuesta.canal)
+        .all()
+    ):
+        responses_by_channel[_norm(channel, "unknown")] += int(count or 0)
+
+    response_by_survey: Counter = Counter()
+    geo_by_survey: Counter = Counter()
+    channel_by_survey: dict[int, Counter] = {}
+    live_survey_ids = [int(encuesta.id) for encuesta in live_votaciones]
+    if live_survey_ids:
+        geo_condition = and_(
+            EncRespuesta.lat.isnot(None),
+            EncRespuesta.lng.isnot(None),
+        )
+        live_rows = (
+            real_period_response_query.filter(
+                EncRespuesta.encuesta_id.in_(live_survey_ids)
+            )
+            .with_entities(
+                EncRespuesta.encuesta_id,
+                EncRespuesta.canal,
+                func.count(EncRespuesta.id),
+                func.sum(case((geo_condition, 1), else_=0)),
+            )
+            .group_by(EncRespuesta.encuesta_id, EncRespuesta.canal)
+            .all()
+        )
+        for survey_id, channel, count, geo_count in live_rows:
+            normalized_survey_id = int(survey_id or 0)
+            normalized_count = int(count or 0)
+            response_by_survey[normalized_survey_id] += normalized_count
+            geo_by_survey[normalized_survey_id] += int(geo_count or 0)
+            channel_by_survey.setdefault(normalized_survey_id, Counter())[
+                _norm(channel, "unknown")
+            ] += normalized_count
+
+    public_survey_count = PublicSurvey.query.filter_by(tenant_id=tenant.id).count()
+    public_response_count = _between(
+        PublicSurveyResponse.query.join(
+            PublicSurvey,
+            PublicSurveyResponse.survey_id == PublicSurvey.id,
+        ).filter(PublicSurvey.tenant_id == tenant.id),
+        PublicSurveyResponse.created_at,
+        start_date,
+        end_date,
+    ).count()
+
     live_control_room = _survey_live_control_room(
         tenant=tenant,
         live_votaciones=live_votaciones,
-        responses=enc_respuestas,
         responses_by_channel=responses_by_channel,
-        responses_with_geo=responses_with_geo,
+        response_by_survey=response_by_survey,
+        geo_by_survey=geo_by_survey,
+        channel_by_survey=channel_by_survey,
     )
 
     return {
         "summary": {
-            "encuestas": len(encuestas),
-            "public_surveys": len(public_surveys),
-            "active": len(active_encuestas),
-            "votaciones_live": len(live_votaciones),
-            "responses": len(enc_respuestas) + public_response_count,
-            "responses_with_geo": len(responses_with_geo),
+            "encuestas": survey_count,
+            "public_surveys": public_survey_count,
+            "active": active_survey_count,
+            "votaciones_live": live_vote_count,
+            "responses": real_response_count + public_response_count,
+            "responses_with_geo": response_with_geo_count,
             "public_responses": public_response_count,
         },
         "by_channel": _counter(responses_by_channel),
@@ -1134,6 +1245,12 @@ def _survey_metrics(tenant: TenantProfile, start_date: datetime, end_date: datet
             for encuesta in live_votaciones[:10]
         ],
         "live_control_room": live_control_room,
+        "response_provenance": build_survey_response_provenance(
+            real_count=real_response_count + public_response_count,
+            synthetic_count=synthetic_response_count,
+            unverified_count=unverified_response_count,
+            mode="real",
+        ),
     }
 
 
@@ -1149,17 +1266,11 @@ def _survey_live_control_room(
     *,
     tenant: TenantProfile,
     live_votaciones: list[EncEncuesta],
-    responses: list[EncRespuesta],
     responses_by_channel: Counter,
-    responses_with_geo: list[EncRespuesta],
+    response_by_survey: Counter,
+    geo_by_survey: Counter,
+    channel_by_survey: dict[int, Counter],
 ) -> dict[str, Any]:
-    response_by_survey = Counter(int(response.encuesta_id or 0) for response in responses)
-    geo_by_survey = Counter(int(response.encuesta_id or 0) for response in responses_with_geo)
-    channel_by_survey: dict[int, Counter] = {}
-    for response in responses:
-        survey_id = int(response.encuesta_id or 0)
-        channel_by_survey.setdefault(survey_id, Counter())[_norm(response.canal, "unknown")] += 1
-
     monitors: list[dict[str, Any]] = []
     for encuesta in live_votaciones[:10]:
         survey_id = int(encuesta.id)
@@ -1807,24 +1918,93 @@ def _freshness_item(
     }
 
 
-def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
-    ticket_records = _collect_ticket_records(tenant, start_date, end_date)
+def build_operational_freshness(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    viewer: Any = None,
+) -> dict[str, Any]:
+    ticket_records = _collect_ticket_records(tenant, start_date, end_date, viewer=viewer)
+    tenant_ticket_query = apply_employee_ticket_category_scope(
+        TenantTicket.query.filter_by(tenant_id=tenant.id),
+        viewer,
+        TenantTicket,
+    )
+    municipio_ticket_query = apply_employee_ticket_category_scope(
+        _municipio_ticket_query(tenant),
+        viewer,
+        MunicipioTicket,
+    )
+    pyme_ticket_query = apply_employee_ticket_category_scope(
+        PymeTicket.query.filter_by(tenant_id=tenant.id),
+        viewer,
+        PymeTicket,
+    )
     ticket_latest = _max_datetime(
-        _latest_from_query(TenantTicket.query.filter_by(tenant_id=tenant.id), TenantTicket.created_at),
-        _latest_from_query(_municipio_ticket_query(tenant), MunicipioTicket.fecha),
-        _latest_from_query(PymeTicket.query.filter_by(tenant_id=tenant.id), PymeTicket.fecha),
+        _latest_from_query(tenant_ticket_query, TenantTicket.created_at),
+        _latest_from_query(municipio_ticket_query, MunicipioTicket.fecha),
+        _latest_from_query(pyme_ticket_query, PymeTicket.fecha),
     )
 
-    enc_response_latest = _latest_from_query(EncRespuesta.query.filter_by(tenant_id=tenant.id), EncRespuesta.submitted_at)
-    public_survey_ids = [survey.id for survey in PublicSurvey.query.filter_by(tenant_id=tenant.id).all()]
-    public_response_latest = None
-    public_response_count = 0
-    if public_survey_ids:
-        public_response_query = PublicSurveyResponse.query.filter(PublicSurveyResponse.survey_id.in_(public_survey_ids))
-        public_response_latest = _latest_from_query(public_response_query, PublicSurveyResponse.created_at)
-        public_response_count = _between(public_response_query, PublicSurveyResponse.created_at, start_date, end_date).count()
+    period_response_condition = and_(
+        EncRespuesta.submitted_at >= start_date,
+        EncRespuesta.submitted_at <= end_date,
+    )
+    enc_response_stats = {
+        str(origin or ""): {
+            "latest_at": latest_at,
+            "period_count": int(period_count or 0),
+        }
+        for origin, latest_at, period_count in (
+            EncRespuesta.query.filter_by(tenant_id=tenant.id)
+            .with_entities(
+                EncRespuesta.response_origin,
+                func.max(EncRespuesta.submitted_at),
+                func.sum(case((period_response_condition, 1), else_=0)),
+            )
+            .group_by(EncRespuesta.response_origin)
+            .all()
+        )
+    }
+    real_response_stats = enc_response_stats.get(
+        SURVEY_RESPONSE_ORIGIN_REAL,
+        {"latest_at": None, "period_count": 0},
+    )
+    synthetic_response_stats = enc_response_stats.get(
+        SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+        {"latest_at": None, "period_count": 0},
+    )
+    unverified_response_stats = enc_response_stats.get(
+        SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+        {"latest_at": None, "period_count": 0},
+    )
+    enc_response_latest = real_response_stats["latest_at"]
+    survey_response_count = int(real_response_stats["period_count"] or 0)
+    period_synthetic_response_count = int(
+        synthetic_response_stats["period_count"] or 0
+    )
+    period_unverified_response_count = int(
+        unverified_response_stats["period_count"] or 0
+    )
 
-    survey_response_count = _between(EncRespuesta.query.filter_by(tenant_id=tenant.id), EncRespuesta.submitted_at, start_date, end_date).count()
+    public_period_condition = and_(
+        PublicSurveyResponse.created_at >= start_date,
+        PublicSurveyResponse.created_at <= end_date,
+    )
+    public_response_latest, public_response_count = (
+        PublicSurveyResponse.query.join(
+            PublicSurvey,
+            PublicSurveyResponse.survey_id == PublicSurvey.id,
+        )
+        .filter(PublicSurvey.tenant_id == tenant.id)
+        .with_entities(
+            func.max(PublicSurveyResponse.created_at),
+            func.sum(case((public_period_condition, 1), else_=0)),
+        )
+        .first()
+    )
+    public_response_count = int(public_response_count or 0)
     survey_latest = _max_datetime(enc_response_latest, public_response_latest)
 
     event_query = AnalyticsEventV2.query.filter_by(tenant_id=tenant.id)
@@ -1853,6 +2033,7 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
         max_points=250,
         include_ai=False,
         commerce_records=commerce_records,
+        viewer=viewer,
     )
     heatmap_latest = None
     for point in heatmap.get("points") or []:
@@ -1956,6 +2137,12 @@ def build_operational_freshness(tenant: TenantProfile, start_date: datetime, end
             "can_render_heatmap": bool((heatmap.get("summary") or {}).get("points", 0)),
         },
         "sources": sources,
+        "response_provenance": build_survey_response_provenance(
+            real_count=survey_response_count + public_response_count,
+            synthetic_count=period_synthetic_response_count,
+            unverified_count=period_unverified_response_count,
+            mode="real",
+        ),
         "frontend_contract": {
             "render_as": "analytics_freshness",
             "primary_refresh_seconds": 60,
@@ -2880,6 +3067,7 @@ def build_operational_heatmap(
     start_date: datetime,
     end_date: datetime,
     *,
+    viewer: Any = None,
     ticket_records: list[dict[str, Any]] | None = None,
     max_points: int = 1000,
     segment_filters: dict[str, Any] | None = None,
@@ -2887,11 +3075,39 @@ def build_operational_heatmap(
     bbox: dict[str, float] | None = None,
     commerce_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    records = ticket_records if ticket_records is not None else _collect_ticket_records(tenant, start_date, end_date)
-    if commerce_records is None:
+    filters = segment_filters or {}
+    employee_view = is_employee_heatmap_viewer(viewer)
+    if employee_view and employee_heatmap_scope_empty(viewer):
+        normalized_filters = {
+            key: sorted(_normalized_heatmap_filter_values(key, value))
+            for key, value in filters.items()
+            if _normalized_heatmap_filter_values(key, value)
+        }
+        return build_employee_aggregated_heatmap(
+            tenant,
+            start_date,
+            end_date,
+            scope_empty=True,
+            applied_filters=normalized_filters,
+            bbox=bbox,
+        )
+
+    records = (
+        ticket_records
+        if ticket_records is not None
+        else _collect_ticket_records(tenant, start_date, end_date, viewer=viewer)
+    )
+    records = filter_ticket_records_for_heatmap(records, viewer)
+    if employee_view:
+        # Employee geography is ticket-only. Survey responses, analytics
+        # events, and commerce locations have no employee category boundary
+        # and therefore must not enter even the k-anonymous aggregation.
+        commerce_records = []
+    elif commerce_records is None:
         commerce_records, _ = _collect_commerce_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
-    filters = segment_filters or {}
+    if employee_view:
+        include_ai = False
     geocoding_candidates = [
         _geocoding_candidate(record)
         for record in records
@@ -2930,10 +3146,59 @@ def build_operational_heatmap(
         if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
             points.append(point)
 
-    survey_responses = _between(EncRespuesta.query.filter_by(tenant_id=tenant.id), EncRespuesta.submitted_at, start_date, end_date).filter(
-        EncRespuesta.lat.isnot(None),
-        EncRespuesta.lng.isnot(None),
-    ).limit(max_points).all()
+    survey_responses = []
+    survey_response_provenance = build_survey_response_provenance(
+        real_count=0,
+        synthetic_count=0,
+        mode="real",
+    )
+    if not employee_view:
+        survey_response_query = _between(
+            EncRespuesta.query.filter_by(tenant_id=tenant.id),
+            EncRespuesta.submitted_at,
+            start_date,
+            end_date,
+        ).filter(
+            EncRespuesta.lat.isnot(None),
+            EncRespuesta.lng.isnot(None),
+        )
+        response_counts_by_origin = {
+            str(origin or ""): int(count or 0)
+            for origin, count in (
+                survey_response_query.with_entities(
+                    EncRespuesta.response_origin,
+                    func.count(EncRespuesta.id),
+                )
+                .group_by(EncRespuesta.response_origin)
+                .all()
+            )
+        }
+        real_survey_response_count = response_counts_by_origin.get(
+            SURVEY_RESPONSE_ORIGIN_REAL,
+            0,
+        )
+        synthetic_survey_response_count = response_counts_by_origin.get(
+            SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+            0,
+        )
+        unverified_survey_response_count = response_counts_by_origin.get(
+            SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+            0,
+        )
+        survey_responses = (
+            survey_response_query.filter(
+                EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL
+            )
+            .order_by(EncRespuesta.submitted_at.desc(), EncRespuesta.id.desc())
+            .limit(max_points)
+            .all()
+        )
+        survey_response_provenance = build_survey_response_provenance(
+            real_count=real_survey_response_count,
+            synthetic_count=synthetic_survey_response_count,
+            unverified_count=unverified_survey_response_count,
+            mode="real",
+        )
     for response in survey_responses:
         metadata = _as_dict(response.metadata_payload)
         demographics = _demographics_from_metadata(
@@ -2965,10 +3230,17 @@ def build_operational_heatmap(
         if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
             points.append(point)
 
-    events = _between(AnalyticsEventV2.query.filter_by(tenant_id=tenant.id), AnalyticsEventV2.ts, start_date, end_date).filter(
-        AnalyticsEventV2.lat.isnot(None),
-        AnalyticsEventV2.lng.isnot(None),
-    ).limit(max_points).all()
+    events = []
+    if not employee_view:
+        events = _between(
+            AnalyticsEventV2.query.filter_by(tenant_id=tenant.id),
+            AnalyticsEventV2.ts,
+            start_date,
+            end_date,
+        ).filter(
+            AnalyticsEventV2.lat.isnot(None),
+            AnalyticsEventV2.lng.isnot(None),
+        ).limit(max_points).all()
     for event in events:
         metadata = _as_dict(event.metadata_payload)
         demographics = _demographics_from_metadata(metadata)
@@ -3265,7 +3537,7 @@ def build_operational_heatmap(
         source_quality=source_quality,
     )
 
-    return {
+    payload = {
         "contract_version": "operations.heatmap.v1",
         "tenant": _tenant_ref(tenant),
         "period": {"from": _iso(start_date), "to": _iso(end_date)},
@@ -3406,7 +3678,21 @@ def build_operational_heatmap(
                 "quality_empty": "Sin eventos para el periodo",
             }
         },
+        "response_provenance": survey_response_provenance,
     }
+
+    if employee_view:
+        return build_employee_aggregated_heatmap(
+            tenant,
+            start_date,
+            end_date,
+            exact_payload=payload,
+            applied_filters=payload.get("applied_filters") or {},
+            bbox=bbox,
+        )
+
+    payload["privacy"] = privileged_heatmap_privacy()
+    return payload
 
 
 def _build_alerts(
@@ -4037,8 +4323,15 @@ def _ai_ops_survey_items(surveys: dict[str, Any], *, limit: int) -> list[dict[st
     return items
 
 
-def build_ai_ops_queue(tenant: TenantProfile, start_date: datetime, end_date: datetime, *, limit: int = 15) -> dict[str, Any]:
-    ticket_records = _collect_ticket_records(tenant, start_date, end_date)
+def build_ai_ops_queue(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    limit: int = 15,
+    viewer: Any = None,
+) -> dict[str, Any]:
+    ticket_records = _collect_ticket_records(tenant, start_date, end_date, viewer=viewer)
     survey_metrics = _survey_metrics(tenant, start_date, end_date)
     ticket_items = _ai_ops_ticket_items(tenant, ticket_records, limit=limit)
     order_items = _ai_ops_order_items(tenant, start_date, end_date, limit=limit)
@@ -4084,14 +4377,21 @@ def build_ai_ops_queue(tenant: TenantProfile, start_date: datetime, end_date: da
     }
 
 
-def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end_date: datetime) -> dict[str, Any]:
+def build_operational_dashboard(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    viewer: Any = None,
+) -> dict[str, Any]:
     as_of = datetime.now(timezone.utc)
-    ticket_records = _collect_ticket_records(tenant, start_date, end_date, as_of=as_of)
-    queue_records = _collect_open_ticket_records(tenant, as_of=as_of)
+    ticket_records = _collect_ticket_records(tenant, start_date, end_date, as_of=as_of, viewer=viewer)
+    queue_records = _collect_open_ticket_records(tenant, as_of=as_of, viewer=viewer)
     queue_membership_quality = _queue_membership_quality(
         tenant,
         as_of=as_of,
         included_records=queue_records,
+        viewer=viewer,
     )
     commerce_records, commerce_raw_count = _collect_commerce_records(tenant, start_date, end_date)
     ticket_metrics = _ticket_metrics(ticket_records)
@@ -4113,6 +4413,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         tenant,
         start_date,
         end_date,
+        viewer=viewer,
         ticket_records=ticket_records,
         max_points=500,
         include_ai=False,
@@ -4136,6 +4437,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         previous_start,
         previous_end,
         as_of=as_of,
+        viewer=viewer,
     )
     previous_commerce_records, previous_commerce_raw_count = _collect_commerce_records(
         tenant,
@@ -4157,6 +4459,7 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
         tenant,
         previous_start,
         previous_end,
+        viewer=viewer,
         ticket_records=previous_ticket_records,
         max_points=250,
         include_ai=False,
@@ -4198,8 +4501,9 @@ def build_operational_dashboard(tenant: TenantProfile, start_date: datetime, end
             "heatmap": {
                 "summary": heatmap["summary"],
                 "bounds": heatmap["bounds"],
-                "hotspots": heatmap["hotspots"],
+                "hotspots": heatmap.get("hotspots") or [],
                 "render_contract": heatmap["render_contract"],
+                "privacy": heatmap.get("privacy"),
                 "ai_insights": heatmap.get("ai_insights"),
                 "ai_layers": heatmap.get("ai_layers"),
                 "map_experience": heatmap.get("map_experience"),

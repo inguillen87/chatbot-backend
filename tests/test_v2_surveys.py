@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import jwt
+from sqlalchemy import event
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
@@ -22,12 +23,21 @@ from models import (
     User,
 )
 from socket_service import _is_authorized_survey_room, emit_survey_update
+from routes.v2.surveys import _survey_response_count
 from services.demo_surveys import (
     build_demo_public_survey_payload,
     build_demo_survey_response_ack,
     build_demo_surveys_votings_contract,
 )
-from services.encuestas_service import EncuestaError, get_public_encuesta
+from services.encuestas_service import (
+    EncuestaError,
+    emit_survey_response_update,
+    get_public_encuesta,
+)
+from services.survey_response_provenance import (
+    SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+    is_trusted_demo_seed_response,
+)
 
 
 class V2SurveysTestConfig(Config):
@@ -371,6 +381,205 @@ class V2SurveysApiTest(unittest.TestCase):
         )
         self.assertFalse(live_payload.get("empty_state", {}).get("is_empty"))
         self.assertTrue(live_payload.get("live_telemetry", {}).get("has_responses"))
+
+    def test_public_demo_and_synthetic_metadata_aliases_remain_real(self):
+        headers, survey_id, token, _public_payload, answer = (
+            self._create_published_answer_context(self._create_payload())
+        )
+        answer.update(
+            {
+                "anon_id": "public-aliases-remain-real",
+                "metadata": {"demo": True, "synthetic": True},
+            }
+        )
+
+        response = self._post_public_response(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=answer,
+        )
+        self.assertEqual(response.status_code, 201, response.get_json())
+        real_response = EncRespuesta.query.filter_by(encuesta_id=survey_id).one()
+        self.assertEqual(
+            real_response.metadata_payload,
+            {"demo": True, "synthetic": True},
+        )
+        self.assertEqual(real_response.response_origin, "real")
+        self.assertFalse(is_trusted_demo_seed_response(real_response))
+
+        smuggling_answer = {
+            **answer,
+            "anon_id": "public-origin-smuggling-rejected",
+            "metadata": {
+                "is_demo_seed": True,
+                "demo_seed_contract_version": (
+                    SURVEY_DEMO_SEEDING_CONTRACT_VERSION
+                ),
+                "demo_batch_id": (
+                    f"seed-{survey_id}-1755680400000-abcdef123456"
+                ),
+            },
+        }
+        smuggling_response = self._post_public_response(
+            f"/api/v2/public/surveys/{token}/respond",
+            json=smuggling_answer,
+        )
+        self.assertEqual(
+            smuggling_response.status_code,
+            400,
+            smuggling_response.get_json(),
+        )
+        self.assertEqual(
+            smuggling_response.get_json().get("reason_code"),
+            "survey_demo_seed_metadata_reserved",
+        )
+        self.assertEqual(
+            EncRespuesta.query.filter_by(encuesta_id=survey_id).count(),
+            1,
+        )
+
+        db.session.add(
+            EncRespuesta(
+                encuesta_id=survey_id,
+                tenant_id=self.tenant_1.id,
+                response_origin="synthetic_demo",
+                metadata_payload={
+                    "is_demo_seed": True,
+                    "demo_seed_contract_version": (
+                        SURVEY_DEMO_SEEDING_CONTRACT_VERSION
+                    ),
+                    "demo_batch_id": (
+                        f"seed-{survey_id}-1755680400000-abcdef123456"
+                    ),
+                },
+                submitted_at=datetime.utcnow(),
+            )
+        )
+        db.session.commit()
+
+        statements = []
+
+        def _capture_sql(_conn, _cursor, statement, _params, _context, _many):
+            statements.append(statement)
+
+        event.listen(db.engine, "before_cursor_execute", _capture_sql)
+        try:
+            with patch.object(
+                type(EncRespuesta.query),
+                "all",
+                side_effect=AssertionError(
+                    "response count must aggregate, not call all()"
+                ),
+            ), patch.object(
+                type(EncRespuesta.query),
+                "yield_per",
+                side_effect=AssertionError(
+                    "response count must not scan ORM rows"
+                ),
+            ):
+                self.assertEqual(
+                    _survey_response_count(db.session.get(EncEncuesta, survey_id)),
+                    1,
+                )
+        finally:
+            event.remove(db.engine, "before_cursor_execute", _capture_sql)
+
+        count_statements = [
+            statement.lower()
+            for statement in statements
+            if "count(" in statement.lower()
+        ]
+        self.assertTrue(count_statements, statements)
+        self.assertTrue(
+            any("response_origin" in statement for statement in count_statements),
+            count_statements,
+        )
+        self.assertFalse(
+            any("metadata_payload" in statement for statement in count_statements),
+            count_statements,
+        )
+
+        public_response = self.client.get(f"/api/v2/public/surveys/{token}")
+        self.assertEqual(public_response.status_code, 200, public_response.get_json())
+        public_results = public_response.get_json()["resultados_envivo"]
+        self.assertEqual(public_results["total_respuestas"], 1)
+        self.assertEqual(public_results["data_provenance"]["mode"], "real")
+        self.assertEqual(
+            public_results["data_provenance"]["synthetic_responses_excluded"],
+            1,
+        )
+
+        live_response = self.client.get(
+            f"/api/v2/public/surveys/{token}/live-results?include_heatmap=0"
+        )
+        self.assertEqual(live_response.status_code, 200, live_response.get_json())
+        live_results = live_response.get_json()
+        self.assertEqual(live_results["total_respuestas"], 1)
+        self.assertEqual(live_results["data_provenance"]["mode"], "real")
+        self.assertEqual(
+            live_results["data_provenance"]["synthetic_responses_excluded"],
+            1,
+        )
+
+        with patch("services.encuestas_service.emit_survey_update") as emit_mock:
+            emitted = emit_survey_response_update(
+                db.session.get(EncEncuesta, survey_id),
+                token,
+            )
+        self.assertTrue(emitted)
+        realtime_payload = emit_mock.call_args.args[1]
+        self.assertEqual(realtime_payload["total_respuestas"], 1)
+        self.assertEqual(
+            realtime_payload["legacy_results"]["total_respuestas"],
+            1,
+        )
+        self.assertEqual(
+            realtime_payload["legacy_results"]["data_provenance"][
+                "synthetic_responses_excluded"
+            ],
+            1,
+        )
+
+        default_summary_response = self.client.get(
+            f"/api/encuestas/{survey_id}/analytics/summary",
+            headers=headers,
+        )
+        self.assertEqual(
+            default_summary_response.status_code,
+            200,
+            default_summary_response.get_json(),
+        )
+        default_summary = default_summary_response.get_json()
+        self.assertEqual(default_summary["total_respuestas"], 1)
+        self.assertEqual(default_summary["data_provenance"]["mode"], "real")
+
+        synthetic_summary_response = self.client.get(
+            f"/api/encuestas/{survey_id}/analytics/summary?data_mode=synthetic",
+            headers=headers,
+        )
+        self.assertEqual(
+            synthetic_summary_response.status_code,
+            200,
+            synthetic_summary_response.get_json(),
+        )
+        synthetic_summary = synthetic_summary_response.get_json()
+        self.assertEqual(synthetic_summary["total_respuestas"], 1)
+        self.assertEqual(
+            synthetic_summary["data_provenance"]["mode"],
+            "synthetic",
+        )
+        self.assertEqual(
+            synthetic_summary["data_provenance"]["synthetic_responses_included"],
+            1,
+        )
+
+        attempted_mixed_response = self.client.get(
+            f"/api/encuestas/{survey_id}/analytics/summary?data_mode=mixed",
+            headers=headers,
+        )
+        self.assertEqual(attempted_mixed_response.status_code, 200)
+        attempted_mixed = attempted_mixed_response.get_json()
+        self.assertEqual(attempted_mixed["total_respuestas"], 1)
+        self.assertEqual(attempted_mixed["data_provenance"]["mode"], "real")
 
     def test_public_realtime_room_matches_socket_with_and_without_tenant_slug(self):
         headers = {**self._auth(self.admin_1), "X-Tenant-Slug": self.tenant_1.slug}
@@ -1595,7 +1804,10 @@ class V2SurveysApiTest(unittest.TestCase):
         self.app.config["PUBLIC_ENCUESTAS_RATE_LIMIT"] = 1
         self.app.config["PUBLIC_ENCUESTAS_RATE_PERIOD"] = 60
         _, _, token, _, answer = self._create_published_answer_context(self._create_payload())
-        common_headers = {"X-Forwarded-For": "198.51.100.152"}
+        common_headers = {
+            "CF-Connecting-IP": "203.0.113.152",
+            "X-Forwarded-For": "198.51.100.152",
+        }
 
         first_id = "survey-shared-limit-legacy-01"
         first = self.client.post(
@@ -1619,7 +1831,11 @@ class V2SurveysApiTest(unittest.TestCase):
                         "submission_id": submission_id,
                         "anon_id": f"anon-shared-limit-{index}",
                     },
-                    headers={**common_headers, "Idempotency-Key": submission_id},
+                    headers={
+                        "CF-Connecting-IP": f"203.0.113.{160 + index}",
+                        "X-Forwarded-For": f"198.51.100.{160 + index}",
+                        "Idempotency-Key": submission_id,
+                    },
                 )
                 self.assertEqual(blocked.status_code, 429, blocked.get_json())
                 self.assertEqual(blocked.get_json().get("reason_code"), "rate_limited")
@@ -1981,10 +2197,8 @@ class V2SurveysApiTest(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(closed.status_code, 200, closed.get_json())
-        self.assertEqual(
-            self.client.get(f"/api/v2/public/surveys/{token}").status_code,
-            403,
-        )
+        closed_public = self.client.get(f"/api/v2/public/surveys/{token}")
+        self.assertEqual(closed_public.status_code, 200, closed_public.get_json())
 
         changed_payload = {
             **payload,

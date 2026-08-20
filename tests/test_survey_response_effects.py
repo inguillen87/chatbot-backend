@@ -526,6 +526,53 @@ class SurveyResponseEffectsTest(unittest.TestCase):
             1,
         )
 
+    def test_stage_rejects_synthetic_and_unverified_origins_without_effects(self):
+        for origin in ("synthetic_demo", "legacy_unverified"):
+            response = self._new_response(
+                huella_unica=f"non-real-{origin}",
+                response_origin=origin,
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                "verified real response",
+            ):
+                self._stage(response=response)
+        self.assertEqual(SurveyResponseEffect.query.count(), 0)
+
+    def test_dispatch_rechecks_origin_and_blocks_legacy_effects_without_side_effects(self):
+        now = datetime(2026, 8, 20, 15, 0, tzinfo=timezone.utc)
+        self._stage(now=now)
+        db.session.commit()
+        self.response.response_origin = "legacy_unverified"
+        db.session.commit()
+
+        with (
+            patch(
+                "services.analytics.ingestor.analytics_ingestor.track"
+            ) as track,
+            patch(
+                "services.encuestas_service._grant_survey_reward_effect"
+            ) as reward,
+            patch(
+                "services.encuestas_service.emit_survey_response_update"
+            ) as realtime,
+        ):
+            result = dispatch_survey_response_effects(
+                tenant_id=self.tenant.id,
+                response_id=self.response.id,
+                now=now,
+            )
+
+        self.assertEqual(result["claimed"], 3)
+        self.assertEqual(result["dead"], 3)
+        self.assertEqual(
+            {effect.status for effect in SurveyResponseEffect.query.all()},
+            {STATUS_DEAD},
+        )
+        track.assert_not_called()
+        reward.assert_not_called()
+        realtime.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,14 +8,20 @@ import json
 import logging
 import math
 import os
+from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from statistics import mean, median
+from threading import Lock
+from time import monotonic
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy.orm import joinedload
+from sqlalchemy import Numeric, String, and_, case, cast, literal, or_
+from sqlalchemy.orm import selectinload
 
 from database import db
 from models import EncEncuesta, EncRespuesta, EncPregunta, EncRespuestaDetalle, EncLink, TenantProfile
@@ -33,6 +39,14 @@ from services.openai_model_defaults import (
     DEFAULT_OPENAI_SOL_MODEL,
     chat_completion_compatibility_options,
     resolve_openai_model,
+)
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    build_survey_response_provenance,
+    filter_survey_response_query_by_origin,
+    is_trusted_demo_seed_response,
 )
 from utils.heatmap import (
     build_feature_collection,
@@ -79,6 +93,19 @@ SURVEY_AI_ADVISORY_POLICY = {
 }
 PUBLIC_SMALL_CELL_CONTRACT_VERSION = "surveys.public_small_cell.v1"
 PUBLIC_SMALL_CELL_DEFAULT_MINIMUM = 5
+SURVEY_ANALYTICS_SAMPLE_CONTRACT_VERSION = "surveys.analytics_sample.v1"
+SURVEY_ANALYTICS_DEFAULT_SAMPLE_LIMIT = 500
+SURVEY_ANALYTICS_MAX_SAMPLE_LIMIT = 1_000
+SURVEY_ANALYTICS_MAX_TIMESERIES_BUCKETS = 10_080
+SURVEY_ANALYTICS_CHANNEL_TOP_LIMIT = 20
+PUBLIC_LIVE_RESULTS_CACHE_TTL_SECONDS = 5.0
+PUBLIC_LIVE_RESULTS_CACHE_MAX_ENTRIES = 256
+
+_ANALYTICS_SNAPSHOT_CACHE: ContextVar[Optional[Dict[str, Dict[str, Any]]]] = (
+    ContextVar("survey_analytics_snapshot_cache", default=None)
+)
+_PUBLIC_LIVE_RESULTS_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_PUBLIC_LIVE_RESULTS_CACHE_LOCK = Lock()
 
 
 def _public_small_cell_minimum() -> int:
@@ -89,7 +116,9 @@ def _public_small_cell_minimum() -> int:
         value = int(raw or PUBLIC_SMALL_CELL_DEFAULT_MINIMUM)
     except (TypeError, ValueError):
         value = PUBLIC_SMALL_CELL_DEFAULT_MINIMUM
-    return max(3, min(value, 50))
+    # Five is a hard public floor. Deploy-time configuration may strengthen
+    # the threshold but can never weaken the privacy boundary.
+    return max(PUBLIC_SMALL_CELL_DEFAULT_MINIMUM, min(value, 50))
 
 
 def _bounded_public_small_cell_minimum(raw: Any = None) -> int:
@@ -97,7 +126,7 @@ def _bounded_public_small_cell_minimum(raw: Any = None) -> int:
         value = int(raw if raw is not None else _public_small_cell_minimum())
     except (TypeError, ValueError, OverflowError):
         value = _public_small_cell_minimum()
-    return max(3, min(value, 50))
+    return max(PUBLIC_SMALL_CELL_DEFAULT_MINIMUM, min(value, 50))
 
 
 def _has_positive_small_cell(values: Iterable[Any], minimum: int) -> bool:
@@ -165,6 +194,7 @@ def _apply_public_small_cell_policy(
     *,
     privacy_mode: str,
     minimum_cell_size: Optional[int] = None,
+    results_final: bool = False,
 ) -> Dict[str, Any]:
     """Redact public aggregates that could isolate source-anonymous people.
 
@@ -175,53 +205,158 @@ def _apply_public_small_cell_policy(
     """
 
     normalized_mode = str(privacy_mode or "legacy").strip().lower()
-    enabled = normalized_mode == "source_anonymous"
+    source_anonymous = normalized_mode == "source_anonymous"
+    results_final = bool(results_final)
+    active_source_anonymous = source_anonymous and not results_final
     minimum = _bounded_public_small_cell_minimum(minimum_cell_size)
+
+    heatmap = payload.get("heatmap")
+    heatmap_metadata = heatmap.get("metadata") if isinstance(heatmap, dict) else None
+    heatmap_metadata = heatmap_metadata if isinstance(heatmap_metadata, dict) else {}
+    geo_aggregation = heatmap_metadata.get("aggregation")
+    geo_aggregation = geo_aggregation if isinstance(geo_aggregation, dict) else {}
+    try:
+        sql_suppressed_cells = int(
+            geo_aggregation.get("suppressed_cell_count") or 0
+        )
+    except (TypeError, ValueError, OverflowError):
+        sql_suppressed_cells = 0
+    try:
+        sql_safe_cells = int(geo_aggregation.get("safe_cell_count") or 0)
+    except (TypeError, ValueError, OverflowError):
+        sql_safe_cells = 0
+    direct_geo_small_cell = False
+    if source_anonymous and isinstance(heatmap, dict):
+        cells = heatmap.get("cells")
+        direct_geo_small_cell = isinstance(cells, list) and _has_positive_small_cell(
+            (
+                cell.get("count", cell.get("weight", cell.get("w")))
+                for cell in cells
+                if isinstance(cell, Mapping)
+            ),
+            minimum,
+        )
+    # Any SQL-suppressed geographic cell makes the heatmap surface sensitive,
+    # even when no safe cell remains to display: suppression metadata would
+    # otherwise reveal the exact size of an all-sub-k cohort.  A hidden
+    # remainder additionally makes the overall total subtractable when at
+    # least one publishable cell is shown beside it.
+    geo_cells_suppressed = source_anonymous and (
+        sql_suppressed_cells > 0 or direct_geo_small_cell
+    )
+    geo_remainder_suppressed = (
+        sql_suppressed_cells > 0 and sql_safe_cells > 0
+    ) or direct_geo_small_cell
+    policy_enabled = source_anonymous or geo_remainder_suppressed
     privacy_contract: Dict[str, Any] = {
         "contract_version": PUBLIC_SMALL_CELL_CONTRACT_VERSION,
         "privacy_mode": normalized_mode,
-        "enabled": enabled,
-        "minimum_cell_size": minimum if enabled else None,
+        "results_final": results_final,
+        "enabled": policy_enabled,
+        "minimum_cell_size": minimum if policy_enabled else None,
         "suppressed_surfaces": [],
         "reason_code": None,
     }
     payload["privacy"] = privacy_contract
-    if not enabled:
+    if not policy_enabled:
         return payload
 
     try:
         exact_total = int(payload.get("total_respuestas") or 0)
     except (TypeError, ValueError, OverflowError):
         exact_total = 0
-    cohort_suppressed = 0 < exact_total < minimum
+    # Active source-anonymous results are withheld as one stable public cohort.
+    # Releasing stateless k-safe snapshots would still allow longitudinal
+    # differencing (for example 7-0 followed by 7-1). Final aggregates become
+    # eligible only after an explicit persisted close.
+    cohort_suppressed = (
+        source_anonymous and results_final and 0 <= exact_total < minimum
+    )
+    aggregate_total_suppressed = (
+        active_source_anonymous
+        or cohort_suppressed
+        or geo_remainder_suppressed
+    )
     suppressed_surfaces: list[str] = []
 
-    if cohort_suppressed:
-        original_snapshot = str(payload.get("snapshot_version") or "")
-        original_result_version = str(payload.get("result_version") or "")
-        opaque_seed = (
-            f"{payload.get('encuesta_id')}:{exact_total}:"
-            f"{original_result_version}:{original_snapshot}"
+    if aggregate_total_suppressed:
+        if active_source_anonymous:
+            privacy_state = "source_anonymous_active"
+        elif cohort_suppressed:
+            privacy_state = "cohort_below_minimum"
+        else:
+            privacy_state = "geo_remainder"
+        stable_seed = (
+            f"survey:{payload.get('encuesta_id')}:privacy:{privacy_state}:k:{minimum}"
         )
         payload["result_version"] = None
         payload["snapshot_version"] = (
-            "private:" + hashlib.sha256(opaque_seed.encode("utf-8")).hexdigest()[:16]
+            "private:" + hashlib.sha256(stable_seed.encode("utf-8")).hexdigest()[:16]
         )
         payload["total_respuestas"] = None
-        payload["total_respuestas_bucket"] = f"<{minimum}"
+        payload["total_respuestas_bucket"] = (
+            "withheld_until_close"
+            if active_source_anonymous
+            else f"<{minimum}"
+            if cohort_suppressed
+            else f">={minimum}"
+        )
+        if not active_source_anonymous and not cohort_suppressed:
+            payload["total_respuestas_lower_bound"] = minimum
         suppressed_surfaces.append("cohort_total")
 
         empty_state = payload.get("empty_state")
         if isinstance(empty_state, dict):
             empty_state.update(
                 {
-                    "is_empty": False,
+                    "is_empty": None,
                     "title": "Resultados protegidos",
                     "message": (
-                        "Los resultados detallados se habilitan cuando hay "
-                        f"al menos {minimum} respuestas."
+                        "Los resultados detallados se habilitan cuando cada "
+                        f"cohorte publicada alcanza al menos {minimum} respuestas."
                     ),
                     "action_hint": "wait_for_minimum_cell_size",
+                }
+            )
+
+        provenance = payload.get("data_provenance")
+        if isinstance(provenance, dict):
+            for key in (
+                "real_responses_included",
+                "synthetic_responses_included",
+                "synthetic_responses_excluded",
+                "unverified_responses_included",
+                "unverified_responses_excluded",
+                "population_size",
+                "sample_size",
+                "sample_limit",
+                "raw_responses_materialized",
+            ):
+                provenance[key] = None
+            provenance.update(
+                {
+                    "contains_synthetic": None,
+                    "sampled": None,
+                    "partial": None,
+                    "exact_aggregates": False,
+                    "privacy_redacted": True,
+                    "population_bucket": (
+                        "withheld_until_close"
+                        if active_source_anonymous
+                        else f"<{minimum}"
+                        if cohort_suppressed
+                        else f">={minimum}"
+                    ),
+                }
+            )
+
+        timeline_metadata = payload.get("timeline_metadata")
+        if isinstance(timeline_metadata, dict):
+            timeline_metadata.update(
+                {
+                    "bucket_count": None,
+                    "partial": None,
+                    "privacy_redacted": True,
                 }
             )
 
@@ -233,13 +368,16 @@ def _apply_public_small_cell_policy(
                 continue
             options = question.get("opciones")
             options = options if isinstance(options, list) else []
-            question_has_small_cell = cohort_suppressed or _has_positive_small_cell(
-                (
-                    option.get("votos", option.get("value"))
-                    for option in options
-                    if isinstance(option, Mapping)
-                ),
-                minimum,
+            question_has_small_cell = (
+                aggregate_total_suppressed
+                or _has_positive_small_cell(
+                    (
+                        option.get("votos", option.get("value"))
+                        for option in options
+                        if isinstance(option, Mapping)
+                    ),
+                    minimum,
+                )
             )
             if not question_has_small_cell:
                 continue
@@ -258,7 +396,7 @@ def _apply_public_small_cell_policy(
             suppressed_surfaces.append("question_results")
 
     timeline = payload.get("timeline_minute")
-    timeline_has_small_cell = cohort_suppressed or (
+    timeline_has_small_cell = aggregate_total_suppressed or (
         isinstance(timeline, list)
         and _has_positive_small_cell(
             (
@@ -285,10 +423,10 @@ def _apply_public_small_cell_policy(
             momentum["suppressed"] = True
         suppressed_surfaces.append("timeline")
 
-    heatmap = payload.get("heatmap")
+    heatmap_has_small_cell = aggregate_total_suppressed or geo_cells_suppressed
     if isinstance(heatmap, dict):
         cells = heatmap.get("cells")
-        heatmap_has_small_cell = cohort_suppressed or (
+        heatmap_has_small_cell = heatmap_has_small_cell or (
             isinstance(cells, list)
             and _has_positive_small_cell(
                 (
@@ -306,25 +444,48 @@ def _apply_public_small_cell_policy(
             if not isinstance(metadata, dict):
                 metadata = {}
                 heatmap["metadata"] = metadata
+            metadata.pop("raw_points_count", None)
             metadata.update(
                 {
                     "points_count": None,
                     "cells_count": None,
-                    "raw_points_count": None,
+                    "truncated_points": None,
+                    "truncated_cells": None,
                     "suppressed": True,
                     "suppression_reason": "minimum_cell_size_not_met",
                     "minimum_cell_size": minimum,
                 }
             )
+            aggregation = metadata.get("aggregation")
+            if isinstance(aggregation, dict):
+                for key in (
+                    "cell_count",
+                    "total_cell_count",
+                    "geo_response_count",
+                    "safe_cell_count",
+                    "safe_response_count",
+                    "suppressed_cell_count",
+                    "suppressed_response_count",
+                ):
+                    aggregation[key] = None
+                aggregation.update(
+                    {
+                        "has_suppressed_cells": None,
+                        "partial": None,
+                        "privacy_redacted": True,
+                    }
+                )
             suppressed_surfaces.append("heatmap")
 
     telemetry = payload.get("live_telemetry")
     if isinstance(telemetry, dict):
         recent = telemetry.get("responses_last_hour")
         recent_is_small = _has_positive_small_cell([recent], minimum)
-        if cohort_suppressed:
+        if aggregate_total_suppressed:
+            telemetry["has_responses"] = None
             telemetry["responses_total"] = None
-            telemetry["responses_bucket"] = f"<{minimum}"
+            telemetry["responses_bucket"] = payload.get("total_respuestas_bucket")
+            telemetry["polling_interval_ms"] = 5000
         if timeline_has_small_cell or recent_is_small:
             telemetry["responses_last_hour"] = None
             telemetry["participation_per_minute"] = None
@@ -332,7 +493,7 @@ def _apply_public_small_cell_policy(
 
     kpis = payload.get("kpis")
     if isinstance(kpis, dict):
-        if timeline_has_small_cell or _has_positive_small_cell(
+        if aggregate_total_suppressed or timeline_has_small_cell or _has_positive_small_cell(
             [kpis.get("responses_last_hour")], minimum
         ):
             kpis["responses_last_hour"] = None
@@ -345,29 +506,40 @@ def _apply_public_small_cell_policy(
 
     if suppressed_surfaces:
         payload["ai_summary"] = (
-            "Los resultados detallados estan protegidos por el umbral minimo "
+            "Los resultados anonimos se publican cuando la encuesta queda cerrada."
+            if active_source_anonymous
+            else "Los resultados detallados estan protegidos por el umbral minimo "
             f"de {minimum} participantes por celda."
         )
         payload["ai_insights"] = []
         payload["ai_layers"] = {}
         payload["operator_recommendations"] = []
-        ai_signal = payload.get("ai_signal")
-        if isinstance(ai_signal, dict):
-            ai_signal.update(
-                {
-                    "mode": "privacy_suppressed",
-                    "summary": {
-                        "text": payload["ai_summary"],
-                        "contains_exact_counts": False,
-                    },
-                    "collection": {"item_count": 0},
-                    "recommended_actions": [],
-                }
-            )
+        payload["ai_signal"] = {
+            "contract_version": "surveys.live_ai_signal.v1",
+            "provider_family": "none",
+            "mode": "privacy_suppressed",
+            "hf_status": {
+                "enabled": False,
+                "reason_code": "minimum_cell_size_not_met",
+            },
+            "summary": {
+                "text": payload["ai_summary"],
+                "contains_exact_counts": False,
+            },
+            "collection": {"item_count": None, "privacy_redacted": True},
+            "recommended_actions": [],
+            "advisory_policy": dict(SURVEY_AI_ADVISORY_POLICY),
+        }
 
         render_contract = payload.get("render_contract")
         if isinstance(render_contract, dict):
-            render_contract["privacy_state"] = "minimum_cell_size_not_met"
+            render_contract["privacy_state"] = (
+                "source_anonymous_results_withheld_until_close"
+                if active_source_anonymous
+                else "minimum_cell_size_not_met"
+            )
+            if aggregate_total_suppressed:
+                render_contract["polling_interval_ms"] = 5000
             supports = render_contract.get("supports")
             if isinstance(supports, list):
                 render_contract["supports"] = [
@@ -388,10 +560,19 @@ def _apply_public_small_cell_policy(
         dict.fromkeys(suppressed_surfaces)
     )
     privacy_contract["reason_code"] = (
-        "minimum_cell_size_not_met" if suppressed_surfaces else None
+        "source_anonymous_results_withheld_until_close"
+        if active_source_anonymous and suppressed_surfaces
+        else "minimum_cell_size_not_met"
+        if suppressed_surfaces
+        else None
     )
     privacy_contract["detailed_results_suppressed"] = bool(suppressed_surfaces)
-    privacy_contract["cohort_size_disclosed"] = not cohort_suppressed
+    privacy_contract["cohort_size_disclosed"] = not aggregate_total_suppressed
+    privacy_contract["geo_remainder_protected"] = (
+        None
+        if active_source_anonymous or cohort_suppressed
+        else geo_remainder_suppressed
+    )
     return payload
 
 
@@ -483,10 +664,20 @@ def _parse_bbox_filter(value: Any) -> Optional[Tuple[float, float, float, float]
 
 
 def _is_demo_respuesta(respuesta: EncRespuesta) -> bool:
-    metadata = getattr(respuesta, "metadata_payload", None)
-    if isinstance(metadata, dict):
-        return bool(metadata.get("is_demo_seed") or metadata.get("demo") or metadata.get("synthetic"))
-    return False
+    return is_trusted_demo_seed_response(respuesta)
+
+
+def _response_data_mode(filtros: Optional[Dict[str, Any]]) -> str:
+    """Resolve explicit admin provenance controls; default to real data."""
+
+    if not filtros:
+        return "real"
+    if _as_bool(filtros.get("exclude_demo")) is True:
+        return "real"
+    requested_mode = str(filtros.get("data_mode") or "").strip().lower()
+    if requested_mode in {"real", "synthetic"}:
+        return requested_mode
+    return "real"
 
 
 def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
@@ -540,23 +731,900 @@ def _apply_filters(query, filtros: Optional[Dict[str, Any]]):
     return query
 
 
+def _analytics_sample_limit(value: Any = None) -> int:
+    raw = value if value is not None else os.environ.get(
+        "SURVEY_ANALYTICS_SAMPLE_LIMIT",
+        SURVEY_ANALYTICS_DEFAULT_SAMPLE_LIMIT,
+    )
+    try:
+        normalized = int(raw)
+    except (TypeError, ValueError, OverflowError):
+        normalized = SURVEY_ANALYTICS_DEFAULT_SAMPLE_LIMIT
+    return max(0, min(normalized, SURVEY_ANALYTICS_MAX_SAMPLE_LIMIT))
+
+
+def _analytics_bounded_int(
+    value: Any,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError, OverflowError):
+        normalized = default
+    return max(minimum, min(normalized, maximum))
+
+
+def _canonical_filter_key(filtros: Optional[Mapping[str, Any]]) -> str:
+    return json.dumps(
+        dict(filtros or {}),
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+@contextmanager
+def _analytics_snapshot_scope():
+    """Reuse one bounded response snapshot across a composite dashboard call."""
+
+    existing = _ANALYTICS_SNAPSHOT_CACHE.get()
+    if existing is not None:
+        yield existing
+        return
+    cache: Dict[str, Dict[str, Any]] = {}
+    token = _ANALYTICS_SNAPSHOT_CACHE.set(cache)
+    try:
+        yield cache
+    finally:
+        _ANALYTICS_SNAPSHOT_CACHE.reset(token)
+
+
+def _response_queries(
+    encuesta: EncEncuesta,
+    filtros: Optional[Dict[str, Any]],
+) -> Tuple[Any, Any, str]:
+    base_query = EncRespuesta.query.filter(EncRespuesta.encuesta_id == encuesta.id)
+    base_query = _apply_filters(base_query, filtros)
+    mode = _response_data_mode(filtros)
+    expected_origin = (
+        SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO
+        if mode == "synthetic"
+        else SURVEY_RESPONSE_ORIGIN_REAL
+    )
+    selected_query = base_query.filter(
+        EncRespuesta.response_origin == expected_origin
+    )
+    return base_query, selected_query, mode
+
+
+def _build_response_snapshot(
+    encuesta: EncEncuesta,
+    filtros: Optional[Dict[str, Any]],
+    *,
+    sample_limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    effective_sample_limit = _analytics_sample_limit(sample_limit)
+    base_query, selected_query, mode = _response_queries(encuesta, filtros)
+
+    origin_row = (
+        base_query.with_entities(
+            db.func.coalesce(
+                db.func.sum(
+                    case(
+                        (EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL, 1),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("real_count"),
+            db.func.coalesce(
+                db.func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("synthetic_count"),
+            db.func.coalesce(
+                db.func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("unverified_count"),
+            db.func.max(
+                case(
+                    (
+                        EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
+                        EncRespuesta.id,
+                    )
+                )
+            ).label("real_max_id"),
+            db.func.max(
+                case(
+                    (
+                        EncRespuesta.response_origin
+                        == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                        EncRespuesta.id,
+                    )
+                )
+            ).label("synthetic_max_id"),
+        )
+        .order_by(None)
+        .one()
+    )
+    real_count = int(origin_row.real_count or 0)
+    synthetic_count = int(origin_row.synthetic_count or 0)
+    unverified_count = int(origin_row.unverified_count or 0)
+    population_size = synthetic_count if mode == "synthetic" else real_count
+    result_version = int(
+        (
+            origin_row.synthetic_max_id
+            if mode == "synthetic"
+            else origin_row.real_max_id
+        )
+        or 0
+    )
+
+    sample: List[EncRespuesta] = []
+    if effective_sample_limit > 0 and population_size > 0:
+        sample = (
+            selected_query.options(
+                selectinload(EncRespuesta.detalles).joinedload(
+                    EncRespuestaDetalle.opcion
+                )
+            )
+            .order_by(
+                EncRespuesta.submitted_at.desc(),
+                EncRespuesta.id.desc(),
+            )
+            .limit(effective_sample_limit)
+            .all()
+        )
+        sample.reverse()
+
+    sample_size = len(sample)
+    partial = sample_size < population_size
+    provenance = build_survey_response_provenance(
+        real_count=real_count,
+        synthetic_count=synthetic_count,
+        unverified_count=unverified_count,
+        mode=mode,
+        synthetic_excluded=synthetic_count if mode == "real" else 0,
+        unverified_excluded=unverified_count,
+    )
+    provenance.update(
+        {
+            "sample_contract_version": SURVEY_ANALYTICS_SAMPLE_CONTRACT_VERSION,
+            "population_size": population_size,
+            "sample_size": sample_size,
+            "sample_limit": effective_sample_limit,
+            "sampled": partial,
+            "partial": partial,
+            "sample_order": "latest",
+        }
+    )
+    return {
+        "encuesta": encuesta,
+        "filters": dict(filtros or {}),
+        "mode": mode,
+        "base_query": base_query,
+        "selected_query": selected_query,
+        "sample": sample,
+        "population_size": population_size,
+        "real_count": real_count,
+        "synthetic_count": synthetic_count,
+        "unverified_count": unverified_count,
+        "result_version": result_version,
+        "provenance": provenance,
+        "derived": {},
+    }
+
+
+def _get_response_snapshot(
+    encuesta: EncEncuesta,
+    filtros: Optional[Dict[str, Any]],
+    *,
+    sample_limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    effective_sample_limit = _analytics_sample_limit(sample_limit)
+    key = (
+        f"{int(encuesta.id)}:{_response_data_mode(filtros)}:"
+        f"{effective_sample_limit}:{_canonical_filter_key(filtros)}"
+    )
+    cache = _ANALYTICS_SNAPSHOT_CACHE.get()
+    if cache is not None and key in cache:
+        return cache[key]
+    snapshot = _build_response_snapshot(
+        encuesta,
+        filtros,
+        sample_limit=effective_sample_limit,
+    )
+    if cache is not None:
+        cache[key] = snapshot
+    return snapshot
+
+
+def _snapshot_value(
+    snapshot: Dict[str, Any],
+    key: str,
+    factory,
+):
+    derived = snapshot.setdefault("derived", {})
+    if key not in derived:
+        derived[key] = factory()
+    return derived[key]
+
+
+def _collect_respuestas_with_provenance(
+    encuesta: EncEncuesta,
+    filtros: Optional[Dict[str, Any]],
+):
+    snapshot = _get_response_snapshot(encuesta, filtros)
+    return list(snapshot["sample"]), dict(snapshot["provenance"])
+
+
 def _collect_respuestas(encuesta: EncEncuesta, filtros: Optional[Dict[str, Any]]):
-    query = EncRespuesta.query.options(joinedload(EncRespuesta.detalles)).filter_by(encuesta_id=encuesta.id)
-    query = _apply_filters(query, filtros)
-    respuestas = query.order_by(EncRespuesta.submitted_at.asc()).all()
+    respuestas, _provenance = _collect_respuestas_with_provenance(
+        encuesta,
+        filtros,
+    )
+    return respuestas
 
-    include_demo = True
-    if filtros:
-        if _as_bool(filtros.get("exclude_demo")) is True:
-            include_demo = False
-        parsed_include_demo = _as_bool(filtros.get("include_demo"))
-        if parsed_include_demo is not None:
-            include_demo = parsed_include_demo
 
-    if include_demo:
-        return respuestas
+def _selected_response_ids_subquery(snapshot: Mapping[str, Any]):
+    return (
+        snapshot["selected_query"]
+        .with_entities(EncRespuesta.id.label("response_id"))
+        .order_by(None)
+        .subquery()
+    )
 
-    return [respuesta for respuesta in respuestas if not _is_demo_respuesta(respuesta)]
+
+def _exact_option_statistics(
+    snapshot: Dict[str, Any],
+) -> Tuple[Dict[int, Counter], Dict[int, Counter], Counter]:
+    def _load():
+        response_ids = _selected_response_ids_subquery(snapshot)
+        option_rows = (
+            db.session.query(
+                EncRespuestaDetalle.pregunta_id,
+                EncRespuestaDetalle.opcion_id,
+                db.func.count(EncRespuestaDetalle.id).label("detail_count"),
+                db.func.count(
+                    db.func.distinct(EncRespuestaDetalle.respuesta_id)
+                ).label("response_count"),
+            )
+            .join(
+                response_ids,
+                response_ids.c.response_id
+                == EncRespuestaDetalle.respuesta_id,
+            )
+            .filter(EncRespuestaDetalle.opcion_id.isnot(None))
+            .group_by(
+                EncRespuestaDetalle.pregunta_id,
+                EncRespuestaDetalle.opcion_id,
+            )
+            .all()
+        )
+        option_counts: Dict[int, Counter] = defaultdict(Counter)
+        unique_counts: Dict[int, Counter] = defaultdict(Counter)
+        for question_id, option_id, detail_count, response_count in option_rows:
+            option_counts[int(question_id)][int(option_id)] = int(
+                detail_count or 0
+            )
+            unique_counts[int(question_id)][int(option_id)] = int(
+                response_count or 0
+            )
+
+        answered_rows = (
+            db.session.query(
+                EncRespuestaDetalle.pregunta_id,
+                db.func.count(
+                    db.func.distinct(EncRespuestaDetalle.respuesta_id)
+                ).label("response_count"),
+            )
+            .join(
+                response_ids,
+                response_ids.c.response_id
+                == EncRespuestaDetalle.respuesta_id,
+            )
+            .filter(
+                or_(
+                    EncRespuestaDetalle.opcion_id.isnot(None),
+                    db.func.length(
+                        db.func.trim(
+                            db.func.coalesce(
+                                EncRespuestaDetalle.texto_libre,
+                                "",
+                            )
+                        )
+                    )
+                    > 0,
+                )
+            )
+            .group_by(EncRespuestaDetalle.pregunta_id)
+            .all()
+        )
+        answered_counts = Counter(
+            {
+                int(question_id): int(response_count or 0)
+                for question_id, response_count in answered_rows
+            }
+        )
+        return option_counts, unique_counts, answered_counts
+
+    return _snapshot_value(snapshot, "exact_option_statistics", _load)
+
+
+def _exact_summary_frequencies(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    def _load():
+        selected_query = snapshot["selected_query"]
+        # Channel names are tenant-controlled legacy data. Normalize casing in
+        # SQL and materialize only a bounded top set; the exact remainder is
+        # represented by ``otros`` so totals remain auditable without an
+        # unbounded GROUP BY result in Python.
+        channel_expr = db.func.coalesce(
+            db.func.nullif(
+                db.func.lower(db.func.trim(cast(EncRespuesta.canal, String))),
+                "",
+            ),
+            "sin_canal",
+        )
+        channel_distinct_total = int(
+            selected_query.with_entities(
+                db.func.count(db.func.distinct(channel_expr))
+            )
+            .order_by(None)
+            .scalar()
+            or 0
+        )
+        channel_rows = (
+            selected_query.with_entities(
+                channel_expr.label("label"),
+                db.func.count(EncRespuesta.id).label("total"),
+            )
+            .group_by(channel_expr)
+            .order_by(
+                db.func.count(EncRespuesta.id).desc(),
+                channel_expr.asc(),
+            )
+            .limit(SURVEY_ANALYTICS_CHANNEL_TOP_LIMIT)
+            .all()
+        )
+        channels = Counter(
+            {str(label or "sin_canal"): int(total or 0) for label, total in channel_rows}
+        )
+        channel_top_total = sum(channels.values())
+        channel_other_count = max(
+            0,
+            int(snapshot.get("population_size") or 0) - channel_top_total,
+        )
+        if channel_other_count:
+            channels["otros"] += channel_other_count
+        channel_metadata = {
+            "top_limit": SURVEY_ANALYTICS_CHANNEL_TOP_LIMIT,
+            "distinct_total": channel_distinct_total,
+            "returned_distinct": len(channel_rows),
+            "truncated": channel_distinct_total > len(channel_rows),
+            "other_count": channel_other_count,
+        }
+
+        source_expr = db.func.coalesce(EncRespuesta.utm_source, "n/a")
+        campaign_expr = db.func.coalesce(EncRespuesta.utm_campaign, "n/a")
+        utm_rows = (
+            selected_query.with_entities(
+                source_expr.label("source"),
+                campaign_expr.label("campaign"),
+                db.func.count(EncRespuesta.id).label("total"),
+            )
+            .group_by(source_expr, campaign_expr)
+            .order_by(db.func.count(EncRespuesta.id).desc())
+            .limit(500)
+            .all()
+        )
+        utm = Counter(
+            {
+                f"{str(source or 'n/a')}|{str(campaign or 'n/a')}": int(total or 0)
+                for source, campaign, total in utm_rows
+            }
+        )
+
+        dimensions: Dict[str, Counter] = {}
+        for key, column in (
+            ("genero", EncRespuesta.genero),
+            ("rango_etario", EncRespuesta.rango_etario),
+            ("barrio", EncRespuesta.barrio),
+            ("ciudad", EncRespuesta.ciudad),
+            ("provincia", EncRespuesta.provincia),
+            ("pais", EncRespuesta.pais),
+        ):
+            rows = (
+                selected_query.with_entities(
+                    column.label("label"),
+                    db.func.count(EncRespuesta.id).label("total"),
+                )
+                .filter(
+                    column.isnot(None),
+                    db.func.length(db.func.trim(cast(column, String))) > 0,
+                )
+                .group_by(column)
+                .order_by(db.func.count(EncRespuesta.id).desc())
+                .limit(50)
+                .all()
+            )
+            dimensions[key] = Counter(
+                {str(label): int(total or 0) for label, total in rows}
+            )
+
+        identity_expr = case(
+            (
+                EncRespuesta.huella_unica.isnot(None),
+                literal("fingerprint:") + cast(EncRespuesta.huella_unica, String),
+            ),
+            (
+                EncRespuesta.user_id.isnot(None),
+                literal("user:") + cast(EncRespuesta.user_id, String),
+            ),
+            (
+                EncRespuesta.dni.isnot(None),
+                literal("dni:") + cast(EncRespuesta.dni, String),
+            ),
+            (
+                EncRespuesta.phone.isnot(None),
+                literal("phone:") + cast(EncRespuesta.phone, String),
+            ),
+            (
+                EncRespuesta.ip.isnot(None),
+                literal("ip:") + cast(EncRespuesta.ip, String),
+            ),
+            else_=literal("anon:") + cast(EncRespuesta.id, String),
+        )
+        unique_participants = int(
+            selected_query.with_entities(
+                db.func.count(db.func.distinct(identity_expr))
+            )
+            .order_by(None)
+            .scalar()
+            or 0
+        )
+        return {
+            "channels": channels,
+            "channel_metadata": channel_metadata,
+            "utm": utm,
+            "dimensions": dimensions,
+            "unique_participants": unique_participants,
+            "utm_top_limit": 500,
+            "dimension_top_limit": 50,
+        }
+
+    return _snapshot_value(snapshot, "exact_summary_frequencies", _load)
+
+
+def _time_bucket_expression(granularity: str):
+    normalized = str(granularity or "day").strip().lower()
+    dialect = str(getattr(db.session.get_bind().dialect, "name", "") or "")
+    if dialect == "postgresql":
+        unit = "minute" if normalized == "minute" else "hour" if normalized == "hour" else "day"
+        return db.func.date_trunc(unit, EncRespuesta.submitted_at)
+    if normalized == "minute":
+        return db.func.strftime("%Y-%m-%dT%H:%M:00", EncRespuesta.submitted_at)
+    if normalized == "hour":
+        return db.func.strftime("%Y-%m-%dT%H:00:00", EncRespuesta.submitted_at)
+    return db.func.strftime("%Y-%m-%d", EncRespuesta.submitted_at)
+
+
+def _bucket_iso(value: Any, granularity: str) -> str:
+    normalized = str(granularity or "day").strip().lower()
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).isoformat()
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if normalized == "day":
+        dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _exact_timeseries(
+    snapshot: Dict[str, Any],
+    granularity: str,
+    *,
+    max_buckets: int = SURVEY_ANALYTICS_MAX_TIMESERIES_BUCKETS,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    normalized = str(granularity or "day").strip().lower()
+    if normalized not in {"minute", "hour", "day"}:
+        normalized = "day"
+    effective_limit = max(1, min(int(max_buckets), SURVEY_ANALYTICS_MAX_TIMESERIES_BUCKETS))
+    cache_key = f"exact_timeseries:{normalized}:{effective_limit}"
+
+    def _load():
+        bucket_expr = _time_bucket_expression(normalized)
+        rows = (
+            snapshot["selected_query"]
+            .with_entities(
+                bucket_expr.label("bucket"),
+                db.func.count(EncRespuesta.id).label("total"),
+            )
+            .filter(EncRespuesta.submitted_at.isnot(None))
+            .group_by(bucket_expr)
+            .order_by(bucket_expr.desc())
+            .limit(effective_limit + 1)
+            .all()
+        )
+        partial = len(rows) > effective_limit
+        rows = rows[:effective_limit]
+        rows.reverse()
+        series = [
+            {
+                "fecha": _bucket_iso(bucket, normalized),
+                "total": int(total or 0),
+            }
+            for bucket, total in rows
+        ]
+        return series, {
+            "contract_version": SURVEY_ANALYTICS_SAMPLE_CONTRACT_VERSION,
+            "granularity": normalized,
+            "bucket_limit": effective_limit,
+            "bucket_count": len(series),
+            "partial": partial,
+        }
+
+    return _snapshot_value(snapshot, cache_key, _load)
+
+
+def _exact_recent_windows(
+    snapshot: Dict[str, Any],
+    *,
+    now: datetime,
+    window_minutes: int,
+) -> Tuple[int, int, int]:
+    window = max(1, min(int(window_minutes or 10), 60))
+    normalized_now = _as_utc_datetime(now)
+    current_start = normalized_now - timedelta(minutes=window)
+    previous_start = normalized_now - timedelta(minutes=window * 2)
+    row = (
+        snapshot["selected_query"]
+        .with_entities(
+            db.func.coalesce(
+                db.func.sum(
+                    case(
+                        (
+                            and_(
+                                EncRespuesta.submitted_at >= current_start,
+                                EncRespuesta.submitted_at <= normalized_now,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("current_count"),
+            db.func.coalesce(
+                db.func.sum(
+                    case(
+                        (
+                            and_(
+                                EncRespuesta.submitted_at >= previous_start,
+                                EncRespuesta.submitted_at < current_start,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("previous_count"),
+            db.func.coalesce(
+                db.func.sum(
+                    case(
+                        (
+                            and_(
+                                EncRespuesta.submitted_at
+                                >= normalized_now - timedelta(hours=1),
+                                EncRespuesta.submitted_at <= normalized_now,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("last_hour_count"),
+        )
+        .order_by(None)
+        .one()
+    )
+    return (
+        int(row.current_count or 0),
+        int(row.previous_count or 0),
+        int(row.last_hour_count or 0),
+    )
+
+
+def _exact_geo_cells(
+    snapshot: Dict[str, Any],
+    *,
+    max_cells: int,
+    minimum_count: int = 1,
+    precision: int = 3,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    effective_limit = max(1, min(int(max_cells or 1), 5_000))
+    effective_minimum = max(1, int(minimum_count or 1))
+    cache_key = f"geo_cells:{precision}:{effective_minimum}:{effective_limit}"
+
+    def _load():
+        lat_cell = db.func.round(cast(EncRespuesta.lat, Numeric), precision)
+        lng_cell = db.func.round(cast(EncRespuesta.lng, Numeric), precision)
+        total_expr = db.func.count(EncRespuesta.id)
+        grouped_cells = (
+            snapshot["selected_query"]
+            .with_entities(
+                lat_cell.label("lat_cell"),
+                lng_cell.label("lng_cell"),
+                db.func.avg(EncRespuesta.lat).label("centroid_lat"),
+                db.func.avg(EncRespuesta.lng).label("centroid_lng"),
+                total_expr.label("total"),
+            )
+            .filter(
+                EncRespuesta.lat.isnot(None),
+                EncRespuesta.lng.isnot(None),
+                EncRespuesta.lat.between(-90, 90),
+                EncRespuesta.lng.between(-180, 180),
+            )
+            .group_by(lat_cell, lng_cell)
+            .order_by(None)
+            .subquery()
+        )
+        (
+            total_cell_count,
+            geo_response_count,
+            suppressed_cell_count,
+            suppressed_response_count,
+        ) = (
+            db.session.query(
+                db.func.count(grouped_cells.c.total),
+                db.func.coalesce(db.func.sum(grouped_cells.c.total), 0),
+                db.func.coalesce(
+                    db.func.sum(
+                        case(
+                            (grouped_cells.c.total < effective_minimum, 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                db.func.coalesce(
+                    db.func.sum(
+                        case(
+                            (
+                                grouped_cells.c.total < effective_minimum,
+                                grouped_cells.c.total,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+            )
+            .one()
+        )
+        rows = (
+            db.session.query(
+                grouped_cells.c.lat_cell,
+                grouped_cells.c.lng_cell,
+                grouped_cells.c.centroid_lat,
+                grouped_cells.c.centroid_lng,
+                grouped_cells.c.total,
+            )
+            .filter(grouped_cells.c.total >= effective_minimum)
+            .order_by(
+                grouped_cells.c.total.desc(),
+                grouped_cells.c.lat_cell.asc(),
+                grouped_cells.c.lng_cell.asc(),
+            )
+            .limit(effective_limit + 1)
+            .all()
+        )
+        partial = len(rows) > effective_limit
+        rows = rows[:effective_limit]
+        cells: List[Dict[str, Any]] = []
+        for lat_cell_value, lng_cell_value, centroid_lat, centroid_lng, total in rows:
+            lat_value = float(centroid_lat if centroid_lat is not None else lat_cell_value)
+            lng_value = float(centroid_lng if centroid_lng is not None else lng_cell_value)
+            count = int(total or 0)
+            cells.append(
+                {
+                    "cell_id": f"grid_{round(float(lat_cell_value), precision)}_{round(float(lng_cell_value), precision)}_{precision}",
+                    "count": count,
+                    "centroid_lat": round(lat_value, 6),
+                    "centroid_lon": round(lng_value, 6),
+                }
+            )
+        enrich_heatmap_cells(cells)
+        return cells, {
+            "contract_version": SURVEY_ANALYTICS_SAMPLE_CONTRACT_VERSION,
+            "aggregation": f"sql_grid_{precision}_decimals",
+            "minimum_cell_size": effective_minimum,
+            "cell_limit": effective_limit,
+            "cell_count": len(cells),
+            "total_cell_count": int(total_cell_count or 0),
+            "geo_response_count": int(geo_response_count or 0),
+            "safe_cell_count": max(
+                0,
+                int(total_cell_count or 0) - int(suppressed_cell_count or 0),
+            ),
+            "safe_response_count": max(
+                0,
+                int(geo_response_count or 0) - int(suppressed_response_count or 0),
+            ),
+            "suppressed_cell_count": int(suppressed_cell_count or 0),
+            "suppressed_response_count": int(suppressed_response_count or 0),
+            "has_suppressed_cells": bool(suppressed_cell_count),
+            "partial": partial,
+        }
+
+    return _snapshot_value(snapshot, cache_key, _load)
+
+
+def _bounded_geo_points(
+    snapshot: Dict[str, Any],
+    *,
+    limit: int,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    effective_limit = max(0, min(int(limit or 0), 5_000))
+    cache_key = f"geo_points:{effective_limit}"
+
+    def _load():
+        if effective_limit <= 0:
+            return [], {
+                "sample_limit": 0,
+                "sample_size": 0,
+                "sampled": False,
+                "partial": False,
+            }
+        rows = (
+            snapshot["selected_query"]
+            .with_entities(
+                EncRespuesta.id,
+                EncRespuesta.lat,
+                EncRespuesta.lng,
+                EncRespuesta.barrio,
+                EncRespuesta.ciudad,
+                EncRespuesta.provincia,
+                EncRespuesta.pais,
+                EncRespuesta.canal,
+                EncRespuesta.submitted_at,
+            )
+            .filter(
+                EncRespuesta.lat.isnot(None),
+                EncRespuesta.lng.isnot(None),
+                EncRespuesta.lat.between(-90, 90),
+                EncRespuesta.lng.between(-180, 180),
+            )
+            .order_by(
+                EncRespuesta.submitted_at.desc(),
+                EncRespuesta.id.desc(),
+            )
+            .limit(effective_limit + 1)
+            .all()
+        )
+        partial = len(rows) > effective_limit
+        rows = rows[:effective_limit]
+        points = [
+            {
+                "response_id": int(response_id),
+                "lat": float(lat),
+                "lng": float(lng),
+                "weight": 1,
+                "barrio": barrio,
+                "ciudad": ciudad,
+                "provincia": provincia,
+                "pais": pais,
+                "canal": canal,
+                "submitted_at": submitted_at.isoformat()
+                if submitted_at
+                else None,
+            }
+            for (
+                response_id,
+                lat,
+                lng,
+                barrio,
+                ciudad,
+                provincia,
+                pais,
+                canal,
+                submitted_at,
+            ) in rows
+        ]
+        enrich_heatmap_points(
+            points,
+            property_keys=("barrio", "ciudad", "provincia", "pais", "canal"),
+        )
+        return points, {
+            "sample_limit": effective_limit,
+            "sample_size": len(points),
+            "sampled": partial,
+            "partial": partial,
+        }
+
+    return _snapshot_value(snapshot, cache_key, _load)
+
+
+def _public_live_cache_get(key: str) -> Optional[Dict[str, Any]]:
+    now = monotonic()
+    with _PUBLIC_LIVE_RESULTS_CACHE_LOCK:
+        cached = _PUBLIC_LIVE_RESULTS_CACHE.get(key)
+        if cached is None:
+            return None
+        expires_at, payload = cached
+        if expires_at <= now:
+            _PUBLIC_LIVE_RESULTS_CACHE.pop(key, None)
+            return None
+        return deepcopy(payload)
+
+
+def _public_live_cache_put(key: str, payload: Dict[str, Any]) -> None:
+    now = monotonic()
+    with _PUBLIC_LIVE_RESULTS_CACHE_LOCK:
+        expired = [
+            cache_key
+            for cache_key, (expires_at, _payload) in _PUBLIC_LIVE_RESULTS_CACHE.items()
+            if expires_at <= now
+        ]
+        for cache_key in expired:
+            _PUBLIC_LIVE_RESULTS_CACHE.pop(cache_key, None)
+        while len(_PUBLIC_LIVE_RESULTS_CACHE) >= PUBLIC_LIVE_RESULTS_CACHE_MAX_ENTRIES:
+            oldest_key = next(iter(_PUBLIC_LIVE_RESULTS_CACHE), None)
+            if oldest_key is None:
+                break
+            _PUBLIC_LIVE_RESULTS_CACHE.pop(oldest_key, None)
+        _PUBLIC_LIVE_RESULTS_CACHE[key] = (
+            now + PUBLIC_LIVE_RESULTS_CACHE_TTL_SECONDS,
+            deepcopy(payload),
+        )
+
+
+def live_results_http_etag(payload: Mapping[str, Any]) -> str:
+    # Hash every stable representation field.  Counts alone are insufficient:
+    # an operator can rename a question/option without adding a response, and
+    # clients must not receive a false 304 for the previous presentation.
+    material = {
+        key: value
+        for key, value in payload.items()
+        if key not in {
+            "cache_etag",
+            "cache_control",
+            "request_id",
+            "updated_at",
+        }
+    }
+    return hashlib.sha256(
+        json.dumps(material, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _top_counter(counter: Counter, limit: int = 10) -> List[Dict[str, Any]]:
@@ -650,6 +1718,15 @@ def _resolve_live_analytics_range(
         )
 
     now_utc = _as_utc_datetime(now or _utc_now())
+    if preset:
+        # Rolling presets must share the same cohort and cache representation
+        # throughout one live-cache window. Microsecond-level boundaries turn
+        # every poll into a miss and change the ETag without any new response.
+        bucket_seconds = max(1, int(PUBLIC_LIVE_RESULTS_CACHE_TTL_SECONDS))
+        bucket_epoch = (
+            int(now_utc.timestamp()) // bucket_seconds
+        ) * bucket_seconds
+        now_utc = datetime.fromtimestamp(bucket_epoch, timezone.utc)
     desde: Optional[datetime] = None
     hasta: Optional[datetime] = None
     mode = "all_time"
@@ -848,10 +1925,8 @@ def _public_heatmap_point_from_cell(cell: Mapping[str, Any]) -> Dict[str, Any] |
         return None
 
     count = int(cell.get("count") or 0)
-    barrios = cell.get("barrios") if isinstance(cell.get("barrios"), Mapping) else {}
-    canales = cell.get("canales") if isinstance(cell.get("canales"), Mapping) else {}
-    barrio = next(iter(barrios.keys()), None) if barrios else None
-    canal = next(iter(canales.keys()), None) if canales else None
+    if count < _public_small_cell_minimum():
+        return None
 
     return {
         "cell_id": cell.get("cell_id"),
@@ -860,8 +1935,6 @@ def _public_heatmap_point_from_cell(cell: Mapping[str, Any]) -> Dict[str, Any] |
         "w": float(count or 1),
         "weight": float(count or 1),
         "count": count,
-        "barrio": barrio,
-        "canal": canal,
         "source": "survey_heatmap_cell",
         "privacy_mode": "public_aggregated",
     }
@@ -885,19 +1958,32 @@ def _prepare_live_heatmap_payload(
             },
         )
 
+    minimum_cell_size = _public_small_cell_minimum()
+    publishable_cells = [
+        cell
+        for cell in cells
+        if isinstance(cell, Mapping)
+        and int(cell.get("count") or 0) >= minimum_cell_size
+    ]
     public_points = [
         point
-        for point in (_public_heatmap_point_from_cell(cell) for cell in cells)
+        for point in (
+            _public_heatmap_point_from_cell(cell) for cell in publishable_cells
+        )
         if point is not None
     ]
     public_cells: List[Dict[str, Any]] = []
-    for cell in cells:
-        next_cell = dict(cell)
-        if next_cell.get("centroid_lat") is not None:
-            next_cell["centroid_lat"] = round(float(next_cell["centroid_lat"]), 3)
-        if next_cell.get("centroid_lon") is not None:
-            next_cell["centroid_lon"] = round(float(next_cell["centroid_lon"]), 3)
-        next_cell["privacy_mode"] = "public_aggregated"
+    for cell in publishable_cells:
+        next_cell = {
+            "cell_id": cell.get("cell_id"),
+            "count": int(cell.get("count") or 0),
+            "weight": int(cell.get("count") or 0),
+            "privacy_mode": "public_aggregated",
+        }
+        if cell.get("centroid_lat") is not None:
+            next_cell["centroid_lat"] = round(float(cell["centroid_lat"]), 3)
+        if cell.get("centroid_lon") is not None:
+            next_cell["centroid_lon"] = round(float(cell["centroid_lon"]), 3)
         public_cells.append(next_cell)
 
     return (
@@ -907,8 +1993,9 @@ def _prepare_live_heatmap_payload(
             "privacy_mode": "public_aggregated",
             "raw_points_redacted": True,
             "coordinate_precision": "rounded_3_decimals",
-            "aggregation": "one_point_per_heatmap_cell",
-            "raw_points_count": len(points),
+            "aggregation_mode": "one_point_per_heatmap_cell",
+            "minimum_cell_size": minimum_cell_size,
+            "small_cells_suppressed": True,
         },
     )
 
@@ -1166,8 +2253,11 @@ def _build_heatmap_metadata(
 def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
     visibility_plan = compile_survey_visibility(encuesta)
-    respuestas = _collect_respuestas(encuesta, filtros)
-    total = len(respuestas)
+    snapshot = _get_response_snapshot(encuesta, filtros)
+    respuestas = list(snapshot["sample"])
+    data_provenance = dict(snapshot["provenance"])
+    total = int(snapshot["population_size"])
+    sample_total = len(respuestas)
 
     opciones_por_pregunta = defaultdict(Counter)
     selecciones_unicas_por_pregunta = defaultdict(Counter)
@@ -1289,6 +2379,55 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
                 respuestas_completas += 1
         else:
             respuestas_completas += 1
+
+    # Frequencies and participant totals are exact SQL aggregates.  Only the
+    # visibility/completion estimates and free-text examples below use the
+    # explicitly bounded response sample.
+    (
+        opciones_por_pregunta,
+        selecciones_unicas_por_pregunta,
+        exact_answered_by_question,
+    ) = _exact_option_statistics(snapshot)
+    respuestas_por_pregunta = exact_answered_by_question
+    exact_frequencies = _exact_summary_frequencies(snapshot)
+    canales = exact_frequencies["channels"]
+    utm = exact_frequencies["utm"]
+    generos = exact_frequencies["dimensions"]["genero"]
+    rangos_etarios = exact_frequencies["dimensions"]["rango_etario"]
+    barrios = exact_frequencies["dimensions"]["barrio"]
+    ciudades = exact_frequencies["dimensions"]["ciudad"]
+    provincias = exact_frequencies["dimensions"]["provincia"]
+    paises = exact_frequencies["dimensions"]["pais"]
+    participantes_unicos_exactos = int(exact_frequencies["unique_participants"])
+
+    partial_sample = bool(data_provenance.get("partial"))
+    if partial_sample and sample_total:
+        for pregunta in encuesta.preguntas:
+            sampled_eligible = int(elegibles_por_pregunta[pregunta.id])
+            if sampled_eligible >= sample_total:
+                elegibles_por_pregunta[pregunta.id] = total
+            else:
+                elegibles_por_pregunta[pregunta.id] = min(
+                    total,
+                    int(round(sampled_eligible / sample_total * total)),
+                )
+        respuestas_completas = min(
+            total,
+            int(round(respuestas_completas / sample_total * total)),
+        )
+    data_provenance.update(
+        {
+            "exact_aggregates": True,
+            "text_examples_sampled": partial_sample,
+            "eligibility_estimated_from_sample": partial_sample,
+            "completion_estimated_from_sample": partial_sample,
+            "utm_top_limit": exact_frequencies["utm_top_limit"],
+            "dimension_top_limit": exact_frequencies["dimension_top_limit"],
+            "channel_top_limit": exact_frequencies["channel_metadata"]["top_limit"],
+            "channel_distinct_total": exact_frequencies["channel_metadata"]["distinct_total"],
+            "channel_truncated": exact_frequencies["channel_metadata"]["truncated"],
+        }
+    )
 
     preguntas_summary = []
     for pregunta in encuesta.preguntas:
@@ -1493,14 +2632,16 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
 
     return {
         "encuesta_id": encuesta.id,
+        "data_provenance": data_provenance,
         "total_respuestas": total,
-        "participantes_unicos": len(participantes_unicos),
+        "participantes_unicos": participantes_unicos_exactos,
         "respuestas_completas": respuestas_completas,
         "respuestas_incompletas": max(total - respuestas_completas, 0),
         "tasa_completitud": round(tasa_completitud, 2),
         "preguntas": preguntas_summary,
         "canales": canales_list,
         "canales_map": canales_map,
+        "canales_metadata": exact_frequencies["channel_metadata"],
         "utm": utm_data,
         "demografia": demografia,
     }
@@ -1508,21 +2649,8 @@ def get_summary(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> D
 
 def get_timeseries(encuesta_id: int, granularity: str = "day", filtros: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
-
-    buckets = Counter()
-    for respuesta in respuestas:
-        dt = respuesta.submitted_at or datetime.now(timezone.utc)
-        dt = dt.astimezone(timezone.utc)
-        if granularity == "hour":
-            bucket = dt.replace(minute=0, second=0, microsecond=0)
-        else:
-            bucket = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        buckets[bucket] += 1
-
-    series = [
-        {"fecha": bucket.isoformat(), "total": buckets[bucket]} for bucket in sorted(buckets.keys())
-    ]
+    snapshot = _get_response_snapshot(encuesta, filtros)
+    series, _metadata = _exact_timeseries(snapshot, granularity)
     return series
 
 
@@ -1538,44 +2666,36 @@ def get_forecast(
     """Build a lightweight short-term projection from minute-level activity."""
 
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
-    now = datetime.now(timezone.utc)
-
-    minute_buckets: Counter = Counter()
-    for respuesta in respuestas:
-        submitted_at = respuesta.submitted_at
-        if not submitted_at:
-            continue
-        dt = submitted_at.astimezone(timezone.utc).replace(second=0, microsecond=0)
-        minute_buckets[dt] += 1
-
+    snapshot = _get_response_snapshot(encuesta, filtros)
+    now = _utc_now()
     window = max(5, min(int(window_minutes or 10), 60))
     horizon = max(15, min(int(horizon_minutes or 60), 240))
-
-    recent_values: List[int] = []
-    for offset in range(window):
-        bucket = (now - timedelta(minutes=offset)).replace(second=0, microsecond=0)
-        recent_values.append(int(minute_buckets.get(bucket, 0)))
-
-    moving_avg = round(sum(recent_values) / len(recent_values), 3) if recent_values else 0.0
+    current_count, _previous_count, _last_hour_count = _exact_recent_windows(
+        snapshot,
+        now=now,
+        window_minutes=window,
+    )
+    baseline_total = int(snapshot["population_size"])
+    moving_avg = round(current_count / window, 3)
     projected_additional = int(round(moving_avg * horizon))
-    projected_total = len(respuestas) + projected_additional
+    projected_total = baseline_total + projected_additional
 
     confidence = "media"
-    if len(respuestas) < 20:
+    if baseline_total < 20:
         confidence = "baja"
-    elif len(respuestas) > 200:
+    elif baseline_total > 200:
         confidence = "alta"
 
     return {
         "encuesta_id": encuesta.id,
         "window_minutes": window,
         "horizon_minutes": horizon,
-        "baseline_total": len(respuestas),
+        "baseline_total": baseline_total,
         "current_rate_per_minute": moving_avg,
         "projected_additional": projected_additional,
         "projected_total": projected_total,
         "confidence": confidence,
+        "data_provenance": dict(snapshot["provenance"]),
         "updated_at": now.isoformat(),
     }
 
@@ -1590,21 +2710,14 @@ def get_alerts(
     """Evaluate alert rules for campaign operations dashboards."""
 
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
-
     window = max(5, min(int(window_minutes or 10), 30))
-    now = datetime.now(timezone.utc)
-    last_window = 0
-    previous_window = 0
-    for respuesta in respuestas:
-        submitted_at = respuesta.submitted_at
-        if not submitted_at:
-            continue
-        delta_seconds = (now - submitted_at.astimezone(timezone.utc)).total_seconds()
-        if delta_seconds <= window * 60:
-            last_window += 1
-        elif delta_seconds <= window * 120:
-            previous_window += 1
+    snapshot = _get_response_snapshot(encuesta, filtros)
+    now = _utc_now()
+    last_window, previous_window, _last_hour = _exact_recent_windows(
+        snapshot,
+        now=now,
+        window_minutes=window,
+    )
 
     delta = last_window - previous_window
     trend = "estable"
@@ -1660,7 +2773,8 @@ def get_alerts(
         "threshold": max(1, int(min_activity_threshold or 5)),
         "alerts": alerts,
         "has_alerts": bool(alerts),
-        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "data_provenance": dict(snapshot["provenance"]),
+        "evaluated_at": now.isoformat(),
     }
 
 
@@ -1746,6 +2860,7 @@ def _build_executive_ai_payload(
     return {
         "contract_version": SURVEY_AI_BRIEF_CONTRACT_VERSION,
         "encuesta_id": encuesta.id,
+        "data_provenance": summary.get("data_provenance"),
         "titulo": encuesta.titulo,
         "summary": {
             "total_respuestas": summary.get("total_respuestas", 0),
@@ -1917,6 +3032,7 @@ def get_executive_brief(encuesta_id: int, filtros: Optional[Dict[str, Any]] = No
         "encuesta_id": encuesta.id,
         "titulo": encuesta.titulo,
         "headline": final_headline,
+        "data_provenance": summary.get("data_provenance"),
         "summary": {
             "total_respuestas": summary.get("total_respuestas", 0),
             "participantes_unicos": summary.get("participantes_unicos", 0),
@@ -2882,6 +3998,24 @@ def get_dashboard_bundle(
     granularity: str = "day",
     fast_mode: bool = False,
 ) -> Dict[str, Any]:
+    """Return one request-scoped analytics snapshot and its derived modules."""
+
+    with _analytics_snapshot_scope():
+        return _get_dashboard_bundle_impl(
+            encuesta_id,
+            filtros,
+            granularity=granularity,
+            fast_mode=fast_mode,
+        )
+
+
+def _get_dashboard_bundle_impl(
+    encuesta_id: int,
+    filtros: Optional[Dict[str, Any]] = None,
+    *,
+    granularity: str = "day",
+    fast_mode: bool = False,
+) -> Dict[str, Any]:
     """Return a complete analytics payload optimized for executive dashboards."""
 
     summary = get_summary(encuesta_id, filtros)
@@ -2971,6 +4105,7 @@ def get_dashboard_bundle(
 
     return {
         "encuesta_id": encuesta_id,
+        "data_provenance": summary.get("data_provenance"),
         "survey_publication": survey_publication,
         "public_links": survey_publication.get("links") or {},
         "executive_summary": executive_summary,
@@ -2990,6 +4125,7 @@ def get_dashboard_bundle(
             "schema_version": "2026.03",
             "filters": dict(filtros or {}),
             "fast_mode": fast_mode,
+            "sampling": dict(summary.get("data_provenance") or {}),
             "module_state": {
                 "summary": "ready" if int(summary.get("total_respuestas") or 0) > 0 else "empty",
                 "timeseries": "ready" if len(timeseries or []) > 0 else "empty",
@@ -3029,7 +4165,10 @@ def get_segment_compare(
     segment_b: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
+    respuestas, data_provenance = _collect_respuestas_with_provenance(
+        encuesta,
+        filtros,
+    )
 
     group_a = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_a)]
     group_b = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_b)]
@@ -3048,6 +4187,7 @@ def get_segment_compare(
 
     return {
         "encuesta_id": encuesta.id,
+        "data_provenance": data_provenance,
         "segment_a": {
             "meta": _segment_meta("a", segment_a, group_a),
             "filters": segment_a or {},
@@ -3074,42 +4214,72 @@ def get_anomaly_report(
     burst_threshold: int = 10,
 ) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
-
-    ip_counter = Counter((respuesta.ip or "") for respuesta in respuestas if respuesta.ip)
-    fingerprint_counter = Counter(
-        (respuesta.huella_unica or "") for respuesta in respuestas if respuesta.huella_unica
-    )
-    geo_counter = Counter(
-        (round(float(respuesta.lat), 3), round(float(respuesta.lng), 3))
-        for respuesta in respuestas
-        if respuesta.lat is not None and respuesta.lng is not None
-    )
-
+    snapshot = _get_response_snapshot(encuesta, filtros)
+    selected_query = snapshot["selected_query"]
     window = max(1, min(int(burst_window_minutes or 5), 30))
     threshold = max(3, int(burst_threshold or 10))
-    now = datetime.now(timezone.utc)
-    burst_count = 0
-    for respuesta in respuestas:
-        if not respuesta.submitted_at:
-            continue
-        if (now - respuesta.submitted_at.astimezone(timezone.utc)).total_seconds() <= window * 60:
-            burst_count += 1
+    now = _utc_now()
+    burst_count, _previous_burst, _last_hour = _exact_recent_windows(
+        snapshot,
+        now=now,
+        window_minutes=window,
+    )
 
+    ip_count_expr = db.func.count(EncRespuesta.id)
     suspicious_ips = [
-        {"ip": ip, "count": count}
-        for ip, count in ip_counter.most_common(5)
-        if count >= 3
+        {"ip": str(ip), "count": int(count or 0)}
+        for ip, count in (
+            selected_query.with_entities(
+                EncRespuesta.ip,
+                ip_count_expr.label("total"),
+            )
+            .filter(EncRespuesta.ip.isnot(None))
+            .group_by(EncRespuesta.ip)
+            .having(ip_count_expr >= 3)
+            .order_by(ip_count_expr.desc())
+            .limit(5)
+            .all()
+        )
     ]
+    fingerprint_count_expr = db.func.count(EncRespuesta.id)
     repeated_fingerprints = [
-        {"fingerprint": fp, "count": count}
-        for fp, count in fingerprint_counter.most_common(5)
-        if count >= 2
+        {"fingerprint": str(fingerprint), "count": int(count or 0)}
+        for fingerprint, count in (
+            selected_query.with_entities(
+                EncRespuesta.huella_unica,
+                fingerprint_count_expr.label("total"),
+            )
+            .filter(EncRespuesta.huella_unica.isnot(None))
+            .group_by(EncRespuesta.huella_unica)
+            .having(fingerprint_count_expr >= 2)
+            .order_by(fingerprint_count_expr.desc())
+            .limit(5)
+            .all()
+        )
     ]
+    lat_cell = db.func.round(cast(EncRespuesta.lat, Numeric), 3)
+    lng_cell = db.func.round(cast(EncRespuesta.lng, Numeric), 3)
+    geo_count_expr = db.func.count(EncRespuesta.id)
     concentrated_geo = [
-        {"lat": lat, "lng": lng, "count": count}
-        for (lat, lng), count in geo_counter.most_common(5)
-        if count >= 3
+        {"lat": float(lat), "lng": float(lng), "count": int(count or 0)}
+        for lat, lng, count in (
+            selected_query.with_entities(
+                lat_cell.label("lat"),
+                lng_cell.label("lng"),
+                geo_count_expr.label("total"),
+            )
+            .filter(
+                EncRespuesta.lat.isnot(None),
+                EncRespuesta.lng.isnot(None),
+                EncRespuesta.lat.between(-90, 90),
+                EncRespuesta.lng.between(-180, 180),
+            )
+            .group_by(lat_cell, lng_cell)
+            .having(geo_count_expr >= 3)
+            .order_by(geo_count_expr.desc())
+            .limit(5)
+            .all()
+        )
     ]
 
     score = 0
@@ -3204,6 +4374,7 @@ def get_anomaly_report(
 
     return {
         "encuesta_id": encuesta.id,
+        "data_provenance": dict(snapshot["provenance"]),
         "advisory_policy": dict(SURVEY_AI_ADVISORY_POLICY),
         "risk_score": score,
         "risk_level": risk_level,
@@ -3238,8 +4409,29 @@ def get_heatmap(
     resolution: Optional[int] = None,
 ) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
-    points, cells = _aggregate_heatmap_cells(respuestas, resolution=resolution)
+    snapshot = _get_response_snapshot(encuesta, filtros)
+    respuestas = list(snapshot["sample"])
+    data_provenance = dict(snapshot["provenance"])
+    points, point_sampling = _bounded_geo_points(
+        snapshot,
+        limit=_analytics_bounded_int(
+            os.environ.get("SURVEY_ANALYTICS_GEO_POINT_LIMIT"),
+            default=2000,
+            minimum=0,
+            maximum=5000,
+        ),
+    )
+    cells, cell_sampling = _exact_geo_cells(
+        snapshot,
+        max_cells=_analytics_bounded_int(
+            os.environ.get("SURVEY_ANALYTICS_GEO_CELL_LIMIT"),
+            default=1000,
+            minimum=1,
+            maximum=5000,
+        ),
+        minimum_count=1,
+        precision=max(2, min(int(resolution or DEFAULT_HEATMAP_RESOLUTION) - 5, 5)),
+    )
     allow_synthetic = bool(_as_bool((filtros or {}).get("allow_synthetic_geo") or (filtros or {}).get("include_synthetic_geo")))
     used_synthetic_points = False
     if allow_synthetic and not points and respuestas:
@@ -3257,6 +4449,14 @@ def get_heatmap(
             "using_synthetic_points": used_synthetic_points,
             "can_render_heatmap": bool(points or cells),
             "empty_reason": None if points or cells else "no_real_geo_points",
+            "point_sampling": point_sampling,
+            "cell_aggregation": cell_sampling,
+        }
+    )
+    data_provenance.update(
+        {
+            "geo_points": point_sampling,
+            "geo_cells": cell_sampling,
         }
     )
     points_geojson = build_feature_collection(points)
@@ -3351,6 +4551,7 @@ def get_heatmap(
         ],
     }
     return {
+        "data_provenance": data_provenance,
         "points": points,
         "cells": cells,
         "headline": headline,
@@ -3383,7 +4584,16 @@ def _mask_ip(ip: Optional[str]) -> str:
 
 def export_csv(encuesta_id: int, filtros: Optional[Dict[str, Any]] = None) -> Iterable[str]:
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
+    _base_query, selected_query, _mode = _response_queries(encuesta, filtros)
+    respuestas = (
+        selected_query.options(
+            selectinload(EncRespuesta.detalles).joinedload(
+                EncRespuestaDetalle.opcion
+            )
+        )
+        .order_by(EncRespuesta.id.asc())
+        .yield_per(250)
+    )
 
     preguntas = encuesta.preguntas
     fieldnames = [
@@ -3452,6 +4662,35 @@ def calculate_live_results(
     *,
     preferred_tenant_id: Optional[int] = None,
     require_tenant_match: bool = False,
+    allow_closed_for_read: bool = False,
+    include_heatmap: bool = True,
+    max_points: int = 2000,
+    max_cells: int = 200,
+    momentum_window_minutes: int = 10,
+    filtros: Optional[Dict[str, Any]] = None,
+    geo_privacy: Optional[str] = "public_aggregated",
+) -> Dict[str, Any]:
+    with _analytics_snapshot_scope():
+        return _calculate_live_results_impl(
+            slug_publico,
+            preferred_tenant_id=preferred_tenant_id,
+            require_tenant_match=require_tenant_match,
+            allow_closed_for_read=allow_closed_for_read,
+            include_heatmap=include_heatmap,
+            max_points=max_points,
+            max_cells=max_cells,
+            momentum_window_minutes=momentum_window_minutes,
+            filtros=filtros,
+            geo_privacy=geo_privacy,
+        )
+
+
+def _calculate_live_results_impl(
+    slug_publico: str,
+    *,
+    preferred_tenant_id: Optional[int] = None,
+    require_tenant_match: bool = False,
+    allow_closed_for_read: bool = False,
     include_heatmap: bool = True,
     max_points: int = 2000,
     max_cells: int = 200,
@@ -3467,6 +4706,7 @@ def calculate_live_results(
         slug_publico,
         preferred_tenant_id=preferred_tenant_id,
         require_tenant_match=require_tenant_match,
+        allow_closed_for_read=allow_closed_for_read,
     )
     if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
         raise EncuestaError(
@@ -3479,38 +4719,123 @@ def calculate_live_results(
         )
 
     requested_filters = dict(filtros or {})
+    privacy_mode = str(
+        getattr(encuesta, "privacy_mode", "legacy") or "legacy"
+    ).strip().lower()
+    results_final = (
+        str(getattr(encuesta, "estado", "") or "").strip().lower() == "cerrada"
+    )
+    active_source_anonymous = privacy_mode == "source_anonymous" and not results_final
+    if privacy_mode == "source_anonymous" and requested_filters:
+        # Arbitrary public ranges/segments can be differenced even when every
+        # individual result satisfies k-anonymity (for example, cohorts of six
+        # and five isolate the excluded response). Public source-anonymous
+        # analytics therefore expose one canonical, unfiltered cohort only.
+        raise EncuestaError(
+            "Los filtros personalizados no estan disponibles en resultados publicos anonimos.",
+            status_code=400,
+            payload={
+                "contract_version": PUBLIC_SMALL_CELL_CONTRACT_VERSION,
+                "reason_code": "privacy_filters_not_available",
+                "retryable": False,
+                "action_hint": "request_canonical_public_results",
+                "blocked_filter_keys": sorted(str(key) for key in requested_filters),
+            },
+        )
     now = _utc_now()
     effective_filters, analytics_range = _resolve_live_analytics_range(
         requested_filters,
         now=now,
     )
-    respuestas_filtradas = _collect_respuestas(encuesta, effective_filters)
-    response_ids = [respuesta.id for respuesta in respuestas_filtradas if getattr(respuesta, "id", None) is not None]
-    responses_count = len(respuestas_filtradas)
-    result_version = max(response_ids) if response_ids else 0
+    snapshot = _get_response_snapshot(
+        encuesta,
+        effective_filters,
+        sample_limit=0,
+    )
+    data_provenance = dict(snapshot["provenance"])
+    data_provenance.update(
+        {
+            "exact_aggregates": True,
+            "raw_responses_materialized": 0,
+        }
+    )
+    responses_count = int(snapshot["population_size"])
+    result_version = int(snapshot["result_version"])
     filters_fingerprint = hashlib.sha1(
         json.dumps(requested_filters, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:12]
-    snapshot_version = f"{encuesta.id}:{responses_count}:{result_version}:{filters_fingerprint}"
-
-    option_counts: Dict[Tuple[int, int], int] = {}
-    if response_ids:
-        option_counts = {
-            (pregunta_id, opcion_id): total
-            for pregunta_id, opcion_id, total in (
-                db.session.query(
-                    EncRespuestaDetalle.pregunta_id,
-                    EncRespuestaDetalle.opcion_id,
-                    db.func.count(EncRespuestaDetalle.id),
-                )
-                .filter(
-                    EncRespuestaDetalle.respuesta_id.in_(response_ids),
-                    EncRespuestaDetalle.opcion_id.isnot(None),
-                )
-                .group_by(EncRespuestaDetalle.pregunta_id, EncRespuestaDetalle.opcion_id)
-                .all()
-            )
+    structure_material = [
+        {
+            "id": int(pregunta.id),
+            "texto": str(pregunta.texto or ""),
+            "tipo": str(pregunta.tipo or ""),
+            "opciones": [
+                {
+                    "id": int(opcion.id),
+                    "texto": str(opcion.texto or ""),
+                    "valor": str(opcion.valor or ""),
+                }
+                for opcion in pregunta.opciones
+            ],
         }
+        for pregunta in encuesta.preguntas
+    ]
+    structure_fingerprint = hashlib.sha1(
+        json.dumps(structure_material, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:12]
+    snapshot_version = (
+        f"{encuesta.id}:{responses_count}:{result_version}:"
+        f"{filters_fingerprint}:{structure_fingerprint}"
+    )
+    if active_source_anonymous:
+        stable_material = (
+            f"survey:{encuesta.id}:source_anonymous_active:{structure_fingerprint}"
+        )
+        snapshot_version = (
+            "private:" + hashlib.sha256(stable_material.encode("utf-8")).hexdigest()[:16]
+        )
+    effective_max_points = _analytics_bounded_int(
+        max_points,
+        default=2000,
+        minimum=0,
+        maximum=5000,
+    )
+    effective_max_cells = _analytics_bounded_int(
+        max_cells,
+        default=200,
+        minimum=1,
+        maximum=1000,
+    )
+    cache_material = {
+        "survey_id": int(encuesta.id),
+        "tenant_id": int(encuesta.tenant_id),
+        "slug": str(slug_publico),
+        "snapshot_version": snapshot_version,
+        "updated_at": getattr(encuesta, "updated_at", None),
+        "survey_state": str(getattr(encuesta, "estado", "") or "").strip().lower(),
+        "range": analytics_range,
+        "filters": requested_filters,
+        "include_heatmap": bool(include_heatmap),
+        "max_points": effective_max_points,
+        "max_cells": effective_max_cells,
+        "window": int(momentum_window_minutes or 10),
+        "geo_privacy": "public_aggregated",
+    }
+    cache_key = hashlib.sha256(
+        json.dumps(cache_material, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    cached_payload = _public_live_cache_get(cache_key)
+    if cached_payload is not None:
+        return cached_payload
+
+    exact_option_counts, _unique_option_counts, _answered_counts = (
+        _exact_option_statistics(snapshot)
+    )
+    option_counts: Dict[Tuple[int, int], int] = {
+        (int(question_id), int(option_id)): int(total or 0)
+        for question_id, counts in exact_option_counts.items()
+        for option_id, total in counts.items()
+    }
 
     preguntas: List[Dict[str, Any]] = []
     highlights: List[str] = []
@@ -3557,27 +4882,11 @@ def calculate_live_results(
         )
 
     window = max(5, min(int(momentum_window_minutes or 10), 30))
-    last_hour_cutoff = now - timedelta(hours=1)
-    bucket_counts: Counter = Counter()
-    responses_last_hour = 0
-    last_window = 0
-    previous_window = 0
-    for respuesta in respuestas_filtradas:
-        submitted_at = respuesta.submitted_at
-        if not submitted_at:
-            continue
-        dt = _as_utc_datetime(submitted_at)
-        minute_bucket = dt.replace(second=0, microsecond=0)
-        bucket_counts[minute_bucket] += 1
-
-        if last_hour_cutoff <= dt <= now:
-            responses_last_hour += 1
-
-        delta_seconds = (now - dt).total_seconds()
-        if 0 <= delta_seconds <= window * 60:
-            last_window += 1
-        elif window * 60 < delta_seconds <= window * 120:
-            previous_window += 1
+    last_window, previous_window, responses_last_hour = _exact_recent_windows(
+        snapshot,
+        now=now,
+        window_minutes=window,
+    )
 
     trend = "estable"
     if last_window > previous_window:
@@ -3585,28 +4894,40 @@ def calculate_live_results(
     elif last_window < previous_window:
         trend = "bajando"
 
+    exact_timeline, timeline_metadata = _exact_timeseries(
+        snapshot,
+        "minute",
+    )
     timeline = [
         {
-            "timestamp": bucket.isoformat(),
-            "minute": bucket.isoformat(),
-            "total": bucket_counts[bucket],
-            "respuestas": bucket_counts[bucket],
-            "value": bucket_counts[bucket],
+            "timestamp": item["fecha"],
+            "minute": item["fecha"],
+            "total": int(item["total"]),
+            "respuestas": int(item["total"]),
+            "value": int(item["total"]),
         }
-        for bucket in sorted(bucket_counts.keys())
+        for item in exact_timeline
     ]
 
     points: List[Dict[str, Any]] = []
     cells: List[Dict[str, Any]] = []
+    geo_aggregation = {
+        "minimum_cell_size": _public_small_cell_minimum(),
+        "cell_limit": effective_max_cells,
+        "cell_count": 0,
+        "partial": False,
+    }
     if include_heatmap:
-        points, cells = _aggregate_heatmap_cells(
-            respuestas_filtradas,
-            resolution=9,
+        cells, geo_aggregation = _exact_geo_cells(
+            snapshot,
+            max_cells=effective_max_cells,
+            minimum_count=_public_small_cell_minimum(),
+            precision=3,
         )
     heatmap_points, heatmap_cells, heatmap_privacy = _prepare_live_heatmap_payload(
-        points,
+        [],
         cells,
-        geo_privacy=geo_privacy,
+        geo_privacy="public_aggregated",
     )
 
     ai_summary = "Sin datos suficientes para resumen en vivo."
@@ -3675,13 +4996,14 @@ def calculate_live_results(
         "active_filters": requested_filters,
         "analytics_range": analytics_range,
     }
-    privacy_mode = getattr(encuesta, "privacy_mode", "legacy")
-    suppress_ai_for_privacy = _public_small_cell_ai_requires_suppression(
-        privacy_mode=privacy_mode,
-        total_responses=responses_count,
-        questions=preguntas,
-        timeline=timeline,
-        heatmap_cells=heatmap_cells,
+    suppress_ai_for_privacy = active_source_anonymous or (
+        _public_small_cell_ai_requires_suppression(
+            privacy_mode=privacy_mode,
+            total_responses=responses_count,
+            questions=preguntas,
+            timeline=timeline,
+            heatmap_cells=heatmap_cells,
+        )
     )
     if suppress_ai_for_privacy:
         # Exact small-cell aggregates must never cross the provider boundary.
@@ -3772,7 +5094,7 @@ def calculate_live_results(
                     "channel": point.get("canal"),
                     "weight": point.get("weight") or point.get("w") or point.get("count") or 1,
                 }
-                for point in heatmap_points[:max_points]
+                for point in heatmap_points[:effective_max_points]
                 if isinstance(point, Mapping)
             ],
             insights=live_ai_insights,
@@ -3832,11 +5154,13 @@ def calculate_live_results(
         "slug": slug_publico,
         "slug_publico": slug_publico,
         "total_respuestas": responses_count,
+        "data_provenance": data_provenance,
         "analytics_range": analytics_range,
         "empty_state": empty_state,
         "live_telemetry": live_telemetry,
         "preguntas": preguntas,
         "timeline_minute": timeline,
+        "timeline_metadata": timeline_metadata,
         "momentum": {
             "window_minutes": window,
             "last_window": last_window,
@@ -3849,15 +5173,22 @@ def calculate_live_results(
         "kpis": kpis,
         "heatmap": {
             "enabled": include_heatmap,
-            "points": heatmap_points[:max_points],
-            "cells": heatmap_cells[:max_cells],
+            "points": heatmap_points[:effective_max_points],
+            "cells": heatmap_cells[:effective_max_cells],
             "metadata": {
                 "resolution": 9,
                 "points_count": len(heatmap_points),
                 "cells_count": len(heatmap_cells),
-                "truncated_points": max(0, len(heatmap_points) - max_points),
-                "truncated_cells": max(0, len(heatmap_cells) - max_cells),
+                "truncated_points": max(
+                    0,
+                    len(heatmap_points) - effective_max_points,
+                ),
+                "truncated_cells": max(
+                    0,
+                    len(heatmap_cells) - effective_max_cells,
+                ),
                 "analytics_range": analytics_range,
+                "aggregation": geo_aggregation,
                 **heatmap_privacy,
             },
         },
@@ -3906,7 +5237,15 @@ def calculate_live_results(
         },
         "updated_at": now.isoformat(),
     }
-    return _apply_public_small_cell_policy(
+    payload = _apply_public_small_cell_policy(
         payload,
         privacy_mode=privacy_mode,
+        results_final=results_final,
     )
+    payload["cache_etag"] = live_results_http_etag(payload)
+    payload["cache_control"] = {
+        "max_age_seconds": 3,
+        "stale_while_revalidate_seconds": 5,
+    }
+    _public_live_cache_put(cache_key, payload)
+    return payload

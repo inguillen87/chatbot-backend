@@ -13,6 +13,11 @@ from sqlalchemy.orm import joinedload
 from database import db
 from models import EncAnchorSnapshot, EncRespuesta
 from services.encuestas_service import EncuestaError, get_encuesta, _parse_datetime
+from services.survey_response_provenance import (
+    is_legacy_unverified_response,
+    is_trusted_demo_seed_response,
+    partition_survey_responses_by_origin,
+)
 
 
 ANCHOR_CONTRACT_VERSION = "surveys.anchor.v2"
@@ -157,6 +162,24 @@ def compute_content_hash(encuesta_id: int, respuesta_id: int, user: object) -> s
     )
     if not respuesta:
         raise EncuestaError("Respuesta no encontrada", status_code=404)
+    if is_trusted_demo_seed_response(respuesta, survey_id=encuesta.id):
+        raise EncuestaError(
+            "Las respuestas sinteticas no forman parte de la auditoria ciudadana",
+            status_code=409,
+            payload={
+                "contract_version": ANCHOR_CONTRACT_VERSION,
+                "reason_code": "anchor_synthetic_response_forbidden",
+            },
+        )
+    if is_legacy_unverified_response(respuesta, survey_id=encuesta.id):
+        raise EncuestaError(
+            "La procedencia de la respuesta no está verificada para auditoría ciudadana",
+            status_code=409,
+            payload={
+                "contract_version": ANCHOR_CONTRACT_VERSION,
+                "reason_code": "anchor_unverified_response_forbidden",
+            },
+        )
 
     payload = _canonical_response_payload(respuesta)
     content_hash = _hash_payload(payload)
@@ -219,6 +242,25 @@ def build_snapshot(encuesta_id: int, desde: str, hasta: str, user: object) -> En
     respuestas = query.order_by(EncRespuesta.submitted_at.asc(), EncRespuesta.id.asc()).all()
     if not respuestas:
         raise EncuestaError("No hay respuestas en el rango indicado", status_code=404)
+    real_respuestas, synthetic_respuestas, unverified_respuestas = (
+        partition_survey_responses_by_origin(
+        respuestas,
+        survey_id=encuesta.id,
+        )
+    )
+    if synthetic_respuestas or unverified_respuestas:
+        raise EncuestaError(
+            "El rango contiene respuestas sinteticas y no puede auditarse como participacion ciudadana",
+            status_code=409,
+            payload={
+                "contract_version": ANCHOR_CONTRACT_VERSION,
+                "reason_code": "anchor_synthetic_responses_forbidden",
+                "real_responses": len(real_respuestas),
+                "synthetic_responses": len(synthetic_respuestas),
+                "unverified_responses": len(unverified_respuestas),
+            },
+        )
+    respuestas = real_respuestas
 
     hashes: List[str] = []
     for respuesta in respuestas:
@@ -334,6 +376,23 @@ def generate_merkle_proof(
         .order_by(EncRespuesta.submitted_at.asc(), EncRespuesta.id.asc())
         .all()
     )
+    _real_respuestas, synthetic_respuestas, unverified_respuestas = (
+        partition_survey_responses_by_origin(
+        respuestas,
+        survey_id=encuesta.id,
+        )
+    )
+    if synthetic_respuestas or unverified_respuestas:
+        raise EncuestaError(
+            "El snapshot contiene respuestas sinteticas y requiere revision",
+            status_code=409,
+            payload={
+                "contract_version": ANCHOR_CONTRACT_VERSION,
+                "reason_code": "anchor_snapshot_synthetic_responses_forbidden",
+                "synthetic_responses": len(synthetic_respuestas),
+                "unverified_responses": len(unverified_respuestas),
+            },
+        )
     hashes = []
     target_index = None
     for idx, respuesta in enumerate(respuestas):

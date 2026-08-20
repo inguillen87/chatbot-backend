@@ -105,6 +105,7 @@ def test_source_anonymous_cohort_below_k_hides_every_exact_public_surface():
         _payload(total=2, option_counts=(1, 1), timeline_counts=(1, 1), cell_counts=(1, 1)),
         privacy_mode="source_anonymous",
         minimum_cell_size=5,
+        results_final=True,
     )
 
     assert result["total_respuestas"] is None
@@ -134,6 +135,7 @@ def test_one_small_option_suppresses_entire_question_to_prevent_subtraction():
         _payload(total=6, option_counts=(5, 1), timeline_counts=(6,), cell_counts=(6,)),
         privacy_mode="source_anonymous",
         minimum_cell_size=5,
+        results_final=True,
     )
 
     assert result["total_respuestas"] == 6
@@ -151,6 +153,7 @@ def test_zero_cells_and_cells_at_k_are_safe_to_publish():
         _payload(total=5, option_counts=(5, 0), timeline_counts=(5,), cell_counts=(5,)),
         privacy_mode="source_anonymous",
         minimum_cell_size=5,
+        results_final=True,
     )
 
     assert result["total_respuestas"] == 5
@@ -166,11 +169,100 @@ def test_one_small_map_cell_hides_whole_map_instead_of_leaking_by_subtraction():
         _payload(total=11, option_counts=(11, 0), timeline_counts=(11,), cell_counts=(7, 4)),
         privacy_mode="source_anonymous",
         minimum_cell_size=5,
+        results_final=True,
     )
 
-    assert result["total_respuestas"] == 11
+    assert result["total_respuestas"] is None
+    assert result["total_respuestas_bucket"] == ">=5"
+    assert result["preguntas"][0]["total_votos"] is None
+    assert result["timeline_minute"] == []
     assert result["heatmap"]["points"] == []
     assert result["heatmap"]["cells"] == []
-    assert result["heatmap"]["metadata"]["raw_points_count"] is None
+    assert "raw_points_count" not in result["heatmap"]["metadata"]
     assert result["kpis"]["heatmap_coverage_cells"] is None
-    assert result["privacy"]["suppressed_surfaces"] == ["heatmap"]
+    assert result["privacy"]["geo_remainder_protected"] is True
+    assert set(result["privacy"]["suppressed_surfaces"]) >= {
+        "cohort_total",
+        "question_results",
+        "timeline",
+        "heatmap",
+    }
+
+
+def test_all_geo_cells_below_k_redact_exact_suppression_metadata():
+    payload = _payload(
+        total=10,
+        option_counts=(10, 0),
+        timeline_counts=(10,),
+        cell_counts=(0,),
+    )
+    payload["heatmap"]["metadata"]["aggregation"] = {
+        "cell_count": 0,
+        "total_cell_count": 1,
+        "geo_response_count": 4,
+        "safe_cell_count": 0,
+        "safe_response_count": 0,
+        "suppressed_cell_count": 1,
+        "suppressed_response_count": 4,
+        "has_suppressed_cells": True,
+        "partial": True,
+    }
+
+    result = _apply_public_small_cell_policy(
+        payload,
+        privacy_mode="source_anonymous",
+        minimum_cell_size=5,
+        results_final=True,
+    )
+
+    assert result["total_respuestas"] == 10
+    assert result["heatmap"]["points"] == []
+    assert result["heatmap"]["cells"] == []
+    assert "raw_points_count" not in result["heatmap"]["metadata"]
+    aggregation = result["heatmap"]["metadata"]["aggregation"]
+    for key in (
+        "cell_count",
+        "total_cell_count",
+        "geo_response_count",
+        "safe_cell_count",
+        "safe_response_count",
+        "suppressed_cell_count",
+        "suppressed_response_count",
+    ):
+        assert aggregation[key] is None
+    assert aggregation["privacy_redacted"] is True
+    assert "heatmap" in result["privacy"]["suppressed_surfaces"]
+
+
+def test_active_source_anonymous_snapshots_never_release_rolling_results():
+    selected = []
+    for total, option_counts in ((0, (0, 0)), (4, (4, 0)), (5, (5, 0)), (7, (7, 0)), (8, (7, 1))):
+        result = _apply_public_small_cell_policy(
+            _payload(
+                total=total,
+                option_counts=option_counts,
+                timeline_counts=(total,),
+                cell_counts=(total,),
+            ),
+            privacy_mode="source_anonymous",
+            minimum_cell_size=5,
+            results_final=False,
+        )
+        selected.append(
+            {
+                "total": result["total_respuestas"],
+                "bucket": result["total_respuestas_bucket"],
+                "snapshot": result["snapshot_version"],
+                "questions": result["preguntas"],
+                "timeline": result["timeline_minute"],
+                "heatmap": result["heatmap"]["cells"],
+                "reason": result["privacy"]["reason_code"],
+                "final": result["privacy"]["results_final"],
+            }
+        )
+
+    assert all(item == selected[0] for item in selected[1:])
+    assert selected[0]["total"] is None
+    assert selected[0]["bucket"] == "withheld_until_close"
+    assert selected[0]["reason"] == "source_anonymous_results_withheld_until_close"
+    assert selected[0]["final"] is False
