@@ -25,6 +25,7 @@ class _User:
     def __init__(self, tenant_id: int = 4):
         self.id = None
         self.municipio_id = tenant_id
+        self.rol = "admin"
 
 
 def _leaf(question_ref: str, option_ref: str) -> dict:

@@ -103,7 +103,7 @@ class TicketNotificationFlowTest(unittest.TestCase):
             patch("services.email_service.enviar_email_ticket_novedad") as mock_email,
             patch("services.email_service.enviar_sms_ticket_novedad") as mock_sms,
             patch("services.email_service.enviar_whatsapp_ticket_novedad") as mock_whatsapp,
-            patch("routes.ticket.emit_ticket_update") as mock_emit,
+            patch("socket_service.socketio.emit") as mock_socket_emit,
         ):
             response = self.client.put(
                 f"/tickets/municipio/{self.ticket.id}/estado",
@@ -126,7 +126,32 @@ class TicketNotificationFlowTest(unittest.TestCase):
         mock_email.assert_called_once()
         mock_sms.assert_called_once()
         mock_whatsapp.assert_called_once()
-        mock_emit.assert_called_once()
+
+        broad_events = [
+            call for call in mock_socket_emit.call_args_list
+            if call.args[0] == "ticket_update"
+        ]
+        self.assertEqual(len(broad_events), 1)
+        self.assertEqual(
+            broad_events[0].args[1],
+            {
+                "contract_version": "tickets.collection.invalidated.v1",
+                "resource": "tickets",
+                "reason": "collection_changed",
+                "refetch": True,
+            },
+        )
+        self.assertEqual(broad_events[0].kwargs, {"room": f"tenant_{self.tenant.id}"})
+
+        public_events = [
+            call for call in mock_socket_emit.call_args_list
+            if call.args[0] == "ticket.status.changed"
+        ]
+        self.assertEqual(len(public_events), 1)
+        self.assertEqual(public_events[0].kwargs, {"room": f"ticket_municipio_{self.ticket.id}"})
+        self.assertEqual(public_events[0].args[1]["estado"], "en_proceso")
+        self.assertNotIn("¿Cuándo arreglan la luz?", str(mock_socket_emit.call_args_list))
+        self.assertNotIn("admin@example.com", str(mock_socket_emit.call_args_list))
 
         kwargs = mock_email.call_args.kwargs
         self.assertIn("comentario_reciente", kwargs)

@@ -824,7 +824,7 @@ def test_public_instrument_revision_rejects_stale_form_without_false_duplicate_a
     assert accepted.get_json()["instrument_revision"] == 2
 
 
-def test_legacy_public_route_maps_only_real_uniqueness_conflict_to_duplicate_200(client):
+def test_legacy_public_route_maps_only_real_uniqueness_conflict_to_duplicate_409(client):
     with client.application.app_context():
         payload = _instrument_payload("Encuesta con unicidad")
         payload["politica_unicidad"] = "por_cookie"
@@ -858,8 +858,7 @@ def test_legacy_public_route_maps_only_real_uniqueness_conflict_to_duplicate_200
         "X-Anon-Id": "same-public-participant",
     }
     second = client.post(endpoint, json=second_payload, headers=second_headers)
-    assert second.status_code == 200
+    assert second.status_code == 409
     duplicate = second.get_json()
-    assert duplicate["duplicate"] is True
     assert duplicate["reason_code"] == "survey_response_duplicate"
     assert duplicate["retryable"] is False

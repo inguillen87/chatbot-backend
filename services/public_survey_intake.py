@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import ipaddress
 import os
 import time
 from typing import Any, Callable, Mapping
@@ -43,15 +44,40 @@ def _coerce_positive_int(value: Any, default: int) -> int:
 
 
 def public_survey_client_ip() -> str:
-    """Return the proxy-provided client address used by every survey alias."""
+    """Return the unspoofable transport peer shared by every survey alias.
 
-    cloudflare_ip = str(request.headers.get("CF-Connecting-IP") or "").strip()
-    if cloudflare_ip:
-        return cloudflare_ip
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip() or "0.0.0.0"
-    return request.remote_addr or "0.0.0.0"
+    ``ProxyFix`` preserves the address that connected to the WSGI application
+    in ``werkzeug.proxy_fix.orig`` before it applies forwarded headers.  Public
+    callers can set ``CF-Connecting-IP`` and ``X-Forwarded-For`` themselves, so
+    neither header is an authorization or rate-limit identity.  A future
+    trusted-edge integration may replace this conservative peer with a
+    provider-authenticated client address, but it must not re-introduce raw
+    caller-controlled headers here.
+    """
+
+    # Render is the only production edge currently declared by this service.
+    # Its documented contract puts the real client address first in XFF, and
+    # the platform injects ``RENDER=true`` at runtime.  We trust that header
+    # only inside that authenticated deployment context; local/direct callers
+    # cannot opt themselves in by sending another HTTP header.
+    if (
+        str(os.getenv("RENDER") or "").strip().lower() == "true"
+        and str(os.getenv("RENDER_SERVICE_TYPE") or "").strip().lower() == "web"
+    ):
+        forwarded = str(request.headers.get("X-Forwarded-For") or "").strip()
+        candidate = forwarded.split(",", 1)[0].strip() if forwarded else ""
+        try:
+            if candidate:
+                return str(ipaddress.ip_address(candidate))
+        except ValueError:
+            pass
+
+    proxy_original = request.environ.get("werkzeug.proxy_fix.orig")
+    if isinstance(proxy_original, Mapping):
+        peer = str(proxy_original.get("REMOTE_ADDR") or "").strip()
+        if peer:
+            return peer
+    return str(request.remote_addr or "0.0.0.0")
 
 
 def public_survey_turnstile_token(payload: Mapping[str, Any] | None) -> str | None:
@@ -320,7 +346,7 @@ def enforce_public_survey_intake(
         token_verifier = verifier or verify_turnstile
         if not token_verifier(
             turnstile_token,
-            remote_ip=request.headers.get("CF-Connecting-IP") or client_ip,
+            remote_ip=client_ip,
             idempotency_key=request_id,
         ):
             security = survey_security_contract(

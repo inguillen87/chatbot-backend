@@ -6729,6 +6729,22 @@ def find_global_menu_action(user_input: str, context: Optional[dict] = None) -> 
         return None
 
     normalized = normalizar_texto(user_input or "")
+
+    # Action identifiers are a transport contract, not natural language.  A
+    # web/WhatsApp client may submit the identifier as plain text, so resolve
+    # an exact declared id before consulting the visible menu vocabulary.  If
+    # this is deferred until fuzzy matching, ``consultar_estado_reclamo`` can
+    # be mistaken for the broader ``mostrar_menu_reclamos`` action because
+    # both expose "consulta/reclamo" labels.
+    direct_action_ids = {
+        normalizar_texto(action_id): action_id
+        for action_id in MENU_KEYWORDS
+        if action_id
+    }
+    direct_action = direct_action_ids.get(normalized)
+    if direct_action:
+        return direct_action
+
     if re.match(
         r"^(?:turnos?|(?:(?:quiero|necesito)\s+)?(?:solicitar|pedir|reservar|sacar)\s+(?:un\s+)?turnos?)\b",
         normalized,

@@ -8,8 +8,11 @@ import pytest
 
 from database import db
 from models import EncEncuesta, EncLink, EncPregunta, EncRespuesta, TenantProfile, User
-from services.encuestas_service import _public_schedule_now
+from services.encuestas_service import _collect_recent_geo_points, _public_schedule_now
 from services.survey_governance import create_release
+from services.survey_response_provenance import (
+    SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+)
 from utils.auth_helpers import generar_token
 
 
@@ -146,6 +149,28 @@ def test_admin_list_v2_reconciles_only_explicit_tenant_metrics(client, monkeypat
     survey_a = _survey(tenant_a, slug="vote-a", voting=True)
     survey_b = _survey(tenant_b, slug="survey-b")
     _response(survey_a, "tenant-a-response")
+    db.session.add(
+        EncRespuesta(
+            encuesta_id=survey_a.id,
+            tenant_id=tenant_a.id,
+            response_origin="synthetic_demo",
+            huella_unica="tenant-a-synthetic",
+            canal="seed",
+            lat=-54.8019,
+            lng=-68.303,
+            metadata_payload={
+                "is_demo_seed": True,
+                "demo_seed_contract_version": (
+                    SURVEY_DEMO_SEEDING_CONTRACT_VERSION
+                ),
+                "demo_batch_id": (
+                    f"seed-{survey_a.id}-1755680400000-abcdef123456"
+                ),
+            },
+            submitted_at=datetime.now(timezone.utc),
+        )
+    )
+    db.session.commit()
     _response(survey_b, "tenant-b-response-1")
     _response(survey_b, "tenant-b-response-2")
 
@@ -168,8 +193,53 @@ def test_admin_list_v2_reconciles_only_explicit_tenant_metrics(client, monkeypat
     assert lifecycle["participation"]["participation_rate"] is None
     assert lifecycle["capabilities"]["can_close"] is True
     assert payload["resumen"]["total_respuestas"] == 1
+    assert payload["resumen"]["synthetic_responses_excluded"] == 1
     assert payload["resumen"]["respuestas_ultimas_24h"] == 1
     assert payload["resumen"]["por_tipo_instrumento"] == {"survey": 0, "voting": 1}
+    assert payload["data_provenance"]["mode"] == "real"
+    assert payload["data_provenance"]["synthetic_responses_excluded"] == 1
+    assert payload["encuestas"][0]["data_provenance"]["mode"] == "real"
+    assert payload["encuestas"][0]["geo"]["points"] == []
+
+
+def test_recent_geo_points_streams_and_enforces_per_survey_limit(client):
+    _owner, tenant = _tenant("survey-geo-bounded")
+    survey = _survey(tenant, slug="survey-geo-bounded")
+    now = datetime.now(timezone.utc)
+    for index in range(5):
+        db.session.add(
+            EncRespuesta(
+                encuesta_id=survey.id,
+                tenant_id=tenant.id,
+                huella_unica=f"geo-real-{index}",
+                lat=-54.8 - (index / 100),
+                lng=-68.3 - (index / 100),
+                submitted_at=now - timedelta(minutes=index),
+            )
+        )
+    db.session.add(
+        EncRespuesta(
+            encuesta_id=survey.id,
+            tenant_id=tenant.id,
+            response_origin="synthetic_demo",
+            huella_unica="geo-trusted-synthetic",
+            lat=-50.0,
+            lng=-60.0,
+            submitted_at=now + timedelta(minutes=1),
+            metadata_payload={
+                "is_demo_seed": True,
+                "demo_seed_contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "demo_batch_id": f"seed-{survey.id}-1755680400000-abcdef123456",
+            },
+        )
+    )
+    db.session.commit()
+
+    points = _collect_recent_geo_points([survey], limit_per_encuesta=2)[survey.id]
+
+    assert len(points) == 2
+    assert [point["lat"] for point in points] == pytest.approx([-54.8, -54.81])
+    assert all(point["lat"] != -50.0 for point in points)
 
 
 def test_close_requires_published_state_and_retry_is_idempotent(client, monkeypatch):

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from database import db
-from models import EncEncuesta, User
+from models import EncAnchorSnapshot, EncEncuesta, User
 from services.encuestas_anchor_service import (
     build_snapshot,
     compute_content_hash,
@@ -174,6 +174,73 @@ def test_simulation_is_idempotent_and_never_claims_publication_or_verification(c
         assert proof["verified"] is False
         assert proof["externally_verified"] is False
         assert proof["verification_status"] == "local_only"
+
+
+def test_snapshot_rejects_trusted_synthetic_responses_without_side_effects(client):
+    with client.application.app_context():
+        owner = _admin("anchor-synthetic@example.com", 707)
+        survey = create_encuesta(
+            {
+                "titulo": "Anchor synthetic containment",
+                "slug": "anchor-synthetic-containment",
+                "preguntas": [
+                    {
+                        "orden": 1,
+                        "tipo": "opcion_unica",
+                        "texto": "Opcion",
+                        "obligatoria": True,
+                        "opciones": [
+                            {"orden": 1, "texto": "A"},
+                            {"orden": 2, "texto": "B"},
+                        ],
+                    }
+                ],
+            },
+            owner,
+        )
+        survey, link = publicar_encuesta(survey.id, owner)
+        survey.inicio_at = None
+        survey.fin_at = None
+        response = save_respuesta(
+            link.slug_publico,
+            {
+                "respuestas": [
+                    {
+                        "pregunta_id": survey.preguntas[0].id,
+                        "opcion_ids": [survey.preguntas[0].opciones[0].id],
+                    }
+                ]
+            },
+            {
+                "ip": "10.0.0.7",
+                "user_agent": "pytest",
+                "anon_id": "anchor-synthetic",
+                "canal": "web",
+            },
+        )
+        response.metadata_payload = {
+            "is_demo_seed": True,
+            "demo_seed_contract_version": "surveys.demo_seeding.v1",
+            "demo_batch_id": f"seed-{survey.id}-1720000000",
+        }
+        response.response_origin = "synthetic_demo"
+        db.session.commit()
+
+        with pytest.raises(EncuestaError) as synthetic_error:
+            build_snapshot(
+                survey.id,
+                "2020-01-01T00:00:00Z",
+                "2035-01-01T00:00:00Z",
+                owner,
+            )
+
+        assert synthetic_error.value.status_code == 409
+        assert (
+            synthetic_error.value.payload["reason_code"]
+            == "anchor_synthetic_responses_forbidden"
+        )
+        assert EncAnchorSnapshot.query.filter_by(encuesta_id=survey.id).count() == 0
+        assert response.snapshot_id is None
 
 
 def test_legacy_sim_reference_is_downgraded_when_serialized(client):

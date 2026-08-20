@@ -333,6 +333,11 @@ class TicketPublicEndpointTest(unittest.TestCase):
             municipio_id=self.user.id,
             es_empleado=True,
             tenant_id=self.tenant.id,
+            accesibilidad={
+                'employee_scope': {
+                    'categorias': ['Limpieza'],
+                }
+            },
         )
         employee.set_password('pass')
         db.session.add(employee)
@@ -349,6 +354,7 @@ class TicketPublicEndpointTest(unittest.TestCase):
 
         ticket = db.session.get(MunicipioTicket, self.ticket_id)
         ticket.user_id = employee.id
+        ticket.categoria = 'Limpieza'
         db.session.commit()
 
         unassigned = self.client.get(

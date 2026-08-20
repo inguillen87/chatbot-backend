@@ -7,7 +7,7 @@ import jwt
 
 from app import create_app, db
 from config import TestConfig
-from models import ChatSessionContext, DomainEffectOutbox, EncEncuesta, EncLink, MunicipioTicket, PymeTicket, Rubro, TenantProfile, TicketComentario, User
+from models import ChatSessionContext, DomainEffectOutbox, EncEncuesta, EncLink, MunicipioTicket, PymeTicket, Rubro, TenantProfile, TenantTicket, TicketComentario, User
 from services.live_chat_access import (
     LIVE_CHAT_TOKEN_AUDIENCE,
     LIVE_CHAT_TOKEN_ISSUER,
@@ -16,6 +16,7 @@ from services.live_chat_access import (
     issue_ticket_room_token,
     verify_ticket_room_token,
 )
+from services.omnichannel_message_policy import OMNICHANNEL_REPLY_MAX_BODY_BYTES
 from routes.whatsapp_webhook import _find_live_chat_ticket
 from services.pymes import (
     CONTEXTO_PYME,
@@ -27,8 +28,10 @@ from services.ticket_service import servicio_tickets
 from services.ticket_domain_effects import (
     COMMENT_REQUESTER_WHATSAPP_HANDLER,
     PYME_COMMENT_AGGREGATE,
+    emit_tenant_ticket_reply_realtime,
 )
 from socket_service import (
+    _get_rooms_for_user,
     disconnect_clerk_session_sockets,
     emit_ticket_assignment_changed,
     emit_ticket_status_changed,
@@ -187,6 +190,131 @@ class LiveChatRoomAccessTest(unittest.TestCase):
         joined_rooms = {item.args[0] for item in join_room.call_args_list}
         self.assertIn("clerk_session:sess_socket_identity", joined_rooms)
         self.assertIn("clerk_user:user_socket_identity", joined_rooms)
+
+    def test_cross_category_employee_receives_only_opaque_tenant_invalidation(self):
+        tenant = TenantProfile(
+            slug="category-socket-scope",
+            nombre="Category socket scope",
+            tipo="municipio",
+            municipio_id=self.admin.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        self.admin.tenant_id = tenant.id
+        self.admin.tenant_slug = tenant.slug
+        employee = User(
+            name="Alumbrado operator",
+            email="alumbrado-socket@example.com",
+            rol="empleado",
+            tipo_chat="municipio",
+            municipio_id=self.admin.id,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            accesibilidad={"employee_scope": {"categorias": ["alumbrado"]}},
+        )
+        employee.set_password("pass")
+        db.session.add(employee)
+        db.session.flush()
+        restricted_event = {
+            "id": "health-reply-event",
+            "origin": "admin_panel",
+            "action": "reply",
+            "body": "health-reply-body-marker",
+            "visibility": "public",
+            "created_at": "2026-08-20T12:00:00+00:00",
+            "actor": {
+                "id": self.admin.id,
+                "name": "health-reply-actor-marker",
+                "role": "admin",
+            },
+        }
+        restricted_ticket = TenantTicket(
+            tenant_id=tenant.id,
+            user_id=self.admin.id,
+            categoria="salud",
+            descripcion="Restricted health ticket",
+            estado="en_proceso",
+            origen="whatsapp",
+            datos_extra={"title": "Restricted health ticket", "comments": [restricted_event]},
+        )
+        allowed_ticket = TenantTicket(
+            tenant_id=tenant.id,
+            user_id=self.admin.id,
+            categoria="alumbrado",
+            descripcion="Allowed lighting ticket",
+            estado="nuevo",
+            origen="web",
+            datos_extra={"title": "Allowed lighting ticket"},
+        )
+        db.session.add_all([restricted_ticket, allowed_ticket])
+        db.session.commit()
+
+        employee_token = jwt.encode(
+            {"user_id": employee.id, "tenant_id": tenant.id, "tenant_slug": tenant.slug},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        employee_headers = {
+            "Authorization": f"Bearer {employee_token}",
+            "X-Tenant-Slug": tenant.slug,
+        }
+        admin_token = jwt.encode(
+            {"user_id": self.admin.id, "tenant_id": tenant.id, "tenant_slug": tenant.slug},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        admin_headers = {
+            "Authorization": f"Bearer {admin_token}",
+            "X-Tenant-Slug": tenant.slug,
+        }
+
+        self.assertIn(f"tenant_{tenant.id}", _get_rooms_for_user(employee))
+        denied = self.client.get(
+            f"/api/v2/tickets/{restricted_ticket.id}",
+            headers=employee_headers,
+        )
+        allowed = self.client.get(
+            f"/api/v2/tickets/{allowed_ticket.id}",
+            headers=employee_headers,
+        )
+        admin_refetch = self.client.get(
+            f"/api/v2/tickets/{restricted_ticket.id}",
+            headers=admin_headers,
+        )
+        self.assertEqual(denied.status_code, 404, denied.get_json())
+        self.assertEqual(allowed.status_code, 200, allowed.get_json())
+        self.assertEqual(admin_refetch.status_code, 200, admin_refetch.get_json())
+        self.assertIn("health-reply-body-marker", str(admin_refetch.get_json()))
+
+        employee_socket = socketio.test_client(
+            self.app,
+            auth={
+                "token": employee_token,
+                "tenant_slug": tenant.slug,
+            },
+        )
+        self.assertTrue(employee_socket.is_connected())
+        employee_socket.get_received()
+        emit_tenant_ticket_reply_realtime(restricted_ticket, restricted_event)
+        received = employee_socket.get_received()
+        employee_socket.disconnect()
+
+        self.assertEqual([item["name"] for item in received], ["ticket_update"])
+        tenant_event = received[0]["args"][0]
+        self.assertEqual(
+            tenant_event,
+            {
+                "contract_version": "tickets.collection.invalidated.v1",
+                "resource": "tickets",
+                "reason": "collection_changed",
+                "refetch": True,
+            },
+        )
+        serialized = str(tenant_event)
+        self.assertNotIn("health-reply-body-marker", serialized)
+        self.assertNotIn("health-reply-actor-marker", serialized)
+        self.assertNotIn("ticket_id", tenant_event)
+        self.assertNotIn("ticketId", tenant_event)
 
     def test_http_only_cookie_authenticates_socket_connect_and_subscription(self):
         token = jwt.encode(
@@ -470,6 +598,123 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             )
 
         create_comment.assert_called_once()
+
+    def test_operator_socket_accepts_exact_utf8_reply_limit(self):
+        token = jwt.encode(
+            {"user_id": self.admin.id},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        message = "á" * (OMNICHANNEL_REPLY_MAX_BODY_BYTES // 2)
+        self.assertEqual(len(message.encode("utf-8")), OMNICHANNEL_REPLY_MAX_BODY_BYTES)
+
+        with patch(
+            "socket_service.servicio_tickets.crear_comentario",
+            return_value=None,
+        ) as create_comment, patch("socket_service.emit") as emit:
+            handle_send_chat_message(
+                {
+                    "token": token,
+                    "room": build_ticket_room("municipio", self.ticket.id),
+                    "ticket_id": self.ticket.id,
+                    "ticket_type": "municipio",
+                    "message": message,
+                }
+            )
+
+        create_comment.assert_called_once()
+        self.assertEqual(
+            create_comment.call_args.kwargs["comentario_data"]["comentario"],
+            message,
+        )
+        emit.assert_not_called()
+
+    def test_operator_socket_rejects_multibyte_reply_over_limit_without_side_effects(self):
+        token = jwt.encode(
+            {"user_id": self.admin.id},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        message = "á" * ((OMNICHANNEL_REPLY_MAX_BODY_BYTES // 2) + 1)
+        before = TicketComentario.query.filter_by(municipio_ticket_id=self.ticket.id).count()
+
+        with patch(
+            "socket_service.servicio_tickets.crear_comentario"
+        ) as create_comment, patch("socket_service.socketio.emit") as socket_emit, patch(
+            "socket_service.emit"
+        ) as emit:
+            handle_send_chat_message(
+                {
+                    "token": token,
+                    "room": build_ticket_room("municipio", self.ticket.id),
+                    "ticket_id": self.ticket.id,
+                    "ticket_type": "municipio",
+                    "message": message,
+                }
+            )
+
+        create_comment.assert_not_called()
+        socket_emit.assert_not_called()
+        emit.assert_called_once_with("chat_error", {"error": "reply_body_too_large"})
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=self.ticket.id).count(),
+            before,
+        )
+
+    def test_category_restricted_employee_cannot_write_ticket_by_id(self):
+        tenant = TenantProfile(
+            slug="socket-category-write-scope",
+            nombre="Socket category write scope",
+            tipo="municipio",
+            municipio_id=910,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        self.ticket.tenant_id = tenant.id
+        self.ticket.categoria = "salud"
+        employee = User(
+            name="Lighting employee",
+            email="socket-lighting-employee@example.com",
+            rol="empleado",
+            es_empleado=True,
+            tipo_chat="municipio",
+            municipio_id=910,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            accesibilidad={"employee_scope": {"categorias": ["alumbrado"]}},
+        )
+        employee.set_password("pass")
+        db.session.add(employee)
+        db.session.commit()
+        token = jwt.encode(
+            {"user_id": employee.id, "tenant_id": tenant.id},
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        before = TicketComentario.query.filter_by(municipio_ticket_id=self.ticket.id).count()
+
+        with patch(
+            "socket_service.servicio_tickets.crear_comentario"
+        ) as create_comment, patch("socket_service.socketio.emit") as socket_emit, patch(
+            "socket_service.emit"
+        ) as emit:
+            handle_send_chat_message(
+                {
+                    "token": token,
+                    "room": build_ticket_room("municipio", self.ticket.id),
+                    "ticket_id": self.ticket.id,
+                    "ticket_type": "municipio",
+                    "message": "No debe persistirse",
+                }
+            )
+
+        create_comment.assert_not_called()
+        socket_emit.assert_not_called()
+        emit.assert_called_once_with("chat_error", {"error": "ticket_not_found"})
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=self.ticket.id).count(),
+            before,
+        )
 
     def test_operator_socket_message_exposes_only_sanitized_public_payload(self):
         token = jwt.encode(

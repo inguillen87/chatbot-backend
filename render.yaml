@@ -198,6 +198,10 @@ services:
         value: "0.5"
       - key: SURVEY_IDENTITY_HMAC_SECRET_V1
         sync: false
+      - key: ENABLE_SURVEY_SYNTHETIC_SEEDING_V1
+        value: "false"
+      - key: SURVEY_SYNTHETIC_SEED_TENANT_IDS
+        value: ""
       - key: ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1
         value: "false"
       - key: SURVEY_ELIGIBILITY_GRANT_TENANT_IDS

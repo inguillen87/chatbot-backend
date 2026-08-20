@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from copy import deepcopy
 
 import pytest
@@ -26,6 +27,7 @@ class _User:
     def __init__(self, tenant_id: int = 4):
         self.id = None
         self.municipio_id = tenant_id
+        self.rol = "admin"
 
 
 def _rule(question_order: int, option_order: int) -> dict:
@@ -562,9 +564,10 @@ def test_conditional_logic_validates_the_complete_instrument(client, case):
         assert exc_info.value.payload["reason_code"] == "survey_conditional_logic_invalid"
 
 
-def test_large_backward_only_instrument_is_validated_without_recursion():
+def test_large_backward_only_instrument_is_validated_without_recursion(app, monkeypatch):
+    max_questions = 500
     questions = []
-    for order in range(1200, 0, -1):
+    for order in range(max_questions, 0, -1):
         question = {
             "orden": order,
             "tipo": "opcion_unica",
@@ -575,9 +578,23 @@ def test_large_backward_only_instrument_is_validated_without_recursion():
             question["conditional_logic"] = _rule(order - 1, 1)
         questions.append(question)
 
-    normalized = _validate_instrument_payload(questions)
-    assert len(normalized) == 1200
-    assert normalized[0]["orden"] == 1200
+    with app.app_context():
+        monkeypatch.setitem(
+            app.config,
+            "SURVEY_INSTRUMENT_MAX_QUESTIONS",
+            max_questions,
+        )
+        previous_recursion_limit = sys.getrecursionlimit()
+        try:
+            # A recursive walk over this 500-question chain would exceed the
+            # focal limit; the production validator must remain iterative.
+            sys.setrecursionlimit(250)
+            normalized = _validate_instrument_payload(questions)
+        finally:
+            sys.setrecursionlimit(previous_recursion_limit)
+
+    assert len(normalized) == max_questions
+    assert normalized[0]["orden"] == max_questions
     assert normalized[-1]["orden"] == 1
 
     for source_order in (2, 3):
@@ -609,6 +626,40 @@ def test_large_backward_only_instrument_is_validated_without_recursion():
             _validate_instrument_payload(invalid)
         assert exc_info.value.payload["reason_code"] == "survey_conditional_logic_invalid"
         assert exc_info.value.payload["source_question_order"] == source_order
+
+
+def test_instrument_question_limit_is_explicitly_enforced(app, monkeypatch):
+    maximum = 3
+    questions = [
+        {
+            "orden": order,
+            "tipo": "abierta",
+            "texto": f"Pregunta {order}",
+            "opciones": [],
+        }
+        for order in range(1, maximum + 2)
+    ]
+
+    with app.app_context():
+        monkeypatch.setitem(
+            app.config,
+            "SURVEY_INSTRUMENT_MAX_QUESTIONS",
+            maximum,
+        )
+        with pytest.raises(EncuestaError) as exc_info:
+            _validate_instrument_payload(questions)
+
+    error = exc_info.value
+    assert error.status_code == 413
+    assert error.payload == {
+        "contract_version": "surveys.instrument_limits.v1",
+        "reason_code": "survey_instrument_too_large",
+        "retryable": False,
+        "action_hint": "reduce_instrument_size",
+        "field": "preguntas",
+        "actual": maximum + 1,
+        "maximum": maximum,
+    }
 
 
 def test_conditional_response_accepts_only_the_visible_branch(client):

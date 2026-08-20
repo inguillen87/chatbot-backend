@@ -192,6 +192,92 @@ class SurveyGovernanceV2Test(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_json())
         return response
 
+    def _closed_source_anonymous_release(
+        self,
+        *,
+        real_count: int,
+        synthetic_count: int,
+        key_suffix: str,
+    ):
+        survey_id = self._create_survey()
+        survey = db.session.get(EncEncuesta, survey_id)
+        survey.privacy_mode = "source_anonymous"
+        survey.privacy_policy_version = "privacy-2026.1"
+        survey.privacy_policy_url = "https://example.test/privacidad"
+        survey.privacy_consent_required = True
+        survey.response_retention_days = 365
+        survey.puntos_recompensa = 0
+        survey.politica_unicidad = "anon_id"
+        survey.anonimo_permitido = True
+        self.app.config["SURVEY_IDENTITY_HMAC_SECRET_V1"] = (
+            "survey-governance-privacy-test-secret-32-bytes"
+        )
+        db.session.commit()
+
+        created = self._create_release(
+            survey_id,
+            key=f"release:privacy:create:{key_suffix}",
+        )
+        release_id = created.get_json()["release_id"]
+        snapshot_sha256 = created.get_json()["snapshot_sha256"]
+        published = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/publish",
+            json={"expected_snapshot_sha256": snapshot_sha256},
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key=f"release:privacy:publish:{key_suffix}",
+            ),
+        )
+        self.assertEqual(published.status_code, 200, published.get_json())
+
+        release = db.session.get(SurveyGovernanceRelease, release_id)
+        recorded_at = datetime.now(timezone.utc)
+        rows = []
+        for origin, count in (
+            ("real", real_count),
+            ("synthetic_demo", synthetic_count),
+        ):
+            for index in range(count):
+                rows.append(
+                    EncRespuesta(
+                        tenant_id=self.tenant_1.id,
+                        encuesta_id=survey_id,
+                        response_origin=origin,
+                        content_hash=hashlib.sha256(
+                            f"{key_suffix}:{origin}:{index}".encode("utf-8")
+                        ).hexdigest(),
+                        privacy_mode="source_anonymous",
+                        privacy_policy_version="privacy-2026.1",
+                        privacy_consent_recorded_at=recorded_at,
+                        retention_expires_at=recorded_at + timedelta(days=365),
+                        governance_release_id=release_id,
+                        governance_eligibility_policy_version=(
+                            release.eligibility_policy_version
+                        ),
+                        governance_consent_policy_version=(
+                            release.consent_policy_version
+                        ),
+                        governance_acknowledged_at=recorded_at,
+                    )
+                )
+        db.session.add_all(rows)
+        db.session.commit()
+
+        closed = self.client.post(
+            f"/api/v2/surveys/{survey_id}/releases/{release_id}/close",
+            json={
+                "human_review_reference": f"review:Privacy{key_suffix.title()}0001"
+            },
+            headers=self._headers(
+                self.owner_1,
+                self.tenant_1,
+                key=f"release:privacy:close:{key_suffix}",
+            ),
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        return survey_id, release_id, closed.get_json()
+
     def test_governed_release_response_pinning_replay_close_and_immutability(self):
         survey_id = self._create_survey()
         created = self._create_release(survey_id)
@@ -343,6 +429,97 @@ class SurveyGovernanceV2Test(unittest.TestCase):
             ).count(),
             3,
         )
+
+    def test_public_governance_redacts_closed_source_anonymous_small_real_cohort(self):
+        survey_id, _release_id, durable = self._closed_source_anonymous_release(
+            real_count=4,
+            synthetic_count=6,
+            key_suffix="below",
+        )
+        durable_closure = durable["closure"]
+        self.assertEqual(durable_closure["manifest"]["response_count"], 10)
+        self.assertIsNotNone(durable_closure["manifest"]["response_set_sha256"])
+
+        from services.survey_governance import survey_governance_contract
+
+        public = survey_governance_contract(db.session.get(EncEncuesta, survey_id))
+        closure = public["latest_release"]["closure"]
+        self.assertEqual(
+            set(closure),
+            {
+                "manifest_sha256",
+                "manifest",
+                "redacted",
+                "privacy",
+                "public_summary",
+            },
+        )
+        self.assertEqual(
+            closure["manifest_sha256"], durable_closure["manifest_sha256"]
+        )
+        self.assertIsNone(closure["manifest"])
+        self.assertTrue(closure["redacted"])
+        self.assertEqual(
+            closure["privacy"]["contract_version"],
+            "surveys.public_count_privacy.v1",
+        )
+        self.assertEqual(closure["privacy"]["bucket"], "<5")
+        self.assertEqual(
+            closure["privacy"]["reason_code"], "minimum_cell_size_not_met"
+        )
+        self.assertEqual(closure["privacy"]["minimum_cell_size"], 5)
+        self.assertIsNone(closure["privacy"]["count"])
+        self.assertIsNone(closure["public_summary"]["response_count"])
+        self.assertEqual(
+            closure["public_summary"]["excluded_non_real"],
+            {"synthetic_demo": 6, "legacy_unverified": 0, "total": 6},
+        )
+
+        serialized_closure = json.dumps(closure, sort_keys=True)
+        for forbidden_field in (
+            "response_set_sha256",
+            "snapshot_sha256",
+            "policy_sha256",
+            "human_review_reference_sha256",
+        ):
+            self.assertNotIn(forbidden_field, serialized_closure)
+
+    def test_public_governance_redacts_mixed_manifest_at_real_cohort_minimum(self):
+        survey_id, _release_id, durable = self._closed_source_anonymous_release(
+            real_count=5,
+            synthetic_count=2,
+            key_suffix="minimum",
+        )
+
+        from services.survey_governance import survey_governance_contract
+
+        public = survey_governance_contract(db.session.get(EncEncuesta, survey_id))
+        closure = public["latest_release"]["closure"]
+        self.assertNotEqual(closure, durable["closure"])
+        self.assertTrue(closure["redacted"])
+        self.assertIsNone(closure["manifest"])
+        self.assertEqual(closure["public_summary"]["response_count"], 5)
+        self.assertEqual(
+            closure["public_summary"]["excluded_non_real"],
+            {"synthetic_demo": 2, "legacy_unverified": 0, "total": 2},
+        )
+        self.assertNotIn("response_count", json.dumps(closure["manifest"]))
+
+    def test_public_governance_keeps_all_real_manifest_at_cohort_minimum(self):
+        survey_id, _release_id, durable = self._closed_source_anonymous_release(
+            real_count=5,
+            synthetic_count=0,
+            key_suffix="allreal",
+        )
+
+        from services.survey_governance import survey_governance_contract
+
+        public = survey_governance_contract(db.session.get(EncEncuesta, survey_id))
+        closure = public["latest_release"]["closure"]
+        self.assertEqual(closure, durable["closure"])
+        self.assertEqual(closure["manifest"]["response_count"], 5)
+        self.assertIsNotNone(closure["manifest"]["response_set_sha256"])
+        self.assertNotIn("redacted", closure)
 
     def test_cross_tenant_and_unpinned_response_fail_closed(self):
         survey_id = self._create_survey()

@@ -346,7 +346,21 @@ class TestProactiveFlows(unittest.TestCase):
             ConversationState.ESPERANDO_INTENCION_UBICACION.name,
         )
 
-    def test_auto_text_bootstrap_location_stays_in_direction_flow(self):
+    @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
+    @patch(
+        'services.municipio_responder.extract_complaint_details_llm',
+        return_value={
+            "intencion": "crear_reclamo",
+            "es_reclamo": True,
+            "tipo_problema": "Arreglo de calle",
+            "descripcion_problema": "hay un agujero en mi cuadra",
+        },
+    )
+    def test_auto_text_bootstrap_location_stays_in_direction_flow(
+        self,
+        _mock_complaint,
+        _mock_contacts,
+    ):
         owner_user = User.query.get(1)
         rubro_obj = owner_user.rubro
         chat_context = ChatSessionContext(chat_session_id='session_auto_text_loc', user_id=1)
@@ -430,7 +444,15 @@ class TestProactiveFlows(unittest.TestCase):
         self.assertEqual(contexto['ubicacion_contextual'].get('source'), 'link')
 
     @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
-    @patch('services.municipio_responder.extract_complaint_details_llm', return_value={})
+    @patch(
+        'services.municipio_responder.extract_complaint_details_llm',
+        return_value={
+            "intencion": "crear_reclamo",
+            "es_reclamo": True,
+            "tipo_problema": "Arbolado",
+            "descripcion_problema": "cortar las ramas de un arbol caido",
+        },
+    )
     @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
     def test_free_text_claim_bootstrap(self, mock_start_flow, _mock_complaint, _mock_contacts):
         mock_start_flow.return_value = {"message_body": "OK"}
@@ -461,7 +483,15 @@ class TestProactiveFlows(unittest.TestCase):
         self.assertTrue(response.get("message_body"))
 
     @patch('services.municipio_responder.extract_multiple_contact_details_llm', return_value={})
-    @patch('services.municipio_responder.extract_complaint_details_llm', return_value={})
+    @patch(
+        'services.municipio_responder.extract_complaint_details_llm',
+        return_value={
+            "intencion": "crear_reclamo",
+            "es_reclamo": True,
+            "tipo_problema": "Arbolado",
+            "descripcion_problema": "tengo un arbol caido frente a mi casa",
+        },
+    )
     @patch('services.audio_transcription_service.transcribe_audio_from_url')
     @patch('services.municipio_responder.ReclamoFlowHandler.start_flow')
     def test_audio_transcription_bootstrap(self, mock_start_flow, mock_transcribe, _mock_complaint, _mock_contacts):

@@ -19,6 +19,10 @@ from models import (
 )
 from utils.auth_helpers import bump_auth_session_version, token_requerido
 from services.operational_scoring import build_lead_portfolio_score
+from services.survey_response_provenance import (
+    build_survey_response_provenance,
+    partition_survey_responses_by_origin,
+)
 from utils.admin_decorators import super_admin_required
 from sqlalchemy import desc, func, or_
 from datetime import datetime, timezone, timedelta
@@ -184,8 +188,16 @@ def _build_tenant_health_snapshot(tenant: TenantProfile, *, cutoff: datetime) ->
     ).all()
     survey_count = len(survey_rows)
     survey_responses = 0
+    synthetic_survey_responses = 0
+    unverified_survey_responses = 0
     for survey in survey_rows:
-        survey_responses += EncRespuesta.query.filter_by(encuesta_id=survey.id).count()
+        real_rows, synthetic_rows, unverified_rows = partition_survey_responses_by_origin(
+            EncRespuesta.query.filter_by(encuesta_id=survey.id).all(),
+            survey_id=survey.id,
+        )
+        survey_responses += len(real_rows)
+        synthetic_survey_responses += len(synthetic_rows)
+        unverified_survey_responses += len(unverified_rows)
 
     catalog_count = CatalogoItem.query.filter_by(tenant_id=tenant.id).count()
     conversations = 0
@@ -259,6 +271,11 @@ def _build_tenant_health_snapshot(tenant: TenantProfile, *, cutoff: datetime) ->
             "unassigned_aging": unassigned_aging,
             "survey_count": survey_count,
             "survey_responses": survey_responses,
+            "survey_response_provenance": build_survey_response_provenance(
+                real_count=survey_responses,
+                synthetic_count=synthetic_survey_responses,
+                unverified_count=unverified_survey_responses,
+            ),
             "catalog_items": catalog_count,
             "conversations_30d": conversations,
         },
@@ -2641,22 +2658,57 @@ def super_admin_surveys_overview(current_user):
     encuestas = EncEncuesta.query.filter(EncEncuesta.updated_at >= cutoff).all()
     by_tenant = {}
     total_responses = 0
+    total_synthetic_responses = 0
+    total_unverified_responses = 0
     for enc in encuestas:
-        count_resp = EncRespuesta.query.filter_by(encuesta_id=enc.id).count()
+        real_rows, synthetic_rows, unverified_rows = partition_survey_responses_by_origin(
+            EncRespuesta.query.filter_by(encuesta_id=enc.id).all(),
+            survey_id=enc.id,
+        )
+        count_resp = len(real_rows)
+        synthetic_count = len(synthetic_rows)
+        unverified_count = len(unverified_rows)
         total_responses += count_resp
+        total_synthetic_responses += synthetic_count
+        total_unverified_responses += unverified_count
         key = str(enc.tenant_id)
         if key not in by_tenant:
-            by_tenant[key] = {'tenant_id': enc.tenant_id, 'surveys': 0, 'responses': 0, 'live_votings': 0}
+            by_tenant[key] = {
+                'tenant_id': enc.tenant_id,
+                'surveys': 0,
+                'responses': 0,
+                'live_votings': 0,
+                '_synthetic_responses': 0,
+                '_unverified_responses': 0,
+            }
         by_tenant[key]['surveys'] += 1
         by_tenant[key]['responses'] += count_resp
+        by_tenant[key]['_synthetic_responses'] += synthetic_count
+        by_tenant[key]['_unverified_responses'] += unverified_count
         if enc.es_votacion_envivo:
             by_tenant[key]['live_votings'] += 1
+
+    tenant_rows = []
+    for row in by_tenant.values():
+        synthetic_count = row.pop('_synthetic_responses', 0)
+        unverified_count = row.pop('_unverified_responses', 0)
+        row['response_provenance'] = build_survey_response_provenance(
+            real_count=row['responses'],
+            synthetic_count=synthetic_count,
+            unverified_count=unverified_count,
+        )
+        tenant_rows.append(row)
 
     return jsonify({
         'since_days': since_days,
         'total_surveys': len(encuestas),
         'total_responses': total_responses,
-        'by_tenant': list(by_tenant.values()),
+        'response_provenance': build_survey_response_provenance(
+            real_count=total_responses,
+            synthetic_count=total_synthetic_responses,
+            unverified_count=total_unverified_responses,
+        ),
+        'by_tenant': tenant_rows,
     })
 
 

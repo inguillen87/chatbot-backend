@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 
 from extensions import db
 from models import (
@@ -29,7 +29,16 @@ from services.plan_access import (
     integration_feature_payload,
     integration_plan_required_payload,
 )
-from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.employee_ticket_access import (
+    apply_employee_ticket_category_scope,
+    employee_ticket_category_scope,
+)
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    build_survey_response_provenance,
+)
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     scoped_municipio_ticket_query,
@@ -50,6 +59,36 @@ backoffice_v2_bp = Blueprint("backoffice_v2", __name__, url_prefix="/api/v2/back
 
 _CLOSED_STATES = {"resuelto", "resuelta", "cerrado", "cerrada", "finalizado", "finalizada", "completado", "completada"}
 _PENDING_STATES = {"nuevo", "nueva", "pendiente", "en_progreso", "abierto", "abierta", "asignado", "asignada"}
+_BACKOFFICE_OPERATION_CAPABILITIES = frozenset(
+    {
+        "*",
+        "analytics.admin",
+        "analytics.operations.read",
+        "analytics.read",
+        "backoffice.read",
+        "claims.admin",
+        "claims.read",
+        "crm.tickets.admin",
+        "crm.tickets.read",
+        "crm_reclamos",
+        "handle_tickets",
+        "inbox.comments.read",
+        "market.orders.read",
+        "reclamos.admin",
+        "reclamos.read",
+        "survey.analytics.read",
+        "survey.governance.manage",
+        "survey.pii.read",
+        "surveys.read",
+        "surveys.write",
+        "tickets.admin",
+        "tickets.assign",
+        "tickets.read",
+        "tickets.write",
+        "view_stats",
+    }
+)
+_CAPABILITY_CONTAINER_KEYS = ("permissions", "permisos", "capabilities", "scopes")
 
 
 def _request_id() -> str:
@@ -153,6 +192,70 @@ def _capability_enabled(capabilities: dict[str, Any], key: str, *, default: bool
     return bool(value)
 
 
+def _capability_values(raw: Any) -> set[str]:
+    """Normalize persisted capability containers without granting on bad data."""
+
+    if raw in (None, ""):
+        return set()
+    if isinstance(raw, str):
+        return {item.strip().lower() for item in raw.split(",") if item.strip()}
+    if isinstance(raw, dict):
+        return {
+            str(key).strip().lower()
+            for key, enabled in raw.items()
+            if _stored_capability_enabled(enabled) and str(key).strip()
+        }
+    if isinstance(raw, (list, tuple, set, frozenset)):
+        values: set[str] = set()
+        for item in raw:
+            values.update(_capability_values(item))
+        return values
+    normalized = str(raw).strip().lower()
+    return {normalized} if normalized else set()
+
+
+def _stored_capability_enabled(value: Any) -> bool:
+    """Accept only explicit persisted true flags, never truthy malformed data."""
+
+    if isinstance(value, dict):
+        if "enabled" not in value:
+            return False
+        value = value.get("enabled")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value == 1
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return False
+
+
+def _employee_has_operational_scope(current_user: User) -> bool:
+    """Require an explicit capability or category assignment for employees.
+
+    Role membership alone must not unlock tenant dashboards.  Existing
+    category-scoped operators remain compatible because a category assignment
+    is itself an explicit operational scope.
+    """
+
+    metadata = getattr(current_user, "accesibilidad", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    employee_scope = metadata.get("employee_scope")
+    employee_scope = employee_scope if isinstance(employee_scope, dict) else {}
+    legacy_scope = getattr(current_user, "scope", None)
+    legacy_scope = legacy_scope if isinstance(legacy_scope, dict) else {}
+
+    granted: set[str] = set()
+    for container in (metadata, employee_scope, legacy_scope):
+        for key in _CAPABILITY_CONTAINER_KEYS:
+            granted.update(_capability_values(container.get(key)))
+    if granted.intersection(_BACKOFFICE_OPERATION_CAPABILITIES):
+        return True
+
+    category_scope = employee_ticket_category_scope(current_user)
+    return bool(category_scope.names or category_scope.ids)
+
+
 def _integration_access(tenant: TenantProfile) -> dict[str, Any]:
     return integration_access_payload(tenant)
 
@@ -226,30 +329,97 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
     tenant_ids = _tenant_id_candidates(tenant)
     surveys_query = EncEncuesta.query.filter(EncEncuesta.tenant_id.in_(tenant_ids))
     active_surveys = surveys_query.filter(EncEncuesta.estado == "publicada").count()
-    survey_ids = [row.id for row in surveys_query.with_entities(EncEncuesta.id).all()]
 
     responses_query = EncRespuesta.query.filter(EncRespuesta.tenant_id.in_(tenant_ids))
     if since is not None:
         responses_query = responses_query.filter(EncRespuesta.submitted_at >= since)
 
-    comments_pending_review = 0
-    if survey_ids:
-        comments_pending_review = (
-            EncComentario.query.filter(EncComentario.encuesta_id.in_(survey_ids))
-            .filter(or_(EncComentario.estado == "revision", EncComentario.report_count > 0))
-            .count()
+    comments_pending_review = (
+        EncComentario.query.join(
+            EncEncuesta,
+            EncEncuesta.id == EncComentario.encuesta_id,
         )
-
-    heatmap_available = responses_query.filter(
-        EncRespuesta.lat.isnot(None),
-        EncRespuesta.lng.isnot(None),
-    ).count() > 0
+        .filter(
+            EncEncuesta.tenant_id.in_(tenant_ids),
+            or_(EncComentario.estado == "revision", EncComentario.report_count > 0),
+        )
+        .count()
+    )
+    aggregate = (
+        responses_query.with_entities(
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_REAL,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("real_count"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("synthetic_count"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            EncRespuesta.response_origin
+                            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("unverified_count"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            (EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL)
+                            & EncRespuesta.lat.isnot(None)
+                            & EncRespuesta.lng.isnot(None),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ).label("geo_count"),
+        )
+        .order_by(None)
+        .one()
+    )
+    real_count = int(aggregate.real_count or 0)
+    synthetic_count = int(aggregate.synthetic_count or 0)
+    unverified_count = int(aggregate.unverified_count or 0)
 
     return {
         "active_surveys": int(active_surveys),
-        "live_votes": int(responses_query.count()),
+        "live_votes": real_count,
         "comments_pending_review": int(comments_pending_review),
-        "heatmap_available": bool(heatmap_available),
+        "heatmap_available": bool(int(aggregate.geo_count or 0)),
+        "responses_window_started_at": since.isoformat() if since else None,
+        "response_provenance": build_survey_response_provenance(
+            real_count=real_count,
+            synthetic_count=synthetic_count,
+            unverified_count=unverified_count,
+            mode="real",
+        ),
         "route": "/admin/encuestas",
     }
 
@@ -439,7 +609,10 @@ def _backoffice_actions(tenant: TenantProfile, *, analytics_modes: dict[str, Any
 
 def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: str) -> dict[str, Any]:
     analytics_modes = _analytics_modes(tenant, current_user)
-    surveys = _surveys_overview(tenant)
+    surveys = _surveys_overview(
+        tenant,
+        since=datetime.now(timezone.utc) - timedelta(days=90),
+    )
     counts = _operations_counts(tenant, since=datetime.now(timezone.utc) - timedelta(days=7))
     access = _integration_access(tenant)
     return {
@@ -527,6 +700,9 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
 @token_requerido
 def backoffice_navigation(current_user: User):
     request_id = _request_id()
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant = _resolve_tenant(current_user)
     if not tenant:
         return _json(
@@ -555,6 +731,9 @@ def backoffice_navigation(current_user: User):
 @token_requerido
 def backoffice_summary(current_user: User):
     request_id = _request_id()
+    role_error = _operator_role_error(current_user, request_id)
+    if role_error:
+        return role_error
     tenant = _resolve_tenant(current_user)
     if not tenant:
         return _json(
@@ -647,11 +826,27 @@ def _operator_role_error(current_user: User, request_id: str):
     """Reject authenticated non-operators before resolving or serializing data."""
 
     role = canonical_role(getattr(current_user, "rol", None))
-    authorized = role in {ROLE_TENANT_ADMIN, ROLE_EMPLEADO}
+    authorized = role == ROLE_TENANT_ADMIN
+    if role == ROLE_EMPLEADO:
+        authorized = _employee_has_operational_scope(current_user)
     if role == ROLE_SUPERADMIN:
         authorized = is_authorized_superadmin_user(current_user)
     if authorized:
         return None
+    if role == ROLE_EMPLEADO:
+        return _json(
+            {
+                "ok": False,
+                "reason_code": "backoffice_operational_capability_required",
+                "message": "El perfil no tiene un alcance operativo asignado.",
+                "action_hint": "request_operational_scope_from_tenant_admin",
+                "required_capabilities": sorted(
+                    _BACKOFFICE_OPERATION_CAPABILITIES - {"*"}
+                ),
+            },
+            status=403,
+            request_id=request_id,
+        )
     return _json(
         {
             "ok": False,

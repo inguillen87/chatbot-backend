@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
 import uuid
-from sqlalchemy import func, or_
+from sqlalchemy import Numeric, and_, case, cast, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
@@ -43,6 +43,20 @@ from services.pymes import tiene_archivo_catalogo
 from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    build_survey_response_provenance,
+)
+from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.operational_heatmap_access import (
+    EMPLOYEE_HEATMAP_K_MIN,
+    EMPLOYEE_HEATMAP_COORDINATE_PRECISION,
+    build_employee_aggregated_heatmap,
+    employee_heatmap_scope_empty,
+    is_employee_heatmap_viewer,
+)
 from services.tenant_ticket_scope import (
     municipio_ticket_belongs_to_tenant,
     municipio_ticket_scope_filter,
@@ -56,7 +70,10 @@ from services.plan_access import (
 )
 from services.live_chat_schedule import build_live_chat_status, build_schedule_from_config
 from services.operational_scoring import build_ticket_priority_score
-from services.ticket_realtime_state import build_ticket_collaboration_state
+from services.ticket_realtime_state import (
+    build_ticket_collaboration_state,
+    build_ticket_collaboration_states,
+)
 from services.twilio_tech_provider import build_twilio_tech_provider_contract
 from services.employee_routing import (
     normalize_scope_list,
@@ -245,9 +262,49 @@ def _is_authorized_for_tenant(current_user: User, tenant: TenantProfile) -> bool
     return False
 
 
+def _survey_response_counts_subquery(tenant_id: int):
+    """Return one bounded aggregate row per survey for real/demo provenance."""
+
+    return (
+        db.session.query(
+            EncRespuesta.encuesta_id.label("encuesta_id"),
+            func.sum(
+                case(
+                    (EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL, 1),
+                    else_=0,
+                )
+            ).label("real_count"),
+            func.sum(
+                case(
+                    (
+                        EncRespuesta.response_origin
+                        == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("synthetic_count"),
+            func.sum(
+                case(
+                    (
+                        EncRespuesta.response_origin
+                        == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("unverified_count"),
+        )
+        .filter(EncRespuesta.tenant_id == tenant_id)
+        .group_by(EncRespuesta.encuesta_id)
+        .subquery()
+    )
+
+
 def _build_tenant_dashboard_bundle_payload(
     tenant: TenantProfile,
     *,
+    viewer: User,
     leads_limit: int = 100,
     surveys_limit: int = 20,
     unread_limit: int = 30,
@@ -257,33 +314,135 @@ def _build_tenant_dashboard_bundle_payload(
     cutoff_unread = now - timedelta(minutes=since_minutes)
 
     lead_rows = []
-    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).order_by(MunicipioTicket.ultima_actividad.desc()).all():
+    municipio_leads_query = apply_employee_ticket_category_scope(
+        MunicipioTicket.query.filter_by(tenant_id=tenant.id),
+        viewer,
+        MunicipioTicket,
+    )
+    for ticket in (
+        municipio_leads_query.order_by(
+            MunicipioTicket.ultima_actividad.desc(),
+            MunicipioTicket.id.desc(),
+        )
+        .limit(leads_limit)
+        .all()
+    ):
         lead_rows.append(("municipio", ticket))
-    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).order_by(PymeTicket.fecha.desc()).all():
+    pyme_leads_query = apply_employee_ticket_category_scope(
+        PymeTicket.query.filter_by(tenant_id=tenant.id),
+        viewer,
+        PymeTicket,
+    )
+    for ticket in (
+        pyme_leads_query.order_by(PymeTicket.fecha.desc(), PymeTicket.id.desc())
+        .limit(leads_limit)
+        .all()
+    ):
         lead_rows.append(("pyme", ticket))
 
+    def _lead_rollup(query, model, activity_column):
+        state_expr = func.lower(func.coalesce(model.estado, "nuevo"))
+        total_expr = func.count(model.id)
+        breached_expr = func.sum(
+            case(
+                (
+                    and_(
+                        activity_column < now - timedelta(minutes=30),
+                        state_expr.notin_(
+                            {
+                                "ganado",
+                                "perdido",
+                                "cerrado",
+                                "cerrada",
+                                "cancelado",
+                                "cancelada",
+                                "resuelto",
+                                "resuelta",
+                            }
+                        ),
+                    ),
+                    1,
+                ),
+                else_=0,
+            )
+        )
+        rows = (
+            query.with_entities(
+                state_expr.label("stage"),
+                total_expr.label("total"),
+                breached_expr.label("sla_breached"),
+            )
+            .group_by(state_expr)
+            .all()
+        )
+        return (
+            sum(int(row.total or 0) for row in rows),
+            {
+                str(row.stage or "nuevo"): int(row.total or 0)
+                for row in rows
+            },
+            sum(int(row.sla_breached or 0) for row in rows),
+        )
+
+    muni_total, muni_by_stage, muni_sla = _lead_rollup(
+        municipio_leads_query,
+        MunicipioTicket,
+        func.coalesce(MunicipioTicket.ultima_actividad, MunicipioTicket.fecha),
+    )
+    pyme_total, pyme_by_stage, pyme_sla = _lead_rollup(
+        pyme_leads_query,
+        PymeTicket,
+        PymeTicket.fecha,
+    )
+    total_leads = muni_total + pyme_total
     lead_items = []
-    by_stage = {}
-    sla_breached = 0
+    by_stage = dict(muni_by_stage)
+    for stage, count in pyme_by_stage.items():
+        by_stage[stage] = by_stage.get(stage, 0) + count
+    sla_breached = muni_sla + pyme_sla
     total_active_viewers = 0
     total_unread_viewers = 0
+
+    lead_collaboration = {
+        "municipio": build_ticket_collaboration_states(
+            ticket_type="municipio",
+            ticket_ids=[
+                ticket.id
+                for ticket_type, ticket in lead_rows
+                if ticket_type == "municipio"
+            ],
+        ),
+        "pyme": build_ticket_collaboration_states(
+            ticket_type="pyme",
+            ticket_ids=[
+                ticket.id
+                for ticket_type, ticket in lead_rows
+                if ticket_type == "pyme"
+            ],
+        ),
+    }
 
     for ticket_type, ticket in lead_rows:
         details = _ticket_details(ticket)
         stage = str(details.get('lead_stage') or ticket.estado or 'nuevo').lower()
-        by_stage[stage] = by_stage.get(stage, 0) + 1
         last_seen = getattr(ticket, 'ultima_actividad', None) or ticket.fecha
         last_dt = last_seen if (last_seen and last_seen.tzinfo) else (last_seen.replace(tzinfo=timezone.utc) if last_seen else None)
         ticket_sla = bool(last_dt and (now - last_dt).total_seconds() > 1800 and stage not in {'ganado', 'perdido'})
-        collaboration_state = build_ticket_collaboration_state(ticket_type=ticket_type, ticket_id=ticket.id)
+        collaboration_state = lead_collaboration[ticket_type].get(
+            int(ticket.id),
+            {
+                "active_viewers_count": 0,
+                "idle_viewers_count": 0,
+                "unread_viewer_count": 0,
+                "operational_status": "healthy",
+            },
+        )
         priority_meta = build_ticket_priority_score(
             sla_breached_flag=ticket_sla,
             collaboration_state=collaboration_state,
             stage=stage,
         )
         priority_score = priority_meta["score"]
-        if ticket_sla:
-            sla_breached += 1
         total_active_viewers += collaboration_state.get('active_viewers_count', 0) or 0
         total_unread_viewers += collaboration_state.get('unread_viewer_count', 0) or 0
         lead_items.append({
@@ -310,12 +469,43 @@ def _build_tenant_dashboard_bundle_payload(
         reverse=True,
     )
 
-    survey_rows = EncEncuesta.query.filter_by(tenant_id=tenant.id).order_by(EncEncuesta.updated_at.desc()).limit(surveys_limit).all()
+    response_counts = _survey_response_counts_subquery(tenant.id)
+    survey_rows = (
+        db.session.query(
+            EncEncuesta,
+            func.coalesce(response_counts.c.real_count, 0).label("real_count"),
+            func.coalesce(response_counts.c.synthetic_count, 0).label("synthetic_count"),
+            func.coalesce(response_counts.c.unverified_count, 0).label("unverified_count"),
+            func.sum(func.coalesce(response_counts.c.real_count, 0))
+            .over()
+            .label("all_real_count"),
+            func.sum(func.coalesce(response_counts.c.synthetic_count, 0))
+            .over()
+            .label("all_synthetic_count"),
+            func.sum(func.coalesce(response_counts.c.unverified_count, 0))
+            .over()
+            .label("all_unverified_count"),
+            func.count(EncEncuesta.id).over().label("all_survey_count"),
+        )
+        .outerjoin(response_counts, response_counts.c.encuesta_id == EncEncuesta.id)
+        .filter(EncEncuesta.tenant_id == tenant.id)
+        .order_by(EncEncuesta.updated_at.desc())
+        .limit(surveys_limit)
+        .all()
+    )
     survey_items = []
-    total_responses = 0
-    for survey in survey_rows:
-        responses_count = EncRespuesta.query.filter_by(encuesta_id=survey.id).count()
-        total_responses += responses_count
+    total_responses = int(survey_rows[0].all_real_count or 0) if survey_rows else 0
+    total_synthetic_responses = (
+        int(survey_rows[0].all_synthetic_count or 0) if survey_rows else 0
+    )
+    total_unverified_responses = (
+        int(survey_rows[0].all_unverified_count or 0) if survey_rows else 0
+    )
+    total_surveys = int(survey_rows[0].all_survey_count or 0) if survey_rows else 0
+    for row in survey_rows:
+        survey = row[0]
+        real_count = row.real_count
+        responses_count = int(real_count or 0)
         survey_items.append({
             'id': survey.id,
             'slug': survey.slug,
@@ -327,7 +517,7 @@ def _build_tenant_dashboard_bundle_payload(
         })
 
     unread_items = []
-    muni_unread = (
+    muni_unread_query = (
         db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
         .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
         .filter(
@@ -335,11 +525,24 @@ def _build_tenant_dashboard_bundle_payload(
             TicketComentario.es_admin.is_(False),
             TicketComentario.fecha >= cutoff_unread,
         )
-        .group_by(TicketComentario.municipio_ticket_id)
+    )
+    muni_unread_scoped = apply_employee_ticket_category_scope(
+        muni_unread_query,
+        viewer,
+        MunicipioTicket,
+    ).group_by(TicketComentario.municipio_ticket_id)
+    muni_unread_total = int(muni_unread_scoped.count())
+    muni_unread = (
+        muni_unread_scoped.order_by(func.max(TicketComentario.fecha).desc())
+        .limit(unread_limit)
         .all()
     )
+    muni_unread_collaboration = build_ticket_collaboration_states(
+        ticket_type="municipio",
+        ticket_ids=[int(ticket_id) for ticket_id, _count, _last_at in muni_unread],
+    )
     for ticket_id, unread_count, last_at in muni_unread:
-        collaboration_state = build_ticket_collaboration_state(ticket_type='municipio', ticket_id=ticket_id)
+        collaboration_state = muni_unread_collaboration.get(int(ticket_id), {})
         unread_items.append({
             'ticket_type': 'municipio',
             'ticket_id': ticket_id,
@@ -348,7 +551,7 @@ def _build_tenant_dashboard_bundle_payload(
             'collaboration_state': collaboration_state,
         })
 
-    pyme_unread = (
+    pyme_unread_query = (
         db.session.query(TicketComentario.pyme_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
         .join(PymeTicket, PymeTicket.id == TicketComentario.pyme_ticket_id)
         .filter(
@@ -356,11 +559,24 @@ def _build_tenant_dashboard_bundle_payload(
             TicketComentario.es_admin.is_(False),
             TicketComentario.fecha >= cutoff_unread,
         )
-        .group_by(TicketComentario.pyme_ticket_id)
+    )
+    pyme_unread_scoped = apply_employee_ticket_category_scope(
+        pyme_unread_query,
+        viewer,
+        PymeTicket,
+    ).group_by(TicketComentario.pyme_ticket_id)
+    pyme_unread_total = int(pyme_unread_scoped.count())
+    pyme_unread = (
+        pyme_unread_scoped.order_by(func.max(TicketComentario.fecha).desc())
+        .limit(unread_limit)
         .all()
     )
+    pyme_unread_collaboration = build_ticket_collaboration_states(
+        ticket_type="pyme",
+        ticket_ids=[int(ticket_id) for ticket_id, _count, _last_at in pyme_unread],
+    )
     for ticket_id, unread_count, last_at in pyme_unread:
-        collaboration_state = build_ticket_collaboration_state(ticket_type='pyme', ticket_id=ticket_id)
+        collaboration_state = pyme_unread_collaboration.get(int(ticket_id), {})
         unread_items.append({
             'ticket_type': 'pyme',
             'ticket_id': ticket_id,
@@ -370,36 +586,129 @@ def _build_tenant_dashboard_bundle_payload(
         })
 
     unread_items.sort(key=lambda item: item.get('last_message_at') or '', reverse=True)
+    total_unread_tickets = muni_unread_total + pyme_unread_total
 
-    def _employee_collaboration_metrics(employee_id: int) -> dict:
-        rows = TicketRealtimeState.query.filter_by(viewer_user_id=employee_id).all()
-        active_ticket_views: set[tuple[str, int]] = set()
-        idle_ticket_views: set[tuple[str, int]] = set()
-        unread_ticket_views: set[tuple[str, int]] = set()
-        for row in rows:
-            collaboration_state = build_ticket_collaboration_state(ticket_type=row.ticket_type, ticket_id=row.ticket_id)
-            if collaboration_state.get('active_viewers_count', 0):
-                active_ticket_views.add((row.ticket_type, row.ticket_id))
-            if collaboration_state.get('idle_viewers_count', 0):
-                idle_ticket_views.add((row.ticket_type, row.ticket_id))
-            if collaboration_state.get('unread_viewer_count', 0):
-                unread_ticket_views.add((row.ticket_type, row.ticket_id))
-        return {
-            'active_ticket_views': len(active_ticket_views),
-            'idle_ticket_views': len(idle_ticket_views),
-            'unread_ticket_views': len(unread_ticket_views),
+    employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+    employee_ids = [int(employee.id) for employee in employees]
+    workload_by_employee_id = {employee_id: 0 for employee_id in employee_ids}
+    collaboration_by_employee_id = {
+        employee_id: {
+            "active": set(),
+            "idle": set(),
+            "unread": set(),
         }
+        for employee_id in employee_ids
+    }
+    if employee_ids:
+        active_states = {"nuevo", "pendiente", "en_proceso"}
+        municipio_workload_query = db.session.query(
+            MunicipioTicket.asignado_a_id,
+            func.count(MunicipioTicket.id),
+        ).filter(
+            municipio_ticket_scope_filter(tenant),
+            MunicipioTicket.asignado_a_id.in_(employee_ids),
+            MunicipioTicket.estado.in_(active_states),
+        )
+        municipio_workload_rows = apply_employee_ticket_category_scope(
+            municipio_workload_query,
+            viewer,
+            MunicipioTicket,
+        ).group_by(MunicipioTicket.asignado_a_id).all()
+
+        pyme_conditions = [PymeTicket.tenant_id == tenant.id]
+        if getattr(tenant, "pyme_id", None):
+            owner = db.session.get(User, tenant.pyme_id)
+            if getattr(owner, "rubro_id", None):
+                pyme_conditions.append(PymeTicket.rubro_id == owner.rubro_id)
+        pyme_workload_query = db.session.query(
+            PymeTicket.asignado_a_id,
+            func.count(PymeTicket.id),
+        ).filter(
+            or_(*pyme_conditions),
+            PymeTicket.asignado_a_id.in_(employee_ids),
+            PymeTicket.estado.in_(active_states),
+        )
+        pyme_workload_rows = apply_employee_ticket_category_scope(
+            pyme_workload_query,
+            viewer,
+            PymeTicket,
+        ).group_by(PymeTicket.asignado_a_id).all()
+        for employee_id, count in [
+            *municipio_workload_rows,
+            *pyme_workload_rows,
+        ]:
+            normalized_id = int(employee_id)
+            workload_by_employee_id[normalized_id] = (
+                workload_by_employee_id.get(normalized_id, 0) + int(count or 0)
+            )
+
+        municipio_realtime_query = (
+            TicketRealtimeState.query.join(
+                MunicipioTicket,
+                (TicketRealtimeState.ticket_type == "municipio")
+                & (TicketRealtimeState.ticket_id == MunicipioTicket.id),
+            ).filter(
+                TicketRealtimeState.viewer_user_id.in_(employee_ids),
+                MunicipioTicket.tenant_id == tenant.id,
+            )
+        )
+        municipio_realtime_rows = apply_employee_ticket_category_scope(
+            municipio_realtime_query,
+            viewer,
+            MunicipioTicket,
+        ).all()
+        pyme_realtime_query = (
+            TicketRealtimeState.query.join(
+                PymeTicket,
+                (TicketRealtimeState.ticket_type == "pyme")
+                & (TicketRealtimeState.ticket_id == PymeTicket.id),
+            ).filter(
+                TicketRealtimeState.viewer_user_id.in_(employee_ids),
+                PymeTicket.tenant_id == tenant.id,
+            )
+        )
+        pyme_realtime_rows = apply_employee_ticket_category_scope(
+            pyme_realtime_query,
+            viewer,
+            PymeTicket,
+        ).all()
+        team_collaboration = {
+            "municipio": build_ticket_collaboration_states(
+                ticket_type="municipio",
+                ticket_ids=[int(row.ticket_id) for row in municipio_realtime_rows],
+            ),
+            "pyme": build_ticket_collaboration_states(
+                ticket_type="pyme",
+                ticket_ids=[int(row.ticket_id) for row in pyme_realtime_rows],
+            ),
+        }
+        for row in [*municipio_realtime_rows, *pyme_realtime_rows]:
+            employee_id = int(row.viewer_user_id)
+            ticket_key = (str(row.ticket_type), int(row.ticket_id))
+            state = team_collaboration[str(row.ticket_type)].get(int(row.ticket_id), {})
+            metrics = collaboration_by_employee_id[employee_id]
+            if state.get("active_viewers_count", 0):
+                metrics["active"].add(ticket_key)
+            if state.get("idle_viewers_count", 0):
+                metrics["idle"].add(ticket_key)
+            if state.get("unread_viewer_count", 0):
+                metrics["unread"].add(ticket_key)
 
     workload_items = []
-    for emp in User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all():
-        collaboration_metrics = _employee_collaboration_metrics(emp.id)
+    for emp in employees:
+        collaboration_metrics = collaboration_by_employee_id.get(
+            int(emp.id),
+            {"active": set(), "idle": set(), "unread": set()},
+        )
         workload_items.append({
             'employee_id': emp.id,
             'name': emp.name,
             'email': emp.email,
-            'workload_open_tickets': _employee_open_workload(tenant.id, emp.id),
+            'workload_open_tickets': int(workload_by_employee_id.get(int(emp.id), 0)),
             'scope': _employee_scope(emp),
-            **collaboration_metrics,
+            'active_ticket_views': len(collaboration_metrics['active']),
+            'idle_ticket_views': len(collaboration_metrics['idle']),
+            'unread_ticket_views': len(collaboration_metrics['unread']),
         })
     workload_items.sort(key=lambda item: item['workload_open_tickets'], reverse=True)
 
@@ -439,29 +748,37 @@ def _build_tenant_dashboard_bundle_payload(
             'is_active': bool(getattr(tenant, 'is_active', True)),
         },
         'summary': {
-            'total_leads': len(lead_items),
+            'total_leads': total_leads,
             'sla_breached': sla_breached,
-            'total_surveys': len(survey_items),
+            'total_surveys': total_surveys,
             'total_survey_responses': total_responses,
-            'tickets_with_unread': len(unread_items),
+            'tickets_with_unread': total_unread_tickets,
             'employees': len(workload_items),
             'active_viewers': total_active_viewers,
             'unread_viewers': total_unread_viewers,
         },
         'leads': {
-            'total': len(lead_items),
+            'total': total_leads,
             'by_stage': by_stage,
             'items': lead_items[:leads_limit],
+            'items_partial': len(lead_items) < total_leads,
         },
         'surveys': {
-            'total_surveys': len(survey_items),
+            'total_surveys': total_surveys,
             'total_responses': total_responses,
+            'response_provenance': build_survey_response_provenance(
+                real_count=total_responses,
+                synthetic_count=total_synthetic_responses,
+                unverified_count=total_unverified_responses,
+                mode='real',
+            ),
             'items': survey_items,
         },
         'unread': {
             'since_minutes': since_minutes,
-            'total_tickets_with_unread': len(unread_items),
+            'total_tickets_with_unread': total_unread_tickets,
             'items': unread_items[:unread_limit],
+            'items_partial': len(unread_items) < total_unread_tickets,
         },
         'team': {
             'items': workload_items,
@@ -470,113 +787,485 @@ def _build_tenant_dashboard_bundle_payload(
     }
 
 
-def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points: int = 1500) -> dict:
+def _build_tenant_heatmap_summary_payload(
+    tenant: TenantProfile,
+    *,
+    viewer: User,
+    limit_points: int = 1500,
+) -> dict:
     def _normalized_label(value, fallback: str) -> str:
         label = str(value or fallback).strip().lower()
         return label or fallback
 
-    def _survey_zone(response: EncRespuesta) -> str:
-        return _normalized_label(
-            response.barrio or response.ciudad or response.provincia or response.pais,
-            'sin_zona',
+    effective_limit = max(1, min(int(limit_points or 1500), 5000))
+
+    def _scoped_ticket_query(model):
+        return apply_employee_ticket_category_scope(
+            model.query.filter_by(tenant_id=tenant.id),
+            viewer,
+            model,
         )
 
-    rows = []
-    for ticket in MunicipioTicket.query.filter_by(tenant_id=tenant.id).all():
-        rows.append({
-            'source': 'ticket',
-            'ticket_type': 'municipio',
-            'ticket_id': ticket.id,
-            'categoria': _normalized_label(ticket.categoria, 'sin_categoria'),
-            'zona': _normalized_label(ticket.distrito, 'sin_zona'),
-            'lat': ticket.latitud,
-            'lon': ticket.longitud,
-            'status': ticket.estado,
+    municipio_query = _scoped_ticket_query(MunicipioTicket)
+    pyme_query = _scoped_ticket_query(PymeTicket)
+
+    if is_employee_heatmap_viewer(viewer):
+        def _ticket_cell_query(query, model):
+            lat_cell = func.round(
+                cast(model.latitud, Numeric),
+                EMPLOYEE_HEATMAP_COORDINATE_PRECISION,
+            )
+            lng_cell = func.round(
+                cast(model.longitud, Numeric),
+                EMPLOYEE_HEATMAP_COORDINATE_PRECISION,
+            )
+            return (
+                query.with_entities(
+                    lat_cell.label('lat'),
+                    lng_cell.label('lng'),
+                    func.count(model.id).label('count'),
+                )
+                .filter(
+                    model.latitud.isnot(None),
+                    model.longitud.isnot(None),
+                    model.latitud.between(-90, 90),
+                    model.longitud.between(-180, 180),
+                )
+                .group_by(lat_cell, lng_cell)
+            )
+
+        ticket_cell_union = _ticket_cell_query(
+            municipio_query,
+            MunicipioTicket,
+        ).union_all(
+            _ticket_cell_query(pyme_query, PymeTicket)
+        ).subquery()
+        combined_cell_count = func.sum(ticket_cell_union.c.count)
+        combined_cells = (
+            db.session.query(
+                ticket_cell_union.c.lat.label('lat'),
+                ticket_cell_union.c.lng.label('lng'),
+                combined_cell_count.label('count'),
+            )
+            .group_by(ticket_cell_union.c.lat, ticket_cell_union.c.lng)
+            .subquery()
+        )
+        safe_cell_rows = (
+            db.session.query(
+                combined_cells.c.lat,
+                combined_cells.c.lng,
+                combined_cells.c.count,
+            )
+            .filter(combined_cells.c.count >= EMPLOYEE_HEATMAP_K_MIN)
+            .order_by(combined_cells.c.count.desc())
+            .limit(effective_limit + 1)
+            .all()
+        )
+        cells_partial = len(safe_cell_rows) > effective_limit
+        safe_cell_rows = safe_cell_rows[:effective_limit]
+        exact_cells = [
+            {
+                'lat': float(lat),
+                'lng': float(lng),
+                'count': int(count or 0),
+                'weight': int(count or 0),
+            }
+            for lat, lng, count in safe_cell_rows
+        ]
+        safe_cells_count, safe_records, suppressed_cells, suppressed_records = (
+            db.session.query(
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (combined_cells.c.count >= EMPLOYEE_HEATMAP_K_MIN, 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                combined_cells.c.count >= EMPLOYEE_HEATMAP_K_MIN,
+                                combined_cells.c.count,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (combined_cells.c.count < EMPLOYEE_HEATMAP_K_MIN, 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (
+                                combined_cells.c.count < EMPLOYEE_HEATMAP_K_MIN,
+                                combined_cells.c.count,
+                            ),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ),
+            )
+            .one()
+        )
+        now = datetime.now(timezone.utc)
+        employee_heatmap = build_employee_aggregated_heatmap(
+            tenant,
+            now,
+            now,
+            exact_payload={'cells': exact_cells},
+            scope_empty=employee_heatmap_scope_empty(viewer),
+        )
+        employee_heatmap['privacy']['suppressed'].update({
+            'cells': int(suppressed_cells or 0),
+            'records': int(suppressed_records or 0),
+            'low_cardinality_cells': int(suppressed_cells or 0),
         })
-    for ticket in PymeTicket.query.filter_by(tenant_id=tenant.id).all():
-        rows.append({
-            'source': 'ticket',
-            'ticket_type': 'pyme',
-            'ticket_id': ticket.id,
-            'categoria': _normalized_label(ticket.categoria, 'sin_categoria'),
-            'zona': _normalized_label(getattr(ticket, 'direccion', None), 'sin_zona'),
-            'lat': ticket.latitud,
-            'lon': ticket.longitud,
-            'status': ticket.estado,
+        employee_heatmap['summary'].update({
+            'points': int(safe_records or 0),
+            'cells': int(safe_cells_count or 0),
+            'aggregated_observations': int(safe_records or 0),
+            'suppressed_cells': int(suppressed_cells or 0),
+            'suppressed_records': int(suppressed_records or 0),
+            'cells_partial': cells_partial,
+            'cells_returned': len(exact_cells),
         })
-    survey_rows = (
-        db.session.query(EncRespuesta, EncEncuesta)
-        .join(EncEncuesta, EncEncuesta.id == EncRespuesta.encuesta_id)
-        .filter(EncRespuesta.tenant_id == tenant.id)
-        .all()
+        safe_cells = employee_heatmap.get('cells') or []
+        safe_points = [
+            {
+                'source': 'ticket_aggregate',
+                'ticket_type': 'aggregate',
+                'lat': cell['lat'],
+                'lon': cell['lng'],
+                'lng': cell['lng'],
+                'count': cell['count'],
+                'weight': cell['weight'],
+                'privacy_mode': 'employee_aggregated',
+            }
+            for cell in safe_cells[:effective_limit]
+        ]
+        return {
+            'tenant_id': tenant.id,
+            'tenant_slug': tenant.slug,
+            'total': int(
+                (employee_heatmap.get('summary') or {}).get(
+                    'aggregated_observations',
+                    0,
+                )
+                or 0
+            ),
+            'top_categories': [],
+            'top_zones': [],
+            'hotspots': [],
+            'hotspot_pairs': [],
+            'heatmap_points': safe_points,
+            'cells': safe_cells,
+            'privacy': employee_heatmap.get('privacy'),
+            'render_contract': employee_heatmap.get('render_contract'),
+            'response_provenance': build_survey_response_provenance(
+                real_count=0,
+                synthetic_count=0,
+                mode='real',
+            ),
+        }
+
+    def _ticket_projection_and_rollup(
+        query,
+        model,
+        *,
+        ticket_type: str,
+        zone_column,
+        activity_column,
+    ):
+        category_expr = case(
+            (
+                func.length(func.trim(model.categoria)) > 0,
+                func.lower(func.trim(model.categoria)),
+            ),
+            else_='sin_categoria',
+        )
+        zone_expr = case(
+            (
+                func.length(func.trim(zone_column)) > 0,
+                func.lower(func.trim(zone_column)),
+            ),
+            else_='sin_zona',
+        )
+        total = int(query.with_entities(func.count(model.id)).scalar() or 0)
+        pair_rows = (
+            query.with_entities(
+                category_expr.label('categoria'),
+                zone_expr.label('zona'),
+                func.count(model.id).label('count'),
+            )
+            .group_by(category_expr, zone_expr)
+            .order_by(func.count(model.id).desc())
+            .limit(effective_limit + 1)
+            .all()
+        )
+        pairs_partial = len(pair_rows) > effective_limit
+        pair_rows = pair_rows[:effective_limit]
+        point_rows = (
+            query.with_entities(
+                model.id.label('ticket_id'),
+                category_expr.label('categoria'),
+                zone_expr.label('zona'),
+                model.latitud.label('lat'),
+                model.longitud.label('lon'),
+                model.estado.label('status'),
+                activity_column.label('activity_at'),
+            )
+            .filter(
+                model.latitud.isnot(None),
+                model.longitud.isnot(None),
+                model.latitud.between(-90, 90),
+                model.longitud.between(-180, 180),
+            )
+            .order_by(activity_column.desc(), model.id.desc())
+            .limit(effective_limit + 1)
+            .all()
+        )
+        points_partial = len(point_rows) > effective_limit
+        projected_points = [
+            {
+                'source': 'ticket',
+                'ticket_type': ticket_type,
+                'ticket_id': int(row.ticket_id),
+                'categoria': _normalized_label(row.categoria, 'sin_categoria'),
+                'zona': _normalized_label(row.zona, 'sin_zona'),
+                'lat': float(row.lat),
+                'lon': float(row.lon),
+                'status': row.status,
+                '_sort_at': row.activity_at,
+            }
+            for row in point_rows[:effective_limit]
+        ]
+        return (
+            total,
+            pair_rows,
+            projected_points,
+            pairs_partial,
+            points_partial,
+        )
+
+    municipio_total, municipio_pairs, municipio_points, municipio_pairs_partial, municipio_points_partial = (
+        _ticket_projection_and_rollup(
+            municipio_query,
+            MunicipioTicket,
+            ticket_type='municipio',
+            zone_column=MunicipioTicket.distrito,
+            activity_column=func.coalesce(
+                MunicipioTicket.ultima_actividad,
+                MunicipioTicket.fecha,
+            ),
+        )
     )
-    for respuesta, encuesta in survey_rows:
-        category = 'votacion' if bool(getattr(encuesta, 'es_votacion_envivo', False)) else 'encuesta'
-        rows.append({
-            'source': 'survey_response',
-            'ticket_type': 'survey_response',
-            'ticket_id': respuesta.id,
-            'response_id': respuesta.id,
-            'survey_id': encuesta.id,
-            'survey_slug': encuesta.slug,
-            'survey_title': encuesta.titulo,
-            'survey_tipo': encuesta.tipo,
-            'is_live_vote': bool(getattr(encuesta, 'es_votacion_envivo', False)),
-            'categoria': category,
-            'zona': _survey_zone(respuesta),
-            'lat': respuesta.lat,
-            'lon': respuesta.lng,
-            'lng': respuesta.lng,
-            'status': encuesta.estado,
-            'channel': respuesta.canal,
-            'canal': respuesta.canal,
-            'barrio': respuesta.barrio,
-            'ciudad': respuesta.ciudad,
-            'provincia': respuesta.provincia,
-            'pais': respuesta.pais,
-            'submitted_at': respuesta.submitted_at.isoformat() if respuesta.submitted_at else None,
-        })
+    pyme_total, pyme_pairs, pyme_points, pyme_pairs_partial, pyme_points_partial = (
+        _ticket_projection_and_rollup(
+            pyme_query,
+            PymeTicket,
+            ticket_type='pyme',
+            zone_column=PymeTicket.direccion,
+            activity_column=PymeTicket.fecha,
+        )
+    )
 
     by_categoria = {}
     by_zona = {}
     hotspots = {}
-    points = []
-    for row in rows:
-        by_categoria[row['categoria']] = by_categoria.get(row['categoria'], 0) + 1
-        by_zona[row['zona']] = by_zona.get(row['zona'], 0) + 1
-        hotspot_key = f"{row['categoria']}::{row['zona']}"
-        hotspots[hotspot_key] = hotspots.get(hotspot_key, 0) + 1
-        if row['lat'] is not None and row['lon'] is not None:
-            point = {
-                'source': row.get('source'),
-                'ticket_type': row['ticket_type'],
-                'ticket_id': row['ticket_id'],
-                'lat': row['lat'],
-                'lon': row['lon'],
-                'lng': row.get('lng') if row.get('lng') is not None else row['lon'],
-                'categoria': row['categoria'],
-                'zona': row['zona'],
-                'status': row['status'],
-                'weight': 1,
-            }
-            for key in (
-                'response_id',
-                'survey_id',
-                'survey_slug',
-                'survey_title',
-                'survey_tipo',
-                'is_live_vote',
-                'channel',
-                'canal',
-                'barrio',
-                'ciudad',
-                'provincia',
-                'pais',
-                'submitted_at',
-            ):
-                if row.get(key) is not None:
-                    point[key] = row[key]
-            points.append(point)
+    points = [*municipio_points, *pyme_points]
+    for categoria, zona, count in [*municipio_pairs, *pyme_pairs]:
+        normalized_category = _normalized_label(categoria, 'sin_categoria')
+        normalized_zone = _normalized_label(zona, 'sin_zona')
+        normalized_count = int(count or 0)
+        by_categoria[normalized_category] = (
+            by_categoria.get(normalized_category, 0) + normalized_count
+        )
+        by_zona[normalized_zone] = by_zona.get(normalized_zone, 0) + normalized_count
+        hotspot_key = f"{normalized_category}::{normalized_zone}"
+        hotspots[hotspot_key] = hotspots.get(hotspot_key, 0) + normalized_count
+
+    survey_category = case(
+        (EncEncuesta.es_votacion_envivo.is_(True), "votacion"),
+        else_="encuesta",
+    )
+    survey_zone = case(
+        (
+            func.length(func.trim(EncRespuesta.barrio)) > 0,
+            func.lower(func.trim(EncRespuesta.barrio)),
+        ),
+        (
+            func.length(func.trim(EncRespuesta.ciudad)) > 0,
+            func.lower(func.trim(EncRespuesta.ciudad)),
+        ),
+        (
+            func.length(func.trim(EncRespuesta.provincia)) > 0,
+            func.lower(func.trim(EncRespuesta.provincia)),
+        ),
+        (
+            func.length(func.trim(EncRespuesta.pais)) > 0,
+            func.lower(func.trim(EncRespuesta.pais)),
+        ),
+        else_="sin_zona",
+    )
+    real_survey_count, unverified_survey_count, synthetic_survey_count = db.session.query(
+        func.coalesce(
+            func.sum(
+                case(
+                    (EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL, 1),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        EncRespuesta.response_origin
+                        == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+        func.coalesce(
+            func.sum(
+                case(
+                    (
+                        EncRespuesta.response_origin
+                        == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            0,
+        ),
+    ).filter(EncRespuesta.tenant_id == tenant.id).one()
+    real_survey_count = int(real_survey_count or 0)
+    synthetic_survey_count = int(synthetic_survey_count or 0)
+    unverified_survey_count = int(unverified_survey_count or 0)
+
+    survey_dimensions = (
+        db.session.query(
+            survey_category.label("categoria"),
+            survey_zone.label("zona"),
+            func.count(EncRespuesta.id).label("count"),
+        )
+        .join(EncEncuesta, EncEncuesta.id == EncRespuesta.encuesta_id)
+        .filter(
+            EncRespuesta.tenant_id == tenant.id,
+            EncEncuesta.tenant_id == tenant.id,
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
+        )
+        .group_by(survey_category, survey_zone)
+        .order_by(func.count(EncRespuesta.id).desc())
+        .limit(effective_limit + 1)
+        .all()
+    )
+    survey_dimensions_partial = len(survey_dimensions) > effective_limit
+    for categoria, zona, count in survey_dimensions[:effective_limit]:
+        count = int(count or 0)
+        by_categoria[categoria] = by_categoria.get(categoria, 0) + count
+        by_zona[zona] = by_zona.get(zona, 0) + count
+        hotspot_key = f"{categoria}::{zona}"
+        hotspots[hotspot_key] = hotspots.get(hotspot_key, 0) + count
+
+    survey_points = (
+        db.session.query(
+            EncRespuesta.id.label("response_id"),
+            EncEncuesta.id.label("survey_id"),
+            EncEncuesta.slug.label("survey_slug"),
+            EncEncuesta.titulo.label("survey_title"),
+            EncEncuesta.tipo.label("survey_tipo"),
+            EncEncuesta.es_votacion_envivo.label("is_live_vote"),
+            EncEncuesta.estado.label("status"),
+            EncRespuesta.lat.label("lat"),
+            EncRespuesta.lng.label("lng"),
+            EncRespuesta.canal.label("channel"),
+            EncRespuesta.barrio.label("barrio"),
+            EncRespuesta.ciudad.label("ciudad"),
+            EncRespuesta.provincia.label("provincia"),
+            EncRespuesta.pais.label("pais"),
+            EncRespuesta.submitted_at.label("submitted_at"),
+            survey_category.label("categoria"),
+            survey_zone.label("zona"),
+        )
+        .join(EncEncuesta, EncEncuesta.id == EncRespuesta.encuesta_id)
+        .filter(
+            EncRespuesta.tenant_id == tenant.id,
+            EncEncuesta.tenant_id == tenant.id,
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
+            EncRespuesta.lat.isnot(None),
+            EncRespuesta.lng.isnot(None),
+            EncRespuesta.lat.between(-90, 90),
+            EncRespuesta.lng.between(-180, 180),
+        )
+        .order_by(EncRespuesta.submitted_at.desc(), EncRespuesta.id.desc())
+        .limit(effective_limit + 1)
+        .all()
+    )
+    survey_points_partial = len(survey_points) > effective_limit
+    for survey_point in survey_points[:effective_limit]:
+        points.append({
+            'source': 'survey_response',
+            'ticket_type': 'survey_response',
+            'ticket_id': survey_point.response_id,
+            'response_id': survey_point.response_id,
+            'survey_id': survey_point.survey_id,
+            'survey_slug': survey_point.survey_slug,
+            'survey_title': survey_point.survey_title,
+            'survey_tipo': survey_point.survey_tipo,
+            'is_live_vote': bool(survey_point.is_live_vote),
+            'categoria': survey_point.categoria,
+            'zona': survey_point.zona,
+            'lat': survey_point.lat,
+            'lon': survey_point.lng,
+            'lng': survey_point.lng,
+            'status': survey_point.status,
+            'weight': 1,
+            'channel': survey_point.channel,
+            'canal': survey_point.channel,
+            'barrio': survey_point.barrio,
+            'ciudad': survey_point.ciudad,
+            'provincia': survey_point.provincia,
+            'pais': survey_point.pais,
+            'submitted_at': (
+                survey_point.submitted_at.isoformat()
+                if survey_point.submitted_at
+                else None
+            ),
+            '_sort_at': survey_point.submitted_at,
+        })
+
+    def _sort_timestamp(item):
+        value = item.get('_sort_at')
+        if value is None:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    points.sort(key=_sort_timestamp, reverse=True)
+    points = points[:effective_limit]
+    for point in points:
+        point.pop('_sort_at', None)
+        point['lng'] = point.get('lng') if point.get('lng') is not None else point.get('lon')
+        point['weight'] = point.get('weight') or 1
 
     top_categories = sorted(by_categoria.items(), key=lambda item: item[1], reverse=True)[:10]
     top_zones = sorted(by_zona.items(), key=lambda item: item[1], reverse=True)[:10]
@@ -594,12 +1283,31 @@ def _build_tenant_heatmap_summary_payload(tenant: TenantProfile, *, limit_points
     return {
         'tenant_id': tenant.id,
         'tenant_slug': tenant.slug,
-        'total': len(rows),
+        'total': municipio_total + pyme_total + real_survey_count,
         'top_categories': [{'categoria': key, 'count': value} for key, value in top_categories],
         'top_zones': [{'zona': key, 'count': value} for key, value in top_zones],
         'hotspots': hotspot_items,
         'hotspot_pairs': hotspot_items,
-        'heatmap_points': points[:limit_points],
+        'heatmap_points': points,
+        'materialization': {
+            'point_limit': effective_limit,
+            'points_returned': len(points),
+            'partial': bool(
+                municipio_pairs_partial
+                or pyme_pairs_partial
+                or municipio_points_partial
+                or pyme_points_partial
+                or survey_dimensions_partial
+                or survey_points_partial
+            ),
+            'ticket_entities_materialized': 0,
+        },
+        'response_provenance': build_survey_response_provenance(
+            real_count=real_survey_count,
+            synthetic_count=synthetic_survey_count,
+            unverified_count=unverified_survey_count,
+            mode='real',
+        ),
     }
 
 
@@ -1916,7 +2624,12 @@ def _scope_match_score(*, categoria: str, zona: str, scope: dict) -> int:
     return score
 
 
-def _employee_open_workload(tenant_id: int, employee_id: int) -> int:
+def _employee_open_workload(
+    tenant_id: int,
+    employee_id: int,
+    *,
+    viewer: User | None = None,
+) -> int:
     active_states = {'nuevo', 'pendiente', 'en_proceso'}
     tenant = db.session.get(TenantProfile, tenant_id)
     pyme_conditions = [PymeTicket.tenant_id == tenant_id]
@@ -1924,16 +2637,29 @@ def _employee_open_workload(tenant_id: int, employee_id: int) -> int:
         owner = db.session.get(User, tenant.pyme_id)
         if getattr(owner, "rubro_id", None):
             pyme_conditions.append(PymeTicket.rubro_id == owner.rubro_id)
-    m_count = MunicipioTicket.query.filter(
+    municipio_query = MunicipioTicket.query.filter(
         municipio_ticket_scope_filter(tenant),
         MunicipioTicket.asignado_a_id == employee_id,
         MunicipioTicket.estado.in_(list(active_states)),
-    ).count()
-    p_count = PymeTicket.query.filter(
+    )
+    pyme_query = PymeTicket.query.filter(
         or_(*pyme_conditions),
         PymeTicket.asignado_a_id == employee_id,
         PymeTicket.estado.in_(list(active_states)),
-    ).count()
+    )
+    if viewer is not None:
+        municipio_query = apply_employee_ticket_category_scope(
+            municipio_query,
+            viewer,
+            MunicipioTicket,
+        )
+        pyme_query = apply_employee_ticket_category_scope(
+            pyme_query,
+            viewer,
+            PymeTicket,
+        )
+    m_count = municipio_query.count()
+    p_count = pyme_query.count()
     return int(m_count + p_count)
 
 
@@ -2415,6 +3141,7 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/encuestas/overview', methods=['GET'])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 @require_tenant
 def tenant_surveys_overview(current_user, slug):
     tenant = _resolve_admin_tenant(current_user, slug)
@@ -2424,12 +3151,29 @@ def tenant_surveys_overview(current_user, slug):
         return jsonify({'error': 'Unauthorized'}), 403
 
     limit = max(1, min(int(request.args.get('limit', 50) or 50), 100))
-    rows = EncEncuesta.query.filter_by(tenant_id=tenant.id).order_by(EncEncuesta.updated_at.desc()).limit(limit).all()
+    response_counts = _survey_response_counts_subquery(tenant.id)
+    rows = (
+        db.session.query(
+            EncEncuesta,
+            func.coalesce(response_counts.c.real_count, 0).label("real_count"),
+            func.coalesce(response_counts.c.synthetic_count, 0).label("synthetic_count"),
+            func.coalesce(response_counts.c.unverified_count, 0).label("unverified_count"),
+        )
+        .outerjoin(response_counts, response_counts.c.encuesta_id == EncEncuesta.id)
+        .filter(EncEncuesta.tenant_id == tenant.id)
+        .order_by(EncEncuesta.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
 
     items = []
     total_responses = 0
-    for encuesta in rows:
-        responses_count = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
+    total_synthetic_responses = 0
+    total_unverified_responses = 0
+    for encuesta, real_count, synthetic_count, unverified_count in rows:
+        responses_count = int(real_count or 0)
+        total_synthetic_responses += int(synthetic_count or 0)
+        total_unverified_responses += int(unverified_count or 0)
         total_responses += responses_count
         items.append({
             'id': encuesta.id,
@@ -2450,6 +3194,12 @@ def tenant_surveys_overview(current_user, slug):
         'tenant_slug': tenant.slug,
         'total_surveys': len(items),
         'total_responses': total_responses,
+        'response_provenance': build_survey_response_provenance(
+            real_count=total_responses,
+            synthetic_count=total_synthetic_responses,
+            unverified_count=total_unverified_responses,
+            mode='real',
+        ),
         'items': items,
     })
 
@@ -2552,6 +3302,7 @@ def tenant_employees_workload(current_user, slug):
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/dashboard-bundle', methods=['GET'])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 @require_tenant
 def tenant_dashboard_bundle(current_user, slug):
     tenant = _resolve_admin_tenant(current_user, slug)
@@ -2567,6 +3318,7 @@ def tenant_dashboard_bundle(current_user, slug):
 
     payload = _build_tenant_dashboard_bundle_payload(
         tenant,
+        viewer=current_user,
         leads_limit=leads_limit,
         surveys_limit=surveys_limit,
         unread_limit=unread_limit,
@@ -2583,6 +3335,7 @@ def tenant_dashboard_bundle(current_user, slug):
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/heatmap-summary', methods=['GET'])
 @token_requerido
+@require_role("admin", "empleado", "super_admin")
 @require_tenant
 def tenant_heatmap_summary(current_user, slug):
     tenant = _resolve_admin_tenant(current_user, slug)
@@ -2592,7 +3345,11 @@ def tenant_heatmap_summary(current_user, slug):
         return jsonify({'error': 'Unauthorized'}), 403
 
     limit_points = max(100, min(int(request.args.get('limit_points', 1500) or 1500), 5000))
-    payload = _build_tenant_heatmap_summary_payload(tenant, limit_points=limit_points)
+    payload = _build_tenant_heatmap_summary_payload(
+        tenant,
+        viewer=current_user,
+        limit_points=limit_points,
+    )
     payload['meta'] = {'limit_points': limit_points}
     return jsonify(payload)
 

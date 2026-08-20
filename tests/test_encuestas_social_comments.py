@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from app import create_app
 from config import TestConfig
-from models import db, EncEncuesta, User
+from models import db, EncEncuesta, TenantProfile, User
 from services.encuestas_service import (
     create_comentario,
     issue_social_comment_token,
@@ -25,8 +25,28 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
         db.create_all()
         self.client = self.app.test_client()
 
+        self.owner = User(
+            email="survey-social-owner@example.com",
+            name="Survey social owner",
+            rol="admin",
+            tipo_chat="municipio",
+        )
+        self.owner.set_password("survey-social-test-only")
+        db.session.add(self.owner)
+        db.session.flush()
+        self.tenant = TenantProfile(
+            slug="survey-social-test",
+            nombre="Survey social test",
+            tipo="municipio",
+            municipio_id=self.owner.id,
+        )
+        db.session.add(self.tenant)
+        db.session.flush()
+        self.owner.tenant_id = self.tenant.id
+        self.app.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"] = self.tenant.id
+
         self.encuesta = EncEncuesta(
-            tenant_id=1,
+            tenant_id=self.tenant.id,
             slug="encuesta-social-test",
             titulo="Encuesta social",
             descripcion="desc",
@@ -63,7 +83,9 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
         self.assertEqual(len(listado), 1)
         self.assertEqual(listado[0]["comment_mode"], "social")
         self.assertEqual(listado[0]["auth_provider"], "instagram")
-        self.assertEqual(listado[0]["auth_user_id"], "ig_12345")
+        self.assertNotIn("auth_user_id", listado[0])
+        self.assertNotIn("anon_id", listado[0])
+        self.assertNotIn("user_id", listado[0])
 
     def test_comment_list_exposes_only_consented_profile_avatar(self):
         user = User(
@@ -186,7 +208,40 @@ class EncuestasSocialCommentsTests(unittest.TestCase):
         comentario = body.get("comentario") or {}
         self.assertEqual(comentario.get("comment_mode"), "social")
         self.assertEqual(comentario.get("auth_provider"), "facebook")
-        self.assertEqual(comentario.get("auth_user_id"), "fb_5566")
+        self.assertNotIn("auth_user_id", comentario)
+        self.assertNotIn("anon_id", comentario)
+        self.assertNotIn("user_id", comentario)
+
+    @patch("services.encuestas_service.emit_survey_comment")
+    def test_public_comment_rest_and_socket_omit_correlation_identifiers(self, emit_mock):
+        sentinel = "social-private-correlation-7788"
+        comentario = create_comentario(
+            self.encuesta.id,
+            {
+                "texto": "Comentario público sin identificadores persistentes",
+                "mode": "social",
+                "auth_provider": "google",
+                "auth_user_id": sentinel,
+                "auth_first_name": "Ana",
+            },
+            user=None,
+        )
+        self.assertIn(sentinel, comentario.anon_id)
+
+        response = self.client.get(
+            f"/api/public/encuestas/{self.encuesta.slug}/comentarios"
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        public_comment = (response.get_json() or [])[0]
+        emitted = emit_mock.call_args.args[1]
+
+        for payload in (public_comment, emitted):
+            self.assertNotIn("user_id", payload)
+            self.assertNotIn("anon_id", payload)
+            self.assertNotIn("auth_user_id", payload)
+            self.assertNotIn(sentinel, str(payload))
+            self.assertEqual(payload.get("comment_mode"), "social")
+            self.assertEqual(payload.get("auth_provider"), "google")
 
     def test_social_comment_rejects_mismatched_payload_and_token(self):
         token = issue_social_comment_token(

@@ -1096,6 +1096,16 @@ def test_admin_encuestas_seed_demo_fails_closed_without_qa_capability(
         "ALLOW_SURVEY_DEMO_SEEDING",
         False,
     )
+    monkeypatch.setitem(
+        client.application.config,
+        "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1",
+        False,
+    )
+    monkeypatch.setitem(
+        client.application.config,
+        "SURVEY_SYNTHETIC_SEED_TENANT_IDS",
+        "",
+    )
 
     headers = _auth_headers(client, admin_user)
     response = client.post(
@@ -1123,6 +1133,16 @@ def test_admin_create_auto_seed_fails_before_persisting_survey(
         client.application.config,
         "ALLOW_SURVEY_DEMO_SEEDING",
         False,
+    )
+    monkeypatch.setitem(
+        client.application.config,
+        "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1",
+        False,
+    )
+    monkeypatch.setitem(
+        client.application.config,
+        "SURVEY_SYNTHETIC_SEED_TENANT_IDS",
+        "",
     )
     headers = _auth_headers(client, admin_user)
     with client.application.app_context():

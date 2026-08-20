@@ -1,11 +1,40 @@
 from app import create_app, db
 from config import TestingConfig
+from models import TenantProfile, User
 from routes.encuestas_public import _public_error_response
 from services.encuestas_service import EncuestaError
-from services.public_survey_intake import enforce_public_survey_intake
+from services.public_survey_intake import (
+    enforce_public_survey_intake,
+    public_survey_client_ip,
+)
+
+
+def _configure_public_default_tenant(client):
+    owner = User(
+        email="public-survey-default@example.com",
+        name="Public survey default",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("public-survey-test-only")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="public-survey-default",
+        nombre="Public survey default",
+        tipo="municipio",
+        municipio_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    client.application.config["PUBLIC_ENCUESTAS_DEFAULT_TENANT_ID"] = tenant.id
+    db.session.commit()
+    return tenant
 
 
 def test_public_encuestas_defaults_to_config_owner(client):
+    _configure_public_default_tenant(client)
     response = client.get("/public/encuestas")
     assert response.status_code == 200
     assert response.get_json() == []
@@ -27,6 +56,7 @@ def test_public_encuestas_options_is_handled(client):
 
 
 def test_public_encuestas_get_includes_cors_headers(client):
+    _configure_public_default_tenant(client)
     origin = "http://localhost:8080"
     response = client.get(
         "/public/encuestas", headers={"Origin": origin}
@@ -113,6 +143,105 @@ def test_public_encuestas_rate_limit_respects_config(app, monkeypatch):
         assert second.allowed is True
         assert blocked.allowed is False
         assert blocked.reason_code == "rate_limited"
+
+
+def test_public_survey_intake_ignores_spoofed_forwarding_headers(app, monkeypatch):
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("RENDER_SERVICE_TYPE", raising=False)
+    monkeypatch.setitem(app.config, "PUBLIC_ENCUESTAS_RATE_LIMIT", 1)
+    monkeypatch.setitem(app.config, "PUBLIC_ENCUESTAS_RATE_PERIOD", 60)
+    monkeypatch.setitem(
+        app.config,
+        "CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE",
+        "false",
+    )
+
+    with app.test_request_context(
+        headers={
+            "CF-Connecting-IP": "203.0.113.10",
+            "X-Forwarded-For": "198.51.100.10",
+        },
+        environ_base={"REMOTE_ADDR": "192.0.2.44"},
+    ):
+        first = enforce_public_survey_intake(
+            "unit-spoof-resistant-survey",
+            {},
+            preferred_tenant_id=None,
+            request_id="unit-spoof-1",
+            synthetic=True,
+        )
+
+    with app.test_request_context(
+        headers={
+            "CF-Connecting-IP": "203.0.113.99",
+            "X-Forwarded-For": "198.51.100.99",
+        },
+        environ_base={"REMOTE_ADDR": "192.0.2.44"},
+    ):
+        blocked = enforce_public_survey_intake(
+            "unit-spoof-resistant-survey",
+            {},
+            preferred_tenant_id=None,
+            request_id="unit-spoof-2",
+            synthetic=True,
+        )
+
+    assert first.allowed is True
+    assert blocked.allowed is False
+    assert blocked.reason_code == "rate_limited"
+
+
+def test_public_survey_turnstile_receives_transport_peer(app, monkeypatch):
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("RENDER_SERVICE_TYPE", raising=False)
+    monkeypatch.setitem(app.config, "PUBLIC_ENCUESTAS_RATE_LIMIT", 5)
+    monkeypatch.setitem(app.config, "PUBLIC_ENCUESTAS_RATE_PERIOD", 60)
+    monkeypatch.setitem(
+        app.config,
+        "CLOUDFLARE_TURNSTILE_ENFORCE_PUBLIC_INTAKE",
+        "false",
+    )
+    captured = {}
+
+    def verifier(_token, *, remote_ip, idempotency_key):
+        captured.update(remote_ip=remote_ip, idempotency_key=idempotency_key)
+        return True
+
+    with app.test_request_context(
+        headers={
+            "CF-Connecting-IP": "203.0.113.77",
+            "X-Forwarded-For": "198.51.100.77",
+        },
+        environ_base={"REMOTE_ADDR": "192.0.2.77"},
+    ):
+        decision = enforce_public_survey_intake(
+            "unit-turnstile-peer-survey",
+            {"turnstile_token": "test-token"},
+            preferred_tenant_id=None,
+            request_id="unit-turnstile-peer-1",
+            synthetic=True,
+            verifier=verifier,
+        )
+
+    assert decision.allowed is True
+    assert captured == {
+        "remote_ip": "192.0.2.77",
+        "idempotency_key": "unit-turnstile-peer-1",
+    }
+
+
+def test_public_survey_client_ip_uses_render_trusted_edge_contract(app, monkeypatch):
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("RENDER_SERVICE_TYPE", "web")
+
+    with app.test_request_context(
+        headers={
+            "CF-Connecting-IP": "198.51.100.250",
+            "X-Forwarded-For": "203.0.113.45, 10.0.0.8",
+        },
+        environ_base={"REMOTE_ADDR": "10.0.0.9"},
+    ):
+        assert public_survey_client_ip() == "203.0.113.45"
 
 
 def test_public_survey_error_response_has_reason_and_request_id(app):

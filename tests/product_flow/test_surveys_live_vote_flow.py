@@ -129,10 +129,17 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
     def _post_public_response(self, endpoint, payload, submission_id, headers=None):
         request_headers = dict(headers or {})
         request_headers["Idempotency-Key"] = submission_id
+        # The Flask test client bypasses the Render edge/ProxyFix chain.  When
+        # a scenario supplies a distinct XFF address to model a distinct
+        # citizen, mirror it as the actual transport peer instead of relying
+        # on a caller-controlled header that production code correctly ignores.
+        forwarded = str(request_headers.get("X-Forwarded-For") or "").strip()
+        remote_addr = forwarded.split(",", 1)[0].strip() if forwarded else None
         return self.client.post(
             endpoint,
             json={**payload, "submission_id": submission_id},
             headers=request_headers,
+            environ_base={"REMOTE_ADDR": remote_addr} if remote_addr else None,
         )
 
     def test_vote_emits_realtime_and_updates_live_results(self):
@@ -299,23 +306,26 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
     def test_live_results_with_heatmap_returns_privacy_safe_vote_coordinates(self):
         survey_id, token, question_id, option_id = self._create_live_vote()
 
-        response = self._post_public_response(
-            f"/api/v2/public/surveys/{token}/respond",
-            {
-                "anon_id": "flow-voter-geo-1",
-                "source": "whatsapp_webview",
-                "lat": -33.08149,
-                "lng": -68.46849,
-                "barrio": "Centro",
-                "ciudad": "Junin",
-                "provincia": "Mendoza",
-                "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
-            },
-            "product-flow-geo-voter-0001",
-            {"X-Forwarded-For": "203.0.113.30"},
-        )
-
-        self.assertEqual(response.status_code, 201, response.get_json())
+        # Public territorial analytics require a hard k-anonymity threshold.
+        # Five distinct votes in the same privacy cell make the aggregate
+        # publishable without exposing a respondent's barrio or channel.
+        for index in range(5):
+            response = self._post_public_response(
+                f"/api/v2/public/surveys/{token}/respond",
+                {
+                    "anon_id": f"flow-voter-geo-{index + 1}",
+                    "source": "whatsapp_webview",
+                    "lat": -33.08149 + (index * 0.00001),
+                    "lng": -68.46849 + (index * 0.00001),
+                    "barrio": "Centro",
+                    "ciudad": "Junin",
+                    "provincia": "Mendoza",
+                    "respuestas": [{"pregunta_id": question_id, "opcion_id": option_id}],
+                },
+                f"product-flow-geo-voter-{index + 1:04d}",
+                {"X-Forwarded-For": f"203.0.113.{30 + index}"},
+            )
+            self.assertEqual(response.status_code, 201, response.get_json())
 
         live = self.client.get(f"/api/v2/public/surveys/{token}/live-results?include_heatmap=1")
         self.assertEqual(live.status_code, 200, live.get_json())
@@ -335,13 +345,16 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
         self.assertNotEqual(point["lat"], -33.08149)
         self.assertNotEqual(point["lng"], -68.46849)
         self.assertNotIn("submitted_at", point)
-        self.assertEqual(point["barrio"], "Centro")
+        self.assertNotIn("barrio", point)
+        self.assertNotIn("canal", point)
+        self.assertEqual(point["count"], 5)
         self.assertEqual(data["heatmap"]["metadata"]["points_count"], 1)
         self.assertEqual(data["heatmap"]["metadata"]["cells_count"], 1)
         self.assertEqual(data["heatmap"]["metadata"]["privacy_mode"], "public_aggregated")
         self.assertTrue(data["heatmap"]["metadata"]["raw_points_redacted"])
         self.assertEqual(data["heatmap"]["metadata"]["coordinate_precision"], "rounded_3_decimals")
-        self.assertEqual(data["heatmap"]["metadata"]["raw_points_count"], 1)
+        self.assertEqual(data["heatmap"]["metadata"]["minimum_cell_size"], 5)
+        self.assertNotIn("raw_points_count", data["heatmap"]["metadata"])
         self._assert_admin_operations(data, token, survey_id, tenant_slug=self.tenant.slug)
 
     def test_live_results_apply_explicit_analytics_range_to_all_surfaces(self):
@@ -390,7 +403,10 @@ class ProductFlowSurveyLiveVoteTest(unittest.TestCase):
             self.assertEqual(payload["preguntas"][0]["total_votos"], expected_total)
             self.assertEqual(payload["preguntas"][0]["opciones"][0]["votos"], expected_total)
             self.assertEqual(sum(point["total"] for point in payload["timeline_minute"]), expected_total)
-            self.assertEqual(payload["heatmap"]["metadata"]["raw_points_count"], expected_total)
+            self.assertEqual(payload["heatmap"]["metadata"]["minimum_cell_size"], 5)
+            self.assertNotIn("raw_points_count", payload["heatmap"]["metadata"])
+            self.assertEqual(payload["heatmap"]["points"], [])
+            self.assertEqual(payload["heatmap"]["cells"], [])
 
         with patch("services.encuestas_analytics_service._utc_now", return_value=fixed_now):
             last_60m = fetch_v2("last_60m")

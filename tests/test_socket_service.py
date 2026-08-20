@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, call
 
 from socket_service import (
@@ -9,27 +10,46 @@ from socket_service import (
     emit_ticket_assignment_changed,
     emit_ticket_presence_changed,
     emit_conversation_message_read,
+    emit_conversation_linked,
     emit_ticket_unread_changed,
+    emit_crm_contact_update,
+    emit_crm_notification_update,
     emit_survey_update,
 )
 
 
 class SocketServiceEventTests(unittest.TestCase):
-    def test_emit_new_ticket_emits_scoped_events(self):
-        payload = {"tenant_type": "municipio", "municipio_id": 7, "id": 11}
+    _INVALIDATION = {
+        'contract_version': 'tickets.collection.invalidated.v1',
+        'resource': 'tickets',
+        'reason': 'collection_changed',
+        'refetch': True,
+    }
+
+    def _assert_opaque_invalidation(self, emitted, *, room):
+        self.assertEqual(emitted, call('ticket_update', self._INVALIDATION, room=room))
+        serialized = str(emitted.args[1])
+        for marker in (
+            'ticket_id', 'ticketId', 'tenant_type', 'categoria', 'descripcion',
+            'direccion', 'email', 'telefono', 'dni', 'actor', 'assigned_to',
+            'presence_status', 'last_read_comment_id', 'unread_viewer_count',
+        ):
+            self.assertNotIn(marker, serialized)
+
+    def test_emit_new_ticket_emits_only_opaque_scoped_invalidation(self):
+        payload = {
+            "tenant_type": "municipio",
+            "municipio_id": 7,
+            "id": 11,
+            "categoria": "salud",
+            "descripcion": "private-ticket-description",
+        }
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_new_ticket(payload)
 
-        mock_emit.assert_has_calls(
-            [
-                call('new_ticket', payload, room='municipio_7'),
-                call('ticket_update', payload, room='municipio_7'),
-            ]
-        )
-        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.updated')
-        self.assertEqual(mock_emit.call_args_list[2].args[1]['room'], 'municipio_7')
-        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(len(mock_emit.call_args_list), 1)
+        self._assert_opaque_invalidation(mock_emit.call_args, room='municipio_7')
 
     def test_emit_ticket_comment_prefers_explicit_room(self):
         payload = {
@@ -52,18 +72,7 @@ class SocketServiceEventTests(unittest.TestCase):
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_comment(payload)
 
-        assert mock_emit.call_args_list[0] == call('new_comment', payload, room='tenant_3')
-        event_name, event_payload = mock_emit.call_args_list[1].args[:2]
-        self.assertEqual(event_name, 'conversation.message.created')
-        self.assertEqual(event_payload['room'], 'tenant_3')
-        self.assertEqual(event_payload['ticket']['id'], 15)
-        self.assertEqual(event_payload['ticket']['tenant_type'], 'pyme')
-        self.assertEqual(event_payload['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[1].kwargs, {'room': 'tenant_3'})
-        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.message.created')
-        self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'tenant_3'})
-        public_event = mock_emit.call_args_list[3]
+        public_event = mock_emit.call_args_list[0]
         self.assertEqual(public_event.args[0], 'new_chat_message')
         self.assertEqual(public_event.args[1]['socket_room'], 'ticket_pyme_15')
         self.assertEqual(public_event.args[1]['contract_version'], 'live_chat.public_message.v1')
@@ -73,6 +82,13 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertNotIn('user_id', public_event.args[1]['message'])
         self.assertNotIn('anon_id', public_event.args[1]['message'])
         self.assertEqual(public_event.kwargs, {'room': 'ticket_pyme_15'})
+        tenant_event = mock_emit.call_args_list[1]
+        self.assertEqual(tenant_event.args[0], 'ticket_update')
+        self.assertEqual(tenant_event.kwargs, {'room': 'tenant_3'})
+        self.assertEqual(tenant_event.args[1]['refetch'], True)
+        self.assertNotIn('ticket_id', tenant_event.args[1])
+        self.assertNotIn('Respuesta publica', str(tenant_event.args[1]))
+        self.assertEqual(len(mock_emit.call_args_list), 2)
 
     def test_emit_ticket_comment_never_mirrors_internal_notes_to_public_room(self):
         payload = {
@@ -92,29 +108,32 @@ class SocketServiceEventTests(unittest.TestCase):
 
         emitted_names = [item.args[0] for item in mock_emit.call_args_list]
         self.assertNotIn('new_chat_message', emitted_names)
-        self.assertEqual(emitted_names, [
-            'new_comment',
-            'conversation.message.created',
-            'ticket.message.created',
-        ])
+        self.assertEqual(emitted_names, ['ticket_update'])
+        self.assertEqual(mock_emit.call_args.kwargs, {'room': 'tenant_3'})
+        self.assertNotIn('Nota solo para operadores', str(mock_emit.call_args.args[1]))
 
-    def test_emit_ticket_status_changed_emits_legacy_and_standard_events(self):
-        payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "estado": "en_proceso"}
+    def test_emit_ticket_status_changed_keeps_broad_room_opaque(self):
+        payload = {
+            "socket_room": "municipio_7",
+            "tenant_type": "municipio",
+            "ticket_id": 11,
+            "estado": "en_proceso",
+            "descripcion": "private-status-description",
+            "actor": {"email": "private-status@example.com"},
+        }
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_status_changed(payload)
 
-        event_name, event_payload = mock_emit.call_args_list[0].args[:2]
-        self.assertEqual(event_name, 'ticket.status.changed')
-        self.assertEqual(event_payload['room'], 'municipio_7')
-        self.assertEqual(event_payload['ticket']['id'], 11)
-        self.assertEqual(event_payload['ticket']['status'], 'en_proceso')
-        self.assertEqual(event_payload['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[0].kwargs, {'room': 'municipio_7'})
-        self.assertEqual(mock_emit.call_args_list[1], call('ticket_update', payload, room='municipio_7'))
-        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.updated')
-        self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(len(mock_emit.call_args_list), 2)
+        self._assert_opaque_invalidation(mock_emit.call_args_list[0], room='municipio_7')
+        public_event = mock_emit.call_args_list[1]
+        self.assertEqual(public_event.args[0], 'ticket.status.changed')
+        self.assertEqual(public_event.kwargs, {'room': 'ticket_municipio_11'})
+        self.assertEqual(public_event.args[1]['contract_version'], 'live_chat.public_state.v1')
+        self.assertEqual(public_event.args[1]['estado'], 'en_proceso')
+        self.assertNotIn('private-status-description', str(public_event.args[1]))
+        self.assertNotIn('private-status@example.com', str(public_event.args[1]))
 
     def test_public_ticket_state_accepts_traditional_id_field(self):
         payload = {
@@ -137,23 +156,27 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertEqual(public_event.args[1]['ticketId'], 11)
         self.assertEqual(public_event.args[1]['estado'], 'resuelto')
 
-    def test_emit_ticket_assignment_changed_emits_legacy_and_standard_events(self):
-        payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "assigned_to": {"id": 22}}
+    def test_emit_ticket_assignment_changed_keeps_broad_room_opaque(self):
+        payload = {
+            "socket_room": "municipio_7",
+            "tenant_type": "municipio",
+            "ticket_id": 11,
+            "assignment_state": "assigned",
+            "assigned_to": {"id": 22, "email": "private-assignee@example.com"},
+        }
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_assignment_changed(payload)
 
-        event_name, event_payload = mock_emit.call_args_list[0].args[:2]
-        self.assertEqual(event_name, 'ticket.assignment.changed')
-        self.assertEqual(event_payload['room'], 'municipio_7')
-        self.assertEqual(event_payload['ticket']['id'], 11)
-        self.assertEqual(event_payload['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[0].kwargs, {'room': 'municipio_7'})
-        self.assertEqual(mock_emit.call_args_list[1], call('ticket_update', payload, room='municipio_7'))
-        self.assertEqual(mock_emit.call_args_list[2].args[0], 'ticket.updated')
-        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
+        self.assertEqual(len(mock_emit.call_args_list), 2)
+        self._assert_opaque_invalidation(mock_emit.call_args_list[0], room='municipio_7')
+        public_event = mock_emit.call_args_list[1]
+        self.assertEqual(public_event.args[0], 'ticket.assignment.changed')
+        self.assertEqual(public_event.kwargs, {'room': 'ticket_municipio_11'})
+        self.assertEqual(public_event.args[1]['assignment_state'], 'assigned')
+        self.assertNotIn('private-assignee@example.com', str(public_event.args[1]))
 
-    def test_emit_new_chat_message_emits_whatsapp_analytics_alias(self):
+    def test_emit_new_chat_message_sanitizes_public_and_invalidates_tenant(self):
         payload = {
             "socket_room": "ticket_municipio_11",
             "tenant_type": "municipio",
@@ -186,54 +209,89 @@ class SocketServiceEventTests(unittest.TestCase):
         self.assertNotIn('user_id', public_message.args[1]['message'])
         self.assertNotIn('anon_id', public_message.args[1]['message'])
         self.assertNotIn('actor_identity', public_message.args[1]['message'])
-        self.assertEqual(mock_emit.call_args_list[1], call('new_chat_message', payload, room='municipio_7'))
-        self.assertEqual(mock_emit.call_args_list[2].args[0], 'conversation.message.created')
-        self.assertEqual(mock_emit.call_args_list[2].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[2].kwargs, {'room': 'municipio_7'})
-        self.assertEqual(mock_emit.call_args_list[3].args[0], 'ticket.message.created')
-        self.assertEqual(mock_emit.call_args_list[3].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[3].kwargs, {'room': 'municipio_7'})
-        self.assertEqual(mock_emit.call_args_list[4].args[0], 'whatsapp.message.created')
-        self.assertEqual(mock_emit.call_args_list[4].args[1]['payload'], payload)
-        self.assertEqual(mock_emit.call_args_list[4].kwargs, {'room': 'municipio_7'})
-        self.assertEqual(len(mock_emit.call_args_list), 5)
+        tenant_event = mock_emit.call_args_list[1]
+        self.assertEqual(tenant_event.args[0], 'ticket_update')
+        self.assertEqual(tenant_event.kwargs, {'room': 'municipio_7'})
+        self.assertEqual(
+            tenant_event.args[1],
+            {
+                'contract_version': 'tickets.collection.invalidated.v1',
+                'resource': 'tickets',
+                'reason': 'collection_changed',
+                'refetch': True,
+            },
+        )
+        tenant_serialized = str(tenant_event.args[1])
+        self.assertNotIn('Respuesta del operador', tenant_serialized)
+        self.assertNotIn('operator@example.com', tenant_serialized)
+        self.assertNotIn('ticket_id', tenant_event.args[1])
+        self.assertEqual(len(mock_emit.call_args_list), 2)
 
-    def test_emit_ticket_presence_changed_uses_enterprise_envelope(self):
+    def test_emit_ticket_presence_changed_keeps_broad_room_opaque(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "presence_status": "active"}
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_presence_changed(payload)
 
-        event_name, event_payload = mock_emit.call_args.args[:2]
-        self.assertEqual(event_name, 'ticket.presence.changed')
-        self.assertEqual(event_payload['ticket']['id'], 11)
-        self.assertEqual(event_payload['payload']['presence_status'], 'active')
-        self.assertEqual(mock_emit.call_args.kwargs, {'room': 'municipio_7'})
+        self._assert_opaque_invalidation(mock_emit.call_args, room='municipio_7')
 
-    def test_emit_conversation_message_read_uses_enterprise_envelope(self):
+    def test_emit_conversation_message_read_keeps_broad_room_opaque(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "last_read_comment_id": 55, "read_at": "2026-03-21T00:00:00+00:00"}
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_conversation_message_read(payload)
 
-        event_name, event_payload = mock_emit.call_args.args[:2]
-        self.assertEqual(event_name, 'conversation.message.read')
-        self.assertEqual(event_payload['ticket']['id'], 11)
-        self.assertEqual(event_payload['message']['read_at'], '2026-03-21T00:00:00+00:00')
-        self.assertEqual(event_payload['payload']['last_read_comment_id'], 55)
-        self.assertEqual(mock_emit.call_args.kwargs, {'room': 'municipio_7'})
+        self._assert_opaque_invalidation(mock_emit.call_args, room='municipio_7')
 
-    def test_emit_ticket_unread_changed_uses_enterprise_envelope(self):
+    def test_emit_conversation_linked_keeps_broad_room_opaque(self):
+        payload = {
+            "socket_room": "municipio_7",
+            "tenant_type": "municipio",
+            "ticket_id": 11,
+            "target_identity": "private-neighbor@example.com",
+        }
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_conversation_linked(payload)
+
+        self._assert_opaque_invalidation(mock_emit.call_args, room='municipio_7')
+        self.assertNotIn('private-neighbor@example.com', str(mock_emit.call_args.args[1]))
+
+    def test_emit_ticket_unread_changed_keeps_broad_room_opaque(self):
         payload = {"socket_room": "municipio_7", "tenant_type": "municipio", "ticket_id": 11, "summary": {"unread_viewer_count": 2}}
 
         with patch('socket_service.socketio.emit') as mock_emit:
             emit_ticket_unread_changed(payload)
 
-        event_name, event_payload = mock_emit.call_args.args[:2]
-        self.assertEqual(event_name, 'ticket.unread.changed')
-        self.assertEqual(event_payload['ticket']['id'], 11)
-        self.assertEqual(event_payload['payload']['summary']['unread_viewer_count'], 2)
-        self.assertEqual(mock_emit.call_args.kwargs, {'room': 'municipio_7'})
+        self._assert_opaque_invalidation(mock_emit.call_args, room='municipio_7')
+
+    def test_crm_broad_rooms_receive_only_opaque_collection_invalidations(self):
+        tenant = SimpleNamespace(id=3, slug='junin')
+        private_payload = {
+            'email': 'private-neighbor@example.com',
+            'phone': '+5491111111111',
+            'body': 'private notification body',
+        }
+
+        with patch(
+            'socket_service._get_rooms_for_tenant_slug',
+            return_value=['crm_3', 'tenant_3'],
+        ), patch('socket_service.socketio.emit') as mock_emit:
+            emit_crm_contact_update(tenant, private_payload)
+            emit_crm_notification_update(tenant, private_payload)
+
+        self.assertEqual(len(mock_emit.call_args_list), 8)
+        for emitted in mock_emit.call_args_list:
+            payload = emitted.args[1]
+            self.assertEqual(payload['contract_version'], 'collections.invalidated.v1')
+            self.assertIn(payload['resource'], {'contacts', 'notifications'})
+            self.assertEqual(payload['reason'], 'collection_changed')
+            self.assertTrue(payload['refetch'])
+            serialized = str(payload)
+            self.assertNotIn('private-neighbor@example.com', serialized)
+            self.assertNotIn('+5491111111111', serialized)
+            self.assertNotIn('private notification body', serialized)
+            self.assertIn(emitted.kwargs['room'], {'crm_3', 'tenant_3'})
 
     def test_emit_survey_update_emits_legacy_and_v2_payloads_to_tenant_room(self):
         legacy_payload = {"total_respuestas": 1, "preguntas": {"10": {"opciones": []}}}

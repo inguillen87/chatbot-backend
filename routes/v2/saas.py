@@ -14,6 +14,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import func, or_
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from extensions import db
 from models import (
@@ -67,6 +68,17 @@ from services.crm_operational_queue_guard import (
 )
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
 from services.live_chat_schedule import build_tenant_live_chat_status
+from services.omnichannel_message_policy import (
+    OMNICHANNEL_REPLY_MAX_BODY_BYTES,
+    OmnichannelMessagePolicyError,
+    normalize_omnichannel_reply_body,
+)
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    build_survey_response_provenance,
+)
 from services.operational_intelligence import build_operational_dashboard, build_operational_freshness
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
 from services.plan_access import integration_access_payload, integration_frontend_contract, plan_allows_full_integrations
@@ -127,6 +139,12 @@ _HANDOFF_QUEUED_STATES = {
 }
 _HANDOFF_TERMINAL_STATES = {"resolved", "cancelled", "canceled", "expired", "rejected"}
 _HANDOFF_SUPPORTED_CHANNELS = {"operator", "live_chat", "phone"}
+# Administrative replies can target WhatsApp, email, or web. Keep the JSON
+# envelope bounded while leaving room for routing/idempotency metadata, and
+# align the durable normalized body with the repository's 8 KiB omnichannel
+# message policy (services.whatsapp_inbound_turns.MAX_BODY_BYTES).
+_OMNICHANNEL_ACTION_MAX_REQUEST_BYTES = 16 * 1024
+_OMNICHANNEL_REPLY_MAX_BODY_BYTES = OMNICHANNEL_REPLY_MAX_BODY_BYTES
 _WHATSAPP_QA_SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "qa_whatsapp_flows.py"
 _TWILIO_STATE_SECRET_KEYS = {
     "embedded_signup_code",
@@ -135,6 +153,10 @@ _TWILIO_STATE_SECRET_KEYS = {
     "access_token",
     "refresh_token",
 }
+
+
+class _OmnichannelActionRequestTooLarge(RequestEntityTooLarge):
+    """Raised before app middleware can deserialize an oversized action body."""
 
 
 def _scrub_twilio_state_secrets(tenant: TenantProfile, state: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -184,6 +206,84 @@ def _error_response(message: str, status_code: int, reason_code: str, action_hin
         },
         status_code,
     )
+
+
+def _bounded_omnichannel_action_raw_body() -> bytes:
+    configured_max = request.max_content_length
+    effective_max = (
+        min(configured_max, _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES)
+        if configured_max is not None and configured_max > 0
+        else _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES
+    )
+    if (
+        request.content_length is not None
+        and request.content_length > effective_max
+    ):
+        raise _OmnichannelActionRequestTooLarge()
+
+    # Werkzeug's limited stream may return exactly its cap without consuming an
+    # unknown-length remainder. Permit one sentinel byte so chunked requests can
+    # be rejected without buffering an unbounded body.
+    request.max_content_length = effective_max + 1
+    try:
+        raw_body = request.get_data(cache=True)
+    except RequestEntityTooLarge as exc:
+        raise _OmnichannelActionRequestTooLarge() from exc
+    if len(raw_body) > effective_max:
+        raise _OmnichannelActionRequestTooLarge()
+    return raw_body
+
+
+@v2_saas_bp.url_value_preprocessor
+def _guard_omnichannel_action_before_app_middleware(endpoint, _values):
+    """Run before app ``before_request`` hooks that may inspect JSON bodies."""
+
+    if (
+        endpoint == f"{v2_saas_bp.name}.omnichannel_inbox_action_v2"
+        and request.method == "POST"
+    ):
+        _bounded_omnichannel_action_raw_body()
+
+
+@v2_saas_bp.errorhandler(_OmnichannelActionRequestTooLarge)
+def _omnichannel_action_request_too_large(_error):
+    return _error_response(
+        "El request de accion de inbox supera el tamano permitido.",
+        413,
+        "inbox_action_request_too_large",
+        "reduce_inbox_action_payload",
+    )
+
+
+def _omnichannel_action_json_payload():
+    """Parse only after the routing-stage byte guard has accepted the body."""
+
+    _bounded_omnichannel_action_raw_body()
+    payload = request.get_json(silent=True)
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _omnichannel_reply_body(payload: Mapping[str, Any]):
+    """Normalize and bound the exact text copied into durable reply records."""
+
+    value = payload.get("body") or payload.get("message") or payload.get("comentario")
+    try:
+        body = normalize_omnichannel_reply_body(value)
+    except OmnichannelMessagePolicyError as exc:
+        if exc.reason_code == "reply_body_too_large":
+            return None, _error_response(
+                "El mensaje supera el tamano permitido.",
+                413,
+                "reply_body_too_large",
+                "reduce_reply_body",
+            )
+        return None, _error_response(
+            "El mensaje no puede estar vacio",
+            400,
+            "reply_body_required",
+            "send_reply_body",
+        )
+    return body, None
 
 
 def _integration_plan_error(tenant: TenantProfile, feature_id: str = "whatsapp_business_platform"):
@@ -628,35 +728,72 @@ def _safe_count(query) -> int:
 
 
 def _survey_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
-    encuestas = EncEncuesta.query.filter_by(tenant_id=tenant.id).all()
-    public_surveys = PublicSurvey.query.filter_by(tenant_id=tenant.id).all()
-    public_survey_ids = [survey.id for survey in public_surveys]
-    public_responses = 0
-    if public_survey_ids:
-        public_responses = _safe_count(PublicSurveyResponse.query.filter(PublicSurveyResponse.survey_id.in_(public_survey_ids)))
-    legacy_responses = _safe_count(EncRespuesta.query.filter_by(tenant_id=tenant.id))
-    live_votes = [
-        encuesta
-        for encuesta in encuestas
-        if bool(getattr(encuesta, "es_votacion_envivo", False))
-        or "vot" in str(getattr(encuesta, "tipo", "") or "").lower()
-        or "vot" in str(getattr(encuesta, "titulo", "") or "").lower()
-    ]
-    active = [
-        encuesta
-        for encuesta in encuestas
-        if str(getattr(encuesta, "estado", "") or "").lower() in {"publicada", "activa", "active", "published"}
-    ]
+    encuestas_query = EncEncuesta.query.filter_by(tenant_id=tenant.id)
+    survey_count = _safe_count(encuestas_query)
+    encuestas = encuestas_query.order_by(EncEncuesta.id.asc()).limit(12).all()
+    public_survey_count = _safe_count(PublicSurvey.query.filter_by(tenant_id=tenant.id))
+    public_responses = _safe_count(
+        PublicSurveyResponse.query.join(
+            PublicSurvey,
+            PublicSurveyResponse.survey_id == PublicSurvey.id,
+        ).filter(PublicSurvey.tenant_id == tenant.id)
+    )
+
+    legacy_response_query = EncRespuesta.query.filter_by(tenant_id=tenant.id)
+    legacy_responses = _safe_count(
+        legacy_response_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL
+        )
+    )
+    synthetic_response_count = _safe_count(
+        legacy_response_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO
+        )
+    )
+    unverified_response_count = _safe_count(
+        legacy_response_query.filter(
+            EncRespuesta.response_origin
+            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED
+        )
+    )
+
+    live_vote_predicate = or_(
+        EncEncuesta.es_votacion_envivo.is_(True),
+        func.lower(func.coalesce(EncEncuesta.tipo, "")).like("%vot%"),
+        func.lower(func.coalesce(EncEncuesta.titulo, "")).like("%vot%"),
+    )
+    live_vote_count = _safe_count(encuestas_query.filter(live_vote_predicate))
+    active_count = _safe_count(
+        encuestas_query.filter(
+            func.lower(func.coalesce(EncEncuesta.estado, "")).in_(
+                {"publicada", "activa", "active", "published"}
+            )
+        )
+    )
+
+    def is_live_vote(encuesta: EncEncuesta) -> bool:
+        return (
+            bool(getattr(encuesta, "es_votacion_envivo", False))
+            or "vot" in str(getattr(encuesta, "tipo", "") or "").lower()
+            or "vot" in str(getattr(encuesta, "titulo", "") or "").lower()
+        )
+
     return {
         "contract_version": "tenant.surveys_ops.v1",
         "summary": {
-            "surveys": len(encuestas),
-            "public_surveys": len(public_surveys),
-            "active": len(active),
-            "live_votes": len(live_votes),
+            "surveys": survey_count,
+            "public_surveys": public_survey_count,
+            "active": active_count,
+            "live_votes": live_vote_count,
             "responses": legacy_responses + public_responses,
             "public_responses": public_responses,
         },
+        "response_provenance": build_survey_response_provenance(
+            real_count=legacy_responses + public_responses,
+            synthetic_count=synthetic_response_count,
+            unverified_count=unverified_response_count,
+            mode="real",
+        ),
         "items": [
             {
                 "id": encuesta.id,
@@ -664,10 +801,10 @@ def _survey_ops_summary(tenant: TenantProfile) -> dict[str, Any]:
                 "title": encuesta.titulo,
                 "type": encuesta.tipo,
                 "status": encuesta.estado,
-                "is_live_vote": bool(encuesta in live_votes),
+                "is_live_vote": is_live_vote(encuesta),
                 "show_live_results": bool(getattr(encuesta, "mostrar_resultados_envivo", False)),
             }
-            for encuesta in encuestas[:12]
+            for encuesta in encuestas
         ],
         "endpoints": {
             "admin": "/api/v2/surveys",
@@ -797,10 +934,34 @@ def _ticket_item_from_legacy(ticket: Any, source: str) -> dict[str, Any]:
     }
 
 
-def _tenant_lead_capture_summary(tenant: TenantProfile, limit: int = 20) -> dict[str, Any]:
-    tenant_rows = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).limit(limit).all()
-    municipio_rows = MunicipioTicket.query.filter_by(tenant_id=tenant.id).order_by(MunicipioTicket.fecha.desc()).limit(limit).all()
-    pyme_rows = PymeTicket.query.filter_by(tenant_id=tenant.id).order_by(PymeTicket.fecha.desc()).limit(limit).all()
+def _tenant_lead_capture_summary(
+    tenant: TenantProfile,
+    limit: int = 20,
+    *,
+    viewer: User | None,
+) -> dict[str, Any]:
+    tenant_query = apply_employee_ticket_category_scope(
+        TenantTicket.query.filter_by(tenant_id=tenant.id),
+        viewer,
+        TenantTicket,
+    )
+    municipio_query = apply_employee_ticket_category_scope(
+        MunicipioTicket.query.filter_by(tenant_id=tenant.id),
+        viewer,
+        MunicipioTicket,
+    )
+    pyme_query = apply_employee_ticket_category_scope(
+        PymeTicket.query.filter_by(tenant_id=tenant.id),
+        viewer,
+        PymeTicket,
+    )
+    tenant_rows = (
+        tenant_query.order_by(TenantTicket.updated_at.desc()).limit(limit).all()
+    )
+    municipio_rows = (
+        municipio_query.order_by(MunicipioTicket.fecha.desc()).limit(limit).all()
+    )
+    pyme_rows = pyme_query.order_by(PymeTicket.fecha.desc()).limit(limit).all()
 
     items = [_ticket_item_from_tenant(ticket) for ticket in tenant_rows]
     items.extend(_ticket_item_from_legacy(ticket, "municipio_ticket") for ticket in municipio_rows)
@@ -1078,13 +1239,19 @@ def _build_tenant_admin_experience_payload(
     start_date: datetime,
     end_date: datetime,
     app_config: Mapping[str, Any] | None = None,
+    viewer: User | None,
 ) -> dict[str, Any]:
     health = _tenant_health_payload(tenant)
-    dashboard = build_operational_dashboard(tenant, start_date, end_date)
-    freshness = build_operational_freshness(tenant, start_date, end_date)
+    dashboard = build_operational_dashboard(tenant, start_date, end_date, viewer=viewer)
+    freshness = build_operational_freshness(
+        tenant,
+        start_date,
+        end_date,
+        viewer=viewer,
+    )
     marketplace = _marketplace_ops_summary(tenant)
     surveys = _survey_ops_summary(tenant)
-    lead_capture = _tenant_lead_capture_summary(tenant)
+    lead_capture = _tenant_lead_capture_summary(tenant, viewer=viewer)
     education_profile = build_education_profile(tenant)
     readiness = _tenant_readiness_payload(tenant, marketplace=marketplace, health=health)
     whatsapp = build_whatsapp_experience(tenant, app_config=app_config)
@@ -1255,12 +1422,14 @@ def _build_tenant_ops_qa_playbook(
     start_date: datetime,
     end_date: datetime,
     app_config: Mapping[str, Any] | None = None,
+    viewer: User | None,
 ) -> dict[str, Any]:
     admin = _build_tenant_admin_experience_payload(
         tenant,
         start_date=start_date,
         end_date=end_date,
         app_config=app_config,
+        viewer=viewer,
     )
     modules = {str(item.get("id")): item for item in admin.get("modules", []) if isinstance(item, Mapping)}
     operations = admin.get("operations") if isinstance(admin.get("operations"), Mapping) else {}
@@ -1523,7 +1692,13 @@ def _tenant_ops_qa_execution_result(
     }
 
 
-def _build_superadmin_command_center_payload(*, start_date: datetime, end_date: datetime, limit: int = 50) -> dict[str, Any]:
+def _build_superadmin_command_center_payload(
+    *,
+    start_date: datetime,
+    end_date: datetime,
+    limit: int = 50,
+    viewer: User | None,
+) -> dict[str, Any]:
     tenants = TenantProfile.query.order_by(TenantProfile.created_at.desc()).limit(limit).all()
     tenant_items = []
     total_open = 0
@@ -1533,7 +1708,11 @@ def _build_superadmin_command_center_payload(*, start_date: datetime, end_date: 
 
     for tenant in tenants:
         health = _tenant_health_payload(tenant)
-        lead_capture = _tenant_lead_capture_summary(tenant, limit=5)
+        lead_capture = _tenant_lead_capture_summary(
+            tenant,
+            limit=5,
+            viewer=viewer,
+        )
         readiness = _tenant_readiness_payload(tenant, marketplace=_marketplace_ops_summary(tenant), health=health)
         tenant_ref = _tenant_ref(tenant)
         health_block = health.get("health") or {}
@@ -1876,6 +2055,7 @@ def tenant_admin_experience_v2(current_user, tenant_slug: str | None = None):
             start_date=start_date,
             end_date=end_date,
             app_config=current_app.config,
+            viewer=current_user,
         )
     except Exception as exc:  # pragma: no cover - defensive production guard
         current_app.logger.exception("[tenant_admin_experience] degraded payload for tenant=%s", getattr(tenant, "slug", None))
@@ -1948,6 +2128,7 @@ def tenant_ops_qa_playbook_v2(current_user, tenant_slug: str | None = None):
             start_date=start_date,
             end_date=end_date,
             app_config=current_app.config,
+            viewer=current_user,
         )
     except Exception as exc:  # pragma: no cover - defensive degradation for ops UI
         current_app.logger.exception("[tenant_ops_qa] degraded payload for tenant=%s", getattr(tenant, "slug", None))
@@ -1990,6 +2171,7 @@ def tenant_ops_qa_check_v2(current_user, check_id: str, tenant_slug: str | None 
         start_date=start_date,
         end_date=end_date,
         app_config=current_app.config,
+        viewer=current_user,
     )
     checks = {
         str(item.get("id")): item
@@ -3531,7 +3713,12 @@ def executive_summary_v2(current_user):
 def superadmin_command_center_v2(current_user):
     start_date, end_date = _date_range_from_request(default_days=30)
     limit = max(1, min(int(request.args.get("limit", 50) or 50), 200))
-    payload = _build_superadmin_command_center_payload(start_date=start_date, end_date=end_date, limit=limit)
+    payload = _build_superadmin_command_center_payload(
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        viewer=current_user,
+    )
     return _json_response(payload)
 
 
@@ -4045,7 +4232,13 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
 
     if tenant:
         marketplace = _marketplace_ops_summary(tenant)
-        admin_payload = _build_tenant_admin_experience_payload(tenant, start_date=start_date, end_date=end_date, app_config=current_app.config)
+        admin_payload = _build_tenant_admin_experience_payload(
+            tenant,
+            start_date=start_date,
+            end_date=end_date,
+            app_config=current_app.config,
+            viewer=current_user,
+        )
         whatsapp = build_whatsapp_experience(tenant, app_config=current_app.config)
         e2e_readiness = _build_production_e2e_readiness(
             tenant=tenant,
@@ -6090,11 +6283,12 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
+    payload = _omnichannel_action_json_payload()
+
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
 
-    payload = request.get_json(silent=True) or {}
     source_model = payload.get("source_model") or payload.get("legacy_model")
     raw_ticket_id = ticket_id or payload.get("legacy_id") or payload.get("ticket_id") or payload.get("id")
     resolved_ticket_id = _coerce_inbox_ticket_id(raw_ticket_id)
@@ -6211,14 +6405,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 "ticket_closed",
                 "reopen_ticket",
             )
-        body = str(
-            payload.get("body")
-            or payload.get("message")
-            or payload.get("comentario")
-            or ""
-        ).strip()
-        if not body:
-            return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
+        body, body_error = _omnichannel_reply_body(payload)
+        if body_error is not None:
+            return body_error
         visibility = str(payload.get("visibility") or "public").strip().lower()
         reply_visibility = "internal" if visibility == "internal" else "public"
         event_body = body
@@ -6407,8 +6596,8 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             "contract_version": "tenant_ticket.reply.realtime.v1",
             "emitted": realtime_emitted,
             "queued": bool(reply_outbox_effect_count and not reply_replayed),
-            "event": "new_chat_message" if (realtime_emitted or reply_outbox_effect_count) else None,
-            "events": ["new_chat_message"] if (realtime_emitted or reply_outbox_effect_count) else [],
+            "event": "ticket_update" if (realtime_emitted or reply_outbox_effect_count) else None,
+            "events": ["ticket_update"] if (realtime_emitted or reply_outbox_effect_count) else [],
             "room": f"tenant_{tenant.id}",
             "scope": "authenticated_tenant_operators",
             "fallback": "http_polling",

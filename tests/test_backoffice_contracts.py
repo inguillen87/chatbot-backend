@@ -1,7 +1,8 @@
 import jwt
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import current_app
+from sqlalchemy import event
 
 from extensions import db
 from models import (
@@ -96,7 +97,7 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
     db.session.add(tenant)
     db.session.flush()
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     db.session.add(
         MunicipioTicket(
             municipio_id=owner.id,
@@ -139,6 +140,33 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
         )
     )
     db.session.add(
+        EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=tenant.id,
+            response_origin="legacy_unverified",
+            huella_unica="summary-legacy-unverified",
+            lat=-34.63,
+            lng=-58.43,
+            submitted_at=now - timedelta(hours=1),
+        )
+    )
+    db.session.add(
+        EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=tenant.id,
+            response_origin="synthetic_demo",
+            huella_unica="summary-trusted-synthetic",
+            lat=-34.62,
+            lng=-58.42,
+            submitted_at=now - timedelta(hours=2),
+            metadata_payload={
+                "is_demo_seed": True,
+                "demo_seed_contract_version": "surveys.demo_seeding.v1",
+                "demo_batch_id": f"seed-{encuesta.id}-1720000000",
+            },
+        )
+    )
+    db.session.add(
         EncComentario(
             encuesta_id=encuesta.id,
             texto="Revisar comentario",
@@ -162,6 +190,16 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
     assert cards["resolved_cases"]["value"] == 1
     assert cards["active_surveys"]["value"] == 1
     assert cards["live_votes"]["value"] == 1
+    assert (
+        payload["surveys_overview"]["response_provenance"]
+        ["synthetic_responses_excluded"]
+        == 1
+    )
+    assert (
+        payload["surveys_overview"]["response_provenance"]
+        ["unverified_responses_excluded"]
+        == 1
+    )
     assert payload["surveys_overview"]["comments_pending_review"] == 1
     assert payload["surveys_overview"]["heatmap_available"] is True
     assert payload["ai_summary_available"] is True
@@ -244,6 +282,197 @@ def test_backoffice_navigation_supports_school_scope_without_frontend_hardcoding
     assert modules["maps"]["enabled"] is True
     assert modules["advanced_analytics"]["enabled"] is True
     assert {item["id"] for item in payload["actions"]} == {"export_backoffice", "executive_summary"}
+
+
+def test_backoffice_employee_requires_explicit_operational_scope(client):
+    owner = User(
+        email="backoffice-capability-owner@test.com",
+        name="Capability Owner",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("pw")
+    employee_without_scope = User(
+        email="backoffice-no-capability@test.com",
+        name="Employee Without Scope",
+        rol="empleado",
+        tipo_chat="municipio",
+        accesibilidad={
+            "employee_scope": {
+                "capabilities": {"analytics.operations.read": "false"},
+            }
+        },
+    )
+    employee_without_scope.set_password("pw")
+    scoped_employee = User(
+        email="backoffice-with-capability@test.com",
+        name="Scoped Employee",
+        rol="empleado",
+        tipo_chat="municipio",
+        accesibilidad={
+            "employee_scope": {
+                "capabilities": ["analytics.operations.read"],
+            }
+        },
+    )
+    scoped_employee.set_password("pw")
+    db.session.add_all([owner, employee_without_scope, scoped_employee])
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="backoffice-capability",
+        nombre="Backoffice Capability",
+        tipo="municipio",
+        municipio_id=owner.id,
+        plan="enterprise",
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    employee_without_scope.tenant_id = tenant.id
+    scoped_employee.tenant_id = tenant.id
+    db.session.commit()
+
+    for endpoint in (
+        "/api/app/backoffice/navigation",
+        "/api/app/backoffice/summary",
+        "/api/v2/backoffice/operations/inbox-summary",
+    ):
+        denied = client.get(
+            endpoint,
+            query_string={"tenant_slug": tenant.slug},
+            headers=_auth_headers(employee_without_scope),
+        )
+        assert denied.status_code == 403
+        denied_payload = denied.get_json()
+        assert (
+            denied_payload["reason_code"]
+            == "backoffice_operational_capability_required"
+        )
+        assert "analytics.operations.read" in denied_payload["required_capabilities"]
+
+        allowed = client.get(
+            endpoint,
+            query_string={"tenant_slug": tenant.slug},
+            headers=_auth_headers(scoped_employee),
+        )
+        assert allowed.status_code == 200
+
+
+def test_backoffice_survey_overview_uses_one_bounded_aggregate_and_excludes_nonreal_geo(client):
+    owner = User(
+        email="backoffice-scale-owner@test.com",
+        name="Scale Owner",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="backoffice-survey-scale",
+        nombre="Backoffice Survey Scale",
+        tipo="municipio",
+        municipio_id=owner.id,
+        plan="enterprise",
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    survey = EncEncuesta(
+        tenant_id=tenant.id,
+        slug="backoffice-survey-scale",
+        titulo="Backoffice survey scale",
+        estado="publicada",
+    )
+    db.session.add(survey)
+    db.session.flush()
+
+    now = datetime.now(timezone.utc)
+    db.session.add_all(
+        [
+            EncRespuesta(
+                encuesta_id=survey.id,
+                tenant_id=tenant.id,
+                response_origin="real",
+                huella_unica=f"backoffice-scale-real-{index}",
+                submitted_at=now - timedelta(hours=1),
+            )
+            for index in range(64)
+        ]
+    )
+    db.session.add_all(
+        [
+            EncRespuesta(
+                encuesta_id=survey.id,
+                tenant_id=tenant.id,
+                response_origin="synthetic_demo",
+                huella_unica=f"backoffice-scale-synthetic-{index}",
+                phone=f"+5492619990{index}",
+                barrio="Barrio reservado",
+                lat=-34.61,
+                lng=-58.41,
+                submitted_at=now - timedelta(minutes=30),
+            )
+            for index in range(3)
+        ]
+    )
+    db.session.add_all(
+        [
+            EncRespuesta(
+                encuesta_id=survey.id,
+                tenant_id=tenant.id,
+                response_origin="legacy_unverified",
+                huella_unica=f"backoffice-scale-unverified-{index}",
+                ip=f"192.0.2.{index + 10}",
+                barrio="Zona en cuarentena",
+                lat=-34.62,
+                lng=-58.42,
+                submitted_at=now - timedelta(minutes=20),
+            )
+            for index in range(2)
+        ]
+    )
+    db.session.commit()
+
+    response_queries: list[str] = []
+    loaded_response_ids: list[int] = []
+
+    def capture_response_query(_conn, _cursor, statement, _parameters, _context, _many):
+        if "enc_respuesta" in statement.lower():
+            response_queries.append(statement)
+
+    def capture_response_load(target, _context):
+        loaded_response_ids.append(target.id)
+
+    event.listen(db.engine, "before_cursor_execute", capture_response_query)
+    event.listen(EncRespuesta, "load", capture_response_load)
+    try:
+        db.session.expire_all()
+        response = client.get(
+            "/api/app/backoffice/summary",
+            query_string={"tenant_slug": tenant.slug, "window": "999999d"},
+            headers=_auth_headers(owner),
+        )
+    finally:
+        event.remove(db.engine, "before_cursor_execute", capture_response_query)
+        event.remove(EncRespuesta, "load", capture_response_load)
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    overview = payload["surveys_overview"]
+    provenance = overview["response_provenance"]
+    assert payload["window"] == "90d"
+    assert overview["live_votes"] == 64
+    assert overview["heatmap_available"] is False
+    assert provenance["real_responses_included"] == 64
+    assert provenance["synthetic_responses_excluded"] == 3
+    assert provenance["unverified_responses_excluded"] == 2
+    assert loaded_response_ids == []
+    assert len(response_queries) == 1
+    assert "sum(case" in " ".join(response_queries[0].lower().split())
+    serialized = response.get_data(as_text=True)
+    assert "+5492619990" not in serialized
+    assert "Barrio reservado" not in serialized
+    assert "Zona en cuarentena" not in serialized
 
 
 def test_backoffice_v2_inbox_summary_prioritizes_real_ticket_work(client):
@@ -489,7 +718,13 @@ def test_backoffice_v2_team_coverage_summary_flags_uncovered_categories(client):
     assert any(item["id"].startswith("assign_category_") for item in payload["assignment_recommendations"])
 
 
-def test_backoffice_v2_export_and_executive_summary_are_traceable(client):
+def test_backoffice_v2_export_and_executive_summary_are_traceable(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr("routes.backoffice._export_dir", lambda: tmp_path)
+
     owner = User(email="export-junin@test.com", name="Export Junin", rol="admin", tipo_chat="municipio")
     owner.set_password("pw")
     db.session.add(owner)
@@ -544,7 +779,15 @@ def test_backoffice_v2_rejects_end_user_before_pii_or_export_side_effects(client
         tenant_slug="operator-gate",
     )
     end_user.set_password("pw")
-    db.session.add_all([owner, end_user])
+    client_alias = User(
+        email="operator-gate-client@test.com",
+        name="Client Alias",
+        rol="cliente",
+        tipo_chat="municipio",
+        tenant_slug="operator-gate",
+    )
+    client_alias.set_password("pw")
+    db.session.add_all([owner, end_user, client_alias])
     db.session.flush()
     tenant = TenantProfile(
         slug="operator-gate",
@@ -556,6 +799,7 @@ def test_backoffice_v2_rejects_end_user_before_pii_or_export_side_effects(client
     db.session.add(tenant)
     db.session.flush()
     end_user.tenant_id = tenant.id
+    client_alias.tenant_id = tenant.id
     db.session.commit()
 
     export_dir_calls = []
@@ -563,17 +807,21 @@ def test_backoffice_v2_rejects_end_user_before_pii_or_export_side_effects(client
     monkeypatch.setattr("routes.backoffice._export_dir", lambda: export_dir_calls.append(True))
     monkeypatch.setattr("routes.backoffice._write_csv_export", lambda path, rows: write_calls.append(rows))
 
-    headers = _auth_headers(end_user)
-    for endpoint in (
-        "/api/v2/backoffice/operations/inbox-summary",
-        "/api/v2/backoffice/orders/summary",
-        "/api/v2/backoffice/contacts/summary",
-        "/api/v2/backoffice/team/coverage-summary",
-    ):
-        response = client.get(endpoint, query_string={"tenant_slug": tenant.slug}, headers=headers)
-        assert response.status_code == 403
-        assert response.get_json()["reason_code"] == "backoffice_operator_required"
+    for blocked_user in (end_user, client_alias):
+        headers = _auth_headers(blocked_user)
+        for endpoint in (
+            "/api/app/backoffice/navigation",
+            "/api/app/backoffice/summary",
+            "/api/v2/backoffice/operations/inbox-summary",
+            "/api/v2/backoffice/orders/summary",
+            "/api/v2/backoffice/contacts/summary",
+            "/api/v2/backoffice/team/coverage-summary",
+        ):
+            response = client.get(endpoint, query_string={"tenant_slug": tenant.slug}, headers=headers)
+            assert response.status_code == 403
+            assert response.get_json()["reason_code"] == "backoffice_operator_required"
 
+    headers = _auth_headers(end_user)
     export_response = client.post(
         "/api/v2/backoffice/export",
         json={"tenant_slug": tenant.slug, "resource": "contacts", "format": "csv"},

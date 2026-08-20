@@ -4,8 +4,12 @@ from config import ALLOWED_ORIGINS
 from models import ChatSessionContext, EncEncuesta, EncLink, User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
-from services.conversation_stream import build_realtime_envelope
 from services.live_chat_access import LiveChatAccessError, build_ticket_room, verify_ticket_room_token
+from services.employee_ticket_access import employee_ticket_category_access_allows
+from services.omnichannel_message_policy import (
+    OmnichannelMessagePolicyError,
+    normalize_omnichannel_reply_body,
+)
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
@@ -44,6 +48,7 @@ PUBLIC_TICKET_COMMENT_ORIGINS = {
     "whatsapp",
     "widget",
 }
+TENANT_TICKET_INVALIDATION_CONTRACT_VERSION = "tickets.collection.invalidated.v1"
 
 SURVEY_EFFECT_WORKER_ROLE = "survey-effect-worker"
 _SOCKET_QUEUE_CHANNEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
@@ -487,8 +492,12 @@ def _resolve_tenant_ticket_room(payload: Any) -> Optional[str]:
     if not isinstance(payload, dict):
         return None
 
+    explicit_room = str(payload.get("socket_room") or "").strip()
+    if re.fullmatch(r"(?:tenant|municipio|pyme|crm)_[1-9][0-9]*", explicit_room):
+        return explicit_room
+
     tenant_type = payload.get("tenant_type") or payload.get("tipo")
-    tenant_profile_id = payload.get("tenant_profile_id")
+    tenant_profile_id = payload.get("tenant_profile_id") or payload.get("tenant_id")
     if tenant_profile_id:
         return f"tenant_{tenant_profile_id}"
 
@@ -536,35 +545,10 @@ def _resolve_ticket_room(payload: Any) -> Optional[str]:
     return _resolve_tenant_ticket_room(payload)
 
 
-def _emit_to_ticket_room(event_name: str, data: Any) -> None:
-    """Emit an event to the room associated with the ticket payload."""
-    room = _resolve_ticket_room(data)
-    if room:
-        socketio.emit(event_name, data, room=room)
-        return
-    current_app.logger.warning("Dropped unscoped ticket socket event event=%s", event_name)
-
-
-def _emit_standard_ticket_event(event_name: str, data: Any) -> None:
-    """Emit normalized enterprise-style events alongside legacy socket payloads."""
-    payload = data if isinstance(data, dict) else {"payload": data}
-    room = _resolve_ticket_room(payload)
-    if room:
-        _emit_standard_ticket_event_to_room(event_name, payload, room)
-        return
-    current_app.logger.warning("Dropped unscoped standard ticket event event=%s", event_name)
-
-
-def _emit_standard_ticket_event_to_room(event_name: str, data: Any, room: str) -> None:
-    payload = data if isinstance(data, dict) else {"payload": data}
-    envelope = build_realtime_envelope(event_name=event_name, payload=payload, room=room)
-    socketio.emit(event_name, envelope, room=room)
-
-
 def emit_ticket_update(data: Any) -> None:
-    """Broadcast generic ticket updates to subscribed admin clients."""
-    _emit_to_ticket_room('ticket_update', data)
-    _emit_standard_ticket_event('ticket.updated', data)
+    """Invalidate tenant ticket collections without broadcasting case data."""
+
+    _emit_tenant_ticket_invalidation(data)
 
 
 def _emit_public_ticket_state_event(event_name: str, data: Any) -> bool:
@@ -597,15 +581,11 @@ def _emit_public_ticket_state_event(event_name: str, data: Any) -> bool:
 
 
 def emit_crm_contact_update(tenant: TenantProfile, contact_payload: Any) -> None:
-    """Broadcast CRM contact enrichment to subscribed admin clients."""
+    """Invalidate broad CRM contact collections without broadcasting PII."""
     if not tenant:
         return
 
-    payload = {
-        "tenant_id": getattr(tenant, "id", None),
-        "tenant_slug": getattr(tenant, "slug", None),
-        "contact": contact_payload,
-    }
+    payload = _build_collection_invalidation("contacts")
     rooms = _get_rooms_for_tenant_slug(getattr(tenant, "slug", None))
     if not rooms and getattr(tenant, "id", None):
         rooms = [f"crm_{tenant.id}", f"tenant_{tenant.id}"]
@@ -622,15 +602,11 @@ def emit_crm_contact_update(tenant: TenantProfile, contact_payload: Any) -> None
 
 
 def emit_crm_notification_update(tenant: TenantProfile, notification_payload: Any) -> None:
-    """Broadcast CRM/campaign notification activity to tenant and CRM rooms."""
+    """Invalidate broad notification collections without recipient data."""
     if not tenant:
         return
 
-    payload = {
-        "tenant_id": getattr(tenant, "id", None),
-        "tenant_slug": getattr(tenant, "slug", None),
-        "notification": notification_payload,
-    }
+    payload = _build_collection_invalidation("notifications")
     rooms = _get_rooms_for_tenant_slug(getattr(tenant, "slug", None))
     if not rooms and getattr(tenant, "id", None):
         rooms = [f"crm_{tenant.id}", f"tenant_{tenant.id}"]
@@ -647,39 +623,38 @@ def emit_crm_notification_update(tenant: TenantProfile, notification_payload: An
 
 
 def emit_ticket_status_changed(data: Any) -> None:
-    """Broadcast a normalized status event while preserving legacy consumers."""
-    _emit_standard_ticket_event('ticket.status.changed', data)
+    """Invalidate operator collections and publish citizen-safe state only."""
+
     emit_ticket_update(data)
     _emit_public_ticket_state_event('ticket.status.changed', data)
 
 
 def emit_ticket_assignment_changed(data: Any) -> None:
-    """Broadcast assignment changes with a normalized contract for new clients."""
-    _emit_standard_ticket_event('ticket.assignment.changed', data)
+    """Invalidate operator collections and publish citizen-safe state only."""
+
     emit_ticket_update(data)
     _emit_public_ticket_state_event('ticket.assignment.changed', data)
 
 
 def emit_ticket_presence_changed(data: Any) -> None:
-    """Broadcast ticket presence updates for collaborative inbox experiences."""
-    _emit_standard_ticket_event('ticket.presence.changed', data)
+    """Invalidate scoped collections without exposing viewer presence broadly."""
+
+    _emit_tenant_ticket_invalidation(data)
 
 
 def emit_conversation_message_read(data: Any) -> None:
-    """Broadcast read-state updates for enterprise inbox clients."""
-    _emit_standard_ticket_event('conversation.message.read', data)
+    """Invalidate scoped collections without exposing read receipts broadly."""
+
+    _emit_tenant_ticket_invalidation(data)
 
 def emit_conversation_linked(data: Any) -> None:
-    """Broadcast omnichannel link events."""
-    _emit_standard_ticket_event('conversation.linked', data)
+    """Invalidate scoped collections without exposing linked identities broadly."""
+
+    _emit_tenant_ticket_invalidation(data)
 
 
 def emit_notification_status_changed(data: Any) -> None:
-    """Broadcast normalized notification lifecycle events."""
-    event_name = data.get("event") if isinstance(data, dict) else None
-    if event_name not in {"notification.sent", "notification.failed"}:
-        event_name = "notification.updated"
-    _emit_standard_ticket_event(event_name, data)
+    """Invalidate notification collections without broad recipient leakage."""
     if isinstance(data, dict):
         tenant_slug = data.get("tenant_slug") or data.get("tenant")
         tenant_id = data.get("tenant_id")
@@ -693,8 +668,9 @@ def emit_notification_status_changed(data: Any) -> None:
 
 
 def emit_ticket_unread_changed(data: Any) -> None:
-    """Broadcast unread-summary deltas for inbox list reconciliation."""
-    _emit_standard_ticket_event('ticket.unread.changed', data)
+    """Invalidate ticket collections without leaking case-level unread state."""
+
+    _emit_tenant_ticket_invalidation(data)
 
 
 def emit_tenant_update(tenant_slug: str, event_name: str, data: Any = None) -> None:
@@ -708,9 +684,9 @@ def emit_tenant_update(tenant_slug: str, event_name: str, data: Any = None) -> N
 
 
 def emit_new_ticket(data: Any) -> None:
-    """Broadcast a newly created ticket and mirror a generic update for legacy clients."""
-    _emit_to_ticket_room('new_ticket', data)
-    emit_ticket_update(data)
+    """Invalidate the operator collection without broadcasting the new case."""
+
+    _emit_tenant_ticket_invalidation(data)
 
 
 def _is_public_ticket_comment(comment: Any) -> bool:
@@ -760,26 +736,46 @@ def _build_public_ticket_comment_event(data: dict[str, Any], room: str) -> Optio
     }
 
 
-def emit_ticket_comment(data: Any) -> None:
-    """Broadcast a new comment without altering the legacy ticket_update payloads."""
-    _emit_to_ticket_room('new_comment', data)
-    _emit_standard_ticket_event('conversation.message.created', data)
-    _emit_standard_ticket_event('ticket.message.created', data)
+def _build_tenant_ticket_invalidation() -> dict[str, Any]:
+    """Return a tenant-wide refetch signal with no ticket or actor metadata."""
 
-    if isinstance(data, dict):
-        ticket_type = data.get('tipo') or data.get('tenant_type')
-        ticket_id = data.get('ticket_id') or data.get('ticketId')
-        try:
-            public_room = build_ticket_room(ticket_type, ticket_id)
-        except LiveChatAccessError:
-            public_room = None
-        if public_room:
-            public_payload = _build_public_ticket_comment_event(data, public_room)
-            if public_payload:
-                socketio.emit('new_chat_message', public_payload, room=public_room)
+    return {
+        "contract_version": TENANT_TICKET_INVALIDATION_CONTRACT_VERSION,
+        "resource": "tickets",
+        "reason": "collection_changed",
+        "refetch": True,
+    }
+
+
+def _build_collection_invalidation(resource: str) -> dict[str, Any]:
+    """Return the only payload shape permitted in broad operator rooms."""
+
+    return {
+        "contract_version": "collections.invalidated.v1",
+        "resource": str(resource or "").strip().lower(),
+        "reason": "collection_changed",
+        "refetch": True,
+    }
+
+
+def _emit_tenant_ticket_invalidation(data: Any) -> bool:
+    """Emit the one allowlisted payload permitted in a broad operator room."""
+
+    room = _resolve_tenant_ticket_room(data)
+    if not room:
+        current_app.logger.warning("Dropped unscoped tenant ticket invalidation")
+        return False
+    socketio.emit("ticket_update", _build_tenant_ticket_invalidation(), room=room)
+    return True
+
+
+def emit_ticket_comment(data: Any) -> None:
+    """Publish a comment through the category-safe live-chat boundary."""
+
+    emit_new_chat_message(data)
 
 def emit_new_chat_message(data: Any) -> None:
-    """Broadcast sanitized public chat data and the full event only to operators."""
+    """Broadcast public chat data and an opaque tenant-wide refetch signal."""
     if not isinstance(data, dict):
         current_app.logger.warning("Dropped malformed live chat socket event")
         return
@@ -795,26 +791,13 @@ def emit_new_chat_message(data: Any) -> None:
         public_payload = _build_public_ticket_comment_event(data, public_room)
         if public_payload:
             socketio.emit("new_chat_message", public_payload, room=public_room)
-        else:
-            current_app.logger.warning(
-                "Dropped non-public live chat payload ticket_type=%s ticket_id=%s",
-                ticket_type,
-                ticket_id,
-            )
 
-    admin_room = _resolve_tenant_ticket_room(data)
-    if not admin_room:
+    if not _emit_tenant_ticket_invalidation(data):
         current_app.logger.warning(
             "Dropped unscoped admin live chat event ticket_type=%s ticket_id=%s",
             ticket_type,
             ticket_id,
         )
-        return
-
-    socketio.emit("new_chat_message", data, room=admin_room)
-    _emit_standard_ticket_event_to_room("conversation.message.created", data, admin_room)
-    _emit_standard_ticket_event_to_room("ticket.message.created", data, admin_room)
-    _emit_standard_ticket_event_to_room("whatsapp.message.created", data, admin_room)
 
 
 def _tenant_slug_for_survey_tenant_id(tenant_id: Any) -> str:
@@ -1190,7 +1173,7 @@ def handle_send_chat_message(data):
     ticket_type = payload.get('ticket_type')
     message_text = payload.get('message')
 
-    if not all([token, room, ticket_id, ticket_type, message_text]):
+    if not all([token, room, ticket_id, ticket_type]):
         current_app.logger.error("Socket 'send_chat_message' recibio datos incompletos")
         return
 
@@ -1243,6 +1226,21 @@ def handle_send_chat_message(data):
             ticket_id,
         )
         emit('chat_error', {'error': 'ticket_forbidden'})
+        return
+
+    if not employee_ticket_category_access_allows(current_user, ticket_obj):
+        current_app.logger.warning(
+            "Socket chat message rejected by category scope user=%s type=%s",
+            current_user.id,
+            ticket_type,
+        )
+        emit('chat_error', {'error': 'ticket_not_found'})
+        return
+
+    try:
+        message_text = normalize_omnichannel_reply_body(message_text)
+    except OmnichannelMessagePolicyError as exc:
+        emit('chat_error', {'error': exc.reason_code})
         return
 
     room = build_ticket_room(ticket_type, ticket_id)

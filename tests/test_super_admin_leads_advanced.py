@@ -138,6 +138,19 @@ def test_super_admin_realtime_ai_and_surveys_overview(client, app):
     db.session.commit()
 
     db.session.add(EncRespuesta(encuesta_id=enc.id, tenant_id=tenant.id, canal="web"))
+    db.session.add(
+        EncRespuesta(
+            encuesta_id=enc.id,
+            tenant_id=tenant.id,
+            canal="web",
+            response_origin="synthetic_demo",
+            metadata_payload={
+                "is_demo_seed": True,
+                "demo_seed_contract_version": "surveys.demo_seeding.v1",
+                "demo_batch_id": f"seed-{enc.id}-1720000000",
+            },
+        )
+    )
     db.session.add(ChatSessionContext(chat_session_id="session-rt-1", context_data={}))
     db.session.commit()
     db.session.add(LlmInteractionLog(chat_session_id="session-rt-1", user_query="hola", status="pending_review"))
@@ -154,6 +167,12 @@ def test_super_admin_realtime_ai_and_surveys_overview(client, app):
     surv_body = surv_resp.get_json()
     assert surv_body['total_surveys'] >= 1
     assert surv_body['total_responses'] >= 1
+    assert surv_body['response_provenance']['synthetic_responses_excluded'] >= 1
+    tenant_row = next(
+        row for row in surv_body['by_tenant'] if row['tenant_id'] == tenant.id
+    )
+    assert tenant_row['responses'] == 1
+    assert tenant_row['response_provenance']['synthetic_responses_excluded'] == 1
 
 
 

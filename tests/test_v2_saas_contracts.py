@@ -38,6 +38,10 @@ from models import (
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
 )
+from routes.v2.saas import (
+    _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES,
+    _OMNICHANNEL_REPLY_MAX_BODY_BYTES,
+)
 from services.meta_flow_json import SURVEY_VOTE_DATA_CONTRACT
 from services.tts_orchestrator import reset_tts_cache_metrics
 
@@ -354,6 +358,24 @@ class V2SaasContractsTest(unittest.TestCase):
             DOMAIN_EFFECT_OUTBOX_MAX_PAYLOAD_BYTES=4096,
             DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS=8,
         )
+
+    def _tenant_reply_side_effect_snapshot(self):
+        db.session.expire_all()
+        ticket = db.session.get(TenantTicket, self.ticket.id)
+        return {
+            "ticket_extra": json.dumps(ticket.datos_extra or {}, sort_keys=True),
+            "ticket_status": ticket.estado,
+            "reply_events": TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            "receipts": TicketDomainEffectReceipt.query.filter_by(
+                tenant_id=self.tenant.id,
+            ).count(),
+            "outbox": DomainEffectOutbox.query.filter_by(
+                tenant_id=self.tenant.id,
+            ).count(),
+        }
 
     def test_employee_coverage_contract(self):
         response = self.client.get(
@@ -2115,7 +2137,10 @@ class V2SaasContractsTest(unittest.TestCase):
         service_email.assert_not_called()
         service_sms.assert_not_called()
         service_whatsapp.assert_not_called()
-        service_socket.assert_not_called()
+        service_socket.assert_called_once()
+        emitted_payload = service_socket.call_args.args[0]
+        self.assertEqual(emitted_payload["tenant_profile_id"], self.tenant.id)
+        self.assertEqual(emitted_payload["ticket_id"], legacy.id)
         self.assertEqual(
             TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
             1,
@@ -2452,6 +2477,189 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(finance_advanced_flow["qa_scenario_id"], "finance_account_servicing")
         self.assertEqual(finance_advanced_flow["evidence"]["finance_runtime"], "finance.transactional_whatsapp.v1")
         self.assertIn("next_action", claim_flow)
+
+    def test_omnichannel_tenant_reply_rejects_oversized_declared_length_before_json_parse(self):
+        self._enable_tenant_domain_outbox()
+        raw_body = json.dumps(
+            {
+                "action": "reply",
+                "body": "Esta respuesta no debe persistirse.",
+                "visibility": "public",
+                "client_message_id": "crm-reply:declared-too-large-0001",
+            }
+        ).encode("utf-8")
+        before = self._tenant_reply_side_effect_snapshot()
+
+        with patch(
+            "flask.wrappers.Request.get_json",
+            side_effect=AssertionError("oversized declared body must not be parsed"),
+        ) as parse_json, patch(
+            "services.ticket_service.ServicioTickets.crear_respuesta_tenant"
+        ) as persist_reply:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                data=raw_body,
+                headers={
+                    **self._auth(self.owner),
+                    "Content-Type": "application/json",
+                    "X-Request-Id": "reply-declared-too-large",
+                },
+                environ_overrides={
+                    "CONTENT_LENGTH": str(_OMNICHANNEL_ACTION_MAX_REQUEST_BYTES + 1),
+                },
+            )
+
+        self.assertEqual(response.status_code, 413, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "shared.error.v1")
+        self.assertEqual(payload["status_code"], 413)
+        self.assertEqual(payload["reason_code"], "inbox_action_request_too_large")
+        self.assertEqual(payload["action_hint"], "reduce_inbox_action_payload")
+        self.assertEqual(payload["request_id"], "reply-declared-too-large")
+        parse_json.assert_not_called()
+        persist_reply.assert_not_called()
+        self.assertEqual(self._tenant_reply_side_effect_snapshot(), before)
+
+    def test_omnichannel_tenant_reply_rejects_oversized_actual_body_without_content_length(self):
+        self._enable_tenant_domain_outbox()
+        raw_body = json.dumps(
+            {
+                "action": "reply",
+                "body": "Esta respuesta tampoco debe persistirse.",
+                "visibility": "public",
+                "client_message_id": "crm-reply:actual-too-large-0001",
+                "padding": "x" * _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES,
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertGreater(len(raw_body), _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES)
+        before = self._tenant_reply_side_effect_snapshot()
+
+        with patch(
+            "flask.wrappers.Request.get_json",
+            side_effect=AssertionError("oversized actual body must not be parsed"),
+        ) as parse_json, patch(
+            "services.ticket_service.ServicioTickets.crear_respuesta_tenant"
+        ) as persist_reply:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                data=raw_body,
+                headers={
+                    **self._auth(self.owner),
+                    "Content-Type": "application/json",
+                    "X-Request-Id": "reply-actual-too-large",
+                },
+                environ_overrides={
+                    "CONTENT_LENGTH": None,
+                    "wsgi.input_terminated": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 413, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "shared.error.v1")
+        self.assertEqual(payload["status_code"], 413)
+        self.assertEqual(payload["reason_code"], "inbox_action_request_too_large")
+        self.assertEqual(payload["action_hint"], "reduce_inbox_action_payload")
+        self.assertEqual(payload["request_id"], "reply-actual-too-large")
+        parse_json.assert_not_called()
+        persist_reply.assert_not_called()
+        self.assertEqual(self._tenant_reply_side_effect_snapshot(), before)
+
+    def test_omnichannel_tenant_reply_rejects_multibyte_body_over_utf8_limit_without_side_effects(self):
+        self._enable_tenant_domain_outbox()
+        body = "á" * ((_OMNICHANNEL_REPLY_MAX_BODY_BYTES // 2) + 1)
+        self.assertLess(len(body), _OMNICHANNEL_REPLY_MAX_BODY_BYTES)
+        self.assertGreater(len(body.encode("utf-8")), _OMNICHANNEL_REPLY_MAX_BODY_BYTES)
+        raw_body = json.dumps(
+            {
+                "action": "reply",
+                "body": body,
+                "visibility": "public",
+                "client_message_id": "crm-reply:multibyte-too-large-0001",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertLess(len(raw_body), _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES)
+        before = self._tenant_reply_side_effect_snapshot()
+
+        with patch(
+            "services.ticket_service.ServicioTickets.crear_respuesta_tenant"
+        ) as persist_reply, patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply"
+        ) as emit_realtime:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                data=raw_body,
+                headers={
+                    **self._auth(self.owner),
+                    "Content-Type": "application/json",
+                    "X-Request-Id": "reply-multibyte-too-large",
+                },
+            )
+
+        self.assertEqual(response.status_code, 413, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "shared.error.v1")
+        self.assertEqual(payload["status_code"], 413)
+        self.assertEqual(payload["reason_code"], "reply_body_too_large")
+        self.assertEqual(payload["action_hint"], "reduce_reply_body")
+        self.assertEqual(payload["request_id"], "reply-multibyte-too-large")
+        persist_reply.assert_not_called()
+        emit_realtime.assert_not_called()
+        self.assertEqual(self._tenant_reply_side_effect_snapshot(), before)
+
+    def test_omnichannel_tenant_reply_accepts_normalized_utf8_body_at_exact_limit(self):
+        body = f"  {'á' * (_OMNICHANNEL_REPLY_MAX_BODY_BYTES // 2)}  "
+        normalized_body = body.strip()
+        self.assertEqual(
+            len(normalized_body.encode("utf-8")),
+            _OMNICHANNEL_REPLY_MAX_BODY_BYTES,
+        )
+        raw_body = json.dumps(
+            {
+                "action": "reply",
+                "body": body,
+                "visibility": "internal",
+                "send_external": False,
+                "client_message_id": "crm-reply:exact-utf8-limit-0001",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertLess(len(raw_body), _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES)
+
+        with patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply",
+            return_value=True,
+        ) as emit_realtime:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                data=raw_body,
+                headers={
+                    **self._auth(self.owner),
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": "crm-reply:exact-utf8-limit-0001",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertTrue(response.get_json()["delivery"]["timeline_updated"])
+        reply_record = TenantTicketReplyEvent.query.filter_by(
+            tenant_id=self.tenant.id,
+            ticket_id=self.ticket.id,
+        ).one()
+        self.assertEqual(reply_record.body, normalized_body)
+        self.assertEqual(
+            len(reply_record.body.encode("utf-8")),
+            _OMNICHANNEL_REPLY_MAX_BODY_BYTES,
+        )
+        self.assertEqual(
+            TicketDomainEffectReceipt.query.filter_by(tenant_id=self.tenant.id).count(),
+            1,
+        )
+        emit_realtime.assert_called_once()
 
     def test_omnichannel_inbox_action_updates_ticket(self):
         with patch(
@@ -2974,8 +3182,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertNotEqual(prepared.params["to"], "whatsapp:+5492222222222")
         emit_realtime.assert_called_once()
         self.assertEqual(
-            emit_realtime.call_args.args[0]["message"]["texto"],
-            first_body,
+            emit_realtime.call_args.args[0],
+            {
+                "contract_version": "tenant_ticket.reply.realtime.v1",
+                "tenant_type": "tenant",
+                "tipo": "tenant",
+                "tenant_profile_id": self.tenant.id,
+                "delivery": "tenant_collection_invalidation",
+            },
         )
         self.assertEqual(replay.status_code, 200, replay.get_json())
         self.assertTrue(replay.get_json()["delivery"]["idempotency"]["replayed"])
@@ -3363,7 +3577,7 @@ class V2SaasContractsTest(unittest.TestCase):
             )
         )
 
-    def test_omnichannel_tenant_reply_realtime_payload_is_tenant_scoped(self):
+    def test_omnichannel_tenant_reply_realtime_payload_is_opaque(self):
         client_message_id = "crm-reply:tenant-socket-scope-0001"
         with patch("socket_service.emit_new_chat_message") as emit_realtime:
             response = self.client.post(
@@ -3384,15 +3598,21 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.get_json())
         emit_realtime.assert_called_once()
         event = emit_realtime.call_args.args[0]
-        self.assertEqual(event["tenant_profile_id"], self.tenant.id)
-        self.assertEqual(event["ticket_id"], self.ticket.id)
-        self.assertEqual(event["source_model"], "TenantTicket")
-        self.assertEqual(event["tenant_type"], "tenant")
-        self.assertNotIn("contact", event)
-        self.assertNotIn("phone", event)
-        self.assertNotIn("email", event)
         self.assertEqual(
-            response.get_json()["delivery"]["realtime"]["room"],
+            event,
+            {
+                "contract_version": "tenant_ticket.reply.realtime.v1",
+                "tenant_type": "tenant",
+                "tipo": "tenant",
+                "tenant_profile_id": self.tenant.id,
+                "delivery": "tenant_collection_invalidation",
+            },
+        )
+        realtime = response.get_json()["delivery"]["realtime"]
+        self.assertEqual(realtime["event"], "ticket_update")
+        self.assertEqual(realtime["events"], ["ticket_update"])
+        self.assertEqual(
+            realtime["room"],
             f"tenant_{self.tenant.id}",
         )
 
@@ -3410,6 +3630,10 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["profile"]["vertical"], "educacion")
         self.assertGreaterEqual(payload["profile"]["readiness"]["score"], 0)
         self.assertEqual(payload["operations"]["dashboard"]["contract_version"], "operations.dashboard.v1")
+        self.assertEqual(
+            payload["operations"]["dashboard"]["maps"]["heatmap"]["privacy"]["mode"],
+            "privileged_exact",
+        )
         self.assertEqual(payload["operations"]["freshness"]["contract_version"], "operations.freshness.v1")
         self.assertIsInstance(payload["operations"]["freshness"]["summary"]["can_render_heatmap"], bool)
         self.assertEqual(payload["lead_capture"]["summary"]["open"], 1)
@@ -3478,6 +3702,258 @@ class V2SaasContractsTest(unittest.TestCase):
             self.assertIn("route", section)
             self.assertIn("widgets", section)
             self.assertIn("secondary_endpoints", section)
+
+    def test_tenant_admin_experience_employee_leads_exclude_cross_category_pii(self):
+        restricted_tenant = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="salud",
+            descripcion="Consulta reservada de salud",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={
+                "contact": {
+                    "name": "Persona privada tenant",
+                    "phone": "+5490000000101",
+                    "email": "private-tenant@example.invalid",
+                },
+                "address": "Domicilio privado tenant",
+            },
+        )
+        restricted_municipio = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            pregunta="Caso municipal reservado",
+            asunto="Caso municipal reservado",
+            categoria="salud",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            nombre_vecino="Persona privada municipio",
+            direccion="Domicilio privado municipio",
+        )
+        restricted_pyme = PymeTicket(
+            tenant_id=self.tenant.id,
+            pregunta="Caso comercial reservado",
+            asunto="Caso comercial reservado",
+            categoria="salud",
+            estado="nuevo",
+            nro_ticket=990101,
+            telefono="+5490000000102",
+            email="private-pyme@example.invalid",
+            direccion="Domicilio privado pyme",
+        )
+        db.session.add_all(
+            [restricted_tenant, restricted_municipio, restricted_pyme]
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/tenant/admin-experience",
+            headers=self._auth(self.employee),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        items = response.get_json()["lead_capture"]["items"]
+        returned = {(item["source"], item["ticket_id"]) for item in items}
+        self.assertIn(("tenant_ticket", self.ticket.id), returned)
+        self.assertTrue(
+            returned.isdisjoint(
+                {
+                    ("tenant_ticket", restricted_tenant.id),
+                    ("municipio_ticket", restricted_municipio.id),
+                    ("pyme_ticket", restricted_pyme.id),
+                }
+            )
+        )
+        serialized_items = json.dumps(items, sort_keys=True)
+        for private_value in (
+            "Persona privada tenant",
+            "+5490000000101",
+            "private-tenant@example.invalid",
+            "Domicilio privado tenant",
+            "Persona privada municipio",
+            "Domicilio privado municipio",
+            "+5490000000102",
+            "private-pyme@example.invalid",
+            "Domicilio privado pyme",
+        ):
+            with self.subTest(private_value=private_value):
+                self.assertNotIn(private_value, serialized_items)
+
+    def test_tenant_admin_experience_employee_empty_category_scope_has_no_leads(self):
+        employee_without_scope = User(
+            name="Operador sin alcance",
+            email="operador-sin-alcance@test.com",
+            rol="empleado",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+            es_empleado=True,
+            accesibilidad={"employee_scope": {"categorias": []}},
+        )
+        employee_without_scope.set_password("secret123")
+        db.session.add(employee_without_scope)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/tenant/admin-experience",
+            headers=self._auth(employee_without_scope),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        lead_capture = response.get_json()["lead_capture"]
+        self.assertEqual(lead_capture["items"], [])
+        self.assertEqual(
+            lead_capture["summary"],
+            {
+                "total_recent": 0,
+                "open": 0,
+                "demo_or_widget": 0,
+                "channels": [],
+            },
+        )
+
+    def test_tenant_admin_experience_employee_sees_allowed_category_lead(self):
+        response = self.client.get(
+            "/api/v2/tenant/admin-experience",
+            headers=self._auth(self.employee),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        allowed_item = next(
+            item
+            for item in response.get_json()["lead_capture"]["items"]
+            if item["source"] == "tenant_ticket"
+            and item["ticket_id"] == self.ticket.id
+        )
+        self.assertEqual(allowed_item["category"], "educacion")
+        self.assertEqual(allowed_item["contact"]["name"], "Familia Gomez")
+
+    def test_tenant_admin_experience_admin_keeps_cross_category_lead_access(self):
+        restricted = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="salud",
+            descripcion="Consulta administrativa de salud",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={
+                "contact": {
+                    "name": "Contacto visible para admin",
+                    "email": "admin-visible@example.invalid",
+                }
+            },
+        )
+        db.session.add(restricted)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/tenant/admin-experience",
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        restricted_item = next(
+            item
+            for item in response.get_json()["lead_capture"]["items"]
+            if item["source"] == "tenant_ticket"
+            and item["ticket_id"] == restricted.id
+        )
+        self.assertEqual(
+            restricted_item["contact"]["email"],
+            "admin-visible@example.invalid",
+        )
+
+    def test_admin_and_whatsapp_survey_summaries_exclude_persisted_demo_origin(self):
+        encuesta = EncEncuesta.query.filter_by(
+            tenant_id=self.tenant.id,
+            slug="voto-saas",
+        ).one()
+        db.session.add(
+            EncRespuesta(
+                encuesta_id=encuesta.id,
+                tenant_id=self.tenant.id,
+                canal="demo_seed",
+                response_origin="synthetic_demo",
+                metadata_payload={
+                    "is_demo_seed": True,
+                    "demo_seed_contract_version": "surveys.demo_seeding.v1",
+                    "demo_batch_id": (
+                        f"seed-{encuesta.id}-1770000000000-deadbeefcafe"
+                    ),
+                },
+            )
+        )
+        db.session.commit()
+
+        admin_response = self.client.get(
+            "/api/v2/tenant/admin-experience",
+            headers=self._auth(self.owner),
+        )
+        whatsapp_response = self.client.get(
+            "/api/v2/whatsapp/experience",
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(
+            admin_response.status_code,
+            200,
+            admin_response.get_json(),
+        )
+        self.assertEqual(
+            whatsapp_response.status_code,
+            200,
+            whatsapp_response.get_json(),
+        )
+        admin_surveys = admin_response.get_json()["surveys_votings"]
+        whatsapp_surveys = whatsapp_response.get_json()["content_modules"][
+            "surveys_votings"
+        ]
+        self.assertEqual(admin_surveys["summary"]["responses"], 1)
+        self.assertEqual(
+            admin_surveys["response_provenance"][
+                "synthetic_responses_excluded"
+            ],
+            1,
+        )
+        self.assertEqual(whatsapp_surveys["responses"], 1)
+        self.assertEqual(
+            whatsapp_surveys["response_provenance"][
+                "synthetic_responses_excluded"
+            ],
+            1,
+        )
+
+    def test_tenant_admin_experience_employee_uses_scoped_aggregated_heatmap(self):
+        for index in range(5):
+            db.session.add(
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.owner.id,
+                    categoria="categoria_restringida_gis",
+                    descripcion=f"Registro GIS restringido {index}",
+                    estado="nuevo",
+                    origen="web",
+                    latitud=-34.712345,
+                    longitud=-58.512345,
+                    datos_extra={"title": f"GIS privado {index}", "priority": "high"},
+                )
+            )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/tenant/admin-experience",
+            headers={**self._auth(self.employee), "X-Request-Id": "employee-admin-exp-gis-1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        dashboard = (payload.get("operations") or {}).get("dashboard") or {}
+        heatmap = ((dashboard.get("maps") or {}).get("heatmap") or {})
+        self.assertEqual((heatmap.get("privacy") or {}).get("mode"), "employee_aggregated")
+        self.assertEqual(heatmap.get("hotspots"), [])
+        categories = {item.get("key") for item in (dashboard.get("tickets") or {}).get("by_category") or []}
+        self.assertIn("educacion", categories)
+        self.assertNotIn("categoria_restringida_gis", categories)
 
     def test_tenant_admin_experience_degrades_to_json_when_source_fails(self):
         with patch("routes.v2.saas.build_operational_dashboard", side_effect=RuntimeError("analytics down")):

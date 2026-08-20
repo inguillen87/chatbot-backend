@@ -10,19 +10,21 @@ import random
 import re
 import secrets
 import unicodedata
+from base64 import urlsafe_b64decode, urlsafe_b64encode
+from binascii import Error as BinasciiError
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Mapping, NoReturn, Optional, Sequence, Tuple
 from urllib.parse import quote_plus, urlsplit
 
 from flask import current_app, g, has_request_context, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from sqlalchemy import func, or_, inspect, text
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import joinedload, load_only
+from sqlalchemy.orm import joinedload, load_only, selectinload
 
 from config import TIMEZONE_OFFSET as _CONFIG_TIMEZONE_OFFSET
 from database import db
@@ -51,6 +53,18 @@ from models import (
 )
 from services.user_service import get_user_profile_identity
 from services.survey_refs import is_canonical_survey_logical_ref
+from services.survey_response_provenance import (
+    SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    build_survey_response_provenance,
+    filter_survey_response_query_by_origin,
+    iter_survey_response_query_bounded,
+    is_legacy_unverified_response,
+    is_trusted_demo_seed_metadata,
+    is_trusted_demo_seed_response,
+)
 try:
     from socket_service import emit_survey_update, emit_survey_comment
 except ImportError:
@@ -73,10 +87,347 @@ SURVEY_PRIVACY_CONTRACT_VERSION = "surveys.privacy.v1"
 SURVEY_PRIVACY_MODE_LEGACY = "legacy"
 SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS = "source_anonymous"
 SURVEY_IDENTITY_FINGERPRINT_VERSION = "hmac-sha256-v1"
+SURVEY_PUBLIC_MINIMUM_CELL_SIZE = 5
+SURVEY_ADMIN_CHANNEL_TOP_LIMIT = 20
+SURVEY_ADMIN_LIST_DEFAULT_LIMIT = 50
+SURVEY_ADMIN_LIST_MAX_LIMIT = 100
+SURVEY_INSTRUMENT_DEFAULT_MAX_QUESTIONS = 100
+SURVEY_INSTRUMENT_DEFAULT_MAX_OPTIONS_PER_QUESTION = 100
+SURVEY_INSTRUMENT_DEFAULT_MAX_TOTAL_OPTIONS = 2_000
+SURVEY_INSTRUMENT_DEFAULT_MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
+SURVEY_TENANT_DEFAULT_MAX_INSTRUMENTS = 5_000
 _SURVEY_PRIVACY_MODES = {
     SURVEY_PRIVACY_MODE_LEGACY,
     SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS,
 }
+
+
+def _bounded_survey_config_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Read an integer guard without allowing configuration to disable it."""
+
+    try:
+        raw_value = current_app.config.get(name, os.environ.get(name, default))
+    except RuntimeError:
+        raw_value = os.environ.get(name, default)
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def survey_instrument_max_payload_bytes() -> int:
+    """Maximum accepted JSON body for one persisted survey instrument."""
+
+    return _bounded_survey_config_int(
+        "SURVEY_INSTRUMENT_MAX_PAYLOAD_BYTES",
+        SURVEY_INSTRUMENT_DEFAULT_MAX_PAYLOAD_BYTES,
+        minimum=64 * 1024,
+        maximum=8 * 1024 * 1024,
+    )
+
+
+def survey_admin_write_rate_limit_key() -> str:
+    """Return a stable, opaque key shared by legacy and v2 admin writers.
+
+    Authentication still runs before the mutation.  Hashing the bearer value
+    avoids retaining credentials in limiter storage or logs while tenant and
+    transport peer keep unauthenticated abuse from collapsing into one bucket.
+    """
+
+    authorization = str(request.headers.get("Authorization") or "").strip()
+    auth_digest = hashlib.sha256(authorization.encode("utf-8")).hexdigest()[:24]
+    tenant_hint = str(
+        request.headers.get("X-Tenant-Slug")
+        or request.headers.get("X-Tenant")
+        or request.headers.get("X-Tenant-Id")
+        or "tenant-unresolved"
+    ).strip().lower()[:160]
+    peer = str(request.remote_addr or "0.0.0.0").strip()
+    return f"{tenant_hint}:{auth_digest}:{peer}"
+
+
+def _survey_instrument_size_limits() -> Dict[str, int]:
+    return {
+        "max_questions": _bounded_survey_config_int(
+            "SURVEY_INSTRUMENT_MAX_QUESTIONS",
+            SURVEY_INSTRUMENT_DEFAULT_MAX_QUESTIONS,
+            minimum=1,
+            maximum=500,
+        ),
+        "max_options_per_question": _bounded_survey_config_int(
+            "SURVEY_INSTRUMENT_MAX_OPTIONS_PER_QUESTION",
+            SURVEY_INSTRUMENT_DEFAULT_MAX_OPTIONS_PER_QUESTION,
+            minimum=2,
+            maximum=500,
+        ),
+        "max_total_options": _bounded_survey_config_int(
+            "SURVEY_INSTRUMENT_MAX_TOTAL_OPTIONS",
+            SURVEY_INSTRUMENT_DEFAULT_MAX_TOTAL_OPTIONS,
+            minimum=2,
+            maximum=20_000,
+        ),
+        "max_payload_bytes": survey_instrument_max_payload_bytes(),
+    }
+
+
+def _instrument_too_large_error(
+    *,
+    field: str,
+    actual: int,
+    maximum: int,
+) -> EncuestaError:
+    return EncuestaError(
+        "El instrumento supera el tamaño máximo permitido.",
+        status_code=413,
+        payload={
+            "contract_version": "surveys.instrument_limits.v1",
+            "reason_code": "survey_instrument_too_large",
+            "retryable": False,
+            "action_hint": "reduce_instrument_size",
+            "field": field,
+            "actual": int(actual),
+            "maximum": int(maximum),
+        },
+    )
+
+
+def _validate_instrument_size_limits(
+    preguntas_payload: Any,
+    *,
+    document_payload: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Reject oversized instruments before ORM entities are constructed."""
+
+    if preguntas_payload is None:
+        preguntas: Sequence[Any] = ()
+    elif isinstance(preguntas_payload, Sequence) and not isinstance(
+        preguntas_payload, (str, bytes, bytearray)
+    ):
+        preguntas = preguntas_payload
+    else:
+        raise EncuestaError(
+            "preguntas debe ser un arreglo",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.instrument_limits.v1",
+                "reason_code": "survey_questions_invalid",
+                "action_hint": "send_questions_array",
+            },
+        )
+
+    limits = _survey_instrument_size_limits()
+    question_count = len(preguntas)
+    if question_count > limits["max_questions"]:
+        raise _instrument_too_large_error(
+            field="preguntas",
+            actual=question_count,
+            maximum=limits["max_questions"],
+        )
+
+    total_options = 0
+    for question_index, raw_question in enumerate(preguntas):
+        if not isinstance(raw_question, Mapping):
+            raise EncuestaError(
+                f"Pregunta #{question_index + 1} debe ser un objeto",
+                status_code=400,
+                payload={
+                    "contract_version": "surveys.instrument_limits.v1",
+                    "reason_code": "survey_question_invalid",
+                    "question_index": question_index,
+                    "action_hint": "send_question_object",
+                },
+            )
+        raw_options = raw_question.get("opciones")
+        if raw_options is None:
+            raw_options = raw_question.get("options")
+        if raw_options is None:
+            option_count = 0
+        elif isinstance(raw_options, Sequence) and not isinstance(
+            raw_options, (str, bytes, bytearray)
+        ):
+            option_count = len(raw_options)
+        else:
+            raise EncuestaError(
+                f"Las opciones de la pregunta #{question_index + 1} deben ser un arreglo",
+                status_code=400,
+                payload={
+                    "contract_version": "surveys.instrument_limits.v1",
+                    "reason_code": "survey_options_invalid",
+                    "question_index": question_index,
+                    "action_hint": "send_options_array",
+                },
+            )
+        if option_count > limits["max_options_per_question"]:
+            raise _instrument_too_large_error(
+                field=f"preguntas[{question_index}].opciones",
+                actual=option_count,
+                maximum=limits["max_options_per_question"],
+            )
+        total_options += option_count
+        if total_options > limits["max_total_options"]:
+            raise _instrument_too_large_error(
+                field="total_opciones",
+                actual=total_options,
+                maximum=limits["max_total_options"],
+            )
+
+    if document_payload is not None:
+        try:
+            canonical_size = len(
+                json.dumps(
+                    document_payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise EncuestaError(
+                "El instrumento no se puede serializar como JSON.",
+                status_code=400,
+                payload={
+                    "contract_version": "surveys.instrument_limits.v1",
+                    "reason_code": "survey_instrument_json_invalid",
+                    "action_hint": "send_valid_json",
+                },
+            ) from exc
+        if canonical_size > limits["max_payload_bytes"]:
+            raise _instrument_too_large_error(
+                field="payload_bytes",
+                actual=canonical_size,
+                maximum=limits["max_payload_bytes"],
+            )
+
+
+def _enforce_survey_tenant_quota(tenant_id: int) -> None:
+    maximum = _bounded_survey_config_int(
+        "SURVEY_TENANT_MAX_INSTRUMENTS",
+        SURVEY_TENANT_DEFAULT_MAX_INSTRUMENTS,
+        minimum=10,
+        maximum=100_000,
+    )
+    total = int(
+        db.session.query(func.count(EncEncuesta.id))
+        .filter(EncEncuesta.tenant_id == int(tenant_id))
+        .scalar()
+        or 0
+    )
+    if total >= maximum:
+        raise EncuestaError(
+            "El tenant alcanzó el límite de instrumentos permitidos.",
+            status_code=429,
+            payload={
+                "contract_version": "surveys.tenant_quota.v1",
+                "reason_code": "survey_tenant_quota_exceeded",
+                "retryable": False,
+                "action_hint": "delete_unused_drafts_or_request_quota_increase",
+                "current": total,
+                "maximum": maximum,
+            },
+        )
+
+
+def public_survey_response_count_contract(
+    encuesta: EncEncuesta,
+    exact_count: Any,
+) -> Dict[str, Any]:
+    """Describe whether an exact public response count may be disclosed.
+
+    Active source-anonymous instruments never disclose rolling counts. A
+    stateless k-threshold is insufficient because comparing two otherwise safe
+    snapshots can reveal the newly selected option. Final aggregates are
+    eligible only after the survey is explicitly closed; even then cells below
+    k remain suppressed.
+    """
+
+    try:
+        normalized_count = max(0, int(exact_count or 0))
+    except (TypeError, ValueError, OverflowError):
+        normalized_count = 0
+    try:
+        configured_minimum = int(
+            os.environ.get(
+                "SURVEY_PUBLIC_MIN_CELL_SIZE",
+                SURVEY_PUBLIC_MINIMUM_CELL_SIZE,
+            )
+            or SURVEY_PUBLIC_MINIMUM_CELL_SIZE
+        )
+    except (TypeError, ValueError, OverflowError):
+        configured_minimum = SURVEY_PUBLIC_MINIMUM_CELL_SIZE
+    minimum = max(
+        SURVEY_PUBLIC_MINIMUM_CELL_SIZE,
+        min(configured_minimum, 50),
+    )
+    privacy_mode = str(
+        getattr(encuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
+        or SURVEY_PRIVACY_MODE_LEGACY
+    ).strip().lower()
+    source_anonymous = privacy_mode == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+    results_final = str(getattr(encuesta, "estado", "") or "").strip().lower() == "cerrada"
+    withheld_until_close = source_anonymous and not results_final
+    below_minimum = source_anonymous and results_final and normalized_count < minimum
+    suppressed = withheld_until_close or below_minimum
+    if withheld_until_close:
+        bucket = "withheld_until_close"
+        reason_code = "source_anonymous_results_withheld_until_close"
+    elif below_minimum:
+        bucket = f"<{minimum}"
+        reason_code = "minimum_cell_size_not_met"
+    else:
+        bucket = None
+        reason_code = None
+    return {
+        "contract_version": "surveys.public_count_privacy.v1",
+        "privacy_mode": privacy_mode,
+        "minimum_cell_size": minimum
+        if privacy_mode == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+        else None,
+        "results_final": results_final,
+        "count": None if suppressed else normalized_count,
+        "bucket": bucket,
+        "suppressed": suppressed,
+        "reason_code": reason_code,
+    }
+
+
+def _redact_public_response_provenance(
+    provenance: Mapping[str, Any],
+    count_contract: Mapping[str, Any],
+) -> Dict[str, Any]:
+    sanitized = dict(provenance or {})
+    if not bool(count_contract.get("suppressed")):
+        return sanitized
+    for key in (
+        "real_responses_included",
+        "synthetic_responses_included",
+        "synthetic_responses_excluded",
+        "unverified_responses_included",
+        "unverified_responses_excluded",
+        "population_size",
+        "sample_size",
+        "sample_limit",
+        "raw_responses_materialized",
+    ):
+        sanitized[key] = None
+    sanitized.update(
+        {
+            "contains_synthetic": None,
+            "sampled": None,
+            "partial": None,
+            "exact_aggregates": False,
+            "privacy_redacted": True,
+            "population_bucket": count_contract.get("bucket"),
+        }
+    )
+    return sanitized
 _SURVEY_SOURCE_ANONYMOUS_DISCARDED_FIELDS = (
     "user_id",
     "dni",
@@ -678,14 +1029,18 @@ _BOOTSTRAP_SAMPLE_ENABLED = _env_flag("ENCUESTAS_BOOTSTRAP_SAMPLE", default=Fals
 
 _AUTO_SEED_SEGMENT_KEY = "auto_seed_demo"
 _AUTO_SEED_DEFAULT_LABEL = "Emular 100 respuestas demo"
-SURVEY_DEMO_SEEDING_CONTRACT_VERSION = "surveys.demo_seeding.v1"
 SURVEY_DEMO_SEED_MAX_RESPONSES = 500
 _SURVEY_DEMO_SAFE_ENVIRONMENTS = frozenset(
     {"dev", "development", "local", "qa", "preview", "staging", "test", "testing"}
 )
 _SURVEY_DEMO_PRODUCTION_ENVIRONMENTS = frozenset({"prod", "production"})
 _SURVEY_DEMO_RESERVED_METADATA_KEYS = frozenset(
-    {"isdemoseed", "demobatchid", "demoseedcontractversion"}
+    {
+        "isdemoseed",
+        "demobatchid",
+        "demoseedcontractversion",
+        "demoseedidempotencykey",
+    }
 )
 
 
@@ -756,33 +1111,154 @@ def _demo_seed_explicitly_enabled() -> bool:
         return _env_flag("ALLOW_SURVEY_DEMO_SEEDING", default=False)
 
 
-def _demo_seed_runtime_allowed(user: Any = None) -> bool:
-    if user is not None and getattr(user, "rol", None) in {"admin", "super_admin"}:
+def _synthetic_seed_canary_enabled() -> bool:
+    try:
+        return current_app.config.get("ENABLE_SURVEY_SYNTHETIC_SEEDING_V1") is True
+    except RuntimeError:
+        return _runtime_flag_enabled(
+            os.getenv("ENABLE_SURVEY_SYNTHETIC_SEEDING_V1")
+        )
+
+
+def _synthetic_seed_tenant_allowlist() -> Optional[frozenset[int]]:
+    try:
+        raw_value = current_app.config.get("SURVEY_SYNTHETIC_SEED_TENANT_IDS", "")
+    except RuntimeError:
+        raw_value = os.getenv("SURVEY_SYNTHETIC_SEED_TENANT_IDS", "")
+
+    normalized = str(raw_value or "").strip()
+    if not normalized:
+        return frozenset()
+
+    tenant_ids: set[int] = set()
+    for raw_tenant_id in normalized.split(","):
+        token = raw_tenant_id.strip()
+        try:
+            tenant_id = int(token)
+        except (TypeError, ValueError):
+            return None
+        if tenant_id <= 0 or str(tenant_id) != token:
+            return None
+        tenant_ids.add(tenant_id)
+    return frozenset(tenant_ids)
+
+
+def _demo_seed_actor_is_authorized(user: Any) -> bool:
+    role = str(getattr(user, "rol", "") or "").strip().lower()
+    if role == "admin":
         return True
-    return _demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe()
+    if role == "super_admin":
+        return is_authorized_superadmin_user(user)
+    return False
 
 
-def _require_demo_seed_runtime_allowed(user: Any = None) -> None:
-    if _demo_seed_runtime_allowed(user=user):
-        return
-    explicitly_enabled = _demo_seed_explicitly_enabled()
+def _demo_seed_runtime_allowed(
+    user: Any = None,
+    *,
+    tenant_id: Optional[int] = None,
+) -> bool:
+    if not _demo_seed_actor_is_authorized(user):
+        return False
+
+    qa_legacy_allowed = (
+        _demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe()
+    )
+    if qa_legacy_allowed:
+        return True
+
+    if not _synthetic_seed_canary_enabled() or tenant_id is None:
+        return False
+    allowlist = _synthetic_seed_tenant_allowlist()
+    return allowlist is not None and int(tenant_id) in allowlist
+
+
+def _raise_demo_seed_forbidden(
+    *,
+    reason_code: str,
+    action_hint: str,
+) -> NoReturn:
     raise EncuestaError(
-        "La generación de respuestas sintéticas sólo está habilitada para administradores o entornos QA.",
+        "La generación de respuestas sintéticas no está habilitada para este administrador y tenant.",
         status_code=403,
         payload={
             "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
-            "reason_code": (
-                "survey_demo_seeding_unsafe_runtime"
-                if explicitly_enabled
-                else "survey_demo_seeding_disabled"
-            ),
+            "reason_code": reason_code,
             "retryable": False,
-            "action_hint": (
-                "disable_capability_in_production"
-                if explicitly_enabled
-                else "enable_explicit_qa_capability"
-            ),
+            "action_hint": action_hint,
+            "legacy_qa_enabled": _demo_seed_explicitly_enabled(),
+            "synthetic_canary_enabled": _synthetic_seed_canary_enabled(),
         },
+    )
+
+
+def _require_demo_seed_control_plane_available(user: Any) -> None:
+    """Reject unauthorized/disabled seed requests before survey lookup.
+
+    The preflight intentionally does not evaluate the actor's home tenant.  A
+    platform super-admin can legitimately select another tenant, but the
+    target survey tenant remains authoritative and is checked exactly once
+    after the read-only, tenant-authorized survey lookup.
+    """
+
+    if not _demo_seed_actor_is_authorized(user):
+        _raise_demo_seed_forbidden(
+            reason_code="survey_demo_seeding_admin_required",
+            action_hint="use_authorized_admin",
+        )
+
+    if _demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe():
+        return
+
+    if _synthetic_seed_canary_enabled():
+        allowlist = _synthetic_seed_tenant_allowlist()
+        if allowlist:
+            return
+        _raise_demo_seed_forbidden(
+            reason_code="survey_synthetic_seeding_canary_misconfigured",
+            action_hint="configure_explicit_canary_tenant",
+        )
+
+    if _demo_seed_explicitly_enabled():
+        _raise_demo_seed_forbidden(
+            reason_code="survey_demo_seeding_unsafe_runtime",
+            action_hint="disable_legacy_qa_capability",
+        )
+
+    _raise_demo_seed_forbidden(
+        reason_code="survey_demo_seeding_disabled",
+        action_hint="enable_explicit_qa_or_canary_capability",
+    )
+
+
+def _require_demo_seed_runtime_allowed(
+    user: Any = None,
+    *,
+    tenant_id: Optional[int] = None,
+) -> None:
+    if _demo_seed_runtime_allowed(user=user, tenant_id=tenant_id):
+        return
+
+    if not _demo_seed_actor_is_authorized(user):
+        reason_code = "survey_demo_seeding_admin_required"
+        action_hint = "use_authorized_admin"
+    elif _synthetic_seed_canary_enabled():
+        allowlist = _synthetic_seed_tenant_allowlist()
+        if not allowlist:
+            reason_code = "survey_synthetic_seeding_canary_misconfigured"
+            action_hint = "configure_explicit_canary_tenant"
+        else:
+            reason_code = "survey_synthetic_seeding_tenant_not_allowlisted"
+            action_hint = "allowlist_target_tenant"
+    elif _demo_seed_explicitly_enabled() and not _demo_seed_runtime_is_safe():
+        reason_code = "survey_demo_seeding_unsafe_runtime"
+        action_hint = "disable_legacy_qa_capability"
+    else:
+        reason_code = "survey_demo_seeding_disabled"
+        action_hint = "enable_explicit_qa_or_canary_capability"
+
+    _raise_demo_seed_forbidden(
+        reason_code=reason_code,
+        action_hint=action_hint,
     )
 
 
@@ -2311,6 +2787,7 @@ def _validate_pregunta_payload(pregunta: Dict[str, Any], index: int) -> Dict[str
 def _validate_instrument_payload(
     preguntas_payload: Sequence[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+    _validate_instrument_size_limits(preguntas_payload)
     normalized = [
         _validate_pregunta_payload(dict(raw_payload or {}), index)
         for index, raw_payload in enumerate(preguntas_payload or [])
@@ -3418,6 +3895,16 @@ def create_encuesta(
     if not titulo:
         raise EncuestaError("El título es requerido")
 
+    preguntas_payload = payload.get("preguntas") or []
+    _validate_instrument_size_limits(
+        preguntas_payload,
+        document_payload=payload,
+    )
+    # The count is deliberately evaluated before the ORM graph is created.
+    # If the quota store/DB is unavailable the request fails closed and cannot
+    # leave a partially persisted instrument behind.
+    _enforce_survey_tenant_quota(tenant_id)
+
     slug_seed = payload.get("slug") or f"{tenant_id}-{titulo}"
     slug = _generate_unique_slug(_slugify(slug_seed))
 
@@ -3430,7 +3917,7 @@ def create_encuesta(
     if auto_seed_cfg:
         # Fail before the ORM object is added or flushed. A disabled seed must
         # never return an error after leaving a real survey committed behind.
-        _require_demo_seed_runtime_allowed(user=user)
+        _require_demo_seed_runtime_allowed(user=user, tenant_id=tenant_id)
     privacy_settings = _validated_privacy_settings(payload)
     if (
         auto_seed_cfg
@@ -3484,7 +3971,6 @@ def create_encuesta(
         puntos_recompensa=_coerce_int_or_none(payload.get("puntos_recompensa")),
     )
 
-    preguntas_payload = payload.get("preguntas") or []
     encuesta.preguntas = _build_pregunta_entities(encuesta, preguntas_payload)
     _sync_encuesta_tags(encuesta, payload.get("tags"))
     _persist_auto_seed_config(encuesta, auto_seed_cfg)
@@ -3628,7 +4114,10 @@ def update_encuesta(encuesta_id: int, data: Dict[str, Any], user: Any) -> EncEnc
             tenant_id=encuesta.tenant_id,
         )
         if prepared_auto_seed_config:
-            _require_demo_seed_runtime_allowed(user=user)
+            _require_demo_seed_runtime_allowed(
+                user=user,
+                tenant_id=encuesta.tenant_id,
+            )
 
     if candidate_slug is not None:
         encuesta.slug = candidate_slug
@@ -3805,6 +4294,28 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
     _ensure_publication_window(encuesta)
     _ensure_privacy_publication_ready(encuesta)
 
+    non_real_response_count = (
+        EncRespuesta.query.filter_by(encuesta_id=encuesta.id)
+        .filter(EncRespuesta.response_origin != SURVEY_RESPONSE_ORIGIN_REAL)
+        .count()
+    )
+    auto_seed_cfg = _get_auto_seed_config(encuesta)
+    auto_seed_enabled = bool(
+        auto_seed_cfg and auto_seed_cfg.get("enabled", True)
+    )
+    if non_real_response_count or auto_seed_enabled:
+        raise EncuestaError(
+            "Un instrumento sandbox con datos sintéticos no puede publicarse.",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_synthetic_sandbox_publish_forbidden",
+                "retryable": False,
+                "non_real_responses": int(non_real_response_count or 0),
+                "auto_seed_configured": auto_seed_enabled,
+            },
+        )
+
     encuesta.estado = "publicada"
     if not encuesta.inicio_at:
         encuesta.inicio_at = _public_schedule_now()
@@ -3819,20 +4330,6 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
         db.session.add(link)
     slug_publico = link.slug_publico
 
-    auto_seed_cfg = _get_auto_seed_config(encuesta)
-    auto_seed_params: Optional[Dict[str, Any]] = None
-    if auto_seed_cfg and auto_seed_cfg.get("enabled", True):
-        try:
-            cantidad_int = int(auto_seed_cfg.get("cantidad", 0))
-        except (TypeError, ValueError):
-            cantidad_int = 0
-        if cantidad_int > 0 and encuesta.respuestas.count() == 0:
-            auto_seed_params = {
-                "cantidad": cantidad_int,
-                "geo_profile_key": auto_seed_cfg.get("geo_profile_key"),
-                "municipality_label": auto_seed_cfg.get("municipality_label"),
-            }
-
     try:
         db.session.commit()
     except IntegrityError as exc:
@@ -3845,30 +4342,6 @@ def publicar_encuesta(encuesta_id: int, user: Any) -> Tuple[EncEncuesta, EncLink
         link.slug_publico,
         getattr(user, "id", None),
     )
-
-    if auto_seed_params and _demo_seed_runtime_allowed():
-        try:
-            seed_encuesta_respuestas_demo(
-                encuesta.id,
-                user,
-                cantidad=auto_seed_params["cantidad"],
-                geo_profile_key=auto_seed_params.get("geo_profile_key"),
-                municipality_label=auto_seed_params.get("municipality_label"),
-            )
-            current_app.logger.info(
-                "[encuestas] Respuestas demo generadas automáticamente al publicar encuesta %s",
-                encuesta.id,
-            )
-        except EncuestaError:
-            current_app.logger.exception(
-                "[encuestas] Error al generar respuestas demo para la encuesta %s tras publicarla",
-                encuesta.id,
-            )
-    elif auto_seed_params:
-        current_app.logger.info(
-            "[encuestas] Auto seed demo omitido para encuesta %s: modo demo deshabilitado",
-            encuesta.id,
-        )
 
     return encuesta, link
 
@@ -4073,7 +4546,10 @@ def _bootstrap_sample_if_needed(tenant_id: int) -> None:
     # Safety net if migrations lag: ensure the reward column exists to avoid 500s
     ensure_enc_encuesta_schema(db.session)
 
-    if not (_BOOTSTRAP_SAMPLE_ENABLED or _demo_seed_runtime_allowed()):
+    if not (
+        _BOOTSTRAP_SAMPLE_ENABLED
+        or (_demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe())
+    ):
         return
 
     profile = _match_bootstrap_profile(tenant_id)
@@ -4319,18 +4795,204 @@ def _public_api_endpoint_for_slug(slug_publico: Optional[str]) -> Optional[str]:
     return f"/api/public/encuestas/v1/{slug_publico}"
 
 
-def list_encuestas(tenant_id: int, estado: Optional[str] = None) -> List[EncEncuesta]:
-    _bootstrap_sample_if_needed(tenant_id)
-    query = (
-        EncEncuesta.query.options(
-            joinedload(EncEncuesta.links),
-            joinedload(EncEncuesta.segmentos),
+def _admin_encuesta_list_options() -> List[Any]:
+    """Load every relationship used by bounded list serialization in bulk."""
+
+    return [
+        selectinload(EncEncuesta.preguntas).selectinload(EncPregunta.opciones),
+        selectinload(EncEncuesta.links),
+        selectinload(EncEncuesta.segmentos),
+    ]
+
+
+def _encode_survey_list_cursor(encuesta_id: int) -> str:
+    material = f"survey-list-v1:{int(encuesta_id)}".encode("ascii")
+    return urlsafe_b64encode(material).decode("ascii").rstrip("=")
+
+
+def _decode_survey_list_cursor(raw_cursor: Any) -> Optional[int]:
+    normalized = str(raw_cursor or "").strip()
+    if not normalized:
+        return None
+    if len(normalized) > 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", normalized):
+        raise EncuestaError(
+            "Cursor de paginación inválido.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_cursor_invalid",
+                "action_hint": "restart_listing_without_cursor",
+            },
         )
-        .filter_by(tenant_id=tenant_id)
-    )
+    try:
+        padded = normalized + ("=" * (-len(normalized) % 4))
+        decoded = urlsafe_b64decode(padded.encode("ascii")).decode("ascii")
+        prefix, raw_id = decoded.split(":", 1)
+        encuesta_id = int(raw_id)
+    except (ValueError, TypeError, UnicodeError, BinasciiError) as exc:
+        raise EncuestaError(
+            "Cursor de paginación inválido.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_cursor_invalid",
+                "action_hint": "restart_listing_without_cursor",
+            },
+        ) from exc
+    if prefix != "survey-list-v1" or encuesta_id <= 0:
+        raise EncuestaError(
+            "Cursor de paginación inválido.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_cursor_invalid",
+                "action_hint": "restart_listing_without_cursor",
+            },
+        )
+    return encuesta_id
+
+
+def _coerce_admin_list_limit(raw_limit: Any) -> int:
+    if raw_limit in (None, ""):
+        return SURVEY_ADMIN_LIST_DEFAULT_LIMIT
+    try:
+        value = int(raw_limit)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise EncuestaError(
+            "El límite de paginación debe ser un entero positivo.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_limit_invalid",
+                "action_hint": "use_limit_between_1_and_100",
+            },
+        ) from exc
+    if value <= 0:
+        raise EncuestaError(
+            "El límite de paginación debe ser un entero positivo.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_limit_invalid",
+                "action_hint": "use_limit_between_1_and_100",
+            },
+        )
+    return min(value, SURVEY_ADMIN_LIST_MAX_LIMIT)
+
+
+def _coerce_admin_list_page(raw_page: Any) -> Optional[int]:
+    if raw_page in (None, ""):
+        return None
+    try:
+        value = int(raw_page)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise EncuestaError(
+            "La página debe ser un entero positivo.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_page_invalid",
+                "action_hint": "use_positive_page_or_cursor",
+            },
+        ) from exc
+    if value <= 0 or value > 10_000:
+        raise EncuestaError(
+            "La página solicitada está fuera de rango.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_page_invalid",
+                "action_hint": "use_cursor_pagination",
+            },
+        )
+    return value
+
+
+def list_encuestas_page(
+    tenant_id: int,
+    estado: Optional[str] = None,
+    *,
+    limit: Any = None,
+    cursor: Any = None,
+    page: Any = None,
+) -> Dict[str, Any]:
+    """Return a hard-bounded tenant page using stable descending ids."""
+
+    _bootstrap_sample_if_needed(tenant_id)
+    safe_limit = _coerce_admin_list_limit(limit)
+    cursor_id = _decode_survey_list_cursor(cursor)
+    safe_page = _coerce_admin_list_page(page)
+    if cursor_id is not None and safe_page not in (None, 1):
+        raise EncuestaError(
+            "No se pueden combinar cursor y page.",
+            status_code=400,
+            payload={
+                "contract_version": "surveys.pagination.v1",
+                "reason_code": "survey_list_pagination_conflict",
+                "action_hint": "use_cursor_or_page",
+            },
+        )
+
+    base_query = EncEncuesta.query.filter(EncEncuesta.tenant_id == int(tenant_id))
     if estado:
-        query = query.filter_by(estado=estado)
-    return query.order_by(EncEncuesta.created_at.desc()).all()
+        base_query = base_query.filter(EncEncuesta.estado == estado)
+
+    total_items = int(
+        base_query.with_entities(func.count(EncEncuesta.id))
+        .order_by(None)
+        .scalar()
+        or 0
+    )
+    query = base_query.options(*_admin_encuesta_list_options())
+    if cursor_id is not None:
+        query = query.filter(EncEncuesta.id < cursor_id)
+    query = query.order_by(EncEncuesta.id.desc())
+    if cursor_id is None and safe_page is not None and safe_page > 1:
+        query = query.offset((safe_page - 1) * safe_limit)
+
+    fetched = query.limit(safe_limit + 1).all()
+    has_more = len(fetched) > safe_limit
+    items = fetched[:safe_limit]
+    next_cursor = (
+        _encode_survey_list_cursor(items[-1].id)
+        if has_more and items and items[-1].id is not None
+        else None
+    )
+    current_page = safe_page or 1
+    return {
+        "items": items,
+        "pagination": {
+            "contract_version": "surveys.pagination.v1",
+            "limit": safe_limit,
+            "page": current_page if cursor_id is None else None,
+            "cursor": str(cursor or "").strip() or None,
+            "next_cursor": next_cursor,
+            "next_page": current_page + 1 if has_more and cursor_id is None else None,
+            "has_more": has_more,
+            "returned": len(items),
+            "total_items": total_items,
+            "ordering": "id_desc",
+        },
+    }
+
+
+def list_encuestas(
+    tenant_id: int,
+    estado: Optional[str] = None,
+    *,
+    limit: Any = None,
+    cursor: Any = None,
+    page: Any = None,
+) -> List[EncEncuesta]:
+    """Compatibility wrapper; even direct callers receive a bounded page."""
+
+    return list_encuestas_page(
+        tenant_id,
+        estado,
+        limit=limit,
+        cursor=cursor,
+        page=page,
+    )["items"]
 
 
 def _public_encuestas_list_options() -> List[Any]:
@@ -4407,7 +5069,11 @@ def list_public_encuestas_for_tenant(
 
 
 def get_encuesta(encuesta_id: int, tenant_id: Optional[int] = None, user: Any = None) -> EncEncuesta:
-    encuesta = db.session.get(EncEncuesta, encuesta_id)
+    encuesta = (
+        EncEncuesta.query.options(*_admin_encuesta_list_options())
+        .filter(EncEncuesta.id == encuesta_id)
+        .first()
+    )
     if not encuesta:
         raise EncuestaError("Encuesta no encontrada", status_code=404)
     if tenant_id and encuesta.tenant_id != tenant_id:
@@ -4505,6 +5171,7 @@ def get_public_encuesta(
     preferred_tenant_id: Optional[int] = None,
     require_tenant_match: bool = False,
     allow_inactive_for_receipt_lookup: bool = False,
+    allow_closed_for_read: bool = False,
 ) -> EncEncuesta:
     """Resolve a public survey, optionally requiring an exact tenant match.
 
@@ -4562,17 +5229,22 @@ def get_public_encuesta(
         return fallback
 
     encuesta: Optional[EncEncuesta] = None
+    resolved_via_public_link = False
+    resolved_via_public_slug = False
     matching_links_query = EncLink.query.filter(
         func.lower(EncLink.slug_publico) == normalized_slug
-    )
+    ).options(joinedload(EncLink.encuesta))
     if require_tenant_match and preferred_tenant is not None:
         matching_links_query = matching_links_query.join(
             EncEncuesta,
             EncLink.encuesta_id == EncEncuesta.id,
         ).filter(EncEncuesta.tenant_id == preferred_tenant)
-    matching_links = matching_links_query.order_by(EncLink.id.desc()).all()
+    matching_links = (
+        matching_links_query.order_by(EncLink.id.desc()).limit(100).all()
+    )
     if matching_links:
         encuesta = _pick_best_candidate([link.encuesta for link in matching_links])
+        resolved_via_public_link = encuesta is not None
     else:
         slug_matches_query = EncEncuesta.query.filter(
             func.lower(EncEncuesta.slug) == normalized_slug
@@ -4583,6 +5255,7 @@ def get_public_encuesta(
             )
         slug_matches = slug_matches_query.order_by(EncEncuesta.id.desc()).all()
         encuesta = _pick_best_candidate(slug_matches)
+        resolved_via_public_slug = encuesta is not None
         if encuesta is None:
             alias_match = _PUBLIC_SLUG_ALIAS_RE.match(normalized_slug)
             if alias_match:
@@ -4602,7 +5275,7 @@ def get_public_encuesta(
     if encuesta is None and re.fullmatch(r"[0-9a-z]{5,12}", normalized_slug):
         short_link_query = EncLink.query.filter(
             EncLink.slug_publico.ilike(f"%-{normalized_slug}")
-        )
+        ).options(joinedload(EncLink.encuesta))
         if require_tenant_match and preferred_tenant is not None:
             short_link_query = short_link_query.join(
                 EncEncuesta,
@@ -4611,11 +5284,22 @@ def get_public_encuesta(
         short_link = short_link_query.order_by(EncLink.id.desc()).first()
         if short_link:
             encuesta = short_link.encuesta
+            resolved_via_public_link = True
 
     if encuesta is None:
         if require_tenant_match:
             raise _public_survey_not_found_error()
         raise EncuestaError("Encuesta no encontrada", status_code=404)
+
+    # Reload the selected instrument with all structure relationships in a
+    # fixed number of select-in queries.  Live-result fingerprinting and cache
+    # hits can now traverse S surveys / Q questions without per-row lazy SQL.
+    encuesta = (
+        EncEncuesta.query.options(*_admin_encuesta_list_options())
+        .filter(EncEncuesta.id == encuesta.id)
+        .populate_existing()
+        .one()
+    )
 
     preview_user = allow_inactive_for_user
     if preview_user is not None:
@@ -4631,6 +5315,17 @@ def get_public_encuesta(
     # lookup, which first proves that the caller's tenant-scoped submission key
     # already has a committed receipt.  It never authorizes a new response.
     if allow_inactive_for_receipt_lookup:
+        return encuesta
+
+    # Final public results are a read-only surface. Accept either a durable
+    # public link or the exact public survey slug retained by legacy published
+    # instruments. Forged slug aliases and numeric database ids do not cross
+    # this boundary. This branch deliberately does not authorize intake,
+    # comments, reporting, QR generation, share pages, sockets, or any other
+    # caller that keeps the default ``False`` value.
+    if allow_closed_for_read and encuesta.estado == "cerrada":
+        if not (resolved_via_public_link or resolved_via_public_slug):
+            raise _public_survey_not_found_error()
         return encuesta
 
     if encuesta.estado != "publicada":
@@ -6489,7 +7184,11 @@ def save_respuesta(
             },
         )
     if fingerprint:
-        existing = EncRespuesta.query.filter_by(encuesta_id=encuesta.id, huella_unica=fingerprint).first()
+        existing = EncRespuesta.query.filter_by(
+            encuesta_id=encuesta.id,
+            huella_unica=fingerprint,
+            response_origin=SURVEY_RESPONSE_ORIGIN_REAL,
+        ).first()
         if existing:
             raise _survey_duplicate_response_error()
 
@@ -6614,6 +7313,7 @@ def save_respuesta(
     respuesta = EncRespuesta(
         encuesta_id=encuesta.id,
         tenant_id=tenant_id,
+        response_origin=SURVEY_RESPONSE_ORIGIN_REAL,
         huella_unica=fingerprint,
         user_id=None if source_anonymous else user_id,
         dni=None if source_anonymous else dni,
@@ -6825,6 +7525,21 @@ def emit_survey_response_update(
     if not encuesta.mostrar_resultados_envivo or not emit_survey_update:
         return False
     try:
+        privacy_mode = str(
+            getattr(encuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
+            or SURVEY_PRIVACY_MODE_LEGACY
+        ).strip().lower()
+        legacy_results = _compute_live_results(encuesta)
+        legacy_privacy = legacy_results.get("privacy")
+        if (
+            privacy_mode == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS
+            and isinstance(legacy_privacy, Mapping)
+            and bool(legacy_privacy.get("suppressed"))
+        ):
+            # Silence is intentional: even an opaque per-response invalidation
+            # would expose the presence and timing of people in a cohort below
+            # the public threshold.
+            return False
         tenant_id = encuesta.tenant_id
         public_slug = _resolve_public_slug(encuesta) or encuesta.slug or slug_publico
         tenant_slug = None
@@ -6840,12 +7555,16 @@ def emit_survey_response_update(
                 require_tenant_match=tenant_id is not None,
                 include_heatmap=True,
             )
-            live_stats["legacy_results"] = _compute_live_results(encuesta)
+            live_stats["legacy_results"] = legacy_results
         except Exception:
             current_app.logger.exception(
-                "[encuestas] Error calculando live-results v2 para socket; se emite contrato legacy"
+                "[encuestas] Error calculando live-results v2 para socket"
             )
-            live_stats = _compute_live_results(encuesta)
+            if privacy_mode == SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS:
+                # The public socket is unauthenticated. A computation failure
+                # must never fall back to a less-governed exact payload.
+                return False
+            live_stats = legacy_results
         if event_envelope is not None and isinstance(live_stats, dict):
             safe_event: Dict[str, Any] = {}
             for field in (
@@ -6854,12 +7573,15 @@ def emit_survey_response_update(
                 "event_name",
                 "tenant_id",
                 "survey_id",
-                "response_id",
                 "slug",
             ):
                 value = event_envelope.get(field)
                 if value is not None:
                     safe_event[field] = value
+            if privacy_mode != SURVEY_PRIVACY_MODE_SOURCE_ANONYMOUS:
+                response_id = event_envelope.get("response_id")
+                if response_id is not None:
+                    safe_event["response_id"] = response_id
             if safe_event:
                 live_stats["event"] = safe_event
 
@@ -6914,6 +7636,80 @@ def _seed_weighted_choice(rng: random.Random, options: Sequence[str], weights: S
     return str(rng.choices(list(options), weights=list(weights), k=1)[0])
 
 
+def _require_synthetic_seed_sandbox(encuesta: EncEncuesta) -> None:
+    """Fail closed unless the instrument is an isolated synthetic-only draft."""
+
+    origin_counts = {
+        str(origin or ""): int(count or 0)
+        for origin, count in (
+            db.session.query(
+                EncRespuesta.response_origin,
+                func.count(EncRespuesta.id),
+            )
+            .filter(EncRespuesta.encuesta_id == encuesta.id)
+            .group_by(EncRespuesta.response_origin)
+            .all()
+        )
+    }
+    blockers: Dict[str, Any] = {}
+    if str(encuesta.estado or "").strip().lower() != "borrador":
+        blockers["survey_state"] = str(encuesta.estado or "unknown")
+
+    real_count = origin_counts.get(SURVEY_RESPONSE_ORIGIN_REAL, 0)
+    unverified_count = origin_counts.get(
+        SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+        0,
+    )
+    if real_count:
+        blockers["real_responses"] = real_count
+    if unverified_count:
+        blockers["legacy_unverified_responses"] = unverified_count
+
+    dependency_queries = {
+        "governance_releases": SurveyGovernanceRelease.query.filter_by(
+            survey_id=encuesta.id
+        ),
+        "response_receipts": SurveyResponseReceipt.query.filter_by(
+            survey_id=encuesta.id
+        ),
+        "response_effects": SurveyResponseEffect.query.filter_by(
+            survey_id=encuesta.id
+        ),
+        "anchors": EncAnchorSnapshot.query.filter_by(encuesta_id=encuesta.id),
+        "materializations": SurveyDraftMaterialization.query.filter_by(
+            survey_id=encuesta.id
+        ),
+        "eligibility_grants": SurveyEligibilityGrant.query.filter_by(
+            survey_id=encuesta.id
+        ),
+        "eligibility_terminals": SurveyEligibilityTerminal.query.filter_by(
+            survey_id=encuesta.id
+        ),
+        "public_links": EncLink.query.filter_by(encuesta_id=encuesta.id),
+        "comments": EncComentario.query.filter_by(encuesta_id=encuesta.id),
+    }
+    for name, query in dependency_queries.items():
+        count = int(query.count() or 0)
+        if count:
+            blockers[name] = count
+
+    if blockers:
+        raise EncuestaError(
+            "El seed sintético requiere un borrador sandbox sin participación ni historia durable.",
+            status_code=409,
+            payload={
+                "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "reason_code": "survey_demo_seed_requires_exclusive_draft",
+                "retryable": False,
+                "blockers": blockers,
+                "synthetic_responses_present": origin_counts.get(
+                    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+                    0,
+                ),
+            },
+        )
+
+
 def seed_encuesta_respuestas_demo(
     encuesta_id: int,
     user: Any,
@@ -6925,13 +7721,15 @@ def seed_encuesta_respuestas_demo(
     reset_data: bool = False,
     scenario: str = "balanced",
 ) -> Dict[str, Any]:
-    _require_demo_seed_runtime_allowed(user=user)
+    _require_demo_seed_control_plane_available(user)
     cantidad = _validate_demo_seed_count(cantidad)
 
     encuesta = get_encuesta(encuesta_id, user=user)
+    _require_demo_seed_runtime_allowed(user=user, tenant_id=encuesta.tenant_id)
     encuesta = _acquire_encuesta_write_guard(encuesta_id)
     _ensure_tenant_access(encuesta, user)
     _validate_persisted_instrument(encuesta)
+    _require_synthetic_seed_sandbox(encuesta)
     if (
         str(
             getattr(encuesta, "privacy_mode", SURVEY_PRIVACY_MODE_LEGACY)
@@ -6959,6 +7757,7 @@ def seed_encuesta_respuestas_demo(
         encuesta = _acquire_encuesta_write_guard(encuesta_id)
         _ensure_tenant_access(encuesta, user)
         _validate_persisted_instrument(encuesta)
+        _require_synthetic_seed_sandbox(encuesta)
 
     expected_structure_revision = int(encuesta.structure_revision or 1)
 
@@ -7015,23 +7814,118 @@ def seed_encuesta_respuestas_demo(
     posibles_barrios = barrios_catalogo + distritos_catalogo
 
     created = 0
+    replayed = 0
     skipped = 0
     attempts = 0
     now = datetime.now(timezone.utc)
-    demo_batch_id = (
-        f"seed-{encuesta.id}-{int(now.timestamp())}-{secrets.token_hex(6)}"
+    idempotency_material = json.dumps(
+        {
+            "survey_id": int(encuesta.id),
+            "count": int(cantidad),
+            "seed": seed,
+            "scenario": scenario_normalized,
+            "geo_profile_key": geo_profile_key,
+            "municipality_label": municipality_label,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
     )
+    seed_idempotency_key = hashlib.sha256(
+        idempotency_material.encode("utf-8")
+    ).hexdigest()
+    if seed is None:
+        demo_batch_id = (
+            f"seed-{encuesta.id}-{int(now.timestamp())}-{secrets.token_hex(6)}"
+        )
+    else:
+        timestamp_token = 100_000_000 + (
+            int(seed_idempotency_key[:12], 16) % 999_900_000_000_000
+        )
+        demo_batch_id = (
+            f"seed-{encuesta.id}-{timestamp_token}-{seed_idempotency_key[12:24]}"
+        )
     analytics_counter = {
         "canales": Counter(),
         "utm_source": Counter(),
         "utm_campaign": Counter(),
         "barrios": Counter(),
     }
+    if seed is not None and not reset_data:
+        existing_batch_rows = []
+        existing_batch_scan = (
+            EncRespuesta.query.options(
+                load_only(
+                    EncRespuesta.id,
+                    EncRespuesta.metadata_payload,
+                    EncRespuesta.canal,
+                    EncRespuesta.utm_source,
+                    EncRespuesta.utm_campaign,
+                    EncRespuesta.barrio,
+                )
+            )
+            .filter_by(
+                encuesta_id=encuesta.id,
+                response_origin=SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+            )
+        )
+        for row in iter_survey_response_query_bounded(existing_batch_scan):
+            metadata = row.metadata_payload
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("demo_batch_id") == demo_batch_id
+                and metadata.get("demo_seed_idempotency_key")
+                == seed_idempotency_key
+            ):
+                existing_batch_rows.append(row)
+        if existing_batch_rows:
+            if len(existing_batch_rows) != cantidad:
+                db.session.rollback()
+                raise EncuestaError(
+                    "El batch sintético idempotente está incompleto y requiere revisión.",
+                    status_code=409,
+                    payload={
+                        "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                        "reason_code": "survey_demo_seed_idempotency_conflict",
+                        "retryable": False,
+                        "expected_responses": cantidad,
+                        "persisted_responses": len(existing_batch_rows),
+                    },
+                )
+            for row in existing_batch_rows:
+                analytics_counter["canales"][row.canal] += 1
+                analytics_counter["utm_source"][row.utm_source] += 1
+                analytics_counter["utm_campaign"][row.utm_campaign] += 1
+                if row.barrio:
+                    analytics_counter["barrios"][row.barrio] += 1
+            db.session.rollback()
+            return {
+                "encuesta_id": encuesta.id,
+                "creadas": 0,
+                "reutilizadas": len(existing_batch_rows),
+                "omitidas": 0,
+                "objetivo": cantidad,
+                "seed": seed,
+                "scenario": scenario_normalized,
+                "reset": reset_summary,
+                "demo_batch_id": demo_batch_id,
+                "analytics_preview": {
+                    "canales": dict(analytics_counter["canales"]),
+                    "utm_source": dict(analytics_counter["utm_source"]),
+                    "utm_campaign": dict(analytics_counter["utm_campaign"]),
+                    "top_barrios": [
+                        {"label": label, "value": value}
+                        for label, value in analytics_counter[
+                            "barrios"
+                        ].most_common(5)
+                    ],
+                },
+            }
     dni_usados: set[str] = set()
     phone_usados: set[str] = set()
     fingerprints: set[str] = set()
 
-    while created < cantidad and attempts < cantidad * 6:
+    while created + replayed < cantidad and attempts < cantidad * 6:
         attempts += 1
 
         dni = f"{rng.randint(20000000, 49999999):08d}"
@@ -7223,21 +8117,33 @@ def seed_encuesta_respuestas_demo(
             if fingerprint in fingerprints:
                 skipped += 1
                 continue
-            existing = EncRespuesta.query.filter_by(
+            existing_rows = EncRespuesta.query.filter_by(
                 encuesta_id=encuesta.id,
                 huella_unica=fingerprint,
-            ).first()
-            if existing:
-                skipped += 1
+                response_origin=SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+            ).all()
+            if any(
+                isinstance(row.metadata_payload, dict)
+                and row.metadata_payload.get("demo_batch_id") == demo_batch_id
+                and row.metadata_payload.get("demo_seed_idempotency_key")
+                == seed_idempotency_key
+                for row in existing_rows
+            ):
+                fingerprints.add(fingerprint)
+                dni_usados.add(dni)
+                phone_usados.add(phone)
+                replayed += 1
                 continue
 
         respuesta = EncRespuesta(
             encuesta_id=encuesta.id,
             tenant_id=tenant_id,
+            response_origin=SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
             metadata_payload={
                 "is_demo_seed": True,
                 "demo_batch_id": demo_batch_id,
                 "demo_seed_contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                "demo_seed_idempotency_key": seed_idempotency_key,
                 "demo_scenario": scenario_normalized,
             },
             huella_unica=fingerprint,
@@ -7265,16 +8171,12 @@ def seed_encuesta_respuestas_demo(
             _persist_respuesta_entity(
                 respuesta,
                 detalles,
+                commit=False,
                 expected_structure_revision=expected_structure_revision,
             )
         except EncuestaError as exc:
-            if (exc.payload or {}).get("reason_code") in {
-                "survey_concurrent_update",
-                "survey_structure_changed",
-            }:
-                raise
-            skipped += 1
-            continue
+            db.session.rollback()
+            raise exc
 
         dni_usados.add(dni)
         phone_usados.add(phone)
@@ -7287,10 +8189,31 @@ def seed_encuesta_respuestas_demo(
         if payload_data.get("barrio"):
             analytics_counter["barrios"][payload_data["barrio"]] += 1
 
+    if created:
+        try:
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.exception(
+                "[encuestas] No se pudo confirmar atomicamente el batch sintético de encuesta %s",
+                encuesta.id,
+            )
+            raise EncuestaError(
+                "No se pudo guardar el batch sintético",
+                status_code=500,
+                payload={
+                    "contract_version": SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
+                    "reason_code": "survey_demo_seed_atomic_commit_failed",
+                    "retryable": True,
+                },
+            ) from exc
+
     current_app.logger.info(
-        "[encuestas] Seed demo agregó %s respuestas a la encuesta %s (saltadas=%s)",
+        "[encuestas] Seed demo agregó %s respuestas a la encuesta %s "
+        "(reutilizadas=%s, saltadas=%s)",
         created,
         encuesta.id,
+        replayed,
         skipped,
     )
 
@@ -7302,6 +8225,7 @@ def seed_encuesta_respuestas_demo(
     return {
         "encuesta_id": encuesta.id,
         "creadas": created,
+        "reutilizadas": replayed,
         "omitidas": skipped,
         "objetivo": cantidad,
         "seed": seed,
@@ -7342,6 +8266,9 @@ def _reset_encuesta_demo_data(encuesta: EncEncuesta) -> Dict[str, int]:
             "effects": SurveyResponseEffect.query.filter_by(
                 survey_id=encuesta.id
             ).count(),
+            "materializations": SurveyDraftMaterialization.query.filter_by(
+                survey_id=encuesta.id
+            ).count(),
             "eligibility_grants": SurveyEligibilityGrant.query.filter_by(
                 survey_id=encuesta.id
             ).count(),
@@ -7349,11 +8276,28 @@ def _reset_encuesta_demo_data(encuesta: EncEncuesta) -> Dict[str, int]:
                 survey_id=encuesta.id
             ).count(),
         }
+        non_synthetic_response_count = (
+            db.session.query(func.count(EncRespuesta.id))
+            .filter(
+                EncRespuesta.encuesta_id == encuesta.id,
+                EncRespuesta.response_origin
+                != SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+            )
+            .scalar()
+        )
         respuestas = (
             EncRespuesta.query.options(
-                load_only(EncRespuesta.id, EncRespuesta.metadata_payload)
+                load_only(
+                    EncRespuesta.id,
+                    EncRespuesta.encuesta_id,
+                    EncRespuesta.response_origin,
+                    EncRespuesta.metadata_payload,
+                )
             )
-            .filter_by(encuesta_id=encuesta.id)
+            .filter_by(
+                encuesta_id=encuesta.id,
+                response_origin=SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+            )
             .all()
         )
         comentarios_count = EncComentario.query.filter_by(
@@ -7391,23 +8335,14 @@ def _reset_encuesta_demo_data(encuesta: EncEncuesta) -> Dict[str, int]:
 
     trusted_response_ids: List[int] = []
     batch_ids: set[str] = set()
-    untrusted_responses = 0
-    expected_batch_prefix = f"seed-{encuesta.id}-"
+    untrusted_responses = int(non_synthetic_response_count or 0)
     for respuesta in respuestas:
         metadata = respuesta.metadata_payload
         batch_id = metadata.get("demo_batch_id") if isinstance(metadata, dict) else None
-        is_demo_seed = metadata.get("is_demo_seed") if isinstance(metadata, dict) else None
-        trusted_batch = (
-            is_demo_seed is True
-            and isinstance(batch_id, str)
-            and batch_id.startswith(expected_batch_prefix)
-            and re.fullmatch(
-                rf"seed-{encuesta.id}-[0-9]{{9,16}}(?:-[a-f0-9]{{12}})?",
-                batch_id,
-            )
-            is not None
-        )
-        if not trusted_batch:
+        if not is_trusted_demo_seed_metadata(
+            metadata,
+            survey_id=encuesta.id,
+        ):
             untrusted_responses += 1
             continue
         trusted_response_ids.append(int(respuesta.id))
@@ -7464,32 +8399,50 @@ def _collect_recent_geo_points(
     if not encuesta_ids:
         return {}
 
-    max_rows = limit_per_encuesta * len(encuesta_ids)
-    query = (
-        EncRespuesta.query.options(
-            load_only(
-                EncRespuesta.encuesta_id,
-                EncRespuesta.lat,
-                EncRespuesta.lng,
-                EncRespuesta.barrio,
-                EncRespuesta.ciudad,
-                EncRespuesta.provincia,
-                EncRespuesta.submitted_at,
+    normalized_limit = max(1, min(int(limit_per_encuesta or 200), 500))
+    ranked = (
+        db.session.query(
+            EncRespuesta.id.label("id"),
+            EncRespuesta.encuesta_id.label("encuesta_id"),
+            EncRespuesta.lat.label("lat"),
+            EncRespuesta.lng.label("lng"),
+            EncRespuesta.barrio.label("barrio"),
+            EncRespuesta.ciudad.label("ciudad"),
+            EncRespuesta.provincia.label("provincia"),
+            EncRespuesta.submitted_at.label("submitted_at"),
+            func.row_number()
+            .over(
+                partition_by=EncRespuesta.encuesta_id,
+                order_by=(
+                    EncRespuesta.submitted_at.desc(),
+                    EncRespuesta.id.desc(),
+                ),
             )
+            .label("response_rank"),
         )
-        .filter(EncRespuesta.encuesta_id.in_(encuesta_ids))
-        .filter(EncRespuesta.lat.isnot(None))
-        .filter(EncRespuesta.lng.isnot(None))
-        .order_by(EncRespuesta.submitted_at.desc(), EncRespuesta.id.desc())
-        .limit(max_rows)
+        .filter(
+            EncRespuesta.encuesta_id.in_(encuesta_ids),
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
+            EncRespuesta.lat.isnot(None),
+            EncRespuesta.lng.isnot(None),
+        )
+        .subquery()
+    )
+    rows = (
+        db.session.query(ranked)
+        .filter(ranked.c.response_rank <= normalized_limit)
+        .order_by(
+            ranked.c.encuesta_id.asc(),
+            ranked.c.submitted_at.desc(),
+            ranked.c.id.desc(),
+        )
+        .all()
     )
 
     points: Dict[int, List[Dict[str, Any]]] = {encuesta_id: [] for encuesta_id in encuesta_ids}
-    for respuesta in query:
+    for respuesta in rows:
         bucket = points.get(respuesta.encuesta_id)
         if bucket is None:
-            continue
-        if len(bucket) >= limit_per_encuesta:
             continue
         bucket.append(
             {
@@ -7509,116 +8462,274 @@ def _collect_recent_geo_points(
 def _collect_admin_panel_stats(
     encuestas: Sequence[EncEncuesta],
 ) -> Dict[int, Dict[str, Any]]:
+    from sqlalchemy import String, case, cast, literal
+
     encuesta_ids = [encuesta.id for encuesta in encuestas if encuesta.id]
     if not encuesta_ids:
         return {}
 
-    raw_stats = {
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    real_origin = EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL
+    synthetic_origin = (
+        EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO
+    )
+    unverified_origin = (
+        EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED
+    )
+    participant_identity = case(
+        (
+            EncRespuesta.huella_unica.isnot(None),
+            literal("fingerprint:") + cast(EncRespuesta.huella_unica, String),
+        ),
+        (
+            EncRespuesta.user_id.isnot(None),
+            literal("user:") + cast(EncRespuesta.user_id, String),
+        ),
+        (
+            EncRespuesta.dni.isnot(None),
+            literal("dni:") + cast(EncRespuesta.dni, String),
+        ),
+        (
+            EncRespuesta.phone.isnot(None),
+            literal("phone:") + cast(EncRespuesta.phone, String),
+        ),
+        (
+            EncRespuesta.ip.isnot(None),
+            literal("ip:") + cast(EncRespuesta.ip, String),
+        ),
+        else_=literal("anon:") + cast(EncRespuesta.id, String),
+    )
+    aggregate_rows = (
+        db.session.query(
+            EncRespuesta.encuesta_id,
+            func.coalesce(func.sum(case((real_origin, 1), else_=0)), 0),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            real_origin
+                            & (EncRespuesta.submitted_at >= cutoff),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            real_origin
+                            & EncRespuesta.lat.isnot(None)
+                            & EncRespuesta.lng.isnot(None),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ),
+                0,
+            ),
+            func.count(
+                func.distinct(case((real_origin, participant_identity), else_=None))
+            ),
+            func.max(case((real_origin, EncRespuesta.submitted_at), else_=None)),
+            func.coalesce(func.sum(case((synthetic_origin, 1), else_=0)), 0),
+            func.coalesce(func.sum(case((unverified_origin, 1), else_=0)), 0),
+        )
+        .filter(EncRespuesta.encuesta_id.in_(encuesta_ids))
+        .group_by(EncRespuesta.encuesta_id)
+        .all()
+    )
+
+    result: Dict[int, Dict[str, Any]] = {
         encuesta_id: {
             "total_respuestas": 0,
             "respuestas_ultimas_24h": 0,
             "respuestas_con_coordenadas": 0,
-            "participantes_unicos": set(),
+            "participantes_unicos": 0,
             "ultima_respuesta_at": None,
-            "canales": Counter(),
-            "utm": Counter(),
+            "canales": {},
+            "canales_metadata": {
+                "top_limit": SURVEY_ADMIN_CHANNEL_TOP_LIMIT,
+                "distinct_total": 0,
+                "returned_distinct": 0,
+                "truncated": False,
+                "other_count": 0,
+            },
+            "utm": [],
+            "synthetic_responses_excluded": 0,
+            "unverified_responses_excluded": 0,
         }
         for encuesta_id in encuesta_ids
     }
-
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    respuestas = (
-        EncRespuesta.query.options(
-            load_only(
-                EncRespuesta.id,
-                EncRespuesta.encuesta_id,
-                EncRespuesta.submitted_at,
-                EncRespuesta.lat,
-                EncRespuesta.lng,
-                EncRespuesta.huella_unica,
-                EncRespuesta.user_id,
-                EncRespuesta.dni,
-                EncRespuesta.phone,
-                EncRespuesta.ip,
-                EncRespuesta.canal,
-                EncRespuesta.utm_source,
-                EncRespuesta.utm_campaign,
-            )
+    for (
+        encuesta_id,
+        total_respuestas,
+        respuestas_ultimas_24h,
+        respuestas_con_coordenadas,
+        participantes_unicos,
+        ultima_respuesta_at,
+        synthetic_excluded,
+        unverified_excluded,
+    ) in aggregate_rows:
+        ultima = (
+            _ensure_timezone(ultima_respuesta_at).isoformat()
+            if ultima_respuesta_at
+            else None
         )
-        .filter(EncRespuesta.encuesta_id.in_(encuesta_ids))
+        result[int(encuesta_id)].update(
+            {
+            "total_respuestas": int(total_respuestas or 0),
+            "respuestas_ultimas_24h": int(respuestas_ultimas_24h or 0),
+            "respuestas_con_coordenadas": int(respuestas_con_coordenadas or 0),
+            "participantes_unicos": int(participantes_unicos or 0),
+            "ultima_respuesta_at": ultima,
+            "synthetic_responses_excluded": int(synthetic_excluded or 0),
+            "unverified_responses_excluded": int(unverified_excluded or 0),
+            }
+        )
+
+    channel_expr = func.coalesce(
+        func.nullif(func.lower(func.trim(cast(EncRespuesta.canal, String))), ""),
+        "sin_canal",
+    )
+    grouped_channels = (
+        db.session.query(
+            EncRespuesta.encuesta_id.label("encuesta_id"),
+            channel_expr.label("channel"),
+            func.count(EncRespuesta.id).label("conteo"),
+        )
+        .filter(
+            EncRespuesta.encuesta_id.in_(encuesta_ids),
+            real_origin,
+        )
+        .group_by(EncRespuesta.encuesta_id, channel_expr)
+        .subquery()
+    )
+    ranked_channels = (
+        db.session.query(
+            grouped_channels.c.encuesta_id,
+            grouped_channels.c.channel,
+            grouped_channels.c.conteo,
+            func.row_number()
+            .over(
+                partition_by=grouped_channels.c.encuesta_id,
+                order_by=(
+                    grouped_channels.c.conteo.desc(),
+                    grouped_channels.c.channel.asc(),
+                ),
+            )
+            .label("rank"),
+            func.count()
+            .over(partition_by=grouped_channels.c.encuesta_id)
+            .label("distinct_total"),
+            func.sum(grouped_channels.c.conteo)
+            .over(partition_by=grouped_channels.c.encuesta_id)
+            .label("channel_total"),
+        )
+        .subquery()
+    )
+    channel_rows = (
+        db.session.query(
+            ranked_channels.c.encuesta_id,
+            ranked_channels.c.channel,
+            ranked_channels.c.conteo,
+            ranked_channels.c.distinct_total,
+            ranked_channels.c.channel_total,
+        )
+        .filter(ranked_channels.c.rank <= SURVEY_ADMIN_CHANNEL_TOP_LIMIT)
+        .order_by(
+            ranked_channels.c.encuesta_id,
+            ranked_channels.c.conteo.desc(),
+            ranked_channels.c.channel.asc(),
+        )
         .all()
     )
-
-    for respuesta in respuestas:
-        stats = raw_stats.get(respuesta.encuesta_id)
-        if not stats:
-            continue
-
-        stats["total_respuestas"] += 1
-
-        submitted_at = respuesta.submitted_at
-        if submitted_at is not None:
-            if submitted_at.tzinfo is None:
-                submitted_at = submitted_at.replace(tzinfo=timezone.utc)
-            else:
-                submitted_at = submitted_at.astimezone(timezone.utc)
-        if submitted_at and submitted_at >= cutoff:
-            stats["respuestas_ultimas_24h"] += 1
-        if submitted_at and (
-            stats["ultima_respuesta_at"] is None
-            or submitted_at > stats["ultima_respuesta_at"]
-        ):
-            stats["ultima_respuesta_at"] = submitted_at
-
-        if respuesta.lat is not None and respuesta.lng is not None:
-            stats["respuestas_con_coordenadas"] += 1
-
-        fingerprint = (
-            respuesta.huella_unica
-            or (respuesta.user_id and f"user:{respuesta.user_id}")
-            or (
-                respuesta.dni
-                and respuesta.dni.strip()
-                and f"dni:{respuesta.dni.strip()}"
-            )
-            or (
-                respuesta.phone
-                and respuesta.phone.strip()
-                and f"phone:{respuesta.phone.strip()}"
-            )
-            or (respuesta.ip and f"ip:{respuesta.ip}")
+    channel_top_totals: Dict[int, int] = Counter()
+    for encuesta_id, channel, count, distinct_total, channel_total in channel_rows:
+        normalized_id = int(encuesta_id)
+        normalized_count = int(count or 0)
+        channel_top_totals[normalized_id] += normalized_count
+        result[normalized_id]["canales"][str(channel or "sin_canal")] = (
+            normalized_count
         )
-        stats["participantes_unicos"].add(
-            fingerprint or f"anon:{respuesta.encuesta_id}:{respuesta.id}"
+        result[normalized_id]["canales_metadata"].update(
+            {
+                "distinct_total": int(distinct_total or 0),
+                "channel_total": int(channel_total or 0),
+            }
+        )
+    for encuesta_id, top_total in channel_top_totals.items():
+        metadata = result[encuesta_id]["canales_metadata"]
+        distinct_total = int(metadata.get("distinct_total") or 0)
+        channel_total = int(metadata.pop("channel_total", 0) or 0)
+        other_count = max(0, channel_total - int(top_total or 0))
+        if other_count:
+            result[encuesta_id]["canales"]["otros"] = (
+                result[encuesta_id]["canales"].get("otros", 0) + other_count
+            )
+        metadata.update(
+            {
+                "returned_distinct": min(
+                    distinct_total,
+                    SURVEY_ADMIN_CHANNEL_TOP_LIMIT,
+                ),
+                "truncated": distinct_total > SURVEY_ADMIN_CHANNEL_TOP_LIMIT,
+                "other_count": other_count,
+            }
         )
 
-        canal = respuesta.canal or "sin_canal"
-        stats["canales"][canal] += 1
-        utm_key = (respuesta.utm_source or "n/a", respuesta.utm_campaign or "n/a")
-        stats["utm"][utm_key] += 1
-
-    result: Dict[int, Dict[str, Any]] = {}
-    for encuesta_id, data in raw_stats.items():
-        ultima_dt = data["ultima_respuesta_at"]
-        ultima = _ensure_timezone(ultima_dt).isoformat() if ultima_dt else None
-        result[encuesta_id] = {
-            "total_respuestas": data["total_respuestas"],
-            "respuestas_ultimas_24h": data["respuestas_ultimas_24h"],
-            "respuestas_con_coordenadas": data["respuestas_con_coordenadas"],
-            "participantes_unicos": len(data["participantes_unicos"]),
-            "ultima_respuesta_at": ultima,
-            "canales": {canal: count for canal, count in data["canales"].items()},
-            "utm": [
-                {
-                    "utm_source": source,
-                    "utm_campaign": campaign,
-                    "conteo": count,
-                }
-                for (source, campaign), count in sorted(
-                    data["utm"].items(), key=lambda item: item[1], reverse=True
-                )
-            ],
-        }
+    source_expr = func.coalesce(EncRespuesta.utm_source, "n/a")
+    campaign_expr = func.coalesce(EncRespuesta.utm_campaign, "n/a")
+    grouped_utm = (
+        db.session.query(
+            EncRespuesta.encuesta_id.label("encuesta_id"),
+            source_expr.label("utm_source"),
+            campaign_expr.label("utm_campaign"),
+            func.count(EncRespuesta.id).label("conteo"),
+        )
+        .filter(
+            EncRespuesta.encuesta_id.in_(encuesta_ids),
+            real_origin,
+        )
+        .group_by(EncRespuesta.encuesta_id, source_expr, campaign_expr)
+        .subquery()
+    )
+    ranked_utm = (
+        db.session.query(
+            grouped_utm.c.encuesta_id,
+            grouped_utm.c.utm_source,
+            grouped_utm.c.utm_campaign,
+            grouped_utm.c.conteo,
+            func.row_number()
+            .over(
+                partition_by=grouped_utm.c.encuesta_id,
+                order_by=grouped_utm.c.conteo.desc(),
+            )
+            .label("rank"),
+        )
+        .subquery()
+    )
+    utm_rows = (
+        db.session.query(
+            ranked_utm.c.encuesta_id,
+            ranked_utm.c.utm_source,
+            ranked_utm.c.utm_campaign,
+            ranked_utm.c.conteo,
+        )
+        .filter(ranked_utm.c.rank <= 50)
+        .order_by(ranked_utm.c.encuesta_id, ranked_utm.c.conteo.desc())
+        .all()
+    )
+    for encuesta_id, source, campaign, count in utm_rows:
+        result[int(encuesta_id)]["utm"].append(
+            {
+                "utm_source": str(source or "n/a"),
+                "utm_campaign": str(campaign or "n/a"),
+                "conteo": int(count or 0),
+            }
+        )
 
     return result
 
@@ -7631,7 +8742,16 @@ def _empty_panel_metrics() -> Dict[str, Any]:
         "participantes_unicos": 0,
         "ultima_respuesta_at": None,
         "canales": {},
+        "canales_metadata": {
+            "top_limit": SURVEY_ADMIN_CHANNEL_TOP_LIMIT,
+            "distinct_total": 0,
+            "returned_distinct": 0,
+            "truncated": False,
+            "other_count": 0,
+        },
         "utm": [],
+        "synthetic_responses_excluded": 0,
+        "unverified_responses_excluded": 0,
     }
 
 
@@ -7755,24 +8875,69 @@ def build_admin_list_payload(
     *,
     tenant_id: Optional[int] = None,
     tenant_slug: Optional[str] = None,
+    pagination: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     stats_map = _collect_admin_panel_stats(encuestas)
     geo_points = _collect_recent_geo_points(encuestas)
+    governance_map = _bulk_survey_governance_contract_map(encuestas)
     encuestas_payload: List[Dict[str, Any]] = []
     estados = Counter()
     total_respuestas = 0
     total_geo = 0
     total_24h = 0
+    total_synthetic_excluded = 0
+    total_unverified_excluded = 0
     activas = 0
     con_respuestas = 0
     accepting_responses = 0
     instrument_kinds = Counter()
 
     seed_profiles_map = _geo_catalog()
+    tenant_ids = {
+        int(encuesta.tenant_id)
+        for encuesta in encuestas
+        if encuesta.tenant_id is not None
+    }
+    geo_metadata_by_tenant = {
+        resolved_tenant_id: _resolve_geo_metadata_for_tenant(resolved_tenant_id)
+        for resolved_tenant_id in tenant_ids
+    }
+    seed_defaults_by_tenant = {
+        resolved_tenant_id: _guess_auto_seed_defaults(
+            municipality_label=None,
+            slug_hint=None,
+            tenant_id=resolved_tenant_id,
+        )
+        for resolved_tenant_id in tenant_ids
+    }
     for encuesta in encuestas:
-        data = serialize_encuesta(encuesta)
         metricas = stats_map.get(encuesta.id or -1, _empty_panel_metrics())
+        governance = governance_map.get(
+            (int(encuesta.tenant_id), int(encuesta.id or 0)),
+            _legacy_survey_governance_contract(),
+        )
+        structure_locked = bool(
+            encuesta.structure_locked_at is not None
+            or int(metricas.get("total_respuestas") or 0) > 0
+            or int(metricas.get("synthetic_responses_excluded") or 0) > 0
+            or int(metricas.get("unverified_responses_excluded") or 0) > 0
+        )
+        data = serialize_encuesta_summary(
+            encuesta,
+            governance=governance,
+            structure_locked=structure_locked,
+        )
         data["metricas"] = metricas
+        data["data_provenance"] = build_survey_response_provenance(
+            real_count=int(metricas.get("total_respuestas") or 0),
+            synthetic_count=int(
+                metricas.get("synthetic_responses_excluded") or 0
+            ),
+            unverified_count=int(
+                metricas.get("unverified_responses_excluded") or 0
+            ),
+            mode="real",
+        )
         data["esta_activa"] = _is_encuesta_activa(encuesta)
         data["slug_publico"] = _resolve_public_slug(encuesta)
         lifecycle = _build_admin_lifecycle_contract(
@@ -7784,7 +8949,7 @@ def build_admin_list_payload(
             ),
         )
         data["admin_lifecycle"] = lifecycle
-        geo_metadata = _resolve_geo_metadata_for_tenant(encuesta.tenant_id)
+        geo_metadata = geo_metadata_by_tenant.get(int(encuesta.tenant_id))
         data["geo"] = {
             "points": geo_points.get(encuesta.id or -1, []),
             "bounds": geo_metadata.get("bounds") if geo_metadata else None,
@@ -7793,10 +8958,9 @@ def build_admin_list_payload(
 
         auto_seed_cfg = _get_auto_seed_config(encuesta) or {}
         if not auto_seed_cfg:
-            default_geo, default_municipality = _guess_auto_seed_defaults(
-                municipality_label=None,
-                slug_hint=encuesta.slug,
-                tenant_id=encuesta.tenant_id,
+            default_geo, default_municipality = seed_defaults_by_tenant.get(
+                int(encuesta.tenant_id),
+                (None, None),
             )
             auto_seed_cfg = {
                 "cantidad": 100,
@@ -7817,6 +8981,12 @@ def build_admin_list_payload(
         total_respuestas += metricas["total_respuestas"]
         total_geo += metricas["respuestas_con_coordenadas"]
         total_24h += metricas["respuestas_ultimas_24h"]
+        total_synthetic_excluded += int(
+            metricas.get("synthetic_responses_excluded") or 0
+        )
+        total_unverified_excluded += int(
+            metricas.get("unverified_responses_excluded") or 0
+        )
         if metricas["total_respuestas"] > 0:
             con_respuestas += 1
         if data["esta_activa"]:
@@ -7833,6 +9003,8 @@ def build_admin_list_payload(
         "total_respuestas": total_respuestas,
         "respuestas_con_coordenadas": total_geo,
         "respuestas_ultimas_24h": total_24h,
+        "synthetic_responses_excluded": total_synthetic_excluded,
+        "unverified_responses_excluded": total_unverified_excluded,
         "accepting_responses": accepting_responses,
         "por_tipo_instrumento": {
             "survey": int(instrument_kinds.get("survey", 0)),
@@ -7869,6 +9041,29 @@ def build_admin_list_payload(
         "municipality_label": seed_profiles[0]["municipality"] if seed_profiles else None,
     }
 
+    data_provenance = build_survey_response_provenance(
+        real_count=total_respuestas,
+        synthetic_count=total_synthetic_excluded,
+        unverified_count=total_unverified_excluded,
+        mode="real",
+    )
+
+    resolved_pagination = dict(
+        pagination
+        or {
+            "contract_version": "surveys.pagination.v1",
+            "limit": len(encuestas_payload),
+            "page": 1,
+            "cursor": None,
+            "next_cursor": None,
+            "next_page": None,
+            "has_more": False,
+            "returned": len(encuestas_payload),
+            "total_items": len(encuestas_payload),
+            "ordering": "id_desc",
+        }
+    )
+
     return {
         "contract_version": "surveys.admin_list.v2",
         "tenant": {"id": tenant_id, "slug": tenant_slug},
@@ -7877,8 +9072,10 @@ def build_admin_list_payload(
             "source": "enc_encuesta_and_enc_respuesta",
             "synthetic": False,
         },
+        "data_provenance": data_provenance,
         "encuestas": encuestas_payload,
         "resumen": resumen,
+        "pagination": resolved_pagination,
         "seed_demo": {"defaults": seed_defaults, "profiles": seed_profiles},
     }
 
@@ -7971,20 +9168,27 @@ def list_respuestas(
     if offset_value < 0:
         raise EncuestaError("El parámetro 'offset' no puede ser negativo")
 
-    total = EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count()
-
-    query = (
-        EncRespuesta.query.options(
+    real_query = filter_survey_response_query_by_origin(
+        EncRespuesta.query.filter_by(encuesta_id=encuesta.id),
+        EncRespuesta,
+        mode="real",
+    )
+    total = int(
+        real_query.with_entities(func.count(EncRespuesta.id))
+        .order_by(None)
+        .scalar()
+        or 0
+    )
+    respuestas = (
+        real_query.options(
             joinedload(EncRespuesta.detalles).joinedload(EncRespuestaDetalle.pregunta),
             joinedload(EncRespuesta.detalles).joinedload(EncRespuestaDetalle.opcion),
         )
-        .filter_by(encuesta_id=encuesta.id)
         .order_by(EncRespuesta.submitted_at.desc(), EncRespuesta.id.desc())
         .offset(offset_value)
         .limit(limit_value)
+        .all()
     )
-
-    respuestas = query.all()
     return encuesta, respuestas, total, limit_value, offset_value
 
 
@@ -8009,40 +9213,214 @@ def _collect_encuesta_tags(encuesta: EncEncuesta) -> List[str]:
     return tags
 
 
-def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
-    def _serialize_question(pregunta: EncPregunta) -> Dict[str, Any]:
-        response_type, internal_type = _map_pregunta_tipo_for_response(pregunta.tipo)
-        question_payload = {
+def _legacy_survey_governance_contract() -> Dict[str, Any]:
+    return {
+        "contract_version": "surveys.public_governance.v1",
+        "mode": "legacy",
+        "release_required": False,
+        "active_release": None,
+        "latest_release": None,
+        "regulated_election_certified": False,
+        "result_certified": False,
+    }
+
+
+def _bulk_survey_governance_contract_map(
+    encuestas: Sequence[EncEncuesta],
+) -> Dict[Tuple[int, int], Dict[str, Any]]:
+    """Build list-safe governance contracts with one release query.
+
+    Administrative listings must expose lifecycle state, but they are not the
+    integrity-audit endpoint.  Deep immutable-snapshot validation remains on
+    detail/public/mutation paths.  This function intentionally never invokes
+    ``survey_governance_contract`` per survey.
+    """
+
+    survey_keys = {
+        (int(encuesta.tenant_id), int(encuesta.id))
+        for encuesta in encuestas
+        if encuesta.id is not None and encuesta.tenant_id is not None
+    }
+    if not survey_keys:
+        return {}
+    survey_ids = sorted({survey_id for _tenant_id, survey_id in survey_keys})
+    tenant_ids = sorted({tenant_id for tenant_id, _survey_id in survey_keys})
+    releases = (
+        SurveyGovernanceRelease.query.filter(
+            SurveyGovernanceRelease.survey_id.in_(survey_ids),
+            SurveyGovernanceRelease.tenant_id.in_(tenant_ids),
+        )
+        .order_by(
+            SurveyGovernanceRelease.survey_id.asc(),
+            SurveyGovernanceRelease.version_number.desc(),
+        )
+        .all()
+    )
+    releases_by_key: Dict[Tuple[int, int], List[SurveyGovernanceRelease]] = {}
+    for release in releases:
+        key = (int(release.tenant_id), int(release.survey_id))
+        if key in survey_keys:
+            releases_by_key.setdefault(key, []).append(release)
+
+    from services.survey_eligibility import public_eligibility_contract
+    from services.survey_governance import release_public_consent_status
+
+    def _release_summary(release: SurveyGovernanceRelease) -> Dict[str, Any]:
+        return {
+            "contract_version": "surveys.governance_release.v1",
+            "release_id": int(release.id),
+            "survey_id": int(release.survey_id),
+            "version_number": int(release.version_number),
+            "status": release.status,
+            "snapshot_sha256": release.snapshot_sha256,
+            "policy_sha256": release.policy_sha256,
+            "published_at": (
+                release.published_at.isoformat() if release.published_at else None
+            ),
+            "closed_at": release.closed_at.isoformat() if release.closed_at else None,
+            "completeness": {
+                "public_consent": release_public_consent_status(release)
+            },
+            "summary_only": True,
+            "assurance": {
+                "regulated_election_certified": False,
+                "result_certified": False,
+                "external_verification": "not_performed",
+            },
+        }
+
+    result: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    encuesta_by_key = {
+        (int(encuesta.tenant_id), int(encuesta.id)): encuesta
+        for encuesta in encuestas
+        if encuesta.id is not None and encuesta.tenant_id is not None
+    }
+    for key in survey_keys:
+        rows = releases_by_key.get(key, [])
+        if not rows:
+            result[key] = _legacy_survey_governance_contract()
+            continue
+        active = next((row for row in rows if row.status == "published"), None)
+        latest = active or rows[0]
+        active_consent = (
+            release_public_consent_status(active)
+            if active is not None
+            else {"complete": False, "reason_code": "survey_governance_release_not_active"}
+        )
+        active_eligibility: Optional[Dict[str, Any]] = None
+        eligibility_error = False
+        if active is not None:
+            try:
+                active_eligibility = public_eligibility_contract(active)
+            except Exception as exc:
+                # A malformed/unsupported policy is never interpreted as an
+                # open intake gate on the lightweight list surface.
+                eligibility_error = True
+                current_app.logger.warning(
+                    "[encuestas] No se pudo resumir elegibilidad de release %s (%s)",
+                    getattr(active, "id", None),
+                    type(exc).__name__,
+                )
+        eligibility_ready = bool(
+            active_eligibility is not None
+            and active_eligibility.get("intake_available") is True
+        )
+        blocked_reason_code = None
+        if active_consent.get("complete") is not True:
+            blocked_reason_code = active_consent.get("reason_code")
+        elif eligibility_error:
+            blocked_reason_code = "survey_eligibility_summary_unavailable"
+        elif not eligibility_ready:
+            blocked_reason_code = (
+                active_eligibility.get("blocked_reason_code")
+                if isinstance(active_eligibility, Mapping)
+                else "survey_governance_release_not_active"
+            )
+        encuesta = encuesta_by_key[key]
+        result[key] = {
+            "contract_version": "surveys.public_governance.v1",
+            "mode": "governed_release",
+            "release_required": True,
+            "active_release": _release_summary(active) if active is not None else None,
+            "latest_release": _release_summary(latest),
+            "eligibility": active_eligibility,
+            "accepting_responses": bool(
+                active is not None
+                and encuesta.estado == "publicada"
+                and active_consent.get("complete") is True
+                and eligibility_ready
+            ),
+            "blocked_reason_code": blocked_reason_code,
+            "regulated_election_certified": False,
+            "result_certified": False,
+            "summary_only": True,
+            "integrity_validation": "detail_endpoint",
+        }
+    return result
+
+
+def _serialize_encuesta_question(
+    pregunta: EncPregunta,
+    *,
+    summary_only: bool,
+) -> Dict[str, Any]:
+    response_type, internal_type = _map_pregunta_tipo_for_response(pregunta.tipo)
+    if summary_only:
+        return {
             "id": pregunta.id,
             "question_ref": pregunta.logical_ref,
             "orden": pregunta.orden,
             "tipo": response_type,
             "type": response_type,
             "tipo_interno": internal_type,
-            "texto": pregunta.texto,
-            "obligatoria": pregunta.obligatoria,
-            "min_selecciones": pregunta.min_selecciones,
-            "max_selecciones": pregunta.max_selecciones,
-            "conditional_logic": deepcopy(pregunta.logica_condicional),
-            "opciones": [
-                {
-                    "id": opcion.id,
-                    "option_ref": opcion.logical_ref,
-                    "orden": opcion.orden,
-                    "texto": opcion.texto,
-                    "valor": opcion.valor,
-                }
-                for opcion in pregunta.opciones
-            ],
+            "opciones_count": len(pregunta.opciones),
+            "summary_only": True,
         }
-        return question_payload
+    return {
+        "id": pregunta.id,
+        "question_ref": pregunta.logical_ref,
+        "orden": pregunta.orden,
+        "tipo": response_type,
+        "type": response_type,
+        "tipo_interno": internal_type,
+        "texto": pregunta.texto,
+        "obligatoria": pregunta.obligatoria,
+        "min_selecciones": pregunta.min_selecciones,
+        "max_selecciones": pregunta.max_selecciones,
+        "conditional_logic": deepcopy(pregunta.logica_condicional),
+        "opciones": [
+            {
+                "id": opcion.id,
+                "option_ref": opcion.logical_ref,
+                "orden": opcion.orden,
+                "texto": opcion.texto,
+                "valor": opcion.valor,
+            }
+            for opcion in pregunta.opciones
+        ],
+    }
+
+
+_GOVERNANCE_NOT_PROVIDED = object()
+
+
+def serialize_encuesta(
+    encuesta: EncEncuesta,
+    *,
+    governance: Any = _GOVERNANCE_NOT_PROVIDED,
+    summary_only: bool = False,
+    structure_locked: Optional[bool] = None,
+) -> Dict[str, Any]:
 
     slug_publico = _resolve_public_slug(encuesta)
     url_publica = _public_url_for_slug(slug_publico)
 
-    from services.survey_governance import survey_governance_contract
+    if governance is _GOVERNANCE_NOT_PROVIDED:
+        from services.survey_governance import survey_governance_contract
 
-    governance = survey_governance_contract(encuesta, validate_integrity=True)
+        # Detail/public serialization is the authoritative deep integrity
+        # boundary.  List callers must supply a bulk summary contract instead.
+        governance = survey_governance_contract(encuesta, validate_integrity=True)
 
     return {
         "id": encuesta.id,
@@ -8101,7 +9479,11 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         "structure_guard": {
             "contract_version": "surveys.structure_guard.v1",
             "revision": int(encuesta.structure_revision or 1),
-            "locked": _survey_structure_is_locked(encuesta),
+            "locked": (
+                bool(structure_locked)
+                if structure_locked is not None
+                else _survey_structure_is_locked(encuesta)
+            ),
             "locked_at": (
                 encuesta.structure_locked_at.isoformat()
                 if encuesta.structure_locked_at is not None
@@ -8110,8 +9492,33 @@ def serialize_encuesta(encuesta: EncEncuesta) -> Dict[str, Any]:
         },
         "governance": governance,
         "tags": _collect_encuesta_tags(encuesta),
-        "preguntas": [_serialize_question(pregunta) for pregunta in encuesta.preguntas],
+        "preguntas_count": len(encuesta.preguntas),
+        "preguntas": [
+            _serialize_encuesta_question(
+                pregunta,
+                summary_only=summary_only,
+            )
+            for pregunta in encuesta.preguntas
+        ],
     }
+
+
+def serialize_encuesta_summary(
+    encuesta: EncEncuesta,
+    *,
+    governance: Mapping[str, Any],
+    structure_locked: bool,
+) -> Dict[str, Any]:
+    """Serialize a bounded admin-list row without the full instrument body."""
+
+    payload = serialize_encuesta(
+        encuesta,
+        governance=dict(governance),
+        summary_only=True,
+        structure_locked=structure_locked,
+    )
+    payload["summary_only"] = True
+    return payload
 
 
 def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str] = None) -> Dict[str, Any]:
@@ -8194,35 +9601,106 @@ def serialize_public_encuesta(encuesta: EncEncuesta, slug_publico: Optional[str]
 
 def _compute_live_results(encuesta: EncEncuesta) -> Dict[str, Any]:
     """Aggregate results for live display."""
+    response_count_query = db.session.query(func.count(EncRespuesta.id)).filter(
+        EncRespuesta.encuesta_id == encuesta.id
+    )
+    real_count = int(
+        response_count_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL
+        ).scalar()
+        or 0
+    )
+    synthetic_count = int(
+        response_count_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO
+        ).scalar()
+        or 0
+    )
+    unverified_count = int(
+        response_count_query.filter(
+            EncRespuesta.response_origin
+            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED
+        ).scalar()
+        or 0
+    )
+    closed_questions = [
+        pregunta
+        for pregunta in encuesta.preguntas
+        if pregunta.tipo in ("opcion_unica", "opcion_multiple", "rating_emoji")
+    ]
+    closed_question_ids = [pregunta.id for pregunta in closed_questions]
+    option_counts: Dict[int, Counter] = {
+        pregunta.id: Counter() for pregunta in closed_questions
+    }
+    if closed_question_ids:
+        count_query = (
+            db.session.query(
+                EncRespuestaDetalle.pregunta_id,
+                EncRespuestaDetalle.opcion_id,
+                func.count(EncRespuestaDetalle.id),
+            )
+            .join(
+                EncRespuesta,
+                EncRespuesta.id == EncRespuestaDetalle.respuesta_id,
+            )
+            .filter(
+                EncRespuesta.encuesta_id == encuesta.id,
+                EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL,
+                EncRespuestaDetalle.pregunta_id.in_(closed_question_ids),
+                EncRespuestaDetalle.opcion_id.isnot(None),
+            )
+            .group_by(
+                EncRespuestaDetalle.pregunta_id,
+                EncRespuestaDetalle.opcion_id,
+            )
+        )
+        for question_id, option_id, count in count_query.all():
+            if question_id in option_counts and option_id is not None:
+                option_counts[question_id][option_id] = int(count or 0)
+
+    count_contract = public_survey_response_count_contract(encuesta, real_count)
+    provenance = _redact_public_response_provenance(
+        build_survey_response_provenance(
+            real_count=real_count,
+            synthetic_count=synthetic_count,
+            unverified_count=unverified_count,
+            mode="real",
+        ),
+        count_contract,
+    )
     results = {
-        "total_respuestas": EncRespuesta.query.filter_by(encuesta_id=encuesta.id).count(),
-        "preguntas": {}
+        "total_respuestas": count_contract["count"],
+        "total_respuestas_bucket": count_contract["bucket"],
+        "preguntas": {},
+        "data_provenance": provenance,
+        "privacy": count_contract,
     }
 
-    # Simple aggregation for closed questions
-    for pregunta in encuesta.preguntas:
-        if pregunta.tipo in ("opcion_unica", "opcion_multiple", "rating_emoji"):
-            # Count details per option
-            counts = (
-                db.session.query(EncRespuestaDetalle.opcion_id, func.count(EncRespuestaDetalle.id))
-                .filter(EncRespuestaDetalle.pregunta_id == pregunta.id)
-                .group_by(EncRespuestaDetalle.opcion_id)
-                .all()
-            )
-            opcion_counts = {oid: count for oid, count in counts if oid}
+    for pregunta in closed_questions:
+        opciones_data = []
+        for opcion in pregunta.opciones:
+            opciones_data.append({
+                "id": opcion.id,
+                "texto": opcion.texto,
+                "votos": option_counts[pregunta.id].get(opcion.id, 0)
+            })
 
-            opciones_data = []
-            for opcion in pregunta.opciones:
-                opciones_data.append({
-                    "id": opcion.id,
-                    "texto": opcion.texto,
-                    "votos": opcion_counts.get(opcion.id, 0)
-                })
-
-            results["preguntas"][pregunta.id] = {
-                "tipo": pregunta.tipo,
-                "opciones": opciones_data
-            }
+        question_has_small_cell = bool(count_contract["suppressed"]) or any(
+            0 < int(option.get("votos") or 0) < int(count_contract["minimum_cell_size"] or 1)
+            for option in opciones_data
+        )
+        if question_has_small_cell:
+            for option in opciones_data:
+                option["votos"] = None
+                option["suppressed"] = True
+        results["preguntas"][pregunta.id] = {
+            "tipo": pregunta.tipo,
+            "opciones": opciones_data,
+            "suppressed": question_has_small_cell,
+            "suppression_reason": (
+                "minimum_cell_size_not_met" if question_has_small_cell else None
+            ),
+        }
 
     return results
 
@@ -8338,7 +9816,6 @@ def create_comentario(encuesta_id: int, payload: Dict[str, Any], user: Optional[
                 "texto": _safe_text_value(comentario.texto, fallback=""),
                 "nombre_autor": _safe_text_value(comentario.nombre_autor or (user.name if user else "Anónimo"), fallback="Anónimo"),
                 "fecha": comentario.created_at.isoformat(),
-                "user_id": comentario.user_id
             }
             data.update(_comment_identity_payload(user))
             if isinstance(comentario.anon_id, str) and comentario.anon_id.startswith("social:"):
@@ -8371,14 +9848,12 @@ def _comment_identity_payload(user: Optional[User]) -> Dict[str, Any]:
 def serialize_public_comment(comentario: EncComentario) -> Dict[str, Any]:
     comment_mode = "anon"
     auth_provider = None
-    auth_user_id = None
     anon_ref = comentario.anon_id
     if isinstance(anon_ref, str) and anon_ref.startswith("social:"):
         parts = anon_ref.split(":", 2)
         if len(parts) == 3:
             comment_mode = "social"
             auth_provider = parts[1] or None
-            auth_user_id = parts[2] or None
 
     user = getattr(comentario, "user", None)
     return {
@@ -8386,11 +9861,8 @@ def serialize_public_comment(comentario: EncComentario) -> Dict[str, Any]:
         "texto": _safe_text_value(comentario.texto, fallback=""),
         "nombre_autor": _safe_text_value(comentario.nombre_autor or (user.name if user else "Anónimo"), fallback="Anónimo"),
         "fecha": comentario.created_at.isoformat() if comentario.created_at else None,
-        "user_id": comentario.user_id,
-        "anon_id": comentario.anon_id,
         "comment_mode": comment_mode,
         "auth_provider": auth_provider,
-        "auth_user_id": auth_user_id,
         **_comment_identity_payload(user),
     }
 
@@ -8449,8 +9921,6 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
                 "texto": _safe_text_value(row.texto, fallback=""),
                 "nombre_autor": _safe_text_value(row.nombre_autor, fallback="Anónimo"),
                 "fecha": row.created_at.isoformat() if row.created_at else None,
-                "user_id": row.user_id,
-                "anon_id": row.anon_id,
             }
             for row in rows
         ]
@@ -8459,25 +9929,20 @@ def list_comentarios(encuesta_id: int, limit: int = 50, offset: int = 0) -> List
     for c in rows:
         comment_mode = "anon"
         auth_provider = None
-        auth_user_id = None
         anon_ref = c.anon_id
         if isinstance(anon_ref, str) and anon_ref.startswith("social:"):
             parts = anon_ref.split(":", 2)
             if len(parts) == 3:
                 comment_mode = "social"
                 auth_provider = parts[1] or None
-                auth_user_id = parts[2] or None
 
         results.append({
             "id": c.id,
             "texto": _safe_text_value(c.texto, fallback=""),
             "nombre_autor": _safe_text_value(c.nombre_autor or (c.user.name if c.user else "Anónimo"), fallback="Anónimo"),
             "fecha": c.created_at.isoformat(),
-            "user_id": c.user_id,
-            "anon_id": c.anon_id,
             "comment_mode": comment_mode,
             "auth_provider": auth_provider,
-            "auth_user_id": auth_user_id,
             **_comment_identity_payload(c.user),
         })
     return results

@@ -49,8 +49,10 @@ def test_location_payload_completes_claim(handler_waiting_for_address):
     # Check that the state transitioned to asking for a photo
     assert handler_waiting_for_address.flow_context["state"] == ReclamoState.ESPERANDO_FOTO.name
 
-    # Check that the response message is asking for a photo
-    assert "agregar una foto" in response.get("message_body", "").lower()
+    # Evidence is multimodal: the citizen can attach a photo, voice note or document.
+    message = response.get("message_body", "").lower()
+    assert "agregar evidencia" in message
+    assert all(kind in message for kind in ("foto", "nota de voz", "documento"))
 
 def test_text_address_moves_to_photo_step(handler_waiting_for_address):
     """
@@ -65,7 +67,9 @@ def test_text_address_moves_to_photo_step(handler_waiting_for_address):
     assert saved_address == "San Martin 550"
 
     assert handler_waiting_for_address.flow_context["state"] == ReclamoState.ESPERANDO_FOTO.name
-    assert "agregar una foto" in response.get("message_body", "").lower()
+    message = response.get("message_body", "").lower()
+    assert "agregar evidencia" in message
+    assert all(kind in message for kind in ("foto", "nota de voz", "documento"))
 
 
 @pytest.fixture
@@ -117,7 +121,8 @@ def test_responder_municipio_location_continues_flow(app_context):
         )
 
     message = response.get("message_body", "").lower()
-    assert "agregar una foto" in message
+    assert "agregar evidencia" in message
+    assert all(kind in message for kind in ("foto", "nota de voz", "documento"))
 
     flow_context = chat_db_context.context_data[CONTEXTO_MUNICIPIO]["reclamo_flow_v2"]
     assert flow_context["state"] == ReclamoState.ESPERANDO_FOTO.name

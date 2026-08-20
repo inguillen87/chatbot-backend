@@ -30,6 +30,12 @@ from models import (
     WhatsAppContactState,
     WhatsAppEnterpriseRule,
 )
+from services.survey_response_provenance import (
+    SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
+    SURVEY_RESPONSE_ORIGIN_REAL,
+    SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
+    build_survey_response_provenance,
+)
 from services.commerce_contracts import build_checkout_experience_payload, payment_capabilities
 from services.education_contracts import build_education_whatsapp_playbook, is_education_tenant
 from services.huggingface_ai_insights import build_whatsapp_ai_runtime_contract
@@ -1112,10 +1118,32 @@ def _content_modules_payload(tenant: TenantProfile) -> dict[str, Any]:
     catalog_with_images = _safe_count(CatalogoItem.query.filter(CatalogoItem.tenant_id == tenant.id, CatalogoItem.imagen_url.isnot(None)))
     legacy_surveys = EncEncuesta.query.filter_by(tenant_id=tenant.id)
     public_surveys = PublicSurvey.query.filter_by(tenant_id=tenant.id)
-    public_survey_ids = [survey.id for survey in public_surveys.all()]
-    public_responses = 0
-    if public_survey_ids:
-        public_responses = _safe_count(PublicSurveyResponse.query.filter(PublicSurveyResponse.survey_id.in_(public_survey_ids)))
+    legacy_survey_count = _safe_count(legacy_surveys)
+    public_survey_count = _safe_count(public_surveys)
+    public_responses = _safe_count(
+        PublicSurveyResponse.query.join(
+            PublicSurvey,
+            PublicSurveyResponse.survey_id == PublicSurvey.id,
+        ).filter(PublicSurvey.tenant_id == tenant.id)
+    )
+    legacy_response_query = EncRespuesta.query.filter_by(tenant_id=tenant.id)
+    real_legacy_response_count = _safe_count(
+        legacy_response_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_REAL
+        )
+    )
+    synthetic_legacy_response_count = _safe_count(
+        legacy_response_query.filter(
+            EncRespuesta.response_origin == SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO
+        )
+    )
+    unverified_legacy_response_count = _safe_count(
+        legacy_response_query.filter(
+            EncRespuesta.response_origin
+            == SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED
+        )
+    )
+    total_real_responses = real_legacy_response_count + public_responses
 
     posts_by_type = {}
     for tipo in ["noticia", "evento", "informacion", "promocion", "promocionar"]:
@@ -1141,10 +1169,15 @@ def _content_modules_payload(tenant: TenantProfile) -> dict[str, Any]:
             "bulk_import_endpoint": "/api/admin/catalogo/importar",
         },
         "surveys_votings": {
-            "enabled": _safe_count(legacy_surveys) + _safe_count(public_surveys) > 0,
-            "legacy_surveys": _safe_count(legacy_surveys),
-            "public_surveys": len(public_survey_ids),
-            "responses": _safe_count(EncRespuesta.query.filter_by(tenant_id=tenant.id)) + public_responses,
+            "enabled": legacy_survey_count + public_survey_count > 0,
+            "legacy_surveys": legacy_survey_count,
+            "public_surveys": public_survey_count,
+            "responses": total_real_responses,
+            "response_provenance": build_survey_response_provenance(
+                real_count=total_real_responses,
+                synthetic_count=synthetic_legacy_response_count,
+                unverified_count=unverified_legacy_response_count,
+            ),
             "endpoint": "/api/v2/surveys",
             "draft_endpoint": "/api/v2/surveys/draft",
         },

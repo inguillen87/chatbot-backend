@@ -896,6 +896,20 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
         )
     )
     db.session.add(
+        EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=profile_id,
+            response_origin='synthetic_demo',
+            huella_unica=f"trusted-synthetic-{tenant_id}",
+            canal='web',
+            metadata_payload={
+                'is_demo_seed': True,
+                'demo_seed_contract_version': 'surveys.demo_seeding.v1',
+                'demo_batch_id': f'seed-{encuesta.id}-1720000000',
+            },
+        )
+    )
+    db.session.add(
         EncComentario(
             encuesta_id=encuesta.id,
             texto='Muy buena atención',
@@ -914,7 +928,8 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     assert data.get('contract_version') == 'analytics.realtime_hub.v1'
     assert data.get('request_id')
     assert data.get('totals', {}).get('events', 0) >= 1
-    assert data.get('totals', {}).get('survey_responses', 0) >= 1
+    assert data.get('totals', {}).get('survey_responses') == 1
+    assert data.get('response_provenance', {}).get('synthetic_responses_excluded') == 1
     assert data.get('totals', {}).get('survey_comments', 0) >= 1
     survey_ops = data.get('survey_operations') or {}
     assert survey_ops.get('contract_version') == 'analytics.survey_operations.v1'

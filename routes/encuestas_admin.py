@@ -5,6 +5,7 @@ from flask import Blueprint, current_app, jsonify, request, g
 
 from config.feature_flags import FEATURE_ENCUESTAS
 from database import db
+from extensions import limiter
 from services.encuestas_service import (
     EncuestaError,
     create_encuesta,
@@ -13,7 +14,7 @@ from services.encuestas_service import (
     publicar_encuesta,
     cerrar_encuesta,
     delete_encuesta,
-    list_encuestas,
+    list_encuestas_page,
     get_encuesta,
     list_respuestas,
     serialize_encuesta,
@@ -25,6 +26,8 @@ from services.encuestas_service import (
     seed_encuesta_respuestas_demo,
     list_all_comentarios_admin,
     administrar_comentario,
+    survey_admin_write_rate_limit_key,
+    survey_instrument_max_payload_bytes,
 )
 from utils.auth_helpers import token_requerido
 from routes.admin_tenant import _is_authorized_for_tenant
@@ -66,9 +69,33 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
         return current_app.make_default_options_response()
 
     @bp.route("", methods=["POST"])
+    @limiter.shared_limit(
+        "120 per minute",
+        scope="survey-admin-create",
+        key_func=survey_admin_write_rate_limit_key,
+    )
     @token_requerido
     @require_role("admin", "super_admin")
     def crear_encuesta_endpoint(current_user):
+        max_payload_bytes = survey_instrument_max_payload_bytes()
+        if (
+            request.content_length is not None
+            and request.content_length > max_payload_bytes
+        ):
+            error = EncuestaError(
+                "El instrumento supera el tamaño máximo permitido.",
+                status_code=413,
+                payload={
+                    "contract_version": "surveys.instrument_limits.v1",
+                    "reason_code": "survey_instrument_too_large",
+                    "retryable": False,
+                    "action_hint": "reduce_instrument_size",
+                    "field": "payload_bytes",
+                    "actual": int(request.content_length),
+                    "maximum": max_payload_bytes,
+                },
+            )
+            return jsonify(error.to_dict()), error.status_code
         try:
             encuesta = create_encuesta(request.get_json(force=True), current_user)
         except EncuestaError as err:
@@ -165,12 +192,16 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
 
             tenant_id = determine_tenant_id_for_user(current_user)
 
-            encuestas = list_encuestas(tenant_id, estado)
+            page_data = list_encuestas_page(
+                tenant_id,
+                estado,
+                limit=request.args.get("limit"),
+                cursor=request.args.get("cursor"),
+                page=request.args.get("page"),
+            )
+            encuestas = page_data["items"]
         except EncuestaError as err:
             return jsonify(err.to_dict()), err.status_code
-
-        if (request.args.get("legacy") or "").lower() in {"1", "true", "yes"}:
-            return jsonify([serialize_encuesta(e) for e in encuestas]), 200
 
         tenant_profile = getattr(g, "tenant_profile", None)
         tenant_slug = (
@@ -182,7 +213,21 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
             encuestas,
             tenant_id=tenant_id,
             tenant_slug=(str(tenant_slug).strip() if tenant_slug else None),
+            pagination=page_data["pagination"],
         )
+        if (request.args.get("legacy") or "").lower() in {"1", "true", "yes"}:
+            # Preserve the historical top-level array while returning the same
+            # bounded, lightweight rows as the versioned envelope.
+            response = jsonify(payload["encuestas"])
+            pagination = page_data["pagination"]
+            response.headers["X-Total-Count"] = str(pagination["total_items"])
+            response.headers["X-Page-Limit"] = str(pagination["limit"])
+            if pagination.get("next_cursor"):
+                response.headers["X-Next-Cursor"] = str(
+                    pagination["next_cursor"]
+                )
+            return response, 200
+
         return jsonify(payload), 200
 
     @bp.route("/templates", methods=["GET"])
