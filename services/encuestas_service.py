@@ -741,20 +741,23 @@ def _demo_seed_runtime_is_safe() -> bool:
         and not render_runtime
         and configured_environments & {"test", "testing"}
     ):
-        # The selected Flask config is authoritative for an isolated test app;
-        # this keeps CI deterministic even if its parent shell exports ENV=prod.
         return True
+    if render_runtime or environment_tokens & _SURVEY_DEMO_PRODUCTION_ENVIRONMENTS:
+        return False
+    return bool(environment_tokens & _SURVEY_DEMO_SAFE_ENVIRONMENTS)
+
+
 def _demo_seed_explicitly_enabled() -> bool:
     try:
         return _runtime_flag_enabled(
-            current_app.config.get("ALLOW_SURVEY_DEMO_SEEDING", True)
+            current_app.config.get("ALLOW_SURVEY_DEMO_SEEDING", False)
         )
     except RuntimeError:
-        return _env_flag("ALLOW_SURVEY_DEMO_SEEDING", default=True)
+        return _env_flag("ALLOW_SURVEY_DEMO_SEEDING", default=False)
 
 
 def _demo_seed_runtime_allowed() -> bool:
-    return _demo_seed_explicitly_enabled()
+    return _demo_seed_explicitly_enabled() and _demo_seed_runtime_is_safe()
 
 
 def _require_demo_seed_runtime_allowed() -> None:
