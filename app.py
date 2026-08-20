@@ -1,7 +1,5 @@
-import ssl
 import os
 import sys
-import uuid
 
 # --- Modo "solo migraciones" o "testing" para evitar carga pesada de eventlet ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
@@ -23,6 +21,9 @@ os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 if not MIGRATIONS_ONLY and not TESTING_MODE and not NON_WEB_PROCESS:
     import eventlet
     eventlet.monkey_patch()
+
+import ssl
+import uuid
 import logging
 from typing import Pattern
 
