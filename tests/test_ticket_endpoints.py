@@ -370,7 +370,9 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertEqual(comment_with_attachment['attachmentInfo']['url'], "http://example.com/test.jpg")
 
     @patch('services.email_service.enviar_email_con_multiples_adjuntos')
-    def test_send_ticket_history_email(self, mock_send_email):
+    @patch('services.email_service.validar_configuracion_smtp')
+    def test_send_ticket_history_email(self, mock_validar_smtp, mock_send_email):
+        mock_validar_smtp.return_value = (True, None)
         mock_send_email.return_value = True
         # 1. Login to get token
         login_resp = self.client.post('/auth/login', json={'email': 'admin@junin.com', 'password': 'adminpass'})
@@ -388,6 +390,7 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertTrue(data['success'])
 
         # 4. Assert that the mock was called
+        mock_validar_smtp.assert_called_once_with(require_auth=False)
         mock_send_email.assert_called_once()
 
         # 5. Assert call arguments
@@ -402,7 +405,9 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertIn('<h1>Historial de Conversación</h1>', kwargs['cuerpo_html'])
 
     @patch('services.email_service.enviar_email_con_multiples_adjuntos')
-    def test_send_ticket_history_handles_missing_dates(self, mock_send_email):
+    @patch('services.email_service.validar_configuracion_smtp')
+    def test_send_ticket_history_handles_missing_dates(self, mock_validar_smtp, mock_send_email):
+        mock_validar_smtp.return_value = (True, None)
         mock_send_email.return_value = True
 
         login_resp = self.client.post('/auth/login', json={'email': 'admin@junin.com', 'password': 'adminpass'})
@@ -434,6 +439,7 @@ class TicketEndpointsTest(unittest.TestCase):
 
         resp = self.client.post(f'/tickets/municipio/{ticket.id}/send-history', headers=headers)
         self.assertEqual(resp.status_code, 200)
+        mock_validar_smtp.assert_called_once_with(require_auth=False)
 
         cuerpo_html = mock_send_email.call_args.kwargs['cuerpo_html']
         self.assertIn('Sin fecha', cuerpo_html)
