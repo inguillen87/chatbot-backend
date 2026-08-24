@@ -183,7 +183,7 @@ def test_clerk_config_contract_api_alias(client, monkeypatch):
 
 
 def test_clerk_auth_response_defaults_to_cookie_only_in_local_dev(client, monkeypatch):
-    from routes.auth import _clerk_auth_response
+    from routes.auth import _clerk_auth_response, _resolve_clerk_session_transport_policy
 
     for key in (
         "CLERK_SESSION_RETURN_TOKEN",
@@ -198,7 +198,12 @@ def test_clerk_auth_response_defaults_to_cookie_only_in_local_dev(client, monkey
     monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", None)
 
     with client.application.test_request_context("/auth/clerk/session"):
-        response, status_code = _clerk_auth_response({"token": "chatboc.jwt"}, 200)
+        policy = _resolve_clerk_session_transport_policy()
+        response, status_code = _clerk_auth_response(
+            {"token": "chatboc.jwt"},
+            200,
+            transport_policy=policy,
+        )
 
     payload = response.get_json()
     assert status_code == 200
@@ -214,7 +219,7 @@ def test_clerk_auth_response_treats_render_as_production_when_config_env_is_dev(
     client,
     monkeypatch,
 ):
-    from routes.auth import _clerk_auth_response
+    from routes.auth import _clerk_auth_response, _resolve_clerk_session_transport_policy
 
     monkeypatch.delenv("CLERK_SESSION_RETURN_TOKEN", raising=False)
     monkeypatch.delenv("ENV", raising=False)
@@ -226,7 +231,12 @@ def test_clerk_auth_response_treats_render_as_production_when_config_env_is_dev(
     monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", None)
 
     with client.application.test_request_context("/auth/clerk/session"):
-        response, status_code = _clerk_auth_response({"token": "chatboc.jwt"}, 200)
+        policy = _resolve_clerk_session_transport_policy()
+        response, status_code = _clerk_auth_response(
+            {"token": "chatboc.jwt"},
+            200,
+            transport_policy=policy,
+        )
 
     payload = response.get_json()
     assert status_code == 200
@@ -239,7 +249,7 @@ def test_clerk_auth_response_treats_flask_env_production_as_production(
     client,
     monkeypatch,
 ):
-    from routes.auth import _clerk_auth_response
+    from routes.auth import _clerk_auth_response, _resolve_clerk_session_transport_policy
 
     monkeypatch.delenv("CLERK_SESSION_RETURN_TOKEN", raising=False)
     monkeypatch.delenv("ENV", raising=False)
@@ -251,7 +261,12 @@ def test_clerk_auth_response_treats_flask_env_production_as_production(
     monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", None)
 
     with client.application.test_request_context("/auth/clerk/session"):
-        response, status_code = _clerk_auth_response({"token": "chatboc.jwt"}, 200)
+        policy = _resolve_clerk_session_transport_policy()
+        response, status_code = _clerk_auth_response(
+            {"token": "chatboc.jwt"},
+            200,
+            transport_policy=policy,
+        )
 
     payload = response.get_json()
     assert status_code == 200
@@ -261,7 +276,7 @@ def test_clerk_auth_response_treats_flask_env_production_as_production(
 
 
 def test_clerk_auth_response_body_token_requires_explicit_opt_in(client, monkeypatch):
-    from routes.auth import _clerk_auth_response
+    from routes.auth import _clerk_auth_response, _resolve_clerk_session_transport_policy
 
     monkeypatch.setenv("CLERK_SESSION_RETURN_TOKEN", "true")
     monkeypatch.setenv("CLERK_SESSION_COOKIE_ENABLED", "false")
@@ -271,7 +286,12 @@ def test_clerk_auth_response_body_token_requires_explicit_opt_in(client, monkeyp
     monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", None)
 
     with client.application.test_request_context("/auth/clerk/session"):
-        response, status_code = _clerk_auth_response({"token": "chatboc.jwt"}, 200)
+        policy = _resolve_clerk_session_transport_policy()
+        response, status_code = _clerk_auth_response(
+            {"token": "chatboc.jwt"},
+            200,
+            transport_policy=policy,
+        )
 
     payload = response.get_json()
     assert status_code == 200
@@ -284,14 +304,19 @@ def test_clerk_auth_response_rejects_cookie_disabled_without_body_opt_in(
     client,
     monkeypatch,
 ):
-    from routes.auth import _clerk_auth_response
+    from routes.auth import _clerk_auth_response, _resolve_clerk_session_transport_policy
 
     monkeypatch.setenv("CLERK_SESSION_COOKIE_ENABLED", "false")
     monkeypatch.delenv("CLERK_SESSION_RETURN_TOKEN", raising=False)
     monkeypatch.setitem(client.application.config, "ENV", "dev")
 
     with client.application.test_request_context("/auth/clerk/session"):
-        response, status_code = _clerk_auth_response({"token": "chatboc.jwt"}, 200)
+        policy = _resolve_clerk_session_transport_policy()
+        response, status_code = _clerk_auth_response(
+            {"token": "chatboc.jwt"},
+            200,
+            transport_policy=policy,
+        )
 
     payload = response.get_json()
     assert status_code == 503
@@ -300,6 +325,93 @@ def test_clerk_auth_response_rejects_cookie_disabled_without_body_opt_in(
     assert "token" not in payload
     assert response.headers.get("Set-Cookie") is None
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_clerk_auth_response_uses_the_resolved_transport_snapshot(client, monkeypatch):
+    from routes.auth import _clerk_auth_response, _resolve_clerk_session_transport_policy
+
+    monkeypatch.setenv("CLERK_SESSION_COOKIE_ENABLED", "true")
+    monkeypatch.delenv("CLERK_SESSION_RETURN_TOKEN", raising=False)
+    monkeypatch.setitem(client.application.config, "SESSION_COOKIE_DOMAIN", None)
+
+    with client.application.test_request_context("/auth/clerk/session"):
+        policy = _resolve_clerk_session_transport_policy()
+        monkeypatch.setenv("CLERK_SESSION_COOKIE_ENABLED", "false")
+        monkeypatch.setenv("CLERK_SESSION_RETURN_TOKEN", "true")
+        response, status_code = _clerk_auth_response(
+            {"token": "chatboc.jwt"},
+            200,
+            transport_policy=policy,
+        )
+
+    payload = response.get_json()
+    assert status_code == 200
+    assert payload["session_transport"] == "cookie"
+    assert "token" not in payload
+    assert (response.headers.get("Set-Cookie") or "").startswith(
+        "auth_token=chatboc.jwt"
+    )
+
+
+def test_invalid_clerk_transport_rejects_both_routes_before_side_effects(
+    client,
+    monkeypatch,
+):
+    monkeypatch.setenv("CLERK_SESSION_COOKIE_ENABLED", "false")
+    monkeypatch.delenv("CLERK_SESSION_RETURN_TOKEN", raising=False)
+
+    with client.application.app_context():
+        counts_before = (User.query.count(), TenantProfile.query.count())
+
+    unexpected_calls: list[str] = []
+
+    def unexpected(name):
+        def _unexpected(*args, **kwargs):
+            del args, kwargs
+            unexpected_calls.append(name)
+            raise AssertionError(f"{name} must not run for an invalid transport policy")
+
+        return _unexpected
+
+    for target in (
+        "routes.auth.verify_clerk_session_token",
+        "routes.auth.fetch_trusted_clerk_profile",
+        "routes.auth.upsert_user_from_clerk",
+        "routes.auth.resolve_clerk_session_tenant",
+        "routes.auth.complete_clerk_onboarding",
+        "routes.auth.build_chatboc_session_payload",
+        "routes.auth._send_verification_email",
+        "services.clerk_auth_service.send_verification_email",
+        "services.clerk_auth_service.send_onboarding_whatsapp",
+    ):
+        monkeypatch.setattr(target, unexpected(target))
+    monkeypatch.setattr(db.session, "add", unexpected("db.session.add"))
+    monkeypatch.setattr(db.session, "commit", unexpected("db.session.commit"))
+    monkeypatch.setattr(db.session, "flush", unexpected("db.session.flush"))
+
+    for path in ("/auth/clerk/session", "/auth/clerk/onboarding"):
+        response = client.post(
+            path,
+            headers={"Authorization": "Bearer must-not-be-verified"},
+            json={"tenant_name": "Must not be created"},
+        )
+
+        assert response.status_code == 503
+        assert response.get_json() == {
+            "error": (
+                "Clerk session transport is disabled; enable the HttpOnly cookie "
+                "or explicitly opt in to bearer response transport."
+            ),
+            "reason_code": "clerk_session_transport_unavailable",
+            "session_transport": "unavailable",
+        }
+        assert response.headers["Cache-Control"] == "no-store"
+
+    with client.application.app_context():
+        counts_after = (User.query.count(), TenantProfile.query.count())
+
+    assert unexpected_calls == []
+    assert counts_after == counts_before
 
 
 def test_clerk_routes_do_not_reflect_untrusted_origin(client, monkeypatch):
