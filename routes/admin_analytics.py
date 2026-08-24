@@ -9,6 +9,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import Any
 
 from flask import Blueprint, Response, abort, jsonify, request
@@ -17,7 +18,10 @@ from sqlalchemy import case, false, func, or_
 from models import AnalyticsEventV2, EncComentario, EncEncuesta, EncRespuesta, MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, db
 from services.analytics import get_geo_heatmap, get_summary
 from services.analytics.filters import parse_filters
-from services.analytics.rbac import require_access
+from services.analytics.rbac import (
+    legacy_tenant_wide_analytics_denial,
+    require_access,
+)
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
     resolve_unique_tenant_for_owner,
@@ -70,6 +74,23 @@ def _json(payload: dict, status: int = 200):
     response = jsonify(payload)
     response.status_code = status
     return response
+
+
+def legacy_tenant_wide_analytics_admin_only(fn):
+    """Reject employees before route-local analytics cache/materialization."""
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        request_id = _request_id()
+        denial = legacy_tenant_wide_analytics_denial(request_id=request_id)
+        if denial is not None:
+            response = _json(denial, status=403)
+            response.headers["X-Request-Id"] = request_id
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        return fn(*args, **kwargs)
+
+    return _wrapped
 
 
 def _tenant_id_as_int(value: str) -> int:
@@ -1163,6 +1184,7 @@ def _dashboard_response(filters):
 
 
 @admin_analytics_bp.get("/overview")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_overview():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
@@ -1171,6 +1193,7 @@ def admin_analytics_overview():
 
 
 @admin_analytics_bp.get("/heatmap")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_heatmap():
     request_id = _request_id()
     filters = parse_filters(request.args)
@@ -1470,6 +1493,7 @@ def _build_realtime_hub_payload(filters, *, window_minutes: int = 30) -> dict[st
 
 
 @admin_analytics_bp.get("/realtime-hub")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_realtime_hub():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
@@ -1481,6 +1505,7 @@ def admin_analytics_realtime_hub():
 
 
 @admin_analytics_bp.get("/whatsapp-funnel")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_whatsapp_funnel():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
@@ -1490,6 +1515,7 @@ def admin_analytics_whatsapp_funnel():
 
 
 @admin_analytics_bp.get("/export.csv")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_export_csv():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
@@ -1511,6 +1537,7 @@ def admin_analytics_export_csv():
 
 
 @admin_analytics_bp.get("/export.pdf")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_export_pdf():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
@@ -1569,6 +1596,7 @@ def admin_analytics_export_pdf():
 
 
 @admin_analytics_bp.get("/dashboard")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_dashboard():
     """Unified payload for the /analytics UI tabs (general/municipio/ventas/mapas)."""
 
@@ -1578,6 +1606,7 @@ def admin_analytics_dashboard():
 
 
 @admin_analytics_bp.get("/hub")
+@legacy_tenant_wide_analytics_admin_only
 def admin_analytics_hub():
     """Alias endpoint to support frontend convergence on one analytics hub route."""
 

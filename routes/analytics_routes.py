@@ -1,9 +1,11 @@
 from functools import wraps
+import re
 
 from flask import Blueprint, current_app, g, request, jsonify
-from flask_login import current_user, login_user
+from flask_login import current_user
 from datetime import datetime, timedelta
 from services.analytics_service import analytics_service
+from services.analytics.rbac import legacy_tenant_wide_analytics_denial
 from services.openai_bridge import generate_analytics_report, analyze_sentiment
 from services.plan_access import (
     integration_access_payload,
@@ -78,22 +80,67 @@ def _api_error(error: str, *, status: int, code: str) -> tuple:
     return jsonify({"error": error, "code": code, "request_id": _request_id()}), status
 
 
+def _analytics_request_user():
+    """Return the request actor while preserving explicit Bearer precedence."""
+
+    if getattr(g, "explicit_bearer_present", False):
+        return getattr(g, "viewer", None)
+    viewer = getattr(g, "viewer", None)
+    if viewer is not None:
+        return viewer
+    if getattr(current_user, "is_authenticated", False):
+        return current_user
+    return None
+
+
 def api_login_required(fn):
     """API-safe auth guard that returns JSON 401 instead of HTML redirects."""
 
     @wraps(fn)
     def _wrapped(*args, **kwargs):
-        if not getattr(current_user, "is_authenticated", False):
+        authorization_header = request.headers.get("Authorization", "").strip()
+        has_explicit_bearer = bool(
+            re.match(
+                r"^bearer(?:\s|$)",
+                authorization_header,
+                flags=re.IGNORECASE,
+            )
+        )
+        if has_explicit_bearer:
+            token = obtener_token()
+            user = user_from_token(token) if token else None
+            if user is None:
+                return _api_error("Unauthorized", status=401, code="auth_required")
+            g.viewer = user
+        elif _analytics_request_user() is None:
             token = obtener_token()
             if token:
                 user = user_from_token(token)
                 if user is not None:
-                    try:
-                        login_user(user, remember=False, force=True)
-                    except Exception:
-                        current_app.logger.debug("[analytics_v2] token login fallback failed", exc_info=True)
-        if not getattr(current_user, "is_authenticated", False):
+                    g.viewer = user
+        if _analytics_request_user() is None:
             return _api_error("Unauthorized", status=401, code="auth_required")
+        return fn(*args, **kwargs)
+
+    return _wrapped
+
+
+def legacy_tenant_wide_analytics_admin_only(fn):
+    """Block employees before route-local analytics materialization."""
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        request_id = _request_id()
+        denial = legacy_tenant_wide_analytics_denial(
+            _analytics_request_user(),
+            request_id=request_id,
+        )
+        if denial is not None:
+            response = jsonify(denial)
+            response.status_code = 403
+            response.headers["X-Request-Id"] = request_id
+            response.headers["Cache-Control"] = "no-store"
+            return response
         return fn(*args, **kwargs)
 
     return _wrapped
@@ -121,17 +168,18 @@ def _resolve_authorized_analytics_tenant(
 ):
     """Resolve analytics scope without granting tenant admins globally."""
 
-    role = canonical_role(getattr(current_user, "rol", None))
+    actor = _analytics_request_user()
+    role = canonical_role(getattr(actor, "rol", None))
     if role not in {ROLE_TENANT_ADMIN, ROLE_EMPLEADO, ROLE_SUPERADMIN}:
         return None, _api_error("Unauthorized", status=403, code="forbidden")
 
     if explicit_provided is None:
         explicit_provided = "tenant_id" in request.args
         explicit_value = request.args.get("tenant_id")
-    actor_tenant_id = _positive_tenant_id(getattr(current_user, "tenant_id", None))
+    actor_tenant_id = _positive_tenant_id(getattr(actor, "tenant_id", None))
 
     if role == ROLE_SUPERADMIN:
-        if not is_authorized_superadmin_user(current_user):
+        if not is_authorized_superadmin_user(actor):
             return None, _api_error("Unauthorized", status=403, code="forbidden")
         if not explicit_provided and actor_tenant_id is None:
             return None, _api_error(
@@ -176,7 +224,7 @@ def _resolve_authorized_analytics_tenant(
             status=404,
             code="tenant_not_found",
         )
-    if not _is_authorized_for_tenant(current_user, tenant_id=tenant.id):
+    if not _is_authorized_for_tenant(actor, tenant_id=tenant.id):
         return None, _api_error("Unauthorized", status=403, code="forbidden")
     return tenant, None
 
@@ -256,6 +304,7 @@ def _get_date_range():
 
 @analytics_v2_bp.route('/summary', methods=['GET'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 def get_summary():
     tenant, error_response = _resolve_authorized_analytics_tenant()
     if error_response is not None:
@@ -286,6 +335,7 @@ def get_summary():
 
 @analytics_v2_bp.route('/heatmap', methods=['GET'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 def get_heatmap():
     tenant, error_response = _resolve_authorized_analytics_tenant()
     if error_response is not None:
@@ -373,6 +423,7 @@ def get_survey_geo():
 
 @analytics_v2_bp.route('/insights', methods=['GET'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 def get_insights():
     tenant, error_response = _resolve_authorized_analytics_tenant()
     if error_response is not None:
@@ -390,6 +441,7 @@ def get_insights():
 
 @analytics_v2_bp.route('/sales', methods=['GET'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 def get_sales_analytics():
     tenant, error_response = _resolve_authorized_analytics_tenant()
     if error_response is not None:
@@ -413,6 +465,7 @@ def get_sales_analytics():
 
 @analytics_v2_bp.route('/benchmarks', methods=['GET'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 def get_benchmarks():
     tenant, error_response = _resolve_authorized_analytics_tenant()
     if error_response is not None:
@@ -436,6 +489,7 @@ def get_benchmarks():
 
 @analytics_v2_bp.route('/funnel', methods=['GET'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 def get_funnel():
     tenant, error_response = _resolve_authorized_analytics_tenant()
     if error_response is not None:
@@ -459,6 +513,7 @@ def get_funnel():
 
 @analytics_v2_bp.route('/report/latest', methods=['GET'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 def get_latest_report():
     """
     Returns the most recent valid cached report without triggering generation.
@@ -499,8 +554,12 @@ def get_latest_report():
 
 @analytics_v2_bp.route('/report/generate', methods=['POST'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 @_report_tenant_authorized
-@limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
+@limiter.limit(
+    "1 per hour",
+    key_func=lambda: str(getattr(_analytics_request_user(), "id", "anonymous")),
+)
 def trigger_generate_report():
     """
     Explicit endpoint to generate a report.
@@ -511,8 +570,12 @@ def trigger_generate_report():
 
 @analytics_v2_bp.route('/generate-report', methods=['POST'])
 @api_login_required
+@legacy_tenant_wide_analytics_admin_only
 @_report_tenant_authorized
-@limiter.limit("1 per hour", key_func=lambda: str(current_user.id))
+@limiter.limit(
+    "1 per hour",
+    key_func=lambda: str(getattr(_analytics_request_user(), "id", "anonymous")),
+)
 def generate_report():
     return _generate_report_impl()
 

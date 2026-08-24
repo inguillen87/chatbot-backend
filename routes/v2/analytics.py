@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta
+from functools import wraps
 from time import monotonic
 from typing import Any
 import uuid
@@ -13,6 +14,7 @@ from models import TenantTicket
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
+from services.analytics.rbac import legacy_tenant_wide_analytics_denial
 from services.ai_provider_status import build_ai_provider_status_public_view
 from services.llm_orchestrator import build_llm_task_policy
 from services.openai_bridge import generate_analytics_report
@@ -51,6 +53,27 @@ def _json_response(payload: dict[str, Any], status: int = 200):
     response.status_code = status
     response.headers["X-Request-Id"] = request_id
     return response
+
+
+def _legacy_tenant_wide_analytics_admin_only(fn):
+    """Reject employees before route-local tenant-wide services or queries."""
+
+    @wraps(fn)
+    def _wrapped(current_user, *args, **kwargs):
+        request_id = _request_id()
+        denial = legacy_tenant_wide_analytics_denial(
+            current_user,
+            request_id=request_id,
+        )
+        if denial is not None:
+            response = jsonify(denial)
+            response.status_code = 403
+            response.headers["X-Request-Id"] = request_id
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        return fn(current_user, *args, **kwargs)
+
+    return _wrapped
 
 
 def _operations_dashboard_cache_enabled() -> bool:
@@ -198,28 +221,39 @@ def _tenant_analytics_segment(tenant) -> str:
 
 def _dashboard_report_lines(payload: dict[str, Any]) -> list[str]:
     tenant = payload.get("tenant") or {}
+    scope = payload.get("scope") or {}
     summary = payload.get("summary") or {}
-    tickets = ((payload.get("tickets") or {}).get("summary") or {})
-    surveys = ((payload.get("surveys") or {}).get("summary") or {})
-    chats = ((payload.get("chats") or {}).get("summary") or {})
-    commerce = ((payload.get("commerce") or {}).get("summary") or {})
+    ticket_section = payload.get("tickets") or {}
+    survey_section = payload.get("surveys") or {}
+    chat_section = payload.get("chats") or {}
+    commerce_section = payload.get("commerce") or {}
+    tickets = ticket_section.get("summary") or {}
+    surveys = survey_section.get("summary") or {}
+    chats = chat_section.get("summary") or {}
+    commerce = commerce_section.get("summary") or {}
     maps = (((payload.get("maps") or {}).get("heatmap") or {}) or {})
     heatmap_summary = maps.get("summary") or {}
     location_quality = maps.get("location_quality") or {}
     alerts = payload.get("alerts") or []
     actions = payload.get("next_best_actions") or []
 
+    def _section_value(section: dict[str, Any], values: dict[str, Any], key: str):
+        if section.get("available") is False:
+            return "no disponible por alcance"
+        return values.get(key, 0)
+
     lines = [
         "Reporte operativo Chatboc",
         f"Tenant: {tenant.get('slug') or tenant.get('id') or 'sin_tenant'}",
+        f"Alcance: {scope.get('mode') or 'tenant_wide'}",
         f"Emitido: {datetime.utcnow().isoformat()}Z",
         "",
         "Resumen:",
         f"- Tickets abiertos: {summary.get('open_tickets', 0)}",
         f"- Tickets vencidos: {summary.get('overdue_tickets', 0)}",
-        f"- Respuestas encuestas: {summary.get('survey_responses', 0)}",
-        f"- Mensajes chat: {summary.get('chat_messages', 0)}",
-        f"- Pedidos asistidos a revisar: {summary.get('orders_needing_review', 0)}",
+        f"- Respuestas encuestas: {_section_value(survey_section, surveys, 'responses')}",
+        f"- Mensajes chat: {_section_value(chat_section, chats, 'messages')}",
+        f"- Pedidos asistidos a revisar: {_section_value(commerce_section, commerce, 'orders_needing_review')}",
         "",
         "Tickets:",
         f"- Total: {tickets.get('total', 0)}",
@@ -233,15 +267,15 @@ def _dashboard_report_lines(payload: dict[str, Any]) -> list[str]:
         f"- Cobertura coordenadas: {location_quality.get('coordinate_coverage_pct', 0)}%",
         "",
         "Encuestas y chat:",
-        f"- Votaciones live: {surveys.get('votaciones_live', 0)}",
-        f"- WhatsApp: {chats.get('whatsapp_messages', 0)}",
-        f"- Widget: {chats.get('widget_messages', 0)}",
+        f"- Votaciones live: {_section_value(survey_section, surveys, 'votaciones_live')}",
+        f"- WhatsApp: {_section_value(chat_section, chats, 'whatsapp_messages')}",
+        f"- Widget: {_section_value(chat_section, chats, 'widget_messages')}",
         "",
         "Marketplace y pedidos:",
-        f"- Pedidos: {commerce.get('orders', 0)}",
-        f"- Asistidos: {commerce.get('assisted_orders', 0)}",
-        f"- Requieren revision: {commerce.get('orders_needing_review', 0)}",
-        f"- Items sin resolver: {commerce.get('unmatched_items', 0)}",
+        f"- Pedidos: {_section_value(commerce_section, commerce, 'orders')}",
+        f"- Asistidos: {_section_value(commerce_section, commerce, 'assisted_orders')}",
+        f"- Requieren revision: {_section_value(commerce_section, commerce, 'orders_needing_review')}",
+        f"- Items sin resolver: {_section_value(commerce_section, commerce, 'unmatched_items')}",
         "",
         "Alertas:",
     ]
@@ -445,6 +479,7 @@ def _heatmap_bbox_filter() -> dict[str, float] | None:
 @v2_analytics_bp.route("/overview", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
 def overview_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -505,6 +540,7 @@ def overview_v2(current_user):
 @v2_analytics_bp.route("/tickets", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
 def tickets_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -534,6 +570,7 @@ def surveys_v2(current_user):
 @v2_analytics_bp.route("/funnel", methods=["GET"])
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
 def funnel_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -623,6 +660,7 @@ def operations_ai_brief_v2(current_user):
             "period": dashboard.get("period"),
             "generated_at": dashboard.get("generated_at"),
             "source_contract": dashboard.get("contract_version"),
+            "scope": dashboard.get("scope") or {},
             "summary": dashboard.get("summary") or {},
             "alerts": dashboard.get("alerts") or [],
             "model_policy": build_llm_task_policy("analytics"),
@@ -753,22 +791,30 @@ def operations_executive_summary_v2(current_user):
     )
 
     if has_data:
+        analytics_report_input = {
+            "tenant": dashboard.get("tenant"),
+            "period": dashboard.get("period"),
+            "scope": dashboard.get("scope") or {},
+            "summary": summary,
+            "trends": dashboard.get("trends"),
+            "tickets": dashboard.get("tickets"),
+            "maps": dashboard.get("maps"),
+            "alerts": dashboard.get("alerts"),
+            "next_best_actions": dashboard.get("next_best_actions"),
+        }
+        for section_name in ("surveys", "chats", "commerce", "employees"):
+            section = dashboard.get(section_name) or {}
+            if section.get("available") is not False:
+                analytics_report_input[section_name] = section
         ai_report = generate_analytics_report(
-            {
-                "tenant": dashboard.get("tenant"),
-                "period": dashboard.get("period"),
-                "summary": summary,
-                "trends": dashboard.get("trends"),
-                "tickets": dashboard.get("tickets"),
-                "surveys": dashboard.get("surveys"),
-                "chats": dashboard.get("chats"),
-                "maps": dashboard.get("maps"),
-                "alerts": dashboard.get("alerts"),
-                "next_best_actions": dashboard.get("next_best_actions"),
-            },
+            analytics_report_input,
             tenant_type=_tenant_analytics_segment(tenant),
         )
-        reason_code = "ai_summary_generated"
+        reason_code = (
+            "ai_scoped_summary_generated"
+            if (dashboard.get("scope") or {}).get("category_scoped")
+            else "ai_summary_generated"
+        )
     else:
         ai_report = {
             "summary": "No hay datos suficientes para generar un resumen ejecutivo en el periodo seleccionado.",
@@ -785,6 +831,7 @@ def operations_executive_summary_v2(current_user):
             "period": dashboard.get("period"),
             "generated_at": dashboard.get("generated_at"),
             "reason_code": reason_code,
+            "scope": dashboard.get("scope") or {},
             "summary": summary,
             "ai": ai_report,
             "source_contract": dashboard.get("contract_version"),

@@ -258,13 +258,13 @@ def test_pyme_endpoints(client):
     templates = client.get(
         '/analytics/whatsapp/templates',
         query_string={'tenant_id': tenant_id, 'scope': 'pyme'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert templates.status_code == 200
     cohorts = client.get(
         '/analytics/cohorts',
         query_string={'tenant_id': tenant_id, 'scope': 'pyme'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert cohorts.status_code == 200
 
@@ -277,7 +277,7 @@ def test_operations_overview(client):
     response = client.get(
         '/analytics/operations',
         query_string={'tenant_id': tenant_id, 'scope': 'operaciones'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -445,7 +445,7 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     overview = client.get(
         '/admin/analytics/overview',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert overview.status_code == 200
     payload = overview.get_json()
@@ -455,7 +455,7 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     csv_export = client.get(
         '/admin/analytics/export.csv',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert csv_export.status_code == 200
     assert csv_export.mimetype == 'text/csv'
@@ -463,7 +463,7 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     pdf_export = client.get(
         '/admin/analytics/export.pdf',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert pdf_export.status_code == 200
     assert pdf_export.mimetype == 'application/pdf'
@@ -483,7 +483,7 @@ def test_admin_analytics_overview_and_exports_are_tenant_scoped(client):
     forbidden = client.get(
         '/admin/analytics/overview',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': '999'},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': '999'},
     )
     assert forbidden.status_code == 403
 
@@ -505,7 +505,7 @@ def test_admin_analytics_heatmap_returns_temporal_matrix(client):
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'tz': 'America/Argentina/Cordoba'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -522,7 +522,7 @@ def test_admin_analytics_heatmap_rejects_non_numeric_tenant_id(client):
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': 'abc', 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': 'abc'},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': 'abc'},
     )
     assert response.status_code == 400
 
@@ -545,7 +545,7 @@ def test_admin_analytics_whatsapp_funnel_reads_profile_scoped_events(client):
     response = client.get(
         '/admin/analytics/whatsapp-funnel',
         query_string={'tenant_id': owner_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(owner_id)},
     )
 
     assert response.status_code == 200
@@ -582,7 +582,7 @@ def test_admin_analytics_heatmap_segments_from_event_metadata(client):
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -623,7 +623,7 @@ def test_admin_analytics_heatmap_applies_segment_filters(client):
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'categoria': 'alumbrado', 'sexo': 'f'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -673,7 +673,7 @@ def test_admin_analytics_heatmap_includes_maplibre_layers_with_category_colors(c
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -722,7 +722,7 @@ def test_admin_analytics_heatmap_honors_maplibre_style_url_from_config(client):
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'geo_limit': 100, 'bbox': '-59,-35,-58,-34'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     geo_layers = (response.get_json() or {}).get('geo_layers') or {}
@@ -756,7 +756,7 @@ def test_admin_analytics_heatmap_uses_persisted_lat_lng_for_geo_layers(client):
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -797,7 +797,7 @@ def test_admin_analytics_heatmap_supports_genero_alias_and_age_bucket(client):
     response = client.get(
         '/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'genero': 'f'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -824,14 +824,14 @@ def test_api_alias_admin_analytics_overview_and_heatmap(client):
     overview = client.get(
         '/api/admin/analytics/overview',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert overview.status_code == 200
 
     heatmap = client.get(
         '/api/admin/analytics/heatmap',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert heatmap.status_code == 200
 
@@ -848,7 +848,7 @@ def test_api_alias_admin_analytics_overview_accepts_tenant_slug(client):
     overview = client.get(
         '/api/admin/analytics/overview',
         query_string={'tenant_slug': 'tenant-analytics-slug', 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert overview.status_code == 200
     assert 'totals' in overview.get_json()
@@ -921,7 +921,7 @@ def test_admin_analytics_realtime_hub_includes_surveys_and_geo(client):
     response = client.get(
         '/admin/analytics/realtime-hub',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 60},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -1021,7 +1021,7 @@ def test_admin_analytics_realtime_hub_applies_segment_filters_to_geo_layers(clie
             'geo_limit': 125,
             'bbox': '-59,-35,-58,-34',
         },
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
 
     assert response.status_code == 200
@@ -1060,7 +1060,7 @@ def test_api_alias_admin_analytics_realtime_hub_available(client):
     response = client.get(
         '/api/admin/analytics/realtime-hub',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     assert response.get_json().get('contract_version') == 'analytics.realtime_hub.v1'
@@ -1073,7 +1073,7 @@ def test_admin_analytics_overview_accepts_debug_tenant_without_query_tenant(clie
     response = client.get(
         '/admin/analytics/overview',
         query_string={'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     payload = response.get_json()
@@ -1088,7 +1088,7 @@ def test_admin_analytics_dashboard_returns_unified_sections(client):
     response = client.get(
         '/admin/analytics/dashboard',
         query_string={'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     payload = response.get_json()
@@ -1108,7 +1108,7 @@ def test_admin_analytics_dashboard_etag_returns_304(client):
     first = client.get(
         '/admin/analytics/dashboard',
         query_string={'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert first.status_code == 200
     etag = first.headers.get('ETag')
@@ -1118,7 +1118,7 @@ def test_admin_analytics_dashboard_etag_returns_304(client):
         '/admin/analytics/dashboard',
         query_string={'scope': 'municipio'},
         headers={
-            'X-Debug-Role': 'operador',
+            'X-Debug-Role': 'admin',
             'X-Debug-Tenant': str(tenant_id),
             'If-None-Match': etag,
         },
@@ -1134,7 +1134,7 @@ def test_api_alias_admin_analytics_hub_available(client):
     response = client.get(
         '/api/admin/analytics/hub',
         query_string={'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     payload = response.get_json()
@@ -1149,7 +1149,7 @@ def test_admin_analytics_hub_includes_meta_and_contract_headers(client):
     response = client.get(
         '/admin/analytics/hub',
         query_string={'scope': 'municipio'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     assert response.headers.get('X-Analytics-Request-Id')
@@ -1173,7 +1173,7 @@ def test_admin_analytics_hub_honors_custom_request_id(client):
         '/admin/analytics/hub',
         query_string={'scope': 'municipio'},
         headers={
-            'X-Debug-Role': 'operador',
+            'X-Debug-Role': 'admin',
             'X-Debug-Tenant': str(tenant_id),
             'X-Request-Id': 'req-demo-123',
         },
@@ -1275,7 +1275,7 @@ def test_admin_analytics_realtime_hub_accepts_invalid_window_minutes(client):
     response = client.get(
         '/admin/analytics/realtime-hub',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 'abc'},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -1299,7 +1299,7 @@ def test_admin_analytics_realtime_hub_counts_live_chat_comments_by_tenant_ticket
     response = client.get(
         '/admin/analytics/realtime-hub',
         query_string={'tenant_id': tenant_id, 'scope': 'municipio', 'window_minutes': 60},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(tenant_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(tenant_id)},
     )
     assert response.status_code == 200
     data = response.get_json()
@@ -1337,7 +1337,7 @@ def test_admin_analytics_realtime_hub_never_treats_owner_as_foreign_profile_pk(c
     response = client.get(
         '/admin/analytics/realtime-hub',
         query_string={'tenant_id': owner_id, 'scope': 'municipio', 'window_minutes': 60},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(owner_id)},
     )
 
     assert response.status_code == 200
@@ -1376,7 +1376,7 @@ def test_admin_analytics_realtime_hub_requires_exact_profile_for_ambiguous_owner
     raw_owner = client.get(
         '/admin/analytics/realtime-hub',
         query_string={'tenant_id': owner_id, 'scope': 'municipio', 'window_minutes': 60},
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(owner_id)},
     )
     exact_profile = client.get(
         '/admin/analytics/realtime-hub',
@@ -1386,7 +1386,7 @@ def test_admin_analytics_realtime_hub_requires_exact_profile_for_ambiguous_owner
             'scope': 'municipio',
             'window_minutes': 60,
         },
-        headers={'X-Debug-Role': 'operador', 'X-Debug-Tenant': str(owner_id)},
+        headers={'X-Debug-Role': 'admin', 'X-Debug-Tenant': str(owner_id)},
     )
 
     assert raw_owner.status_code == 200

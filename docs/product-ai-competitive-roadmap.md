@@ -289,9 +289,18 @@ live only after its provider and deployment smoke tests pass.
   contract/UI evidence only: a durable queue projection, transactionally
   consistent snapshots, logical-case deduplication across the three source
   tables, CRM-to-provider callback linkage and staging validation remain
-  pending. Category RBAC is not yet globally closed: historical admin-tenant,
-  metrics and aggregate analytics/cache surfaces still need to consume the
-  same central policy before this control can be certified platform-wide.
+  pending. Tenant-wide legacy analytics, their v2 compatibility aliases and
+  the historical admin analytics/cache surfaces now fail closed for employees
+  before route-local analytics resolution/materialization, queries, cache,
+  rate limiting or AI-provider work; authentication and tenant-context
+  middleware still execute first. The category-scoped Operations v2 dashboard
+  remains their supported path: tickets, live presence and the k-anonymous map
+  respect employee categories, while surveys, chat aggregates, commerce and
+  employee-directory metrics are explicitly unavailable and are not queried
+  until those sources gain an enforceable employee boundary.
+  Category RBAC is still not globally certified: historical metrics and other
+  aggregate surfaces must consume the same central policy and pass staging
+  verification before the control can be declared platform-wide.
 - A tenant-scoped assessment/interview core now models immutable published
   program versions, cases pinned to one version, explicit versioned consent,
   referenced evidence with provenance/hash and a terminal

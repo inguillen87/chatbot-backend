@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 # --- Modo "solo migraciones" o "testing" ---
@@ -360,6 +361,33 @@ def create_app(config_class=Config):
             from flask_login import current_user
 
             g.viewer = None
+            g.explicit_bearer_present = False
+            authorization_header = request.headers.get("Authorization", "").strip()
+            has_explicit_bearer = bool(
+                re.match(
+                    r"^bearer(?:\s|$)",
+                    authorization_header,
+                    flags=re.IGNORECASE,
+                )
+            )
+            if has_explicit_bearer:
+                # An explicit request credential must win over an ambient panel
+                # cookie. Keep the resolved actor on g only; never mutate the
+                # Flask-Login request/session identity for unrelated routes.
+                g.explicit_bearer_present = True
+                token = obtener_token()
+                user = user_from_token(token) if token else None
+                g.viewer = user
+                if user is None:
+                    current_app.logger.warning(
+                        "Explicit Bearer credential rejected path=%s",
+                        request.path,
+                    )
+                else:
+                    current_app.logger.debug(
+                        "Authenticated request source=explicit_bearer"
+                    )
+                return
             if current_user and current_user.is_authenticated:
                 g.viewer = current_user
                 current_app.logger.debug("Authenticated request source=flask_login")
