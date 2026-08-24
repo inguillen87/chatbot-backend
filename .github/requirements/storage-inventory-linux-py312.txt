@@ -1,0 +1,8 @@
+# Focal CI lock for CPython 3.12 x86_64 on Ubuntu 24.04.
+# Hashes were reconciled with the PyPI JSON release metadata.
+cryptography==50.0.0 \
+    --hash=sha256:b42a28c1844fd9de8f3f7d540e36b66f3a9c83fceac7170ebc7a6a19edd9dcae
+cffi==2.1.1 \
+    --hash=sha256:c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf
+pycparser==3.0 \
+    --hash=sha256:b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992

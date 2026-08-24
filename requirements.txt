@@ -44,13 +44,13 @@ cachetools==5.3.3
 catalogue==2.0.10
 celery==5.5.3
 certifi==2025.6.15
-cffi==1.17.1
+cffi==2.1.1
 charset-normalizer==3.4.2
 cloudinary==1.41.0
 cohere==5.15.0
 colorama==0.4.6
 confection==0.1.5
-cryptography==45.0.5
+cryptography==50.0.0
 cymem==2.0.11
 dnspython==2.5.0
 eventlet==0.40.4
@@ -118,7 +118,8 @@ protobuf==5.29.5
 psycopg2-binary==2.9.9
 psycopg[binary]==3.1.19
 pusher==3.3.3
-pyOpenSSL==25.1.0
+pyOpenSSL==26.4.0
+pycparser==3.0
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
 pydub
