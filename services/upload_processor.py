@@ -5,6 +5,7 @@ import traceback
 import shutil
 import mimetypes
 from flask import Blueprint, request, jsonify, g
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 from extensions import db
 from models import CatalogoItem, User, Rubro, ArchivoAdjunto, CatalogUpload
@@ -23,7 +24,13 @@ from services.qdrant_utils import (
 )
 from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO, coleccion_catalogo_para_rubro
 from services.logic import es_rubro_publico
-from services.gcs_service import upload_to_gcs
+from services.gcs_service import (
+    MAX_FILE_SIZE as CATALOG_UPLOAD_MAX_BYTES,
+    UploadFileTooLargeError,
+    upload_to_gcs,
+    validate_upload_size,
+)
+from utils.upload_limits import set_upload_request_limit
 from qdrant_client import models as qdrant_models
 from typing import List, Dict, Any, Optional
 
@@ -44,7 +51,13 @@ def _store_catalog_attachment_record(file_storage, user: User) -> Optional[Archi
         return None
 
     try:
-        upload_meta = upload_to_gcs(file_storage, kind="attachments")
+        upload_meta = upload_to_gcs(
+            file_storage,
+            kind="attachments",
+            max_file_size=CATALOG_UPLOAD_MAX_BYTES,
+        )
+    except UploadFileTooLargeError:
+        raise
     except Exception:
         logger.exception("Catalog upload to storage failed.")
         return None
@@ -264,17 +277,42 @@ def subir_catalogo(current_user: Optional[User] = None):
     if not user:
         return jsonify({"error": "Unauthorized"}), 401
 
-    archivo = request.files.get("file")
+    set_upload_request_limit(CATALOG_UPLOAD_MAX_BYTES)
+    try:
+        archivo = request.files.get("file")
+    except RequestEntityTooLarge:
+        return jsonify({
+            "error": "El archivo supera el límite permitido.",
+            "code": "file_too_large",
+            "max_file_bytes": CATALOG_UPLOAD_MAX_BYTES,
+        }), 413
     if not archivo:
         return jsonify({"error": "No file"}), 400
 
+    try:
+        validate_upload_size(archivo, max_bytes=CATALOG_UPLOAD_MAX_BYTES)
+    except UploadFileTooLargeError:
+        return jsonify({
+            "error": "El archivo supera el límite permitido.",
+            "code": "file_too_large",
+            "max_file_bytes": CATALOG_UPLOAD_MAX_BYTES,
+        }), 413
+
     # Upload to R2/CDN and persist attachment record for direct catalog access
-    catalog_attachment = _store_catalog_attachment_record(archivo, user)
+    try:
+        catalog_attachment = _store_catalog_attachment_record(archivo, user)
+    except UploadFileTooLargeError:
+        return jsonify({
+            "error": "El archivo supera el límite permitido.",
+            "code": "file_too_large",
+            "max_file_bytes": CATALOG_UPLOAD_MAX_BYTES,
+        }), 413
 
     # Save Temp
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     filename = secure_filename(archivo.filename)
     path = os.path.join(UPLOAD_FOLDER, filename)
+    archivo.seek(0)
     archivo.save(path)
     mime_type = archivo.mimetype
 

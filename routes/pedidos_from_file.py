@@ -14,6 +14,7 @@ import pandas as pd
 from flask import Blueprint, jsonify, request, session, g
 from flask_cors import cross_origin
 from sqlalchemy import func
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 from database import db
@@ -23,13 +24,14 @@ from routes.productos import _resolve_public_owner
 from services.cart import _get_pyme_cart
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.commerce_unified import _build_assisted_operator_pack, _build_operator_triage
-from services.gcs_service import upload_to_gcs
+from services.gcs_service import UploadFileTooLargeError, upload_to_gcs
 from services.marketplace_analytics import track_marketplace_event
 from services.order_attachment_preview import build_crm_order_draft
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_and_user
 from services.vision_extractor import extract_table_from_file
 from config import ALLOWED_ORIGINS
 from utils.time_utils import datetime_to_iso_utc
+from utils.upload_limits import set_request_content_limit, set_upload_request_limit
 from utils.turnstile import (
     TURNSTILE_TOKEN_FIELDS,
     turnstile_enforce_public_intake,
@@ -44,6 +46,7 @@ _ASSISTED_REQUEST_CONTRACT_VERSION = "marketplace.assisted_request.v1"
 VEGA_MARKETPLACE_DISPLAY_NAME = "Vega Marketplace IA"
 _MAX_ORDER_NOTE_BYTES = 8 * 1024 * 1024
 _MAX_ORDER_TEXT_CHARS = 12000
+_MAX_ORDER_JSON_BYTES = 64 * 1024
 _MAX_CATALOG_CANDIDATES_PER_ROW = 3
 _MIN_CATALOG_CANDIDATE_SCORE = 0.34
 _ORDER_NOTE_ALLOWED_EXTENSIONS = {"pdf", "xls", "xlsx", "csv", "png", "jpg", "jpeg", "webp", "doc", "docx", "txt"}
@@ -2193,22 +2196,42 @@ def pedidos_desde_archivo():
     if request.method == "OPTIONS":
         return "", 204
 
-    json_payload = request.get_json(silent=True) if request.is_json else None
-    archivo = request.files.get("archivo") or request.files.get("file")
-    text_payload = _clean_optional_text(
-        _form_or_json_value(
-            json_payload,
-            "pedido_text",
-            "texto_pedido",
-            "notes_text",
-            "order_text",
-            "message",
-            "description",
-            "descripcion",
-            "texto",
-            "text",
+    if request.is_json:
+        set_request_content_limit(_MAX_ORDER_JSON_BYTES)
+    else:
+        set_upload_request_limit(_MAX_ORDER_NOTE_BYTES)
+
+    try:
+        json_payload = request.get_json(silent=True) if request.is_json else None
+        archivo = None
+        if not request.is_json:
+            archivo = request.files.get("archivo") or request.files.get("file")
+        text_payload = _clean_optional_text(
+            _form_or_json_value(
+                json_payload,
+                "pedido_text",
+                "texto_pedido",
+                "notes_text",
+                "order_text",
+                "message",
+                "description",
+                "descripcion",
+                "texto",
+                "text",
+            )
         )
-    )
+    except RequestEntityTooLarge:
+        if request.is_json:
+            return _json_error(
+                413,
+                "solicitud_demasiado_grande",
+                "La solicitud supera el limite permitido de 64 KB.",
+            )
+        return _json_error(
+            413,
+            "archivo_demasiado_grande",
+            "El archivo supera el limite permitido. Usa un archivo de hasta 8 MB.",
+        )
     if not archivo and not text_payload:
         return _json_error(400, "archivo_o_texto_requerido", "Archivo o texto de pedido requerido")
     if archivo and not archivo.filename:
@@ -2375,7 +2398,7 @@ def pedidos_desde_archivo():
 
     if archivo:
         try:
-            contenido = archivo.read()
+            contenido = archivo.read(_MAX_ORDER_NOTE_BYTES + 1)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Error al leer archivo de nota de pedido", exc_info=exc)
             return _json_error(400, "archivo_ilegible", "No se pudo leer el archivo subido")
@@ -2399,10 +2422,18 @@ def pedidos_desde_archivo():
 
     if archivo:
         _reset_file_pointer(archivo)
-        upload_meta = upload_to_gcs(
-            archivo,
-            kind=_storage_context_for_request_kind(request_kind, request_kind_config),
-        )
+        try:
+            upload_meta = upload_to_gcs(
+                archivo,
+                kind=_storage_context_for_request_kind(request_kind, request_kind_config),
+                max_file_size=_MAX_ORDER_NOTE_BYTES,
+            )
+        except UploadFileTooLargeError:
+            return _json_error(
+                413,
+                "archivo_demasiado_grande",
+                "El archivo supera el limite permitido. Usa un archivo de hasta 8 MB.",
+            )
         if not upload_meta or not upload_meta.get("public_url"):
             return _json_error(500, "upload_fallido", "No se pudo guardar el archivo")
         original_name = upload_meta.get("original_name") or archivo.filename

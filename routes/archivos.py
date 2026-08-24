@@ -4,13 +4,16 @@ from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, TenantProfile, U
 import os
 import uuid
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 from datetime import datetime
 from utils.auth_helpers import anon_o_token_requerido
 from routes.auth import token_requerido
 from services.gcs_service import (
     upload_to_gcs,
     BUCKET_NAME,
-    MAX_FILE_SIZE,
+    MAX_FILE_SIZE as STORAGE_MAX_FILE_SIZE,
+    UploadFileTooLargeError,
+    validate_upload_size,
     resolve_attachment_thumb_url,
 )
 from services.attachment_delivery import serialize_attachment_for_delivery
@@ -24,6 +27,7 @@ from services.tenant_ticket_scope import (
 )
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
+from utils.upload_limits import set_upload_request_limit
 from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 from google.cloud import storage
 from services.google_vision_service import analyze_image_from_content
@@ -59,6 +63,62 @@ ALLOWED_MIME_PREFIXES = [
 
 # Tamaño máximo de archivo (10 MB) por archivo
 MAX_FILE_SIZE = 10 * 1024 * 1024
+MAX_UPLOAD_BATCH_FILES = 5
+
+
+def _upload_too_large_payload(
+    *,
+    max_file_bytes: int | None = None,
+    max_request_bytes: int | None = None,
+) -> dict:
+    payload = {
+        "contract_version": "upload.error.v1",
+        "code": "file_too_large",
+        "error": "El archivo o lote supera el límite de carga permitido.",
+    }
+    if max_file_bytes is not None:
+        payload["max_file_bytes"] = int(max_file_bytes)
+    if max_request_bytes is not None:
+        payload["max_request_bytes"] = int(max_request_bytes)
+    return payload
+
+
+@archivos_bp.before_request
+def _apply_upload_request_limit_before_authentication():
+    """Set parser caps before decorators can inspect multipart form fields."""
+
+    if request.method != "POST":
+        return None
+
+    endpoint = request.endpoint or ""
+    if endpoint == "archivos_bp.subir_archivo":
+        set_upload_request_limit(
+            MAX_FILE_SIZE,
+            max_files=MAX_UPLOAD_BATCH_FILES,
+        )
+    elif endpoint in {"archivos_bp.subir_imagen"}:
+        set_upload_request_limit(MAX_FILE_SIZE)
+    elif endpoint in {
+        "archivos_bp.subir_archivo_admin",
+        "archivos_bp.upload_chat_attachment",
+    }:
+        set_upload_request_limit(STORAGE_MAX_FILE_SIZE)
+    return None
+
+
+@archivos_bp.errorhandler(RequestEntityTooLarge)
+def _handle_upload_request_too_large(_exc: RequestEntityTooLarge):
+    payload = _upload_too_large_payload(
+        max_request_bytes=request.max_content_length
+    )
+    request_id = request.headers.get("X-Request-Id")
+    if request_id:
+        payload["request_id"] = request_id
+    response = jsonify(payload)
+    response.status_code = 413
+    if request_id:
+        response.headers["X-Request-Id"] = request_id
+    return response
 
 
 # Definition of the new cors_options_response function
@@ -218,6 +278,10 @@ def subir_archivo_options():
 @archivos_bp.route('/subir', methods=['POST'])
 @token_requerido
 def subir_archivo(current_user):
+    set_upload_request_limit(
+        MAX_FILE_SIZE,
+        max_files=MAX_UPLOAD_BATCH_FILES,
+    )
     # El frontend puede enviar un solo "archivo" o una lista "archivos".
     files = request.files.getlist("archivos")
     if not files:
@@ -233,28 +297,26 @@ def subir_archivo(current_user):
 
     if not files or all(f.filename == '' for f in files):
         return jsonify({'error': 'No se enviaron archivos o nombres de archivo vacíos.'}), 400
+    if len(files) > MAX_UPLOAD_BATCH_FILES:
+        return jsonify({
+            "contract_version": "upload.error.v1",
+            "code": "too_many_files",
+            "error": "El lote supera la cantidad máxima de archivos permitida.",
+            "max_files": MAX_UPLOAD_BATCH_FILES,
+        }), 413
 
-    # Validar cada archivo antes de procesar
+    # Validate the full batch before the first storage or database side effect.
     for file_to_check in files:
-        # La validación de content_length total es más compleja para múltiples archivos.
-        # MAX_FILE_SIZE se aplicará por archivo.
-        # file_to_check.seek(0, os.SEEK_END)
-        # file_size = file_to_check.tell()
-        # file_to_check.seek(0) # Resetear puntero del archivo
-        # if file_size > MAX_FILE_SIZE:
-        #     return jsonify({'error': f'Archivo "{file_to_check.filename}" demasiado grande (máx 10MB).'}), 400
-        # Nota: Werkzeug FileStorage no tiene un método simple para obtener el tamaño antes de leerlo todo
-        # o guardarlo. request.content_length es para toda la request.
-        # La validación de tamaño se hará después de guardar o se confiará en el frontend,
-        # o se leerá en memoria si es estrictamente necesario (no ideal para archivos grandes).
-        # Por ahora, la validación de MAX_FILE_SIZE se omite aquí para el chequeo individual previo
-        # y se verificará después de guardar, o se asume que el cliente lo valida.
-        # El request.content_length total sí podría chequearse contra N * MAX_FILE_SIZE como un sanity check.
-
         if not allowed_file(file_to_check.filename):
             return jsonify({'error': f'Archivo "{file_to_check.filename}": formato no permitido.'}), 400
         if not allowed_mime(file_to_check.mimetype):
             return jsonify({'error': f'Archivo "{file_to_check.filename}": tipo MIME no permitido ({file_to_check.mimetype}).'}), 400
+        try:
+            validate_upload_size(file_to_check, max_bytes=MAX_FILE_SIZE)
+        except UploadFileTooLargeError:
+            return jsonify(
+                _upload_too_large_payload(max_file_bytes=MAX_FILE_SIZE)
+            ), 413
 
     pyme_ticket_id = request.form.get("pyme_ticket_id")
     municipio_ticket_id = request.form.get("municipio_ticket_id")
@@ -281,7 +343,12 @@ def subir_archivo(current_user):
         if file.filename == '':
             continue
 
-        upload_result = upload_to_gcs(file)
+        try:
+            upload_result = upload_to_gcs(file, max_file_size=MAX_FILE_SIZE)
+        except UploadFileTooLargeError:
+            return jsonify(
+                _upload_too_large_payload(max_file_bytes=MAX_FILE_SIZE)
+            ), 413
 
         if not upload_result:
             # Rollback previous successful uploads if any
@@ -397,6 +464,7 @@ def subir_archivo(current_user):
 @archivos_bp.route('/subir_imagen', methods=['POST'])
 @token_requerido
 def subir_imagen(current_user):
+    set_upload_request_limit(MAX_FILE_SIZE)
     if 'archivo' not in request.files:
         return jsonify({'error': 'No se encontró el archivo'}), 400
 
@@ -406,7 +474,13 @@ def subir_imagen(current_user):
         return jsonify({'error': 'No se seleccionó ningún archivo'}), 400
 
     if file and allowed_file(file.filename) and allowed_mime(file.mimetype):
-        upload_result = upload_to_gcs(file)
+        try:
+            validate_upload_size(file, max_bytes=MAX_FILE_SIZE)
+            upload_result = upload_to_gcs(file, max_file_size=MAX_FILE_SIZE)
+        except UploadFileTooLargeError:
+            return jsonify(
+                _upload_too_large_payload(max_file_bytes=MAX_FILE_SIZE)
+            ), 413
 
         if not upload_result:
             return jsonify({'error': 'Error al subir la imagen.'}), 500
@@ -458,6 +532,7 @@ def subir_archivo_admin(current_user: User):
     Endpoint específico para que administradores/empleados suban archivos a un ticket existente.
     Crea tanto el ArchivoAdjunto como el TicketComentario asociado.
     """
+    set_upload_request_limit(STORAGE_MAX_FILE_SIZE)
     if 'archivo' not in request.files:
         return jsonify({'error': 'No se encontró el archivo'}), 400
 
@@ -478,6 +553,13 @@ def subir_archivo_admin(current_user: User):
 
     if not allowed_file(file.filename) or not allowed_mime(file.mimetype):
         return jsonify({'error': 'Tipo de archivo no permitido.'}), 400
+
+    try:
+        validate_upload_size(file, max_bytes=STORAGE_MAX_FILE_SIZE)
+    except UploadFileTooLargeError:
+        return jsonify(
+            _upload_too_large_payload(max_file_bytes=STORAGE_MAX_FILE_SIZE)
+        ), 413
 
     # Lógica de guardado y creación de comentario
     try:
@@ -509,6 +591,10 @@ def subir_archivo_admin(current_user: User):
         # Devolver el comentario serializado, que ya incluye 'attachmentInfo'
         return jsonify(comentario.to_dict()), 201
 
+    except UploadFileTooLargeError:
+        return jsonify(
+            _upload_too_large_payload(max_file_bytes=STORAGE_MAX_FILE_SIZE)
+        ), 413
     except Exception as e:
         db.session.rollback()
         current_app.logger.error(f"Error en subir_archivo_admin para ticket {ticket_id}: {e}", exc_info=True)
@@ -655,6 +741,7 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
     Devuelve la metadata para que el frontend la use en la llamada a /ask.
     """
     request_id = request.headers.get("X-Request-Id") or uuid.uuid4().hex
+    set_upload_request_limit(STORAGE_MAX_FILE_SIZE)
 
     def _json(payload: dict, status: int = 200):
         body = dict(payload)
@@ -680,7 +767,13 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         display_mime = raw_mime_type or "desconocido"
         return _json({"error": f"Tipo de archivo no permitido: {display_mime}"}, 400)
 
-    # El tamaño se valida dentro de gcs_service
+    try:
+        validate_upload_size(file, max_bytes=STORAGE_MAX_FILE_SIZE)
+    except UploadFileTooLargeError:
+        return _json(
+            _upload_too_large_payload(max_file_bytes=STORAGE_MAX_FILE_SIZE),
+            413,
+        )
 
     try:
         user = current_user or owner_user
@@ -732,6 +825,11 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
             "attachmentInfo": attachment_info_payload,
         }, 200)
 
+    except UploadFileTooLargeError:
+        return _json(
+            _upload_too_large_payload(max_file_bytes=STORAGE_MAX_FILE_SIZE),
+            413,
+        )
     except Exception as e:
         current_app.logger.error("Error critico en upload_chat_attachment: %s", e, exc_info=True)
         return _json({"error": "Error interno del servidor."}, 500)

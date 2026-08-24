@@ -5,6 +5,7 @@ from werkzeug.datastructures import FileStorage
 # from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, User # Movido para evitar importación circular
 from datetime import datetime, timedelta # Para posible filtro de tiempo
 from services.attachment_service import create_attachment_with_thumbnail
+from services.gcs_service import UploadFileTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ def guardar_archivo_adjunto_ticket(file: FileStorage, user_id: int, ticket_id: i
         logger.info(f"ArchivoAdjunto ID {nuevo_adjunto.id} preparado para ticket {tipo_ticket} {ticket_id}.")
         return nuevo_adjunto
 
+    except UploadFileTooLargeError:
+        raise
     except Exception as e:
         logger.error(f"Error en guardar_archivo_adjunto_ticket: {e}", exc_info=True)
         # La función que llama debe manejar el rollback.

@@ -7,6 +7,7 @@ from functools import wraps
 from typing import Any, Mapping, Optional
 from flask_limiter.errors import RateLimitExceeded
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 from flask import Blueprint, g, request, jsonify, current_app, make_response, render_template
 from socket_service import (
     emit_ticket_update,
@@ -56,7 +57,12 @@ from services.ticket_realtime_state import (
 )
 from services.conversation_stream import build_unified_conversation_stream
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
-from services.gcs_service import upload_to_gcs # Import the new GCS service
+from services.gcs_service import (
+    MAX_FILE_SIZE as TICKET_ATTACHMENT_MAX_BYTES,
+    UploadFileTooLargeError,
+    upload_to_gcs,
+    validate_upload_size,
+)
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.geo.route import obtener_ruta
 from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
@@ -65,6 +71,7 @@ from collections import defaultdict
 from sqlalchemy import or_, func, exists
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
+from utils.upload_limits import set_upload_request_limit
 from utils.tenant import get_current_tenant, get_current_tenant_profile
 from utils.errors import ApiError
 from extensions import limiter
@@ -86,6 +93,7 @@ logger = logging.getLogger("app")
 from utils.recaptcha import verify_recaptcha
 
 ticket_bp = Blueprint('ticket_bp', __name__)
+TICKET_ATTACHMENT_MAX_FILES = 5
 
 MENSAJE_CHAT_CERRADO = "El chat fue cerrado"
 MENSAJE_SIN_PERMISOS = "No tienes permiso para acceder a este chat."
@@ -1844,7 +1852,10 @@ def guardar_archivo_adjunto_ticket(file_storage, user_id, ticket_id, tipo_ticket
         return None
 
     # Use the centralized GCS upload function
-    upload_result = upload_to_gcs(file_storage)
+    upload_result = upload_to_gcs(
+        file_storage,
+        max_file_size=TICKET_ATTACHMENT_MAX_BYTES,
+    )
 
     if not upload_result:
         current_app.logger.error(f"GCS upload failed for ticket {tipo_ticket} {ticket_id}.")
@@ -3556,7 +3567,8 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     archivos_subidos = []
     attachment_info = None
 
-    if request.content_type.startswith('application/json'):
+    content_type = request.content_type or ""
+    if content_type.startswith('application/json'):
         data = request.get_json()
         if not isinstance(data, dict):
             return jsonify({"error": "Formato JSON inválido"}), 400
@@ -3564,9 +3576,42 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
         attachment_info = data.get("attachmentInfo") or data.get("attachment_info")
         archivos_subidos = [] # No files in JSON payload
         current_app.logger.info(f"Admin response via JSON: text='{comentario_texto}', attachment_info={attachment_info}")
-    elif request.content_type.startswith('multipart/form-data'):
-        comentario_texto = request.form.get("comentario")
-        archivos_subidos = request.files.getlist("archivos") # 'archivos' es el name del input type="file"
+    elif content_type.startswith('multipart/form-data'):
+        set_upload_request_limit(
+            TICKET_ATTACHMENT_MAX_BYTES,
+            max_files=TICKET_ATTACHMENT_MAX_FILES,
+        )
+        try:
+            comentario_texto = request.form.get("comentario")
+            archivos_subidos = request.files.getlist("archivos")
+        except RequestEntityTooLarge:
+            return jsonify({
+                "error": "El lote de archivos supera el límite permitido.",
+                "code": "file_too_large",
+            }), 413
+        archivos_subidos = [
+            file_storage
+            for file_storage in archivos_subidos
+            if file_storage and file_storage.filename
+        ]
+        if len(archivos_subidos) > TICKET_ATTACHMENT_MAX_FILES:
+            return jsonify({
+                "error": "El lote supera la cantidad máxima de archivos permitida.",
+                "code": "too_many_files",
+                "max_files": TICKET_ATTACHMENT_MAX_FILES,
+            }), 413
+        try:
+            for file_storage in archivos_subidos:
+                validate_upload_size(
+                    file_storage,
+                    max_bytes=TICKET_ATTACHMENT_MAX_BYTES,
+                )
+        except UploadFileTooLargeError:
+            return jsonify({
+                "error": "Uno de los archivos supera el límite permitido.",
+                "code": "file_too_large",
+                "max_file_bytes": TICKET_ATTACHMENT_MAX_BYTES,
+            }), 413
         current_app.logger.info(f"Admin response via multipart: text='{comentario_texto}', files_count={len(archivos_subidos)}")
     else:
         current_app.logger.warning(f"Admin response con Content-Type no soportado: {request.content_type}")
@@ -3621,7 +3666,19 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     if archivos_subidos:
         for file_storage in archivos_subidos:
             if file_storage and file_storage.filename:
-                adjunto_db = guardar_archivo_adjunto_ticket(file_storage, current_user.id, ticket_id, tipo)
+                try:
+                    adjunto_db = guardar_archivo_adjunto_ticket(
+                        file_storage,
+                        current_user.id,
+                        ticket_id,
+                        tipo,
+                    )
+                except UploadFileTooLargeError:
+                    return jsonify({
+                        "error": "Uno de los archivos supera el límite permitido.",
+                        "code": "file_too_large",
+                        "max_file_bytes": TICKET_ATTACHMENT_MAX_BYTES,
+                    }), 413
                 if adjunto_db:
                     archivos_adjuntados_db.append(adjunto_db)
                 else:

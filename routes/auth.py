@@ -2,6 +2,7 @@
 
 from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
 from flask_cors import cross_origin
+from werkzeug.exceptions import RequestEntityTooLarge
 from services.logic import es_rubro_publico, normalizar_rubro
 import os
 import re
@@ -161,8 +162,13 @@ from services.user_service import (
     split_password_reset_token,
     update_user_profile,
 )
-from services.gcs_service import upload_to_gcs
+from services.gcs_service import (
+    UploadFileTooLargeError,
+    upload_to_gcs,
+    validate_upload_size,
+)
 from utils.map_config import get_map_config
+from utils.upload_limits import set_upload_request_limit
 from utils.user_query import user_table_has_tenant_id_column
 
 
@@ -3807,15 +3813,22 @@ def upload_profile_avatar(user):
             return jsonify({"error": message}), status
         return jsonify(_profile_avatar_payload(user, message=message))
 
+    set_upload_request_limit(
+        PROFILE_AVATAR_UPLOAD_MAX_BYTES,
+        multipart_overhead_bytes=2048,
+    )
     if request.content_length and request.content_length > PROFILE_AVATAR_UPLOAD_MAX_BYTES + 2048:
         return jsonify({"error": "La imagen de perfil no puede superar 5 MB."}), 413
 
-    uploaded = (
-        request.files.get("avatar")
-        or request.files.get("file")
-        or request.files.get("image")
-        or request.files.get("imagen")
-    )
+    try:
+        uploaded = (
+            request.files.get("avatar")
+            or request.files.get("file")
+            or request.files.get("image")
+            or request.files.get("imagen")
+        )
+    except RequestEntityTooLarge:
+        return jsonify({"error": "La imagen de perfil no puede superar 5 MB."}), 413
     if not uploaded or not uploaded.filename:
         return jsonify({"error": "Envia una imagen de perfil."}), 400
 
@@ -3828,10 +3841,24 @@ def upload_profile_avatar(user):
     if extension not in PROFILE_AVATAR_ALLOWED_EXTENSIONS or mimetype not in PROFILE_AVATAR_ALLOWED_MIMES:
         return jsonify({"error": "Formato de avatar no permitido. Usa JPG, PNG o WebP."}), 400
 
+    try:
+        validate_upload_size(
+            uploaded,
+            max_bytes=PROFILE_AVATAR_UPLOAD_MAX_BYTES,
+        )
+    except UploadFileTooLargeError:
+        return jsonify({"error": "La imagen de perfil no puede superar 5 MB."}), 413
+
     previous_user = getattr(g, "current_user", None)
     g.current_user = user
     try:
-        upload_result = upload_to_gcs(uploaded, kind="profile_avatars")
+        upload_result = upload_to_gcs(
+            uploaded,
+            kind="profile_avatars",
+            max_file_size=PROFILE_AVATAR_UPLOAD_MAX_BYTES,
+        )
+    except UploadFileTooLargeError:
+        return jsonify({"error": "La imagen de perfil no puede superar 5 MB."}), 413
     finally:
         g.current_user = previous_user
 

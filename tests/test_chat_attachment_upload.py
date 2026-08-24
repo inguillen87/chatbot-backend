@@ -141,6 +141,77 @@ class ChatAttachmentUploadTests(unittest.TestCase):
         _, status = _response_json_and_status(resp)
         self.assertEqual(status, 200)
 
+    def test_upload_chat_attachment_returns_413_before_storage_or_db(self):
+        data = {"file": (BytesIO(b"12345"), "foto.png", "image/png")}
+
+        with self.app.test_request_context(
+            "/archivos/upload/chat_attachment",
+            method="POST",
+            data=data,
+            content_type="multipart/form-data",
+            headers={
+                "X-Chat-Session-Id": "abc",
+                "X-Request-Id": "oversize-request",
+            },
+        ):
+            with patch.object(
+                archivos_route,
+                "STORAGE_MAX_FILE_SIZE",
+                4,
+            ), patch(
+                "routes.archivos.create_attachment_with_thumbnail"
+            ) as create_attachment_mock, patch.object(
+                db.session,
+                "commit",
+            ) as commit_mock:
+                resp = archivos_route.upload_chat_attachment.__wrapped__(
+                    current_user=self.user
+                )
+
+        res_json, status = _response_json_and_status(resp)
+        self.assertEqual(status, 413)
+        self.assertEqual(res_json["contract_version"], "upload.error.v1")
+        self.assertEqual(res_json["code"], "file_too_large")
+        self.assertEqual(res_json["max_file_bytes"], 4)
+        self.assertEqual(res_json["request_id"], "oversize-request")
+        create_attachment_mock.assert_not_called()
+        commit_mock.assert_not_called()
+
+    def test_upload_chat_attachment_caps_multipart_before_auth_decorator_parse(self):
+        client = self.app.test_client()
+        data = {
+            "file": (
+                BytesIO(b"x" * (1024 * 1024 + 1024)),
+                "oversize.png",
+                "image/png",
+            )
+        }
+
+        with patch.object(
+            archivos_route,
+            "STORAGE_MAX_FILE_SIZE",
+            4,
+        ), patch(
+            "routes.archivos.create_attachment_with_thumbnail"
+        ) as create_attachment_mock, patch.object(
+            db.session,
+            "commit",
+        ) as commit_mock:
+            response = client.post(
+                "/archivos/upload/chat_attachment",
+                data=data,
+                content_type="multipart/form-data",
+                headers={"X-Request-Id": "early-parser-cap"},
+            )
+
+        payload = response.get_json() or {}
+        self.assertEqual(response.status_code, 413)
+        self.assertEqual(payload.get("contract_version"), "upload.error.v1")
+        self.assertEqual(payload.get("code"), "file_too_large")
+        self.assertEqual(payload.get("request_id"), "early-parser-cap")
+        create_attachment_mock.assert_not_called()
+        commit_mock.assert_not_called()
+
     def test_ticket_comentario_to_dict_contains_thumbUrl(self):
         """Ensure model serialization uses local storage path when GCS is disabled."""
         from models import ArchivoAdjunto, TicketComentario
