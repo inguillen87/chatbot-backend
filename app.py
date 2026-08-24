@@ -776,7 +776,7 @@ def create_app(config_class=Config):
     from routes.integrations import integrations_bp
     from routes.pyme_catalog_fixes import pyme_catalog_fix_bp
     from routes.pyme_api import pyme_api_bp
-    from routes.health import health_bp
+    from routes.health import health_bp, runtime_readiness_bp
     from routes.voice_routes import voice_bp
     from routes.catalog_routes import catalog_bp as catalog_v2_bp
     from routes.orders import orders_bp
@@ -957,6 +957,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pyme_catalog_fix_bp)
     app.register_blueprint(pyme_api_bp)
     app.register_blueprint(health_bp)
+    app.register_blueprint(runtime_readiness_bp)
     app.register_blueprint(voice_bp)
     app.register_blueprint(catalog_v2_bp)
     app.register_blueprint(orders_bp)

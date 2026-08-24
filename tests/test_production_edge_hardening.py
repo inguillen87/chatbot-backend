@@ -204,6 +204,12 @@ def test_render_blueprint_declares_production_edge_guards():
     blueprint = (Path(__file__).parents[1] / "render.yaml").read_text(encoding="utf-8")
 
     assert "healthCheckPath: /health" in blueprint
+    assert "healthCheckPath: /health/ready" not in blueprint
+    assert "DATABASE_CONNECT_TIMEOUT_SECONDS" in blueprint
+    assert "DATABASE_POOL_TIMEOUT_SECONDS" in blueprint
+    assert "READINESS_DATABASE_TIMEOUT_SECONDS" in blueprint
+    assert "READINESS_REDIS_TIMEOUT_SECONDS" in blueprint
+    assert "READINESS_CACHE_TTL_SECONDS" in blueprint
     assert "Keep its onrender.com subdomain disabled" in blueprint
     assert "value: production" in blueprint
     assert 'value: "https://chatboc.ar,https://www.chatboc.ar"' in blueprint
