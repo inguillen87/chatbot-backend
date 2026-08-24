@@ -148,12 +148,13 @@ redis==6.2.0
 ##############################
 # SECURITY / CRYPTO
 ##############################
-cryptography==45.0.5
-pyOpenSSL==25.1.0
+cryptography==50.0.0
+pyOpenSSL==26.4.0
 PyJWT==2.10.1
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
-cffi==1.17.1
+cffi==2.1.1
+pycparser==3.0
 ndg-httpsclient==0.5.1
 six==1.17.0
 
