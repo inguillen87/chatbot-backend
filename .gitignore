@@ -6,6 +6,7 @@ instance/*
 .env
 /data/*.json
 *.json
+!vercel.json
 !data/tramites.json
 !data/respuestas_municipio.json
 !data/demo_rubros.json
@@ -34,3 +35,6 @@ sandbox_venv/
 node_modules
 !data/estacionamiento/camaras.json
 flask_session/
+.vercel
+.env.local
+.env.*.local

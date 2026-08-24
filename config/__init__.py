@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 from utils.runtime_environment import (
     is_production_runtime,
     is_render_runtime,
+    is_vercel_runtime,
     resolved_runtime_environment,
 )
 
@@ -171,11 +172,29 @@ def _bounded_timeout_seconds(
     return min(max(timeout, minimum), maximum)
 
 
+def _bounded_pool_count(
+    value: object,
+    *,
+    default: int,
+    minimum: int = 0,
+    maximum: int = 50,
+) -> int:
+    """Parse a connection-pool count without allowing runaway autoscaling."""
+
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(count, minimum), maximum)
+
+
 def build_database_engine_options(
     database_uri: object,
     *,
     connect_timeout_seconds: object = 2.0,
     pool_timeout_seconds: object = 2.0,
+    pool_size: object = 10,
+    max_overflow: object = 20,
 ) -> dict[str, Any]:
     """Build bounded SQLAlchemy options for SQLite or network databases."""
 
@@ -192,9 +211,18 @@ def build_database_engine_options(
         pool_timeout_seconds,
         default=2.0,
     )
+    bounded_pool_size = _bounded_pool_count(
+        pool_size,
+        default=10,
+        minimum=1,
+    )
+    bounded_max_overflow = _bounded_pool_count(
+        max_overflow,
+        default=20,
+    )
     return {
-        "pool_size": 10,
-        "max_overflow": 20,
+        "pool_size": bounded_pool_size,
+        "max_overflow": bounded_max_overflow,
         "pool_pre_ping": True,
         "pool_recycle": 1800,
         # DBAPI/libpq requires an integer connect_timeout. Round upward so an
@@ -202,6 +230,30 @@ def build_database_engine_options(
         "connect_args": {"connect_timeout": int(math.ceil(connect_timeout))},
         "pool_timeout": pool_timeout,
     }
+
+
+def resolve_database_uri(
+    *,
+    environ: Optional[Dict[str, str]] = None,
+    base_dir: Optional[str] = None,
+) -> str:
+    """Resolve the database URI and fail closed on stateless Vercel runtimes."""
+
+    runtime_env = os.environ if environ is None else environ
+    configured = str(runtime_env.get("DATABASE_URL") or "").strip()
+    if configured:
+        return configured
+    if is_vercel_runtime(runtime_env):
+        raise RuntimeError(
+            "DATABASE_URL es obligatoria en Vercel; SQLite efimero no es un almacenamiento valido."
+        )
+    if is_render_runtime(runtime_env):
+        return "sqlite:////data/database.db?check_same_thread=False"
+
+    resolved_base = base_dir or basedir
+    local_db_path = os.path.join(resolved_base, "instance", "database.db")
+    os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
+    return f"sqlite:///{local_db_path}?check_same_thread=False"
 
 
 def _env_fail_closed_hold(default: bool, name: str) -> bool:
@@ -248,13 +300,26 @@ def _is_render_runtime() -> bool:
     return is_render_runtime()
 
 
+def _is_vercel_runtime() -> bool:
+    return is_vercel_runtime()
+
+
 IS_PRODUCTION_RUNTIME = is_production_runtime(config_env=_CONFIGURED_ENV)
 
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
+_VERCEL_HOST = (
+    os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
+    or os.getenv("VERCEL_BRANCH_URL")
+    or os.getenv("VERCEL_URL")
+)
+VERCEL_EXTERNAL_URL = f"https://{_VERCEL_HOST.strip()}" if _VERCEL_HOST else None
+BACKEND_URL = os.getenv(
+    "BACKEND_URL",
+    RENDER_EXTERNAL_URL or VERCEL_EXTERNAL_URL or "http://localhost:5000",
+)
 
 # Public participation surveys share image (also used for WhatsApp thumbnails)
 ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH = (
@@ -661,16 +726,7 @@ class Config:
     )
 
     # 2. CONFIGURACIÓN DE LA BASE DE DATOS
-    db_url = os.getenv("DATABASE_URL")
-    if db_url:
-        SQLALCHEMY_DATABASE_URI = db_url
-    elif os.getenv("RENDER") == "true":
-        db_path_render = "/data/database.db"
-        SQLALCHEMY_DATABASE_URI = f"sqlite:///{db_path_render}?check_same_thread=False"
-    else:
-        local_db_path = os.path.join(basedir, 'instance', 'database.db')
-        os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
-        SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}?check_same_thread=False"
+    SQLALCHEMY_DATABASE_URI = resolve_database_uri()
 
     # Directory for persistent data such as uploaded media.
     DATA_DIR = os.getenv("DATA_DIR", "/data")
@@ -684,10 +740,21 @@ class Config:
         os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "2"),
         default=2.0,
     )
+    DATABASE_POOL_SIZE = _bounded_pool_count(
+        os.getenv("DATABASE_POOL_SIZE", "10"),
+        default=10,
+        minimum=1,
+    )
+    DATABASE_MAX_OVERFLOW = _bounded_pool_count(
+        os.getenv("DATABASE_MAX_OVERFLOW", "20"),
+        default=20,
+    )
     SQLALCHEMY_ENGINE_OPTIONS = build_database_engine_options(
         SQLALCHEMY_DATABASE_URI,
         connect_timeout_seconds=DATABASE_CONNECT_TIMEOUT_SECONDS,
         pool_timeout_seconds=DATABASE_POOL_TIMEOUT_SECONDS,
+        pool_size=DATABASE_POOL_SIZE,
+        max_overflow=DATABASE_MAX_OVERFLOW,
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
@@ -764,7 +831,11 @@ class Config:
 
     # Runtime bootstrap guards: in production, schema sync and tenant init must be explicit
     # via migrations/CLI. Local dev keeps convenience defaults enabled.
-    _runtime_bootstrap_default = ENV == "dev" and not _is_render_runtime()
+    _runtime_bootstrap_default = (
+        ENV == "dev"
+        and not _is_render_runtime()
+        and not _is_vercel_runtime()
+    )
     ENABLE_RUNTIME_SCHEMA_SYNC = _env_flag(
         _runtime_bootstrap_default,
         "ENABLE_RUNTIME_SCHEMA_SYNC",
