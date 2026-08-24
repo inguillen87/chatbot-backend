@@ -101,6 +101,15 @@ services:
         value: "20"
       - key: TRACKING_FAILURE_RATE_LIMIT_WINDOW_SECONDS
         value: "60"
+      # Deployment gate: the public full demo catalog uses client and global
+      # counters that must be shared before the Render web service can start.
+      # Set a managed Redis/Redis-TLS URL; memory:// is rejected on Render web.
+      - key: RATELIMIT_STORAGE_URI
+        sync: false
+      - key: DEMO_CATALOG_FULL_RATE_LIMIT
+        value: "12 per minute"
+      - key: DEMO_CATALOG_FULL_GLOBAL_RATE_LIMIT
+        value: "48 per minute"
       - key: AUTH_EMAIL_VERIFY_BASE_URL
         value: https://www.chatboc.ar
       - key: AUTH_EMAIL_FROM

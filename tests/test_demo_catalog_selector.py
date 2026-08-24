@@ -8,7 +8,7 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 os.environ.setdefault("TESTING", "1")
 
 from app import create_app, db
-from config import Config
+from config import Config, validate_runtime_security
 from extensions import limiter
 from routes.v2 import demo as demo_routes
 
@@ -21,6 +21,7 @@ class DemoCatalogSelectorTestConfig(Config):
     ENABLE_RUNTIME_SCHEMA_SYNC = False
     ENABLE_RUNTIME_TENANT_INIT = False
     DEMO_CATALOG_FULL_RATE_LIMIT = "2 per second"
+    DEMO_CATALOG_FULL_GLOBAL_RATE_LIMIT = "4 per second"
 
 
 def _field_names(value):
@@ -245,45 +246,63 @@ class DemoCatalogSelectorTest(unittest.TestCase):
         )
 
     def test_full_catalog_limit_is_proxy_safe_json_cors_and_recovers(self):
-        request_headers = {
-            "Origin": "https://chatboc.ar",
-            "X-Forwarded-For": "198.51.100.10",
-        }
-        first = self.client.get(
-            "/api/v2/demo/catalog",
-            headers={**request_headers, "X-Request-Id": "full-limit-one"},
-            environ_base={"REMOTE_ADDR": "203.0.113.10"},
-        )
-        second = self.client.get(
-            "/api/v2/demo/catalog?response_profile=full",
-            headers={
-                **request_headers,
-                "X-Forwarded-For": "198.51.100.11",
-                "X-Request-Id": "full-limit-two",
-            },
-            environ_base={"REMOTE_ADDR": "203.0.113.11"},
-        )
-        limited = self.client.get(
-            "/api/v2/demo/catalog?response_profile=selector%00",
-            headers={
-                **request_headers,
-                "X-Forwarded-For": "198.51.100.12",
-                "X-Request-Id": "full-limit-blocked",
-            },
-            environ_base={"REMOTE_ADDR": "203.0.113.12"},
-        )
+        with patch.dict(
+            os.environ,
+            {"RENDER": "", "RENDER_SERVICE_TYPE": ""},
+        ):
+            first = self.client.get(
+                "/api/v2/demo/catalog",
+                headers={
+                    "Origin": "https://chatboc.ar",
+                    "X-Forwarded-For": "198.51.100.10",
+                    "X-Request-Id": "full-limit-one",
+                },
+                environ_base={"REMOTE_ADDR": "192.0.2.44"},
+            )
+            second = self.client.get(
+                "/api/v2/demo/catalog?response_profile=full",
+                headers={
+                    "Origin": "https://chatboc.ar",
+                    "X-Forwarded-For": "198.51.100.11",
+                    "X-Request-Id": "full-limit-two",
+                },
+                environ_base={"REMOTE_ADDR": "192.0.2.44"},
+            )
+            limited = self.client.get(
+                "/api/v2/demo/catalog?response_profile=selector%00",
+                headers={
+                    "Origin": "https://chatboc.ar",
+                    "X-Forwarded-For": "198.51.100.12",
+                    "X-Request-Id": "full-limit-blocked",
+                },
+                environ_base={"REMOTE_ADDR": "192.0.2.44"},
+            )
+            other_client = self.client.get(
+                "/api/v2/demo/catalog",
+                headers={
+                    "X-Forwarded-For": "198.51.100.12",
+                    "X-Request-Id": "full-limit-client-b",
+                },
+                environ_base={"REMOTE_ADDR": "198.51.100.44"},
+            )
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
         self.assertEqual(first.get_json().get("request_id"), "full-limit-one")
         self.assertEqual(second.get_json().get("request_id"), "full-limit-two")
         self.assertEqual(limited.status_code, 429)
+        self.assertEqual(other_client.status_code, 200)
+        self.assertEqual(
+            other_client.get_json().get("request_id"),
+            "full-limit-client-b",
+        )
         self.assertLess(len(limited.data), 2_000)
         limited_payload = limited.get_json()
         self.assertEqual(
             limited_payload.get("reason_code"),
             "demo_catalog_full_rate_limited",
         )
+        self.assertEqual(limited_payload.get("rate_limit_scope"), "client")
         self.assertEqual(limited_payload.get("request_id"), "full-limit-blocked")
         self.assertNotIn("server_time", limited_payload)
         self.assertEqual(limited.headers.get("X-Request-Id"), "full-limit-blocked")
@@ -300,15 +319,111 @@ class DemoCatalogSelectorTest(unittest.TestCase):
         self.assertIn("Origin", limited.headers.get("Vary") or "")
 
         time.sleep(1.1)
-        recovered = self.client.get(
-            "/api/v2/demo/catalog",
-            headers={"X-Request-Id": "full-limit-recovered"},
-        )
+        with patch.dict(
+            os.environ,
+            {"RENDER": "", "RENDER_SERVICE_TYPE": ""},
+        ):
+            recovered = self.client.get(
+                "/api/v2/demo/catalog",
+                headers={"X-Request-Id": "full-limit-recovered"},
+                environ_base={"REMOTE_ADDR": "192.0.2.44"},
+            )
         self.assertEqual(recovered.status_code, 200)
         self.assertEqual(
             recovered.get_json().get("request_id"),
             "full-limit-recovered",
         )
+
+    def test_global_breaker_blocks_source_rotation_before_new_client_buckets(self):
+        rotated_clients = [
+            "192.0.2.10",
+            "198.51.100.10",
+            "203.0.113.10",
+        ]
+        with (
+            patch.dict(
+                self.app.config,
+                {"DEMO_CATALOG_FULL_GLOBAL_RATE_LIMIT": "3 per second"},
+            ),
+            patch.dict(
+                os.environ,
+                {"RENDER": "", "RENDER_SERVICE_TYPE": ""},
+            ),
+            patch.object(
+                demo_routes,
+                "_demo_catalog_full_client_scope",
+                wraps=demo_routes._demo_catalog_full_client_scope,
+            ) as client_scope,
+            patch.object(
+                demo_routes,
+                "legacy_demo_catalog",
+                wraps=demo_routes.legacy_demo_catalog,
+            ) as legacy_catalog,
+            patch.object(
+                demo_routes,
+                "_commercial_demo_bundle",
+                wraps=demo_routes._commercial_demo_bundle,
+            ) as commercial_bundle,
+        ):
+            allowed = [
+                self.client.get(
+                    "/api/v2/demo/catalog",
+                    environ_base={"REMOTE_ADDR": peer},
+                    headers={"X-Forwarded-For": f"10.0.0.{index + 1}"},
+                )
+                for index, peer in enumerate(rotated_clients)
+            ]
+            scope_calls_before_limit = client_scope.call_count
+            legacy_calls_before_limit = legacy_catalog.call_count
+            bundle_calls_before_limit = commercial_bundle.call_count
+            blocked = self.client.get(
+                "/api/v2/demo/catalog",
+                environ_base={"REMOTE_ADDR": "198.18.1.10"},
+                headers={
+                    "Origin": "https://chatboc.ar",
+                    "X-Forwarded-For": "10.0.0.99",
+                    "X-Request-Id": "full-global-blocked",
+                },
+            )
+            blocked_again = self.client.get(
+                "/api/v2/demo/catalog",
+                environ_base={"REMOTE_ADDR": "198.19.1.10"},
+                headers={"X-Forwarded-For": "10.0.0.100"},
+            )
+
+            self.assertTrue(all(response.status_code == 200 for response in allowed))
+            self.assertEqual(blocked.status_code, 429)
+            self.assertEqual(blocked_again.status_code, 429)
+            self.assertEqual(blocked.get_json().get("rate_limit_scope"), "global")
+            self.assertEqual(blocked.get_json().get("request_id"), "full-global-blocked")
+            self.assertEqual(client_scope.call_count, scope_calls_before_limit)
+            self.assertEqual(legacy_catalog.call_count, legacy_calls_before_limit)
+            self.assertEqual(commercial_bundle.call_count, bundle_calls_before_limit)
+
+    def test_render_web_deployment_gate_requires_shared_rate_limit_storage(self):
+        with patch.dict(
+            os.environ,
+            {"RENDER": "true", "RENDER_SERVICE_TYPE": "web"},
+        ):
+            memory_errors = validate_runtime_security(
+                {
+                    "ENV": "production",
+                    "RATELIMIT_STORAGE_URI": "memory://",
+                }
+            )
+            shared_errors = validate_runtime_security(
+                {
+                    "ENV": "production",
+                    "RATELIMIT_STORAGE_URI": "rediss://shared.example.test:6380/0",
+                }
+            )
+
+        gate_message = (
+            "RATELIMIT_STORAGE_URI debe usar Redis compartido "
+            "en el servicio web de Render."
+        )
+        self.assertIn(gate_message, memory_errors)
+        self.assertNotIn(gate_message, shared_errors)
 
 
 if __name__ == "__main__":

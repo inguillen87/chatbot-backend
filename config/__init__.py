@@ -653,11 +653,15 @@ class Config:
     )
     # The legacy full demo catalog is intentionally backward compatible but
     # expensive to materialize and transfer.  Current first-party clients use
-    # response_profile=selector, so keep a narrow route-wide safety budget for
-    # callers that still need the full contract.
+    # response_profile=selector, so keep a per-client budget plus a wider
+    # deployment circuit breaker for callers that still need the full contract.
     DEMO_CATALOG_FULL_RATE_LIMIT = _env_first(
         "DEMO_CATALOG_FULL_RATE_LIMIT",
         default="12 per minute",
+    )
+    DEMO_CATALOG_FULL_GLOBAL_RATE_LIMIT = _env_first(
+        "DEMO_CATALOG_FULL_GLOBAL_RATE_LIMIT",
+        default="48 per minute",
     )
     # Operational queue reads can fan out across three legacy ticket stores.
     # Rate capacity is shared by tenant+actor; row inspection remains bounded
@@ -1335,6 +1339,24 @@ def validate_runtime_security(config: Any) -> list[str]:
     is_production = env_value in {"prod", "production"}
     if not is_production:
         return errors
+
+    render_web_runtime = (
+        str(os.getenv("RENDER") or "").strip().lower() == "true"
+        and str(os.getenv("RENDER_SERVICE_TYPE") or "").strip().lower() == "web"
+    )
+    rate_limit_storage_uri = str(
+        getattr(config, "get", lambda *_: None)(
+            "RATELIMIT_STORAGE_URI",
+            "",
+        )
+        or ""
+    ).strip().lower()
+    if render_web_runtime and not rate_limit_storage_uri.startswith(
+        ("redis://", "rediss://")
+    ):
+        errors.append(
+            "RATELIMIT_STORAGE_URI debe usar Redis compartido en el servicio web de Render."
+        )
 
     raw_demo_seed_flag = getattr(config, "get", lambda *_: None)(
         "ALLOW_SURVEY_DEMO_SEEDING",

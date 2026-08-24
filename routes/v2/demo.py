@@ -4,13 +4,14 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 import hashlib
+import ipaddress
 import json
 import math
 import time
 import uuid
 
 from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
-from flask_limiter.errors import RateLimitExceeded
+from limits import parse
 
 from extensions import limiter
 from models import MunicipioTicket, TenantProfile, WhatsappNumero
@@ -23,6 +24,7 @@ from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.demo_experience_contract import build_demo_experience_contract
 from services.demo_registry import load_demo_rubros
+from services.public_survey_intake import public_survey_client_ip
 from services.demo_pillar_catalog import (
     DEMO_PILLAR_CONTRACT_VERSION,
     catalog_resources_for_rubro,
@@ -2178,11 +2180,26 @@ def _demo_catalog_full_rate_limit() -> str:
     )
 
 
-def _demo_catalog_full_rate_limit_key() -> str:
-    # This route-wide key deliberately does not trust X-Forwarded-For or any
-    # caller-controlled identity.  It also bounds limiter storage cardinality
-    # to one expiring key per deployment/storage backend.
-    return "demo-catalog-full"
+def _demo_catalog_full_global_rate_limit() -> str:
+    return str(
+        current_app.config.get("DEMO_CATALOG_FULL_GLOBAL_RATE_LIMIT")
+        or "48 per minute"
+    )
+
+
+def _demo_catalog_full_client_scope() -> str:
+    raw_client_ip = public_survey_client_ip()
+    try:
+        parsed_ip = ipaddress.ip_address(raw_client_ip)
+        prefix_length = 24 if parsed_ip.version == 4 else 64
+        network = ipaddress.ip_network(
+            f"{parsed_ip}/{prefix_length}",
+            strict=False,
+        )
+        normalized = f"{network.network_address}/{prefix_length}"
+    except ValueError:
+        normalized = str(raw_client_ip or "unknown")[:128]
+    return hashlib.sha256(normalized.encode("utf-8", "replace")).hexdigest()
 
 
 def _demo_catalog_full_rate_limit_exempt() -> bool:
@@ -2191,16 +2208,27 @@ def _demo_catalog_full_rate_limit_exempt() -> bool:
     ) == "selector"
 
 
-def _demo_catalog_full_rate_limited(request_limit):
-    retry_after = 60
-    try:
-        retry_after = max(
-            1,
-            math.ceil(float(request_limit.reset_at) - time.time()),
-        )
-    except (AttributeError, TypeError, ValueError):
-        pass
+def _demo_catalog_full_rate_limit_item(configured: str):
+    item = parse(configured)
+    amount = int(item.amount)
+    window_seconds = int(item.get_expiry())
+    if amount <= 0 or amount > 10_000 or window_seconds <= 0 or window_seconds > 86_400:
+        raise ValueError("demo catalog full rate limit outside supported range")
+    return item, amount, window_seconds
 
+
+def _demo_catalog_full_retry_after(strategy, item, *identifiers: str) -> int:
+    try:
+        window = strategy.get_window_stats(item, *identifiers)
+        return max(
+            1,
+            math.ceil(float(window.reset_time) - time.time()),
+        )
+    except Exception:
+        return max(1, int(item.get_expiry()))
+
+
+def _demo_catalog_full_rate_limited(*, retry_after: int, scope: str):
     response = _json_response(
         {
             "contract_version": "demo.catalog.v2",
@@ -2210,6 +2238,7 @@ def _demo_catalog_full_rate_limited(request_limit):
             },
             "reason_code": "demo_catalog_full_rate_limited",
             "action_hint": "request_selector_profile_or_retry",
+            "rate_limit_scope": scope,
         },
         status=429,
     )
@@ -2218,24 +2247,94 @@ def _demo_catalog_full_rate_limited(request_limit):
     return response
 
 
-@v2_demo_bp.errorhandler(RateLimitExceeded)
-def _handle_demo_catalog_full_rate_limit(error):
-    if error.response is not None:
-        return error.response
-    return _demo_catalog_full_rate_limited(error.limit)
+def _demo_catalog_full_rate_limit_unavailable(*, retry_after: int):
+    response = _json_response(
+        {
+            "contract_version": "demo.catalog.v2",
+            "error": {
+                "code": 503,
+                "message": "El control de capacidad del catalogo demo no esta disponible.",
+            },
+            "reason_code": "demo_catalog_full_rate_limit_unavailable",
+            "action_hint": "retry_after_rate_limit_recovers",
+        },
+        status=503,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Retry-After"] = str(max(1, retry_after))
+    return response
+
+
+def _enforce_demo_catalog_full_rate_limit():
+    if _demo_catalog_full_rate_limit_exempt():
+        return None
+
+    try:
+        client_item, client_amount, client_window = _demo_catalog_full_rate_limit_item(
+            _demo_catalog_full_rate_limit()
+        )
+        global_item, global_amount, global_window = _demo_catalog_full_rate_limit_item(
+            _demo_catalog_full_global_rate_limit()
+        )
+        if global_amount * client_window <= client_amount * global_window:
+            raise ValueError("global demo catalog limit must exceed client capacity")
+
+        strategy = limiter.limiter
+        global_identifiers = ("demo-catalog-full-v2", "global")
+
+        # Read global capacity before deriving or touching a client key. Once
+        # the breaker opens, source rotation cannot grow limiter cardinality.
+        global_stats = strategy.get_window_stats(global_item, *global_identifiers)
+        if int(global_stats.remaining) <= 0:
+            return _demo_catalog_full_rate_limited(
+                retry_after=_demo_catalog_full_retry_after(
+                    strategy,
+                    global_item,
+                    *global_identifiers,
+                ),
+                scope="global",
+            )
+        client_identifiers = (
+            "demo-catalog-full-v2",
+            "client",
+            _demo_catalog_full_client_scope(),
+        )
+        if not strategy.hit(client_item, *client_identifiers):
+            return _demo_catalog_full_rate_limited(
+                retry_after=_demo_catalog_full_retry_after(
+                    strategy,
+                    client_item,
+                    *client_identifiers,
+                ),
+                scope="client",
+            )
+        if not strategy.hit(global_item, *global_identifiers):
+            return _demo_catalog_full_rate_limited(
+                retry_after=_demo_catalog_full_retry_after(
+                    strategy,
+                    global_item,
+                    *global_identifiers,
+                ),
+                scope="global",
+            )
+    except Exception:
+        current_app.logger.exception(
+            "[demo-catalog] Shared full-catalog rate limiter unavailable; request denied"
+        )
+        return _demo_catalog_full_rate_limit_unavailable(
+            retry_after=60
+        )
+    return None
 
 
 @v2_demo_bp.route("/catalog", methods=["GET", "OPTIONS"])
-@limiter.limit(
-    _demo_catalog_full_rate_limit,
-    key_func=_demo_catalog_full_rate_limit_key,
-    methods=["GET", "HEAD"],
-    exempt_when=_demo_catalog_full_rate_limit_exempt,
-    on_breach=_demo_catalog_full_rate_limited,
-)
 def demo_catalog_v2():
     if request.method == "OPTIONS":
         return _options_response()
+
+    rate_limit_response = _enforce_demo_catalog_full_rate_limit()
+    if rate_limit_response is not None:
+        return rate_limit_response
 
     legacy_response = legacy_demo_catalog()
     legacy_payload = legacy_response.get_json(silent=True) if hasattr(legacy_response, "get_json") else {}
