@@ -651,6 +651,14 @@ class Config:
         "UPSTASH_REDIS_URL",
         default="memory://",
     )
+    # The legacy full demo catalog is intentionally backward compatible but
+    # expensive to materialize and transfer.  Current first-party clients use
+    # response_profile=selector, so keep a narrow route-wide safety budget for
+    # callers that still need the full contract.
+    DEMO_CATALOG_FULL_RATE_LIMIT = _env_first(
+        "DEMO_CATALOG_FULL_RATE_LIMIT",
+        default="12 per minute",
+    )
     # Operational queue reads can fan out across three legacy ticket stores.
     # Rate capacity is shared by tenant+actor; row inspection remains bounded
     # even when a portable SQL pushdown is unavailable (for example SLA JSON).

@@ -5,10 +5,14 @@ from typing import Any
 from urllib.parse import quote_plus
 import hashlib
 import json
+import math
+import time
 import uuid
 
 from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
+from flask_limiter.errors import RateLimitExceeded
 
+from extensions import limiter
 from models import MunicipioTicket, TenantProfile, WhatsappNumero
 from routes.auth import (
     _first_active_tenant_for_demo,
@@ -2167,7 +2171,68 @@ def _demo_catalog_selector_response(
     return response
 
 
+def _demo_catalog_full_rate_limit() -> str:
+    return str(
+        current_app.config.get("DEMO_CATALOG_FULL_RATE_LIMIT")
+        or "12 per minute"
+    )
+
+
+def _demo_catalog_full_rate_limit_key() -> str:
+    # This route-wide key deliberately does not trust X-Forwarded-For or any
+    # caller-controlled identity.  It also bounds limiter storage cardinality
+    # to one expiring key per deployment/storage backend.
+    return "demo-catalog-full"
+
+
+def _demo_catalog_full_rate_limit_exempt() -> bool:
+    return request.method == "OPTIONS" or _payload_slug(
+        request.args.get("response_profile")
+    ) == "selector"
+
+
+def _demo_catalog_full_rate_limited(request_limit):
+    retry_after = 60
+    try:
+        retry_after = max(
+            1,
+            math.ceil(float(request_limit.reset_at) - time.time()),
+        )
+    except (AttributeError, TypeError, ValueError):
+        pass
+
+    response = _json_response(
+        {
+            "contract_version": "demo.catalog.v2",
+            "error": {
+                "code": 429,
+                "message": "Demasiadas solicitudes del catalogo demo completo.",
+            },
+            "reason_code": "demo_catalog_full_rate_limited",
+            "action_hint": "request_selector_profile_or_retry",
+        },
+        status=429,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Retry-After"] = str(retry_after)
+    return response
+
+
+@v2_demo_bp.errorhandler(RateLimitExceeded)
+def _handle_demo_catalog_full_rate_limit(error):
+    if error.response is not None:
+        return error.response
+    return _demo_catalog_full_rate_limited(error.limit)
+
+
 @v2_demo_bp.route("/catalog", methods=["GET", "OPTIONS"])
+@limiter.limit(
+    _demo_catalog_full_rate_limit,
+    key_func=_demo_catalog_full_rate_limit_key,
+    methods=["GET", "HEAD"],
+    exempt_when=_demo_catalog_full_rate_limit_exempt,
+    on_breach=_demo_catalog_full_rate_limited,
+)
 def demo_catalog_v2():
     if request.method == "OPTIONS":
         return _options_response()
