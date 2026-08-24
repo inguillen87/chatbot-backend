@@ -67,6 +67,8 @@ from typing import Any, Callable, Dict, Optional
 import secrets
 from urllib.parse import quote_plus
 
+from utils.runtime_environment import is_production_runtime
+
 _DEMO_CATALOG_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0, "fingerprint": ""}
 _DEMO_RUBROS_CACHE: dict[str, Any] = {
     "items": None,
@@ -437,13 +439,7 @@ def _registration_log_metadata(data: object) -> dict[str, bool]:
 
 
 def _clerk_runtime_is_production() -> bool:
-    environment = str(
-        current_app.config.get("ENV")
-        or os.getenv("ENV")
-        or os.getenv("FLASK_ENV")
-        or ""
-    ).strip().lower()
-    return environment in {"prod", "production"}
+    return is_production_runtime(config_env=current_app.config.get("ENV"))
 
 
 def _clerk_config_flag(name: str, *, default: bool) -> bool:
@@ -458,7 +454,10 @@ def _clerk_config_flag(name: str, *, default: bool) -> bool:
 def _clerk_return_token_in_body() -> bool:
     return _clerk_config_flag(
         "CLERK_SESSION_RETURN_TOKEN",
-        default=not _clerk_runtime_is_production(),
+        # A bearer token in JSON is readable by browser JavaScript and widens
+        # the impact of an XSS.  HttpOnly cookie transport is the safe default
+        # in every runtime; local tools can opt in explicitly when required.
+        default=False,
     )
 
 
@@ -469,6 +468,21 @@ def _clerk_auth_response(payload: dict, status_code: int):
     token = response_payload.get("token")
     cookie_enabled = _clerk_config_flag("CLERK_SESSION_COOKIE_ENABLED", default=True)
     return_token = _clerk_return_token_in_body()
+
+    if token and not cookie_enabled and not return_token:
+        # Disabling the cookie is not an implicit opt-in to expose a bearer
+        # token to JavaScript.  Reject the unsafe transport combination instead
+        # of silently widening the session boundary.
+        response_payload.pop("token", None)
+        response_payload["session_transport"] = "unavailable"
+        response_payload["reason_code"] = "clerk_session_transport_unavailable"
+        response_payload["error"] = (
+            "Clerk session transport is disabled; enable the HttpOnly cookie "
+            "or explicitly opt in to bearer response transport."
+        )
+        response = jsonify(response_payload)
+        response.headers["Cache-Control"] = "no-store"
+        return response, 503
 
     if token and cookie_enabled:
         response_payload["session_transport"] = "cookie_and_body" if return_token else "cookie"
