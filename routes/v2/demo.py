@@ -2058,6 +2058,115 @@ def _demo_default_menu_contract(
     }
 
 
+def _demo_catalog_selector_rubro(rubro: dict[str, Any]) -> dict[str, Any]:
+    """Return only the catalog fields required by the public selector UI."""
+
+    slug = str(rubro.get("slug") or rubro.get("key") or "").strip()
+    sector = str(rubro.get("sector") or sector_for_rubro(slug) or "empresas").strip()
+    category = category_for_rubro(slug) or {}
+    resources = (
+        rubro.get("resources")
+        or category.get("resources")
+        or catalog_resources_for_rubro(slug, sector)
+    )
+    sample_prompts = rubro.get("sample_prompts") or category.get("sample_prompts") or []
+    return {
+        "slug": slug,
+        "key": rubro.get("key") or slug,
+        "label": rubro.get("label") or category.get("label") or slug,
+        "tipo_chat": rubro.get("tipo_chat") or category.get("tipo_chat"),
+        "tenant_slug": rubro.get("tenant_slug") or slug,
+        "vertical": rubro.get("vertical") or category.get("vertical"),
+        "subvertical": rubro.get("subvertical") or category.get("subvertical"),
+        "sector": sector,
+        "pillar": rubro.get("pillar") or category.get("pillar") or sector,
+        "resources": resources,
+        "sample_prompts": sample_prompts,
+    }
+
+
+def _demo_catalog_selector_group(
+    *,
+    key: str,
+    label: str,
+    tenant_slug: str,
+    rubros: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "tenant_slug": tenant_slug,
+        "default_rubro": default_rubro_for_sector(key),
+        "rubro_slugs": [
+            str(rubro.get("slug") or rubro.get("key") or "").strip()
+            for rubro in rubros
+            if str(rubro.get("slug") or rubro.get("key") or "").strip()
+        ],
+    }
+
+
+def _demo_catalog_selector_response(
+    *,
+    rubros: list[dict[str, Any]],
+    gobierno: list[dict[str, Any]],
+    empresas: list[dict[str, Any]],
+    educacion: list[dict[str, Any]],
+):
+    selector_rubros = [_demo_catalog_selector_rubro(rubro) for rubro in rubros]
+    resources_by_id: dict[str, dict[str, Any]] = {}
+    for rubro in selector_rubros:
+        for resource in rubro.get("resources") or []:
+            if not isinstance(resource, dict):
+                continue
+            resource_id = str(
+                resource.get("id") or resource.get("url") or resource.get("label") or ""
+            ).strip()
+            if resource_id and resource_id not in resources_by_id:
+                resources_by_id[resource_id] = resource
+
+    payload = {
+        "contract_version": "demo.catalog.v2",
+        "response_profile": "selector",
+        "pillar_contract_version": DEMO_PILLAR_CONTRACT_VERSION,
+        "sectors": ["gobierno", "empresas", "educacion"],
+        "pillars": demo_pillars(),
+        "rubros": selector_rubros,
+        "resources": list(resources_by_id.values()),
+        "sector_groups": [
+            _demo_catalog_selector_group(
+                key="gobierno",
+                label="Gobiernos",
+                tenant_slug="municipio",
+                rubros=gobierno,
+            ),
+            _demo_catalog_selector_group(
+                key="empresas",
+                label="Empresas",
+                tenant_slug="bodega",
+                rubros=empresas,
+            ),
+            _demo_catalog_selector_group(
+                key="educacion",
+                label="Colegios",
+                tenant_slug="colegio-demo",
+                rubros=educacion,
+            ),
+        ],
+    }
+
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    response = current_app.response_class(body, status=200, mimetype="application/json")
+    response.set_etag(hashlib.sha256(body).hexdigest())
+    response.headers["Cache-Control"] = "public, max-age=300"
+    response.make_conditional(request)
+
+    request_id = _request_id()
+    response.headers["X-Request-Id"] = request_id
+    response = _with_public_cors(response)
+    response.vary.add("Origin")
+    return response
+
+
 @v2_demo_bp.route("/catalog", methods=["GET", "OPTIONS"])
 def demo_catalog_v2():
     if request.method == "OPTIONS":
@@ -2107,6 +2216,15 @@ def demo_catalog_v2():
                 "sector": "educacion",
             }
         ]
+
+    if _payload_slug(request.args.get("response_profile")) == "selector":
+        return _demo_catalog_selector_response(
+            rubros=rubros,
+            gobierno=gobierno,
+            empresas=empresas,
+            educacion=educacion,
+        )
+
     for rubro_item in rubros:
         rubro_sector = rubro_item.get("sector") or sector_for_rubro(rubro_item.get("slug") or rubro_item.get("key")) or "empresas"
         bundle = _commercial_demo_bundle(
