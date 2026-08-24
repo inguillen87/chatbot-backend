@@ -1624,6 +1624,52 @@ def test_marketplace_order_note_upload_rejects_large_files_before_upload(client,
     assert called["upload"] is False
 
 
+def test_marketplace_order_note_upload_returns_json_when_request_cap_rejects_parse(
+    client,
+    init_database,
+    monkeypatch,
+):
+    upload_mock = lambda *_args, **_kwargs: pytest.fail("storage must not run")
+    monkeypatch.setattr("routes.pedidos_from_file.upload_to_gcs", upload_mock)
+    monkeypatch.setitem(client.application.config, "MAX_CONTENT_LENGTH", 128)
+
+    response = client.post(
+        "/api/pedidos/from-file",
+        data={"archivo": (io.BytesIO(b"x" * 1024), "large.pdf")},
+        content_type="multipart/form-data",
+    )
+
+    assert response.status_code == 413
+    assert response.is_json
+    assert response.get_json()["codigo"] == "archivo_demasiado_grande"
+
+
+def test_marketplace_order_note_rejects_oversize_json_before_resolution_or_storage(
+    client,
+    init_database,
+    monkeypatch,
+):
+    tenant_resolution_mock = lambda *_args, **_kwargs: pytest.fail(
+        "tenant resolution must not run"
+    )
+    upload_mock = lambda *_args, **_kwargs: pytest.fail("storage must not run")
+    monkeypatch.setattr(
+        "routes.pedidos_from_file.resolve_tenant_and_user",
+        tenant_resolution_mock,
+    )
+    monkeypatch.setattr("routes.pedidos_from_file.upload_to_gcs", upload_mock)
+    monkeypatch.setitem(client.application.config, "MAX_CONTENT_LENGTH", None)
+
+    response = client.post(
+        "/api/pedidos/from-file",
+        json={"pedido_text": "x" * (64 * 1024)},
+    )
+
+    assert response.status_code == 413
+    assert response.is_json
+    assert response.get_json()["codigo"] == "solicitud_demasiado_grande"
+
+
 def test_marketplace_order_note_upload_rejects_unsafe_mime_before_upload(client, init_database, monkeypatch):
     owner = User.query.filter_by(email="admin@test.com").first()
     tenant = TenantProfile(slug="market-unsafe", nombre="Market Unsafe", tipo="pyme", pyme_id=owner.id, plan="full")

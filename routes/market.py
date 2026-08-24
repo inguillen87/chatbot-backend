@@ -11,6 +11,7 @@ from typing import Dict, List, Optional
 from flask import Blueprint, abort, current_app, jsonify, make_response, request, g, session
 from flask_login import current_user
 from sqlalchemy import func, or_
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from database import db
 from models import (
@@ -35,6 +36,7 @@ from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
 from services.notification_dispatcher import dispatch_order_update
 from utils.auth_helpers import auth_tenant_for_user, token_requerido
 from utils.permissions import require_role
+from utils.upload_limits import set_upload_request_limit
 from utils.roles import (
     ROLE_SUPERADMIN,
     ROLE_TENANT_ADMIN,
@@ -42,11 +44,17 @@ from utils.roles import (
     is_authorized_superadmin_user,
 )
 from socket_service import emit_tenant_update
-from services.gcs_service import upload_to_gcs
+from services.gcs_service import (
+    MAX_FILE_SIZE as MARKET_PRODUCT_IMAGE_MAX_BYTES,
+    UploadFileTooLargeError,
+    upload_to_gcs,
+    validate_upload_size,
+)
 
 
 market_bp = Blueprint("market", __name__, url_prefix="/api/market")
 market_admin_bp = Blueprint("market_admin", __name__, url_prefix="/api/admin/market")
+MARKET_PRODUCT_IMAGE_MAX_FILES = 5
 
 
 def _resolve_tenant(slug: str) -> TenantProfile:
@@ -1445,9 +1453,45 @@ def admin_update_product(current_user, product_id: int):
 @token_requerido
 @require_role("admin", "super_admin")
 def admin_upload_product_image(current_user, product_id: int):
+    set_upload_request_limit(
+        MARKET_PRODUCT_IMAGE_MAX_BYTES,
+        max_files=MARKET_PRODUCT_IMAGE_MAX_FILES,
+    )
     payload = {}
     payload.update(request.args.to_dict())
-    payload.update(request.form.to_dict())
+    try:
+        payload.update(request.form.to_dict())
+        image_files = (
+            request.files.getlist("image")
+            + request.files.getlist("images")
+            + request.files.getlist("file")
+        )
+    except RequestEntityTooLarge:
+        return jsonify({
+            "error": "El lote de imágenes supera el límite permitido.",
+            "code": "file_too_large",
+        }), 413
+
+    image_files = [file for file in image_files if file and file.filename]
+    if len(image_files) > MARKET_PRODUCT_IMAGE_MAX_FILES:
+        return jsonify({
+            "error": "El lote supera la cantidad máxima de imágenes permitida.",
+            "code": "too_many_files",
+            "max_files": MARKET_PRODUCT_IMAGE_MAX_FILES,
+        }), 413
+
+    for file in image_files:
+        if not (file.mimetype or "").lower().startswith("image/"):
+            return jsonify({"error": "Solo se permiten imágenes para este endpoint"}), 400
+        try:
+            validate_upload_size(file, max_bytes=MARKET_PRODUCT_IMAGE_MAX_BYTES)
+        except UploadFileTooLargeError:
+            return jsonify({
+                "error": "Una imagen supera el límite permitido.",
+                "code": "file_too_large",
+                "max_file_bytes": MARKET_PRODUCT_IMAGE_MAX_BYTES,
+            }), 413
+
     tenant = _resolve_admin_tenant(current_user, payload)
 
     producto = CatalogoItem.query.filter_by(id=product_id, tenant_id=tenant.id).first()
@@ -1455,12 +1499,19 @@ def admin_upload_product_image(current_user, product_id: int):
         return jsonify({"error": "Producto no encontrado"}), 404
 
     uploaded = []
-    for file in request.files.getlist("image") + request.files.getlist("images") + request.files.getlist("file"):
-        if not file or not file.filename:
-            continue
-        if not (file.mimetype or "").lower().startswith("image/"):
-            return jsonify({"error": "Solo se permiten imagenes para este endpoint"}), 400
-        result = upload_to_gcs(file, kind="catalog_product_images")
+    for file in image_files:
+        try:
+            result = upload_to_gcs(
+                file,
+                kind="catalog_product_images",
+                max_file_size=MARKET_PRODUCT_IMAGE_MAX_BYTES,
+            )
+        except UploadFileTooLargeError:
+            return jsonify({
+                "error": "Una imagen supera el límite permitido.",
+                "code": "file_too_large",
+                "max_file_bytes": MARKET_PRODUCT_IMAGE_MAX_BYTES,
+            }), 413
         if not result:
             return jsonify({"error": "No se pudo subir la imagen"}), 500
         uploaded.append(result["public_url"])

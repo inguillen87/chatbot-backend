@@ -504,8 +504,9 @@ def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
     if isinstance(jwt_token, bytes):
         jwt_token = jwt_token.decode("utf-8")
 
-    def fake_upload(file_storage, kind="attachments"):
+    def fake_upload(file_storage, kind="attachments", **kwargs):
         assert kind == "profile_avatars"
+        assert kwargs["max_file_size"] == 5 * 1024 * 1024
         assert file_storage.mimetype == "image/png"
         return {
             "original_url": "https://cdn.example.com/profile_avatars/avatar.png",
@@ -545,6 +546,54 @@ def test_profile_avatar_upload_stores_consent_metadata(client, monkeypatch):
     assert identity["avatar_url"] == payload["avatar_url"]
     assert identity["avatar_source"] == "profile_upload"
     assert identity["avatar_consent"] is True
+
+
+def test_profile_avatar_upload_rejects_oversize_before_storage(client, monkeypatch):
+    rubro = Rubro.query.filter_by(clave="pyme").first()
+    if not rubro:
+        rubro = Rubro(nombre="pyme", clave="pyme", es_publico=False)
+        db.session.add(rubro)
+        db.session.commit()
+
+    user = User(
+        email="avatar-oversize@test.com",
+        name="Avatar Oversize",
+        token="avatar-oversize-token",
+        rubro_id=rubro.id,
+    )
+    user.set_password("pw")
+    db.session.add(user)
+    db.session.commit()
+
+    jwt_payload = {"user_id": user.id, "exp": datetime.utcnow() + timedelta(days=1)}
+    jwt_token = jwt.encode(jwt_payload, current_app.config["SECRET_KEY"], algorithm="HS256")
+    if isinstance(jwt_token, bytes):
+        jwt_token = jwt_token.decode("utf-8")
+
+    upload_called = False
+
+    def fake_upload(*_args, **_kwargs):
+        nonlocal upload_called
+        upload_called = True
+        return None
+
+    monkeypatch.setattr("routes.auth.PROFILE_AVATAR_UPLOAD_MAX_BYTES", 4)
+    monkeypatch.setattr("routes.auth.upload_to_gcs", fake_upload)
+
+    response = client.post(
+        "/auth/profile/avatar",
+        data={
+            "avatar": (BytesIO(b"12345"), "avatar.png"),
+            "avatar_consent": "true",
+        },
+        content_type="multipart/form-data",
+        headers={"Authorization": f"Bearer {jwt_token}"},
+    )
+
+    assert response.status_code == 413
+    assert upload_called is False
+    db.session.refresh(user)
+    assert not user.accesibilidad
 
 
 def test_profile_avatar_upload_requires_explicit_consent(client, monkeypatch):

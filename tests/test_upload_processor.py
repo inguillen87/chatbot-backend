@@ -78,3 +78,26 @@ class UploadProcessorCatalogAttachmentTests(unittest.TestCase):
         self.assertIsNone(payload.get("catalog_url"))
         self.assertIsNone(payload.get("catalog_attachment_id"))
         mock_process_catalog.assert_called_once()
+
+    @patch("services.upload_processor.procesar_y_embedear_catalogo")
+    @patch("services.upload_processor._store_catalog_attachment_record")
+    def test_subir_catalogo_rejects_oversize_before_storage_or_processing(
+        self,
+        mock_store_attachment,
+        mock_process_catalog,
+    ):
+        with patch("services.upload_processor.CATALOG_UPLOAD_MAX_BYTES", 4):
+            response = self.client.post(
+                "/subir_catalogo",
+                data={"file": (io.BytesIO(b"12345"), "catalogo.csv")},
+                headers={"Authorization": f"Bearer {self.user.token}"},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 413)
+        payload = response.get_json() or {}
+        self.assertEqual(payload.get("code"), "file_too_large")
+        self.assertEqual(payload.get("max_file_bytes"), 4)
+        mock_store_attachment.assert_not_called()
+        mock_process_catalog.assert_not_called()
+        self.assertEqual(ArchivoAdjunto.query.count(), 0)

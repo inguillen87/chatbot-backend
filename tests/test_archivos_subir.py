@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import Config
-from models import User
+from models import ArchivoAdjunto, User
 from routes import archivos as archivos_route
 
 
@@ -56,6 +56,30 @@ class ArchivosSubirTests(unittest.TestCase):
         self.assertEqual(resp[1], 200)
         res_json = resp[0].get_json()
         self.assertEqual(res_json["name"], "fake.txt")
+
+    def test_subir_archivo_validates_the_full_batch_before_any_upload(self):
+        data = {
+            "archivos": [
+                (BytesIO(b"1234"), "primero.txt", "text/plain"),
+                (BytesIO(b"12345"), "segundo.txt", "text/plain"),
+            ],
+        }
+
+        with self.app.test_request_context(
+            "/archivos/subir",
+            method="POST",
+            data=data,
+            content_type="multipart/form-data",
+        ):
+            with patch.object(archivos_route, "MAX_FILE_SIZE", 4), patch(
+                "routes.archivos.upload_to_gcs"
+            ) as upload_mock:
+                resp = archivos_route.subir_archivo.__wrapped__(self.user)
+
+        self.assertEqual(resp[1], 413)
+        self.assertEqual(resp[0].get_json()["code"], "file_too_large")
+        upload_mock.assert_not_called()
+        self.assertEqual(ArchivoAdjunto.query.count(), 0)
 
 
 if __name__ == "__main__":

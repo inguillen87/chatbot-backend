@@ -13,6 +13,7 @@ from flask import current_app, has_app_context, has_request_context, request, g
 from werkzeug.utils import secure_filename
 from services.thumbnail_service import generar_thumbnail
 from services.r2_service import r2_service
+from utils.upload_limits import UploadFileTooLargeError
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +538,41 @@ BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
 
 
+def _read_upload_bytes_bounded(file_storage, *, max_bytes: int = MAX_FILE_SIZE) -> bytes:
+    """Read at most ``max_bytes + 1`` so oversized uploads never fill memory."""
+
+    limit = int(max_bytes)
+    if limit <= 0:
+        raise ValueError("max_bytes must be greater than zero")
+
+    filename = secure_filename(getattr(file_storage, "filename", "")) or "upload"
+    declared_size = getattr(file_storage, "content_length", None)
+    if isinstance(declared_size, int) and declared_size > limit:
+        raise UploadFileTooLargeError(
+            filename=filename,
+            max_bytes=limit,
+            observed_bytes=declared_size,
+        )
+
+    file_storage.seek(0)
+    file_bytes = file_storage.read(limit + 1)
+    if len(file_bytes) > limit:
+        raise UploadFileTooLargeError(
+            filename=filename,
+            max_bytes=limit,
+            observed_bytes=len(file_bytes),
+        )
+    return file_bytes
+
+
+def validate_upload_size(file_storage, *, max_bytes: int = MAX_FILE_SIZE) -> int:
+    """Validate an upload without provider, thumbnail, filesystem, or DB effects."""
+
+    file_bytes = _read_upload_bytes_bounded(file_storage, max_bytes=max_bytes)
+    file_storage.seek(0)
+    return len(file_bytes)
+
+
 def _get_gcs_client():
     """Initializes and returns a GCS client."""
     # This could be extended with more robust credential handling if needed
@@ -821,7 +857,12 @@ def _save_to_cloudinary(
         return None
 
 
-def upload_to_gcs(file_storage, kind: str = "attachments") -> dict | None:
+def upload_to_gcs(
+    file_storage,
+    kind: str = "attachments",
+    *,
+    max_file_size: int = MAX_FILE_SIZE,
+) -> dict | None:
     """Upload a file to the configured storage backend.
 
     Order of preference:
@@ -844,8 +885,10 @@ def upload_to_gcs(file_storage, kind: str = "attachments") -> dict | None:
     original_filename = secure_filename(file_storage.filename)
     unique_name = f"{uuid.uuid4().hex}_{original_filename}"
 
-    file_storage.seek(0)
-    file_bytes = file_storage.read()
+    file_bytes = _read_upload_bytes_bounded(
+        file_storage,
+        max_bytes=max_file_size,
+    )
 
     # 1. R2 Upload Strategy
     try:
@@ -925,9 +968,10 @@ def upload_to_gcs(file_storage, kind: str = "attachments") -> dict | None:
 
         blob.upload_from_string(file_bytes, content_type=file_storage.mimetype)
 
-        if blob.size > MAX_FILE_SIZE:
+        if blob.size > max_file_size:
             current_app.logger.warning(
-                f"User uploaded a file larger than MAX_FILE_SIZE: {original_filename} ({blob.size} bytes)"
+                "GCS reported an object above the configured upload limit: "
+                f"{original_filename} ({blob.size} bytes)"
             )
             blob.delete()
             return None
@@ -1027,7 +1071,12 @@ def _resolve_r2_tenant_slug(owner_user) -> str | None:
     return None
 
 
-def guardar_adjunto_y_thumbnail(file_storage, kind: str = "attachments") -> dict | None:
+def guardar_adjunto_y_thumbnail(
+    file_storage,
+    kind: str = "attachments",
+    *,
+    max_file_size: int = MAX_FILE_SIZE,
+) -> dict | None:
     """Upload a file and its generated thumbnail to storage.
 
     Order of preference:
@@ -1049,15 +1098,10 @@ def guardar_adjunto_y_thumbnail(file_storage, kind: str = "attachments") -> dict
     original_filename = secure_filename(file_storage.filename)
     unique_name = f"{uuid.uuid4().hex}_{original_filename}"
 
-    # Rewind stream to read for validation and thumbnailing
-    file_storage.seek(0)
-    file_bytes = file_storage.read()
-
-    if len(file_bytes) > MAX_FILE_SIZE:
-        current_app.logger.warning(
-            f"File '{original_filename}' exceeds max size of {MAX_FILE_SIZE} bytes."
-        )
-        return None
+    file_bytes = _read_upload_bytes_bounded(
+        file_storage,
+        max_bytes=max_file_size,
+    )
 
     # Create a new stream for thumbnail generation
     file_stream_for_thumb = io.BytesIO(file_bytes)
