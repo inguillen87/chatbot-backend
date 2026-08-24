@@ -72,6 +72,160 @@ _COMMERCE_REQUEST_KINDS = {
     "tax_or_payment_support",
 }
 
+_EMPLOYEE_SCOPE_UNAVAILABLE_REASON = "employee_category_boundary_unavailable"
+
+
+def _operations_scope_contract(*, employee_view: bool) -> dict[str, Any]:
+    if not employee_view:
+        return {
+            "mode": "tenant_wide",
+            "category_scoped": False,
+            "scoped_sources": [
+                "tickets",
+                "surveys",
+                "chats",
+                "commerce",
+                "employees",
+                "live_chat",
+                "maps.heatmap",
+            ],
+            "unavailable_sources": [],
+        }
+    return {
+        "mode": "employee_category_limited",
+        "category_scoped": True,
+        "scoped_sources": [
+            "tickets",
+            "queue_truth",
+            "live_chat",
+            "maps.heatmap",
+        ],
+        "unavailable_sources": [
+            "surveys",
+            "chats",
+            "commerce",
+            "employees",
+        ],
+        "reason_code": _EMPLOYEE_SCOPE_UNAVAILABLE_REASON,
+        "notice": (
+            "Las fuentes sin frontera de categoria para empleados se omiten; "
+            "no representan conteos cero."
+        ),
+    }
+
+
+def _employee_unavailable_section(
+    *,
+    contract_version: str,
+    summary: dict[str, Any],
+    **empty_fields: Any,
+) -> dict[str, Any]:
+    return {
+        "contract_version": contract_version,
+        "available": False,
+        "reason_code": _EMPLOYEE_SCOPE_UNAVAILABLE_REASON,
+        "summary": summary,
+        **empty_fields,
+    }
+
+
+def _employee_unavailable_survey_metrics() -> dict[str, Any]:
+    return _employee_unavailable_section(
+        contract_version="operations.surveys.v1",
+        summary={
+            "encuestas": 0,
+            "public_surveys": 0,
+            "active": 0,
+            "votaciones_live": 0,
+            "responses": 0,
+            "responses_with_geo": 0,
+            "public_responses": 0,
+        },
+        by_channel=[],
+        live_items=[],
+        live_control_room={
+            "contract_version": "operations.survey_live_control_room.v1",
+            "enabled": False,
+            "state": "scope_unavailable",
+            "reason_code": _EMPLOYEE_SCOPE_UNAVAILABLE_REASON,
+            "summary": {
+                "live_surveys": 0,
+                "responses": 0,
+                "responses_with_geo": 0,
+                "geo_coverage_rate": 0.0,
+                "channels": [],
+            },
+            "monitors": [],
+            "actions": [],
+        },
+        response_provenance={
+            "available": False,
+            "reason_code": _EMPLOYEE_SCOPE_UNAVAILABLE_REASON,
+        },
+    )
+
+
+def _employee_unavailable_chat_metrics() -> dict[str, Any]:
+    return _employee_unavailable_section(
+        contract_version="operations.chats.v1",
+        summary={
+            "events": 0,
+            "messages": 0,
+            "sessions": 0,
+            "whatsapp_messages": 0,
+            "widget_messages": 0,
+            "handoffs": 0,
+            "handoff_rate": 0.0,
+        },
+        by_channel=[],
+        by_event=[],
+    )
+
+
+def _employee_unavailable_commerce_metrics() -> dict[str, Any]:
+    return _employee_unavailable_section(
+        contract_version="operations.commerce.v1",
+        summary={
+            "orders": 0,
+            "source_records": 0,
+            "deduplicated_mirrors": 0,
+            "assisted_orders": 0,
+            "orders_needing_review": 0,
+            "detected_items": 0,
+            "matched_items": 0,
+            "unmatched_items": 0,
+            "review_rate": 0.0,
+            "total_monetary": None,
+            "currency": None,
+            "currencies": 0,
+        },
+        by_state=[],
+        by_origin=[],
+        by_source_model=[],
+        by_request_kind=[],
+        totals_by_currency=[],
+        review_items=[],
+    )
+
+
+def _employee_unavailable_employee_metrics() -> dict[str, Any]:
+    return _employee_unavailable_section(
+        contract_version="operations.employees.v1",
+        summary={
+            "employees": 0,
+            "assigned_open_tickets": 0,
+            "coverage_rate": None,
+            "unassigned_open_tickets": 0,
+        },
+        items=[],
+        coverage={
+            "categories": [],
+            "channels": [],
+            "uncovered_categories": [],
+            "uncovered_channels": [],
+        },
+    )
+
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else None
@@ -1947,6 +2101,132 @@ def build_operational_freshness(
         _latest_from_query(pyme_ticket_query, PymeTicket.fecha),
     )
 
+    if is_employee_heatmap_viewer(viewer):
+        heatmap = build_operational_heatmap(
+            tenant,
+            start_date,
+            end_date,
+            ticket_records=ticket_records,
+            max_points=250,
+            include_ai=False,
+            commerce_records=[],
+            viewer=viewer,
+        )
+        heatmap_latest = None
+        for point in heatmap.get("points") or []:
+            timestamp = point.get("timestamp")
+            if not timestamp:
+                continue
+            try:
+                parsed = datetime.fromisoformat(
+                    str(timestamp).replace("Z", "+00:00")
+                )
+            except ValueError:
+                continue
+            heatmap_latest = _max_datetime(heatmap_latest, parsed)
+
+        ticket_source = _freshness_item(
+            key="tickets",
+            label="Tickets y reclamos",
+            latest_at=ticket_latest,
+            period_count=len(ticket_records),
+            stale_after_seconds=6 * 60 * 60,
+            empty_reason="no_tickets_in_period",
+            recommended_action={
+                "endpoint": "/api/v2/tickets",
+                "ui_hint": "open_ticket_board",
+            },
+        )
+        heatmap_source = _freshness_item(
+            key="heatmap",
+            label="Mapa operativo",
+            latest_at=heatmap_latest,
+            period_count=(heatmap.get("summary") or {}).get("points", 0),
+            stale_after_seconds=24 * 60 * 60,
+            empty_reason="no_geo_points_in_period",
+            recommended_action={
+                "endpoint": "/api/v2/analytics/operations/heatmap",
+                "ui_hint": "open_heatmap",
+            },
+        )
+        unavailable_sources = [
+            {
+                "key": key,
+                "label": label,
+                "status": "unavailable",
+                "reason_code": _EMPLOYEE_SCOPE_UNAVAILABLE_REASON,
+                "period_count": None,
+                "latest_at": None,
+                "age_seconds": None,
+                "stale_after_seconds": None,
+                "recommended_action": {},
+            }
+            for key, label in (
+                ("surveys", "Encuestas y votaciones"),
+                ("analytics_events", "Eventos analytics"),
+                ("chats", "Sesiones de chat"),
+                ("commerce", "Pedidos, ventas y marketplace"),
+            )
+        ]
+        sources = [ticket_source, heatmap_source, *unavailable_sources]
+        has_operational_data = bool(
+            len(ticket_records)
+            or int((heatmap.get("summary") or {}).get("points") or 0)
+        )
+        if not has_operational_data:
+            status = "empty"
+            reason_code = "no_scoped_operational_data_in_period"
+        elif ticket_source["status"] == "stale" or heatmap_source["status"] == "stale":
+            status = "degraded"
+            reason_code = "one_or_more_scoped_sources_stale"
+        else:
+            status = "fresh"
+            reason_code = "all_scoped_sources_fresh"
+
+        latest_at = _max_datetime(ticket_latest, heatmap_latest)
+        return {
+            "contract_version": "operations.freshness.v1",
+            "tenant": _tenant_ref(tenant),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "period": {"from": _iso(start_date), "to": _iso(end_date)},
+            "scope": _operations_scope_contract(employee_view=True),
+            "status": status,
+            "reason_code": reason_code,
+            "summary": {
+                "sources": len(sources),
+                "scoped_sources": 2,
+                "unavailable_sources": len(unavailable_sources),
+                "fresh_sources": len(
+                    [item for item in (ticket_source, heatmap_source) if item["status"] == "fresh"]
+                ),
+                "stale_sources": len(
+                    [item for item in (ticket_source, heatmap_source) if item["status"] == "stale"]
+                ),
+                "empty_sources": len(
+                    [item for item in (ticket_source, heatmap_source) if item["status"] == "empty"]
+                ),
+                "latest_at": _iso(latest_at),
+                "employee_count": None,
+                "has_operational_data": has_operational_data,
+                "can_render_dashboard": has_operational_data,
+                "can_render_heatmap": bool(
+                    (heatmap.get("summary") or {}).get("points", 0)
+                ),
+            },
+            "sources": sources,
+            "response_provenance": {
+                "available": False,
+                "reason_code": _EMPLOYEE_SCOPE_UNAVAILABLE_REASON,
+            },
+            "frontend_contract": {
+                "render_as": "analytics_freshness",
+                "primary_refresh_seconds": 60,
+                "empty_state_behavior": "show_reason_code",
+                "degraded_state_behavior": "show_stale_sources",
+                "unavailable_state_behavior": "show_scope_restriction",
+            },
+        }
+
     period_response_condition = and_(
         EncRespuesta.submitted_at >= start_date,
         EncRespuesta.submitted_at <= end_date,
@@ -3709,18 +3989,26 @@ def _build_alerts(
     chat_summary = chat_metrics.get("summary") or {}
     employee_summary = employee_metrics.get("summary") or {}
     commerce_summary = (commerce_metrics or {}).get("summary") or {}
+    survey_available = survey_metrics.get("available", True) is not False
+    chat_available = chat_metrics.get("available", True) is not False
+    employee_available = employee_metrics.get("available", True) is not False
+    commerce_available = (commerce_metrics or {}).get("available", True) is not False
 
     if ticket_summary.get("overdue", 0) > 0:
         alerts.append({"severity": "high", "reason_code": "tickets_overdue", "message": "Hay tickets o reclamos vencidos que requieren accion."})
     if ticket_summary.get("unassigned", 0) > 0:
         alerts.append({"severity": "medium", "reason_code": "tickets_unassigned", "message": "Hay tickets abiertos sin responsable asignado."})
-    if ticket_summary.get("whatsapp", 0) > 0 and employee_summary.get("employees", 0) == 0:
+    if (
+        employee_available
+        and ticket_summary.get("whatsapp", 0) > 0
+        and employee_summary.get("employees", 0) == 0
+    ):
         alerts.append({"severity": "high", "reason_code": "whatsapp_without_team", "message": "Entraron reclamos por WhatsApp pero no hay empleados configurados."})
-    if survey_summary.get("votaciones_live", 0) > 0 and survey_summary.get("responses", 0) == 0:
+    if survey_available and survey_summary.get("votaciones_live", 0) > 0 and survey_summary.get("responses", 0) == 0:
         alerts.append({"severity": "medium", "reason_code": "live_vote_without_responses", "message": "Hay votaciones activas sin respuestas recientes."})
-    if chat_summary.get("handoff_rate", 0) >= 30:
+    if chat_available and chat_summary.get("handoff_rate", 0) >= 30:
         alerts.append({"severity": "medium", "reason_code": "high_handoff_rate", "message": "La tasa de derivacion humana esta alta; revisar intents y respuestas."})
-    if int(commerce_summary.get("orders_needing_review") or 0) > 0:
+    if commerce_available and int(commerce_summary.get("orders_needing_review") or 0) > 0:
         alerts.append({
             "severity": "medium",
             "reason_code": "assisted_orders_need_review",
@@ -3832,6 +4120,10 @@ def _build_next_best_actions(
     employee_summary = employee_metrics.get("summary") or {}
     commerce_summary = (commerce_metrics or {}).get("summary") or {}
     coverage = employee_metrics.get("coverage") or {}
+    survey_available = survey_metrics.get("available", True) is not False
+    chat_available = chat_metrics.get("available", True) is not False
+    employee_available = employee_metrics.get("available", True) is not False
+    commerce_available = (commerce_metrics or {}).get("available", True) is not False
 
     if ticket_summary.get("overdue", 0) > 0:
         actions.append(
@@ -3862,7 +4154,9 @@ def _build_next_best_actions(
             )
         )
 
-    if coverage.get("uncovered_categories") or coverage.get("uncovered_channels"):
+    if employee_available and (
+        coverage.get("uncovered_categories") or coverage.get("uncovered_channels")
+    ):
         actions.append(
             _action(
                 action_id="improve_employee_coverage",
@@ -3876,7 +4170,7 @@ def _build_next_best_actions(
             )
         )
 
-    if survey_summary.get("votaciones_live", 0) > 0 and survey_summary.get("responses", 0) == 0:
+    if survey_available and survey_summary.get("votaciones_live", 0) > 0 and survey_summary.get("responses", 0) == 0:
         actions.append(
             _action(
                 action_id="promote_live_vote",
@@ -3890,7 +4184,7 @@ def _build_next_best_actions(
             )
         )
 
-    if chat_summary.get("whatsapp_messages", 0) > 0:
+    if chat_available and chat_summary.get("whatsapp_messages", 0) > 0:
         actions.append(
             _action(
                 action_id="monitor_whatsapp_claims",
@@ -3904,7 +4198,7 @@ def _build_next_best_actions(
             )
         )
 
-    if chat_summary.get("handoff_rate", 0) >= 30:
+    if chat_available and chat_summary.get("handoff_rate", 0) >= 30:
         actions.append(
             _action(
                 action_id="review_high_handoff_rate",
@@ -3918,7 +4212,7 @@ def _build_next_best_actions(
             )
         )
 
-    if int(commerce_summary.get("orders_needing_review") or 0) > 0:
+    if commerce_available and int(commerce_summary.get("orders_needing_review") or 0) > 0:
         actions.append(
             _action(
                 action_id="review_assisted_orders",
@@ -3958,7 +4252,7 @@ def _build_next_best_actions(
             _action(
                 action_id="keep_monitoring",
                 title="Mantener monitoreo operativo",
-                description="No hay alertas criticas. Seguir observando tickets, encuestas, WhatsApp y mapa.",
+                description="No hay alertas criticas. Seguir observando la operacion dentro del alcance autorizado.",
                 priority="low",
                 reason_code="all_clear",
                 endpoint="/api/v2/analytics/operations/dashboard",
@@ -4331,11 +4625,22 @@ def build_ai_ops_queue(
     limit: int = 15,
     viewer: Any = None,
 ) -> dict[str, Any]:
+    employee_view = is_employee_heatmap_viewer(viewer)
     ticket_records = _collect_ticket_records(tenant, start_date, end_date, viewer=viewer)
-    survey_metrics = _survey_metrics(tenant, start_date, end_date)
+    survey_metrics = (
+        _employee_unavailable_survey_metrics()
+        if employee_view
+        else _survey_metrics(tenant, start_date, end_date)
+    )
     ticket_items = _ai_ops_ticket_items(tenant, ticket_records, limit=limit)
-    order_items = _ai_ops_order_items(tenant, start_date, end_date, limit=limit)
-    survey_items = _ai_ops_survey_items(survey_metrics, limit=limit)
+    order_items = (
+        []
+        if employee_view
+        else _ai_ops_order_items(tenant, start_date, end_date, limit=limit)
+    )
+    survey_items = (
+        [] if employee_view else _ai_ops_survey_items(survey_metrics, limit=limit)
+    )
     items = sorted([*ticket_items, *order_items, *survey_items], key=_ai_ops_priority)[:limit]
     priority_counts = Counter(_norm(item.get("priority"), "low") for item in items)
     source_counts = Counter(_norm(item.get("source"), "unknown") for item in items)
@@ -4345,6 +4650,7 @@ def build_ai_ops_queue(
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "tenant": _tenant_ref(tenant),
         "period": {"from": _iso(start_date), "to": _iso(end_date)},
+        "scope": _operations_scope_contract(employee_view=employee_view),
         "summary": {
             "total": len(items),
             "high": int(priority_counts.get("high", 0)),
@@ -4385,6 +4691,7 @@ def build_operational_dashboard(
     viewer: Any = None,
 ) -> dict[str, Any]:
     as_of = datetime.now(timezone.utc)
+    employee_view = is_employee_heatmap_viewer(viewer)
     ticket_records = _collect_ticket_records(tenant, start_date, end_date, as_of=as_of, viewer=viewer)
     queue_records = _collect_open_ticket_records(tenant, as_of=as_of, viewer=viewer)
     queue_membership_quality = _queue_membership_quality(
@@ -4393,21 +4700,44 @@ def build_operational_dashboard(
         included_records=queue_records,
         viewer=viewer,
     )
-    commerce_records, commerce_raw_count = _collect_commerce_records(tenant, start_date, end_date)
+    if employee_view:
+        commerce_records, commerce_raw_count = [], 0
+    else:
+        commerce_records, commerce_raw_count = _collect_commerce_records(
+            tenant,
+            start_date,
+            end_date,
+        )
     ticket_metrics = _ticket_metrics(ticket_records)
     queue_ticket_metrics = _ticket_metrics(queue_records)
     ticket_metrics["grain"] = "one_ticket_created_in_period"
     ticket_metrics["period"] = {"from": _iso(start_date), "to": _iso(end_date)}
-    survey_metrics = _survey_metrics(tenant, start_date, end_date)
-    chat_metrics = _chat_metrics(tenant, start_date, end_date)
-    commerce_metrics = _commerce_metrics(
-        tenant,
-        start_date,
-        end_date,
-        commerce_records=commerce_records,
-        raw_record_count=commerce_raw_count,
+    survey_metrics = (
+        _employee_unavailable_survey_metrics()
+        if employee_view
+        else _survey_metrics(tenant, start_date, end_date)
     )
-    employee_metrics = _employee_metrics(tenant, queue_records)
+    chat_metrics = (
+        _employee_unavailable_chat_metrics()
+        if employee_view
+        else _chat_metrics(tenant, start_date, end_date)
+    )
+    commerce_metrics = (
+        _employee_unavailable_commerce_metrics()
+        if employee_view
+        else _commerce_metrics(
+            tenant,
+            start_date,
+            end_date,
+            commerce_records=commerce_records,
+            raw_record_count=commerce_raw_count,
+        )
+    )
+    employee_metrics = (
+        _employee_unavailable_employee_metrics()
+        if employee_view
+        else _employee_metrics(tenant, queue_records)
+    )
     live_chat = _active_presence(queue_records)
     heatmap = build_operational_heatmap(
         tenant,
@@ -4439,22 +4769,43 @@ def build_operational_dashboard(
         as_of=as_of,
         viewer=viewer,
     )
-    previous_commerce_records, previous_commerce_raw_count = _collect_commerce_records(
-        tenant,
-        previous_start,
-        previous_end,
-    )
+    if employee_view:
+        previous_commerce_records, previous_commerce_raw_count = [], 0
+    else:
+        previous_commerce_records, previous_commerce_raw_count = (
+            _collect_commerce_records(
+                tenant,
+                previous_start,
+                previous_end,
+            )
+        )
     previous_ticket_metrics = _ticket_metrics(previous_ticket_records)
-    previous_survey_metrics = _survey_metrics(tenant, previous_start, previous_end)
-    previous_chat_metrics = _chat_metrics(tenant, previous_start, previous_end)
-    previous_commerce_metrics = _commerce_metrics(
-        tenant,
-        previous_start,
-        previous_end,
-        commerce_records=previous_commerce_records,
-        raw_record_count=previous_commerce_raw_count,
+    previous_survey_metrics = (
+        _employee_unavailable_survey_metrics()
+        if employee_view
+        else _survey_metrics(tenant, previous_start, previous_end)
     )
-    previous_employee_metrics = _employee_metrics(tenant, previous_ticket_records)
+    previous_chat_metrics = (
+        _employee_unavailable_chat_metrics()
+        if employee_view
+        else _chat_metrics(tenant, previous_start, previous_end)
+    )
+    previous_commerce_metrics = (
+        _employee_unavailable_commerce_metrics()
+        if employee_view
+        else _commerce_metrics(
+            tenant,
+            previous_start,
+            previous_end,
+            commerce_records=previous_commerce_records,
+            raw_record_count=previous_commerce_raw_count,
+        )
+    )
+    previous_employee_metrics = (
+        _employee_unavailable_employee_metrics()
+        if employee_view
+        else _employee_metrics(tenant, previous_ticket_records)
+    )
     previous_heatmap = build_operational_heatmap(
         tenant,
         previous_start,
@@ -4482,15 +4833,41 @@ def build_operational_dashboard(
         heatmap=heatmap,
     )
 
+    trends = _build_trends(summary, previous_summary)
+    if employee_view:
+        unavailable_trend_keys = {
+            "survey_responses",
+            "live_votes",
+            "chat_messages",
+            "whatsapp_messages",
+            "orders",
+            "assisted_orders",
+            "orders_needing_review",
+        }
+        trends["items"] = [
+            item
+            for item in trends.get("items") or []
+            if item.get("key") not in unavailable_trend_keys
+        ]
+        trends.setdefault("unavailable", []).extend(
+            {
+                "key": key,
+                "reason_code": _EMPLOYEE_SCOPE_UNAVAILABLE_REASON,
+            }
+            for key in sorted(unavailable_trend_keys)
+        )
+        summary["unavailable_metrics"] = sorted(unavailable_trend_keys | {"employees"})
+
     return {
         "contract_version": "operations.dashboard.v1",
         "tenant": _tenant_ref(tenant),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "period": {"from": _iso(start_date), "to": _iso(end_date)},
+        "scope": _operations_scope_contract(employee_view=employee_view),
         "summary": summary,
         "queue_truth": queue_truth,
         "previous_summary": previous_summary,
-        "trends": _build_trends(summary, previous_summary),
+        "trends": trends,
         "tickets": ticket_metrics,
         "surveys": survey_metrics,
         "chats": chat_metrics,
@@ -4518,21 +4895,34 @@ def build_operational_dashboard(
         "next_best_actions": next_best_actions,
         "ai_brief": ai_brief,
         "frontend_contract": {
-            "recommended_views": [
-                "executive_summary",
-                "ticket_board",
-                "live_chat_inbox",
-                "commerce_assisted_orders",
-                "survey_vote_monitor",
-                "heatmap",
-                "interactive_globe",
-                "ai_risk_layers",
-                "employee_coverage",
-                "action_center",
-            ],
+            "recommended_views": (
+                [
+                    "ticket_board",
+                    "live_chat_inbox",
+                    "heatmap",
+                    "action_center",
+                ]
+                if employee_view
+                else [
+                    "executive_summary",
+                    "ticket_board",
+                    "live_chat_inbox",
+                    "commerce_assisted_orders",
+                    "survey_vote_monitor",
+                    "heatmap",
+                    "interactive_globe",
+                    "ai_risk_layers",
+                    "employee_coverage",
+                    "action_center",
+                ]
+            ),
             "primary_refresh_seconds": 30,
             "empty_state_behavior": "show_contract_empty_state",
-            "map_layers": ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity", "survey_participation", "commerce_activity"],
+            "map_layers": (
+                ["tickets"]
+                if employee_view
+                else ["tickets", "surveys", "analytics_events", "ai_risk", "whatsapp_activity", "survey_participation", "commerce_activity"]
+            ),
             "exports": {
                 "pdf": "/api/v2/analytics/operations/export.pdf",
                 "ai_summary": "/api/v2/analytics/operations/executive-summary",
@@ -4562,6 +4952,7 @@ def build_action_center(
         "tenant": dashboard.get("tenant"),
         "generated_at": dashboard.get("generated_at"),
         "period": dashboard.get("period"),
+        "scope": dashboard.get("scope") or {},
         "summary": {
             "total": len(actions),
             "high": high,

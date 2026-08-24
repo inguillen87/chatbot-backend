@@ -10,7 +10,7 @@ Este módulo incorpora tableros avanzados para municipios, PyMEs y equipos de op
 - **Multitenancy y RBAC**: acceso protegido por `tenant_id` y roles (`admin`, `operador`, `visor`). El módulo reutiliza el viewer de `g.viewer` y expone encabezados `X-Debug-*` en modo testing.
 - **Cache TTL configurable**: respuestas cacheadas en memoria 10 minutos por combinación de filtros (se puede ajustar vía `ANALYTICS_CACHE_TTL`).
 - **Pre-cómputo nocturno**: el job `services.analytics.jobs.rebuild_analytics_snapshot` calcula tablas agregadas diarias, métricas geográficas, top-N, cohortes y rendimiento de plantillas WhatsApp.
-- **Observabilidad**: endpoint `/analytics/health` con métricas de cache y estado de jobs. Cada consulta se loguea con filtros aplicados.
+- **Observabilidad**: endpoint público saneado `/analytics/health` con métricas de cache y estado de jobs; nunca expone metadata de tenant del snapshot. Cada consulta autenticada se loguea con filtros aplicados.
 - **Feature flag**: habilitar/deshabilitar con `ANALYTICS_ENABLED`.
 
 ## Endpoints
@@ -26,10 +26,10 @@ Este módulo incorpora tableros avanzados para municipios, PyMEs y equipos de op
 | `GET /analytics/operations` | Métricas de colas, aging, agentes, SLA. |
 | `GET /analytics/cohorts` | Cohortes de recurrencia (PyME). |
 | `GET /analytics/whatsapp/templates` | KPI de plantillas (envíos, entregas, CTR, bloqueos). |
-| `GET /analytics/health` | Estado del módulo (cache, jobs, último snapshot). |
+| `GET /analytics/health` | Estado público saneado del módulo (cache, jobs, último snapshot; sin metadata de tenant). |
 | `GET /analytics/ui` | Dashboard web responsive con modo oscuro. |
 
-Todos los endpoints requieren `tenant_id` y respetan los filtros opcionales: `from`, `to`, `canal`, `categoria`, `estado`, `agente`, `zona`, `etiqueta`, `bbox`, `pyme`, `resolution`.
+Los endpoints de datos requieren `tenant_id` y respetan los filtros opcionales: `from`, `to`, `canal`, `categoria`, `estado`, `agente`, `zona`, `etiqueta`, `bbox`, `pyme`, `resolution`. `/analytics/health` es la única vista pública y su contrato está saneado.
 
 ## Jobs nocturnos
 

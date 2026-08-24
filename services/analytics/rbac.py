@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Set
+from typing import Any, Optional, Set
 
 from flask import abort, current_app, g, request
 from sqlalchemy import or_
@@ -32,6 +32,81 @@ _TENANT_NAMESPACES = {
     TENANT_NAMESPACE_PROFILE,
     TENANT_NAMESPACE_PLATFORM,
 }
+
+LEGACY_TENANT_WIDE_ANALYTICS_REASON_CODE = (
+    "employee_analytics_scope_unsupported"
+)
+LEGACY_TENANT_WIDE_ANALYTICS_REPLACEMENT_ENDPOINT = (
+    "/api/v2/analytics/operations/dashboard"
+)
+
+
+def analytics_actor_is_category_limited(actor: Any) -> bool:
+    """Identify canonical employee/operator viewers without resolving tenants."""
+
+    if isinstance(actor, str):
+        raw_role = actor
+    else:
+        raw_role = getattr(actor, "rol", None)
+        if raw_role in (None, ""):
+            raw_role = getattr(actor, "role", None)
+    return canonical_role(raw_role) == ROLE_EMPLEADO
+
+
+def current_analytics_scope_actor() -> Any:
+    """Read the already-authenticated actor without tenant materialization."""
+
+    actor = getattr(g, "viewer", None)
+    if actor is not None:
+        return actor
+    if getattr(g, "explicit_bearer_present", False):
+        return None
+    if current_app.config.get("TESTING"):
+        return request.headers.get("X-Debug-Role")
+    return None
+
+
+def legacy_tenant_wide_analytics_denial(
+    actor: Any | None = None,
+    *,
+    request_id: str,
+) -> dict[str, Any] | None:
+    """Return the stable employee denial for unscoped legacy analytics.
+
+    Legacy analytics aggregate the entire tenant. Employees must use the
+    operations dashboard, which applies their assignment/category scope. Tenant
+    and platform administrators keep the established tenant-wide contract.
+    """
+
+    resolved_actor = actor if actor is not None else current_analytics_scope_actor()
+    if not analytics_actor_is_category_limited(resolved_actor):
+        return None
+    message = (
+        "Los empleados deben usar analytics operativos con alcance segun sus "
+        "permisos."
+    )
+    return {
+        "contract_version": "shared.error.v1",
+        "ok": False,
+        "status_code": 403,
+        "code": LEGACY_TENANT_WIDE_ANALYTICS_REASON_CODE,
+        "reason_code": LEGACY_TENANT_WIDE_ANALYTICS_REASON_CODE,
+        "retryable": False,
+        "message": message,
+        "detail": (
+            "Este endpoint agrega datos de todo el tenant y no aplica el "
+            "alcance por categorias del empleado."
+        ),
+        "action_hint": "use_scoped_operations_dashboard",
+        "request_id": request_id,
+        "error": {
+            "code": 403,
+            "message": message,
+        },
+        "replacement_endpoint": (
+            LEGACY_TENANT_WIDE_ANALYTICS_REPLACEMENT_ENDPOINT
+        ),
+    }
 
 
 def _positive_int(value) -> int | None:
@@ -271,6 +346,9 @@ def resolve_viewer() -> AnalyticsViewer:
         if candidate.role not in _ALLOWED_ROLES:
             abort(403, description="Role not authorised for analytics")
         return candidate
+
+    if getattr(g, "explicit_bearer_present", False):
+        abort(401, description="Authentication required")
 
     app = current_app
     if app.config.get("TESTING"):

@@ -1,10 +1,12 @@
 import json
 import os
 import unittest
+from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import jwt
+from sqlalchemy import event
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
@@ -1620,6 +1622,136 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             analytics_routes._clear_operations_dashboard_cache_for_tests()
             self.app.config["ENABLE_OPERATIONS_DASHBOARD_CACHE_FOR_TESTS"] = False
 
+    def test_employee_dashboard_withholds_unbounded_sources_before_queries(self):
+        sensitive_targets = (
+            "services.operational_intelligence._survey_metrics",
+            "services.operational_intelligence._chat_metrics",
+            "services.operational_intelligence._collect_commerce_records",
+            "services.operational_intelligence._commerce_metrics",
+            "services.operational_intelligence._employee_metrics",
+        )
+        with ExitStack() as stack:
+            for target in sensitive_targets:
+                stack.enter_context(
+                    patch(
+                        target,
+                        side_effect=AssertionError(
+                            f"employee dashboard called unbounded source: {target}"
+                        ),
+                    )
+                )
+            response = self.client.get(
+                "/api/v2/analytics/operations/dashboard",
+                headers=self._auth_for(
+                    self.employee,
+                    tenant_slug=self.tenant.slug,
+                ),
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        scope = payload.get("scope") or {}
+        self.assertEqual(scope.get("mode"), "employee_category_limited")
+        self.assertTrue(scope.get("category_scoped"))
+        self.assertEqual(
+            set(scope.get("unavailable_sources") or []),
+            {"surveys", "chats", "commerce", "employees"},
+        )
+        for section_name in ("surveys", "chats", "commerce", "employees"):
+            section = payload.get(section_name) or {}
+            self.assertFalse(section.get("available"), section_name)
+            self.assertEqual(
+                section.get("reason_code"),
+                "employee_category_boundary_unavailable",
+                section_name,
+            )
+        self.assertEqual((payload.get("commerce") or {}).get("review_items"), [])
+        alert_codes = {
+            item.get("reason_code") for item in payload.get("alerts") or []
+        }
+        self.assertNotIn("whatsapp_without_team", alert_codes)
+        encoded_actions = str(payload.get("next_best_actions") or []).lower()
+        self.assertNotIn("encuesta", encoded_actions)
+        self.assertNotIn("pedido asistido", encoded_actions)
+        self.assertTrue(
+            {
+                item.get("reason_code")
+                for item in payload.get("next_best_actions") or []
+            }.issubset(
+                {
+                    "tickets_overdue",
+                    "tickets_unassigned",
+                    "heatmap_hotspot",
+                    "all_clear",
+                }
+            )
+        )
+
+        from routes.v2.analytics import _dashboard_report_lines
+
+        report_text = "\n".join(_dashboard_report_lines(payload))
+        self.assertIn("Alcance: employee_category_limited", report_text)
+        self.assertGreaterEqual(
+            report_text.count("no disponible por alcance"),
+            8,
+        )
+
+    def test_employee_executive_summary_excludes_unavailable_sources_from_ai(self):
+        provider_payloads = []
+
+        def _capture_provider(payload, *, tenant_type):
+            provider_payloads.append((payload, tenant_type))
+            return {
+                "summary": "Resumen limitado al alcance autorizado.",
+                "opportunities": [],
+                "threats": [],
+                "tone": "Scoped",
+            }
+
+        with patch(
+            "routes.v2.analytics.generate_analytics_report",
+            side_effect=_capture_provider,
+        ):
+            response = self.client.get(
+                "/api/v2/analytics/operations/executive-summary",
+                headers=self._auth_for(
+                    self.employee,
+                    tenant_slug=self.tenant.slug,
+                ),
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("reason_code"), "ai_scoped_summary_generated")
+        self.assertEqual(
+            (payload.get("scope") or {}).get("mode"),
+            "employee_category_limited",
+        )
+        self.assertEqual(len(provider_payloads), 1)
+        provider_payload, tenant_type = provider_payloads[0]
+        self.assertEqual(tenant_type, "municipio")
+        self.assertEqual(
+            (provider_payload.get("scope") or {}).get("mode"),
+            "employee_category_limited",
+        )
+        for section_name in ("surveys", "chats", "commerce", "employees"):
+            self.assertNotIn(section_name, provider_payload)
+
+    def test_employee_pdf_labels_unavailable_metrics_instead_of_zero(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/export.pdf",
+            headers=self._auth_for(
+                self.employee,
+                tenant_slug=self.tenant.slug,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        body = response.get_data().decode("latin-1")
+        self.assertIn("Alcance: employee_category_limited", body)
+        self.assertIn("no disponible por alcance", body)
+
     def test_operations_ai_ops_queue_disabled_by_feature_flag(self):
         with patch.object(feature_flags, "FEATURE_AI_OPS_QUEUE", False):
             response = self.client.get(
@@ -1751,6 +1883,35 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertNotIn("Caso financiero reservado", str(employee_response.get_json()))
         self.assertNotIn("Direccion financiera reservada", str(employee_response.get_json()))
 
+    def test_employee_ai_ops_queue_never_queries_orders_or_surveys(self):
+        with patch.object(feature_flags, "FEATURE_AI_OPS_QUEUE", True), patch(
+            "services.operational_intelligence._survey_metrics",
+            side_effect=AssertionError("employee queue queried surveys"),
+        ), patch(
+            "services.operational_intelligence._ai_ops_order_items",
+            side_effect=AssertionError("employee queue queried orders"),
+        ):
+            response = self.client.get(
+                "/api/v2/analytics/operations/ai-ops-queue?limit=50",
+                headers=self._auth_for(
+                    self.employee,
+                    tenant_slug=self.tenant.slug,
+                ),
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(
+            (payload.get("scope") or {}).get("mode"),
+            "employee_category_limited",
+        )
+        self.assertEqual(
+            {item.get("source") for item in payload.get("items") or []},
+            {"ticket"},
+        )
+        self.assertEqual((payload.get("summary") or {}).get("orders_unmatched"), 0)
+        self.assertEqual((payload.get("summary") or {}).get("survey_alerts"), 0)
+
     def test_operations_freshness_returns_source_diagnostics(self):
         response = self.client.get(
             "/api/v2/analytics/operations/freshness",
@@ -1825,6 +1986,57 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             allowed_created_at = allowed_created_at.replace(tzinfo=timezone.utc)
         self.assertEqual(employee_latest, allowed_created_at)
         self.assertNotEqual(admin_tickets.get("latest_at"), employee_tickets.get("latest_at"))
+
+    def test_employee_freshness_does_not_query_unbounded_source_tables(self):
+        statements = []
+
+        def _capture(_conn, _cursor, statement, _parameters, _context, _executemany):
+            statements.append(" ".join(str(statement).lower().split()))
+
+        event.listen(db.engine, "before_cursor_execute", _capture)
+        try:
+            with patch(
+                "services.operational_intelligence._collect_commerce_records",
+                side_effect=AssertionError("employee freshness queried commerce"),
+            ):
+                response = self.client.get(
+                    "/api/v2/analytics/operations/freshness",
+                    headers=self._auth_for(
+                        self.employee,
+                        tenant_slug=self.tenant.slug,
+                    ),
+                )
+        finally:
+            event.remove(db.engine, "before_cursor_execute", _capture)
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(
+            (payload.get("scope") or {}).get("mode"),
+            "employee_category_limited",
+        )
+        sources = {item.get("key"): item for item in payload.get("sources") or []}
+        for source_name in ("surveys", "analytics_events", "chats", "commerce"):
+            self.assertEqual(sources[source_name].get("status"), "unavailable")
+            self.assertIsNone(sources[source_name].get("period_count"))
+        sensitive_tables = (
+            "enc_encuesta",
+            "enc_respuesta",
+            "public_survey",
+            "analytics_events_v2",
+            "chat_session_context",
+            "pyme_pedido",
+            "market_order",
+            "pedido_conversacional",
+            " from orders ",
+        )
+        sensitive_selects = [
+            statement
+            for statement in statements
+            if statement.startswith("select")
+            and any(table in statement for table in sensitive_tables)
+        ]
+        self.assertEqual(sensitive_selects, [])
 
 
 if __name__ == "__main__":

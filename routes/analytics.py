@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from functools import wraps
 import json
 from typing import Any
 import time
@@ -31,7 +32,10 @@ from services.analytics import (
 from services.analytics.ingestor import analytics_ingestor
 from services.analytics.models import AnalyticsModuleStatus
 from models import AnalyticsEventV2, TenantProfile
-from services.analytics.rbac import require_access
+from services.analytics.rbac import (
+    legacy_tenant_wide_analytics_denial,
+    require_access,
+)
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     resolve_unique_tenant_for_owner,
@@ -681,6 +685,22 @@ def _json_response(payload, status: int = 200, request_id: str | None = None):
     return response
 
 
+def legacy_tenant_wide_analytics_admin_only(fn):
+    """Fail closed before route-local analytics scope parsing/materialization."""
+
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        request_id = (request.headers.get("X-Request-Id") or "").strip() or uuid.uuid4().hex
+        denial = legacy_tenant_wide_analytics_denial(request_id=request_id)
+        if denial is not None:
+            response = _json_response(denial, status=403, request_id=request_id)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        return fn(*args, **kwargs)
+
+    return _wrapped
+
+
 def _analytics_event_ignored_response(
     reason: str,
     *,
@@ -1198,6 +1218,7 @@ def _compute_identity_coverage(events: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @analytics_bp.route("/summary", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_summary():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
@@ -1207,6 +1228,7 @@ def analytics_summary():
 
 
 @analytics_bp.route("/timeseries", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_timeseries():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
@@ -1217,6 +1239,7 @@ def analytics_timeseries():
 
 
 @analytics_bp.route("/breakdown", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_breakdown():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
@@ -1226,6 +1249,7 @@ def analytics_breakdown():
 
 
 @analytics_bp.route("/geo/heatmap", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_heatmap():
     request_started = time.perf_counter()
     request_id = request.headers.get("X-Request-Id")
@@ -1267,6 +1291,7 @@ def analytics_heatmap():
 
 
 @analytics_bp.route("/geo/points", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_points():
     request_started = time.perf_counter()
     request_id = request.headers.get("X-Request-Id")
@@ -1312,6 +1337,7 @@ def analytics_points():
 
 
 @analytics_bp.route("/top", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_top():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
@@ -1322,6 +1348,7 @@ def analytics_top():
 
 
 @analytics_bp.route("/operations", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_operations():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
@@ -1330,6 +1357,7 @@ def analytics_operations():
 
 
 @analytics_bp.route("/cohorts", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_cohorts():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "visor", required_capability="analytics.read")
@@ -1338,6 +1366,7 @@ def analytics_cohorts():
 
 
 @analytics_bp.route("/whatsapp/templates", methods=["GET"])
+@legacy_tenant_wide_analytics_admin_only
 def analytics_templates():
     filters = parse_filters(request.args)
     require_access(filters.tenant_id, "operador", required_capability="analytics.admin")
@@ -1497,7 +1526,10 @@ def analytics_health():
         .order_by(AnalyticsModuleStatus.snapshot_at.desc())
         .first()
     )
+    failed_jobs = int(latest.jobs_failed if latest else 0)
     payload = {
+        "contract_version": "analytics.health.v1",
+        "status": "degraded" if failed_jobs else "ok",
         "cache": {
             "hits": analytics_cache.stats.hits,
             "misses": analytics_cache.stats.misses,
@@ -1509,9 +1541,11 @@ def analytics_health():
             "failed": latest.jobs_failed if latest else 0,
         },
         "last_snapshot": latest.snapshot_at.isoformat() if latest else None,
-        "metadata": latest.metadata if latest else {},
+        "metadata_redacted": True,
     }
-    return _json_response(payload)
+    response = _json_response(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @analytics_bp.route("/event", methods=["POST"])

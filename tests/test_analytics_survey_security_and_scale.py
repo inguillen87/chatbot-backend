@@ -18,16 +18,14 @@ from models import (
     User,
 )
 from services.analytics_service import analytics_service
+from services.analytics.models import AnalyticsModuleStatus
 from routes import admin_tenant as admin_tenant_routes
 from utils.auth_helpers import auth_session_version, generar_token
 
 
-_ANALYTICS_GET_PATHS = [
+_TENANT_WIDE_ANALYTICS_GET_PATHS = [
     "/api/analytics/summary",
     "/api/analytics/heatmap",
-    "/api/analytics/surveys/summary",
-    "/api/analytics/surveys/sentiment",
-    "/api/analytics/surveys/geo",
     "/api/analytics/insights",
     "/api/analytics/sales",
     "/api/analytics/benchmarks",
@@ -35,14 +33,29 @@ _ANALYTICS_GET_PATHS = [
     "/api/analytics/report/latest",
     "/api/v2/analytics/summary",
     "/api/v2/analytics/heatmap",
-    "/api/v2/analytics/surveys/summary",
-    "/api/v2/analytics/surveys/sentiment",
-    "/api/v2/analytics/surveys/geo",
     "/api/v2/analytics/insights",
     "/api/v2/analytics/sales",
     "/api/v2/analytics/benchmarks",
     "/api/v2/analytics/report/latest",
     "/analytics/report/latest",
+    "/api/v2/analytics/overview",
+    "/api/v2/analytics/tickets",
+    "/api/v2/analytics/funnel",
+]
+
+_SURVEY_ANALYTICS_GET_PATHS = [
+    "/api/analytics/surveys/summary",
+    "/api/analytics/surveys/sentiment",
+    "/api/analytics/surveys/geo",
+    "/api/v2/analytics/surveys/summary",
+    "/api/v2/analytics/surveys/sentiment",
+    "/api/v2/analytics/surveys/geo",
+    "/api/v2/analytics/surveys",
+]
+
+_ANALYTICS_GET_PATHS = [
+    *_TENANT_WIDE_ANALYTICS_GET_PATHS,
+    *_SURVEY_ANALYTICS_GET_PATHS,
 ]
 
 _ANALYTICS_POST_PATHS = [
@@ -51,6 +64,38 @@ _ANALYTICS_POST_PATHS = [
     "/api/v2/analytics/report/generate",
     "/api/v2/analytics/generate-report",
     "/analytics/report/generate",
+]
+
+_ROOT_TENANT_WIDE_ANALYTICS_GET_PATHS = [
+    "/analytics/summary",
+    "/analytics/timeseries",
+    "/analytics/breakdown",
+    "/analytics/geo/heatmap",
+    "/analytics/geo/points",
+    "/analytics/top",
+    "/analytics/operations",
+    "/analytics/cohorts",
+    "/analytics/whatsapp/templates",
+]
+
+_ADMIN_TENANT_WIDE_ANALYTICS_GET_PATHS = [
+    "/admin/analytics/overview",
+    "/admin/analytics/heatmap",
+    "/admin/analytics/realtime-hub",
+    "/admin/analytics/whatsapp-funnel",
+    "/admin/analytics/export.csv",
+    "/admin/analytics/export.pdf",
+    "/admin/analytics/dashboard",
+    "/admin/analytics/hub",
+    "/api/admin/analytics/overview",
+    "/api/admin/analytics/heatmap",
+    "/api/admin/analytics/realtime-hub",
+    "/api/admin/analytics/whatsapp-funnel",
+    "/api/admin/analytics/export.csv",
+    "/api/admin/analytics/export.pdf",
+    "/api/admin/analytics/dashboard",
+    "/api/admin/analytics/hub",
+    "/api/v2/analytics/whatsapp-funnel",
 ]
 
 _ANALYTICS_SERVICE_SENTINELS = {
@@ -88,8 +133,17 @@ def _token_for(actor: User) -> str:
     )
 
 
-def _headers(actor: User) -> dict[str, str]:
-    return {"Authorization": f"Bearer {_token_for(actor)}"}
+def _headers(actor: User, *, tenant_slug: str | None = None) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {_token_for(actor)}"}
+    if tenant_slug:
+        headers["X-Tenant-Slug"] = tenant_slug
+    return headers
+
+
+def _set_panel_session(client, actor: User) -> None:
+    with client.session_transaction() as flask_session:
+        flask_session["_user_id"] = str(actor.id)
+        flask_session["_fresh"] = True
 
 
 def _create_tenant(slug: str) -> tuple[TenantProfile, User]:
@@ -151,9 +205,18 @@ def _mocked_analytics_services():
                 return_value=True,
             )
         )
+        mocks["v2_feature_enabled"] = stack.enter_context(
+            patch("routes.v2.analytics._feature_enabled", return_value=True)
+        )
         stack.enter_context(
             patch(
                 "routes.analytics_routes.generate_analytics_report",
+                return_value={"sentinel": "foreign-tenant-secret"},
+            )
+        )
+        mocks["v2_generate_provider"] = stack.enter_context(
+            patch(
+                "routes.v2.analytics.generate_analytics_report",
                 return_value={"sentinel": "foreign-tenant-secret"},
             )
         )
@@ -176,10 +239,22 @@ def test_all_legacy_and_v2_aliases_block_cross_tenant_before_materialization(
             response = client.get(
                 path,
                 query_string={"tenant_id": foreign_tenant.id},
-                headers=_headers(actor),
+                headers=_headers(actor, tenant_slug=foreign_tenant.slug),
             )
             assert response.status_code == 403, path
-            assert response.get_json()["code"] == "forbidden", path
+            expected_code = (
+                "employee_analytics_scope_unsupported"
+                if role == "empleado" and path in _TENANT_WIDE_ANALYTICS_GET_PATHS
+                else None
+            )
+            payload = response.get_json()
+            if expected_code:
+                assert payload["code"] == expected_code, path
+            else:
+                assert (payload.get("code") or payload.get("reason_code")) in {
+                    "forbidden",
+                    "forbidden_tenant",
+                }, path
             assert "foreign-tenant-secret" not in response.get_data(as_text=True), path
 
         for path in _ANALYTICS_POST_PATHS:
@@ -187,38 +262,389 @@ def test_all_legacy_and_v2_aliases_block_cross_tenant_before_materialization(
             response = client.post(
                 path,
                 json={"tenant_id": foreign_tenant.id, "segment": "pyme"},
-                headers=_headers(actor),
+                headers=_headers(actor, tenant_slug=foreign_tenant.slug),
             )
             assert response.status_code == 403, path
-            assert response.get_json()["code"] == "forbidden", path
+            expected_code = (
+                "employee_analytics_scope_unsupported"
+                if role == "empleado"
+                else "forbidden"
+            )
+            assert response.get_json()["code"] == expected_code, path
             assert "foreign-tenant-secret" not in response.get_data(as_text=True), path
 
     assert all(not service_call.called for service_call in service_calls.values())
 
 
-@pytest.mark.parametrize("role", ["admin", "empleado"])
-def test_all_legacy_endpoints_allow_same_tenant_without_retargeting(client, role):
-    tenant, owner = _create_tenant(f"analytics-all-same-{role}")
-    actor = _create_actor(role=role, tenant=tenant, owner=owner)
+def test_all_legacy_endpoints_allow_same_tenant_admin_without_retargeting(client):
+    tenant, owner = _create_tenant("analytics-all-same-admin")
+    actor = owner
 
     with _mocked_analytics_services():
-        for path in _ANALYTICS_GET_PATHS[:10]:
+        for path in _ANALYTICS_GET_PATHS:
             response = client.get(
                 path,
                 query_string={"tenant_id": tenant.id},
-                headers=_headers(actor),
+                headers=_headers(actor, tenant_slug=tenant.slug),
             )
             assert response.status_code == 200, path
 
-        # Exercise the canonical POST implementation once; both report routes
-        # and their aliases call this same protected function.
-        limiter.reset()
-        response = client.post(
-            "/api/analytics/generate-report",
-            json={"tenant_id": tenant.id, "segment": "pyme"},
-            headers=_headers(actor),
+        for path in _ANALYTICS_POST_PATHS:
+            limiter.reset()
+            response = client.post(
+                path,
+                json={"tenant_id": tenant.id, "segment": "pyme"},
+                headers=_headers(actor, tenant_slug=tenant.slug),
+            )
+            assert response.status_code == 200, path
+
+
+def test_employee_tenant_wide_analytics_fail_closed_before_route_side_effects(
+    client,
+):
+    tenant, owner = _create_tenant("analytics-employee-scope-guard")
+    employee = _create_actor(role="empleado", tenant=tenant, owner=owner)
+    request_id = "employee-analytics-scope-p0"
+    headers = _headers(employee, tenant_slug=tenant.slug)
+    headers["X-Request-Id"] = request_id
+
+    all_paths = [
+        *_TENANT_WIDE_ANALYTICS_GET_PATHS,
+        *_ROOT_TENANT_WIDE_ANALYTICS_GET_PATHS,
+        *_ADMIN_TENANT_WIDE_ANALYTICS_GET_PATHS,
+    ]
+    materializer_targets = [
+        "routes.analytics_routes._resolve_authorized_analytics_tenant",
+        "routes.analytics_routes._feature_enabled_for_tenant_id",
+        "routes.analytics_routes._integration_access_for_tenant_id",
+        "routes.analytics_routes._generate_report_impl",
+        "routes.analytics_routes.generate_analytics_report",
+        "routes.v2.analytics._resolve_tenant_or_error",
+        "routes.v2.analytics._feature_enabled",
+        "routes.v2.analytics.generate_analytics_report",
+        "routes.analytics.parse_filters",
+        "routes.analytics.get_summary",
+        "routes.analytics.get_timeseries",
+        "routes.analytics.get_breakdown",
+        "routes.analytics.get_geo_heatmap",
+        "routes.analytics.get_geo_points",
+        "routes.analytics.get_top",
+        "routes.analytics.get_operations_overview",
+        "routes.analytics.get_cohorts",
+        "routes.analytics.get_whatsapp_templates",
+        "routes.admin_analytics.parse_filters",
+        "routes.admin_analytics.get_summary",
+        "routes.admin_analytics.get_geo_heatmap",
+        "routes.admin_analytics._dashboard_response",
+        "routes.admin_analytics._build_realtime_hub_payload",
+        "routes.admin_analytics._build_whatsapp_funnel_payload",
+    ]
+
+    limiter.reset()
+    with ExitStack() as stack:
+        side_effect_calls = [
+            stack.enter_context(patch(target)) for target in materializer_targets
+        ]
+        side_effect_calls.extend(
+            stack.enter_context(patch.object(analytics_service, method))
+            for method in _ANALYTICS_SERVICE_SENTINELS
         )
-        assert response.status_code == 200
+        side_effect_calls.append(
+            stack.enter_context(patch("routes.analytics.analytics_cache.get_or_set"))
+        )
+
+        for path in all_paths:
+            response = client.get(
+                path,
+                query_string={"tenant_id": tenant.id},
+                headers=headers,
+            )
+            assert response.status_code == 403, path
+            payload = response.get_json()
+            assert payload["contract_version"] == "shared.error.v1", path
+            assert payload["status_code"] == 403, path
+            assert payload["code"] == "employee_analytics_scope_unsupported", path
+            assert (
+                payload["reason_code"]
+                == "employee_analytics_scope_unsupported"
+            ), path
+            assert payload["retryable"] is False, path
+            assert payload["ok"] is False, path
+            assert payload["message"] == payload["error"]["message"], path
+            assert payload["detail"], path
+            assert payload["action_hint"] == "use_scoped_operations_dashboard", path
+            assert payload["replacement_endpoint"] == (
+                "/api/v2/analytics/operations/dashboard"
+            ), path
+            assert payload["request_id"] == request_id, path
+            assert response.headers["X-Request-Id"] == request_id, path
+            assert response.headers["Cache-Control"] == "no-store", path
+
+        # Every alias shares the same one-per-hour limiter. Calling all paths
+        # twice proves the route-local rejection happens before that quota.
+        for _attempt in range(2):
+            for path in _ANALYTICS_POST_PATHS:
+                response = client.post(
+                    path,
+                    json={"tenant_id": tenant.id, "segment": "pyme"},
+                    headers=headers,
+                )
+                assert response.status_code == 403, path
+                payload = response.get_json()
+                assert (
+                    payload["reason_code"]
+                    == "employee_analytics_scope_unsupported"
+                ), path
+                assert payload["replacement_endpoint"] == (
+                    "/api/v2/analytics/operations/dashboard"
+                ), path
+
+    assert all(not side_effect_call.called for side_effect_call in side_effect_calls)
+
+
+@pytest.mark.parametrize(
+    ("path", "query"),
+    [
+        ("/api/analytics/summary", "profile"),
+        ("/analytics/summary", "owner"),
+        ("/api/v2/analytics/overview", "none"),
+    ],
+)
+def test_explicit_employee_bearer_overrides_stale_admin_session_on_analytics(
+    client,
+    path,
+    query,
+):
+    tenant, owner = _create_tenant(f"analytics-mixed-admin-{query}")
+    employee = _create_actor(role="empleado", tenant=tenant, owner=owner)
+    _set_panel_session(client, owner)
+    query_string = (
+        {"tenant_id": tenant.id}
+        if query == "profile"
+        else {"tenant_id": owner.id, "scope": "pyme"}
+        if query == "owner"
+        else None
+    )
+
+    response = client.get(
+        path,
+        query_string=query_string,
+        headers=_headers(employee, tenant_slug=tenant.slug),
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == (
+        "employee_analytics_scope_unsupported"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "query"),
+    [
+        ("/api/analytics/summary", "profile"),
+        ("/analytics/summary", "owner"),
+        ("/api/v2/analytics/overview", "none"),
+    ],
+)
+def test_explicit_admin_bearer_overrides_stale_employee_session_on_analytics(
+    client,
+    path,
+    query,
+):
+    tenant, owner = _create_tenant(f"analytics-mixed-employee-{query}")
+    employee = _create_actor(role="empleado", tenant=tenant, owner=owner)
+    _set_panel_session(client, employee)
+    query_string = (
+        {"tenant_id": tenant.id}
+        if query == "profile"
+        else {"tenant_id": owner.id, "scope": "pyme"}
+        if query == "owner"
+        else None
+    )
+
+    with _mocked_analytics_services(), patch(
+        "routes.analytics.get_summary",
+        return_value={"totals": {"tickets": 0}},
+    ):
+        response = client.get(
+            path,
+            query_string=query_string,
+            headers=_headers(owner, tenant_slug=tenant.slug),
+        )
+
+    assert response.status_code == 200
+
+
+def test_employee_survey_analytics_remain_available_on_canonical_and_alias_paths(
+    client,
+):
+    tenant, owner = _create_tenant("analytics-employee-surveys-out-of-slice")
+    employee = _create_actor(role="empleado", tenant=tenant, owner=owner)
+    headers = _headers(employee, tenant_slug=tenant.slug)
+
+    with patch.object(
+        analytics_service,
+        "get_survey_summary",
+        return_value={"stats": {"total_votes": 0}},
+    ) as summary_call, patch.object(
+        analytics_service,
+        "get_cached_report",
+        return_value={"ok": True, "source": "survey-cache"},
+    ) as cache_call, patch.object(
+        analytics_service,
+        "get_survey_geo",
+        return_value=[],
+    ) as geo_call, patch(
+        "routes.analytics_routes._feature_enabled_for_tenant_id",
+        return_value=True,
+    ):
+        for path in _SURVEY_ANALYTICS_GET_PATHS:
+            response = client.get(
+                path,
+                query_string={"tenant_id": tenant.id},
+                headers=headers,
+            )
+            assert response.status_code == 200, path
+
+    assert summary_call.call_count == 3
+    assert cache_call.call_count == 2
+    assert geo_call.call_count == 2
+
+
+def test_employee_identity_coverage_read_remains_available(client):
+    tenant, owner = _create_tenant("analytics-employee-identity-coverage")
+    employee = _create_actor(role="empleado", tenant=tenant, owner=owner)
+    headers = _headers(employee, tenant_slug=tenant.slug)
+
+    for path in (
+        "/analytics/identity/coverage",
+        "/api/analytics/identity/coverage",
+    ):
+        response = client.get(
+            path,
+            query_string={"tenant_id": owner.id, "scope": "pyme"},
+            headers=headers,
+        )
+        assert response.status_code == 200, path
+        assert response.get_json()["contract_version"] == (
+            "analytics.identity_coverage.v1"
+        ), path
+
+
+def test_public_analytics_health_never_exposes_snapshot_tenant_metadata(client):
+    db.session.add(
+        AnalyticsModuleStatus(
+            jobs_pending=1,
+            jobs_running=0,
+            jobs_failed=0,
+            extra={
+                "tenant_id": "private-tenant-42",
+                "scope": "municipio-private",
+                "secret_marker": "must-never-leak",
+            },
+        )
+    )
+    db.session.commit()
+
+    response = client.get("/analytics/health")
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    payload = response.get_json()
+    assert payload["contract_version"] == "analytics.health.v1"
+    assert payload["metadata_redacted"] is True
+    assert "metadata" not in payload
+    assert "extra" not in payload
+    encoded = response.get_data(as_text=True)
+    assert "private-tenant-42" not in encoded
+    assert "municipio-private" not in encoded
+    assert "must-never-leak" not in encoded
+
+
+@pytest.mark.parametrize("role", ["admin", "super_admin"])
+def test_privileged_analytics_families_keep_tenant_wide_access(client, role):
+    tenant, owner = _create_tenant(f"analytics-privileged-{role}")
+    if role == "admin":
+        actor = owner
+    else:
+        actor = User(
+            name="Platform analytics admin",
+            email="platform-analytics-admin@test.com",
+            rol="super_admin",
+            tipo_chat="platform",
+        )
+        actor.set_password("safe-password")
+        db.session.add(actor)
+        db.session.commit()
+
+    headers = _headers(actor, tenant_slug=tenant.slug)
+    with patch.object(
+        analytics_service,
+        "get_summary",
+        return_value={"kpis": {"total_interactions": 0}},
+    ), patch.object(
+        analytics_service,
+        "get_survey_summary",
+        return_value={"stats": {"total_votes": 0}},
+    ), patch(
+        "routes.analytics.get_summary",
+        return_value={"totals": {"tickets": 0}},
+    ), patch(
+        "routes.admin_analytics.get_summary",
+        return_value={"totals": {"tickets": 0}},
+    ):
+        responses = [
+            client.get(
+                "/api/analytics/summary",
+                query_string={"tenant_id": tenant.id},
+                headers=headers,
+            ),
+            client.get(
+                "/api/v2/analytics/overview",
+                query_string={"tenant_id": tenant.id},
+                headers=headers,
+            ),
+            client.get(
+                "/analytics/summary",
+                query_string={"tenant_id": owner.id, "scope": "pyme"},
+                headers=headers,
+            ),
+            client.get(
+                "/admin/analytics/overview",
+                query_string={"tenant_id": owner.id, "scope": "pyme"},
+                headers=headers,
+            ),
+        ]
+
+    assert [response.status_code for response in responses] == [200, 200, 200, 200]
+
+
+def test_employee_operations_dashboard_remains_scope_aware_and_available(client):
+    tenant, owner = _create_tenant("analytics-employee-operations-ok")
+    employee = _create_actor(role="empleado", tenant=tenant, owner=owner)
+    payload = {
+        "contract_version": "analytics.operations.v2",
+        "tenant": {"id": tenant.id, "slug": tenant.slug},
+        "summary": {"open_tickets": 0},
+    }
+
+    with patch(
+        "routes.v2.analytics._cached_operational_dashboard",
+        return_value=payload,
+    ) as operations_call, patch.object(
+        analytics_service,
+        "get_summary",
+    ) as legacy_summary_call:
+        response = client.get(
+            "/api/v2/analytics/operations/dashboard",
+            headers=_headers(employee, tenant_slug=tenant.slug),
+        )
+
+    assert response.status_code == 200
+    assert response.get_json()["contract_version"] == "analytics.operations.v2"
+    operations_call.assert_called_once()
+    assert operations_call.call_args.kwargs["viewer"].id == employee.id
+    legacy_summary_call.assert_not_called()
 
 
 def test_cross_tenant_report_rejection_does_not_consume_generation_quota(client):
