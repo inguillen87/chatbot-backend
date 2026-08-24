@@ -3,7 +3,6 @@ import os
 sys.path.append(os.getcwd())
 # Ensure env vars are set before importing app
 os.environ["FLASK_SKIP_GLOBAL_APP"] = "1"
-os.environ["EVENTLET_NO_GREENDNS"] = "YES"
 
 # Manually create app if 'from app import app' returns None due to FLASK_SKIP_GLOBAL_APP
 from app import create_app

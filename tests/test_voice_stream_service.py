@@ -1,8 +1,10 @@
 import json
+import threading
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from flask import Flask
 from app import create_app, db
 from config import TestConfig
 from models import (
@@ -87,6 +89,83 @@ class VoiceStreamServiceMessageTests(unittest.TestCase):
 
         self.assertIn("Authorization", headers)
         self.assertNotIn("OpenAI-Beta", headers)
+
+    def test_max_call_timer_is_daemon_and_cancelled_deterministically(self):
+        service = VoiceStreamService(_FakeSocket())
+        service.max_call_seconds = 60
+        timer = MagicMock()
+
+        with patch(
+            "services.voice_stream_service.threading.Timer",
+            return_value=timer,
+        ) as timer_factory:
+            service._arm_max_call_timer()
+
+        timer_factory.assert_called_once_with(60, service._safe_end_call_twilio)
+        self.assertTrue(timer.daemon)
+        timer.start.assert_called_once_with()
+
+        service._cancel_max_call_timer()
+
+        timer.cancel.assert_called_once_with()
+        self.assertIsNone(service._max_call_timer)
+
+    def test_run_uses_native_daemon_listener_and_joins_after_closing_provider(self):
+        app = Flask("voice-native-thread")
+        app.config["OPENAI_API_KEY"] = "test-openai-key"
+        twilio_ws = MagicMock()
+        twilio_ws.receive.return_value = None
+        openai_ws = MagicMock()
+        openai_ws.recv.return_value = None
+        service = VoiceStreamService(twilio_ws, app=app)
+        service._consent_lifecycle_tenant_id = 1
+        service.tenant_profile = SimpleNamespace(id=1)
+        created_threads = []
+        native_thread = threading.Thread
+
+        def capture_thread(*args, **kwargs):
+            thread = native_thread(*args, **kwargs)
+            created_threads.append(thread)
+            return thread
+
+        with patch(
+            "services.voice_stream_service.voice_consent_lifecycle_enabled",
+            return_value=True,
+        ), patch.object(
+            service,
+            "_await_validated_twilio_start",
+            return_value=({}, {}),
+        ), patch.object(
+            service,
+            "_apply_verified_start",
+        ), patch.object(
+            service,
+            "_authorize_durable_voice_consent",
+            return_value=True,
+        ), patch.object(
+            service,
+            "_resolve_context",
+            return_value=True,
+        ), patch(
+            "services.voice_stream_service.provider_network_allowed",
+            return_value=True,
+        ), patch(
+            "services.voice_stream_service.ws_connect",
+            return_value=openai_ws,
+        ), patch.object(
+            service,
+            "handle_twilio_message",
+        ), patch(
+            "services.voice_stream_service.threading.Thread",
+            side_effect=capture_thread,
+        ):
+            service.run()
+
+        self.assertEqual(len(created_threads), 1)
+        self.assertEqual(created_threads[0].name, "voice-openai-listener")
+        self.assertTrue(created_threads[0].daemon)
+        self.assertFalse(created_threads[0].is_alive())
+        openai_ws.close.assert_called_once_with()
 
     def test_initial_voice_greeting_for_municipio_has_menu(self):
         service = VoiceStreamService(_FakeSocket())

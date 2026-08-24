@@ -2,7 +2,6 @@ import sys
 import os
 sys.path.append(os.getcwd())
 os.environ["FLASK_SKIP_GLOBAL_APP"] = "1"
-os.environ["EVENTLET_NO_GREENDNS"] = "YES"
 
 from app import create_app
 app = create_app()

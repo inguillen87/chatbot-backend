@@ -1,0 +1,139 @@
+name: Native thread runtime contract
+
+"on":
+  pull_request:
+    paths:
+      - .github/requirements/native-thread-runtime-linux-py312.txt
+      - .github/workflows/native-thread-runtime.yml
+      - app.py
+      - gunicorn.conf.py
+      - render.yaml
+      - requirements.txt
+      - requirements_fixed.txt
+      - services/voice_stream_service.py
+      - socket_service.py
+      - tests/native_thread_smoke_app.py
+      - tests/test_a_monkey_patch.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-thread-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-websocket:
+    name: Gunicorn gthread WebSocket (Python 3.12.14)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12.14"
+          architecture: x64
+
+      - name: Install hash-locked runtime dependencies
+        run: |
+          python -m pip install \
+            --disable-pip-version-check \
+            --no-input \
+            --no-deps \
+            --only-binary=:all: \
+            --require-hashes \
+            --requirement .github/requirements/native-thread-runtime-linux-py312.txt
+          python -m pip check
+
+      - name: Validate fail-closed runtime configuration
+        run: |
+          python - <<'PY'
+          import importlib.util
+          import os
+          import runpy
+          from pathlib import Path
+
+          requirements = Path("requirements.txt").read_text(encoding="utf-8")
+          if "eventlet==" in requirements.lower():
+              raise SystemExit("Eventlet remains in the Production manifest")
+          if "simple-websocket==1.1.0" not in requirements:
+              raise SystemExit("simple-websocket Production pin is missing")
+          if importlib.util.find_spec("eventlet") is not None:
+              raise SystemExit("Eventlet unexpectedly resolved in clean CI")
+
+          os.environ["GUNICORN_WORKERS"] = "1"
+          config = runpy.run_path("gunicorn.conf.py")
+          if config["worker_class"] != "gthread" or config["workers"] != 1:
+              raise SystemExit("Gunicorn native-thread contract is not active")
+
+          os.environ["GUNICORN_WORKERS"] = "2"
+          try:
+              runpy.run_path("gunicorn.conf.py")
+          except RuntimeError:
+              pass
+          else:
+              raise SystemExit("multi-worker override did not fail closed")
+          PY
+
+      - name: Compile runtime implementation and smoke app
+        run: >-
+          python -m py_compile gunicorn.conf.py socket_service.py
+          services/voice_stream_service.py tests/native_thread_smoke_app.py
+
+      - name: Boot Gunicorn and require a real WebSocket upgrade
+        run: |
+          set -euo pipefail
+          export GUNICORN_WORKERS=1
+          export GUNICORN_THREADS=8
+          gunicorn \
+            --config gunicorn.conf.py \
+            --bind 127.0.0.1:5099 \
+            tests.native_thread_smoke_app:app \
+            >"${RUNNER_TEMP}/native-thread-gunicorn.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "${server_pid}" 2>/dev/null || true' EXIT
+
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error http://127.0.0.1:5099/health >/dev/null; then
+              break
+            fi
+            if ! kill -0 "${server_pid}" 2>/dev/null; then
+              cat "${RUNNER_TEMP}/native-thread-gunicorn.log"
+              exit 1
+            fi
+            sleep 0.5
+          done
+          curl --fail --silent --show-error http://127.0.0.1:5099/health
+
+          python - <<'PY'
+          import socketio
+
+          client = socketio.Client(reconnection=False)
+          client.connect(
+              "http://127.0.0.1:5099",
+              transports=["websocket"],
+              socketio_path="api/socket.io",
+              wait_timeout=10,
+          )
+          if client.transport() != "websocket":
+              raise SystemExit(f"unexpected transport: {client.transport()}")
+          reply = client.call(
+              "runtime_ping",
+              {"probe": "linux-gthread"},
+              timeout=5,
+          )
+          expected = {
+              "ok": True,
+              "probe": "linux-gthread",
+              "async_mode": "threading",
+          }
+          if reply != expected:
+              raise SystemExit(f"unexpected Socket.IO reply: {reply!r}")
+          client.disconnect()
+          PY

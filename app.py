@@ -1,28 +1,14 @@
 import os
 import sys
 
-# --- Modo "solo migraciones" o "testing" para evitar carga pesada de eventlet ---
+# --- Modo "solo migraciones" o "testing" ---
 MIGRATIONS_ONLY = os.getenv("FLASK_MIGRATIONS_ONLY") == "1"
 TESTING_MODE = (
     os.getenv("TESTING") == "1"
     or "pytest" in sys.modules
     or "unittest" in sys.modules
 )
-NON_WEB_PROCESS = os.getenv("CHATBOC_PROCESS_ROLE", "").strip().lower() in {
-    "whatsapp-durable-worker",
-    "whatsapp-payload-retention-cron",
-    "domain-effect-worker",
-    "survey-effect-worker",
-}
-os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 
-# Monkey patch must happen before importing any other modules that might use threads/sockets
-# Solo en runtime normal (no migraciones, no testing)
-if not MIGRATIONS_ONLY and not TESTING_MODE and not NON_WEB_PROCESS:
-    import eventlet
-    eventlet.monkey_patch()
-
-import ssl
 import uuid
 import logging
 from typing import Pattern
@@ -138,7 +124,7 @@ def _is_public_cross_origin_path(path: str) -> bool:
 # En migraciones NO importamos socket_service ni blueprints
 if not MIGRATIONS_ONLY:
     # SocketIO real
-    from socket_service import (  # usa eventlet
+    from socket_service import (
         build_fail_closed_socketio_redis_manager,
         socketio,
     )

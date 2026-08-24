@@ -7,4 +7,11 @@
 import os
 
 timeout = int(os.getenv("GUNICORN_TIMEOUT", "300"))
-worker_class = 'eventlet'
+worker_class = "gthread"
+configured_workers = int(os.getenv("GUNICORN_WORKERS", "1"))
+if configured_workers != 1:
+    raise RuntimeError(
+        "GUNICORN_WORKERS must be 1; scale single-worker instances behind sticky sessions"
+    )
+workers = 1
+threads = int(os.getenv("GUNICORN_THREADS", "100"))
