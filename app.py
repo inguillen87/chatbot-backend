@@ -88,6 +88,7 @@ from utils.contact_identity import (
     resolve_contact_identity_from_request,
 )
 from utils.safe_logging import describe_database_uri
+from utils.runtime_environment import is_production_runtime, is_render_runtime
 
 
 def _truthy_env(name: str) -> bool:
@@ -95,7 +96,7 @@ def _truthy_env(name: str) -> bool:
 
 
 def _running_on_render() -> bool:
-    return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+    return is_render_runtime()
 
 
 _PUBLIC_CORS_TREE_PREFIXES = (
@@ -183,6 +184,12 @@ def create_app(config_class=Config):
 
     # Cargar configuración
     app.config.from_object(config_class)
+    if is_production_runtime(config_env=app.config.get("ENV")):
+        # Environment classes are allowed for tests/local tooling, but a stale
+        # ``ENV=dev`` must not keep debug or development guards enabled when
+        # the process itself is running in production.
+        app.config["ENV"] = "prod"
+        app.config["DEBUG"] = False
     if not callable(app.config.get("META_FLOW_DATA_EXCHANGE_CONFIG_RESOLVER")):
         from services.meta_flow_runtime import create_meta_flow_runtime_resolver
 
@@ -473,7 +480,7 @@ def create_app(config_class=Config):
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
         env_name = str(app.config.get("ENV") or "").strip().lower()
-        production_runtime = env_name in {"prod", "production"} or _running_on_render()
+        production_runtime = is_production_runtime(config_env=env_name)
         credentialed_origins = list(
             app.config.get("CORS_CREDENTIALS_ALLOWED_ORIGINS") or ALLOWED_ORIGINS
         )

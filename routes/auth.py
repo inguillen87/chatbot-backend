@@ -63,9 +63,11 @@ from services.webhook_delivery_service import (
     fail_delivery,
     stage_delivery_completion,
 )
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, NamedTuple, Optional
 import secrets
 from urllib.parse import quote_plus
+
+from utils.runtime_environment import is_production_runtime
 
 _DEMO_CATALOG_CACHE: dict[str, Any] = {"payload": None, "expires_at": 0.0, "fingerprint": ""}
 _DEMO_RUBROS_CACHE: dict[str, Any] = {
@@ -437,13 +439,7 @@ def _registration_log_metadata(data: object) -> dict[str, bool]:
 
 
 def _clerk_runtime_is_production() -> bool:
-    environment = str(
-        current_app.config.get("ENV")
-        or os.getenv("ENV")
-        or os.getenv("FLASK_ENV")
-        or ""
-    ).strip().lower()
-    return environment in {"prod", "production"}
+    return is_production_runtime(config_env=current_app.config.get("ENV"))
 
 
 def _clerk_config_flag(name: str, *, default: bool) -> bool:
@@ -458,21 +454,74 @@ def _clerk_config_flag(name: str, *, default: bool) -> bool:
 def _clerk_return_token_in_body() -> bool:
     return _clerk_config_flag(
         "CLERK_SESSION_RETURN_TOKEN",
-        default=not _clerk_runtime_is_production(),
+        # A bearer token in JSON is readable by browser JavaScript and widens
+        # the impact of an XSS.  HttpOnly cookie transport is the safe default
+        # in every runtime; local tools can opt in explicitly when required.
+        default=False,
     )
 
 
-def _clerk_auth_response(payload: dict, status_code: int):
+class _ClerkSessionTransportPolicy(NamedTuple):
+    cookie_enabled: bool
+    return_token_in_body: bool
+    cookie_name: str
+    cookie_domain: Optional[str]
+    cookie_secure: bool
+
+    @property
+    def available(self) -> bool:
+        return self.cookie_enabled or self.return_token_in_body
+
+
+def _resolve_clerk_session_transport_policy() -> _ClerkSessionTransportPolicy:
+    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
+    return _ClerkSessionTransportPolicy(
+        cookie_enabled=_clerk_config_flag("CLERK_SESSION_COOKIE_ENABLED", default=True),
+        return_token_in_body=_clerk_return_token_in_body(),
+        cookie_name=str(current_app.config.get("AUTH_TOKEN_COOKIE_NAME") or "auth_token"),
+        cookie_domain=str(cookie_domain) if cookie_domain else None,
+        cookie_secure=(
+            True
+            if _clerk_runtime_is_production()
+            else bool(current_app.config.get("SESSION_COOKIE_SECURE", False))
+        ),
+    )
+
+
+def _clerk_session_transport_unavailable_response():
+    response = jsonify(
+        {
+            "error": (
+                "Clerk session transport is disabled; enable the HttpOnly cookie "
+                "or explicitly opt in to bearer response transport."
+            ),
+            "reason_code": "clerk_session_transport_unavailable",
+            "session_transport": "unavailable",
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response, 503
+
+
+def _clerk_auth_response(
+    payload: dict,
+    status_code: int,
+    *,
+    transport_policy: _ClerkSessionTransportPolicy,
+):
     """Return a Clerk exchange response and persist its Chatboc JWT in a safe cookie."""
+
+    if not transport_policy.available:
+        return _clerk_session_transport_unavailable_response()
 
     response_payload = dict(payload)
     token = response_payload.get("token")
-    cookie_enabled = _clerk_config_flag("CLERK_SESSION_COOKIE_ENABLED", default=True)
-    return_token = _clerk_return_token_in_body()
 
-    if token and cookie_enabled:
-        response_payload["session_transport"] = "cookie_and_body" if return_token else "cookie"
-        if not return_token:
+    if token and transport_policy.cookie_enabled:
+        response_payload["session_transport"] = (
+            "cookie_and_body" if transport_policy.return_token_in_body else "cookie"
+        )
+        if not transport_policy.return_token_in_body:
             response_payload.pop("token", None)
     elif token:
         response_payload["session_transport"] = "bearer"
@@ -482,23 +531,18 @@ def _clerk_auth_response(payload: dict, status_code: int):
     response = jsonify(response_payload)
     response.headers["Cache-Control"] = "no-store"
 
-    if not cookie_enabled:
+    if not transport_policy.cookie_enabled:
         return response, status_code
 
-    cookie_name = current_app.config.get("AUTH_TOKEN_COOKIE_NAME", "auth_token")
-    cookie_domain = current_app.config.get("SESSION_COOKIE_DOMAIN")
-    secure = True if _clerk_runtime_is_production() else bool(
-        current_app.config.get("SESSION_COOKIE_SECURE", False)
-    )
     cookie_args = {
-        "key": cookie_name,
-        "secure": secure,
+        "key": transport_policy.cookie_name,
+        "secure": transport_policy.cookie_secure,
         "httponly": True,
         "samesite": "Lax",
         "path": "/",
     }
-    if cookie_domain:
-        cookie_args["domain"] = cookie_domain
+    if transport_policy.cookie_domain:
+        cookie_args["domain"] = transport_policy.cookie_domain
 
     if token:
         response.set_cookie(value=token, **cookie_args)
@@ -530,6 +574,10 @@ def clerk_config():
 @auth_bp.route("/clerk/session", methods=["POST"])
 def clerk_session_sync():
     """Verify a Clerk session JWT and exchange it for a Chatboc JWT."""
+
+    transport_policy = _resolve_clerk_session_transport_policy()
+    if not transport_policy.available:
+        return _clerk_session_transport_unavailable_response()
 
     data = request.get_json(silent=True) or {}
     clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
@@ -565,7 +613,11 @@ def clerk_session_sync():
             _send_verification_email(user)
 
         status_code = 200 if not payload.get("onboarding", {}).get("required") else 202
-        return _clerk_auth_response(payload, status_code)
+        return _clerk_auth_response(
+            payload,
+            status_code,
+            transport_policy=transport_policy,
+        )
     except ClerkTenantInactive as exc:
         db.session.rollback()
         return jsonify({"error": str(exc), "reason_code": "tenant_inactive"}), 403
@@ -592,6 +644,10 @@ def clerk_session_sync():
 @auth_bp.route("/clerk/onboarding", methods=["POST"])
 def clerk_onboarding():
     """Complete tenant creation for a Clerk-authenticated owner."""
+
+    transport_policy = _resolve_clerk_session_transport_policy()
+    if not transport_policy.available:
+        return _clerk_session_transport_unavailable_response()
 
     data = request.get_json(silent=True) or {}
     clerk_token = _extract_bearer_token() or data.get("clerk_token") or data.get("session_token")
@@ -621,7 +677,11 @@ def clerk_onboarding():
             auth_intent=auth_intent,
         )
         payload["message"] = "Tenant creado y onboarding completado"
-        return _clerk_auth_response(payload, 201)
+        return _clerk_auth_response(
+            payload,
+            201,
+            transport_policy=transport_policy,
+        )
     except ClerkTenantInactive as exc:
         db.session.rollback()
         return jsonify({"error": str(exc), "reason_code": "tenant_inactive"}), 403

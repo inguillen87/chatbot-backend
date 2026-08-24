@@ -19,6 +19,11 @@ class ProductionLikeCorsConfig(TestingConfig):
     )
 
 
+class StaleDevelopmentCorsConfig(ProductionLikeCorsConfig):
+    ENV = "dev"
+    DEBUG = True
+
+
 def test_public_widget_cors_never_allows_credentials(client):
     origin = "https://customer-store.example"
     response = client.options(
@@ -144,6 +149,28 @@ def test_production_app_drops_local_pattern_even_if_config_attempts_to_enable_it
     assert rejected.headers.get("Access-Control-Allow-Credentials") is None
     assert accepted.headers.get("Access-Control-Allow-Origin") == "https://www.chatboc.ar"
     assert accepted.headers.get("Access-Control-Allow-Credentials") == "true"
+
+
+def test_flask_env_production_overrides_stale_development_config(monkeypatch):
+    monkeypatch.delenv("ENV", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+    monkeypatch.setenv("FLASK_ENV", "production")
+
+    production_app = create_app(StaleDevelopmentCorsConfig)
+    with production_app.test_client() as production_client:
+        rejected = production_client.options(
+            "/api/analytics/kpis?tenant_id=1",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+    assert production_app.config["ENV"] == "prod"
+    assert production_app.debug is False
+    assert rejected.headers.get("Access-Control-Allow-Origin") is None
+    assert rejected.headers.get("Access-Control-Allow-Credentials") is None
 
 
 def test_render_hostname_keeps_cors_on_ticket_crm_preflights():

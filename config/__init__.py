@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from utils.runtime_environment import (
+    is_production_runtime,
+    is_render_runtime,
+    resolved_runtime_environment,
+)
+
 # Directorio base de la aplicación
 basedir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 TIMEZONE_OFFSET = int(os.getenv("TIMEZONE_OFFSET", "-3"))
@@ -180,14 +186,17 @@ DEFAULT_BACKEND_VERSION = _coalesce_version(
 )
 
 # --- Variables de Entorno para Despliegue ---
-ENV = os.getenv("ENV", "dev")  # "dev" o "prod"
+# Resolve all production signals together.  A missing/stale ``ENV=dev`` must
+# never enable development behavior on Render or when FLASK_ENV is production.
+_CONFIGURED_ENV = os.getenv("ENV")
+ENV = resolved_runtime_environment(config_env=_CONFIGURED_ENV)
 
 
 def _is_render_runtime() -> bool:
-    return os.getenv("RENDER", "").strip().lower() == "true" or bool(os.getenv("RENDER_EXTERNAL_URL"))
+    return is_render_runtime()
 
 
-IS_PRODUCTION_RUNTIME = ENV.strip().lower() in {"prod", "production"} or _is_render_runtime()
+IS_PRODUCTION_RUNTIME = is_production_runtime(config_env=_CONFIGURED_ENV)
 
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
@@ -503,13 +512,13 @@ def _load_default_demo_rubros() -> List[Dict[str, Any]]:
 
     return normalized
 
-# Derive cookie domain for production if not provided explicitly
+# Keep cookies host-only unless an operator deliberately configures a shared
+# parent domain. Deriving this from RENDER_EXTERNAL_URL can produce
+# ``.onrender.com`` when the public API uses a custom domain, causing browsers
+# to reject the cookie and widening its scope unnecessarily.
 cookie_domain_env = os.getenv("COOKIE_DOMAIN")
 if cookie_domain_env:
     COOKIE_DOMAIN = cookie_domain_env
-elif ENV != "dev" and parsed_backend.hostname:
-    parts = parsed_backend.hostname.split('.')
-    COOKIE_DOMAIN = f".{parts[-2]}.{parts[-1]}" if len(parts) >= 2 else None
 else:
     COOKIE_DOMAIN = None
 
