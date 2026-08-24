@@ -6,6 +6,9 @@ services:
     # SECURITY OPERATIONS: api.chatboc.ar is already attached to this existing
     # service outside the Blueprint. Keep its onrender.com subdomain disabled
     # in Render Dashboard; redeclaring the domain here fails Blueprint validation.
+    # Keep Render's automatic probe on liveness until managed Postgres + Redis
+    # pass /health/ready in staging. The controlled cutover is documented in
+    # docs/render.deploy.quickcheck.md; changing this early blocks every deploy.
     healthCheckPath: /health
     buildCommand: "./build.sh"
     preDeployCommand: "flask db upgrade"
@@ -106,6 +109,16 @@ services:
       # Set a managed Redis/Redis-TLS URL; memory:// is rejected on Render web.
       - key: RATELIMIT_STORAGE_URI
         sync: false
+      - key: DATABASE_CONNECT_TIMEOUT_SECONDS
+        value: "2"
+      - key: DATABASE_POOL_TIMEOUT_SECONDS
+        value: "2"
+      - key: READINESS_DATABASE_TIMEOUT_SECONDS
+        value: "1.5"
+      - key: READINESS_REDIS_TIMEOUT_SECONDS
+        value: "1.0"
+      - key: READINESS_CACHE_TTL_SECONDS
+        value: "1.0"
       - key: DEMO_CATALOG_FULL_RATE_LIMIT
         value: "12 per minute"
       - key: DEMO_CATALOG_FULL_GLOBAL_RATE_LIMIT

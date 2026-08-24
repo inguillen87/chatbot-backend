@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 import re
 from pathlib import Path
@@ -150,6 +151,57 @@ def _env_strict_opt_in(name: str) -> bool:
         return False
     _logger.error("[config] Invalid %s; feature remains disabled fail-closed.", name)
     return False
+
+
+def _bounded_timeout_seconds(
+    value: object,
+    *,
+    default: float,
+    minimum: float = 0.1,
+    maximum: float = 10.0,
+) -> float:
+    """Parse an operator timeout without allowing unbounded pool waits."""
+
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(timeout):
+        return default
+    return min(max(timeout, minimum), maximum)
+
+
+def build_database_engine_options(
+    database_uri: object,
+    *,
+    connect_timeout_seconds: object = 2.0,
+    pool_timeout_seconds: object = 2.0,
+) -> dict[str, Any]:
+    """Build bounded SQLAlchemy options for SQLite or network databases."""
+
+    uri = str(database_uri or "")
+    if uri.startswith("sqlite"):
+        return {"connect_args": {"timeout": 5}}
+
+    connect_timeout = _bounded_timeout_seconds(
+        connect_timeout_seconds,
+        default=2.0,
+        minimum=1.0,
+    )
+    pool_timeout = _bounded_timeout_seconds(
+        pool_timeout_seconds,
+        default=2.0,
+    )
+    return {
+        "pool_size": 10,
+        "max_overflow": 20,
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+        # DBAPI/libpq requires an integer connect_timeout. Round upward so an
+        # operator value such as 1.5 seconds never becomes zero or unbounded.
+        "connect_args": {"connect_timeout": int(math.ceil(connect_timeout))},
+        "pool_timeout": pool_timeout,
+    }
 
 
 def _env_fail_closed_hold(default: bool, name: str) -> bool:
@@ -623,15 +675,20 @@ class Config:
     # Directory for persistent data such as uploaded media.
     DATA_DIR = os.getenv("DATA_DIR", "/data")
 
-    if SQLALCHEMY_DATABASE_URI.startswith("sqlite"):
-        SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 5}}
-    else:
-        SQLALCHEMY_ENGINE_OPTIONS = {
-            'pool_size': 10,
-            'max_overflow': 20,
-            'pool_pre_ping': True,
-            'pool_recycle': 1800,
-        }
+    DATABASE_CONNECT_TIMEOUT_SECONDS = _bounded_timeout_seconds(
+        os.getenv("DATABASE_CONNECT_TIMEOUT_SECONDS", "2"),
+        default=2.0,
+        minimum=1.0,
+    )
+    DATABASE_POOL_TIMEOUT_SECONDS = _bounded_timeout_seconds(
+        os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "2"),
+        default=2.0,
+    )
+    SQLALCHEMY_ENGINE_OPTIONS = build_database_engine_options(
+        SQLALCHEMY_DATABASE_URI,
+        connect_timeout_seconds=DATABASE_CONNECT_TIMEOUT_SECONDS,
+        pool_timeout_seconds=DATABASE_POOL_TIMEOUT_SECONDS,
+    )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (MODO DEV/PROD)
@@ -650,6 +707,20 @@ class Config:
         "REDIS_URL",
         "UPSTASH_REDIS_URL",
         default="memory://",
+    )
+    # Public readiness probes stay bounded and never serialize dependency
+    # details. Runtime parsing clamps probe timeouts and cache TTL to 0.1-5 s.
+    READINESS_DATABASE_TIMEOUT_SECONDS = os.getenv(
+        "READINESS_DATABASE_TIMEOUT_SECONDS",
+        "1.5",
+    )
+    READINESS_REDIS_TIMEOUT_SECONDS = os.getenv(
+        "READINESS_REDIS_TIMEOUT_SECONDS",
+        "1.0",
+    )
+    READINESS_CACHE_TTL_SECONDS = os.getenv(
+        "READINESS_CACHE_TTL_SECONDS",
+        "1.0",
     )
     # The legacy full demo catalog is intentionally backward compatible but
     # expensive to materialize and transfer.  Current first-party clients use
