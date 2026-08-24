@@ -129,7 +129,7 @@ python-dateutil==2.9.0.post0
 python-docx==1.2.0
 python-dotenv==1.1.1
 python-engineio==4.13.2
-python-socketio==5.16.2
+python-socketio==5.16.4
 pytz==2025.2
 qdrant-client==1.14.3
 qrcode[pil]>=7.4.0

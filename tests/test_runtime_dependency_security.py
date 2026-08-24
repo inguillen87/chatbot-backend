@@ -16,7 +16,7 @@ SECURITY_FLOORS = {
     "pdfminer-six": Version("20251230"),
     "pillow": Version("12.3.0"),
     "python-engineio": Version("4.13.2"),
-    "python-socketio": Version("5.16.2"),
+    "python-socketio": Version("5.16.4"),
 }
 
 
