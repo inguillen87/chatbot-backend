@@ -61,8 +61,6 @@ class DummyUser(SimpleNamespace):
 @patch('services.municipio_responder.flag_modified', MagicMock())
 class MunicipioLogicTests(unittest.TestCase):
     def setUp(self):
-        import eventlet
-        eventlet.monkey_patch = lambda *a, **k: None
         from app import create_app
         self.app = create_app('config.TestingConfig')
         self.app_context = self.app.app_context()

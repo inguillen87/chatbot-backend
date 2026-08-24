@@ -311,10 +311,12 @@ def disconnect_clerk_session_sockets(
     return len(socket_sids)
 
 def _resolve_socket_async_mode() -> str:
-    """Use threading by default; allow explicit override via env."""
+    """Keep the supported production runtime on native threads."""
     forced_mode = (os.getenv("SOCKETIO_ASYNC_MODE") or "").strip().lower()
-    if forced_mode:
-        return forced_mode
+    if forced_mode and forced_mode != "threading":
+        raise RuntimeError(
+            "SOCKETIO_ASYNC_MODE must be 'threading'; green-thread runtimes are unsupported"
+        )
     return "threading"
 
 

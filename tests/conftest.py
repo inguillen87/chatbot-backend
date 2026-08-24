@@ -3,10 +3,6 @@ import ipaddress
 import socket
 import sys
 
-# Keep eventlet out of the pytest bootstrap. The app disables eventlet in
-# TESTING mode, and patching os/file APIs here breaks Flask-Session filesystem
-# writes on Windows before endpoint logic can run.
-os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 os.environ.setdefault("TESTING", "1")
 
 import pytest

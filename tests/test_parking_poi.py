@@ -127,10 +127,6 @@ class TestParkingPOI(unittest.TestCase):
 
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value=_sample_info())
     def test_stateful_location_triggers_parking(self, mock_occ):
-        import eventlet
-
-        eventlet.monkey_patch = lambda *args, **kwargs: None
-
         from app import create_app, db
         from config import TestConfig
         from models import User, Rubro, ChatSessionContext
@@ -179,10 +175,6 @@ class TestParkingPOI(unittest.TestCase):
 
     @patch("services.points_of_interest_handler.consultar_ocupacion", return_value=_sample_info())
     def test_repeat_share_location_uses_last_query(self, mock_occ):
-        import eventlet
-
-        eventlet.monkey_patch = lambda *args, **kwargs: None
-
         from app import create_app, db
         from config import TestConfig
         from models import User, Rubro, ChatSessionContext

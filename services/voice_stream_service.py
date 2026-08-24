@@ -5,6 +5,7 @@ import logging
 import hashlib
 import re
 import math
+import threading
 import unicodedata
 from datetime import datetime, timezone
 
@@ -209,6 +210,7 @@ class VoiceStreamService:
         self.to_number = None
         self.source_chat_session_id = None
         self.max_call_seconds = None
+        self._max_call_timer = None
         self.demo_hub = None
         self.requested_tenant_slug = None
         self.requested_vertical = None
@@ -535,6 +537,26 @@ class VoiceStreamService:
             logger.info("[VOICE] Ended call call_ref=%s", _safe_reference(self.call_sid))
         except Exception as exc:
             logger.error("[VOICE] Failed to end call error_type=%s", type(exc).__name__)
+
+    def _arm_max_call_timer(self) -> None:
+        """Arm one daemon timer and retain it so stream cleanup can cancel it."""
+
+        self._cancel_max_call_timer()
+        if not self.max_call_seconds:
+            return
+        timer = threading.Timer(
+            self.max_call_seconds,
+            self._safe_end_call_twilio,
+        )
+        timer.daemon = True
+        self._max_call_timer = timer
+        timer.start()
+
+    def _cancel_max_call_timer(self) -> None:
+        timer = self._max_call_timer
+        self._max_call_timer = None
+        if timer is not None:
+            timer.cancel()
 
     @staticmethod
     def _resolve_promo_image_url(config: dict | None) -> str | None:
@@ -2141,6 +2163,7 @@ class VoiceStreamService:
     # ----------------------------
     def run(self):
         openai_thread = None
+        stop_openai_listener = threading.Event()
         try:
             app_ctx = self.app.app_context() if self.app else current_app.app_context()
             with app_ctx:
@@ -2201,25 +2224,30 @@ class VoiceStreamService:
                     verified_envelope=verified_envelope,
                 )
 
-                import eventlet
+                listener_app = self.app or current_app._get_current_object()
 
                 def listen_openai():
-                    listener_ctx = self.app.app_context() if self.app else current_app.app_context()
-                    with listener_ctx:
+                    with listener_app.app_context():
                         try:
-                            while True:
+                            while not stop_openai_listener.is_set():
                                 msg = self.openai_ws.recv()
                                 if not msg:
                                     break
                                 data = json.loads(msg)
                                 self.handle_openai_message(data)
                         except Exception as exc:
-                            logger.error(
-                                "[VOICE] OpenAI listener failed error_type=%s",
-                                type(exc).__name__,
-                            )
+                            if not stop_openai_listener.is_set():
+                                logger.error(
+                                    "[VOICE] OpenAI listener failed error_type=%s",
+                                    type(exc).__name__,
+                                )
 
-                openai_thread = eventlet.spawn(listen_openai)
+                openai_thread = threading.Thread(
+                    target=listen_openai,
+                    name="voice-openai-listener",
+                    daemon=True,
+                )
+                openai_thread.start()
 
                 while True:
                     try:
@@ -2240,16 +2268,22 @@ class VoiceStreamService:
                 type(exc).__name__,
             )
         finally:
-            if openai_thread is not None:
-                try:
-                    openai_thread.kill()
-                except Exception:
-                    pass
+            stop_openai_listener.set()
+            self._cancel_max_call_timer()
             if self.openai_ws:
                 try:
                     self.openai_ws.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "[VOICE] Provider close failed error_type=%s",
+                        type(exc).__name__,
+                    )
+            if openai_thread is not None and openai_thread.is_alive():
+                openai_thread.join(timeout=2.0)
+                if openai_thread.is_alive():
+                    logger.warning(
+                        "[VOICE] OpenAI listener did not stop before cleanup deadline"
+                    )
 
     # ----------------------------
     # Twilio -> OpenAI
@@ -2286,9 +2320,7 @@ class VoiceStreamService:
             )
             if self.max_call_seconds:
                 try:
-                    import eventlet
-
-                    eventlet.spawn_after(self.max_call_seconds, self._safe_end_call_twilio)
+                    self._arm_max_call_timer()
                     logger.info(
                         "[VOICE] Max call duration armed call_ref=%s max_seconds=%s",
                         _safe_reference(self.call_sid),

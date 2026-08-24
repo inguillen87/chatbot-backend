@@ -4,7 +4,6 @@ import sys
 
 # Keep both pytest and the documented unittest runner in deterministic test
 # mode before application modules can inherit live provider credentials.
-os.environ.setdefault("EVENTLET_NO_GREENDNS", "YES")
 os.environ.setdefault("TESTING", "1")
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 

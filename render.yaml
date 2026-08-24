@@ -9,7 +9,7 @@ services:
     healthCheckPath: /health
     buildCommand: "./build.sh"
     preDeployCommand: "flask db upgrade"
-    startCommand: "gunicorn --worker-class eventlet --workers 1 --bind 0.0.0.0:$PORT app:app"
+    startCommand: "gunicorn --config gunicorn.conf.py --bind 0.0.0.0:$PORT app:app"
     plan: starter
     envVars:
       - key: PYTHON_VERSION
