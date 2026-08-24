@@ -701,6 +701,9 @@ class Config:
 
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
+    # Vercel sends this value as ``Authorization: Bearer ...`` to scheduled
+    # endpoints. An empty value must never authorize an internal invocation.
+    CRON_SECRET = os.getenv("CRON_SECRET", "")
     # Dedicated/versioned HMAC boundary for TenantTicket intake receipts.  It
     # intentionally has no SECRET_KEY fallback: creation and tracking fail
     # closed when it is absent or shorter than 32 UTF-8 bytes.

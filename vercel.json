@@ -1,5 +1,12 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "container",
   "fluid": true,
-  "regions": ["pdx1"]
+  "regions": ["pdx1"],
+  "crons": [
+    {
+      "path": "/api/internal/cron/outbox-reconciliation",
+      "schedule": "* * * * *"
+    }
+  ]
 }
