@@ -6,8 +6,6 @@ from urllib.parse import quote_plus
 import hashlib
 import ipaddress
 import json
-import math
-import time
 import uuid
 
 from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
@@ -24,6 +22,7 @@ from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.demo_experience_contract import build_demo_experience_contract
 from services.demo_registry import load_demo_rubros
+from services.demo_catalog_admission import admit_demo_catalog_full
 from services.public_survey_intake import public_survey_client_ip
 from services.demo_pillar_catalog import (
     DEMO_PILLAR_CONTRACT_VERSION,
@@ -2217,17 +2216,6 @@ def _demo_catalog_full_rate_limit_item(configured: str):
     return item, amount, window_seconds
 
 
-def _demo_catalog_full_retry_after(strategy, item, *identifiers: str) -> int:
-    try:
-        window = strategy.get_window_stats(item, *identifiers)
-        return max(
-            1,
-            math.ceil(float(window.reset_time) - time.time()),
-        )
-    except Exception:
-        return max(1, int(item.get_expiry()))
-
-
 def _demo_catalog_full_rate_limited(*, retry_after: int, scope: str):
     response = _json_response(
         {
@@ -2270,52 +2258,28 @@ def _enforce_demo_catalog_full_rate_limit():
         return None
 
     try:
-        client_item, client_amount, client_window = _demo_catalog_full_rate_limit_item(
+        _, client_amount, client_window = _demo_catalog_full_rate_limit_item(
             _demo_catalog_full_rate_limit()
         )
-        global_item, global_amount, global_window = _demo_catalog_full_rate_limit_item(
+        _, global_amount, global_window = _demo_catalog_full_rate_limit_item(
             _demo_catalog_full_global_rate_limit()
         )
-        if global_amount * client_window <= client_amount * global_window:
-            raise ValueError("global demo catalog limit must exceed client capacity")
 
-        strategy = limiter.limiter
-        global_identifiers = ("demo-catalog-full-v2", "global")
-
-        # Read global capacity before deriving or touching a client key. Once
-        # the breaker opens, source rotation cannot grow limiter cardinality.
-        global_stats = strategy.get_window_stats(global_item, *global_identifiers)
-        if int(global_stats.remaining) <= 0:
-            return _demo_catalog_full_rate_limited(
-                retry_after=_demo_catalog_full_retry_after(
-                    strategy,
-                    global_item,
-                    *global_identifiers,
-                ),
-                scope="global",
-            )
-        client_identifiers = (
-            "demo-catalog-full-v2",
-            "client",
-            _demo_catalog_full_client_scope(),
+        admission = admit_demo_catalog_full(
+            limiter.limiter.storage,
+            client_scope=_demo_catalog_full_client_scope(),
+            client_limit=client_amount,
+            client_window_seconds=client_window,
+            global_limit=global_amount,
+            global_window_seconds=global_window,
+            allow_process_memory=bool(current_app.testing or current_app.debug),
         )
-        if not strategy.hit(client_item, *client_identifiers):
+        if not admission.allowed:
+            if admission.scope not in {"global", "client"}:
+                raise RuntimeError("invalid demo catalog admission response")
             return _demo_catalog_full_rate_limited(
-                retry_after=_demo_catalog_full_retry_after(
-                    strategy,
-                    client_item,
-                    *client_identifiers,
-                ),
-                scope="client",
-            )
-        if not strategy.hit(global_item, *global_identifiers):
-            return _demo_catalog_full_rate_limited(
-                retry_after=_demo_catalog_full_retry_after(
-                    strategy,
-                    global_item,
-                    *global_identifiers,
-                ),
-                scope="global",
+                retry_after=admission.retry_after_seconds,
+                scope=admission.scope,
             )
     except Exception:
         current_app.logger.exception(
