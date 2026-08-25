@@ -17,7 +17,11 @@ from models import (
 )
 from routes import encuestas_public
 from services.encuestas_service import EncuestaError, get_public_encuesta, list_public_encuestas_for_tenant
-from services.demo_surveys import build_demo_survey_chat_menu, build_demo_surveys_votings_contract
+from services.demo_surveys import (
+    build_demo_live_results_payload,
+    build_demo_survey_chat_menu,
+    build_demo_surveys_votings_contract,
+)
 from services.response_formatter import build_interactive_response
 
 
@@ -160,6 +164,44 @@ def test_public_demo_surveys_list_uses_seeded_contract(client):
     assert all(item["whatsapp_share_url"].startswith("https://wa.me/") for item in payload["items"])
 
 
+def test_junin_demo_heatmap_uses_junin_display_anchor():
+    payload = build_demo_live_results_payload(
+        "demo-gobierno-junin-prioridades-barriales",
+        public_base_url="https://www.chatboc.ar",
+    )
+
+    assert payload is not None
+    points = payload["heatmap"]["points"]
+    assert len(points) == 5
+    assert all(-34.64 <= point["lat"] <= -34.53 for point in points)
+    assert all(-61.01 <= point["lng"] <= -60.88 for point in points)
+    assert payload["heatmap"]["source"] == "demo_seeded_responses"
+    assert payload["heatmap"]["metadata"] == {
+        "contract_version": "surveys.demo_seeding.v1",
+        "source": "demo_seeded_responses",
+        "provider": "chatboc_demo_seed",
+        "using_synthetic_points": True,
+        "synthetic": True,
+        "point_count": 5,
+    }
+    provenance = payload["data_provenance"]
+    assert provenance == payload["response_provenance"]
+    assert provenance["contract_version"] == "surveys.response_provenance.v1"
+    assert provenance["server_trusted_classification"] is True
+    assert provenance["mode"] == "synthetic"
+    assert provenance["contains_synthetic"] is True
+    assert provenance["real_responses_included"] == 0
+    assert provenance["synthetic_responses_included"] == 100
+    assert provenance["synthetic_responses_excluded"] == 0
+    options = next(iter(payload["preguntas"].values()))["opciones"]
+    assert sum(option["votos"] for option in options) == 100
+    assert sum(option["porcentaje"] for option in options) == 100
+    assert all(
+        option["porcentaje"] == round(option["votos"] / 100 * 100, 2)
+        for option in options
+    )
+
+
 def test_public_demo_survey_detail_results_and_response(client):
     client.application.config["PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL"] = "https://www.chatboc.ar"
     contract = build_demo_surveys_votings_contract(
@@ -173,10 +215,13 @@ def test_public_demo_survey_detail_results_and_response(client):
     assert detail.status_code == 200
     detail_payload = detail.get_json()
     assert detail_payload["demo_mode"] is True
+    assert detail_payload["data_provenance"]["mode"] == "synthetic"
+    assert detail_payload["response_provenance"] == detail_payload["data_provenance"]
     assert detail_payload["resultados_envivo"]["total_respuestas"] == 100
     assert detail_payload["preguntas"]
     question = detail_payload["preguntas"][0]
     option = question["opciones"][0]
+    assert option["porcentaje"] == option["votos"]
 
     results = client.get(f"/api/public/encuestas/v1/{slug}/live-results")
     assert results.status_code == 200

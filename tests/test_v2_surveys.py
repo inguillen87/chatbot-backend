@@ -1258,6 +1258,19 @@ class V2SurveysApiTest(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "surveys.live_results.v2")
         self.assertTrue(payload.get("demo_mode"))
+        provenance = payload.get("data_provenance") or {}
+        self.assertEqual(provenance.get("mode"), "synthetic")
+        self.assertEqual(provenance.get("synthetic_responses_included"), 100)
+        self.assertEqual(payload.get("response_provenance"), provenance)
+        self.assertTrue(
+            payload.get("heatmap", {})
+            .get("metadata", {})
+            .get("using_synthetic_points")
+        )
+        question = next(iter((payload.get("preguntas") or {}).values()))
+        options = question.get("opciones") or []
+        self.assertEqual(sum(option.get("votos", 0) for option in options), 100)
+        self.assertEqual(sum(option.get("porcentaje", 0) for option in options), 100)
         self.assertEqual(
             payload.get("links", {}).get("live_results_endpoint"),
             f"/api/v2/public/surveys/{token}/live-results",

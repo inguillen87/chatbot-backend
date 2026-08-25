@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from services.demo_pillar_catalog import normalize_demo_sector
+from services.survey_response_provenance import build_survey_response_provenance
 
 
 DEMO_SURVEY_CONTRACT_VERSION = "demo.surveys_votings.v1"
@@ -253,6 +254,11 @@ def _geo_labels(sector: str, tenant_slug: str = "") -> list[str]:
 
 def _coordinate_base(sector: str, tenant_slug: str) -> tuple[float, float]:
     normalized = normalize_demo_sector(sector)
+    safe_tenant = _slug_part(tenant_slug, fallback="")
+    if normalized == "gobierno" and safe_tenant in {"junin", "junin-1"}:
+        # Synthetic demo points must still render inside the municipality being
+        # demonstrated. This is a display anchor, not a claim about real votes.
+        return -34.5889, -60.9462
     if normalized == "empresas":
         return -32.8895, -68.8458  # Mendoza Ciudad
     if normalized == "educacion":
@@ -277,6 +283,17 @@ def _demo_public_state(*, is_live_vote: bool = True) -> dict[str, Any]:
         "server_time": datetime.now(timezone.utc).isoformat(),
         "demo_mode": True,
     }
+
+
+def _demo_response_provenance() -> dict[str, Any]:
+    """Truthfully classify deterministic demo aggregates as synthetic."""
+
+    return build_survey_response_provenance(
+        real_count=0,
+        synthetic_count=DEMO_SURVEY_RESPONSE_COUNT,
+        mode="synthetic",
+        synthetic_excluded=0,
+    )
 
 
 def _demo_survey_links(slug: str, public_base_url: str) -> dict[str, Any]:
@@ -391,7 +408,18 @@ def _demo_operational_next_steps(slug: str, public_base_url: str) -> dict[str, A
 
 def _results_for_template(template: dict[str, Any], *, sector: str, tenant_slug: str, slug: str) -> dict[str, Any]:
     total = DEMO_SURVEY_RESPONSE_COUNT
-    option_counts = _split_counts(total, list(template.get("opciones") or []), f"{slug}:options")
+    option_counts = [
+        {
+            **entry,
+            "votos": entry["count"],
+            "porcentaje": round((entry["count"] / total) * 100, 2) if total else 0,
+        }
+        for entry in _split_counts(
+            total,
+            list(template.get("opciones") or []),
+            f"{slug}:options",
+        )
+    ]
     gender_counts = _split_counts(total, ["mujer", "varon", "otro_prefiere_no_decir"], f"{slug}:gender")
     age_counts = _split_counts(total, ["18-29", "30-44", "45-60", "60+"], f"{slug}:age")
     zone_counts = _split_counts(total, _geo_labels(sector, tenant_slug), f"{slug}:zone")
@@ -410,10 +438,13 @@ def _results_for_template(template: dict[str, Any], *, sector: str, tenant_slug:
             }
         )
 
+    provenance = _demo_response_provenance()
     return {
         "contract_version": "demo.survey_results.v1",
         "seeded_responses": total,
         "total_respuestas": total,
+        "data_provenance": provenance,
+        "response_provenance": provenance,
         "options": option_counts,
         "segments": {
             "genero": gender_counts,
@@ -460,6 +491,8 @@ def _build_demo_item(
         "public_state": public_state,
         "estado_publico": public_state,
         "demo_mode": True,
+        "data_provenance": results["data_provenance"],
+        "response_provenance": results["response_provenance"],
         "es_votacion_envivo": template.get("tipo") == "votacion",
         "mostrar_resultados_envivo": True,
         "permitir_comentarios": False,
@@ -470,6 +503,7 @@ def _build_demo_item(
             "responses": DEMO_SURVEY_RESPONSE_COUNT,
             "personas_random": DEMO_SURVEY_RESPONSE_COUNT,
             "deterministic": True,
+            "real_people": False,
             "source": "backend_demo_contract",
         },
         "results": results,
@@ -630,11 +664,21 @@ def build_demo_public_survey_payload(
         options = []
         for index, option in enumerate(item.get("options") or [], start=1):
             option_id = f"{question_id}_op_{index}"
-            votes = next(
-                (entry["count"] for entry in item["results"]["options"] if entry["label"] == option),
-                0,
+            option_result = next(
+                (entry for entry in item["results"]["options"] if entry["label"] == option),
+                {},
             )
-            options.append({"id": option_id, "texto": option, "label": option, "votos": votes})
+            votes = int(option_result.get("count") or 0)
+            percentage = float(option_result.get("porcentaje") or 0)
+            options.append(
+                {
+                    "id": option_id,
+                    "texto": option,
+                    "label": option,
+                    "votos": votes,
+                    "porcentaje": percentage,
+                }
+            )
         payload = {
             **item,
             "contract_version": "encuestas.public.v1",
@@ -692,10 +736,14 @@ def build_demo_live_results_payload(
         {
             "id": f"{question_id}_op_{index}",
             "texto": entry["label"],
+            "label": entry["label"],
             "votos": entry["count"],
+            "porcentaje": entry["porcentaje"],
         }
         for index, entry in enumerate(item["results"]["options"], start=1)
     ]
+    provenance = _demo_response_provenance()
+    heatmap_points = item["results"]["heatmap_points"]
     return {
         "contract_version": "encuestas.live_results.v1",
         "ok": True,
@@ -707,19 +755,30 @@ def build_demo_live_results_payload(
         "estado_publico": public_state,
         "total_respuestas": DEMO_SURVEY_RESPONSE_COUNT,
         "seeded_responses": DEMO_SURVEY_RESPONSE_COUNT,
+        "data_provenance": provenance,
+        "response_provenance": provenance,
         "result_version": DEMO_SURVEY_RESPONSE_COUNT,
         "snapshot_version": f"demo:{item['slug']}:{DEMO_SURVEY_RESPONSE_COUNT}",
         "preguntas": {
             question_id: {
                 "tipo": "opcion_unica",
                 "texto": item.get("question"),
+                "total_votos": DEMO_SURVEY_RESPONSE_COUNT,
                 "opciones": opciones,
             }
         },
         "segments": item["results"]["segments"],
         "heatmap": {
-            "points": item["results"]["heatmap_points"],
+            "points": heatmap_points,
             "source": "demo_seeded_responses",
+            "metadata": {
+                "contract_version": "surveys.demo_seeding.v1",
+                "source": "demo_seeded_responses",
+                "provider": "chatboc_demo_seed",
+                "using_synthetic_points": True,
+                "synthetic": True,
+                "point_count": len(heatmap_points),
+            },
         },
         "links": links,
         "share": share,
