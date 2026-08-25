@@ -60,6 +60,7 @@ from services.operational_heatmap_access import (
 from services.tenant_ticket_scope import (
     municipio_ticket_belongs_to_tenant,
     municipio_ticket_scope_filter,
+    scoped_municipio_ticket_query,
 )
 from services.plan_access import (
     FULL_INTEGRATION_PLANS,
@@ -315,7 +316,7 @@ def _build_tenant_dashboard_bundle_payload(
 
     lead_rows = []
     municipio_leads_query = apply_employee_ticket_category_scope(
-        MunicipioTicket.query.filter_by(tenant_id=tenant.id),
+        scoped_municipio_ticket_query(tenant),
         viewer,
         MunicipioTicket,
     )
@@ -521,7 +522,7 @@ def _build_tenant_dashboard_bundle_payload(
         db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
         .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
         .filter(
-            MunicipioTicket.tenant_id == tenant.id,
+            municipio_ticket_scope_filter(tenant),
             TicketComentario.es_admin.is_(False),
             TicketComentario.fecha >= cutoff_unread,
         )
@@ -649,7 +650,7 @@ def _build_tenant_dashboard_bundle_payload(
                 & (TicketRealtimeState.ticket_id == MunicipioTicket.id),
             ).filter(
                 TicketRealtimeState.viewer_user_id.in_(employee_ids),
-                MunicipioTicket.tenant_id == tenant.id,
+                municipio_ticket_scope_filter(tenant),
             )
         )
         municipio_realtime_rows = apply_employee_ticket_category_scope(
@@ -800,8 +801,13 @@ def _build_tenant_heatmap_summary_payload(
     effective_limit = max(1, min(int(limit_points or 1500), 5000))
 
     def _scoped_ticket_query(model):
+        base_query = (
+            scoped_municipio_ticket_query(tenant)
+            if model is MunicipioTicket
+            else model.query.filter_by(tenant_id=tenant.id)
+        )
         return apply_employee_ticket_category_scope(
-            model.query.filter_by(tenant_id=tenant.id),
+            base_query,
             viewer,
             model,
         )
@@ -3227,7 +3233,7 @@ def tenant_unread_ticket_summary(current_user, slug):
         db.session.query(TicketComentario.municipio_ticket_id, func.count(TicketComentario.id), func.max(TicketComentario.fecha))
         .join(MunicipioTicket, MunicipioTicket.id == TicketComentario.municipio_ticket_id)
         .filter(
-            MunicipioTicket.tenant_id == tenant.id,
+            municipio_ticket_scope_filter(tenant),
             TicketComentario.es_admin.is_(False),
             TicketComentario.fecha >= cutoff,
         )
@@ -4894,7 +4900,7 @@ def tenant_list_leads(current_user, slug):
     limit = max(1, min(int(request.args.get('limit', 100) or 100), 250))
     stage_filter = str(request.args.get('stage') or '').strip().lower()
 
-    m_query = MunicipioTicket.query.filter_by(tenant_id=tenant.id)
+    m_query = scoped_municipio_ticket_query(tenant)
     p_query = PymeTicket.query.filter_by(tenant_id=tenant.id)
     t_query = TenantTicket.query.filter_by(tenant_id=tenant.id)
     rows = []

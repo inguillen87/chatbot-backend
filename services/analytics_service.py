@@ -5,8 +5,10 @@ from sqlalchemy import case, func, text, desc, and_
 from database import db
 from models import (
     AnalyticsEvent, User, MunicipioTicket, PymePedido, MarketOrder,
-    EncEncuesta, EncRespuesta, EncRespuestaDetalle, EncPregunta, EncOpcion
+    EncEncuesta, EncRespuesta, EncRespuestaDetalle, EncPregunta, EncOpcion,
+    TenantProfile,
 )
+from services.tenant_ticket_scope import municipio_ticket_scope_filter
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_REAL,
     SURVEY_RESPONSE_ORIGIN_SYNTHETIC_DEMO,
@@ -14,10 +16,29 @@ from services.survey_response_provenance import (
     build_survey_response_provenance,
 )
 
+MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT = "municipio_ticket_scope.v1"
+MUNICIPIO_CONSULTANT_REPORT_TYPE = "consultant_municipio"
+
 try:
     import pygeohash as pgh
 except ImportError:
     pgh = None
+
+
+def _municipio_ticket_scope_for_tenant_id(tenant_id):
+    """Resolve the canonical municipal scope or return a false SQL predicate."""
+
+    if isinstance(tenant_id, bool):
+        return municipio_ticket_scope_filter(None)
+    try:
+        normalized_tenant_id = int(tenant_id)
+    except (TypeError, ValueError, OverflowError):
+        return municipio_ticket_scope_filter(None)
+    if normalized_tenant_id <= 0:
+        return municipio_ticket_scope_filter(None)
+    tenant = db.session.get(TenantProfile, normalized_tenant_id)
+    return municipio_ticket_scope_filter(tenant)
+
 
 class AnalyticsService:
     def __init__(self):
@@ -136,10 +157,11 @@ class AnalyticsService:
         # Fallback to models for Categories (more reliable for now)
         top_categories = []
         if context == 'municipio':
+             ticket_scope = _municipio_ticket_scope_for_tenant_id(tenant_id)
              cat_query = db.session.query(
                  MunicipioTicket.categoria, func.count(MunicipioTicket.id)
              ).filter(
-                 MunicipioTicket.tenant_id == tenant_id,
+                 ticket_scope,
                  MunicipioTicket.fecha >= start_date,
                  MunicipioTicket.fecha <= end_date,
              ).group_by(MunicipioTicket.categoria).order_by(desc(func.count(MunicipioTicket.id))).limit(5)
@@ -219,9 +241,11 @@ class AnalyticsService:
         """
         Dedicated analytics for Municipios: Claims (Reclamos), Suggestions, Zones, Categories.
         """
+        ticket_scope = _municipio_ticket_scope_for_tenant_id(tenant_id)
+
         # 1. Claims Overview (MunicipioTicket)
         tickets_query = db.session.query(MunicipioTicket).filter(
-            MunicipioTicket.tenant_id == tenant_id,
+            ticket_scope,
             MunicipioTicket.fecha >= start_date,
             MunicipioTicket.fecha <= end_date
         )
@@ -234,7 +258,7 @@ class AnalyticsService:
         cat_query = db.session.query(
             MunicipioTicket.categoria, func.count(MunicipioTicket.id)
         ).filter(
-             MunicipioTicket.tenant_id == tenant_id,
+             ticket_scope,
              MunicipioTicket.fecha >= start_date,
              MunicipioTicket.fecha <= end_date
         ).group_by(MunicipioTicket.categoria).order_by(desc(func.count(MunicipioTicket.id))).limit(8)
@@ -247,7 +271,7 @@ class AnalyticsService:
         zone_query = db.session.query(
              MunicipioTicket.distrito, func.count(MunicipioTicket.id)
         ).filter(
-             MunicipioTicket.tenant_id == tenant_id,
+             ticket_scope,
              MunicipioTicket.fecha >= start_date,
              MunicipioTicket.fecha <= end_date,
              MunicipioTicket.distrito.isnot(None)
@@ -272,7 +296,7 @@ class AnalyticsService:
         peak_hours_query = db.session.query(
             hour_func.label('hour'), func.count().label('count')
         ).filter(
-            MunicipioTicket.tenant_id == tenant_id,
+            ticket_scope,
             MunicipioTicket.fecha >= start_date,
             MunicipioTicket.fecha <= end_date
         ).group_by('hour').all()
@@ -727,6 +751,12 @@ class AnalyticsService:
     ) -> Optional[Dict[str, Any]]:
         if not isinstance(payload, dict):
             return None
+        if (
+            report_type == MUNICIPIO_CONSULTANT_REPORT_TYPE
+            and payload.get("municipio_ticket_scope_contract")
+            != MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT
+        ):
+            return None
         if payload.get("contract_version") != contract_version:
             if source is None and period_start is None and period_end is None:
                 result = dict(payload)
@@ -860,6 +890,22 @@ class AnalyticsService:
                 "period_start": self._canonical_report_period(period_start),
                 "period_end": self._canonical_report_period(period_end),
                 "report_type": report_type,
+                "report": data,
+            }
+            if report_type == MUNICIPIO_CONSULTANT_REPORT_TYPE:
+                payload["municipio_ticket_scope_contract"] = (
+                    MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT
+                )
+        elif report_type == MUNICIPIO_CONSULTANT_REPORT_TYPE:
+            payload = {
+                "contract_version": "analytics.report_cache.v1",
+                "source": None,
+                "period_start": None,
+                "period_end": None,
+                "report_type": report_type,
+                "municipio_ticket_scope_contract": (
+                    MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT
+                ),
                 "report": data,
             }
         self.log_event(

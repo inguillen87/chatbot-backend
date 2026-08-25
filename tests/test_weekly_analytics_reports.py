@@ -166,6 +166,7 @@ def test_retry_uses_committed_reservation_and_calls_provider_once(
         "period_start": "2026-08-16T00:00:00+00:00",
         "period_end": "2026-08-23T00:00:00+00:00",
         "report_type": "consultant_municipio",
+        "municipio_ticket_scope_contract": "municipio_ticket_scope.v1",
         "report": SAFE_PROVIDER_REPORT,
     }
     assert weekly.analytics_service.get_cached_report(

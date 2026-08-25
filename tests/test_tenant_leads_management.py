@@ -28,12 +28,12 @@ def _headers(app, user):
 
 
 def test_tenant_admin_can_list_and_update_leads(client, app):
-    owner = User(email="owner-tenant@test.com", name="Owner", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-tenant@test.com", name="Owner", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-leads", nombre="Tenant Leads", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-leads", nombre="Tenant Leads", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -66,12 +66,12 @@ def test_tenant_admin_can_list_and_update_leads(client, app):
 
 
 def test_tenant_admin_bulk_stage_and_timeline(client, app):
-    owner = User(email="owner-tenant-bulk@test.com", name="Owner Bulk", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-tenant-bulk@test.com", name="Owner Bulk", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-leads-bulk", nombre="Tenant Leads Bulk", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-leads-bulk", nombre="Tenant Leads Bulk", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -194,12 +194,12 @@ def test_tenant_admin_includes_marketplace_assisted_ticket_in_leads(client, app)
 
 
 def test_tenant_auto_assign_and_surveys_overview(client, app):
-    owner = User(email="owner-tenant-auto@test.com", name="Owner Auto", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-tenant-auto@test.com", name="Owner Auto", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-auto", nombre="Tenant Auto", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-auto", nombre="Tenant Auto", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -244,12 +244,12 @@ def test_tenant_auto_assign_and_surveys_overview(client, app):
 
 
 def test_tenant_suggest_and_workload_balance(client, app):
-    owner = User(email="owner-work@test.com", name="Owner Work", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-work@test.com", name="Owner Work", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-workload", nombre="Tenant Workload", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-workload", nombre="Tenant Workload", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -418,12 +418,12 @@ def test_public_live_chat_schedule_aliases_never_404_for_demo_widget(client, app
         assert options_resp.headers.get("Access-Control-Allow-Origin")
 
 def test_tenant_unread_ticket_summary(client, app):
-    owner = User(email="owner-unread@test.com", name="Owner Unread", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-unread@test.com", name="Owner Unread", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-unread", nombre="Tenant Unread", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-unread", nombre="Tenant Unread", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -443,12 +443,12 @@ def test_tenant_unread_ticket_summary(client, app):
 
 
 def test_tenant_dashboard_bundle(client, app):
-    owner = User(email="owner-dashboard@test.com", name="Owner Dashboard", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-dashboard@test.com", name="Owner Dashboard", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-dashboard", nombre="Tenant Dashboard", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-dashboard", nombre="Tenant Dashboard", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -515,12 +515,12 @@ def test_tenant_dashboard_bundle(client, app):
 
 
 def test_tenant_heatmap_summary(client, app):
-    owner = User(email="owner-heatmap@test.com", name="Owner Heatmap", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-heatmap@test.com", name="Owner Heatmap", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-heatmap", nombre="Tenant Heatmap", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-heatmap", nombre="Tenant Heatmap", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -601,12 +601,12 @@ def test_tenant_heatmap_summary(client, app):
 
 
 def test_tenant_dashboard_bundle_counts_full_backlog_even_when_items_are_limited(client, app):
-    owner = User(email="owner-backlog@test.com", name="Owner Backlog", rol="admin", tipo_chat="pyme")
+    owner = User(email="owner-backlog@test.com", name="Owner Backlog", rol="admin", tipo_chat="municipio")
     owner.set_password("pass")
     db.session.add(owner)
     db.session.commit()
 
-    tenant = TenantProfile(slug="tenant-backlog", nombre="Tenant Backlog", tipo="pyme", pyme_id=owner.id)
+    tenant = TenantProfile(slug="tenant-backlog", nombre="Tenant Backlog", tipo="municipio", municipio_id=owner.id)
     db.session.add(tenant)
     db.session.commit()
 
@@ -700,7 +700,7 @@ def test_employee_admin_experience_is_category_scoped_and_empty_scope_fails_clos
         email="owner-category-scope@test.com",
         name="Owner category scope",
         rol="admin",
-        tipo_chat="pyme",
+        tipo_chat="municipio",
     )
     owner.set_password("pass")
     db.session.add(owner)
@@ -708,8 +708,8 @@ def test_employee_admin_experience_is_category_scoped_and_empty_scope_fails_clos
     tenant = TenantProfile(
         slug="employee-category-scope",
         nombre="Employee category scope",
-        tipo="pyme",
-        pyme_id=owner.id,
+        tipo="municipio",
+        municipio_id=owner.id,
     )
     db.session.add(tenant)
     db.session.flush()
@@ -720,7 +720,7 @@ def test_employee_admin_experience_is_category_scoped_and_empty_scope_fails_clos
         name="Scoped employee",
         rol="empleado",
         es_empleado=True,
-        tipo_chat="pyme",
+        tipo_chat="municipio",
         tenant_id=tenant.id,
         accesibilidad={"employee_scope": {"categorias": ["luminaria"]}},
     )
@@ -730,7 +730,7 @@ def test_employee_admin_experience_is_category_scoped_and_empty_scope_fails_clos
         name="Empty employee",
         rol="empleado",
         es_empleado=True,
-        tipo_chat="pyme",
+        tipo_chat="municipio",
         tenant_id=tenant.id,
         accesibilidad={"employee_scope": {"categorias": []}},
     )

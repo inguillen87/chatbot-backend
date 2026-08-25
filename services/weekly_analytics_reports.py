@@ -21,7 +21,10 @@ from sqlalchemy import func, or_, select, text
 
 from database import db
 from models import AnalyticsEvent, TenantProfile
-from services.analytics_service import analytics_service
+from services.analytics_service import (
+    MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT,
+    analytics_service,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -363,6 +366,15 @@ def _persist_completed_report(
             "period_end": reservation_payload.get("period_end"),
             "report_type": f"consultant_{tenant_type}",
             "report": report,
+            **(
+                {
+                    "municipio_ticket_scope_contract": (
+                        MUNICIPIO_TICKET_SCOPE_CACHE_CONTRACT
+                    )
+                }
+                if tenant_type == "municipio"
+                else {}
+            ),
         },
     )
     reservation_payload["status"] = "completed"
