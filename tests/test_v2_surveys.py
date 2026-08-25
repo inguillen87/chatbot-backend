@@ -1241,6 +1241,17 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(payload.get("contract_version"), "surveys.public_response.v2")
         self.assertEqual(payload.get("legacy_contract_version"), "demo.survey_response_ack.v1")
         self.assertTrue(payload.get("demo_mode"))
+        self.assertFalse(payload.get("persisted"))
+        self.assertFalse(payload.get("durable"))
+        self.assertEqual(payload.get("persistence", {}).get("state"), "not_persisted")
+        self.assertFalse(payload.get("persistence", {}).get("database_write"))
+        self.assertFalse(payload.get("persistence", {}).get("live_results_mutated"))
+        self.assertEqual(payload.get("seeded_responses_after"), 100)
+        self.assertEqual(payload.get("simulated_view_responses_after"), 101)
+        self.assertEqual(
+            payload.get("frontend_contract", {}).get("persistence"),
+            payload.get("persistence"),
+        )
         self.assertEqual(payload.get("security", {}).get("status"), "verified")
         self.assertEqual(
             payload.get("links", {}).get("live_results_endpoint"),
@@ -2335,6 +2346,13 @@ class V2SurveysApiTest(unittest.TestCase):
             public_base_url="https://demo.chatboc.test",
         )
         self.assertTrue(ack["accepted"])
+        self.assertFalse(ack["persisted"])
+        self.assertFalse(ack["durable"])
+        self.assertEqual(ack["persistence"]["state"], "not_persisted")
+        self.assertFalse(ack["persistence"]["database_write"])
+        self.assertFalse(ack["persistence"]["live_results_mutated"])
+        self.assertEqual(ack["seeded_responses_after"], 100)
+        self.assertEqual(ack["simulated_view_responses_after"], 101)
         self.assertEqual(ack["links"]["qr_endpoint"], item["links"]["qr_endpoint"])
         self.assertEqual(ack["realtime"]["transports"], ["polling"])
 

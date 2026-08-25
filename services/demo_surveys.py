@@ -1054,10 +1054,18 @@ def build_demo_survey_response_ack(
     request_fingerprint = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()[:16]
     accepted = bool(answers)
     message = (
-        "Voto demo registrado. Ahora podes ver los resultados en vivo."
+        "Participacion de simulacion procesada. Se refleja solo en esta vista y no modifica datos ciudadanos."
         if accepted
-        else "No se detecto una opcion valida para registrar el voto demo."
+        else "No se detecto una opcion valida para procesar la participacion de simulacion."
     )
+    persistence = {
+        "contract_version": "demo.survey_persistence.v1",
+        "state": "not_persisted",
+        "durable": False,
+        "database_write": False,
+        "live_results_mutated": False,
+        "scope": "current_view",
+    }
     return {
         "contract_version": "demo.survey_response_ack.v1",
         "ok": True,
@@ -1066,6 +1074,9 @@ def build_demo_survey_response_ack(
         "ignored": not accepted,
         "duplicate": False,
         "demo_mode": True,
+        "persisted": False,
+        "durable": False,
+        "persistence": persistence,
         "slug": public_payload["slug"],
         "canonical_slug": public_payload["canonical_slug"],
         "sector": public_payload["sector"],
@@ -1077,7 +1088,13 @@ def build_demo_survey_response_ack(
         "answers": answers,
         "respuestas": answers,
         "seeded_responses_before": DEMO_SURVEY_RESPONSE_COUNT,
-        "seeded_responses_after": DEMO_SURVEY_RESPONSE_COUNT + 1,
+        # The deterministic fixture is immutable. The browser may append this
+        # interaction to the current view, but a reload must return the same
+        # clearly-labelled synthetic baseline.
+        "seeded_responses_after": DEMO_SURVEY_RESPONSE_COUNT,
+        "simulated_view_responses_after": (
+            DEMO_SURVEY_RESPONSE_COUNT + 1 if accepted else DEMO_SURVEY_RESPONSE_COUNT
+        ),
         "public_url": public_payload["public_url"],
         "public_page_url": public_payload.get("public_page_url"),
         "respond_endpoint": public_payload["respond_endpoint"],
@@ -1098,7 +1115,8 @@ def build_demo_survey_response_ack(
         "analytics": {
             "accepted": accepted,
             "ignored": not accepted,
-            "source": "demo_survey_response_ack",
+            "persisted": False,
+            "source": "synthetic_ephemeral_demo",
         },
     }
 

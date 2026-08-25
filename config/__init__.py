@@ -894,6 +894,20 @@ class Config:
     ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 = _env_strict_opt_in(
         "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1"
     )
+    # Stores only isolated, non-municipal demo interactions. Runtime guards in
+    # the participation service additionally require Vercel Preview + Neon and
+    # reject both Production and Render even if this flag is misconfigured.
+    ENABLE_PREVIEW_DURABLE_DEMO_SURVEY_VOTES_V1 = _env_strict_opt_in(
+        "ENABLE_PREVIEW_DURABLE_DEMO_SURVEY_VOTES_V1"
+    )
+    PREVIEW_DURABLE_DEMO_NEON_BRANCH_ID = os.getenv(
+        "PREVIEW_DURABLE_DEMO_NEON_BRANCH_ID",
+        "",
+    ).strip()
+    PREVIEW_DURABLE_DEMO_SURVEY_MAX_INTERACTIONS = os.getenv(
+        "PREVIEW_DURABLE_DEMO_SURVEY_MAX_INTERACTIONS",
+        "50",
+    )
     SURVEY_SYNTHETIC_SEED_TENANT_IDS = os.getenv(
         "SURVEY_SYNTHETIC_SEED_TENANT_IDS",
         "",
@@ -2199,6 +2213,9 @@ class TestConfig(Config):
     CORS_ALLOW_LOCAL_DEV = True
     ALLOW_SURVEY_DEMO_SEEDING = True
     ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 = False
+    ENABLE_PREVIEW_DURABLE_DEMO_SURVEY_VOTES_V1 = False
+    PREVIEW_DURABLE_DEMO_NEON_BRANCH_ID = ""
+    PREVIEW_DURABLE_DEMO_SURVEY_MAX_INTERACTIONS = "50"
     SURVEY_SYNTHETIC_SEED_TENANT_IDS = ""
     SURVEY_JURISDICTION_GATE_MODE = "observe"
     SURVEY_JURISDICTION_GATE_TENANT_IDS = ""

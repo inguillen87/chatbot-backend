@@ -3426,6 +3426,85 @@ class SurveyResponseReceipt(db.Model):
     )
 
 
+class DemoSurveyParticipation(db.Model):
+    """Append-only receipt for an interactive synthetic-demo participation.
+
+    Demo instruments are deterministic presentation fixtures rather than
+    ``EncEncuesta`` records.  Keeping their interactions in a dedicated table
+    prevents a Preview/demo click from being promoted to municipal response
+    truth while still providing an exactly-once durable acknowledgement.
+
+    The raw submission id, request metadata, IP address and Turnstile token are
+    deliberately not persisted.  One row is both the minimized response and
+    its receipt, so the unique constraint commits both facts atomically.
+    """
+
+    __tablename__ = "demo_survey_participation"
+
+    RESPONSE_ORIGIN = "interactive_demo"
+
+    id = db.Column(db.Integer, primary_key=True)
+    survey_slug = db.Column(db.String(160), nullable=False)
+    tenant_slug = db.Column(db.String(160), nullable=False)
+    sector = db.Column(db.String(32), nullable=False)
+    question_id = db.Column(db.String(96), nullable=False)
+    option_id = db.Column(db.String(96), nullable=False)
+    submission_id_hash = db.Column(db.String(64), nullable=False)
+    payload_hash = db.Column(db.String(64), nullable=False)
+    instrument_sha256 = db.Column(db.String(64), nullable=False)
+    instrument_revision = db.Column(
+        db.Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    response_origin = db.Column(
+        db.String(32),
+        nullable=False,
+        default=RESPONSE_ORIGIN,
+        server_default=RESPONSE_ORIGIN,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "survey_slug",
+            "submission_id_hash",
+            name="uq_demo_survey_participation_slug_submission",
+        ),
+        db.CheckConstraint(
+            "instrument_revision >= 1",
+            name="ck_demo_survey_participation_revision_positive",
+        ),
+        db.CheckConstraint(
+            "response_origin = 'interactive_demo'",
+            name="ck_demo_survey_participation_origin",
+        ),
+        db.CheckConstraint(
+            "length(submission_id_hash) = 64 AND "
+            "length(payload_hash) = 64 AND "
+            "length(instrument_sha256) = 64",
+            name="ck_demo_survey_participation_hashes",
+        ),
+        db.Index(
+            "ix_demo_survey_participation_slug_option",
+            "survey_slug",
+            "instrument_sha256",
+            "option_id",
+        ),
+        db.Index(
+            "ix_demo_survey_participation_slug_order",
+            "survey_slug",
+            "instrument_sha256",
+            "id",
+        ),
+    )
+
+
 class SurveyResponseEffect(db.Model, TimestampMixin):
     """Durable, independently retryable side effect for one survey response."""
 

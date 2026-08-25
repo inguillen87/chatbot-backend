@@ -253,10 +253,22 @@ def test_public_demo_survey_detail_results_and_response(client):
     assert submitted_payload["demo_mode"] is True
     assert submitted_payload["contract_version"] == "demo.survey_response_ack.v1"
     assert submitted_payload["accepted"] is True
+    assert submitted_payload["persisted"] is False
+    assert submitted_payload["durable"] is False
+    assert submitted_payload["persistence"] == {
+        "contract_version": "demo.survey_persistence.v1",
+        "state": "not_persisted",
+        "durable": False,
+        "database_write": False,
+        "live_results_mutated": False,
+        "scope": "current_view",
+    }
     assert submitted_payload["answer_count"] == 1
     assert submitted_payload["answers"][0]["question_id"] == question["id"]
     assert submitted_payload["answers"][0]["option_id"] == option["id"]
     assert submitted_payload["seeded_responses_before"] == 100
+    assert submitted_payload["seeded_responses_after"] == 100
+    assert submitted_payload["simulated_view_responses_after"] == 101
     assert submitted_payload["resultados_envivo"]["total_respuestas"] == 100
     assert submitted_payload["results_endpoint"].endswith("/live-results")
     assert f"/e/{slug}" in submitted_payload["next_url"]
