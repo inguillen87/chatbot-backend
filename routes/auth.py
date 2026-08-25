@@ -572,7 +572,15 @@ def _clerk_error_response(
 def clerk_config():
     """Frontend contract for Clerk-based auth and tenant onboarding."""
 
-    return jsonify(build_clerk_frontend_contract())
+    response = jsonify(build_clerk_frontend_contract())
+    # This payload contains only public configuration and changes with a new
+    # deployment, not per user. A short shared cache keeps auth bootstrap from
+    # waking a cold backend instance on every public navigation.
+    response.headers["Cache-Control"] = (
+        "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+    )
+    response.headers["Vary"] = "Origin"
+    return response
 
 
 @auth_api_bp.route("/clerk/session", methods=["POST"])
