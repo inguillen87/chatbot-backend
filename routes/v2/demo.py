@@ -53,6 +53,7 @@ from services.education_contracts import (
     is_education_tenant,
 )
 from routes.v2.tenants import create_demo_session_token, decode_demo_session_token
+from utils.demo_session import stable_demo_chat_session_id as _stable_demo_chat_session_id
 
 v2_demo_bp = Blueprint("v2_demo", __name__, url_prefix="/api/v2/demo")
 demo_compat_bp = Blueprint("demo_compat", __name__)
@@ -61,16 +62,6 @@ demo_compat_bp = Blueprint("demo_compat", __name__)
 def _request_id() -> str:
     incoming = (request.headers.get("X-Request-Id") or "").strip()
     return incoming or uuid.uuid4().hex
-
-
-def _stable_demo_chat_session_id(demo_session_id: str | None) -> str:
-    token = str(demo_session_id or "").strip()
-    if not token:
-        return str(uuid.uuid4())
-    if len(token) <= 36:
-        return token
-    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
-    return f"sid_{digest}"
 
 
 def _twilio_sandbox_number() -> str:

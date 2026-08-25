@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, current_app, send_from_directory, make_response
 from extensions import db
 from models import ArchivoAdjunto, MunicipioTicket, PymeTicket, TenantProfile, User, AnalisisArchivo
+import hmac
 import os
 import uuid
 from werkzeug.utils import secure_filename
@@ -8,6 +9,7 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from datetime import datetime
 from utils.auth_helpers import anon_o_token_requerido
 from routes.auth import token_requerido
+from routes.v2.tenants import decode_demo_session_token
 from services.gcs_service import (
     upload_to_gcs,
     BUCKET_NAME,
@@ -22,18 +24,21 @@ from services.direct_attachment_upload import (
     DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
     DirectAttachmentUploadError,
     complete_direct_attachment_upload,
+    discard_direct_attachment_upload,
     prepare_direct_attachment_upload,
     resolve_direct_upload_scope,
 )
 from services.archivo_service import guardar_archivo_adjunto_ticket
 from services.employee_ticket_access import employee_ticket_category_access_allows
+from services.plan_access import tenant_allows_public_demo_uploads
 from services.ticket_service import servicio_tickets
 from services.tenant_ticket_scope import (
     municipio_ticket_belongs_to_tenant,
     resolve_unique_tenant_for_owner,
 )
 from utils.permissions import require_role
-from utils.roles import is_authorized_superadmin_user
+from utils.demo_session import stable_demo_chat_session_id
+from utils.roles import is_authorized_superadmin_user, normalize_tenant_slug
 from utils.lazy_module import LazyModule
 from utils.upload_limits import set_upload_request_limit
 
@@ -189,6 +194,82 @@ def allowed_mime(mime: str) -> bool:
 
 def allowed_file(filename: str) -> bool:
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _demo_session_owner_for_direct_upload(owner_user: User | None) -> User | None:
+    """Resolve a demo owner only from a valid signed, session-bound token."""
+
+    if owner_user is not None:
+        return owner_user
+
+    demo_session_id = str(
+        request.headers.get("X-Demo-Session-Id")
+        or request.headers.get("X-Demo-Session")
+        or ""
+    ).strip()
+    if not demo_session_id:
+        return None
+
+    demo_payload = decode_demo_session_token(demo_session_id)
+    if not isinstance(demo_payload, dict):
+        raise DirectAttachmentUploadError(
+            "demo_session_expired",
+            "La sesion de demostracion no es valida o vencio.",
+            403,
+        )
+
+    claimed_slug = normalize_tenant_slug(demo_payload.get("tenant_slug"))
+    requested_slug = normalize_tenant_slug(request.headers.get("X-Tenant-Slug"))
+    if not claimed_slug:
+        raise DirectAttachmentUploadError(
+            "demo_session_expired",
+            "La sesion de demostracion no contiene un tenant valido.",
+            403,
+        )
+    if requested_slug and not hmac.compare_digest(
+        requested_slug.encode("utf-8"),
+        claimed_slug.encode("utf-8"),
+    ):
+        raise DirectAttachmentUploadError(
+            "upload_scope_mismatch",
+            "La sesion de demostracion no pertenece al tenant solicitado.",
+            409,
+        )
+
+    chat_session_id = str(request.headers.get("X-Chat-Session-Id") or "").strip()
+    expected_chat_session_id = stable_demo_chat_session_id(demo_session_id)
+    if not chat_session_id or not hmac.compare_digest(
+        chat_session_id.encode("utf-8"),
+        expected_chat_session_id.encode("utf-8"),
+    ):
+        raise DirectAttachmentUploadError(
+            "upload_scope_mismatch",
+            "La sesion de chat no coincide con la sesion de demostracion.",
+            409,
+        )
+
+    tenant = TenantProfile.query.filter_by(slug=claimed_slug, is_active=True).first()
+    if tenant is None:
+        raise DirectAttachmentUploadError(
+            "tenant_scope_required",
+            "No se pudo resolver el tenant activo de la demostracion.",
+            403,
+        )
+    if not tenant_allows_public_demo_uploads(tenant):
+        raise DirectAttachmentUploadError(
+            "demo_upload_not_allowed",
+            "Este tenant no habilita adjuntos en sesiones publicas de demostracion.",
+            403,
+        )
+    owner_id = getattr(tenant, "municipio_id", None) or getattr(tenant, "pyme_id", None)
+    resolved_owner = db.session.get(User, owner_id) if owner_id else None
+    if resolved_owner is None:
+        raise DirectAttachmentUploadError(
+            "tenant_scope_required",
+            "No se pudo resolver el responsable del tenant de la demostracion.",
+            403,
+        )
+    return resolved_owner
 
 
 def _municipio_tenant_for_actor(user: User) -> TenantProfile | None:
@@ -797,6 +878,28 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         response.headers["Pragma"] = "no-cache"
         return response
 
+    def _direct_error(exc: DirectAttachmentUploadError):
+        error_payload = {
+            "ok": False,
+            "contract_version": DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
+            "code": exc.code,
+            "error": exc.message,
+            "retryable": exc.retryable,
+        }
+        if exc.code == "file_too_large":
+            error_payload["max_file_bytes"] = int(STORAGE_MAX_FILE_SIZE)
+        if exc.rate_limit:
+            error_payload["rate_limit"] = exc.rate_limit
+        response = _direct_json(error_payload, exc.status_code)
+        if exc.retry_after_seconds > 0:
+            response.headers["Retry-After"] = str(exc.retry_after_seconds)
+        return response
+
+    try:
+        owner_user = _demo_session_owner_for_direct_upload(owner_user)
+    except DirectAttachmentUploadError as exc:
+        return _direct_error(exc)
+
     if request.is_json:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
@@ -812,7 +915,11 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
             )
 
         operation = str(payload.get("operation") or "").strip().lower()
-        if operation not in {"prepare_direct_upload", "complete_direct_upload"}:
+        if operation not in {
+            "prepare_direct_upload",
+            "complete_direct_upload",
+            "discard_direct_upload",
+        }:
             return _direct_json(
                 {
                     "ok": False,
@@ -837,28 +944,19 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
                     allowed_mime_types=ALLOWED_CHAT_MIMES,
                     max_file_bytes=STORAGE_MAX_FILE_SIZE,
                 )
-            else:
+            elif operation == "complete_direct_upload":
                 result = complete_direct_attachment_upload(
+                    payload,
+                    scope=scope,
+                )
+            else:
+                result = discard_direct_attachment_upload(
                     payload,
                     scope=scope,
                 )
             return _direct_json(result, 200)
         except DirectAttachmentUploadError as exc:
-            error_payload = {
-                "ok": False,
-                "contract_version": DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
-                "code": exc.code,
-                "error": exc.message,
-                "retryable": exc.retryable,
-            }
-            if exc.code == "file_too_large":
-                error_payload["max_file_bytes"] = int(STORAGE_MAX_FILE_SIZE)
-            if exc.rate_limit:
-                error_payload["rate_limit"] = exc.rate_limit
-            response = _direct_json(error_payload, exc.status_code)
-            if exc.retry_after_seconds > 0:
-                response.headers["Retry-After"] = str(exc.retry_after_seconds)
-            return response
+            return _direct_error(exc)
 
     if 'file' not in request.files:
         return _json({"error": "No se encontro el campo de archivo file"}, 400)
