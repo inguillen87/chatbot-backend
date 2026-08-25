@@ -16,27 +16,32 @@ revertido y no se movió DNS. Las variables de futuros deployments fueron
 corregidas para Neon principal, la cola Socket.IO quedó sincronizada con Redis y
 el cron queda fail-closed hasta una activación explícita.
 
-No se debe apagar Render todavía. Antes faltan aplicar la única migración de
-esquema pendiente en Neon principal, cerrar la paridad de workers/crons y ejecutar
-la verificación remota completa con escritura controlada.
+No se debe apagar Render todavía. Neon principal está en
+`20260825_demo_survey_participation_v1` y conserva dos revisiones pendientes:
+la reparación acotada de tres tickets históricos y la tabla durable de
+idempotencia del chat municipal. Ambas ya fueron ensayadas con éxito sobre una
+rama temporal aislada; falta la autorización y ventana de corte para aplicarlas
+en principal, cerrar la paridad de workers/crons y ejecutar la verificación
+remota completa con escritura controlada.
 
 ## Evidencia por fase
 
 | Fase | Estado | Evidencia |
 | --- | --- | --- |
 | Inventario y aislamiento | Completa | Trabajo realizado en ramas/worktrees aislados; el DNS público de API continúa en Render. |
-| Neon QA | Completa | Rama QA: 171 tablas y 53.220 filas. Neon principal: 170 tablas y 52.751 filas, todavía una revisión Alembic detrás. La diferencia de QA incluye tráfico de prueba y no debe fusionarse como datos de Producción. |
-| Backend Vercel Preview | Completa | Deployment `dpl_CpkSoRTiAToWjwep3YFDtBXwX78g`, región `gru1`, estado `Ready`, construido desde el worktree limpio en `b172f4ae4`. El alias `api-preview.chatboc.ar` fue verificado contra ese deployment. |
-| Frontend Vercel Preview | Completa | Deployment `dpl_FyqvHD4DNppT3WkboA2LxCH33KWv`, estado `Ready`, commit `80d3ada8`. |
+| Neon QA | Completa | QA y principal permanecen sin promover. Neon principal: 171 tablas, 52.751 filas inventariadas y revisión `20260825_demo_survey_participation_v1`. La rama temporal `br-falling-wind-actm4mcu` fue creada desde principal para el ensayo final. |
+| Ensayo Neon de migraciones | Completa | Preflight inicial: 171 tablas, 52.751 filas, dos revisiones pendientes, 0/3 tickets reparados y tabla de idempotencia ausente. Preflight final: 172 tablas, misma suma de filas, revisión `20260825_chat_idempotency_v1`, 3/3 tickets reparados, tabla e índice presentes, `ready=true`. Principal fue reconsultada después y permaneció intacta. |
+| Backend Vercel Preview | Completa | Deployment `dpl_FJirKYFqLL1Sp4xLGVqEw8SEEYUW`, región `gru1`, estado `Ready`, construido desde el SHA exacto `a17e90a6be20069655dcf91d0e434a6a2e518291`. El alias `api-preview.chatboc.ar` fue verificado contra ese deployment. |
+| Frontend Vercel Preview | Completa | Deployment `dpl_G35fJ8h48qVyzjHdwCGDPoPHNmBp`, estado `Ready`, SHA exacto `054ae14ed33fa471346a1ae45a0d8a10979891b7`; el HTML del alias y de la URL inmutable tuvo el mismo SHA-256. |
 | Demo ejecutiva y territorial | Completa en Preview | Contrato `demo.admin_preview.v1`, mapa MapLibre, KPIs reconciliados y responsive. |
-| Aceptación remota read-only | Completa | Contra el deployment nuevo: 3 pruebas pasaron y 1 prueba durable quedó omitida por `WRITE_QA=0`; sin escrituras. Mapa, realtime directo, responsive, QR y URLs WhatsApp quedaron verificados. |
+| Aceptación remota read-only | Completa | Contratos de versión/readiness/admin Preview, encuesta, resultados, sesión y menú pasaron por frontend y backend. Desktop y móvil quedaron sin errores de página ni respuestas HTTP `>=400`; mapa MapLibre con 5 puntos, encuesta sintética de 100 respuestas y disclosure explícito fueron verificados. WhatsApp quedó comprobado hasta launcher/capacidades, sin enviar un mensaje real. |
 | Arranque en frío | Mejorado, todavía pendiente estructural | El primer health del deployment nuevo midió 14,24 s; tres requests activos midieron 0,48 s, 0,21 s y 0,38 s. Mejora respecto de ~16 s, pero todavía requiere precalentamiento para la reunión. |
 | Candidato Production | Revertido | `dpl_8AAiQbu1oWFZLLDyfFLcYfe4T5Z5` arrancó y respondió health, pero usó la base Render. Se revirtió al deployment anterior antes de cualquier corte de DNS. |
 | Seguridad de cron | Corregida en código/configuración futura | `VERCEL_OUTBOX_CRON_ENABLED=false` por defecto; 13 invocaciones del candidato finalizaron a las 08:11:15 UTC y no reaparecieron tras el rollback. WhatsApp quedó sin efectos; los efectos de encuesta requieren reconciliación antes del corte. |
 | Variables Production futuras | Parcial | `DATABASE_URL` y `SQLALCHEMY_DATABASE_URI` fueron sincronizadas explícitamente desde `NEON_DATABASE_URL` pooled; `ALEMBIC_DB_URL` y `MIGRATIONS_DATABASE_URL` desde la URL directa; `SOCKETIO_MESSAGE_QUEUE_URL` desde `REDIS_URL`. Los valores no se imprimieron y solo aplican a deployments nuevos. |
-| Paridad operativa Render | Parcial | Los 3 workers permanentes quedan cubiertos por ciclos acotados del cron de outbox. WhatsApp payload retention y survey privacy ya tienen cron Vercel con horarios equivalentes, bearer y gate destructivo independiente en `false`. Falta validar todo remotamente y reemplazar el reporte semanal. |
-| Reporte semanal | Bloqueado correctamente | El comando actual carga todos los tenants sin límite y no posee lease ni unicidad idempotente. No fue expuesto como endpoint ni agendado en Vercel para evitar llamadas duplicadas a proveedores. |
-| Turnstile real | Pendiente externo | Requiere completar la autorización de Cloudflare y probar el desafío humano real. |
+| Paridad operativa Render | Parcial | Outbox, WhatsApp payload retention, survey privacy y reporte semanal tienen ciclos acotados y cuatro cron declarados en Vercel. Todos permanecen fail-closed mediante gates independientes en `false` hasta su validación remota y activación controlada. |
+| Reporte semanal | Implementado, gate pendiente | El procesamiento ahora es acotado e idempotente y el cron está declarado. Falta verificar una ejecución remota controlada antes de activarlo. |
+| Cloudflare/Turnstile | Fuera del corte actual | Cloudflare no forma parte de esta migración ni es requisito para la demo ejecutiva. No se activó AI Gateway ni se incorporó la promoción recibida por correo. |
 | Producción y retiro de Render | Pendiente | No ejecutar hasta completar backup, migración final, smoke con escritura, webhooks y rollback. |
 
 ## URLs correctas de Preview
@@ -70,9 +75,10 @@ Iniciarlo entre dos y cinco minutos antes de la presentación y mantener esa ter
 
 1. Crear una rama/backup verificable de Neon principal y registrar revisión
    Alembic, conteos, constraints y LSN.
-2. Aplicar exclusivamente `20260825_demo_survey_participation_v1` a Neon
-   principal y verificar 171 tablas, tabla vacía, índices y trigger inmutable.
-3. Cerrar la paridad de los 3 workers y 3 cron declarados en `render.yaml`; no
+2. Aplicar exclusivamente las dos revisiones ya ensayadas —reparación acotada de
+   tickets e idempotencia municipal— y verificar revisión final, 172 tablas,
+   3/3 reparaciones y tabla/índice de idempotencia.
+3. Cerrar la paridad de los 3 workers y 4 cron declarados en `vercel.json`; no
    asumir que un web container reemplaza procesos permanentes.
 4. Confirmar por nombres/targets todas las variables de Production sin imprimir
    secretos y comprobar que no quedan referencias a Render.
@@ -83,7 +89,8 @@ Iniciarlo entre dos y cinco minutos antes de la presentación y mantener esa ter
    subida de archivos, QR/WhatsApp y tiempo real contra Neon principal.
 7. Activar cron de forma controlada, ejecutar una escritura canaria idempotente y
    reconciliar UI, API, base, logs y proveedores.
-8. Validar webhooks reales de WhatsApp/Twilio y Turnstile con evidencia externa.
+8. Validar webhooks reales de WhatsApp/Twilio con evidencia externa; Turnstile
+   queda como hardening opcional separado y no como dependencia del corte.
 9. Mover `api.chatboc.ar`, observar y probar rollback a Render durante la ventana
    de corte.
 10. Recién después, detener los workers/web de Render y eliminar el servicio pago
