@@ -11,7 +11,11 @@ Checklist mínimo para probar despliegue sin sorpresas.
 
 PostgreSQL y Redis son dependencias obligatorias del web service en Render. No
 se considera listo un deploy que arranca con SQLite, un rate limiter en memoria
-o una URL de Redis configurada pero inaccesible.
+o una URL de Redis configurada pero inaccesible. En runtimes production-like,
+la sonda PostgreSQL también exige la tabla crítica
+`municipio_chat_idempotency_receipt`: la ruta municipal con idempotencia está
+registrada siempre y no puede servir tráfico correctamente sin esa migración.
+No se inspeccionan filas ni se exige el catálogo completo de tablas opcionales.
 
 ## Variables recomendadas (hardening)
 
@@ -43,6 +47,8 @@ o una URL de Redis configurada pero inaccesible.
    - `GET /health` devuelve `200` (liveness del proceso).
    - `GET /health/ready` devuelve `200`, `status=ready`, DB `ok` y Redis `ok`.
      Un `503` bloquea la promoción; usar `request_id` para correlacionar logs.
+     `components.database.reason_code=required_schema_missing` identifica una
+     base conectada cuya migración crítica todavía no está disponible.
    - login
    - `/auth/widget/bootstrap`
    - `/analytics/event`

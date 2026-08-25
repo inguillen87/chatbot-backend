@@ -28,6 +28,13 @@ _DEFAULT_DATABASE_TIMEOUT_SECONDS = 1.5
 _DEFAULT_REDIS_TIMEOUT_SECONDS = 1.0
 _MIN_TIMEOUT_SECONDS = 0.1
 _MAX_TIMEOUT_SECONDS = 5.0
+# Keep this list deliberately small.  These relations back unconditionally
+# registered request paths, so a production-like runtime cannot serve its
+# advertised contract without them.  Optional feature tables belong behind
+# their corresponding runtime flags instead of being added here wholesale.
+_REQUIRED_POSTGRESQL_TABLES = (
+    "municipio_chat_idempotency_receipt",
+)
 
 
 class _CacheEntry:
@@ -139,7 +146,7 @@ def _database_status(
     timeout_seconds: float,
     require_postgresql: bool,
 ) -> dict[str, Any]:
-    """Run a side-effect-free database probe with a short statement timeout."""
+    """Run bounded connectivity and critical-schema probes without row reads."""
 
     timeout_ms = max(1, int(timeout_seconds * 1000))
     dialect_name = ""
@@ -152,11 +159,53 @@ def _database_status(
                 connection.exec_driver_sql(
                     f"SET LOCAL statement_timeout = {timeout_ms}"
                 )
-            result = connection.execute(
-                text("SELECT 1").execution_options(timeout=timeout_seconds)
-            )
-            if result.scalar_one() != 1:
-                raise RuntimeError("unexpected database readiness result")
+            if require_postgresql and dialect_name == "postgresql":
+                bind_params = {
+                    f"required_table_{index}": table_name
+                    for index, table_name in enumerate(
+                        _REQUIRED_POSTGRESQL_TABLES
+                    )
+                }
+                relation_lookups = ", ".join(
+                    "pg_catalog.to_regclass(:required_table_"
+                    f"{index})"
+                    for index in range(len(_REQUIRED_POSTGRESQL_TABLES))
+                )
+                schema_statement = text(
+                    "SELECT COUNT(*) = :required_table_count "
+                    "FROM pg_catalog.pg_class "
+                    f"WHERE oid IN ({relation_lookups}) "
+                    "AND relkind IN ('r', 'p')"
+                ).execution_options(timeout=timeout_seconds)
+                schema_available = connection.execute(
+                    schema_statement,
+                    {
+                        **bind_params,
+                        "required_table_count": len(
+                            _REQUIRED_POSTGRESQL_TABLES
+                        ),
+                    },
+                ).scalar_one()
+                if schema_available is not True:
+                    logger.warning(
+                        "Runtime readiness database schema probe failed "
+                        "reason_code=required_schema_missing"
+                    )
+                    return {
+                        "status": "error",
+                        "required": True,
+                        "reason_code": "required_schema_missing",
+                    }
+            else:
+                result = connection.execute(
+                    text("SELECT 1").execution_options(
+                        timeout=timeout_seconds
+                    )
+                )
+                if result.scalar_one() != 1:
+                    raise RuntimeError(
+                        "unexpected database readiness result"
+                    )
     except Exception as exc:
         logger.warning(
             "Runtime readiness database probe failed error_type=%s",

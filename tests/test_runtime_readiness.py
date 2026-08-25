@@ -29,10 +29,13 @@ def _sqlite_engine():
     return create_engine("sqlite:///:memory:", future=True)
 
 
-def _postgres_engine():
+def _postgres_engine(*, schema_available=True):
     class Result:
+        def __init__(self, value):
+            self.value = value
+
         def scalar_one(self):
-            return 1
+            return self.value
 
     class Connection:
         dialect = SimpleNamespace(name="postgresql")
@@ -40,6 +43,7 @@ def _postgres_engine():
         def __init__(self):
             self.driver_statements = []
             self.statements = []
+            self.statement_parameters = []
 
         def __enter__(self):
             return self
@@ -50,9 +54,12 @@ def _postgres_engine():
         def exec_driver_sql(self, statement):
             self.driver_statements.append(statement)
 
-        def execute(self, statement):
+        def execute(self, statement, parameters=None):
             self.statements.append(statement)
-            return Result()
+            self.statement_parameters.append(parameters)
+            if "pg_catalog.pg_class" in str(statement):
+                return Result(schema_available)
+            return Result(1)
 
     connection = Connection()
     return SimpleNamespace(connect=lambda: connection), connection
@@ -61,7 +68,7 @@ def _postgres_engine():
 def test_database_and_redis_are_ready_with_short_timeouts():
     redis_client = _HealthyRedis()
     factory_calls = []
-    engine, _connection = _postgres_engine()
+    engine, connection = _postgres_engine()
 
     def redis_factory(uri, **kwargs):
         factory_calls.append((uri, kwargs))
@@ -97,6 +104,46 @@ def test_database_and_redis_are_ready_with_short_timeouts():
         )
     ]
     assert redis_client.closed is True
+    assert len(connection.statements) == 1
+    assert "pg_catalog.to_regclass" in str(connection.statements[0])
+    assert connection.statement_parameters[0] == {
+        "required_table_0": "municipio_chat_idempotency_receipt",
+        "required_table_count": 1,
+    }
+
+
+def test_missing_required_postgres_table_is_not_ready_and_skips_redis():
+    engine, connection = _postgres_engine(schema_available=False)
+    redis_factory_calls = []
+
+    payload = evaluate_runtime_readiness(
+        engine=engine,
+        redis_uri="redis://redis.internal:6379/0",
+        production_like=True,
+        redis_factory=lambda *_args, **_kwargs: redis_factory_calls.append(True),
+    )
+
+    assert payload == {
+        "contract_version": "runtime.readiness.v1",
+        "ready": False,
+        "status": "not_ready",
+        "components": {
+            "database": {
+                "status": "error",
+                "required": True,
+                "reason_code": "required_schema_missing",
+            },
+            "redis": {"status": "not_checked", "required": True},
+        },
+    }
+    assert redis_factory_calls == []
+    assert connection.statement_parameters[0] == {
+        "required_table_0": "municipio_chat_idempotency_receipt",
+        "required_table_count": 1,
+    }
+    assert "demo_survey_participation" not in repr(
+        connection.statement_parameters[0]
+    )
 
 
 def test_postgres_database_probe_sets_local_statement_timeout():
@@ -461,6 +508,50 @@ def test_readiness_route_returns_200_and_correlated_request_id(monkeypatch):
     assert second.get_json()["request_id"] == "readiness-ok-2"
     assert second.headers["X-Request-Id"] == "readiness-ok-2"
     assert redis_calls == [True]
+
+
+def test_vercel_preview_route_caches_fail_closed_schema_result(monkeypatch):
+    for variable in (
+        "ENV",
+        "FLASK_ENV",
+        "RENDER",
+        "RENDER_EXTERNAL_URL",
+        "VERCEL",
+        "VERCEL_ENV",
+        "VERCEL_URL",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("VERCEL_ENV", "preview")
+
+    redis_calls = []
+    monkeypatch.setattr(
+        "services.runtime_readiness.Redis.from_url",
+        lambda *_args, **_kwargs: redis_calls.append(True),
+    )
+    engine, connection = _postgres_engine(schema_available=False)
+    app = _route_app(monkeypatch, environment="testing", engine=engine)
+
+    first = app.test_client().get(
+        "/health/ready",
+        headers={"X-Request-Id": "schema-missing-1"},
+    )
+    second = app.test_client().get(
+        "/health/ready",
+        headers={"X-Request-Id": "schema-missing-2"},
+    )
+
+    assert first.status_code == 503
+    assert second.status_code == 503
+    assert first.get_json()["contract_version"] == "runtime.readiness.v1"
+    assert first.get_json()["components"]["database"] == {
+        "status": "error",
+        "required": True,
+        "reason_code": "required_schema_missing",
+    }
+    assert second.get_json()["request_id"] == "schema-missing-2"
+    assert len(connection.statements) == 1
+    assert redis_calls == []
 
 
 def test_readiness_route_returns_sanitized_503(monkeypatch):
