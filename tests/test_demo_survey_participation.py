@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import sqlalchemy as sa
@@ -22,6 +23,7 @@ from services.demo_surveys import (
 )
 from services.encuestas_service import EncuestaError
 import services.demo_survey_participation as participation
+from socket_service import socketio
 
 
 SLUG = "demo-gobierno-junin-prioridades-barriales"
@@ -104,6 +106,13 @@ def test_preview_durable_http_flow_is_exactly_once_across_public_aliases(
     detail_before = client.get(f"/api/v2/public/surveys/{SLUG}")
     assert detail_before.status_code == 200, detail_before.get_json()
     assert detail_before.get_json()["resultados_envivo"]["total_respuestas"] == 100
+    expected_room = f"encuesta:junin:{SLUG}"
+    assert detail_before.get_json()["realtime"]["room"] == expected_room
+    assert detail_before.get_json()["realtime"]["rooms"] == [expected_room]
+    assert "legacy_room" not in detail_before.get_json()["realtime"]
+    assert detail_before.get_json()["realtime"]["socket"]["join_payloads"] == [
+        {"room": expected_room}
+    ]
     assert detail_before.get_json()["persistence"] == {
         "contract_version": "demo.survey_persistence.v1",
         "state": "durable_preview",
@@ -113,15 +122,21 @@ def test_preview_durable_http_flow_is_exactly_once_across_public_aliases(
         "municipal_truth": False,
     }
 
-    first = client.post(
-        f"/api/v2/public/surveys/{SLUG}/respond",
-        json=payload,
-        headers={
-            "Idempotency-Key": SUBMISSION_ID,
-            "X-Turnstile-Token": "valid-preview-token",
-        },
-    )
+    with patch("socket_service.socketio.emit") as first_publish:
+        first = client.post(
+            f"/api/v2/public/surveys/{SLUG}/respond",
+            json=payload,
+            headers={
+                "Idempotency-Key": SUBMISSION_ID,
+                "X-Turnstile-Token": "valid-preview-token",
+            },
+        )
     assert first.status_code == 201, first.get_json()
+    assert [call.args[0] for call in first_publish.call_args_list] == [
+        "survey_update",
+        "survey_update_v2",
+        "survey.vote.created",
+    ]
     first_ack = first.get_json()
     assert first_ack["contract_version"] == "surveys.public_response.v2"
     assert first_ack["legacy_contract_version"] == "demo.survey_participation.v1"
@@ -131,6 +146,9 @@ def test_preview_durable_http_flow_is_exactly_once_across_public_aliases(
     assert first_ack["municipal_truth"] is False
     assert first_ack["response_origin"] == "interactive_demo"
     assert first_ack["replayed"] is False
+    assert first_ack["realtime"]["room"] == expected_room
+    assert "legacy_room" not in first_ack["realtime"]
+    assert first_ack["realtime"]["delivery"] == "publish_accepted"
     assert first_ack["idempotency"]["state"] == "committed"
     assert first_ack["frontend_contract"]["persistence"] == first_ack["persistence"]
     assert verify_calls == ["valid-preview-token"]
@@ -146,15 +164,17 @@ def test_preview_durable_http_flow_is_exactly_once_across_public_aliases(
 
     # A committed retry through the legacy alias bypasses one-shot Turnstile
     # and returns the same durable receipt without a second row.
-    replay = client.post(
-        f"/api/public/encuestas/v1/{SLUG}/responder",
-        json=payload,
-        headers={"Idempotency-Key": SUBMISSION_ID},
-    )
+    with patch("socket_service.socketio.emit") as replay_publish:
+        replay = client.post(
+            f"/api/public/encuestas/v1/{SLUG}/responder",
+            json=payload,
+            headers={"Idempotency-Key": SUBMISSION_ID},
+        )
     assert replay.status_code == 200, replay.get_json()
     replay_ack = replay.get_json()
     assert replay_ack["response_id"] == first_ack["response_id"]
     assert replay_ack["replayed"] is True
+    replay_publish.assert_not_called()
     assert verify_calls == ["valid-preview-token"]
     assert DemoSurveyParticipation.query.count() == 1
     assert EncRespuesta.query.count() == 0
@@ -511,6 +531,138 @@ def test_admin_projection_rejects_non_finite_percentages(
 
     with pytest.raises(ValueError, match="percentage is invalid"):
         participation._merge_durable_live_results_into_demo_item(item, live)
+
+
+def test_committed_demo_vote_emits_v2_events_only_to_tenant_scoped_room(demo_app):
+    receipt = participation.persist_demo_survey_participation(
+        SLUG,
+        _submission(),
+        submission_id=SUBMISSION_ID,
+    )
+    aggregate = participation.get_demo_survey_participation_aggregate(SLUG)
+    expected_room = f"encuesta:junin:{SLUG}"
+
+    with patch("socket_service.socketio.emit") as socket_emit:
+        published = participation.publish_durable_demo_survey_participation_update(
+            receipt,
+            aggregate,
+        )
+
+    assert published is True
+    assert [call.args[0] for call in socket_emit.call_args_list] == [
+        "survey_update",
+        "survey_update_v2",
+        "survey.vote.created",
+    ]
+    assert {call.kwargs.get("room") for call in socket_emit.call_args_list} == {
+        expected_room
+    }
+    modern_payload = socket_emit.call_args_list[1].args[1]
+    assert modern_payload["contract_version"] == "surveys.live_results.v2"
+    assert modern_payload["tenant_slug"] == "junin"
+    assert modern_payload["slug"] == SLUG
+    assert modern_payload["total_respuestas"] == 101
+    assert modern_payload["event"]["event_name"] == "survey.response.committed"
+    assert len(modern_payload["event"]["event_id"]) == 64
+    assert "legacy_results" not in modern_payload
+
+    replay = participation.persist_demo_survey_participation(
+        SLUG,
+        _submission(),
+        submission_id=SUBMISSION_ID,
+    )
+    assert replay.replayed is True
+    with patch("socket_service.socketio.emit") as replay_emit:
+        republished = participation.publish_durable_demo_survey_participation_update(
+            replay,
+            aggregate,
+        )
+    assert republished is False
+    replay_emit.assert_not_called()
+
+
+def test_durable_demo_socket_membership_ack_receives_committed_vote(demo_app):
+    expected_room = f"encuesta:junin:{SLUG}"
+    socket_client = socketio.test_client(demo_app)
+    try:
+        assert socket_client.is_connected()
+        socket_client.emit("join", {"room": expected_room})
+        join_events = socket_client.get_received()
+        join_ack = next(event for event in join_events if event["name"] == "join_ack")
+        assert join_ack["args"][0] == {
+            "room": expected_room,
+            "access_mode": "public_survey_room",
+        }
+
+        response = demo_app.test_client().post(
+            f"/api/v2/public/surveys/{SLUG}/respond",
+            json=_submission(),
+            headers={"Idempotency-Key": SUBMISSION_ID},
+        )
+        assert response.status_code == 201, response.get_json()
+        events = socket_client.get_received()
+        event_names = {event["name"] for event in events}
+        assert event_names == {
+            "survey_update",
+            "survey_update_v2",
+            "survey.vote.created",
+        }
+        update = next(event for event in events if event["name"] == "survey_update_v2")
+        assert update["args"][0]["tenant_slug"] == "junin"
+        assert update["args"][0]["slug"] == SLUG
+        assert update["args"][0]["total_respuestas"] == 101
+    finally:
+        if socket_client.is_connected():
+            socket_client.disconnect()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("survey_slug", "demo-gobierno-ushuaia-prioridades-barriales"),
+        ("tenant_slug", "ushuaia"),
+    ],
+)
+def test_demo_realtime_scope_mismatch_fails_closed_before_emit(
+    demo_app,
+    field,
+    value,
+):
+    receipt = participation.persist_demo_survey_participation(
+        SLUG,
+        _submission(),
+        submission_id=SUBMISSION_ID,
+    )
+    aggregate = participation.get_demo_survey_participation_aggregate(SLUG)
+    aggregate[field] = value
+
+    with patch("socket_service.socketio.emit") as socket_emit:
+        published = participation.publish_durable_demo_survey_participation_update(
+            receipt,
+            aggregate,
+        )
+
+    assert published is False
+    socket_emit.assert_not_called()
+
+
+def test_socket_failure_keeps_committed_demo_write_and_returns_polling_fallback(
+    demo_app,
+):
+    client = demo_app.test_client()
+    with patch("socket_service.socketio.emit", side_effect=RuntimeError("broker unavailable")):
+        response = client.post(
+            f"/api/v2/public/surveys/{SLUG}/respond",
+            json=_submission(),
+            headers={"Idempotency-Key": SUBMISSION_ID},
+        )
+
+    assert response.status_code == 201, response.get_json()
+    payload = response.get_json()
+    assert payload["persisted"] is True
+    assert payload["durable"] is True
+    assert payload["realtime"]["delivery"] == "polling_fallback"
+    assert DemoSurveyParticipation.query.count() == 1
 
 
 def test_model_unique_constraint_keeps_one_receipt(demo_app):

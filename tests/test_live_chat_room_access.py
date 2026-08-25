@@ -557,7 +557,72 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             on_join({"room": "encuesta:junin:consulta-barrial"})
 
         join_room.assert_called_once_with("encuesta:junin:consulta-barrial")
-        emit.assert_not_called()
+        emit.assert_called_once_with(
+            "join_ack",
+            {
+                "room": "encuesta:junin:consulta-barrial",
+                "access_mode": "public_survey_room",
+            },
+        )
+
+    def test_enabled_durable_demo_room_joins_only_registry_derived_tenant_and_acks(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        room = f"encuesta:junin:{slug}"
+
+        with patch(
+            "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+            return_value=True,
+        ), patch("socket_service.join_room") as join_room, patch(
+            "socket_service.emit"
+        ) as emit:
+            on_join({"room": room, "tenant_slug": "ushuaia"})
+
+        join_room.assert_called_once_with(room)
+        emit.assert_called_once_with(
+            "join_ack",
+            {"room": room, "access_mode": "public_survey_room"},
+        )
+
+    def test_durable_demo_room_rejects_cross_tenant_and_legacy_alias(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        rejected_rooms = [
+            f"encuesta:ushuaia:{slug}",
+            f"encuesta_{slug}",
+            "encuesta:ju/nin:demo-gobierno-ju/nin-prioridades-barriales",
+        ]
+
+        for room in rejected_rooms:
+            with self.subTest(room=room), patch(
+                "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+                return_value=True,
+            ), patch("socket_service.join_room") as join_room, patch(
+                "socket_service.emit"
+            ) as emit:
+                on_join({"room": room, "tenant_slug": "junin"})
+
+            join_room.assert_not_called()
+            emit.assert_called_once_with(
+                "join_error",
+                {"error": "room_not_joinable", "room": room},
+            )
+
+    def test_default_off_demo_room_remains_polling_only(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        room = f"encuesta:junin:{slug}"
+
+        with patch(
+            "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+            return_value=False,
+        ), patch("socket_service.join_room") as join_room, patch(
+            "socket_service.emit"
+        ) as emit:
+            on_join({"room": room})
+
+        join_room.assert_not_called()
+        emit.assert_called_once_with(
+            "join_error",
+            {"error": "room_not_joinable", "room": room},
+        )
 
     def test_legacy_unscoped_survey_room_is_rejected(self):
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:

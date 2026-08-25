@@ -63,6 +63,7 @@ from services.demo_survey_participation import (
     find_demo_survey_participation_replay,
     get_demo_survey_participation_aggregate,
     persist_demo_survey_participation,
+    publish_durable_demo_survey_participation_update,
 )
 from services.public_survey_intake import (
     attach_public_survey_rate_limit_headers,
@@ -1268,6 +1269,10 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                     submission_id=submission_id,
                 )
                 demo_aggregate = get_demo_survey_participation_aggregate(slug)
+                realtime_published = publish_durable_demo_survey_participation_update(
+                    demo_receipt,
+                    demo_aggregate,
+                )
                 durable_ack = build_demo_survey_participation_ack(
                     demo_receipt,
                     aggregate=demo_aggregate,
@@ -1275,6 +1280,9 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             except EncuestaError as err:
                 return _public_error_response(err)
             durable_ack["request_id"] = request_id
+            durable_ack["realtime"]["delivery"] = (
+                "publish_accepted" if realtime_published else "polling_fallback"
+            )
             response = jsonify(durable_ack)
             response.headers.setdefault("X-Request-Id", request_id)
             attach_public_survey_rate_limit_headers(

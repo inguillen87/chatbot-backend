@@ -904,11 +904,60 @@ def _survey_candidates_for_slug(slug_publico: str) -> list[EncEncuesta]:
     ]
 
 
+def _durable_demo_survey_tenant_slug(slug_publico: str) -> str:
+    """Resolve the tenant owned by an enabled durable Preview demo fixture.
+
+    Demo instruments intentionally do not exist in ``enc_encuesta``.  Their
+    room scope must therefore come from the immutable demo registry, never
+    from a client supplied tenant hint.  Static/default-off demos remain
+    polling-only and cannot open a Socket.IO room.
+    """
+
+    normalized_slug = str(slug_publico or "").strip()
+    if (
+        not normalized_slug.startswith("demo-")
+        or normalized_slug != normalized_slug.lower()
+        or not _is_valid_survey_room_segment(normalized_slug)
+    ):
+        return ""
+
+    try:
+        from services.demo_survey_participation import (
+            durable_demo_survey_participation_enabled,
+        )
+        from services.demo_surveys import build_demo_public_survey_payload
+
+        if not durable_demo_survey_participation_enabled():
+            return ""
+        public_payload = build_demo_public_survey_payload(normalized_slug)
+    except Exception:
+        # A misconfigured opt-in gate already fails the HTTP demo flow closed.
+        # Socket authorization must likewise reject without trusting hints.
+        current_app.logger.warning(
+            "Durable demo survey socket authorization unavailable slug=%s",
+            normalized_slug,
+        )
+        return ""
+
+    if not isinstance(public_payload, dict):
+        return ""
+    if str(public_payload.get("slug") or "").strip().lower() != normalized_slug:
+        return ""
+    normalized_tenant = str(public_payload.get("tenant_slug") or "").strip().lower()
+    if not _is_valid_survey_room_segment(normalized_tenant):
+        return ""
+    return normalized_tenant
+
+
 def _resolve_survey_tenant_slug(slug_publico: str, data: Any, tenant_slug: str | None) -> str:
     slug = str(slug_publico or "").strip()
     if not _is_valid_survey_room_segment(slug):
         return ""
     try:
+        demo_tenant_slug = _durable_demo_survey_tenant_slug(slug)
+        if demo_tenant_slug:
+            return demo_tenant_slug
+
         candidates = _survey_candidates_for_slug(slug)
         if len(candidates) == 1:
             return _tenant_slug_for_survey_tenant_id(candidates[0].tenant_id)
@@ -979,11 +1028,11 @@ def _is_authorized_survey_room(room: str) -> bool:
     return bool(_authorized_survey_room(room))
 
 
-def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
+def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> bool:
     """Emit a live update for a specific survey/poll."""
     rooms = _survey_realtime_rooms(slug_publico, data, tenant_slug=tenant_slug)
     if not rooms:
-        return
+        return False
     if isinstance(data, dict) and data.get("contract_version") == "surveys.live_results.v2":
         legacy_payload = data.get("legacy_results")
         modern_payload = {key: value for key, value in data.items() if key != "legacy_results"}
@@ -991,10 +1040,11 @@ def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = N
             socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
             socketio.emit('survey_update_v2', modern_payload, room=room)
             socketio.emit('survey.vote.created', modern_payload, room=room)
-        return
+        return True
     for room in rooms:
         socketio.emit('survey_update', data, room=room)
         socketio.emit('survey.vote.created', data, room=room)
+    return True
 
 
 def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
@@ -1150,6 +1200,13 @@ def on_join(data):
     if authorized_survey_room:
         join_room(authorized_survey_room)
         current_app.logger.debug("Client joined public survey room: %s", authorized_survey_room)
+        emit(
+            'join_ack',
+            {
+                'room': authorized_survey_room,
+                'access_mode': 'public_survey_room',
+            },
+        )
         return
 
     if room.startswith('ticket_'):

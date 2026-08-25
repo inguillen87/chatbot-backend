@@ -55,6 +55,7 @@ from services.demo_survey_participation import (
     find_demo_survey_participation_replay,
     get_demo_survey_participation_aggregate,
     persist_demo_survey_participation,
+    publish_durable_demo_survey_participation_update,
 )
 from services.plan_access import (
     integration_access_payload,
@@ -3336,6 +3337,10 @@ def respond_public_survey_v2(token: str):
                 submission_id=submission_id,
             )
             demo_aggregate = get_demo_survey_participation_aggregate(token)
+            realtime_published = publish_durable_demo_survey_participation_update(
+                demo_receipt,
+                demo_aggregate,
+            )
             durable_ack = build_demo_survey_participation_ack(
                 demo_receipt,
                 aggregate=demo_aggregate,
@@ -3343,6 +3348,9 @@ def respond_public_survey_v2(token: str):
         except EncuestaError as exc:
             db.session.rollback()
             return _encuesta_error_response(exc)
+        durable_ack["realtime"]["delivery"] = (
+            "publish_accepted" if realtime_published else "polling_fallback"
+        )
         response = _json_response(
             _attach_demo_response_contract(
                 durable_ack,

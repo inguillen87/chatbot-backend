@@ -759,6 +759,81 @@ def _percentages_for_counts(counts: list[int]) -> list[float]:
     return [round(value / 100, 2) for value in basis_points]
 
 
+def _durable_demo_realtime_contract(
+    slug: str,
+    tenant_slug: str,
+    *,
+    current: Mapping[str, Any] | None = None,
+    result_version: Any = None,
+    snapshot_version: Any = None,
+) -> dict[str, Any]:
+    """Advertise the one tenant-scoped room owned by a durable demo fixture."""
+
+    normalized_slug = str(slug or "").strip().lower()
+    normalized_tenant = str(tenant_slug or "").strip().lower()
+    if not normalized_slug or not normalized_tenant:
+        raise ValueError("durable demo realtime scope is incomplete")
+    room = f"encuesta:{normalized_tenant}:{normalized_slug}"
+    payload = deepcopy(dict(current or {}))
+    polling = (
+        dict(payload.get("polling"))
+        if isinstance(payload.get("polling"), Mapping)
+        else {}
+    )
+    polling.update(
+        {
+            "enabled": True,
+            "interval_ms": int(polling.get("interval_ms") or 8000),
+            "fallback_after_ms": int(polling.get("fallback_after_ms") or 15000),
+        }
+    )
+    versioning = (
+        dict(payload.get("versioning"))
+        if isinstance(payload.get("versioning"), Mapping)
+        else {}
+    )
+    versioning.update(
+        {
+            "result_version": result_version,
+            "snapshot_version": snapshot_version,
+            "result_version_field": "result_version",
+            "snapshot_version_field": "snapshot_version",
+        }
+    )
+    payload.update(
+        {
+            "contract_version": "surveys.realtime.v2",
+            "enabled": True,
+            "demo_mode": True,
+            "transports": ["socket.io", "polling"],
+            "room": room,
+            "primary_room": room,
+            "rooms": [room],
+            "socket": {
+                "enabled": True,
+                "path": "/api/socket.io",
+                "join_event": "join",
+                "join_payload": {"room": room},
+                "join_payloads": [{"room": room}],
+                "events": [
+                    {
+                        "name": "survey_update_v2",
+                        "contract_version": "surveys.live_results.v2",
+                    },
+                    {
+                        "name": "survey.vote.created",
+                        "contract_version": "surveys.live_results.v2",
+                    },
+                    {"name": "survey_update", "contract_version": "legacy"},
+                ],
+            },
+            "polling": polling,
+            "versioning": versioning,
+        }
+    )
+    return payload
+
+
 def merge_demo_participation_into_live_results(
     live_results: Mapping[str, Any],
     aggregate: Mapping[str, Any],
@@ -770,6 +845,10 @@ def merge_demo_participation_into_live_results(
     aggregate_slug = str(aggregate.get("survey_slug") or "").strip().lower()
     if not slug or slug != aggregate_slug:
         raise ValueError("demo survey aggregate does not match live-results slug")
+    tenant_slug = str(payload.get("tenant_slug") or "").strip().lower()
+    aggregate_tenant = str(aggregate.get("tenant_slug") or "").strip().lower()
+    if not tenant_slug or tenant_slug != aggregate_tenant:
+        raise ValueError("demo survey aggregate does not match live-results tenant")
 
     raw_seeded = payload.get("seeded_responses", DEMO_SURVEY_RESPONSE_COUNT)
     try:
@@ -883,22 +962,13 @@ def merge_demo_participation_into_live_results(
         heatmap_payload["metadata"] = metadata
         payload["heatmap"] = heatmap_payload
 
-    realtime = payload.get("realtime")
-    if isinstance(realtime, Mapping):
-        realtime_payload = dict(realtime)
-        versioning = (
-            dict(realtime_payload.get("versioning"))
-            if isinstance(realtime_payload.get("versioning"), Mapping)
-            else {}
-        )
-        versioning.update(
-            {
-                "result_version": total_responses,
-                "snapshot_version": snapshot_version,
-            }
-        )
-        realtime_payload["versioning"] = versioning
-        payload["realtime"] = realtime_payload
+    payload["realtime"] = _durable_demo_realtime_contract(
+        slug,
+        tenant_slug,
+        current=payload.get("realtime") if isinstance(payload.get("realtime"), Mapping) else None,
+        result_version=total_responses,
+        snapshot_version=snapshot_version,
+    )
 
     return payload
 
@@ -1160,8 +1230,66 @@ def build_durable_demo_public_survey_payload(
     ):
         if key in live_results:
             payload[key] = deepcopy(live_results[key])
+    payload["realtime"] = deepcopy(live_results["realtime"])
     payload["durable_demo_participation"] = True
     return payload
+
+
+def publish_durable_demo_survey_participation_update(
+    receipt: DemoSurveyParticipationReceipt,
+    aggregate: Mapping[str, Any],
+) -> bool:
+    """Publish one committed demo vote to its exact tenant-scoped room.
+
+    Replays deliberately do not republish.  Polling remains the durable
+    fallback if Socket.IO publication is unavailable after the receipt commit.
+    """
+
+    if receipt.replayed:
+        return False
+    try:
+        _require_enabled()
+        aggregate_slug = str(aggregate.get("survey_slug") or "").strip().lower()
+        aggregate_tenant = str(aggregate.get("tenant_slug") or "").strip().lower()
+        if aggregate_slug != receipt.survey_slug or aggregate_tenant != receipt.tenant_slug:
+            raise ValueError("demo survey realtime aggregate scope mismatch")
+
+        base_payload = build_demo_live_results_payload(receipt.survey_slug)
+        if base_payload is None:
+            return False
+        modern_payload = merge_demo_participation_into_live_results(base_payload, aggregate)
+        legacy_payload = deepcopy(modern_payload)
+        modern_payload["legacy_contract_version"] = modern_payload.get("contract_version")
+        modern_payload["contract_version"] = "surveys.live_results.v2"
+        modern_payload["legacy_results"] = legacy_payload
+        modern_payload["event"] = {
+            "contract_version": "surveys.realtime_effect.v2",
+            "event_id": hashlib.sha256(
+                f"demo-survey-response:{receipt.survey_slug}:{receipt.response_id}".encode("utf-8")
+            ).hexdigest(),
+            "event_name": "survey.response.committed",
+            "response_id": int(receipt.response_id),
+            "slug": receipt.survey_slug,
+            "tenant_slug": receipt.tenant_slug,
+        }
+
+        from socket_service import emit_survey_update
+
+        return bool(
+            emit_survey_update(
+                receipt.survey_slug,
+                modern_payload,
+                tenant_slug=receipt.tenant_slug,
+            )
+        )
+    except Exception:
+        if has_app_context():
+            current_app.logger.exception(
+                "Durable demo survey realtime publish failed slug=%s response_id=%s",
+                receipt.survey_slug,
+                receipt.response_id,
+            )
+        return False
 
 
 def build_demo_survey_participation_ack(
@@ -1203,6 +1331,23 @@ def build_demo_survey_participation_ack(
         "scope": "interactive_demo_only",
         "municipal_truth": False,
     }
+    max_response_id = (
+        max(0, int(aggregate.get("max_response_id") or 0))
+        if aggregate is not None
+        else 0
+    )
+    snapshot_version = (
+        f"demo:{receipt.survey_slug}:seed:{DEMO_SURVEY_RESPONSE_COUNT}:"
+        f"interactive:{interactive_after}:receipt:{max_response_id}"
+        if interactive_after is not None
+        else None
+    )
+    realtime = _durable_demo_realtime_contract(
+        receipt.survey_slug,
+        receipt.tenant_slug,
+        result_version=total_after,
+        snapshot_version=snapshot_version,
+    )
     payload: dict[str, Any] = {
         "contract_version": PUBLIC_RESPONSE_CONTRACT_VERSION,
         "participation_contract_version": PARTICIPATION_CONTRACT_VERSION,
@@ -1226,6 +1371,7 @@ def build_demo_survey_participation_ack(
         "option_id": receipt.option_id,
         "idempotency": idempotency,
         "persistence": persistence,
+        "realtime": realtime,
         "seeded_responses_before": DEMO_SURVEY_RESPONSE_COUNT,
         "seeded_responses_after": DEMO_SURVEY_RESPONSE_COUNT,
         "interactive_demo_responses_after": interactive_after,
@@ -1271,5 +1417,6 @@ __all__ = [
     "get_demo_survey_participation_aggregate",
     "merge_demo_participation_into_live_results",
     "persist_demo_survey_participation",
+    "publish_durable_demo_survey_participation_update",
     "prepare_demo_survey_participation",
 ]

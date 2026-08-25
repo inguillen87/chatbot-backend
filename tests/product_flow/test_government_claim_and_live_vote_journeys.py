@@ -728,7 +728,12 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         )
         self.assertTrue(socket_client.is_connected())
         socket_client.emit("join", {"room": expected_room})
-        socket_client.get_received()
+        join_events = socket_client.get_received()
+        join_ack = next(event for event in join_events if event["name"] == "join_ack")
+        self.assertEqual(
+            join_ack["args"][0],
+            {"room": expected_room, "access_mode": "public_survey_room"},
+        )
 
         question = public_payload["preguntas"][0]
         first_option = question["opciones"][0]
