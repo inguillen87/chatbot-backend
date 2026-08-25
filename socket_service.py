@@ -1,6 +1,6 @@
 from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
-from config import ALLOWED_ORIGINS
+from config import SOCKET_CORS_ALLOWED_ORIGINS
 from models import ChatSessionContext, EncEncuesta, EncLink, User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
 from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
@@ -25,7 +25,10 @@ import os
 import re
 
 SOCKET_CORS_ORIGINS = list(
-    dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
+    dict.fromkeys(
+        list(SOCKET_CORS_ALLOWED_ORIGINS)
+        + ["https://chatboc.ar", "https://www.chatboc.ar"]
+    )
 )
 
 TICKET_OPERATOR_ROLES = {"admin", "empleado", "manager", "supervisor"}

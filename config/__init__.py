@@ -485,6 +485,34 @@ CREDENTIALS_ALLOWED_ORIGINS = list(allowed_urls)
 # Backwards-compatible export. It no longer contains wildcard Vercel previews.
 ALLOWED_ORIGINS = CREDENTIALS_ALLOWED_ORIGINS
 
+
+def _resolve_socket_cors_origins() -> List[str]:
+    """Build an exact allowlist for Socket.IO browser handshakes.
+
+    Socket.IO may be hosted on a different Vercel project than the frontend.
+    Those cross-project origins must be configured explicitly and are kept
+    separate from the credentialed HTTP CORS policy. Wildcards, paths and
+    insecure production origins fail closed.
+    """
+
+    resolved = [origin for origin in CREDENTIALS_ALLOWED_ORIGINS if isinstance(origin, str)]
+    configured = str(os.getenv("SOCKET_CORS_ALLOWED_ORIGINS") or "")
+    for candidate in configured.split(","):
+        normalized = _normalize_cors_origin(candidate)
+        if not normalized:
+            continue
+        parsed_origin = urlparse(normalized)
+        if "*" in str(parsed_origin.hostname or ""):
+            continue
+        if IS_PRODUCTION_RUNTIME and parsed_origin.scheme.lower() != "https":
+            continue
+        if normalized not in resolved:
+            resolved.append(normalized)
+    return resolved
+
+
+SOCKET_CORS_ALLOWED_ORIGINS = _resolve_socket_cors_origins()
+
 # --- Demo Rubros Loader ----------------------------------------------------
 
 _DEMO_RUBRO_ENV_FIELDS = {
