@@ -16,7 +16,7 @@ project_root_chat_routes = os.path.abspath(os.path.join(os.path.dirname(__file__
 if project_root_chat_routes not in sys.path:
     sys.path.insert(0, project_root_chat_routes)
 
-from flask import Blueprint, request, jsonify, current_app, g
+from flask import Blueprint, request, jsonify, current_app, g, make_response
 from sqlalchemy import func, desc
 from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modified
@@ -60,7 +60,10 @@ from services.demo_surveys import (
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
-from services.tenant_ticket_scope import normalize_municipio_ticket_write_scope
+from services.tenant_ticket_scope import (
+    normalize_municipio_ticket_write_scope,
+    resolve_unique_tenant_for_owner,
+)
 from routes.v2.tenants import decode_demo_session_token
 from routes.auth import _first_active_tenant_for_demo
 from utils.auth_helpers import (
@@ -2819,11 +2822,465 @@ def _authenticate_and_get_user():
             return User.query.filter_by(token=token).first()
     return None
 
+
+def _municipio_idempotency_tenant(
+    *,
+    current_user: Optional[User],
+    owner_user: Optional[User],
+) -> Optional[TenantProfile]:
+    """Resolve the same server-owned tenant boundary used by municipal chat."""
+
+    request_payload = _request_json_payload()
+    demo_payload = _resolve_demo_session_payload()
+    owner_resolution_source = str(
+        getattr(g, "owner_resolution_source", "") or ""
+    ).strip().lower()
+    public_demo_can_override = bool(
+        _is_public_landing_request()
+        and owner_resolution_source
+        in {
+            "anonymous",
+            "default_municipio_owner",
+            "static_entity_token",
+            "explicit_entity_token",
+            "session_owner_context",
+        }
+    )
+    demo_tenant_slug = str(
+        demo_payload.get("tenant_slug")
+        or demo_payload.get("tenant")
+        or (
+            request.headers.get("X-Tenant-Slug")
+            or request.args.get("tenant_slug")
+            or request.args.get("tenant")
+            or request_payload.get("tenant_slug")
+            if public_demo_can_override
+            else ""
+        )
+        or ""
+    ).strip().lower()
+    if demo_tenant_slug and public_demo_can_override:
+        demo_tenant = _resolve_demo_tenant_for_chat(
+            demo_tenant_slug,
+            demo_payload.get("sector") or request_payload.get("sector"),
+        )
+        if demo_tenant is not None:
+            return demo_tenant
+
+    request_tenant = getattr(g, "tenant_profile", None) or getattr(
+        g, "current_tenant", None
+    )
+    if isinstance(request_tenant, TenantProfile):
+        return request_tenant
+
+    for actor in (owner_user, current_user):
+        if actor is None:
+            continue
+        tenant_id = getattr(actor, "tenant_id", None)
+        if tenant_id:
+            tenant = db.session.get(TenantProfile, tenant_id)
+            if tenant is not None:
+                return tenant
+        actor_id = getattr(actor, "id", None)
+        if not actor_id:
+            continue
+        try:
+            resolution = resolve_unique_tenant_for_owner(actor_id)
+        except ValueError:
+            continue
+        if resolution.status == "unique" and resolution.tenant is not None:
+            return resolution.tenant
+
+    if demo_tenant_slug:
+        return _resolve_demo_tenant_for_chat(
+            demo_tenant_slug,
+            demo_payload.get("sector") or request_payload.get("sector"),
+        )
+    return None
+
+
+def _municipio_idempotency_request_hash() -> str:
+    from services.municipio_chat_idempotency import canonical_request_hash
+
+    query_items = list(request.args.items(multi=True))
+    if request.is_json:
+        return canonical_request_hash(
+            endpoint="/api/ask/municipio",
+            query_items=query_items,
+            json_payload=request.get_json(silent=True),
+        )
+
+    if request.form or request.files:
+        form_items = [
+            (key, list(request.form.getlist(key)))
+            for key in sorted(request.form.keys())
+        ]
+        file_items: list[dict[str, Any]] = []
+        for field in sorted(request.files.keys()):
+            for uploaded in request.files.getlist(field):
+                stream = uploaded.stream
+                position = stream.tell()
+                digest = hashlib.sha256()
+                while True:
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                stream.seek(position)
+                file_items.append(
+                    {
+                        "field": field,
+                        "filename": uploaded.filename or "",
+                        "content_type": uploaded.content_type or "",
+                        "sha256": digest.hexdigest(),
+                    }
+                )
+        return canonical_request_hash(
+            endpoint="/api/ask/municipio",
+            query_items=query_items,
+            form_items=form_items,
+            file_items=file_items,
+        )
+
+    return canonical_request_hash(
+        endpoint="/api/ask/municipio",
+        query_items=query_items,
+        raw_body=request.get_data(cache=True),
+    )
+
+
+def _municipio_idempotency_error_response(
+    *,
+    reason_code: str,
+    message: str,
+    status_code: int,
+    retryable: bool,
+):
+    from services.municipio_chat_idempotency import CONTRACT_VERSION
+
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or getattr(g, "request_id", None)
+        or uuid.uuid4().hex
+    )
+    g.request_id = request_id
+    response = jsonify(
+        {
+            "contract_version": "shared.error.v1",
+            "idempotency_contract_version": CONTRACT_VERSION,
+            "ok": False,
+            "request_id": request_id,
+            "reason_code": reason_code,
+            "message": message,
+            "retryable": retryable,
+            "error": {"code": status_code, "message": message},
+        }
+    )
+    response.status_code = status_code
+    response.headers["X-Request-Id"] = request_id
+    response.headers["X-Chat-Idempotency-Contract"] = CONTRACT_VERSION
+    response.headers["X-Idempotency-Status"] = "rejected"
+    response.headers["Idempotency-Replayed"] = "false"
+    if retryable:
+        response.headers["Retry-After"] = "1"
+    return response
+
+
+def _apply_municipio_idempotency_headers(response, *, replayed: bool):
+    from services.municipio_chat_idempotency import CONTRACT_VERSION
+
+    response.headers["X-Chat-Idempotency-Contract"] = CONTRACT_VERSION
+    response.headers["X-Idempotency-Status"] = "replayed" if replayed else "accepted"
+    response.headers["Idempotency-Replayed"] = "true" if replayed else "false"
+    response.headers.setdefault("Cache-Control", "private, no-store")
+    return response
+
+
+def _assert_existing_municipio_session_tenant(
+    *,
+    chat_session_id: str,
+    tenant_id: int,
+) -> None:
+    """Fail closed before a keyed request can read a global session row."""
+
+    from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+    ensure_chat_session_context_schema(db.session)
+    existing_context = ChatSessionContext.query.filter_by(
+        chat_session_id=chat_session_id
+    ).one_or_none()
+    if existing_context is None:
+        return
+    try:
+        existing_tenant_id = int(existing_context.tenant_id)
+    except (TypeError, ValueError):
+        existing_tenant_id = None
+    if existing_tenant_id != int(tenant_id):
+        raise IdempotencyScopeConflict(
+            "La sesion indicada no pertenece al tenant validado. "
+            "No se realizo ninguna accion."
+        )
+
+
+def _municipio_chat_with_idempotency(
+    *,
+    current_user: Optional[User],
+    owner_user: Optional[User],
+    anon_id: Optional[str],
+):
+    """Execute or exactly replay one Idempotency-Key municipal chat turn."""
+
+    from services.municipio_chat_idempotency import (
+        IdempotencyPayloadConflict,
+        IdempotencyReplayUnavailable,
+        IdempotencyRequestInProgress,
+        IdempotencyResponseExpired,
+        IdempotencyScopeConflict,
+        InvalidIdempotencyKey,
+        build_identity,
+        claim_or_replay,
+        complete_receipt,
+        discard_processing_receipt,
+        execution_lock,
+        maybe_expire_completed_response_snapshots,
+        replay_snapshot,
+        validate_idempotency_key,
+    )
+
+    raw_key = request.headers.get("Idempotency-Key")
+    if raw_key in (None, ""):
+        return _procesar_chat(
+            "municipio",
+            current_user=current_user,
+            owner_user=owner_user,
+            anon_id=anon_id,
+        )
+    try:
+        idempotency_key = validate_idempotency_key(raw_key)
+    except InvalidIdempotencyKey as exc:
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=str(exc),
+            status_code=400,
+            retryable=False,
+        )
+
+    tenant = _municipio_idempotency_tenant(
+        current_user=current_user,
+        owner_user=owner_user,
+    )
+    if tenant is None:
+        return _municipio_idempotency_error_response(
+            reason_code="municipio_chat_idempotency_scope_unavailable",
+            message=(
+                "No se pudo validar el tenant para ejecutar este mensaje de forma "
+                "idempotente. No se realizo ninguna accion."
+            ),
+            status_code=422,
+            retryable=False,
+        )
+
+    chat_session_id, _, chat_session_source = _resolve_chat_session_id_from_request()
+    try:
+        _assert_existing_municipio_session_tenant(
+            chat_session_id=chat_session_id,
+            tenant_id=tenant.id,
+        )
+    except IdempotencyScopeConflict as exc:
+        db.session.rollback()
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=str(exc),
+            status_code=409,
+            retryable=False,
+        )
+    except SQLAlchemyError:
+        db.session.rollback()
+        current_app.logger.error(
+            "Municipal idempotency session scope unavailable."
+        )
+        return _municipio_idempotency_error_response(
+            reason_code="municipio_chat_idempotency_scope_unavailable",
+            message=(
+                "No se pudo validar la sesion de forma segura. "
+                "No se realizo ninguna accion."
+            ),
+            status_code=503,
+            retryable=False,
+        )
+
+    if current_user is not None and getattr(current_user, "id", None):
+        actor_kind = "user"
+        actor_id = current_user.id
+    else:
+        normalized_anon_id = str(anon_id or "").strip()
+        actor_kind = "session"
+        actor_id = (
+            json.dumps(
+                [chat_session_id, normalized_anon_id],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if chat_session_source != "generated"
+            else normalized_anon_id
+        )
+    if not actor_id or (
+        current_user is None and not str(anon_id or "").strip()
+    ):
+        return _municipio_idempotency_error_response(
+            reason_code="municipio_chat_idempotency_actor_unavailable",
+            message=(
+                "No se pudo validar la sesion para ejecutar este mensaje de forma "
+                "idempotente. No se realizo ninguna accion."
+            ),
+            status_code=422,
+            retryable=False,
+        )
+
+    try:
+        identity = build_identity(
+            tenant_id=tenant.id,
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            idempotency_key=idempotency_key,
+            request_hash=_municipio_idempotency_request_hash(),
+        )
+    except (TypeError, ValueError):
+        db.session.rollback()
+        return _municipio_idempotency_error_response(
+            reason_code="invalid_municipio_chat_idempotency_request",
+            message=(
+                "El request no se pudo normalizar de forma segura para "
+                "idempotencia. No se realizo ninguna accion."
+            ),
+            status_code=400,
+            retryable=False,
+        )
+
+    claimed_receipt_id = None
+    try:
+        with execution_lock(identity):
+            maybe_expire_completed_response_snapshots()
+            decision = claim_or_replay(identity)
+            if decision.replayed:
+                payload, status_code, response_request_id = replay_snapshot(
+                    decision.receipt_id
+                )
+                response = jsonify(payload)
+                response.status_code = status_code
+                if response_request_id:
+                    response.headers["X-Request-Id"] = response_request_id
+                return _apply_municipio_idempotency_headers(
+                    response,
+                    replayed=True,
+                )
+
+            effect_key = f"chat:{identity.lock_digest}"
+            claimed_receipt_id = decision.receipt_id
+            response = make_response(
+                _procesar_chat(
+                    "municipio",
+                    current_user=current_user,
+                    owner_user=owner_user,
+                    anon_id=anon_id,
+                    _idempotency_receipt_id=decision.receipt_id,
+                    _idempotency_effect_key=effect_key,
+                    _idempotency_tenant_id=tenant.id,
+                )
+            )
+            response_payload = response.get_json(silent=True)
+            if not isinstance(response_payload, (dict, list)):
+                raise IdempotencyReplayUnavailable(
+                    "Municipal chat returned a non-JSON response."
+                )
+            complete_receipt(
+                decision.receipt_id,
+                response_json=response_payload,
+                response_status=response.status_code,
+                response_request_id=response.headers.get("X-Request-Id"),
+            )
+            return _apply_municipio_idempotency_headers(
+                response,
+                replayed=False,
+            )
+    except IdempotencyScopeConflict as exc:
+        db.session.rollback()
+        if claimed_receipt_id is not None:
+            try:
+                discard_processing_receipt(claimed_receipt_id)
+            except Exception as discard_exc:
+                db.session.rollback()
+                current_app.logger.error(
+                    "Municipal idempotency scope rejection could not discard "
+                    "reservation error_type=%s",
+                    type(discard_exc).__name__,
+                )
+                return _municipio_idempotency_error_response(
+                    reason_code="municipio_chat_idempotency_replay_unavailable",
+                    message=(
+                        "La ejecucion fue bloqueada y no se repetira "
+                        "automaticamente."
+                    ),
+                    status_code=503,
+                    retryable=False,
+                )
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=str(exc),
+            status_code=409,
+            retryable=False,
+        )
+    except IdempotencyPayloadConflict as exc:
+        db.session.rollback()
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=str(exc),
+            status_code=409,
+            retryable=False,
+        )
+    except IdempotencyRequestInProgress as exc:
+        db.session.rollback()
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=(
+                "El mensaje con esta Idempotency-Key sigue en proceso. "
+                "Reintenta sin cambiar el payload."
+            ),
+            status_code=425,
+            retryable=True,
+        )
+    except IdempotencyResponseExpired as exc:
+        db.session.rollback()
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=str(exc),
+            status_code=410,
+            retryable=False,
+        )
+    except IdempotencyReplayUnavailable as exc:
+        db.session.rollback()
+        current_app.logger.error(
+            "Municipal chat idempotency replay unavailable error_type=%s",
+            type(exc).__name__,
+        )
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=(
+                "La ejecucion quedo reservada pero su respuesta no esta disponible. "
+                "No se repetiran acciones automaticamente."
+            ),
+            status_code=503,
+            retryable=False,
+        )
+
 def _procesar_chat(
     tipo_chat_fijo: str | None = None,
     current_user=None,
     owner_user=None,
     anon_id: str | None = None,
+    _idempotency_receipt_id: int | None = None,
+    _idempotency_effect_key: str | None = None,
+    _idempotency_tenant_id: int | None = None,
 ): 
     channel = "web"  # Define channel for this processing function
     original_user_payload = None
@@ -2876,6 +3333,22 @@ def _procesar_chat(
 
     actor_principal = current_user
 
+    if _idempotency_tenant_id is not None:
+        try:
+            _idempotency_tenant_id = int(_idempotency_tenant_id)
+        except (TypeError, ValueError) as exc:
+            from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+            raise IdempotencyScopeConflict(
+                "El tenant idempotente no es valido."
+            ) from exc
+        if _idempotency_tenant_id <= 0:
+            from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+            raise IdempotencyScopeConflict(
+                "El tenant idempotente no es valido."
+            )
+
     # Failsafe: make sure schema is aligned even if migrations lag behind
     ensure_chat_session_context_schema(db.session)
     try:
@@ -2921,6 +3394,19 @@ def _procesar_chat(
             200,
         )
 
+    if chat_context_obj is not None and _idempotency_tenant_id is not None:
+        try:
+            context_tenant_id = int(chat_context_obj.tenant_id)
+        except (TypeError, ValueError):
+            context_tenant_id = None
+        if context_tenant_id != _idempotency_tenant_id:
+            from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+            raise IdempotencyScopeConflict(
+                "La sesion indicada no pertenece al tenant validado. "
+                "No se realizo ninguna accion."
+            )
+
     if not chat_context_obj:
         current_app.logger.info(
             "No ChatSessionContext found; creating one session_metadata=%s",
@@ -2939,6 +3425,7 @@ def _procesar_chat(
             initial_context_data["demo_session_payload"] = demo_session_payload_for_context
         chat_context_obj = ChatSessionContext(
             chat_session_id=chat_session_id_header,
+            tenant_id=_idempotency_tenant_id,
             user_id=getattr(actor_principal, 'id', None),
             anon_id=anon_id if not actor_principal else None,
             context_data=initial_context_data
@@ -4210,6 +4697,7 @@ def _procesar_chat(
                 initial_context_data["demo_session_payload"] = demo_session_payload_for_context
             chat_context_obj = ChatSessionContext(
                 chat_session_id=chat_session_id_header,
+                tenant_id=_idempotency_tenant_id,
                 user_id=getattr(actor_principal, 'id', None), # Asociar con usuario logueado si existe
                 anon_id=anon_id if not actor_principal else None, # Asociar con anon_id si no hay usuario logueado
                 context_data=initial_context_data
@@ -4217,6 +4705,18 @@ def _procesar_chat(
             db.session.add(chat_context_obj)
             # No hacer commit aquí todavía, se hará después de procesar el chat
         else:
+            if _idempotency_tenant_id is not None:
+                try:
+                    context_tenant_id = int(chat_context_obj.tenant_id)
+                except (TypeError, ValueError):
+                    context_tenant_id = None
+                if context_tenant_id != _idempotency_tenant_id:
+                    from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+                    raise IdempotencyScopeConflict(
+                        "La sesion indicada no pertenece al tenant validado. "
+                        "No se realizo ninguna accion."
+                    )
             current_app.logger.info(
                 "ChatSessionContext cargado context_id=%s user_id=%s has_anon_id=%s",
                 _safe_internal_log_id(getattr(chat_context_obj, "id", None)),
@@ -4403,6 +4903,8 @@ def _procesar_chat(
                 channel=channel,
                 action_id=action_id,
                 anon_id=anon_id,
+                idempotency_key=_idempotency_effect_key,
+                tenant_id=_idempotency_tenant_id,
                 demo_metadata=demo_metadata_for_responder or None,
                 education_context=education_context_for_responder,
             )
@@ -4467,6 +4969,11 @@ def _procesar_chat(
             chat_session_id=chat_session_id_header,
             demo_session_active=demo_session_activa,
         )
+        # The demo contract can add button aliases after the first generic
+        # normalization pass.  Finalize those aliases before the durable
+        # response snapshot so a replay is byte-for-byte equivalent at the
+        # JSON contract level to the first HTTP response.
+        normalize_response_payload(resultado)
 
         # Si el usuario es anónimo y la acción requiere datos personales, pedir solo los faltantes.
         if is_anonymous and resultado and resultado.get("accion_backend") in ["crear_reclamo", "iniciar_reclamo"]:
@@ -4497,7 +5004,8 @@ def _procesar_chat(
         # Persistencia BE-01 conversation core (compatibilidad temporal con chat_session_id)
         try:
             tenant_for_conversation = (
-                getattr(chat_context_obj, "tenant_id", None)
+                _idempotency_tenant_id
+                or getattr(chat_context_obj, "tenant_id", None)
                 or getattr(owner_del_bot, "tenant_id", None)
                 or getattr(actor_principal, "tenant_id", None)
             )
@@ -4564,6 +5072,21 @@ def _procesar_chat(
 
         # This commit is for User.preguntas_usadas and ChatSessionContext primarily
         try:
+            if _idempotency_receipt_id is not None:
+                from services.municipio_chat_idempotency import complete_receipt
+
+                response_snapshot = json.loads(current_app.json.dumps(resultado))
+                complete_receipt(
+                    _idempotency_receipt_id,
+                    response_json=response_snapshot,
+                    response_status=200,
+                    response_request_id=(
+                        resultado.get("request_id")
+                        if isinstance(resultado, dict)
+                        else None
+                    ),
+                    commit=False,
+                )
             commit_with_retry(db.session)
         except Exception as e:
             db.session.rollback()
@@ -4693,7 +5216,11 @@ def ask_pyme(current_user=None, anon_id=None, owner_user=None):
 @anon_o_token_requerido
 def ask_municipio(current_user=None, anon_id=None, owner_user=None):
     user = owner_user or current_user
-    response = _procesar_chat("municipio", current_user=current_user, owner_user=user, anon_id=anon_id)
+    response = _municipio_chat_with_idempotency(
+        current_user=current_user,
+        owner_user=user,
+        anon_id=anon_id,
+    )
     return _log_widget_request(response, user)
 
 

@@ -33,10 +33,15 @@ class CorsOptionsTests(unittest.TestCase):
     def test_ask_municipio_options(self):
         resp = self.client.options('/ask/municipio', headers={
             'Origin': 'http://localhost:8080',
-            'Access-Control-Request-Method': 'POST'
+            'Access-Control-Request-Method': 'POST',
+            'Access-Control-Request-Headers': 'Content-Type, Idempotency-Key',
         })
         self.assertEqual(resp.status_code, 204)
         self.assertIn('Access-Control-Allow-Origin', resp.headers)
+        self.assertIn(
+            'Idempotency-Key',
+            resp.headers.get('Access-Control-Allow-Headers', ''),
+        )
 
     def test_options_allows_anon_id_header(self):
         resp = self.client.options('/perfil', headers={

@@ -2511,6 +2511,103 @@ class ChatSessionContext(db.Model):
     def __repr__(self):
         return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
 
+
+class MunicipioChatIdempotencyReceipt(db.Model):
+    """Durable, tenant-scoped replay receipt for municipal web chat turns.
+
+    Raw idempotency keys, actor/session identifiers and request bodies are not
+    retained.  Their SHA-256 digests provide the uniqueness and conflict
+    boundary.  ``response_json`` is the minimal unavoidable snapshot required
+    to return the exact successful HTTP body without running the LLM or any
+    domain/CRM side effect again.
+    """
+
+    __tablename__ = "municipio_chat_idempotency_receipt"
+
+    CONTRACT_VERSION = "chat.municipio.idempotency.v1"
+    STATUS_PROCESSING = "processing"
+    STATUS_COMPLETED = "completed"
+    STATUS_EXPIRED = "expired"
+    STATUSES = (STATUS_PROCESSING, STATUS_COMPLETED, STATUS_EXPIRED)
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    endpoint = db.Column(db.String(80), nullable=False)
+    actor_scope_hash = db.Column(db.String(64), nullable=False)
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_hash = db.Column(db.String(64), nullable=False)
+    status = db.Column(
+        db.String(16),
+        nullable=False,
+        default=STATUS_PROCESSING,
+        server_default=STATUS_PROCESSING,
+    )
+    response_status = db.Column(db.Integer, nullable=True)
+    response_json = db.Column(JSONType, nullable=True)
+    response_request_id = db.Column(db.String(128), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    expired_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "endpoint",
+            "actor_scope_hash",
+            "idempotency_key_hash",
+            name="uq_municipio_chat_idempotency_scope",
+        ),
+        db.CheckConstraint(
+            "status IN ('processing', 'completed', 'expired')",
+            name="ck_municipio_chat_idempotency_status",
+        ),
+        db.CheckConstraint(
+            "length(actor_scope_hash) = 64 AND "
+            "length(idempotency_key_hash) = 64 AND "
+            "length(request_hash) = 64",
+            name="ck_municipio_chat_idempotency_hashes",
+        ),
+        db.CheckConstraint(
+            "(status = 'processing' AND response_status IS NULL "
+            "AND response_json IS NULL AND completed_at IS NULL "
+            "AND expired_at IS NULL) OR "
+            "(status = 'completed' AND response_status BETWEEN 100 AND 599 "
+            "AND response_json IS NOT NULL AND completed_at IS NOT NULL "
+            "AND expired_at IS NULL) OR "
+            "(status = 'expired' AND response_status IS NULL "
+            "AND response_json IS NULL AND response_request_id IS NULL "
+            "AND completed_at IS NOT NULL AND expired_at IS NOT NULL)",
+            name="ck_municipio_chat_idempotency_completion",
+        ),
+        db.Index(
+            "ix_municipio_chat_idempotency_tenant_created",
+            "tenant_id",
+            "created_at",
+        ),
+    )
+
 class TicketRealtimeState(db.Model):
     __tablename__ = "ticket_realtime_state"
 

@@ -639,7 +639,9 @@ def create_app(config_class=Config):
             "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
             "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id, "
             "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Window, "
-            "X-RateLimit-Reset-After, Retry-After"
+            "X-RateLimit-Reset-After, Retry-After, "
+            "X-Chat-Idempotency-Contract, X-Idempotency-Status, "
+            "Idempotency-Replayed"
         )
 
         @app.after_request
@@ -698,6 +700,9 @@ def create_app(config_class=Config):
                 "X-RateLimit-Window",
                 "X-RateLimit-Reset-After",
                 "Retry-After",
+                "X-Chat-Idempotency-Contract",
+                "X-Idempotency-Status",
+                "Idempotency-Replayed",
             ],
         )
 

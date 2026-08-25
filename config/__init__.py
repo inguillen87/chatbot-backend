@@ -824,6 +824,36 @@ class Config:
         max_overflow=DATABASE_MAX_OVERFLOW,
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    MUNICIPIO_CHAT_IDEMPOTENCY_LOCK_TIMEOUT_SECONDS = _bounded_timeout_seconds(
+        os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_LOCK_TIMEOUT_SECONDS", "20"),
+        default=20.0,
+        minimum=0.1,
+        maximum=60.0,
+    )
+    MUNICIPIO_CHAT_IDEMPOTENCY_RESPONSE_RETENTION_DAYS = int(
+        _bounded_timeout_seconds(
+            os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_RESPONSE_RETENTION_DAYS", "30"),
+            default=30.0,
+            minimum=1.0,
+            maximum=90.0,
+        )
+    )
+    MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_BATCH_SIZE = int(
+        _bounded_timeout_seconds(
+            os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_BATCH_SIZE", "100"),
+            default=100.0,
+            minimum=1.0,
+            maximum=500.0,
+        )
+    )
+    MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_SWEEP_SECONDS = int(
+        _bounded_timeout_seconds(
+            os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_SWEEP_SECONDS", "300"),
+            default=300.0,
+            minimum=60.0,
+            maximum=3600.0,
+        )
+    )
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (MODO DEV/PROD)
     SESSION_COOKIE_DOMAIN = (None if ENV == "dev" else COOKIE_DOMAIN)
