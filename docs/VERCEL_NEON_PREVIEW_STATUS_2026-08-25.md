@@ -1,6 +1,6 @@
 # Chatboc Vercel + Neon — estado verificable de Preview
 
-Fecha de corte: 2026-08-25  
+Fecha de corte: 2026-08-25
 Alcance: entorno Preview y rama Neon QA. Producción y Render quedan fuera de este corte.
 
 ## Resultado ejecutivo
