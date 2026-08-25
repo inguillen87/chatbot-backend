@@ -135,7 +135,7 @@ An accountable human must approve every `unknown`, `media_review_required`, and 
 | Cache/temp | Rebuild or discard only after owner approval | Prove it is non-authoritative and has no pending work | Never assume a directory named `cache` is disposable |
 | Unknown | No destination | Human classification or private quarantine | Cannot proceed while unknown remains |
 
-The object key must be generated independently from the original filename and scoped by tenant. Store the source `path_id`, destination object ID, source size/hash, destination size/hash, encryption class, tenant, migration attempt, and verification state in a private migration ledger.
+The object key must be generated independently from the original filename. Authoritatively owned objects are scoped by tenant. An object whose tenant cannot be demonstrated may only use the separately approved opaque quarantine prefix; it must not carry a tenant field or update an application reference. Store the source `path_id`, destination object ID, source size/hash, destination size/hash, disposition, migration attempt, and verification state in a private migration ledger.
 
 ## Phase 4: SQLite consistent snapshot and restore proof
 
@@ -171,19 +171,30 @@ The input approval map is a separate owner-only `0600` JSON file in an owner-onl
 
 ```json
 {
-  "contract_version": "storage.r2.approved-reference-map.v1",
+  "contract_version": "storage.r2.approved-reference-map.v2",
   "key_id": "inventory-2026-08-r1",
   "integrity_algorithm": "HMAC-SHA256",
   "approved_payload": {
     "scope_id": "chatboc:production:backend:disk-data-v1",
     "source_manifest_mac": "<independently recorded 64-hex manifest MAC>",
     "approval_status": "approved",
+    "quarantine_policy": {
+      "destination_prefix": "render-quarantine-v1",
+      "visibility": "private",
+      "reference_updates": "forbidden"
+    },
     "references": [
       {
         "path_id": "<64-hex signed-manifest path_id>",
         "tenant_slug": "<approved lowercase tenant slug>",
         "destination_key": "render-import-v1/<tenant_slug>/<first-2-path_id>/<path_id>",
-        "approval_status": "approved"
+        "approval_status": "tenant-approved"
+      },
+      {
+        "path_id": "<64-hex signed-manifest path_id with unresolved tenant>",
+        "quarantine_reason": "tenant-unresolved",
+        "destination_key": "render-quarantine-v1/<first-2-path_id>/<path_id>",
+        "approval_status": "quarantine-approved"
       }
     ]
   },
@@ -193,7 +204,7 @@ The input approval map is a separate owner-only `0600` JSON file in an owner-onl
 
 An accountable operator must produce and approve that map from the private review artifact and an authoritative tenant/reference reconciliation. Seal the exact approved payload with `seal_approved_reference_map`; its HMAC key is domain-separated from both the manifest and ledger keys. Record the emitted map MAC in an independent protected change record or approved operator channel. At execution, `STORAGE_EXPECTED_APPROVED_MAP_MAC` is mandatory and must come from that independent record, never from the map envelope. The expected MAC is checked in constant time and the HMAC is recomputed before any semantic mapping is trusted or any R2 client is created.
 
-Every `media_review_required` manifest record must appear exactly once. The migrator fails closed if one is missing, pending, duplicated, points outside the manifest, has a non-deterministic destination, or is not explicitly approved. It refuses mappings for `secret`, `secret_review_required`, `database`, `unknown`, cache, or tenant-configuration records. Do not copy an unverified count such as “476 references” or “34 unmappable” into the change record: record only counts reproduced from the signed manifest and approved map used by the command.
+Every `media_review_required` manifest record must appear exactly once as either `tenant-approved` or `quarantine-approved`. Tenant approval requires a valid tenant slug and the deterministic tenant prefix. Quarantine approval requires the exact `tenant-unresolved` reason, forbids a tenant field, and requires the deterministic quarantine prefix. The migrator fails closed if one is missing, pending, duplicated, points outside the manifest, crosses those routes, has a non-deterministic destination, or is not explicitly approved. It refuses mappings for `secret`, `secret_review_required`, `database`, `unknown`, cache, or tenant-configuration records. Do not copy an unverified count such as “476 references” or “34 unmappable” into the change record: record only counts reproduced from the signed manifest and approved map used by the command.
 
 Keep shell tracing disabled and inject the existing inventory master key, all three independent expected anchors, and R2 credentials from approved secret storage. The command reads `STORAGE_INVENTORY_MASTER_KEY`, `STORAGE_EXPECTED_MANIFEST_MAC`, `STORAGE_EXPECTED_APPROVED_MAP_MAC`, `STORAGE_EXPECTED_R2_DESTINATION_FINGERPRINT`, `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, and optional `R2_REGION`; never place their values in this runbook or shell history.
 
@@ -216,7 +227,7 @@ python scripts/migrate_render_uploads_to_r2.py \
   --scope-id "$STORAGE_SCOPE_ID"
 ```
 
-Review the one aggregate `storage.r2.migration-summary.v1` stdout object. It contains counts and a stable error code only; it does not contain source paths, object keys, hashes, credentials, or provider error details. `go_for_cutover` remains `false`. Resolve every error before enabling writes.
+Review the one aggregate `storage.r2.migration-summary.v2` stdout object. It contains separate tenant-approved and quarantine-approved object/verified-byte counts, the no-reference-update quarantine policy, aggregate progress, and a stable error code only; it does not contain source paths, object keys, hashes, credentials, or provider error details. `go_for_cutover` remains `false`. Resolve every error before enabling writes.
 
 The write path requires both the `copy-missing` subcommand and the explicit `--execute` gate. Omitting either remains a dry run:
 
@@ -231,11 +242,11 @@ python scripts/migrate_render_uploads_to_r2.py \
   copy-missing --execute
 ```
 
-For a missing key, the command sends `PutObject` with `If-None-Match: *`, `Content-MD5`, an exact content length, and opaque source identifiers. A concurrent `412 Precondition Failed` is never treated as success by itself: the command repeats `HeadObject` and downloads the complete winner. Every existing, newly written, concurrently won, and resumed object is accepted only after its byte length and locally recomputed SHA-256 match the signed source manifest. ETag is not used as a content checksum. Existing mismatches are collisions and are never overwritten.
+For a missing key, the command sends `PutObject` with `If-None-Match: *`, `Content-MD5`, an exact content length, opaque source identifiers, and the approved disposition. Quarantine objects are additionally marked `quarantine=true` and `reference-updates=forbidden`; the command never creates application references for them. A concurrent `412 Precondition Failed` is never treated as success by itself: the command repeats `HeadObject` and downloads the complete winner. Every existing, newly written, concurrently won, and resumed object is accepted only after its byte length and locally recomputed SHA-256 match the signed source manifest. ETag is not used as a content checksum. Existing mismatches are collisions and are never overwritten.
 
 The default invocation is capped at 1,000 approved objects (`--max-objects`) and 64 MiB buffered per object (`--max-object-bytes`). Raising either is an explicit capacity/risk decision because buffering is what makes the bytes hashed from the secure descriptor exactly the bytes submitted to R2. Split larger batches or objects into a separately reviewed plan instead of silently bypassing either bound.
 
-After each successful destination rehash, the command atomically creates or replaces a private `0600` `storage.r2.migration-ledger.v1` checkpoint. Its HMAC is domain-separated from the signed-manifest MAC and binds the key ID, logical scope, source manifest MAC, authenticated approved-map MAC, independently pinned normalized destination fingerprint, completed path IDs, and their deterministic opaque destination keys. It contains no plaintext source paths, endpoint, bucket, credentials, provider error details, or citizen data. A retry re-verifies both source and destination; a completed ledger entry whose object disappeared is a hard failure. Run only one operator instance per ledger even though conditional R2 creation prevents overwrites, so concurrent checkpoint replacements cannot discard each other's progress.
+After each successful destination rehash, the command atomically creates or replaces a private `0600` `storage.r2.migration-ledger.v2` checkpoint. Its HMAC is domain-separated from the signed-manifest MAC and binds the key ID, logical scope, source manifest MAC, authenticated approved-map MAC, independently pinned normalized destination fingerprint, completed path IDs, approved disposition, destination class, and deterministic opaque destination keys. It contains no plaintext source paths, endpoint, bucket, credentials, provider error details, or citizen data. A retry re-verifies both source and destination; a completed ledger entry whose object disappeared is a hard failure. Run only one operator instance per ledger even though conditional R2 creation prevents overwrites, so concurrent checkpoint replacements cannot discard each other's progress.
 
 If a post-PUT download or checksum fails, the command records no completed entry and performs no automatic delete. Preserve the Render source and R2 evidence, quarantine the deterministic key through the approved incident process, and investigate before retrying. Phase 5A never calls an R2 delete API, never modifies `/data`, and never updates Neon. Application references and traffic therefore continue to use the legacy storage path until a later, separately reviewed reconciliation/cutover phase.
 

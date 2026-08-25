@@ -16,6 +16,12 @@ from scripts.migrate_render_uploads_to_r2 import (
     ApprovedReference,
     MigrationError,
     PosixManifestSourceReader,
+    QUARANTINE_APPROVAL_STATUS,
+    QUARANTINE_DESTINATION_CLASS,
+    QUARANTINE_POLICY,
+    QUARANTINE_REASON_TENANT_UNRESOLVED,
+    TENANT_APPROVAL_STATUS,
+    TENANT_DESTINATION_CLASS,
     _content_md5,
     _ledger_payload,
     _load_r2_destination,
@@ -23,6 +29,7 @@ from scripts.migrate_render_uploads_to_r2 import (
     destination_key_for,
     migrate_approved_objects,
     normalize_r2_destination,
+    quarantine_destination_key_for,
     seal_approved_reference_map,
     seal_ledger,
     validate_approved_reference_map,
@@ -72,27 +79,63 @@ def _approved_pair(payload: bytes = b"approved upload"):
     return record, reference
 
 
-def _map_payload_for(records, *, status="approved", reference_status="approved"):
+def _quarantine_pair(
+    payload: bytes = b"quarantined upload", path_id: str = "b" * 64
+):
+    record = _record(payload, path_id)
+    reference = ApprovedReference(
+        path_id=record["path_id"],
+        tenant_slug=None,
+        destination_key=quarantine_destination_key_for(record["path_id"]),
+        approval_status=QUARANTINE_APPROVAL_STATUS,
+    )
+    return record, reference
+
+
+def _map_payload_for(
+    records,
+    *,
+    status="approved",
+    reference_status=TENANT_APPROVAL_STATUS,
+    quarantine_ids=frozenset(),
+):
     references = []
     for record in records:
-        tenant = "municipio-junin"
-        references.append(
-            {
-                "path_id": record["path_id"],
-                "tenant_slug": tenant,
-                "destination_key": destination_key_for(record["path_id"], tenant),
-                "approval_status": reference_status,
-            }
-        )
+        if record["path_id"] in quarantine_ids:
+            references.append(
+                {
+                    "path_id": record["path_id"],
+                    "destination_key": quarantine_destination_key_for(
+                        record["path_id"]
+                    ),
+                    "approval_status": QUARANTINE_APPROVAL_STATUS,
+                    "quarantine_reason": QUARANTINE_REASON_TENANT_UNRESOLVED,
+                }
+            )
+        else:
+            tenant = "municipio-junin"
+            references.append(
+                {
+                    "path_id": record["path_id"],
+                    "tenant_slug": tenant,
+                    "destination_key": destination_key_for(
+                        record["path_id"], tenant
+                    ),
+                    "approval_status": reference_status,
+                }
+            )
     return {
         "scope_id": TEST_SCOPE,
         "source_manifest_mac": TEST_MANIFEST_MAC,
         "approval_status": status,
+        "quarantine_policy": dict(QUARANTINE_POLICY),
         "references": references,
     }
 
 
-def _map_for(records, *, status="approved", reference_status="approved"):
+def _map_for(
+    records, *, status="approved", reference_status=TENANT_APPROVAL_STATUS
+):
     return seal_approved_reference_map(
         _map_payload_for(
             records,
@@ -256,6 +299,40 @@ class MigrationObjectTests(unittest.TestCase):
         )
         self.assertEqual(client.delete_calls, [])
 
+    def test_quarantine_copy_uses_opaque_private_route_and_auditable_ledger(self):
+        payload = b"unresolved-owner-media"
+        record, reference = _quarantine_pair(payload)
+        client = FakeS3()
+        ledger = _empty_ledger()
+        checkpoints = []
+        summary = migrate_approved_objects(
+            [(record, reference)],
+            source_reader=FakeSourceReader({record["path_id"]: payload}),
+            client=client,
+            bucket=TEST_BUCKET,
+            ledger_payload=ledger,
+            checkpoint=lambda value: checkpoints.append(deepcopy(value)),
+            execute=True,
+        )
+
+        self.assertEqual(
+            reference.destination_key,
+            f"render-quarantine-v1/{record['path_id'][:2]}/{record['path_id']}",
+        )
+        self.assertNotIn("municipio-junin", reference.destination_key)
+        self.assertEqual(client.put_calls[0]["Metadata"]["quarantine"], "true")
+        self.assertEqual(
+            client.put_calls[0]["Metadata"]["reference-updates"], "forbidden"
+        )
+        completed = checkpoints[-1]["records"][record["path_id"]]
+        self.assertEqual(completed["destination_class"], "quarantine")
+        self.assertEqual(completed["approval_status"], "quarantine-approved")
+        self.assertEqual(summary["objects_tenant_approved_total"], 0)
+        self.assertEqual(summary["objects_quarantine_approved_total"], 1)
+        self.assertEqual(summary["bytes_quarantine_approved_verified"], len(payload))
+        self.assertEqual(summary["quarantine_reference_updates"], "forbidden")
+        self.assertEqual(client.delete_calls, [])
+
     def test_resume_rechecks_source_head_and_get_without_another_put(self):
         payload = b"resume"
         record, reference = _approved_pair(payload)
@@ -264,6 +341,8 @@ class MigrationObjectTests(unittest.TestCase):
         ledger = _empty_ledger()
         ledger["records"][record["path_id"]] = {
             "destination_key": reference.destination_key,
+            "destination_class": TENANT_DESTINATION_CLASS,
+            "approval_status": TENANT_APPROVAL_STATUS,
             "size_bytes": len(payload),
             "sha256": record["sha256"],
             "state": "copied_verified",
@@ -395,6 +474,8 @@ class MigrationObjectTests(unittest.TestCase):
         ledger = _empty_ledger()
         ledger["records"][record["path_id"]] = {
             "destination_key": reference.destination_key,
+            "destination_class": TENANT_DESTINATION_CLASS,
+            "approval_status": TENANT_APPROVAL_STATUS,
             "size_bytes": len(payload),
             "sha256": record["sha256"],
             "state": "copied_verified",
@@ -440,6 +521,8 @@ class MigrationObjectTests(unittest.TestCase):
         ledger = _empty_ledger()
         ledger["records"][extra_id] = {
             "destination_key": destination_key_for(extra_id, "other-tenant"),
+            "destination_class": TENANT_DESTINATION_CLASS,
+            "approval_status": TENANT_APPROVAL_STATUS,
             "size_bytes": 1,
             "sha256": "c" * 64,
             "state": "copied_verified",
@@ -509,6 +592,121 @@ class ApprovedMapAndLedgerTests(unittest.TestCase):
                 expected_approved_map_mac=value["mac"],
             )
 
+    def test_v2_map_requires_signed_private_no_reference_quarantine_policy(self):
+        record = _record()
+        payload = _map_payload_for([record])
+        payload.pop("quarantine_policy")
+        value = seal_approved_reference_map(payload, _keys())
+        with self.assertRaisesRegex(MigrationError, "structure_invalid"):
+            validate_approved_reference_map(
+                value,
+                inventory={"records": [record]},
+                keys=_keys(),
+                scope_id=TEST_SCOPE,
+                source_manifest_mac=TEST_MANIFEST_MAC,
+                expected_approved_map_mac=value["mac"],
+            )
+
+        payload = _map_payload_for([record])
+        payload["quarantine_policy"]["reference_updates"] = "allowed"
+        value = seal_approved_reference_map(payload, _keys())
+        with self.assertRaisesRegex(MigrationError, "quarantine_policy_invalid"):
+            validate_approved_reference_map(
+                value,
+                inventory={"records": [record]},
+                keys=_keys(),
+                scope_id=TEST_SCOPE,
+                source_manifest_mac=TEST_MANIFEST_MAC,
+                expected_approved_map_mac=value["mac"],
+            )
+
+    def test_mixed_97_tenant_and_9_quarantine_plan_has_exact_coverage(self):
+        records = []
+        payloads = {}
+        for index in range(106):
+            payload = f"media-{index}".encode()
+            path_id = hashlib.sha256(f"path-{index}".encode()).hexdigest()
+            record = _record(payload, path_id)
+            records.append(record)
+            payloads[path_id] = payload
+        quarantine_ids = {record["path_id"] for record in records[-9:]}
+        map_payload = _map_payload_for(
+            records,
+            quarantine_ids=quarantine_ids,
+        )
+        value = seal_approved_reference_map(map_payload, _keys())
+        approved, _map_mac = validate_approved_reference_map(
+            value,
+            inventory={"records": records},
+            keys=_keys(),
+            scope_id=TEST_SCOPE,
+            source_manifest_mac=TEST_MANIFEST_MAC,
+            expected_approved_map_mac=value["mac"],
+        )
+
+        self.assertEqual(len(approved), 106)
+        self.assertEqual(
+            sum(
+                reference.approval_status == TENANT_APPROVAL_STATUS
+                for _record_value, reference in approved
+            ),
+            97,
+        )
+        self.assertEqual(
+            sum(
+                reference.approval_status == QUARANTINE_APPROVAL_STATUS
+                for _record_value, reference in approved
+            ),
+            9,
+        )
+        summary = migrate_approved_objects(
+            approved,
+            source_reader=FakeSourceReader(payloads),
+            client=FakeS3(),
+            bucket=TEST_BUCKET,
+            ledger_payload=_empty_ledger(map_mac=value["mac"]),
+            checkpoint=lambda _value: self.fail("dry run must not checkpoint"),
+            execute=False,
+        )
+        self.assertEqual(summary["objects_total"], 106)
+        self.assertEqual(summary["objects_tenant_approved_total"], 97)
+        self.assertEqual(summary["objects_quarantine_approved_total"], 9)
+        self.assertEqual(summary["sources_verified"], 106)
+        self.assertEqual(summary["objects_initially_missing"], 106)
+
+    def test_quarantine_rejects_tenant_fields_and_tenant_destination_routes(self):
+        record = _record()
+        payload = _map_payload_for(
+            [record], quarantine_ids={record["path_id"]}
+        )
+        payload["references"][0]["tenant_slug"] = "municipio-junin"
+        value = seal_approved_reference_map(payload, _keys())
+        with self.assertRaisesRegex(MigrationError, "reference_invalid"):
+            validate_approved_reference_map(
+                value,
+                inventory={"records": [record]},
+                keys=_keys(),
+                scope_id=TEST_SCOPE,
+                source_manifest_mac=TEST_MANIFEST_MAC,
+                expected_approved_map_mac=value["mac"],
+            )
+
+        payload = _map_payload_for(
+            [record], quarantine_ids={record["path_id"]}
+        )
+        payload["references"][0]["destination_key"] = destination_key_for(
+            record["path_id"], "municipio-junin"
+        )
+        value = seal_approved_reference_map(payload, _keys())
+        with self.assertRaisesRegex(MigrationError, "destination_invalid"):
+            validate_approved_reference_map(
+                value,
+                inventory={"records": [record]},
+                keys=_keys(),
+                scope_id=TEST_SCOPE,
+                source_manifest_mac=TEST_MANIFEST_MAC,
+                expected_approved_map_mac=value["mac"],
+            )
     def test_approved_map_hmac_and_independent_expected_mac_are_both_required(self):
         record = _record()
         value = _map_for([record])
@@ -549,6 +747,8 @@ class ApprovedMapAndLedgerTests(unittest.TestCase):
         tampered = deepcopy(envelope)
         tampered["payload"]["records"]["a" * 64] = {
             "destination_key": destination_key_for("a" * 64, "junin"),
+            "destination_class": TENANT_DESTINATION_CLASS,
+            "approval_status": TENANT_APPROVAL_STATUS,
             "size_bytes": 1,
             "sha256": "b" * 64,
             "state": "copied_verified",
@@ -581,6 +781,60 @@ class ApprovedMapAndLedgerTests(unittest.TestCase):
                 destination_fingerprint="0" * 64,
             )
 
+    def test_quarantine_ledger_tamper_and_cross_route_fail_closed(self):
+        record, reference = _quarantine_pair()
+        payload = _empty_ledger()
+        payload["records"][record["path_id"]] = {
+            "destination_key": reference.destination_key,
+            "destination_class": QUARANTINE_DESTINATION_CLASS,
+            "approval_status": QUARANTINE_APPROVAL_STATUS,
+            "size_bytes": record["size_bytes"],
+            "sha256": record["sha256"],
+            "state": "copied_verified",
+        }
+        envelope = seal_ledger(payload, _keys())
+        verified = verify_ledger(
+            envelope,
+            _keys(),
+            scope_id=TEST_SCOPE,
+            source_manifest_mac=TEST_MANIFEST_MAC,
+            approved_map_mac="1" * 64,
+            destination_fingerprint=_destination().fingerprint,
+        )
+        self.assertEqual(
+            verified["records"][record["path_id"]]["destination_class"],
+            QUARANTINE_DESTINATION_CLASS,
+        )
+
+        tampered = deepcopy(envelope)
+        tampered["payload"]["records"][record["path_id"]][
+            "destination_class"
+        ] = TENANT_DESTINATION_CLASS
+        with self.assertRaisesRegex(MigrationError, "integrity_check_failed"):
+            verify_ledger(
+                tampered,
+                _keys(),
+                scope_id=TEST_SCOPE,
+                source_manifest_mac=TEST_MANIFEST_MAC,
+                approved_map_mac="1" * 64,
+                destination_fingerprint=_destination().fingerprint,
+            )
+
+        invalid_route = deepcopy(payload)
+        invalid_route["records"][record["path_id"]][
+            "destination_key"
+        ] = destination_key_for(record["path_id"], "municipio-junin")
+        remaced = seal_ledger(invalid_route, _keys())
+        with self.assertRaisesRegex(MigrationError, "ledger_record_invalid"):
+            verify_ledger(
+                remaced,
+                _keys(),
+                scope_id=TEST_SCOPE,
+                source_manifest_mac=TEST_MANIFEST_MAC,
+                approved_map_mac="1" * 64,
+                destination_fingerprint=_destination().fingerprint,
+            )
+
     def test_ledger_contains_no_plaintext_source_paths_or_secrets(self):
         envelope = seal_ledger(_empty_ledger(), _keys())
         serialized = json.dumps(envelope)
@@ -592,6 +846,8 @@ class ApprovedMapAndLedgerTests(unittest.TestCase):
         payload = _empty_ledger()
         payload["records"]["a" * 64] = {
             "destination_key": "uploads/citizen-name/document.png",
+            "destination_class": TENANT_DESTINATION_CLASS,
+            "approval_status": TENANT_APPROVAL_STATUS,
             "size_bytes": 1,
             "sha256": "b" * 64,
             "state": "copied_verified",

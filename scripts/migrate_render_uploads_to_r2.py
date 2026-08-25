@@ -31,9 +31,9 @@ except ImportError:  # pragma: no cover - direct ``python scripts/...`` executio
     import inventory_persistent_data as inventory_tools
 
 
-APPROVED_MAP_CONTRACT_VERSION = "storage.r2.approved-reference-map.v1"
-LEDGER_CONTRACT_VERSION = "storage.r2.migration-ledger.v1"
-SUMMARY_CONTRACT_VERSION = "storage.r2.migration-summary.v1"
+APPROVED_MAP_CONTRACT_VERSION = "storage.r2.approved-reference-map.v2"
+LEDGER_CONTRACT_VERSION = "storage.r2.migration-ledger.v2"
+SUMMARY_CONTRACT_VERSION = "storage.r2.migration-summary.v2"
 DESTINATION_CONTRACT_VERSION = "storage.r2.destination-fingerprint.v1"
 APPROVED_MAP_INTEGRITY_ALGORITHM = "HMAC-SHA256"
 LEDGER_INTEGRITY_ALGORITHM = "HMAC-SHA256"
@@ -60,6 +60,18 @@ NOT_FOUND_CODES = frozenset({"404", "nosuchkey", "nosuchobject", "notfound"})
 PRECONDITION_CODES = frozenset(
     {"412", "conditionalrequestconflict", "preconditionfailed"}
 )
+TENANT_APPROVAL_STATUS = "tenant-approved"
+QUARANTINE_APPROVAL_STATUS = "quarantine-approved"
+TENANT_DESTINATION_CLASS = "tenant"
+QUARANTINE_DESTINATION_CLASS = "quarantine"
+TENANT_DESTINATION_PREFIX = "render-import-v1"
+QUARANTINE_DESTINATION_PREFIX = "render-quarantine-v1"
+QUARANTINE_REASON_TENANT_UNRESOLVED = "tenant-unresolved"
+QUARANTINE_POLICY = {
+    "destination_prefix": QUARANTINE_DESTINATION_PREFIX,
+    "visibility": "private",
+    "reference_updates": "forbidden",
+}
 
 
 class MigrationError(RuntimeError):
@@ -86,8 +98,17 @@ class SourceReader(Protocol):
 @dataclass(frozen=True)
 class ApprovedReference:
     path_id: str
-    tenant_slug: str
+    tenant_slug: str | None
     destination_key: str
+    approval_status: str = TENANT_APPROVAL_STATUS
+
+    @property
+    def destination_class(self) -> str:
+        if self.approval_status == TENANT_APPROVAL_STATUS:
+            return TENANT_DESTINATION_CLASS
+        if self.approval_status == QUARANTINE_APPROVAL_STATUS:
+            return QUARANTINE_DESTINATION_CLASS
+        raise MigrationError("approved_reference_status_invalid")
 
 
 @dataclass(frozen=True)
@@ -113,7 +134,7 @@ def _canonical_json(value: Any) -> bytes:
 def _artifact_mac_key(keys: inventory_tools.ManifestKeys) -> bytes:
     return hmac.new(
         keys.manifest_mac_key,
-        b"chatboc-render-r2-ledger-v1\x00" + keys.key_id.encode("ascii"),
+        b"chatboc-render-r2-ledger-v2\x00" + keys.key_id.encode("ascii"),
         hashlib.sha256,
     ).digest()
 
@@ -121,7 +142,7 @@ def _artifact_mac_key(keys: inventory_tools.ManifestKeys) -> bytes:
 def _approved_map_mac_key(keys: inventory_tools.ManifestKeys) -> bytes:
     return hmac.new(
         keys.manifest_mac_key,
-        b"chatboc-render-r2-approved-map-v1\x00" + keys.key_id.encode("ascii"),
+        b"chatboc-render-r2-approved-map-v2\x00" + keys.key_id.encode("ascii"),
         hashlib.sha256,
     ).digest()
 
@@ -190,7 +211,15 @@ def destination_key_for(path_id: str, tenant_slug: str) -> str:
         raise MigrationError("approved_map_path_id_invalid")
     if not TENANT_PATTERN.fullmatch(tenant_slug):
         raise MigrationError("approved_map_tenant_invalid")
-    return f"render-import-v1/{tenant_slug}/{path_id[:2]}/{path_id}"
+    return f"{TENANT_DESTINATION_PREFIX}/{tenant_slug}/{path_id[:2]}/{path_id}"
+
+
+def quarantine_destination_key_for(path_id: str) -> str:
+    """Return the only accepted opaque key for privately quarantined media."""
+
+    if not isinstance(path_id, str) or not PATH_ID_PATTERN.fullmatch(path_id):
+        raise MigrationError("approved_map_path_id_invalid")
+    return f"{QUARANTINE_DESTINATION_PREFIX}/{path_id[:2]}/{path_id}"
 
 
 def seal_approved_reference_map(
@@ -267,6 +296,7 @@ def validate_approved_reference_map(
         "scope_id",
         "source_manifest_mac",
         "approval_status",
+        "quarantine_policy",
         "references",
     }
     if set(approved_payload) != expected_payload_fields:
@@ -278,6 +308,13 @@ def validate_approved_reference_map(
         raise MigrationError("approved_map_binding_mismatch")
     if approved_payload.get("approval_status") != "approved":
         raise MigrationError("approved_map_not_approved")
+    quarantine_policy = approved_payload.get("quarantine_policy")
+    if (
+        not isinstance(quarantine_policy, dict)
+        or set(quarantine_policy) != set(QUARANTINE_POLICY)
+        or quarantine_policy != QUARANTINE_POLICY
+    ):
+        raise MigrationError("approved_map_quarantine_policy_invalid")
 
     manifest_records = inventory.get("records")
     references = approved_payload.get("references")
@@ -301,29 +338,41 @@ def validate_approved_reference_map(
 
     mapped_ids: set[str] = set()
     approved: list[tuple[dict[str, Any], ApprovedReference]] = []
-    entry_fields = {
-        "path_id",
-        "tenant_slug",
-        "destination_key",
-        "approval_status",
-    }
+    common_entry_fields = {"path_id", "destination_key", "approval_status"}
+    tenant_entry_fields = common_entry_fields | {"tenant_slug"}
+    quarantine_entry_fields = common_entry_fields | {"quarantine_reason"}
     for item in references:
-        if not isinstance(item, dict) or set(item) != entry_fields:
+        if not isinstance(item, dict):
             raise MigrationError("approved_map_reference_invalid")
         path_id = item.get("path_id")
-        tenant_slug = item.get("tenant_slug")
         destination_key = item.get("destination_key")
         if not isinstance(path_id, str) or not PATH_ID_PATTERN.fullmatch(path_id):
             raise MigrationError("approved_map_path_id_invalid")
         if path_id in mapped_ids:
             raise MigrationError("approved_map_path_id_duplicate")
-        if item.get("approval_status") != "approved":
+        approval_status = item.get("approval_status")
+        tenant_slug: str | None
+        if approval_status == TENANT_APPROVAL_STATUS:
+            if set(item) != tenant_entry_fields:
+                raise MigrationError("approved_map_reference_invalid")
+            tenant_slug = item.get("tenant_slug")
+            if not isinstance(tenant_slug, str) or not TENANT_PATTERN.fullmatch(
+                tenant_slug
+            ):
+                raise MigrationError("approved_map_tenant_invalid")
+            expected_destination_key = destination_key_for(path_id, tenant_slug)
+        elif approval_status == QUARANTINE_APPROVAL_STATUS:
+            if set(item) != quarantine_entry_fields:
+                raise MigrationError("approved_map_reference_invalid")
+            tenant_slug = None
+            if (
+                item.get("quarantine_reason")
+                != QUARANTINE_REASON_TENANT_UNRESOLVED
+            ):
+                raise MigrationError("approved_map_quarantine_reason_invalid")
+            expected_destination_key = quarantine_destination_key_for(path_id)
+        else:
             raise MigrationError("approved_map_has_unapproved_reference")
-        if not isinstance(tenant_slug, str) or not TENANT_PATTERN.fullmatch(
-            tenant_slug
-        ):
-            raise MigrationError("approved_map_tenant_invalid")
-        expected_destination_key = destination_key_for(path_id, tenant_slug)
         if (
             not isinstance(destination_key, str)
             or destination_key != expected_destination_key
@@ -345,6 +394,7 @@ def validate_approved_reference_map(
                     path_id=path_id,
                     tenant_slug=tenant_slug,
                     destination_key=destination_key,
+                    approval_status=approval_status,
                 ),
             )
         )
@@ -461,6 +511,8 @@ def verify_ledger(
         raise MigrationError("ledger_payload_invalid")
     record_fields = {
         "destination_key",
+        "destination_class",
+        "approval_status",
         "size_bytes",
         "sha256",
         "state",
@@ -478,11 +530,6 @@ def verify_ledger(
             or not isinstance(item, dict)
             or set(item) != record_fields
             or not isinstance(item.get("destination_key"), str)
-            or len(destination_parts) != 4
-            or destination_parts[0] != "render-import-v1"
-            or not TENANT_PATTERN.fullmatch(destination_parts[1])
-            or destination_parts[2] != path_id[:2]
-            or destination_parts[3] != path_id
             or not isinstance(item.get("size_bytes"), int)
             or isinstance(item.get("size_bytes"), bool)
             or item["size_bytes"] < 0
@@ -491,6 +538,27 @@ def verify_ledger(
             or item.get("state")
             not in {"copied_verified", "existing_verified", "race_verified"}
         ):
+            raise MigrationError("ledger_record_invalid")
+        approval_status = item.get("approval_status")
+        destination_class = item.get("destination_class")
+        if approval_status == TENANT_APPROVAL_STATUS:
+            if (
+                destination_class != TENANT_DESTINATION_CLASS
+                or len(destination_parts) != 4
+                or destination_parts[0] != TENANT_DESTINATION_PREFIX
+                or not TENANT_PATTERN.fullmatch(destination_parts[1])
+                or destination_key
+                != destination_key_for(path_id, destination_parts[1])
+            ):
+                raise MigrationError("ledger_record_invalid")
+        elif approval_status == QUARANTINE_APPROVAL_STATUS:
+            if (
+                destination_class != QUARANTINE_DESTINATION_CLASS
+                or len(destination_parts) != 3
+                or destination_key != quarantine_destination_key_for(path_id)
+            ):
+                raise MigrationError("ledger_record_invalid")
+        else:
             raise MigrationError("ledger_record_invalid")
     return payload
 
@@ -771,6 +839,8 @@ def _completed_ledger_record(
 ) -> dict[str, Any]:
     return {
         "destination_key": reference.destination_key,
+        "destination_class": reference.destination_class,
+        "approval_status": reference.approval_status,
         "size_bytes": record["size_bytes"],
         "sha256": record["sha256"],
         "state": state,
@@ -785,13 +855,21 @@ def _validate_resume_record(
 ) -> None:
     if (
         value.get("destination_key") != reference.destination_key
+        or value.get("destination_class") != reference.destination_class
+        or value.get("approval_status") != reference.approval_status
         or value.get("size_bytes") != record.get("size_bytes")
         or value.get("sha256") != record.get("sha256")
     ):
         raise MigrationError("ledger_record_binding_mismatch")
 
 
-def _new_summary(*, execute: bool, total: int) -> dict[str, Any]:
+def _new_summary(
+    *,
+    execute: bool,
+    total: int,
+    tenant_approved_total: int = 0,
+    quarantine_approved_total: int = 0,
+) -> dict[str, Any]:
     return {
         "contract_version": SUMMARY_CONTRACT_VERSION,
         "status": "running",
@@ -799,6 +877,10 @@ def _new_summary(*, execute: bool, total: int) -> dict[str, Any]:
         "dry_run": not execute,
         "go_for_cutover": False,
         "objects_total": total,
+        "objects_tenant_approved_total": tenant_approved_total,
+        "objects_quarantine_approved_total": quarantine_approved_total,
+        "quarantine_destination_prefix": QUARANTINE_DESTINATION_PREFIX,
+        "quarantine_reference_updates": "forbidden",
         "sources_verified": 0,
         "objects_initially_missing": 0,
         "objects_existing_verified": 0,
@@ -806,9 +888,38 @@ def _new_summary(*, execute: bool, total: int) -> dict[str, Any]:
         "objects_race_verified": 0,
         "objects_resumed_verified": 0,
         "bytes_verified": 0,
+        "bytes_tenant_approved_verified": 0,
+        "bytes_quarantine_approved_verified": 0,
         "failures": 0,
         "error_code": None,
     }
+
+
+def _validate_approved_plan_reference(reference: ApprovedReference) -> None:
+    if (
+        not isinstance(reference.path_id, str)
+        or not PATH_ID_PATTERN.fullmatch(reference.path_id)
+        or not isinstance(reference.destination_key, str)
+    ):
+        raise MigrationError("approved_plan_reference_invalid")
+    if reference.approval_status == TENANT_APPROVAL_STATUS:
+        if (
+            not isinstance(reference.tenant_slug, str)
+            or not TENANT_PATTERN.fullmatch(reference.tenant_slug)
+            or reference.destination_key
+            != destination_key_for(reference.path_id, reference.tenant_slug)
+        ):
+            raise MigrationError("approved_plan_reference_invalid")
+        return
+    if reference.approval_status == QUARANTINE_APPROVAL_STATUS:
+        if (
+            reference.tenant_slug is not None
+            or reference.destination_key
+            != quarantine_destination_key_for(reference.path_id)
+        ):
+            raise MigrationError("approved_plan_reference_invalid")
+        return
+    raise MigrationError("approved_plan_reference_invalid")
 
 
 def migrate_approved_objects(
@@ -824,7 +935,22 @@ def migrate_approved_objects(
     """Verify every source/destination and conditionally create missing objects."""
 
     items = list(approved)
-    summary = _new_summary(execute=execute, total=len(items))
+    for _record, reference in items:
+        _validate_approved_plan_reference(reference)
+    tenant_approved_total = sum(
+        reference.approval_status == TENANT_APPROVAL_STATUS
+        for _record, reference in items
+    )
+    quarantine_approved_total = sum(
+        reference.approval_status == QUARANTINE_APPROVAL_STATUS
+        for _record, reference in items
+    )
+    summary = _new_summary(
+        execute=execute,
+        total=len(items),
+        tenant_approved_total=tenant_approved_total,
+        quarantine_approved_total=quarantine_approved_total,
+    )
     ledger_records = ledger_payload.get("records")
     if not isinstance(ledger_records, dict):
         raise MigrationError("ledger_payload_invalid")
@@ -870,6 +996,10 @@ def migrate_approved_objects(
                         )
                         checkpoint(ledger_payload)
                 summary["bytes_verified"] += expected_size
+                if reference.approval_status == TENANT_APPROVAL_STATUS:
+                    summary["bytes_tenant_approved_verified"] += expected_size
+                else:
+                    summary["bytes_quarantine_approved_verified"] += expected_size
                 continue
 
             if previous is not None:
@@ -879,6 +1009,18 @@ def migrate_approved_objects(
                 continue
 
             try:
+                metadata = {
+                    "source-path-id": reference.path_id,
+                    "source-sha256": expected_sha256,
+                    "migration-disposition": reference.approval_status,
+                }
+                if reference.approval_status == QUARANTINE_APPROVAL_STATUS:
+                    metadata.update(
+                        {
+                            "quarantine": "true",
+                            "reference-updates": "forbidden",
+                        }
+                    )
                 client.put_object(
                     Bucket=bucket,
                     Key=reference.destination_key,
@@ -887,10 +1029,7 @@ def migrate_approved_objects(
                     ContentMD5=_content_md5(payload),
                     ContentType=record.get("mime_type") or "application/octet-stream",
                     IfNoneMatch="*",
-                    Metadata={
-                        "source-path-id": reference.path_id,
-                        "source-sha256": expected_sha256,
-                    },
+                    Metadata=metadata,
                 )
                 state = "copied_verified"
             except Exception as exc:
@@ -919,6 +1058,10 @@ def migrate_approved_objects(
             else:
                 summary["objects_race_verified"] += 1
             summary["bytes_verified"] += expected_size
+            if reference.approval_status == TENANT_APPROVAL_STATUS:
+                summary["bytes_tenant_approved_verified"] += expected_size
+            else:
+                summary["bytes_quarantine_approved_verified"] += expected_size
     except MigrationError as exc:
         summary["status"] = "failed"
         summary["failures"] += 1
