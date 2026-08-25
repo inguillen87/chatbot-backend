@@ -2787,25 +2787,25 @@ def _admin_preview_for_sector(
             "catalog_file": "colegio-demo.pdf",
         },
         "gobierno": {
-            "title": "Panel demo para gestion ciudadana",
+            "title": "Panel demo para gestión ciudadana",
             "subtitle": "Gobiernos y municipios",
             "modules": [
                 {"id": "summary", "label": "Resumen", "enabled": True},
                 {"id": "claims", "label": "Reclamos", "enabled": True},
-                {"id": "heatmap", "label": "Mapa operativo", "enabled": False, "empty_state": "Disponible cuando la sesion genere puntos con coordenadas."},
+                {"id": "heatmap", "label": "Mapa operativo", "enabled": False, "empty_state": "Disponible cuando la sesión genere puntos con coordenadas."},
                 {"id": "surveys", "label": "Encuestas", "enabled": True},
             ],
             "cards": [
-                {"label": "Reclamos creados en esta sesion", "value": "0", "detail": "se actualiza cuando el chat crea un ticket"},
+                {"label": "Reclamos creados en esta sesión", "value": "0", "detail": "se actualiza cuando el chat crea un ticket"},
                 {"label": "Ubicaciones capturadas", "value": "0", "detail": "mapa disponible cuando hay coordenadas"},
                 {"label": "Comentarios ciudadanos", "value": "0", "detail": "mensajes y actualizaciones del caso"},
             ],
             "timeline": [
-                {"label": "Vecino envia ubicacion", "status": "setup"},
+                {"label": "Vecino envía ubicación", "status": "setup"},
                 {"label": "IA clasifica y pide faltantes", "status": "waiting_for_session"},
                 {"label": "Equipo ve ticket y mapa", "status": "waiting_for_session"},
             ],
-            "catalog_title": "Guia demo gobiernos",
+            "catalog_title": "Guía demo para gobiernos",
             "catalog_file": "municipio-demo.pdf",
         },
         "empresas": {

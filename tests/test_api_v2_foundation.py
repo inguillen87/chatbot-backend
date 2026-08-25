@@ -873,6 +873,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
         self.assertEqual(payload.get("contract_version"), "demo.admin_preview.v1")
+        self.assertEqual(payload.get("title"), "Panel demo para gestión ciudadana")
         self.assertEqual(payload.get("metrics"), [])
         self.assertEqual((payload.get("map") or {}).get("enabled"), False)
         self.assertEqual((payload.get("map") or {}).get("points"), [])
@@ -1682,12 +1683,17 @@ class ApiV2FoundationTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200)
         payload = resp.get_json()
+        workspace = payload.get("workspace") or {}
         tools = ((payload.get("workspace") or {}).get("rubro_tools") or {})
         enabled_tools = {item.get("id"): item for item in tools.get("enabled_tools") or []}
         locations = tools.get("locations") or []
         catalog_items = {item.get("id"): item for item in enabled_tools["catalog"].get("items") or []}
 
         self.assertEqual(tools.get("contract_version"), "demo.rubro_tools.v1")
+        self.assertEqual(
+            (((workspace.get("media_capabilities") or {}).get("composer") or {}).get("actions") or [])[2].get("label"),
+            "Ubicación",
+        )
         self.assertIn("location", enabled_tools)
         self.assertIn("contact", enabled_tools)
         self.assertTrue(locations)
