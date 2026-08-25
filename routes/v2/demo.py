@@ -2890,6 +2890,7 @@ def demo_whatsapp_sandbox_launcher_v2():
         provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
         whatsapp_playbook=education_whatsapp_playbook,
         education=education_payload,
+        public_base_url=_demo_public_frontend_base_url(),
     )
 
     return _json_response(
@@ -3215,6 +3216,7 @@ def demo_session_v2():
         source="public_demo_session",
         provider="twilio_whatsapp_number" if demo_whatsapp_number else "twilio_sandbox",
         whatsapp_playbook=education_whatsapp_playbook,
+        public_base_url=_demo_public_frontend_base_url(),
     )
     education_payload = None
     if education_profile.get("is_education"):

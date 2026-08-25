@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from urllib.parse import unquote_plus
 from unittest.mock import patch
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
@@ -246,10 +247,41 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("location"))
         self.assertTrue((whatsapp_sandbox.get("supported_inputs") or {}).get("file"))
         self.assertTrue(whatsapp_sandbox.get("scenario_scripts"))
+        sandbox_surveys = whatsapp_sandbox.get("surveys_votings") or {}
+        sandbox_items = sandbox_surveys.get("all_items") or []
+        self.assertEqual(len(sandbox_items), 6)
+        self.assertTrue(
+            all(
+                str(item.get("public_url") or "").startswith(
+                    "https://chatboc-r2-preview.vercel.app/e/"
+                )
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                str(item.get("qr_url") or "").startswith(
+                    "https://chatboc-r2-preview.vercel.app/api/public/encuestas/v1/"
+                )
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                "https://chatboc-r2-preview.vercel.app/e/"
+                in unquote_plus(str(item.get("whatsapp_share_url") or ""))
+                for item in sandbox_items
+            )
+        )
+        decoded_sandbox_surveys = unquote_plus(json.dumps(sandbox_surveys, sort_keys=True))
+        self.assertIn("https://chatboc-r2-preview.vercel.app/e/", decoded_sandbox_surveys)
+        self.assertNotIn("https://www.chatboc.ar/e/", decoded_sandbox_surveys)
         self.assertEqual((payload.get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
         self.assertEqual(((payload.get("chat_seed") or {}).get("whatsapp_sandbox") or {}).get("contract_version"), "demo.whatsapp_sandbox.v1")
 
     def test_public_whatsapp_sandbox_launcher_requires_no_auth_and_exposes_trial_contract(self):
+        preview_frontend = "https://chatboc-r2-preview.vercel.app"
+        self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = preview_frontend
         owner = User(name="Bodega Demo", email="bodega-sandbox@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
         db.session.flush()
@@ -308,6 +340,31 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue((contract.get("surveys_votings") or {}).get("enabled"))
         self.assertEqual(((contract.get("surveys_votings") or {}).get("seed_policy") or {}).get("responses_per_item"), 100)
         self.assertEqual(len((contract.get("surveys_votings") or {}).get("items") or []), 5)
+        sandbox_surveys = contract.get("surveys_votings") or {}
+        sandbox_items = sandbox_surveys.get("all_items") or []
+        self.assertEqual(len(sandbox_items), 6)
+        self.assertTrue(
+            all(
+                str(item.get("public_url") or "").startswith(f"{preview_frontend}/e/")
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                str(item.get("qr_url") or "").startswith(
+                    f"{preview_frontend}/api/public/encuestas/v1/"
+                )
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                f"{preview_frontend}/e/" in unquote_plus(str(item.get("whatsapp_share_url") or ""))
+                for item in sandbox_items
+            )
+        )
+        decoded_sandbox_surveys = unquote_plus(json.dumps(sandbox_surveys, sort_keys=True))
+        self.assertNotIn("https://www.chatboc.ar/e/", decoded_sandbox_surveys)
         self.assertTrue(any(script.get("expected_result") == "survey_response" for script in contract.get("scenario_scripts") or []))
         self.assertFalse((payload.get("frontend_contract") or {}).get("requires_auth"))
 

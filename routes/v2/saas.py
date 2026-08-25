@@ -67,6 +67,7 @@ from services.crm_operational_queue_guard import (
     enforce_operational_queue_rate_limit,
 )
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
+from services.demo_surveys import resolve_demo_public_frontend_base_url
 from services.live_chat_schedule import build_tenant_live_chat_status
 from services.omnichannel_message_policy import (
     OMNICHANNEL_REPLY_MAX_BODY_BYTES,
@@ -3429,6 +3430,7 @@ def _sandbox_demo_context(tenant: TenantProfile, payload: Mapping[str, Any] | No
         sandbox_number=_twilio_sandbox_number(),
         join_phrase=_twilio_sandbox_join_phrase(payload),
         source=str(payload.get("source") or "tenant_integrations_panel"),
+        public_base_url=resolve_demo_public_frontend_base_url(current_app.config),
     )
     context = sandbox_context_from_contract(contract)
     context.update(

@@ -2,6 +2,7 @@ import os
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
+from urllib.parse import unquote_plus
 from unittest.mock import patch
 
 import jwt
@@ -686,6 +687,12 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(payload["frontend_contract"]["allow_stock_only_import"])
 
     def test_whatsapp_sandbox_session_returns_deeplink_contract(self):
+        preview_frontend = "https://chatboc-r2-preview.vercel.app"
+        self.app.config.update(
+            PUBLIC_ENCUESTAS_CANONICAL_BASE_URL="",
+            PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL="",
+            PUBLIC_FRONTEND_URL=preview_frontend,
+        )
         response = self.client.post(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/sandbox-session",
             headers={**self._auth(self.owner), "X-Request-Id": "sandbox-1"},
@@ -713,6 +720,31 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["whatsapp_sandbox"]["contract_version"], "demo.whatsapp_sandbox.v1")
         self.assertEqual(payload["whatsapp_sandbox"]["trial_policy"]["max_messages"], 10)
         self.assertTrue(payload["whatsapp_sandbox"]["scenario_scripts"])
+        sandbox_surveys = payload["whatsapp_sandbox"]["surveys_votings"]
+        sandbox_items = sandbox_surveys.get("all_items") or []
+        self.assertEqual(len(sandbox_items), 6)
+        self.assertTrue(
+            all(
+                str(item.get("public_url") or "").startswith(f"{preview_frontend}/e/")
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                str(item.get("qr_url") or "").startswith(
+                    f"{preview_frontend}/api/public/encuestas/v1/"
+                )
+                for item in sandbox_items
+            )
+        )
+        self.assertTrue(
+            all(
+                f"{preview_frontend}/e/" in unquote_plus(str(item.get("whatsapp_share_url") or ""))
+                for item in sandbox_items
+            )
+        )
+        decoded_sandbox_surveys = unquote_plus(json.dumps(sandbox_surveys, sort_keys=True))
+        self.assertNotIn("https://www.chatboc.ar/e/", decoded_sandbox_surveys)
         self.assertTrue(payload["demo_context"]["trial_policy"])
         self.assertFalse(payload["session"]["sends_real_message"])
 
