@@ -4,13 +4,23 @@ import subprocess
 import sys
 
 
-def _run_import_probe(code: str, *, flask_env: str = "production", timeout: int = 30):
+def _run_import_probe(
+    code: str,
+    *,
+    flask_env: str = "production",
+    timeout: int = 30,
+    disable_spacy: bool = True,
+):
     project_root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env["FLASK_SKIP_GLOBAL_APP"] = "1"
     env["FLASK_ENV"] = flask_env
-    env["TESTING"] = "1"
-    env["CHATBOC_DISABLE_SPACY"] = "1"
+    if disable_spacy:
+        env["TESTING"] = "1"
+        env["CHATBOC_DISABLE_SPACY"] = "1"
+    else:
+        env.pop("TESTING", None)
+        env.pop("CHATBOC_DISABLE_SPACY", None)
     env["DATABASE_URL"] = "sqlite:///:memory:"
     env["SECRET_KEY"] = "startup-boundary-test-only-secret-key-32chars"
     env.pop("VERCEL", None)
@@ -74,6 +84,54 @@ def test_app_factory_does_not_eagerly_import_conversation_logic():
         "assert 'services.logic' not in sys.modules",
         flask_env="testing",
         timeout=45,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_spacy_loader_module_does_not_import_spacy_until_first_use():
+    probe = _run_import_probe(
+        "import sys; import services.spacy_loader; "
+        "assert 'spacy' not in sys.modules",
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_spacy_loader_initializes_on_first_use_with_safe_fallback():
+    probe = _run_import_probe(
+        "import sys; from services.spacy_loader import get_spacy_model; "
+        "assert 'spacy' not in sys.modules; "
+        "nlp = get_spacy_model(); assert nlp is not None; "
+        "assert getattr(nlp, 'lang', None) == 'es'; "
+        "assert 'spacy' in sys.modules",
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_document_ai_import_keeps_spacy_pipeline_lazy():
+    probe = _run_import_probe(
+        "import sys; import services.google_docai as google_docai; "
+        "assert google_docai.NLP_SPACY is None; "
+        "assert 'spacy' not in sys.modules",
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_app_factory_keeps_document_ai_and_spacy_out_of_startup():
+    probe = _run_import_probe(
+        "import sys; from app import create_app; from config import TestingConfig; "
+        "app = create_app(TestingConfig); assert app.testing; "
+        "assert 'services.google_docai' not in sys.modules; "
+        "assert 'spacy' not in sys.modules",
+        flask_env="testing",
+        timeout=45,
+        disable_spacy=False,
     )
 
     assert probe.returncode == 0, probe.stderr

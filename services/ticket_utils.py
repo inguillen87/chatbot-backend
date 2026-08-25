@@ -6,17 +6,17 @@ from urllib.parse import quote
 
 from services.vocabulary_loader import get_ticket_vocabulary
 
-VOCABULARY = get_ticket_vocabulary()
+VOCABULARY = None
 
-STOPWORDS = VOCABULARY.stopwords
-PRIORITY_ISSUES = VOCABULARY.priority_issues
-PRIORITY_LOCATIONS = VOCABULARY.priority_locations
-LOCATION_PRIORITY_ORDER = list(VOCABULARY.location_priority_order)
-LOCATION_TOKENS = VOCABULARY.location_tokens
-DESCRIPTIVE_TOKENS = VOCABULARY.descriptive_tokens
-IMPACT_TOKENS = VOCABULARY.impact_tokens
-IMPACT_KEYWORDS = VOCABULARY.impact_keywords
-IMPACT_SUBSTRINGS = VOCABULARY.impact_substrings
+STOPWORDS = frozenset()
+PRIORITY_ISSUES = frozenset()
+PRIORITY_LOCATIONS = frozenset()
+LOCATION_PRIORITY_ORDER: list[str] = []
+LOCATION_TOKENS = frozenset()
+DESCRIPTIVE_TOKENS = frozenset()
+IMPACT_TOKENS = frozenset()
+IMPACT_KEYWORDS = frozenset()
+IMPACT_SUBSTRINGS: tuple[str, ...] = ()
 GREETING_TOKEN_NORMS = {
     "hola",
     "buenas",
@@ -27,9 +27,36 @@ GREETING_TOKEN_NORMS = {
     "tardes",
     "noches",
 }
-FILLER_PATTERNS = VOCABULARY.filler_patterns
-VERB_ENDINGS = VOCABULARY.verb_endings
-VERB_EXCEPTIONS = VOCABULARY.verb_exceptions
+FILLER_PATTERNS: tuple[str, ...] = ()
+VERB_ENDINGS: tuple[str, ...] = ()
+VERB_EXCEPTIONS = frozenset()
+
+
+def _ensure_ticket_vocabulary() -> None:
+    """Initialize NLP-backed vocabulary only for descriptions that need it."""
+    global VOCABULARY
+    global STOPWORDS, PRIORITY_ISSUES, PRIORITY_LOCATIONS
+    global LOCATION_PRIORITY_ORDER, LOCATION_TOKENS, DESCRIPTIVE_TOKENS
+    global IMPACT_TOKENS, IMPACT_KEYWORDS, IMPACT_SUBSTRINGS
+    global FILLER_PATTERNS, VERB_ENDINGS, VERB_EXCEPTIONS
+
+    if VOCABULARY is not None:
+        return
+
+    vocabulary = get_ticket_vocabulary()
+    STOPWORDS = vocabulary.stopwords
+    PRIORITY_ISSUES = vocabulary.priority_issues
+    PRIORITY_LOCATIONS = vocabulary.priority_locations
+    LOCATION_PRIORITY_ORDER = list(vocabulary.location_priority_order)
+    LOCATION_TOKENS = vocabulary.location_tokens
+    DESCRIPTIVE_TOKENS = vocabulary.descriptive_tokens
+    IMPACT_TOKENS = vocabulary.impact_tokens
+    IMPACT_KEYWORDS = vocabulary.impact_keywords
+    IMPACT_SUBSTRINGS = vocabulary.impact_substrings
+    FILLER_PATTERNS = vocabulary.filler_patterns
+    VERB_ENDINGS = vocabulary.verb_endings
+    VERB_EXCEPTIONS = vocabulary.verb_exceptions
+    VOCABULARY = vocabulary
 
 
 def build_claim_tracking_url(
@@ -188,6 +215,8 @@ def construir_descripcion_breve(texto: str | None, max_chars: int = 80) -> str |
     if len(texto) <= max_chars:
         cleaned = texto.replace("\n", " ").strip(" .,;")
         return cleaned
+
+    _ensure_ticket_vocabulary()
 
     def _clean_candidate(sentence: str) -> str:
         candidate = sentence.strip()

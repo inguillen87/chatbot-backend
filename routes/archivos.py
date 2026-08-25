@@ -38,7 +38,20 @@ from utils.upload_limits import set_upload_request_limit
 from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
 from google.cloud import storage
 from services.google_vision_service import analyze_image_from_content
-from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
+
+
+def procesar_catalogo_pdf_google(*args, **kwargs):
+    """Load the optional Document AI stack only when a PDF is processed."""
+    from services.google_docai import procesar_catalogo_pdf_google as processor
+
+    return processor(*args, **kwargs)
+
+
+def procesar_catalogo_imagen_google(*args, **kwargs):
+    """Load the optional Document AI stack only when an image is processed."""
+    from services.google_docai import procesar_catalogo_imagen_google as processor
+
+    return processor(*args, **kwargs)
 
 archivos_bp = Blueprint('archivos_bp', __name__, url_prefix='/archivos')
 # Extensiones permitidas para evitar archivos ejecutables sospechosos
