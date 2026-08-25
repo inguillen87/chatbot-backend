@@ -34,15 +34,21 @@ def test_gunicorn_default_has_safe_minimum_socket_capacity() -> None:
 
     assert config["worker_class"] == "gthread"
     assert config["workers"] == 1
+    assert config["threads"] == 100
+
+
+def test_vercel_runtime_defaults_to_bounded_32_thread_capacity() -> None:
+    config = _load_config(VERCEL="1")
+
     assert config["threads"] == 32
-    assert config["threads"] >= config["MIN_GUNICORN_THREADS"]
+    assert config["threads"] >= config["VERCEL_MIN_GUNICORN_THREADS"]
 
 
 @pytest.mark.parametrize("configured", [16, 24, 32, 48, 64])
 def test_gunicorn_preserves_explicit_thread_overrides_in_safe_range(
     configured: int,
 ) -> None:
-    config = _load_config(GUNICORN_THREADS=str(configured))
+    config = _load_config(VERCEL="1", GUNICORN_THREADS=str(configured))
 
     assert config["threads"] == configured
 
@@ -60,10 +66,17 @@ def test_gunicorn_clamps_thread_overrides_to_safe_range(
     configured: int,
     expected: int,
 ) -> None:
-    config = _load_config(GUNICORN_THREADS=str(configured))
+    config = _load_config(VERCEL="1", GUNICORN_THREADS=str(configured))
 
     assert config["threads"] == expected
     assert 16 <= config["threads"] <= 64
+
+
+@pytest.mark.parametrize("configured", [8, 32, 100, 128])
+def test_non_vercel_runtime_preserves_existing_thread_overrides(configured: int) -> None:
+    config = _load_config(GUNICORN_THREADS=str(configured))
+
+    assert config["threads"] == configured
 
 
 @pytest.mark.parametrize("invalid", ["", "many", "32.5", "0x20"])

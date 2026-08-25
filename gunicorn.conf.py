@@ -5,14 +5,15 @@
 #
 # Allow overriding via environment variables. The web runtime deliberately
 # remains a single gthread worker because Socket.IO room affinity is not safe
-# across multiple workers in one instance. Thread capacity is bounded so an
-# invalid deployment override cannot silently collapse or exhaust the process.
+# across multiple workers in one instance. Vercel thread capacity is bounded;
+# other runtimes retain their established 100-thread default and overrides.
 import os
 
 
-DEFAULT_GUNICORN_THREADS = 32
-MIN_GUNICORN_THREADS = 16
-MAX_GUNICORN_THREADS = 64
+DEFAULT_GUNICORN_THREADS = 100
+VERCEL_DEFAULT_GUNICORN_THREADS = 32
+VERCEL_MIN_GUNICORN_THREADS = 16
+VERCEL_MAX_GUNICORN_THREADS = 64
 
 
 def _parse_integer_env(name: str, default: int) -> int:
@@ -34,10 +35,16 @@ if configured_workers != 1:
         "GUNICORN_WORKERS must be 1; scale single-worker instances behind sticky sessions"
     )
 workers = 1
+is_vercel_runtime = bool(os.getenv("VERCEL") or os.getenv("VERCEL_ENV"))
 configured_threads = _parse_integer_env(
-    "GUNICORN_THREADS", DEFAULT_GUNICORN_THREADS
+    "GUNICORN_THREADS",
+    VERCEL_DEFAULT_GUNICORN_THREADS if is_vercel_runtime else DEFAULT_GUNICORN_THREADS,
 )
-threads = min(
-    MAX_GUNICORN_THREADS,
-    max(MIN_GUNICORN_THREADS, configured_threads),
+threads = (
+    min(
+        VERCEL_MAX_GUNICORN_THREADS,
+        max(VERCEL_MIN_GUNICORN_THREADS, configured_threads),
+    )
+    if is_vercel_runtime
+    else configured_threads
 )
