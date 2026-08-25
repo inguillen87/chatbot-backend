@@ -222,6 +222,23 @@ def test_app_factory_keeps_storage_and_document_processors_out_of_startup():
     assert probe.returncode == 0, probe.stderr
 
 
+def test_app_factory_keeps_passkey_and_government_analytics_stacks_lazy():
+    probe = _run_import_probe(
+        "import sys; from app import create_app; from config import TestingConfig; "
+        "app = create_app(TestingConfig); assert app.testing; "
+        "targets = ('webauthn', 'asn1crypto', 'services.government_pipeline', "
+        "'numpy'); "
+        "loaded = lambda target: any(name == target or name.startswith(target + '.') "
+        "for name in sys.modules); "
+        "assert all(not loaded(target) for target in targets)",
+        flask_env="testing",
+        timeout=45,
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_upload_processor_defers_optional_processing_stack_until_first_use():
     probe = _run_import_probe(
         "import sys; import services.upload_processor; "
