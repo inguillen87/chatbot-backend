@@ -1,10 +1,10 @@
 # Persistent storage migration runbook
 
-Status: **NO-GO for detaching `/data`**. This runbook gathers and validates evidence; it does not move, delete, upload, rewrite, or detach production data.
+Status: **NO-GO for detaching `/data`**. The inventory phases only gather and validate evidence. The optional Phase 5A copier can create verified missing R2 objects, but it never deletes Render data, overwrites an R2 object, updates Neon/application references, changes traffic, or authorizes cutover.
 
 ## Security and truth boundary
 
-- Run the inventory inside the Linux service runtime that owns the mounted disk. Descriptor-relative traversal (`openat` semantics), `O_NOFOLLOW`, same-filesystem enforcement, two consistency passes, and directory/file identity checks are mandatory for a reviewable manifest.
+- Run the inventory inside the Linux service runtime that owns the mounted disk. Descriptor-relative traversal (`openat` semantics), `O_NOFOLLOW`, same-filesystem enforcement, two consistency passes, directory/file identity checks, and `st_nlink == 1` before/during/after every eligible file read are mandatory for a reviewable manifest. A hardlinked secret or media file is rejected before it can be inventoried or copied.
 - The focused `.github/workflows/storage-inventory-security.yml` job must pass on Ubuntu 24.04/Python 3.12.14 with its hash-locked wheel set before merge. Merely adding the workflow is not Linux evidence; record the green GitHub Actions run URL and commit SHA in the change record.
 - Windows dry runs are aggregate evidence only and return `unsafe`; the tool refuses manifests because Python cannot prove equivalent traversal and owner-only ACL properties there.
 - A mutable tree can return `unsafe` even when no malicious activity exists. Quiesce writers and rerun; never reinterpret that result as a pass.
@@ -162,6 +162,82 @@ Use idempotent copy jobs. A retry must address the same destination object or tr
 3. Verify tenant ownership and authorization using a negative cross-tenant test.
 4. Verify encryption at rest, TLS in transit, key ownership, bucket/database ACLs, access logging, retention, lifecycle, and deletion behavior.
 5. Verify dangling references in both directions: no database row without an object and no object without an authorized owning record.
+
+### Phase 5A: bounded Render uploads to R2 copy (implemented, still NO-GO)
+
+`scripts/migrate_render_uploads_to_r2.py` implements only the first object-copy step. Run it inside the same quiesced Linux service runtime and against the exact private manifest, independently recorded manifest MAC, root identity, key ID, and scope from Phase 2. It reuses the inventory verifier before reading a source byte. Windows cannot satisfy the descriptor/ACL checks and is not an execution environment for this command.
+
+The input approval map is a separate owner-only `0600` JSON file in an owner-only `0700` directory outside `/data`. It must contain no plaintext source paths, filenames, citizen data, credentials, or URLs. It is an authenticated envelope, not unsigned operator input. Its exact contract is:
+
+```json
+{
+  "contract_version": "storage.r2.approved-reference-map.v1",
+  "key_id": "inventory-2026-08-r1",
+  "integrity_algorithm": "HMAC-SHA256",
+  "approved_payload": {
+    "scope_id": "chatboc:production:backend:disk-data-v1",
+    "source_manifest_mac": "<independently recorded 64-hex manifest MAC>",
+    "approval_status": "approved",
+    "references": [
+      {
+        "path_id": "<64-hex signed-manifest path_id>",
+        "tenant_slug": "<approved lowercase tenant slug>",
+        "destination_key": "render-import-v1/<tenant_slug>/<first-2-path_id>/<path_id>",
+        "approval_status": "approved"
+      }
+    ]
+  },
+  "mac": "<64-hex approved-map MAC>"
+}
+```
+
+An accountable operator must produce and approve that map from the private review artifact and an authoritative tenant/reference reconciliation. Seal the exact approved payload with `seal_approved_reference_map`; its HMAC key is domain-separated from both the manifest and ledger keys. Record the emitted map MAC in an independent protected change record or approved operator channel. At execution, `STORAGE_EXPECTED_APPROVED_MAP_MAC` is mandatory and must come from that independent record, never from the map envelope. The expected MAC is checked in constant time and the HMAC is recomputed before any semantic mapping is trusted or any R2 client is created.
+
+Every `media_review_required` manifest record must appear exactly once. The migrator fails closed if one is missing, pending, duplicated, points outside the manifest, has a non-deterministic destination, or is not explicitly approved. It refuses mappings for `secret`, `secret_review_required`, `database`, `unknown`, cache, or tenant-configuration records. Do not copy an unverified count such as “476 references” or “34 unmappable” into the change record: record only counts reproduced from the signed manifest and approved map used by the command.
+
+Keep shell tracing disabled and inject the existing inventory master key, all three independent expected anchors, and R2 credentials from approved secret storage. The command reads `STORAGE_INVENTORY_MASTER_KEY`, `STORAGE_EXPECTED_MANIFEST_MAC`, `STORAGE_EXPECTED_APPROVED_MAP_MAC`, `STORAGE_EXPECTED_R2_DESTINATION_FINGERPRINT`, `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, and optional `R2_REGION`; never place their values in this runbook or shell history.
+
+The independently approved destination fingerprint is SHA-256 over canonical JSON containing contract version `storage.r2.destination-fingerprint.v1`, the normalized official R2 hostname, its 32-hex account ID, optional supported jurisdiction, and bucket name. Obtain it through a separately reviewed configuration/change-record step and do not derive the expected value from live environment variables during the migration run. The migrator normalizes HTTPS/443 and the `auto`/`us-east-1` alias, then compares the live fingerprint in constant time before opening a ledger or constructing an R2 client. This prevents a valid ledger from being replayed against another account endpoint or bucket. The endpoint must be HTTPS on the exact official `<account-id>[.<jurisdiction>].r2.cloudflarestorage.com` form with no URL credentials, query, fragment, nonstandard port, or path; the bucket must be a plain R2-compatible name.
+
+The default invocation is read-only: it securely opens and rehashes each approved source, requires `st_nlink == 1`, then uses R2 `HeadObject` and full `GetObject` checks where an object already exists. It performs no `PutObject` and writes no checkpoint.
+
+```bash
+export STORAGE_SCOPE_ID="chatboc:production:backend:disk-data-v1"
+export STORAGE_EXPECTED_MANIFEST_MAC="<independently recorded 64-hex MAC>"
+export STORAGE_EXPECTED_APPROVED_MAP_MAC="<independently recorded 64-hex map MAC>"
+export STORAGE_EXPECTED_R2_DESTINATION_FINGERPRINT="<independently recorded 64-hex destination fingerprint>"
+
+python scripts/migrate_render_uploads_to_r2.py \
+  --root /data \
+  --manifest "$STORAGE_REVIEW_DIR/inventory-20260824T000000Z.json" \
+  --approved-reference-map "$STORAGE_REVIEW_DIR/approved-reference-map-20260824T000000Z.json" \
+  --ledger "$STORAGE_REVIEW_DIR/r2-copy-ledger-20260824T000000Z.json" \
+  --key-id inventory-2026-08-r1 \
+  --scope-id "$STORAGE_SCOPE_ID"
+```
+
+Review the one aggregate `storage.r2.migration-summary.v1` stdout object. It contains counts and a stable error code only; it does not contain source paths, object keys, hashes, credentials, or provider error details. `go_for_cutover` remains `false`. Resolve every error before enabling writes.
+
+The write path requires both the `copy-missing` subcommand and the explicit `--execute` gate. Omitting either remains a dry run:
+
+```bash
+python scripts/migrate_render_uploads_to_r2.py \
+  --root /data \
+  --manifest "$STORAGE_REVIEW_DIR/inventory-20260824T000000Z.json" \
+  --approved-reference-map "$STORAGE_REVIEW_DIR/approved-reference-map-20260824T000000Z.json" \
+  --ledger "$STORAGE_REVIEW_DIR/r2-copy-ledger-20260824T000000Z.json" \
+  --key-id inventory-2026-08-r1 \
+  --scope-id "$STORAGE_SCOPE_ID" \
+  copy-missing --execute
+```
+
+For a missing key, the command sends `PutObject` with `If-None-Match: *`, `Content-MD5`, an exact content length, and opaque source identifiers. A concurrent `412 Precondition Failed` is never treated as success by itself: the command repeats `HeadObject` and downloads the complete winner. Every existing, newly written, concurrently won, and resumed object is accepted only after its byte length and locally recomputed SHA-256 match the signed source manifest. ETag is not used as a content checksum. Existing mismatches are collisions and are never overwritten.
+
+The default invocation is capped at 1,000 approved objects (`--max-objects`) and 64 MiB buffered per object (`--max-object-bytes`). Raising either is an explicit capacity/risk decision because buffering is what makes the bytes hashed from the secure descriptor exactly the bytes submitted to R2. Split larger batches or objects into a separately reviewed plan instead of silently bypassing either bound.
+
+After each successful destination rehash, the command atomically creates or replaces a private `0600` `storage.r2.migration-ledger.v1` checkpoint. Its HMAC is domain-separated from the signed-manifest MAC and binds the key ID, logical scope, source manifest MAC, authenticated approved-map MAC, independently pinned normalized destination fingerprint, completed path IDs, and their deterministic opaque destination keys. It contains no plaintext source paths, endpoint, bucket, credentials, provider error details, or citizen data. A retry re-verifies both source and destination; a completed ledger entry whose object disappeared is a hard failure. Run only one operator instance per ledger even though conditional R2 creation prevents overwrites, so concurrent checkpoint replacements cannot discard each other's progress.
+
+If a post-PUT download or checksum fails, the command records no completed entry and performs no automatic delete. Preserve the Render source and R2 evidence, quarantine the deterministic key through the approved incident process, and investigate before retrying. Phase 5A never calls an R2 delete API, never modifies `/data`, and never updates Neon. Application references and traffic therefore continue to use the legacy storage path until a later, separately reviewed reconciliation/cutover phase.
 
 Introduce storage adapters behind a feature flag, then dual-write with idempotency keys. During soak, measure:
 
