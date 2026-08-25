@@ -361,7 +361,9 @@ def _synthetic_map() -> dict[str, Any]:
             },
             {
                 "id": "synthetic-junin-03",
-                "lat": -33.1513,
+                # Keep the synthetic sample inside Junin's municipal boundary.
+                # The previous latitude crossed into neighboring Rivadavia.
+                "lat": -33.1463,
                 "lng": -68.4786,
                 "label": "Retiro de residuos voluminosos",
                 "status": "resolved",
@@ -372,7 +374,8 @@ def _synthetic_map() -> dict[str, Any]:
             },
             {
                 "id": "synthetic-junin-04",
-                "lat": -33.1560,
+                # This is still south of the demo center while remaining in Junin.
+                "lat": -33.1480,
                 "lng": -68.4899,
                 "label": "Poda preventiva solicitada",
                 "status": "new",

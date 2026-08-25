@@ -144,6 +144,14 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
         self.assertEqual(len(payload.get("timeline") or []), 5)
         self.assertEqual(len(payload.get("cases") or []), 5)
         self.assertEqual(len((payload.get("map") or {}).get("points") or []), 5)
+        map_points = {
+            point.get("id"): (point.get("lat"), point.get("lng"))
+            for point in ((payload.get("map") or {}).get("points") or [])
+        }
+        # These two southern samples previously crossed the official Junin-Rivadavia
+        # boundary. Pin the independently verified in-jurisdiction coordinates.
+        self.assertEqual(map_points.get("synthetic-junin-03"), (-33.1463, -68.4786))
+        self.assertEqual(map_points.get("synthetic-junin-04"), (-33.148, -68.4899))
         self.assertTrue((payload.get("map") or {}).get("enabled"))
         self.assertTrue((payload.get("map") or {}).get("sample"))
         self.assertEqual((payload.get("map") or {}).get("represented_cases"), 52)
