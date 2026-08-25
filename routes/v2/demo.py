@@ -22,6 +22,10 @@ from routes.auth import (
 from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.demo_experience_contract import build_demo_experience_contract
+from services.demo_executive_snapshot import (
+    apply_gobierno_executive_snapshot,
+    normalize_demo_presentation_mode,
+)
 from services.demo_registry import load_demo_rubros
 from services.demo_catalog_admission import admit_demo_catalog_full
 from services.public_survey_intake import public_survey_client_ip
@@ -2630,7 +2634,12 @@ def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, c
     }
 
 
-def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_id: str = "") -> dict[str, Any]:
+def _admin_preview_for_sector(
+    sector: str,
+    tenant_slug: str = "",
+    chat_session_id: str = "",
+    presentation_mode: str = "",
+) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector or tenant_slug or "empresas")
     if normalized not in {"educacion", "gobierno", "empresas"}:
         slug_hint = str(tenant_slug or normalized or "").lower()
@@ -2739,7 +2748,7 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_i
         tenant_name=preset["subtitle"],
         allowed_actions=allowed_actions,
     )
-    return {
+    payload = {
         "contract_version": "demo.admin_preview.v1",
         "sector": normalized,
         "tenant_slug": resolved_tenant_slug,
@@ -2769,6 +2778,13 @@ def _admin_preview_for_sector(sector: str, tenant_slug: str = "", chat_session_i
         },
         "frontend_contract": {"render_as": "demo_admin_preview"},
     }
+    resolved_presentation_mode = normalize_demo_presentation_mode(presentation_mode)
+    if normalized == "gobierno" and resolved_presentation_mode:
+        return apply_gobierno_executive_snapshot(
+            payload,
+            tenant_slug=resolved_tenant_slug,
+        )
+    return payload
 
 
 @v2_demo_bp.route("/admin-preview", methods=["GET", "OPTIONS"])
@@ -2807,6 +2823,7 @@ def demo_admin_preview_v2():
             sector,
             tenant_slug=str(tenant_slug or "").strip().lower(),
             chat_session_id=str(chat_session_id or "").strip(),
+            presentation_mode=str(request.args.get("presentation_mode") or "").strip(),
         )
     )
 
