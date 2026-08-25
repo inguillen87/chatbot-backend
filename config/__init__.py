@@ -739,6 +739,13 @@ class Config:
         False,
         "VERCEL_OUTBOX_CRON_ENABLED",
     )
+    # Destructive retention jobs need an independent production cutover.  A
+    # scheduled deployment must remain inert until the operator explicitly
+    # transfers ownership of maintenance work away from Render.
+    VERCEL_MAINTENANCE_CRONS_ENABLED = _env_flag(
+        False,
+        "VERCEL_MAINTENANCE_CRONS_ENABLED",
+    )
     # Dedicated/versioned HMAC boundary for TenantTicket intake receipts.  It
     # intentionally has no SECRET_KEY fallback: creation and tracking fail
     # closed when it is absent or shorter than 32 UTF-8 bytes.

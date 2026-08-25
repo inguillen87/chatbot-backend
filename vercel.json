@@ -7,6 +7,14 @@
     {
       "path": "/api/internal/cron/outbox-reconciliation",
       "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/internal/cron/whatsapp-payload-retention",
+      "schedule": "43 3 * * *"
+    },
+    {
+      "path": "/api/internal/cron/survey-privacy-retention",
+      "schedule": "17 3 * * *"
     }
   ]
 }

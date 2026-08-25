@@ -213,7 +213,7 @@ def test_degraded_reconciliation_returns_service_unavailable():
     assert response.get_json()["status"] == "degraded"
 
 
-def test_vercel_config_declares_only_bounded_outbox_reconciliation_cron():
+def test_vercel_config_declares_bounded_internal_crons():
     config = json.loads((REPOSITORY_ROOT / "vercel.json").read_text("utf-8"))
 
     assert config["framework"] == "container"
@@ -221,7 +221,15 @@ def test_vercel_config_declares_only_bounded_outbox_reconciliation_cron():
         {
             "path": "/api/internal/cron/outbox-reconciliation",
             "schedule": "* * * * *",
-        }
+        },
+        {
+            "path": "/api/internal/cron/whatsapp-payload-retention",
+            "schedule": "43 3 * * *",
+        },
+        {
+            "path": "/api/internal/cron/survey-privacy-retention",
+            "schedule": "17 3 * * *",
+        },
     ]
 
 
