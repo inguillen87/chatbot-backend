@@ -11,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from utils.time_utils import get_local_now
 from utils.permissions import require_role
 # from routes.crm import _obtener_clientes
-from services.municipio_responder import TODAS_LAS_CATEGORIAS_UNICAS
 from routes.categorias import _bootstrap_municipio_categories, _serialize_categoria
 from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_

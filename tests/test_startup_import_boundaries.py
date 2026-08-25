@@ -89,6 +89,44 @@ def test_app_factory_does_not_eagerly_import_conversation_logic():
     assert probe.returncode == 0, probe.stderr
 
 
+def test_app_factory_keeps_municipal_conversation_stack_lazy():
+    probe = _run_import_probe(
+        "import sys; from app import create_app; from config import TestingConfig; "
+        "app = create_app(TestingConfig); assert app.testing; "
+        "assert 'services.municipio_responder' not in sys.modules",
+        flask_env="testing",
+        timeout=45,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_whatsapp_and_tramites_routes_keep_municipal_conversation_stack_lazy():
+    probe = _run_import_probe(
+        "import sys; import routes.whatsapp_webhook; import routes.tramites; "
+        "assert 'services.municipio_responder' not in sys.modules"
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_tramites_service_loads_municipal_catalog_only_on_first_use():
+    probe = _run_import_probe(
+        "import sys; from types import ModuleType; import services.tramites as tramites; "
+        "assert 'services.municipio_responder' not in sys.modules; "
+        "fake = ModuleType('services.municipio_responder'); "
+        "fake.get_tramites_info = lambda: {"
+        "'Licencia': {'descripcion': 'Renovar', 'botones': [{'texto': 'Ver'}]}, "
+        "'Partida': {'descripcion': 'Solicitar', 'botones': []}}; "
+        "sys.modules['services.municipio_responder'] = fake; "
+        "result = tramites.buscar_tramites('lic'); "
+        "assert result == [{'nombre': 'Licencia', 'descripcion': 'Renovar', "
+        "'botones': [{'texto': 'Ver'}]}]"
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_spacy_loader_module_does_not_import_spacy_until_first_use():
     probe = _run_import_probe(
         "import sys; import services.spacy_loader; "

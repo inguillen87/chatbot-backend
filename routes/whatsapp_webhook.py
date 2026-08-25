@@ -64,7 +64,7 @@ from services.whatsapp_inbound_durability import (
 )
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
-from services.municipio_responder import CONTEXTO_MUNICIPIO
+from services.constants import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
 from services.response_formatter import repair_common_mojibake, render_audio_text
 from services.tts_orchestrator import generar_audio
