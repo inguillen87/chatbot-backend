@@ -147,6 +147,47 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
         )
 
     @patch('routes.estadisticas.servicio_tickets')
+    def test_mapa_calor_acepta_tipo_pyme_del_frontend(self, mock_servicio):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
+        import routes.estadisticas as estats
+        with self.app.test_request_context('/estadisticas/mapa_calor/datos?tipo=pyme'):
+            response = estats.mapa_calor_datos(current_user=None)
+        self.assertEqual(response.status_code, 200)
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_called_once_with(
+            tipo_ticket='pyme',
+            actor=None,
+            municipio_id=None,
+            rubro_id=None,
+            tenant_id=None,
+            fecha_inicio=None,
+            fecha_fin=None,
+            categoria=None,
+            distrito=None,
+            estado=None,
+            satisfactorio=None,
+        )
+
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_mapa_calor_rechaza_tipos_en_conflicto(self, mock_servicio):
+        import routes.estadisticas as estats
+        with self.app.test_request_context(
+            '/estadisticas/mapa_calor/datos?tipo=pyme&tipo_ticket=municipio'
+        ):
+            response, status = estats.mapa_calor_datos(current_user=None)
+        self.assertEqual(status, 400)
+        self.assertEqual(response.get_json()['error'], 'bad_request')
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_not_called()
+
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_mapa_calor_rechaza_tipo_desconocido(self, mock_servicio):
+        import routes.estadisticas as estats
+        with self.app.test_request_context('/estadisticas/mapa_calor/datos?tipo=otro'):
+            response, status = estats.mapa_calor_datos(current_user=None)
+        self.assertEqual(status, 400)
+        self.assertEqual(response.get_json()['error'], 'bad_request')
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_not_called()
+
+    @patch('routes.estadisticas.servicio_tickets')
     def test_mapa_calor_acepta_varias_categorias(self, mock_servicio):
         mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = []
         import routes.estadisticas as estats

@@ -712,6 +712,37 @@ def _normalize_dashboard_tipo(raw_tipo: str | None) -> str:
     return tipo
 
 
+def _resolve_heatmap_ticket_type(args) -> str:
+    """Resolve the canonical ticket type without silently changing domains.
+
+    ``tipo`` is the query parameter used by the current frontend, while
+    ``tipo_ticket`` is kept for legacy clients.  Conflicting or unsupported
+    values must fail closed so a PyME request can never fall back to municipal
+    data.
+    """
+
+    raw_tipo_ticket = _clean_text_param(args.get("tipo_ticket"))
+    raw_tipo = _clean_text_param(args.get("tipo"))
+
+    normalized_tipo_ticket = (
+        raw_tipo_ticket.lower() if raw_tipo_ticket is not None else None
+    )
+    normalized_tipo = raw_tipo.lower() if raw_tipo is not None else None
+
+    if (
+        normalized_tipo_ticket is not None
+        and normalized_tipo is not None
+        and normalized_tipo_ticket != normalized_tipo
+    ):
+        raise ValueError("tipo y tipo_ticket no pueden identificar dominios distintos")
+
+    ticket_type = normalized_tipo_ticket or normalized_tipo or "municipio"
+    if ticket_type not in {"municipio", "pyme"}:
+        raise ValueError("tipo debe ser municipio o pyme")
+
+    return ticket_type
+
+
 def _clean_text_param(value: str | None) -> str | None:
     if value is None:
         return None
@@ -894,7 +925,10 @@ def estadisticas_dashboard(current_user):
 def mapa_calor_datos(current_user):
     """Devuelve los puntos para el mapa de calor en formato JSON."""
     args = request.args
-    tipo_ticket = args.get("tipo_ticket", "municipio")
+    try:
+        tipo_ticket = _resolve_heatmap_ticket_type(args)
+    except ValueError as exc:
+        return jsonify({"error": "bad_request", "detail": str(exc)}), 400
 
     try:
         tenant = _resolve_tenant_profile_or_error(args)
