@@ -141,6 +141,25 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
         self.assertEqual((payload.get("session_activity") or {}).get("items"), [])
         self.assertEqual(len(payload.get("cards") or []), 4)
         self.assertEqual(len(payload.get("metrics") or []), 4)
+        metrics_by_id = {
+            item.get("id"): item for item in (payload.get("metrics") or [])
+        }
+        self.assertEqual(
+            (metrics_by_id.get("claims_received") or {}).get("denominator"),
+            {"label": "Casos del escenario", "value": 184},
+        )
+        self.assertEqual(
+            (metrics_by_id.get("sla_compliance_pct") or {}).get("numerator"),
+            {"label": "Casos dentro del objetivo", "value": 160},
+        )
+        self.assertEqual(
+            (metrics_by_id.get("sla_compliance_pct") or {}).get("denominator"),
+            {"label": "Casos con SLA evaluado", "value": 184},
+        )
+        self.assertEqual(
+            (metrics_by_id.get("whatsapp_first_response_minutes") or {}).get("denominator"),
+            {"label": "Conversaciones WhatsApp", "value": 326},
+        )
         self.assertEqual(len(payload.get("timeline") or []), 5)
         self.assertEqual(len(payload.get("cases") or []), 5)
         self.assertEqual(len((payload.get("map") or {}).get("points") or []), 5)
@@ -174,6 +193,10 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
             item for item in (payload.get("cards") or []) if item.get("id") == "survey_participation"
         )
         self.assertEqual(survey_metric.get("value"), survey_total)
+        self.assertEqual(
+            survey_metric.get("denominator"),
+            {"label": "Respuestas incluidas", "value": survey_total},
+        )
         self.assertEqual(survey_card.get("value"), str(survey_total))
         self.assertIn(survey_top.get("label"), survey_metric.get("detail") or "")
         self.assertIn(f"{survey_top.get('porcentaje'):g}%", survey_metric.get("detail") or "")
