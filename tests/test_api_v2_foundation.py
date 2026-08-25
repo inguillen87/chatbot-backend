@@ -11,6 +11,7 @@ os.environ.setdefault("TESTING", "1")
 from app import create_app, db
 from config import Config
 from models import ChatSessionContext, MunicipioTicket, TenantProfile, TicketComentario, User, WhatsappNumero
+from routes.v2 import demo as demo_routes
 
 
 class V2BaseTestConfig(Config):
@@ -26,6 +27,19 @@ class BadProdConfig(V2BaseTestConfig):
     ENV = "prod"
     SECRET_KEY = "una-llave-secreta-muy-segura-para-desarrollo-local"
     DEBUG = False
+
+
+def _values_for_key(value, expected_key):
+    values = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            if key == expected_key:
+                values.append(nested)
+            values.extend(_values_for_key(nested, expected_key))
+    elif isinstance(value, list):
+        for nested in value:
+            values.extend(_values_for_key(nested, expected_key))
+    return values
 
 
 class ApiV2FoundationTest(unittest.TestCase):
@@ -60,7 +74,17 @@ class ApiV2FoundationTest(unittest.TestCase):
         sector_groups = {group.get("key"): group for group in payload.get("sector_groups") or []}
         self.assertEqual((sector_groups.get("gobierno") or {}).get("tenant_slug"), "municipio")
         self.assertEqual((sector_groups.get("empresas") or {}).get("tenant_slug"), "bodega")
-        self.assertEqual((sector_groups.get("educacion") or {}).get("tenant_slug"), "colegio-demo")
+        education_group = sector_groups.get("educacion") or {}
+        self.assertIsNone(education_group.get("tenant_slug"))
+        self.assertFalse(education_group.get("available"))
+        education_rubros = [
+            item
+            for item in payload.get("rubros") or []
+            if item.get("sector") == "educacion"
+        ]
+        self.assertTrue(education_rubros)
+        self.assertTrue(all(item.get("tenant_slug") is None for item in education_rubros))
+        self.assertTrue(all(item.get("available") is False for item in education_rubros))
         self.assertTrue(any((item.get("resources") or []) for item in payload.get("rubros") or []))
         self.assertTrue(payload.get("resources"))
         first_rubro = (payload.get("rubros") or [])[0]
@@ -129,6 +153,230 @@ class ApiV2FoundationTest(unittest.TestCase):
         ]
         self.assertTrue(frontend_key_flags)
         self.assertTrue(all(flag is False for flag in frontend_key_flags))
+
+    def test_v2_demo_catalog_uses_unique_education_tenant_for_all_session_scopes(self):
+        owner = User(
+            name="Colegio Sandbox",
+            email="catalog-education-sandbox@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="qa-colegio-sandbox",
+            nombre="Colegio Sandbox",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            vertical="educacion",
+            subvertical="colegio_privado",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        session_scopes = {}
+        for response_profile in ("full", "selector"):
+            query = "" if response_profile == "full" else "?response_profile=selector"
+            with patch.object(
+                demo_routes,
+                "_first_education_tenant_for_demo",
+                wraps=demo_routes._first_education_tenant_for_demo,
+            ) as education_resolver:
+                response = self.client.get(f"/api/v2/demo/catalog{query}")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(education_resolver.call_count, 1)
+            payload = response.get_json()
+            education_group = next(
+                group
+                for group in payload.get("sector_groups") or []
+                if group.get("key") == "educacion"
+            )
+            self.assertEqual(education_group.get("tenant_slug"), tenant.slug)
+            self.assertTrue(education_group.get("available"))
+            session_scopes.setdefault(
+                "sector_group",
+                {
+                    "sector": "educacion",
+                    "tenant_slug": education_group.get("tenant_slug"),
+                    "response_profile": "widget",
+                },
+            )
+
+            education_rubros = [
+                item
+                for item in payload.get("rubros") or []
+                if item.get("sector") == "educacion"
+            ]
+            self.assertTrue(education_rubros)
+            for rubro in education_rubros:
+                self.assertEqual(rubro.get("tenant_slug"), tenant.slug)
+                self.assertTrue(rubro.get("available"))
+                self.assertEqual(set(_values_for_key(rubro, "tenant_slug")), {tenant.slug})
+                session_scopes.setdefault(
+                    f"education_rubro:{rubro.get('slug')}",
+                    {
+                        "sector": "educacion",
+                        "rubro": rubro.get("slug"),
+                        "tenant_slug": rubro.get("tenant_slug"),
+                        "response_profile": "widget",
+                    },
+                )
+
+            for rubro in education_group.get("rubros") or []:
+                self.assertEqual(rubro.get("tenant_slug"), tenant.slug)
+                self.assertTrue(rubro.get("available"))
+
+        for scope in session_scopes.values():
+            session_response = self.client.post("/api/v2/demo/session", json=scope)
+            self.assertEqual(session_response.status_code, 200, scope)
+            self.assertEqual(session_response.get_json().get("tenant_slug"), tenant.slug)
+
+        legacy_alias_response = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "educacion",
+                "tenant_slug": "colegio-demo",
+                "response_profile": "widget",
+            },
+        )
+        self.assertEqual(legacy_alias_response.status_code, 200)
+        self.assertEqual(legacy_alias_response.get_json().get("tenant_slug"), tenant.slug)
+
+        for wrong_tenant_slug in ("unknown-school", "bodega", "municipio"):
+            wrong_slug_response = self.client.post(
+                "/api/v2/demo/session",
+                json={"sector": "educacion", "tenant_slug": wrong_tenant_slug},
+            )
+            self.assertEqual(wrong_slug_response.status_code, 404)
+            self.assertEqual(
+                wrong_slug_response.get_json().get("reason_code"),
+                "tenant_not_found",
+            )
+        self.assertIsNone(TenantProfile.query.filter_by(slug="bodega").first())
+        self.assertIsNone(TenantProfile.query.filter_by(slug="municipio").first())
+
+        for mismatched_scope in (
+            {"sector": "educacion", "rubro": "bodega"},
+            {
+                "sector": "educacion",
+                "rubro": "bodega",
+                "tenant_slug": tenant.slug,
+            },
+        ):
+            mismatched_response = self.client.post(
+                "/api/v2/demo/session",
+                json=mismatched_scope,
+            )
+            self.assertEqual(mismatched_response.status_code, 400)
+            self.assertEqual(
+                mismatched_response.get_json().get("reason_code"),
+                "validation_error",
+            )
+
+    def test_v2_demo_catalog_marks_education_unavailable_without_active_education_tenant(self):
+        business_owner = User(
+            name="Comercio Activo",
+            email="catalog-active-business@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        inactive_school_owner = User(
+            name="Colegio Inactivo",
+            email="catalog-inactive-school@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add_all([business_owner, inactive_school_owner])
+        db.session.flush()
+        db.session.add_all(
+            [
+                TenantProfile(
+                    slug="active-business",
+                    nombre="Comercio Activo",
+                    tipo="pyme",
+                    pyme_id=business_owner.id,
+                    is_active=True,
+                    vertical="retail",
+                ),
+                TenantProfile(
+                    slug="inactive-school",
+                    nombre="Colegio Inactivo",
+                    tipo="pyme",
+                    pyme_id=inactive_school_owner.id,
+                    is_active=False,
+                    vertical="educacion",
+                    capabilities_json={"education": {"enabled": True}},
+                ),
+            ]
+        )
+        db.session.commit()
+
+        for query in ("", "?response_profile=selector"):
+            response = self.client.get(f"/api/v2/demo/catalog{query}")
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            education_group = next(
+                group
+                for group in payload.get("sector_groups") or []
+                if group.get("key") == "educacion"
+            )
+            self.assertIsNone(education_group.get("tenant_slug"))
+            self.assertFalse(education_group.get("available"))
+
+            education_rubros = [
+                item
+                for item in payload.get("rubros") or []
+                if item.get("sector") == "educacion"
+            ]
+            self.assertTrue(education_rubros)
+            self.assertTrue(all(item.get("tenant_slug") is None for item in education_rubros))
+            self.assertTrue(all(item.get("available") is False for item in education_rubros))
+            for rubro in education_rubros:
+                self.assertTrue(
+                    all(value is None for value in _values_for_key(rubro, "tenant_slug"))
+                )
+                if "admin_preview_endpoint" in rubro:
+                    self.assertIsNone(rubro.get("admin_preview_endpoint"))
+                    self.assertFalse((rubro.get("survey_voting") or {}).get("enabled"))
+            self.assertTrue(
+                all(
+                    item.get("tenant_slug") is None and item.get("available") is False
+                    for item in education_group.get("rubros") or []
+                )
+            )
+
+        session_response = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "educacion", "rubro": "colegios"},
+        )
+        self.assertEqual(session_response.status_code, 404)
+        self.assertEqual(
+            session_response.get_json().get("reason_code"),
+            "tenant_resolution_failed",
+        )
+
+        wrong_scope_response = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "educacion", "tenant_slug": "active-business"},
+        )
+        self.assertEqual(wrong_scope_response.status_code, 404)
+        self.assertEqual(
+            wrong_scope_response.get_json().get("reason_code"),
+            "tenant_not_found",
+        )
+
+        inactive_response = self.client.post(
+            "/api/v2/demo/session",
+            json={"sector": "educacion", "tenant_slug": "inactive-school"},
+        )
+        self.assertEqual(inactive_response.status_code, 404)
+        self.assertEqual(
+            inactive_response.get_json().get("reason_code"),
+            "tenant_not_found",
+        )
 
     def test_v2_demo_session_returns_workspace_contract(self):
         self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = (
