@@ -1,7 +1,7 @@
 """add durable municipal chat idempotency receipts
 
 Revision ID: 20260825_chat_idempotency_v1
-Revises: 20260825_demo_survey_participation_v1
+Revises: 20260825_legacy_municipio_ticket_scope_repair_v1
 Create Date: 2026-08-25 18:00:00.000000
 
 Only digests of the client key, actor/session scope and canonical request are
@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision = "20260825_chat_idempotency_v1"
-down_revision = "20260825_demo_survey_participation_v1"
+down_revision = "20260825_legacy_municipio_ticket_scope_repair_v1"
 branch_labels = None
 depends_on = None
 

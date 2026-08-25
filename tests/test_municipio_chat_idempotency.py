@@ -963,7 +963,7 @@ def test_municipio_chat_idempotency_migration_supports_sqlite(tmp_path):
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
     assert migration.revision == "20260825_chat_idempotency_v1"
-    assert migration.down_revision == "20260825_demo_survey_participation_v1"
+    assert migration.down_revision == "20260825_legacy_municipio_ticket_scope_repair_v1"
 
     engine = sa.create_engine(f"sqlite:///{(tmp_path / 'chat-idem.sqlite3').as_posix()}")
     metadata = sa.MetaData()
