@@ -15,7 +15,11 @@ o una URL de Redis configurada pero inaccesible. En runtimes production-like,
 la sonda PostgreSQL también exige la tabla crítica
 `municipio_chat_idempotency_receipt`: la ruta municipal con idempotencia está
 registrada siempre y no puede servir tráfico correctamente sin esa migración.
-No se inspeccionan filas ni se exige el catálogo completo de tablas opcionales.
+La validación material cubre columnas y tipos críticos, nulabilidad, secuencia
+de identidad, el índice único de alcance idempotente y los privilegios
+efectivos de esquema, tabla y secuencia del usuario runtime. No se inspeccionan
+filas, no se exige un head Alembic exacto ni el catálogo completo de tablas
+opcionales.
 
 ## Variables recomendadas (hardening)
 
@@ -49,6 +53,10 @@ No se inspeccionan filas ni se exige el catálogo completo de tablas opcionales.
      Un `503` bloquea la promoción; usar `request_id` para correlacionar logs.
      `components.database.reason_code=required_schema_missing` identifica una
      base conectada cuya migración crítica todavía no está disponible.
+     `required_schema_incompatible`,
+     `required_idempotency_uniqueness_missing` y
+     `required_database_privilege_missing` distinguen deriva material sin
+     publicar nombres de roles, esquemas, hosts ni credenciales.
    - login
    - `/auth/widget/bootstrap`
    - `/analytics/event`

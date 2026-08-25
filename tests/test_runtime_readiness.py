@@ -29,13 +29,63 @@ def _sqlite_engine():
     return create_engine("sqlite:///:memory:", future=True)
 
 
-def _postgres_engine(*, schema_available=True):
+def _postgres_columns():
+    return {
+        "id": ["int4", True],
+        "tenant_id": ["int4", True],
+        "endpoint": ["varchar", True],
+        "actor_scope_hash": ["varchar", True],
+        "idempotency_key_hash": ["varchar", True],
+        "request_hash": ["varchar", True],
+        "status": ["varchar", True],
+        "response_status": ["int4", False],
+        "response_json": ["jsonb", False],
+        "response_request_id": ["varchar", False],
+        "contract_version": ["varchar", True],
+        "created_at": ["timestamptz", True],
+        "updated_at": ["timestamptz", True],
+        "completed_at": ["timestamptz", False],
+        "expired_at": ["timestamptz", False],
+    }
+
+
+def _postgres_engine(**schema_overrides):
+    schema_state = {
+        "relation_present": True,
+        "table_kind_valid": True,
+        "columns": _postgres_columns(),
+        "unique_indexes": [
+            ["id"],
+            [
+                "tenant_id",
+                "endpoint",
+                "actor_scope_hash",
+                "idempotency_key_hash",
+            ],
+        ],
+        "identity_sequence_present": True,
+        "schema_usage_privilege": True,
+        "select_privilege": True,
+        "insert_privilege": True,
+        "update_privilege": True,
+        "delete_privilege": True,
+        "identity_sequence_privilege": True,
+    }
+    schema_state.update(schema_overrides)
+
     class Result:
-        def __init__(self, value):
+        def __init__(self, value=None, mapping=None):
             self.value = value
+            self.mapping = mapping
 
         def scalar_one(self):
             return self.value
+
+        def mappings(self):
+            return self
+
+        def one(self):
+            return dict(self.mapping)
 
     class Connection:
         dialect = SimpleNamespace(name="postgresql")
@@ -57,9 +107,9 @@ def _postgres_engine(*, schema_available=True):
         def execute(self, statement, parameters=None):
             self.statements.append(statement)
             self.statement_parameters.append(parameters)
-            if "pg_catalog.pg_class" in str(statement):
-                return Result(schema_available)
-            return Result(1)
+            if "AS relation_present" in str(statement):
+                return Result(mapping=schema_state)
+            return Result(value=1)
 
     connection = Connection()
     return SimpleNamespace(connect=lambda: connection), connection
@@ -105,15 +155,34 @@ def test_database_and_redis_are_ready_with_short_timeouts():
     ]
     assert redis_client.closed is True
     assert len(connection.statements) == 1
-    assert "pg_catalog.to_regclass" in str(connection.statements[0])
-    assert connection.statement_parameters[0] == {
-        "required_table_0": "municipio_chat_idempotency_receipt",
-        "required_table_count": 1,
+    probe_sql = str(connection.statements[0])
+    assert "pg_catalog.to_regclass" in probe_sql
+    assert "FROM municipio_chat_idempotency_receipt" not in probe_sql
+    assert "pg_catalog.pg_attribute" in probe_sql
+    assert "pg_catalog.jsonb_object_agg" in probe_sql
+    assert "pg_catalog.pg_index" in probe_sql
+    for index_guard in (
+        "index_definition.indisunique",
+        "index_definition.indisvalid",
+        "index_definition.indisready",
+        "index_definition.indislive",
+        "index_definition.indpred IS NULL",
+        "index_definition.indexprs IS NULL",
+    ):
+        assert index_guard in probe_sql
+    assert probe_sql.count("pg_catalog.has_table_privilege") == 4
+    for table_privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        assert f"relation.oid, '{table_privilege}'" in probe_sql
+    assert "pg_catalog.has_sequence_privilege" in probe_sql
+    params = connection.statement_parameters[0]
+    assert params == {
+        "required_table": "municipio_chat_idempotency_receipt",
+        "identity_column": "id",
     }
 
 
 def test_missing_required_postgres_table_is_not_ready_and_skips_redis():
-    engine, connection = _postgres_engine(schema_available=False)
+    engine, connection = _postgres_engine(relation_present=False)
     redis_factory_calls = []
 
     payload = evaluate_runtime_readiness(
@@ -137,13 +206,97 @@ def test_missing_required_postgres_table_is_not_ready_and_skips_redis():
         },
     }
     assert redis_factory_calls == []
-    assert connection.statement_parameters[0] == {
-        "required_table_0": "municipio_chat_idempotency_receipt",
-        "required_table_count": 1,
-    }
     assert "demo_survey_participation" not in repr(
         connection.statement_parameters[0]
     )
+
+
+def test_missing_required_postgres_column_is_not_ready():
+    columns = _postgres_columns()
+    columns.pop("request_hash")
+    engine, _connection = _postgres_engine(columns=columns)
+
+    payload = evaluate_runtime_readiness(
+        engine=engine,
+        redis_uri="memory://",
+        production_like=True,
+    )
+
+    assert payload["ready"] is False
+    assert payload["components"]["database"] == {
+        "status": "error",
+        "required": True,
+        "reason_code": "required_schema_incompatible",
+    }
+
+
+def test_missing_idempotency_unique_index_is_not_ready():
+    engine, _connection = _postgres_engine(unique_indexes=[["id"]])
+
+    payload = evaluate_runtime_readiness(
+        engine=engine,
+        redis_uri="memory://",
+        production_like=True,
+    )
+
+    assert payload["ready"] is False
+    assert payload["components"]["database"] == {
+        "status": "error",
+        "required": True,
+        "reason_code": "required_idempotency_uniqueness_missing",
+    }
+
+
+def test_equivalent_reordered_idempotency_unique_index_is_accepted():
+    engine, _connection = _postgres_engine(
+        unique_indexes=[
+            ["id"],
+            [
+                "idempotency_key_hash",
+                "actor_scope_hash",
+                "endpoint",
+                "tenant_id",
+            ],
+        ]
+    )
+
+    payload = evaluate_runtime_readiness(
+        engine=engine,
+        redis_uri="memory://",
+        production_like=True,
+    )
+
+    assert payload["components"]["database"] == {
+        "status": "ok",
+        "required": True,
+    }
+
+
+def test_missing_runtime_schema_table_or_sequence_privilege_is_not_ready():
+    for missing_privilege in (
+        "schema_usage_privilege",
+        "select_privilege",
+        "insert_privilege",
+        "update_privilege",
+        "delete_privilege",
+        "identity_sequence_privilege",
+    ):
+        engine, _connection = _postgres_engine(
+            **{missing_privilege: False}
+        )
+
+        payload = evaluate_runtime_readiness(
+            engine=engine,
+            redis_uri="memory://",
+            production_like=True,
+        )
+
+        assert payload["ready"] is False
+        assert payload["components"]["database"] == {
+            "status": "error",
+            "required": True,
+            "reason_code": "required_database_privilege_missing",
+        }
 
 
 def test_postgres_database_probe_sets_local_statement_timeout():
@@ -529,7 +682,7 @@ def test_vercel_preview_route_caches_fail_closed_schema_result(monkeypatch):
         "services.runtime_readiness.Redis.from_url",
         lambda *_args, **_kwargs: redis_calls.append(True),
     )
-    engine, connection = _postgres_engine(schema_available=False)
+    engine, connection = _postgres_engine(relation_present=False)
     app = _route_app(monkeypatch, environment="testing", engine=engine)
 
     first = app.test_client().get(
