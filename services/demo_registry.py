@@ -11,10 +11,17 @@ from sqlalchemy import func
 
 from models import QA, Rubro, User
 from utils.user_query import _safe_user_query
-from services.logic import es_rubro_publico
 
 
 _MISCONFIGURED_DEMOS_LOGGED: set[str] = set()
+
+
+def _is_public_rubro(rubro: object) -> bool:
+    """Keep the chat/NLP stack off authentication and startup import paths."""
+
+    from services.logic import es_rubro_publico
+
+    return es_rubro_publico(rubro)
 
 
 @dataclass(slots=True)
@@ -143,7 +150,7 @@ def _guess_tipo_chat(entry: Dict[str, object], rubro: Optional[Rubro], owner: Op
     tipo_chat = entry.get("tipo_chat")
     if isinstance(tipo_chat, str) and tipo_chat.strip():
         return tipo_chat.strip().lower()
-    if rubro and es_rubro_publico(rubro):
+    if rubro and _is_public_rubro(rubro):
         return "municipio"
     if owner and getattr(owner, "tipo_chat", None):
         return owner.tipo_chat
@@ -257,7 +264,7 @@ def load_demo_rubros(require_owner: bool = True) -> List[DemoRubro]:
                 )
                 owner_user = fallback_owner
 
-        if not owner_user and rubro_obj and es_rubro_publico(rubro_obj):
+        if not owner_user and rubro_obj and _is_public_rubro(rubro_obj):
             owner_user = user_query.filter_by(tipo_chat="municipio", rol="admin").first()
 
         if not owner_user:

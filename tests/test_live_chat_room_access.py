@@ -41,6 +41,7 @@ from socket_service import (
     on_location,
     on_new_chat,
     on_subscribe_ticket_updates,
+    send_welcome_message,
     socketio,
 )
 from utils.auth_helpers import bump_auth_session_version
@@ -120,6 +121,41 @@ class LiveChatRoomAccessTest(unittest.TestCase):
 
         self.assertFalse(result)
         join_room.assert_not_called()
+
+    def test_anonymous_web_connect_passes_concrete_app_to_background_task(self):
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="anonymous-web-connect")
+        ), patch("socket_service.socketio.start_background_task") as start_task:
+            result = on_connect({"channel": "web"})
+
+        self.assertIsNone(result)
+        start_task.assert_called_once_with(
+            send_welcome_message,
+            self.app,
+            "anonymous-web-connect",
+            {"channel": "web"},
+        )
+
+    def test_background_welcome_uses_app_context_and_server_emitter(self):
+        rubro = Rubro(clave="socket-welcome", nombre="Socket welcome", es_publico=True)
+        db.session.add(rubro)
+        db.session.flush()
+        self.admin.rubro_id = rubro.id
+        db.session.commit()
+
+        self.app_context.pop()
+        try:
+            with patch(
+                "services.municipio_responder.responder_municipio",
+                return_value={"message_body": "Bienvenido", "options_list": []},
+            ), patch("socket_service.socketio.emit") as socket_emit:
+                send_welcome_message(self.app, "anonymous-background", {"channel": "web"})
+        finally:
+            self.app_context.push()
+
+        socket_emit.assert_called_once()
+        self.assertEqual(socket_emit.call_args.args[0], "message")
+        self.assertEqual(socket_emit.call_args.kwargs["room"], "anonymous-background")
 
     def test_revoked_clerk_session_cannot_subscribe_socket(self):
         token = self._revoked_clerk_token()

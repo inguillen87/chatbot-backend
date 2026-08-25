@@ -2,7 +2,6 @@ from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
 from config import SOCKET_CORS_ALLOWED_ORIGINS
 from models import ChatSessionContext, EncEncuesta, EncLink, User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
-from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
 from services.live_chat_access import LiveChatAccessError, build_ticket_room, verify_ticket_room_token
 from services.employee_ticket_access import employee_ticket_category_access_allows
@@ -14,7 +13,6 @@ from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
 )
-from utils.auth_helpers import user_from_token
 from utils.response_utils import ensure_buttons_compatibility
 from utils.roles import canonical_role, is_authorized_superadmin_user
 from typing import Any, Optional, Set
@@ -55,6 +53,26 @@ TENANT_TICKET_INVALIDATION_CONTRACT_VERSION = "tickets.collection.invalidated.v1
 
 SURVEY_EFFECT_WORKER_ROLE = "survey-effect-worker"
 _SOCKET_QUEUE_CHANNEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+class _LazyTicketServiceProxy:
+    """Load the ticket domain only when a socket handler actually needs it."""
+
+    def __getattr__(self, name: str):
+        from services.ticket_service import servicio_tickets as ticket_service
+
+        return getattr(ticket_service, name)
+
+
+servicio_tickets = _LazyTicketServiceProxy()
+
+
+def _user_from_token(token: str):
+    """Avoid importing demo/chat intelligence during the process cold start."""
+
+    from utils.auth_helpers import user_from_token
+
+    return user_from_token(token)
 
 
 class SurveyRealtimeTransportError(RuntimeError):
@@ -987,23 +1005,23 @@ def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = 
 
 
 
-def send_welcome_message(sid, auth):
+def send_welcome_message(app, sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
     from services.municipio_responder import responder_municipio
     from models import User, ChatSessionContext, Rubro, db
     from uuid import uuid4
     from flask import g
 
-    current_app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
-    with current_app.app_context():
+    with app.app_context():
+        app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
         owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
         if not owner_user:
-            current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
+            app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
             return
 
         rubro = owner_user.rubro
         if not rubro:
-            current_app.logger.error(f"Rubro not found for user {owner_user.id}")
+            app.logger.error(f"Rubro not found for user {owner_user.id}")
             return
 
         chat_session_uuid = str(uuid4())
@@ -1038,10 +1056,10 @@ def send_welcome_message(sid, auth):
                 if audio_url:
                     respuesta["audio_url"] = audio_url
             except Exception as e:
-                current_app.logger.error(f"Error generating welcome audio: {e}")
+                app.logger.error(f"Error generating welcome audio: {e}")
 
-        emit('message', respuesta, room=sid)
-        current_app.logger.info(f"Welcome message sent to sid: {sid}")
+        socketio.emit('message', respuesta, room=sid)
+        app.logger.info(f"Welcome message sent to sid: {sid}")
 
 @socketio.on('connect')
 def on_connect(auth):
@@ -1057,7 +1075,7 @@ def on_connect(auth):
 
     if token:
         try:
-            user = user_from_token(str(token))
+            user = _user_from_token(str(token))
             if not user:
                 current_app.logger.warning(
                     "Socket.IO connection rejected for sid %s due to invalid or revoked token.",
@@ -1083,7 +1101,12 @@ def on_connect(auth):
             return False
     elif channel == 'web':
         # Defer the welcome message to a separate thread to not block the connection
-        socketio.start_background_task(send_welcome_message, request.sid, auth)
+        socketio.start_background_task(
+            send_welcome_message,
+            current_app._get_current_object(),
+            request.sid,
+            auth,
+        )
 
 
 @socketio.on('subscribe_ticket_updates')
@@ -1095,7 +1118,7 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'missing_token'})
         return
 
-    user = user_from_token(str(token))
+    user = _user_from_token(str(token))
     if not user:
         current_app.logger.warning("Socket subscribe rejected for sid %s: invalid or revoked token", request.sid)
         emit('subscription_error', {'error': 'invalid_token'})
@@ -1194,7 +1217,7 @@ def handle_send_chat_message(data):
         current_app.logger.error("Socket 'send_chat_message' recibio datos incompletos")
         return
 
-    current_user = user_from_token(str(token))
+    current_user = _user_from_token(str(token))
     if not current_user:
         current_app.logger.warning("Token invalido o revocado en 'send_chat_message'")
         emit('chat_error', {'error': 'invalid_token'})
