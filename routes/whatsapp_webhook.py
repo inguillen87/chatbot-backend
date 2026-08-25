@@ -46,7 +46,6 @@ from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.categorias_municipio import normalizar_texto
-from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from services.whatsapp_assisted_intake import (
@@ -144,6 +143,14 @@ from services.education_case_service import (
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
 logger = logging.getLogger(__name__)
+
+
+def responder_chatboc(*args, **kwargs):
+    """Load the conversational stack only when an inbound turn needs it."""
+
+    from services.logic import responder_chatboc as _responder_chatboc
+
+    return _responder_chatboc(*args, **kwargs)
 
 # Twilio accepts at most 1,600 GSM characters per API request, while WhatsApp
 # applies the stricter 1,024-character limit to non-template messages.  We use

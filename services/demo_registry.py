@@ -19,7 +19,7 @@ _MISCONFIGURED_DEMOS_LOGGED: set[str] = set()
 def _is_public_rubro(rubro: object) -> bool:
     """Keep the chat/NLP stack off authentication and startup import paths."""
 
-    from services.logic import es_rubro_publico
+    from services.rubro_classification import es_rubro_publico
 
     return es_rubro_publico(rubro)
 

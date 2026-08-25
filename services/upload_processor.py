@@ -23,7 +23,7 @@ from services.qdrant_utils import (
     verificar_y_crear_coleccion_qdrant,
 )
 from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO, coleccion_catalogo_para_rubro
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 from services.gcs_service import (
     MAX_FILE_SIZE as CATALOG_UPLOAD_MAX_BYTES,
     UploadFileTooLargeError,

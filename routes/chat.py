@@ -23,7 +23,7 @@ from sqlalchemy.orm.attributes import flag_modified # Importado para flag_modifi
 from models import User, Rubro, Conversacion, MunicipioTicket, PymeTicket, PymePedido, TenantProfile, TicketComentario, db, ChatSessionContext # Added ChatSessionContext
 from utils.db_utils import commit_with_retry, ensure_chat_session_context_schema
 from socket_service import socketio # Import socketio
-from services.logic import (
+from services.rubro_classification import (
     RUBROS_PUBLICOS,
     normalizar_rubro,
     es_rubro_publico,

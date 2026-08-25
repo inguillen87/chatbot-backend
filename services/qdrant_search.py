@@ -35,7 +35,7 @@ CATALOGO_MUNICIPIO = "catalogo_municipio"
 
 def coleccion_catalogo_para_rubro(rubro) -> str:
     """Devuelve el nombre de colección Qdrant según el rubro."""
-    from services.logic import es_rubro_publico
+    from services.rubro_classification import es_rubro_publico
 
     return CATALOGO_MUNICIPIO if es_rubro_publico(rubro) else CATALOGO_PYME
 

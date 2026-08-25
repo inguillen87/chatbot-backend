@@ -354,7 +354,7 @@ def _issue_login_response(
         )
     tenant_slug = getattr(tenant, "slug", None) if tenant is not None else None
     try:
-        from services.logic import es_rubro_publico
+        from services.rubro_classification import es_rubro_publico
     except Exception:
         es_rubro_publico = lambda *_args, **_kwargs: False  # type: ignore
 
