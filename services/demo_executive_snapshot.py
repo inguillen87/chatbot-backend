@@ -10,11 +10,7 @@ EXECUTIVE_CHANNEL_SUMMARY_CONTRACT_VERSION = "demo.channel_summary.v1"
 
 _SYNTHETIC_DATA_MODE = "synthetic_demo_scenario"
 _SESSION_DATA_MODE = "session_generated_events"
-_EXECUTIVE_SCENARIO_TIMESTAMPS = {
-    "server_time": "2026-08-25T12:00:00+00:00",
-    "inicio_at": "2026-08-25T12:00:00+00:00",
-    "fin_at": "2026-09-24T12:00:00+00:00",
-}
+_MIXED_PARTITIONED_DATA_MODE = "mixed_partitioned"
 
 
 def normalize_demo_presentation_mode(value: Any) -> str:
@@ -26,14 +22,18 @@ def normalize_demo_presentation_mode(value: Any) -> str:
 
 def _executive_provenance(*, mode: str, tenant_slug: str) -> dict[str, Any]:
     synthetic = mode == _SYNTHETIC_DATA_MODE
+    contains_synthetic = mode in {
+        _SYNTHETIC_DATA_MODE,
+        _MIXED_PARTITIONED_DATA_MODE,
+    }
     label = (
         "Escenario demostrativo sintético de Junín. No representa datos municipales "
         "reales ni debe usarse para tomar decisiones de gobierno."
         if synthetic
         else (
-            "El panel ejecutivo muestra únicamente actividad real generada en esta "
-            "sesión demo. Las encuestas sembradas conservan su procedencia sintética "
-            "y no se computan como estadísticas municipales oficiales."
+            "El panel separa la actividad real generada en esta sesión demo de la "
+            "encuesta sintética adjunta. Ninguna de las dos fuentes representa "
+            "estadísticas municipales oficiales."
         )
     )
     provenance = {
@@ -41,12 +41,19 @@ def _executive_provenance(*, mode: str, tenant_slug: str) -> dict[str, Any]:
         "scope": "executive_snapshot",
         "mode": mode,
         "synthetic": synthetic,
+        "contains_synthetic": contains_synthetic,
         "municipal_truth": False,
         "suitable_for_product_demonstration": True,
         "suitable_for_government_decisions": False,
         "label": label,
         "tenant_scope": str(tenant_slug or "municipio").strip().lower() or "municipio",
-        "scenario_scope": "Junín, Mendoza" if synthetic else "Sesión demo validada",
+        "requested_tenant_slug": str(tenant_slug or "municipio").strip().lower() or "municipio",
+        "scenario_tenant_slug": "junin" if synthetic else None,
+        "scenario_scope": (
+            "Junín, Mendoza"
+            if synthetic
+            else "Sesión demo validada con encuesta sintética separada"
+        ),
     }
     provenance["source_partitions"] = (
         [
@@ -73,24 +80,58 @@ def _executive_provenance(*, mode: str, tenant_slug: str) -> dict[str, Any]:
     return provenance
 
 
-def _stabilize_synthetic_contract(value: Any) -> Any:
-    """Replace request-time clocks inside seeded survey data for stable demos."""
-
-    if isinstance(value, dict):
-        return {
-            key: (
-                _EXECUTIVE_SCENARIO_TIMESTAMPS[key]
-                if key in _EXECUTIVE_SCENARIO_TIMESTAMPS
-                else _stabilize_synthetic_contract(nested)
-            )
-            for key, nested in value.items()
-        }
-    if isinstance(value, list):
-        return [_stabilize_synthetic_contract(item) for item in value]
-    return value
+def _as_non_negative_int(value: Any) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
-def _synthetic_cards() -> list[dict[str, Any]]:
+def _as_percentage(value: Any) -> float:
+    try:
+        return max(0.0, min(100.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _survey_snapshot_summary(survey_voting: dict[str, Any]) -> dict[str, Any]:
+    """Derive the executive survey KPI from the embedded survey contract."""
+
+    raw_items = survey_voting.get("items") or survey_voting.get("all_items") or []
+    item = next((entry for entry in raw_items if isinstance(entry, dict)), {})
+    results = item.get("results") if isinstance(item.get("results"), dict) else {}
+    total = _as_non_negative_int(
+        results.get("total_respuestas")
+        or results.get("seeded_responses")
+        or (survey_voting.get("seed_policy") or {}).get("responses_per_item")
+    )
+    options = [
+        option
+        for option in (results.get("options") or [])
+        if isinstance(option, dict)
+    ]
+    top_option = max(
+        options,
+        key=lambda option: _as_non_negative_int(option.get("count") or option.get("votos")),
+        default={},
+    )
+    top_count = _as_non_negative_int(top_option.get("count") or top_option.get("votos"))
+    top_percentage = _as_percentage(top_option.get("porcentaje"))
+    if not top_percentage and total:
+        top_percentage = round((top_count / total) * 100, 2)
+    return {
+        "title": str(item.get("titulo") or item.get("title") or "encuesta demostrativa"),
+        "total": total,
+        "top_label": str(top_option.get("label") or top_option.get("texto") or "Sin resultados"),
+        "top_percentage": top_percentage,
+    }
+
+
+def _format_percentage(value: float) -> str:
+    return f"{value:g}%"
+
+
+def _synthetic_cards(survey_summary: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": "claims_received",
@@ -118,16 +159,16 @@ def _synthetic_cards() -> list[dict[str, Any]]:
         },
         {
             "id": "survey_participation",
-            "label": "Participaciones en encuesta",
-            "value": "1.248",
-            "detail": "Votos válidos del escenario demostrativo",
-            "period": "consulta barrial simulada",
+            "label": "Respuestas en encuesta demo",
+            "value": str(survey_summary["total"]),
+            "detail": f"Base sintética de {survey_summary['title']}",
+            "period": "muestra determinística simulada",
             "data_mode": _SYNTHETIC_DATA_MODE,
         },
     ]
 
 
-def _synthetic_metrics() -> list[dict[str, Any]]:
+def _synthetic_metrics(survey_summary: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": "claims_received",
@@ -159,16 +200,19 @@ def _synthetic_metrics() -> list[dict[str, Any]]:
         {
             "id": "survey_valid_votes",
             "label": "Participación en encuesta",
-            "value": 1248,
-            "unit": "votos válidos",
-            "detail": "Prioridades barriales; luminarias lidera con 42%",
-            "period": "consulta simulada",
+            "value": survey_summary["total"],
+            "unit": "respuestas sintéticas",
+            "detail": (
+                f"{survey_summary['top_label']} lidera con "
+                f"{_format_percentage(survey_summary['top_percentage'])}"
+            ),
+            "period": survey_summary["title"],
             "data_mode": _SYNTHETIC_DATA_MODE,
         },
     ]
 
 
-def _synthetic_timeline() -> list[dict[str, Any]]:
+def _synthetic_timeline(survey_summary: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": "timeline-01",
@@ -210,7 +254,11 @@ def _synthetic_timeline() -> list[dict[str, Any]]:
             "id": "timeline-05",
             "time": "12:00",
             "label": "Corte ejecutivo de prioridades barriales",
-            "detail": "1.248 participaciones válidas en la consulta simulada",
+            "detail": (
+                f"{survey_summary['total']} respuestas sintéticas; "
+                f"{survey_summary['top_label']} lidera con "
+                f"{_format_percentage(survey_summary['top_percentage'])}"
+            ),
             "status": "in_progress",
             "channel": "survey",
             "data_mode": _SYNTHETIC_DATA_MODE,
@@ -221,6 +269,14 @@ def _synthetic_timeline() -> list[dict[str, Any]]:
 def _synthetic_map() -> dict[str, Any]:
     return {
         "enabled": True,
+        "sample": True,
+        "displayed_points": 5,
+        "represented_cases": 52,
+        "total_cases": 184,
+        "coverage_note": (
+            "Cinco zonas de muestra representan 52 de 184 reclamos del escenario; "
+            "no son un relevamiento territorial real."
+        ),
         "center": {"lat": -33.144539, "lng": -68.485729},
         "zoom": 13,
         "label": "Mapa demostrativo de demanda ciudadana",
@@ -410,21 +466,22 @@ def apply_gobierno_executive_snapshot(payload: dict[str, Any], *, tenant_slug: s
     frontend_contract = dict(result.get("frontend_contract") or {})
     frontend_contract["presentation_mode"] = EXECUTIVE_PRESENTATION_MODE
     result["frontend_contract"] = frontend_contract
-    result["survey_voting"] = _stabilize_synthetic_contract(result.get("survey_voting") or {})
+    result["survey_voting"] = deepcopy(result.get("survey_voting") or {})
 
     session_activity = dict(result.get("session_activity") or {})
     if session_activity.get("has_session_data"):
         items = [dict(item) for item in (session_activity.get("items") or []) if isinstance(item, dict)]
         result["data_provenance"] = _executive_provenance(
-            mode=_SESSION_DATA_MODE,
+            mode=_MIXED_PARTITIONED_DATA_MODE,
             tenant_slug=tenant_slug,
         )
         result["cases"] = _session_cases(items)
         result["channel_summary"] = {
             "contract_version": EXECUTIVE_CHANNEL_SUMMARY_CONTRACT_VERSION,
             "data_mode": _SESSION_DATA_MODE,
-            "total_interactions": len(items),
-            "observed_items": len(items),
+            "total_interactions": None,
+            "total_cases": len(items),
+            "observed_cases": len(items),
             "channels": [],
             "whatsapp": {
                 "conversations": None,
@@ -446,11 +503,23 @@ def apply_gobierno_executive_snapshot(payload: dict[str, Any], *, tenant_slug: s
         mode=_SYNTHETIC_DATA_MODE,
         tenant_slug=tenant_slug,
     )
-    result["cards"] = _synthetic_cards()
-    result["metrics"] = _synthetic_metrics()
-    result["timeline"] = _synthetic_timeline()
+    survey_summary = _survey_snapshot_summary(result["survey_voting"])
+    result["cards"] = _synthetic_cards(survey_summary)
+    result["metrics"] = _synthetic_metrics(survey_summary)
+    result["timeline"] = _synthetic_timeline(survey_summary)
     result["map"] = _synthetic_map()
     result["cases"] = _synthetic_cases()
+    result["case_sample"] = {
+        "contract_version": "demo.case_sample.v1",
+        "sample": True,
+        "total_cases": 184,
+        "displayed_cases": len(result["cases"]),
+        "represented_cases_on_map": 52,
+        "label": (
+            "Muestra de casos del escenario sintético; no representa el universo "
+            "de reclamos de un municipio."
+        ),
+    }
     result["channel_summary"] = _synthetic_channel_summary()
 
     modules: list[dict[str, Any]] = []
