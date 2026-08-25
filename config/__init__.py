@@ -732,6 +732,13 @@ class Config:
     # Vercel sends this value as ``Authorization: Bearer ...`` to scheduled
     # endpoints. An empty value must never authorize an internal invocation.
     CRON_SECRET = os.getenv("CRON_SECRET", "")
+    # A Vercel Production deployment can become the active cron target before
+    # DNS or database cutover. Keep reconciliation inert until the operator
+    # explicitly confirms that the deployment owns the production workload.
+    VERCEL_OUTBOX_CRON_ENABLED = _env_flag(
+        False,
+        "VERCEL_OUTBOX_CRON_ENABLED",
+    )
     # Dedicated/versioned HMAC boundary for TenantTicket intake receipts.  It
     # intentionally has no SECRET_KEY fallback: creation and tracking fail
     # closed when it is absent or shorter than 32 UTF-8 bytes.

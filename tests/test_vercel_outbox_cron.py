@@ -14,9 +14,10 @@ CRON_SECRET = "cron-test-secret-" + ("x" * 32)
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _route_app(*, secret: str = CRON_SECRET) -> Flask:
+def _route_app(*, secret: str = CRON_SECRET, enabled: bool = True) -> Flask:
     app = Flask(__name__)
     app.config["CRON_SECRET"] = secret
+    app.config["VERCEL_OUTBOX_CRON_ENABLED"] = enabled
     app.register_blueprint(internal_cron_bp)
     return app
 
@@ -153,6 +154,25 @@ def test_wrong_cron_bearer_fails_closed_without_running_workers():
     run.assert_not_called()
 
 
+def test_valid_cron_bearer_stays_inert_until_cutover_is_enabled():
+    app = _route_app(enabled=False)
+    with patch.object(reconciliation, "run_outbox_reconciliation") as run:
+        response = app.test_client().get(
+            "/api/internal/cron/outbox-reconciliation",
+            headers={"Authorization": f"Bearer {CRON_SECRET}"},
+        )
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "contract_version": "internal.cron.activation.v1",
+        "executed": False,
+        "reason_code": "vercel_outbox_cron_disabled",
+        "status": "disabled",
+    }
+    assert response.headers["Cache-Control"] == "no-store"
+    run.assert_not_called()
+
+
 def test_valid_cron_bearer_runs_reconciliation():
     app = _route_app()
     with patch.object(
@@ -207,6 +227,7 @@ def test_vercel_config_declares_only_bounded_outbox_reconciliation_cron():
 
 def test_application_registers_the_internal_cron_blueprint(client):
     client.application.config["CRON_SECRET"] = CRON_SECRET
+    client.application.config["VERCEL_OUTBOX_CRON_ENABLED"] = True
     with patch.object(
         reconciliation,
         "run_outbox_reconciliation",

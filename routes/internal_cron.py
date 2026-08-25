@@ -32,6 +32,10 @@ def _has_valid_cron_authorization() -> bool:
     )
 
 
+def _outbox_cron_is_enabled() -> bool:
+    return current_app.config.get("VERCEL_OUTBOX_CRON_ENABLED") is True
+
+
 @internal_cron_bp.get("/outbox-reconciliation")
 def outbox_reconciliation():
     if not _has_valid_cron_authorization():
@@ -42,6 +46,19 @@ def outbox_reconciliation():
             }
         )
         response.status_code = 401
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+    if not _outbox_cron_is_enabled():
+        response = jsonify(
+            {
+                "contract_version": "internal.cron.activation.v1",
+                "executed": False,
+                "reason_code": "vercel_outbox_cron_disabled",
+                "status": "disabled",
+            }
+        )
+        response.status_code = 503
         response.headers["Cache-Control"] = "no-store"
         return response
 
