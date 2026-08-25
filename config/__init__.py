@@ -4,7 +4,7 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 
 from utils.runtime_environment import (
@@ -107,6 +107,35 @@ def _coalesce_version(*candidates: Optional[str], fallback: str = "dev") -> str:
             return value
 
     return fallback
+
+
+def _resolve_backend_version(
+    environ: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Resolve the deployed backend revision before manual fallbacks.
+
+    Platform-provided Git revisions are immutable for a deployment, while
+    ``BACKEND_VERSION`` can remain stale when environment variables are copied
+    between releases.  Vercel wins if both platform signals are present (for
+    example, after migrating Render variables into a Vercel project).
+    """
+
+    runtime_env = os.environ if environ is None else environ
+    platform_revisions: List[Optional[str]] = []
+    if is_vercel_runtime(runtime_env):
+        platform_revisions.append(runtime_env.get("VERCEL_GIT_COMMIT_SHA"))
+    if is_render_runtime(runtime_env):
+        platform_revisions.append(runtime_env.get("RENDER_GIT_COMMIT"))
+
+    return _coalesce_version(
+        *platform_revisions,
+        runtime_env.get("BACKEND_VERSION"),
+        runtime_env.get("SOURCE_VERSION"),  # Heroku style
+        runtime_env.get("GIT_COMMIT"),
+        runtime_env.get("GITHUB_SHA"),
+        runtime_env.get("VERCEL_GIT_COMMIT_SHA"),
+        runtime_env.get("RENDER_GIT_COMMIT"),
+    )
 
 
 def _env_first(*names: str, default: Optional[str] = None) -> Optional[str]:
@@ -280,14 +309,7 @@ DEFAULT_FRONTEND_VERSION = _coalesce_version(
     os.getenv("NEXT_PUBLIC_APP_VERSION"),
 )
 
-DEFAULT_BACKEND_VERSION = _coalesce_version(
-    os.getenv("BACKEND_VERSION"),
-    os.getenv("SOURCE_VERSION"),  # Heroku style
-    os.getenv("RENDER_GIT_COMMIT"),
-    os.getenv("GIT_COMMIT"),
-    os.getenv("GITHUB_SHA"),
-    os.getenv("VERCEL_GIT_COMMIT_SHA"),
-)
+DEFAULT_BACKEND_VERSION = _resolve_backend_version()
 
 # --- Variables de Entorno para Despliegue ---
 # Resolve all production signals together.  A missing/stale ``ENV=dev`` must
