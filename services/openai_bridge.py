@@ -10,7 +10,9 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
+from dataclasses import dataclass
 from typing import Any, Dict, List
 
 import httpx
@@ -38,7 +40,35 @@ _LEGACY_DEFAULT_MODEL = "gpt-4o-mini"
 _CLIENT_LOCK = threading.Lock()
 _CLIENT_KEY_DIGEST: str | None = None
 _OPENAI_CLIENT: Any | None = None
+_RESPONSES_CLIENT_KEY_DIGEST: str | None = None
+_OPENAI_RESPONSES_CLIENT: Any | None = None
 _CLIENT_IS_MANAGED = False  # Compatibility marker retained for older tests.
+_CONFIG_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+_CONFIG_FALSE_VALUES = frozenset({"0", "false", "no", "off"})
+_CLOUDFLARE_ACCOUNT_ID_RE = re.compile(r"^[a-fA-F0-9]{32}$")
+_CLOUDFLARE_PROMO_MODEL = "gpt-5.6-sol"
+
+
+@dataclass(frozen=True)
+class _CloudflareAIGatewayConfig:
+    account_id: str
+    api_token: str
+    gateway_id: str
+
+    @property
+    def base_url(self) -> str:
+        return (
+            "https://api.cloudflare.com/client/v4/accounts/"
+            f"{self.account_id}/ai/v1"
+        )
+
+    @property
+    def default_headers(self) -> dict[str, str]:
+        return {
+            "cf-aig-gateway-id": self.gateway_id,
+            "cf-aig-skip-cache": "true",
+            "cf-aig-collect-log-payload": "false",
+        }
 
 
 def OpenAI(*args: Any, **kwargs: Any) -> Any:
@@ -72,11 +102,37 @@ class _LazyOpenAIClientProxy:
         )
 
 
+class _LazyOpenAIResponsesClientProxy(_LazyOpenAIClientProxy):
+    """Lazy proxy scoped to Responses-compatible transports only."""
+
+    def __getattr__(self, name: str) -> Any:
+        if (
+            name.startswith("__") and name.endswith("__")
+        ) or name in {"_is_coroutine", "_is_coroutine_marker"}:
+            raise AttributeError(name)
+        return getattr(_get_openai_responses_client(None), name)
+
+    def __bool__(self) -> bool:
+        cloudflare_gateway_requested = (
+            str(os.getenv("CLOUDFLARE_AI_GATEWAY_ENABLED") or "")
+            .strip()
+            .lower()
+            in _CONFIG_TRUE_VALUES
+        )
+        return (
+            _OPENAI_RESPONSES_CLIENT is not None
+            or bool(str(os.getenv("OPENAI_API_KEY") or "").strip())
+            or cloudflare_gateway_requested
+        )
+
+
 _PUBLIC_CLIENT_PROXY = _LazyOpenAIClientProxy()
+_PUBLIC_RESPONSES_CLIENT_PROXY = _LazyOpenAIResponsesClientProxy()
 
 # Existing modules import this symbol directly. The stable proxy ensures those
 # imports do not capture ``None`` before dotenv/Flask configuration is loaded.
 client: Any = _PUBLIC_CLIENT_PROXY
+responses_client: Any = _PUBLIC_RESPONSES_CLIENT_PROXY
 
 
 def _safe_log_identifier(value: Any, default: str = "unknown") -> str:
@@ -118,8 +174,96 @@ def _config_value(app: Any, name: str, default: Any = None) -> Any:
     return value if value not in (None, "") else default
 
 
+def _strict_config_flag(app: Any, name: str) -> bool:
+    raw_value = _config_value(app, name, None)
+    if raw_value is None:
+        return False
+    if isinstance(raw_value, bool):
+        return raw_value
+    normalized = str(raw_value).strip().lower()
+    if normalized in _CONFIG_TRUE_VALUES:
+        return True
+    if normalized in _CONFIG_FALSE_VALUES:
+        return False
+    raise LLMProviderPreRequestError(
+        f"{name.lower()}_invalid"
+    )
+
+
+def _cloudflare_ai_gateway_config(
+    app: Any = None,
+) -> _CloudflareAIGatewayConfig | None:
+    """Resolve the opt-in Unified Billing transport or fail before I/O."""
+
+    if not _strict_config_flag(app, "CLOUDFLARE_AI_GATEWAY_ENABLED"):
+        return None
+
+    account_id = str(
+        _config_value(app, "CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID", "") or ""
+    ).strip()
+    if not account_id:
+        raise LLMProviderPreRequestError(
+            "cloudflare_ai_gateway_account_id_missing"
+        )
+    if not _CLOUDFLARE_ACCOUNT_ID_RE.fullmatch(account_id):
+        raise LLMProviderPreRequestError(
+            "cloudflare_ai_gateway_account_id_invalid"
+        )
+
+    gateway_id = str(
+        _config_value(app, "CLOUDFLARE_AI_GATEWAY_ID", "") or ""
+    ).strip()
+    if not gateway_id:
+        raise LLMProviderPreRequestError(
+            "cloudflare_ai_gateway_id_missing"
+        )
+    if not (1 <= len(gateway_id) <= 64) or any(
+        ord(char) < 0x21 or ord(char) > 0x7E for char in gateway_id
+    ):
+        raise LLMProviderPreRequestError(
+            "cloudflare_ai_gateway_id_invalid"
+        )
+
+    api_token = str(
+        _config_value(app, "CLOUDFLARE_AI_GATEWAY_API_TOKEN", "") or ""
+    ).strip()
+    if not api_token:
+        raise LLMProviderPreRequestError(
+            "cloudflare_ai_gateway_api_token_missing"
+        )
+    if len(api_token) < 20 or any(char.isspace() for char in api_token):
+        raise LLMProviderPreRequestError(
+            "cloudflare_ai_gateway_api_token_invalid"
+        )
+
+    return _CloudflareAIGatewayConfig(
+        account_id=account_id.lower(),
+        api_token=api_token,
+        gateway_id=gateway_id,
+    )
+
+
+def _model_for_openai_transport(model: Any, app: Any = None) -> str:
+    """Return the provider model name required by the selected transport."""
+
+    normalized = str(model or "").strip()
+    if not normalized:
+        raise LLMProviderPreRequestError("openai_model_missing")
+    if _cloudflare_ai_gateway_config(app) is None:
+        return normalized
+
+    # This opt-in exists specifically for the discounted Sol route. Keep the
+    # direct provider's channel-specific model selection untouched, while the
+    # Cloudflare transport is deterministic and cannot drift to an unsupported
+    # or non-promotional model through an unrelated OpenAI model environment.
+    gateway_model = _CLOUDFLARE_PROMO_MODEL
+    if "/" not in gateway_model:
+        gateway_model = f"openai/{gateway_model}"
+    return gateway_model
+
+
 def _get_openai_client(app: Any = None) -> Any:
-    """Return a zero-retry OpenAI client created only when it is needed."""
+    """Return the unchanged direct OpenAI client for non-Responses callers."""
 
     global _OPENAI_CLIENT, _CLIENT_KEY_DIGEST, _CLIENT_IS_MANAGED
 
@@ -168,13 +312,89 @@ def _get_openai_client(app: Any = None) -> Any:
         return _OPENAI_CLIENT
 
 
+def _get_openai_responses_client(app: Any = None) -> Any:
+    """Return the direct or opt-in Cloudflare client for Responses calls."""
+
+    global _OPENAI_RESPONSES_CLIENT, _RESPONSES_CLIENT_KEY_DIGEST
+    global _CLIENT_IS_MANAGED
+
+    # Preserve the repository's test/embedding injection contract.
+    if client is not _PUBLIC_CLIENT_PROXY:
+        return client
+
+    cloudflare_gateway = _cloudflare_ai_gateway_config(app)
+    if cloudflare_gateway is None:
+        return _get_openai_client(app)
+
+    require_llm_provider_network("openai", app)
+    try:
+        timeout_seconds = float(_config_value(app, "OPENAI_TIMEOUT_SECONDS", 25))
+    except (TypeError, ValueError):
+        raise LLMProviderPreRequestError("openai_timeout_invalid") from None
+    if timeout_seconds <= 0:
+        raise LLMProviderPreRequestError("openai_timeout_invalid")
+
+    default_headers = cloudflare_gateway.default_headers
+    fingerprint_material = json.dumps(
+        {
+            "transport": "cloudflare_ai_gateway",
+            "credential_digest": hashlib.sha256(
+                cloudflare_gateway.api_token.encode("utf-8")
+            ).hexdigest(),
+            "base_url": cloudflare_gateway.base_url,
+            "default_headers": default_headers,
+            "model": f"openai/{_CLOUDFLARE_PROMO_MODEL}",
+            "timeout_seconds": timeout_seconds,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    key_digest = hashlib.sha256(fingerprint_material.encode("utf-8")).hexdigest()
+    with _CLIENT_LOCK:
+        if (
+            _OPENAI_RESPONSES_CLIENT is not None
+            and _RESPONSES_CLIENT_KEY_DIGEST == key_digest
+        ):
+            return _OPENAI_RESPONSES_CLIENT
+        try:
+            http_client = httpx.Client(
+                proxy=None,
+                trust_env=False,
+                timeout=timeout_seconds,
+            )
+            _OPENAI_RESPONSES_CLIENT = OpenAI(
+                api_key=cloudflare_gateway.api_token,
+                base_url=cloudflare_gateway.base_url,
+                default_headers=default_headers,
+                http_client=http_client,
+                max_retries=0,
+                timeout=timeout_seconds,
+            )
+        except Exception:
+            logger.error(
+                "Cloudflare AI Gateway client initialization failed "
+                "code=cloudflare_ai_gateway_client_init_failed"
+            )
+            raise LLMProviderPreRequestError(
+                "cloudflare_ai_gateway_client_init_failed"
+            ) from None
+        _RESPONSES_CLIENT_KEY_DIGEST = key_digest
+        _CLIENT_IS_MANAGED = True
+        return _OPENAI_RESPONSES_CLIENT
+
+
 def _reset_openai_client_for_tests() -> None:
     """Reset lazy-client state without ever reading or exposing credentials."""
 
-    global client, _OPENAI_CLIENT, _CLIENT_KEY_DIGEST, _CLIENT_IS_MANAGED
+    global client, responses_client, _OPENAI_CLIENT, _CLIENT_KEY_DIGEST
+    global _OPENAI_RESPONSES_CLIENT, _RESPONSES_CLIENT_KEY_DIGEST
+    global _CLIENT_IS_MANAGED
     client = _PUBLIC_CLIENT_PROXY
+    responses_client = _PUBLIC_RESPONSES_CLIENT_PROXY
     _OPENAI_CLIENT = None
     _CLIENT_KEY_DIGEST = None
+    _OPENAI_RESPONSES_CLIENT = None
+    _RESPONSES_CLIENT_KEY_DIGEST = None
     _CLIENT_IS_MANAGED = False
 
 
@@ -668,7 +888,8 @@ def _normalize_chatboc_payload(parsed_response: Any, usuario: dict) -> dict[str,
 
 
 def _reasoning_for_model(model: str) -> dict[str, str] | None:
-    if not str(model or "").lower().startswith("gpt-5.6"):
+    normalized_model = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    if not normalized_model.startswith("gpt-5.6"):
         return None
     effort = str(os.getenv("OPENAI_CHAT_REASONING_EFFORT") or "none").strip().lower()
     if effort not in {"none", "low", "medium", "high", "xhigh", "max"}:
@@ -686,7 +907,7 @@ def llamar_openai(
 ) -> tuple[dict, dict]:
     """Call Responses once and return the validated Chatboc decision contract."""
 
-    openai_client = _get_openai_client(app)
+    openai_client = _get_openai_responses_client(app)
     responses_api = getattr(openai_client, "responses", None)
     if responses_api is None or not hasattr(responses_api, "create"):
         raise LLMProviderPreRequestError("openai_sdk_responses_unavailable")
@@ -745,14 +966,15 @@ def llamar_openai(
         str(mensaje_usuario),
         historial=historial,
     )
+    provider_model = _model_for_openai_transport(resolved_model, app)
     request: dict[str, Any] = {
-        "model": resolved_model,
+        "model": provider_model,
         "input": messages,
         "text": {"format": CHATBOC_TEXT_FORMAT},
         "max_output_tokens": max(256, max_output_tokens),
         "store": False,
     }
-    reasoning = _reasoning_for_model(resolved_model)
+    reasoning = _reasoning_for_model(provider_model)
     if reasoning:
         request["reasoning"] = reasoning
     safety_identifier = _privacy_safe_identifier(
@@ -765,7 +987,7 @@ def llamar_openai(
 
     logger.info(
         "OpenAI request started model=%s prompt_tokens_estimate=%s history_turns=%s",
-        _safe_log_identifier(resolved_model),
+        _safe_log_identifier(provider_model),
         total_prompt_tokens,
         len(historial or []),
     )
@@ -776,7 +998,7 @@ def llamar_openai(
     except Exception:
         logger.error(
             "OpenAI request failed code=openai_request_failed model=%s",
-            _safe_log_identifier(resolved_model),
+            _safe_log_identifier(provider_model),
         )
         # The SDK may fail after bytes were sent; switching endpoints or providers
         # could duplicate a semantic/transactional decision, so fail closed.
@@ -792,7 +1014,7 @@ def llamar_openai(
         raise LLMProviderRequestUncertainError("openai_contract_invalid") from None
     normalized = _normalize_chatboc_payload(parsed_response, usuario or {})
     usage = _usage_dict(response)
-    actual_model = str(getattr(response, "model", "") or resolved_model)
+    actual_model = str(getattr(response, "model", "") or provider_model)
     logger.info(
         "OpenAI request completed model=%s contract_valid=true total_tokens=%s",
         _safe_log_identifier(actual_model),
@@ -817,12 +1039,13 @@ def _call_structured_response(
     max_output_tokens: int = 2048,
     safety_subject: Any = None,
 ) -> dict[str, Any]:
-    openai_client = _get_openai_client(app)
+    openai_client = _get_openai_responses_client(app)
     responses_api = getattr(openai_client, "responses", None)
     if responses_api is None or not hasattr(responses_api, "create"):
         raise LLMProviderPreRequestError("openai_sdk_responses_unavailable")
+    provider_model = _model_for_openai_transport(model, app)
     request: dict[str, Any] = {
-        "model": model,
+        "model": provider_model,
         "input": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -838,7 +1061,7 @@ def _call_structured_response(
         "max_output_tokens": max_output_tokens,
         "store": False,
     }
-    reasoning = _reasoning_for_model(model)
+    reasoning = _reasoning_for_model(provider_model)
     if reasoning:
         request["reasoning"] = reasoning
     safety_identifier = _privacy_safe_identifier(safety_subject)
