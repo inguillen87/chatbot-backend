@@ -7,6 +7,7 @@ from typing import Any
 EXECUTIVE_PRESENTATION_MODE = "executive"
 EXECUTIVE_PROVENANCE_CONTRACT_VERSION = "demo.executive_provenance.v1"
 EXECUTIVE_CHANNEL_SUMMARY_CONTRACT_VERSION = "demo.channel_summary.v1"
+EXECUTIVE_METRIC_PROVENANCE_CONTRACT_VERSION = "demo.metric_provenance.v1"
 
 _SYNTHETIC_DATA_MODE = "synthetic_demo_scenario"
 _SESSION_DATA_MODE = "session_generated_events"
@@ -31,7 +32,7 @@ def _executive_provenance(*, mode: str, tenant_slug: str) -> dict[str, Any]:
         "reales ni debe usarse para tomar decisiones de gobierno."
         if synthetic
         else (
-            "El panel separa la actividad real generada en esta sesión demo de la "
+            "El panel separa la actividad persistida vinculada a esta sesión demo de la "
             "encuesta sintética adjunta. Ninguna de las dos fuentes representa "
             "estadísticas municipales oficiales."
         )
@@ -66,14 +67,21 @@ def _executive_provenance(*, mode: str, tenant_slug: str) -> dict[str, Any]:
         if synthetic
         else [
             {
-                "scope": "cards,timeline,map,cases,channel_summary,session_activity",
+                "scope": "cards,metrics,timeline,map,cases,channel_summary,session_activity",
                 "mode": _SESSION_DATA_MODE,
                 "synthetic": False,
+                "source_contract": "demo.session_activity.v1",
+                "metric_ids": [
+                    "session_claims_observed",
+                    "session_geolocated_claims",
+                    "session_evidence_files",
+                ],
             },
             {
-                "scope": "survey_voting",
+                "scope": "metrics,survey_voting",
                 "mode": _SYNTHETIC_DATA_MODE,
                 "synthetic": True,
+                "metric_ids": ["survey_valid_votes"],
             },
         ]
     )
@@ -505,7 +513,12 @@ def _synthetic_channel_summary() -> dict[str, Any]:
 
 def _session_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     cases: list[dict[str, Any]] = []
-    for index, item in enumerate(items, start=1):
+    ticket_items = [
+        item
+        for item in items
+        if str(item.get("type") or "").strip().lower() == "ticket"
+    ]
+    for index, item in enumerate(ticket_items, start=1):
         cases.append(
             {
                 "id": str(item.get("id") or f"session-case-{index}"),
@@ -524,6 +537,156 @@ def _session_cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return cases
 
 
+def _session_observation_summary(items: list[dict[str, Any]]) -> dict[str, int]:
+    """Aggregate only fields explicitly exposed by demo.session_activity.v1."""
+
+    ticket_items = [
+        item
+        for item in items
+        if str(item.get("type") or "").strip().lower() == "ticket"
+    ]
+    return {
+        "claims": len(ticket_items),
+        "geolocated_claims": sum(
+            1 for item in ticket_items if item.get("has_location") is True
+        ),
+        "evidence_files": sum(
+            _as_non_negative_int(item.get("media_count")) for item in ticket_items
+        ),
+    }
+
+
+def _session_metric_provenance(
+    *,
+    session_contract: str,
+    source_field: str,
+    aggregation: str,
+) -> dict[str, Any]:
+    return {
+        "contract_version": EXECUTIVE_METRIC_PROVENANCE_CONTRACT_VERSION,
+        "source_contract": session_contract,
+        "source_scope": "session_activity.items",
+        "source_field": source_field,
+        "aggregation": aggregation,
+        "data_mode": _SESSION_DATA_MODE,
+        "observed": True,
+        "synthetic": False,
+        "municipal_truth": False,
+    }
+
+
+def _session_metrics(
+    summary: dict[str, int],
+    *,
+    session_contract: str,
+) -> list[dict[str, Any]]:
+    claims = summary["claims"]
+    geolocated_claims = summary["geolocated_claims"]
+    evidence_files = summary["evidence_files"]
+    observed_claims_denominator = {
+        "label": "Reclamos observados en esta sesión",
+        "value": claims,
+    }
+    return [
+        {
+            "id": "session_claims_observed",
+            "label": "Reclamos observados",
+            "value": claims,
+            "unit": "casos",
+            "denominator": dict(observed_claims_denominator),
+            "detail": "Tickets persistidos y vinculados a esta sesión demo.",
+            "period": "esta sesión demo",
+            "data_mode": _SESSION_DATA_MODE,
+            "provenance": _session_metric_provenance(
+                session_contract=session_contract,
+                source_field="type",
+                aggregation="count(items where type=ticket)",
+            ),
+        },
+        {
+            "id": "session_geolocated_claims",
+            "label": "Reclamos geolocalizados",
+            "value": geolocated_claims,
+            "unit": "casos",
+            "numerator": {
+                "label": "Reclamos con ubicación",
+                "value": geolocated_claims,
+            },
+            "denominator": dict(observed_claims_denominator),
+            "detail": "Solo reclamos cuyo contrato de sesión confirma ubicación.",
+            "period": "esta sesión demo",
+            "data_mode": _SESSION_DATA_MODE,
+            "provenance": _session_metric_provenance(
+                session_contract=session_contract,
+                source_field="has_location",
+                aggregation="count(ticket items where has_location=true)",
+            ),
+        },
+        {
+            "id": "session_evidence_files",
+            "label": "Evidencias adjuntas",
+            "value": evidence_files,
+            "unit": "archivos",
+            "numerator": {
+                "label": "Archivos declarados por los reclamos",
+                "value": evidence_files,
+            },
+            "denominator": dict(observed_claims_denominator),
+            "detail": "Suma de media_count; no infiere mensajes ni interacciones no expuestas.",
+            "period": "esta sesión demo",
+            "data_mode": _SESSION_DATA_MODE,
+            "provenance": _session_metric_provenance(
+                session_contract=session_contract,
+                source_field="media_count",
+                aggregation="sum(media_count for ticket items)",
+            ),
+        },
+    ]
+
+
+def _session_cards(metrics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": metric["id"],
+            "label": metric["label"],
+            "value": str(metric["value"]),
+            "detail": metric["detail"],
+            "period": metric["period"],
+            "data_mode": metric["data_mode"],
+            "denominator": deepcopy(metric["denominator"]),
+            "provenance": deepcopy(metric["provenance"]),
+        }
+        for metric in metrics
+    ]
+
+
+def _synthetic_survey_metric(survey_voting: dict[str, Any]) -> dict[str, Any]:
+    survey_summary = _survey_snapshot_summary(survey_voting)
+    metric = next(
+        item
+        for item in _synthetic_metrics(survey_summary)
+        if item.get("id") == "survey_valid_votes"
+    )
+    metric["label"] = "Encuesta demo · participación"
+    metric["detail"] = (
+        "Partición sintética independiente; no se combina con los reclamos observados. "
+        f"{metric['detail']}"
+    )
+    metric["provenance"] = {
+        "contract_version": EXECUTIVE_METRIC_PROVENANCE_CONTRACT_VERSION,
+        "source_contract": str(
+            survey_voting.get("contract_version") or "demo.survey_contract"
+        ),
+        "source_scope": "survey_voting.items[0].results",
+        "aggregation": "seeded_responses plus interactive_demo_responses",
+        "data_mode": _SYNTHETIC_DATA_MODE,
+        "observed": False,
+        "synthetic": True,
+        "municipal_truth": False,
+    }
+    return metric
+
+
 def apply_gobierno_executive_snapshot(payload: dict[str, Any], *, tenant_slug: str) -> dict[str, Any]:
     """Add an honest executive view without persisting or blending data sources."""
 
@@ -533,21 +696,84 @@ def apply_gobierno_executive_snapshot(payload: dict[str, Any], *, tenant_slug: s
     frontend_contract["presentation_mode"] = EXECUTIVE_PRESENTATION_MODE
     result["frontend_contract"] = frontend_contract
     result["survey_voting"] = deepcopy(result.get("survey_voting") or {})
+    result["survey_voting"]["data_mode"] = _SYNTHETIC_DATA_MODE
+    result["survey_voting"]["partition_label"] = (
+        "Encuesta demo sintética · partición independiente"
+    )
 
     session_activity = dict(result.get("session_activity") or {})
     if session_activity.get("has_session_data"):
-        items = [dict(item) for item in (session_activity.get("items") or []) if isinstance(item, dict)]
+        session_contract = str(
+            session_activity.get("contract_version") or "demo.session_activity.v1"
+        )
+        items: list[dict[str, Any]] = []
+        for item in session_activity.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            cloned = dict(item)
+            cloned["data_mode"] = _SESSION_DATA_MODE
+            cloned["source_contract"] = session_contract
+            items.append(cloned)
+        session_activity["items"] = items
+        session_activity["data_mode"] = _SESSION_DATA_MODE
+        result["session_activity"] = session_activity
+        observed = _session_observation_summary(items)
+        session_metrics = _session_metrics(
+            observed,
+            session_contract=session_contract,
+        )
         result["data_provenance"] = _executive_provenance(
             mode=_MIXED_PARTITIONED_DATA_MODE,
             tenant_slug=tenant_slug,
         )
+        result["cards"] = _session_cards(session_metrics)
+        result["metrics"] = [
+            *session_metrics,
+            _synthetic_survey_metric(result["survey_voting"]),
+        ]
+        timeline: list[dict[str, Any]] = []
+        for index, item in enumerate(result.get("timeline") or [], start=1):
+            if not isinstance(item, dict):
+                continue
+            cloned = dict(item)
+            cloned.setdefault("id", f"session-timeline-{index:02d}")
+            cloned["data_mode"] = _SESSION_DATA_MODE
+            cloned["source_contract"] = session_contract
+            timeline.append(cloned)
+        result["timeline"] = timeline
+
+        map_contract = dict(result.get("map") or {})
+        map_points: list[dict[str, Any]] = []
+        for point in map_contract.get("points") or []:
+            if not isinstance(point, dict):
+                continue
+            cloned = dict(point)
+            cloned["data_mode"] = _SESSION_DATA_MODE
+            cloned["source_contract"] = session_contract
+            map_points.append(cloned)
+        map_contract["points"] = map_points
+        map_contract["data_mode"] = _SESSION_DATA_MODE
+        map_contract["source_contract"] = session_contract
+        map_contract["displayed_points"] = len(map_points)
+        map_contract["represented_cases"] = observed["geolocated_claims"]
+        map_contract["total_cases"] = observed["claims"]
+        map_contract["coverage_note"] = (
+            f"{observed['geolocated_claims']} de {observed['claims']} reclamos "
+            "observados en esta sesión tienen ubicación."
+        )
+        result["map"] = map_contract
         result["cases"] = _session_cases(items)
         result["channel_summary"] = {
             "contract_version": EXECUTIVE_CHANNEL_SUMMARY_CONTRACT_VERSION,
             "data_mode": _SESSION_DATA_MODE,
+            "source_contract": session_contract,
             "total_interactions": None,
-            "total_cases": len(items),
-            "observed_cases": len(items),
+            "total_cases": observed["claims"],
+            "observed_cases": observed["claims"],
+            "denominator": {
+                "label": "Reclamos observados en esta sesión",
+                "value": observed["claims"],
+            },
             "channels": [],
             "whatsapp": {
                 "conversations": None,
@@ -557,10 +783,10 @@ def apply_gobierno_executive_snapshot(payload: dict[str, Any], *, tenant_slug: s
             "label": "Solo actividad observada en esta sesión; no se infieren métricas agregadas.",
         }
         operations = dict(result.get("operations") or {})
-        operations["data_policy"] = "session_events_only"
+        operations["data_policy"] = "partitioned_session_and_synthetic_survey"
         operations["setup_message"] = (
-            "Vista ejecutiva limitada a eventos reales de esta sesión demo; "
-            "no se mezclan valores del escenario sintético."
+            "Los reclamos observados en esta sesión y la encuesta demo sintética se "
+            "presentan como particiones independientes, sin sumar ni promediar valores."
         )
         result["operations"] = operations
         return result

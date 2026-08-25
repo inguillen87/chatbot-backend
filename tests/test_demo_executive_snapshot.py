@@ -495,7 +495,7 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
             )
         )
 
-    def test_valid_session_activity_is_preserved_without_synthetic_blending(self):
+    def test_valid_session_activity_exposes_partitioned_auditable_metrics(self):
         owner, tenant = self._tenant("junin-session-real")
         demo_session_id = create_demo_session_token(
             tenant_slug=tenant.slug,
@@ -522,10 +522,34 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
                     "demo_runtime": True,
                     "source": "demo_municipio_runtime",
                     "chat_session_id": chat_session_id,
+                    "media": [
+                        {"id": "photo-7101-a"},
+                        {"id": "photo-7101-b"},
+                    ],
                 }
             ),
         )
-        db.session.add(ticket)
+        ticket_without_location = MunicipioTicket(
+            tenant_id=tenant.id,
+            municipio_id=owner.id,
+            user_id=owner.id,
+            nro_ticket="REAL-DEMO-7102",
+            consulta_pin="pin-real-demo-7102",
+            pregunta="Segundo reclamo generado durante esta sesión demo",
+            asunto="Bache reportado en la sesión",
+            categoria="Calles",
+            estado="nuevo",
+            canal_ingreso="web_demo_widget",
+            detalles=json.dumps(
+                {
+                    "demo_runtime": True,
+                    "source": "demo_municipio_runtime",
+                    "chat_session_id": chat_session_id,
+                    "media": [{"id": "photo-7102-a"}],
+                }
+            ),
+        )
+        db.session.add_all([ticket, ticket_without_location])
         db.session.commit()
 
         mutations = []
@@ -560,28 +584,87 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
         self.assertFalse(provenance.get("municipal_truth"))
         self.assertEqual(
             (payload.get("operations") or {}).get("data_policy"),
-            "session_events_only",
+            "partitioned_session_and_synthetic_survey",
         )
-        self.assertEqual((payload.get("channel_summary") or {}).get("total_cases"), 1)
-        self.assertEqual((payload.get("channel_summary") or {}).get("observed_cases"), 1)
+        self.assertEqual((payload.get("channel_summary") or {}).get("total_cases"), 2)
+        self.assertEqual((payload.get("channel_summary") or {}).get("observed_cases"), 2)
         self.assertIsNone((payload.get("channel_summary") or {}).get("total_interactions"))
         self.assertTrue((payload.get("session_activity") or {}).get("has_session_data"))
-        self.assertEqual(payload.get("metrics"), [])
-        self.assertEqual((payload.get("cards") or [])[0].get("value"), "1")
+        self.assertEqual(
+            (payload.get("session_activity") or {}).get("data_mode"),
+            "session_generated_events",
+        )
+
+        metrics_by_id = {
+            item.get("id"): item for item in (payload.get("metrics") or [])
+        }
+        self.assertEqual(
+            set(metrics_by_id),
+            {
+                "session_claims_observed",
+                "session_geolocated_claims",
+                "session_evidence_files",
+                "survey_valid_votes",
+            },
+        )
+        session_metric_expectations = {
+            "session_claims_observed": 2,
+            "session_geolocated_claims": 1,
+            "session_evidence_files": 3,
+        }
+        for metric_id, expected_value in session_metric_expectations.items():
+            metric = metrics_by_id[metric_id]
+            self.assertEqual(metric.get("value"), expected_value)
+            self.assertEqual(metric.get("data_mode"), "session_generated_events")
+            self.assertEqual(
+                metric.get("denominator"),
+                {"label": "Reclamos observados en esta sesión", "value": 2},
+            )
+            metric_provenance = metric.get("provenance") or {}
+            self.assertEqual(
+                metric_provenance.get("contract_version"),
+                "demo.metric_provenance.v1",
+            )
+            self.assertEqual(
+                metric_provenance.get("source_contract"),
+                "demo.session_activity.v1",
+            )
+            self.assertTrue(metric_provenance.get("observed"))
+            self.assertFalse(metric_provenance.get("synthetic"))
+
+        survey_metric = metrics_by_id["survey_valid_votes"]
+        self.assertEqual(survey_metric.get("data_mode"), "synthetic_demo_scenario")
+        self.assertIn("Encuesta demo", survey_metric.get("label") or "")
+        self.assertIn("Partición sintética independiente", survey_metric.get("detail") or "")
+        self.assertEqual(survey_metric.get("verified_citizen_responses"), 0)
+        self.assertEqual(
+            (survey_metric.get("provenance") or {}).get("data_mode"),
+            "synthetic_demo_scenario",
+        )
+        self.assertTrue((survey_metric.get("provenance") or {}).get("synthetic"))
+
+        cards = payload.get("cards") or []
+        self.assertEqual(
+            {item.get("id") for item in cards},
+            set(session_metric_expectations),
+        )
+        self.assertTrue(
+            all(item.get("data_mode") == "session_generated_events" for item in cards)
+        )
+        self.assertEqual((cards or [])[0].get("value"), "2")
         self.assertEqual(
             [(item.get("ticket_code")) for item in ((payload.get("map") or {}).get("points") or [])],
             ["REAL-DEMO-7101"],
         )
-        self.assertEqual(
+        self.assertCountEqual(
             [item.get("case_code") for item in (payload.get("cases") or [])],
-            ["REAL-DEMO-7101"],
+            ["REAL-DEMO-7101", "REAL-DEMO-7102"],
         )
-        executive_projection = json.dumps(
+        session_projection = json.dumps(
             {
                 key: payload.get(key)
                 for key in (
                     "cards",
-                    "metrics",
                     "timeline",
                     "map",
                     "cases",
@@ -591,13 +674,52 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
             },
             ensure_ascii=False,
         )
-        self.assertNotIn("synthetic_demo_scenario", executive_projection)
-        self.assertNotIn("JN-DEMO-", executive_projection)
-        self.assertNotIn('"value": 184', executive_projection)
+        self.assertNotIn("synthetic_demo_scenario", session_projection)
+        self.assertNotIn("JN-DEMO-", session_projection)
+        self.assertNotIn('"value": 184', session_projection)
+        self.assertTrue(
+            all(
+                item.get("data_mode") == "session_generated_events"
+                for item in (payload.get("timeline") or [])
+            )
+        )
+        map_payload = payload.get("map") or {}
+        self.assertEqual(map_payload.get("data_mode"), "session_generated_events")
+        self.assertEqual(map_payload.get("displayed_points"), 1)
+        self.assertEqual(map_payload.get("represented_cases"), 1)
+        self.assertEqual(map_payload.get("total_cases"), 2)
+        self.assertTrue(
+            all(
+                item.get("data_mode") == "session_generated_events"
+                for item in (map_payload.get("points") or [])
+            )
+        )
+        self.assertEqual(
+            (payload.get("survey_voting") or {}).get("data_mode"),
+            "synthetic_demo_scenario",
+        )
         partitions = provenance.get("source_partitions") or []
         self.assertEqual(
             {partition.get("mode") for partition in partitions},
             {"session_generated_events", "synthetic_demo_scenario"},
+        )
+        session_partition = next(
+            item
+            for item in partitions
+            if item.get("mode") == "session_generated_events"
+        )
+        synthetic_partition = next(
+            item
+            for item in partitions
+            if item.get("mode") == "synthetic_demo_scenario"
+        )
+        self.assertEqual(
+            set(session_partition.get("metric_ids") or []),
+            set(session_metric_expectations),
+        )
+        self.assertEqual(
+            synthetic_partition.get("metric_ids"),
+            ["survey_valid_votes"],
         )
 
 
