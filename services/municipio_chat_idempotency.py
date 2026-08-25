@@ -47,6 +47,10 @@ class IdempotencyRequestInProgress(MunicipioChatIdempotencyError):
     reason_code = "municipio_chat_idempotency_in_progress"
 
 
+class IdempotencyReconciliationRequired(MunicipioChatIdempotencyError):
+    reason_code = "municipio_chat_idempotency_reconciliation_required"
+
+
 class IdempotencyReplayUnavailable(MunicipioChatIdempotencyError):
     reason_code = "municipio_chat_idempotency_replay_unavailable"
 
@@ -138,6 +142,7 @@ def canonical_request_hash(
     raw_body: bytes | None = None,
     form_items: list[tuple[str, list[str]]] | None = None,
     file_items: list[dict[str, Any]] | None = None,
+    authorization_context: dict[str, Any] | None = None,
 ) -> str:
     """Hash one semantic request without retaining citizen data or credentials."""
 
@@ -194,6 +199,12 @@ def canonical_request_hash(
         ],
         "body": body_contract,
     }
+    if authorization_context:
+        # Only one-way digests and non-secret routing metadata belong here.
+        # Authorization is still validated on every request before replay; this
+        # context prevents a valid receipt from crossing two distinct demo
+        # sessions that intentionally share the same explicit chat session.
+        canonical["authorization_context"] = _canonicalize(authorization_context)
     encoded = json.dumps(
         canonical,
         ensure_ascii=False,
@@ -433,8 +444,9 @@ def claim_or_replay(identity: IdempotencyIdentity) -> IdempotencyDecision:
                 "La respuesta asociada a esta Idempotency-Key ya fue depurada. "
                 "La operacion no se ejecutara nuevamente."
             )
-        raise IdempotencyRequestInProgress(
-            "The prior execution did not reach a replayable response."
+        raise IdempotencyReconciliationRequired(
+            "The prior execution ended without a replayable response and "
+            "requires reconciliation."
         )
 
     receipt = MunicipioChatIdempotencyReceipt(
@@ -464,8 +476,9 @@ def claim_or_replay(identity: IdempotencyIdentity) -> IdempotencyDecision:
                 "La respuesta asociada a esta Idempotency-Key ya fue depurada. "
                 "La operacion no se ejecutara nuevamente."
             )
-        raise IdempotencyRequestInProgress(
-            "A concurrent request already reserved this idempotency key."
+        raise IdempotencyReconciliationRequired(
+            "A durable reservation exists without a replayable response and "
+            "requires reconciliation."
         )
     return IdempotencyDecision(receipt_id=receipt.id, replayed=False)
 
@@ -568,6 +581,7 @@ __all__ = [
     "CANONICAL_ENDPOINT",
     "CONTRACT_VERSION",
     "IdempotencyPayloadConflict",
+    "IdempotencyReconciliationRequired",
     "IdempotencyReplayUnavailable",
     "IdempotencyRequestInProgress",
     "IdempotencyResponseExpired",

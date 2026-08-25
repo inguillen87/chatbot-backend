@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+import jwt
 import sqlalchemy as sa
 
 from app import create_app, db
@@ -29,6 +30,7 @@ from models import (
 from models_memory import Contact, InteractionEvent
 from routes.v2.tenants import create_demo_session_token
 from services.municipio_chat_idempotency import (
+    IdempotencyRequestInProgress,
     IdempotencyResponseExpired,
     build_identity,
     canonical_request_hash,
@@ -131,6 +133,38 @@ class MunicipioChatIdempotencyTest(unittest.TestCase):
         }
         return url, payload, headers
 
+    def _header_demo_request(
+        self,
+        tenant: TenantProfile,
+        *,
+        key: str,
+        question: str,
+        demo_session_id: str,
+    ):
+        url = (
+            f"/api/ask/municipio?tenant_slug={tenant.slug}"
+            f"&entityToken={self.admin.token}"
+        )
+        payload = {
+            "pregunta": question,
+            "demo_mode": True,
+            "tenant_slug": tenant.slug,
+        }
+        headers = {
+            "Origin": "https://www.chatboc.ar",
+            "X-Chat-Session-Id": "sid-header-demo-idempotency",
+            "X-Anon-Id": "anon-header-demo-idempotency",
+            "Idempotency-Key": key,
+            "X-Demo-Session-Id": demo_session_id,
+        }
+        return url, payload, headers
+
+    @staticmethod
+    def _tamper_jwt(token: str) -> str:
+        header, payload, signature = token.split(".")
+        replacement = "A" if signature[0] != "A" else "B"
+        return ".".join((header, payload, replacement + signature[1:]))
+
     @staticmethod
     def _effect_counts():
         return {
@@ -227,6 +261,113 @@ class MunicipioChatIdempotencyTest(unittest.TestCase):
         self.assertEqual(MunicipioChatIdempotencyReceipt.query.count(), 0)
         self.assertEqual(MunicipioTicket.query.count(), 0)
 
+    def test_invalid_demo_header_is_rejected_before_replaying_completed_receipt(self):
+        valid_token = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="gobierno",
+        )
+        url, payload, headers = self._header_demo_request(
+            self.tenant,
+            key="municipio-demo-auth-replay-0001",
+            question="Mensaje con respuesta sensible",
+            demo_session_id=valid_token,
+        )
+        expired_token = jwt.encode(
+            {
+                "kind": "demo_session",
+                "tenant_slug": self.tenant.slug,
+                "sector": "gobierno",
+                "rubro": "gobierno",
+                "jti": "a" * 64,
+                "iat": datetime.now(timezone.utc) - timedelta(hours=2),
+                "exp": datetime.now(timezone.utc) - timedelta(hours=1),
+            },
+            self.app.config.get("DEMO_SESSION_SECRET")
+            or self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+
+        with patch(
+            "routes.chat._procesar_chat",
+            return_value=({"message_body": "respuesta privada", "consulta_pin": "123456"}, 200),
+        ) as processor:
+            first = self.client.post(url, json=payload, headers=headers)
+            invalid = self.client.post(
+                url,
+                json=payload,
+                headers={
+                    **headers,
+                    "X-Demo-Session-Id": self._tamper_jwt(valid_token),
+                },
+            )
+            malformed = self.client.post(
+                url,
+                json=payload,
+                headers={**headers, "X-Demo-Session-Id": "truncated-demo-token"},
+            )
+            expired = self.client.post(
+                url,
+                json=payload,
+                headers={**headers, "X-Demo-Session-Id": expired_token},
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(first.headers.get("X-Idempotency-Status"), "accepted")
+        self.assertEqual(invalid.status_code, 400, invalid.get_json())
+        self.assertEqual(invalid.get_json()["reason_code"], "demo_session_expired")
+        self.assertEqual(invalid.headers.get("X-Idempotency-Status"), "rejected")
+        self.assertEqual(invalid.headers.get("Idempotency-Replayed"), "false")
+        self.assertNotIn("respuesta privada", str(invalid.get_json()))
+        self.assertNotIn("123456", str(invalid.get_json()))
+        self.assertEqual(malformed.status_code, 400, malformed.get_json())
+        self.assertEqual(malformed.get_json()["reason_code"], "demo_session_expired")
+        self.assertNotIn("respuesta privada", str(malformed.get_json()))
+        self.assertNotIn("123456", str(malformed.get_json()))
+        self.assertEqual(expired.status_code, 400, expired.get_json())
+        self.assertEqual(expired.get_json()["reason_code"], "demo_session_expired")
+        self.assertNotIn("respuesta privada", str(expired.get_json()))
+        self.assertNotIn("123456", str(expired.get_json()))
+        self.assertEqual(processor.call_count, 1)
+
+    def test_distinct_valid_demo_header_token_conflicts_instead_of_replaying(self):
+        first_token = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="gobierno",
+        )
+        second_token = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="gobierno",
+        )
+        self.assertNotEqual(first_token, second_token)
+        url, payload, headers = self._header_demo_request(
+            self.tenant,
+            key="municipio-demo-token-binding-0001",
+            question="Mismo payload en otra sesion demo",
+            demo_session_id=first_token,
+        )
+
+        with patch(
+            "routes.chat._procesar_chat",
+            return_value=({"message_body": "primera sesion"}, 200),
+        ) as processor:
+            first = self.client.post(url, json=payload, headers=headers)
+            conflict = self.client.post(
+                url,
+                json=payload,
+                headers={**headers, "X-Demo-Session-Id": second_token},
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(
+            conflict.get_json()["reason_code"],
+            "municipio_chat_idempotency_payload_conflict",
+        )
+        self.assertEqual(processor.call_count, 1)
+
     def test_same_key_and_session_are_isolated_across_tenants(self):
         _, tenant_b = self._create_tenant("municipio-idem-b", "idem-b")
         key = "municipio-cross-tenant-key-0001"
@@ -293,6 +434,139 @@ class MunicipioChatIdempotencyTest(unittest.TestCase):
         processor.assert_not_called()
         self.assertEqual(MunicipioChatIdempotencyReceipt.query.count(), 0)
         self.assertEqual(MunicipioTicket.query.count(), 0)
+
+    def test_existing_session_from_other_anonymous_actor_is_rejected_without_leak(self):
+        db.session.add(
+            ChatSessionContext(
+                chat_session_id="sid-municipio-idempotency",
+                tenant_id=self.tenant.id,
+                anon_id="victim-anon-id",
+                context_data={
+                    "last_bot_response": {
+                        "message_body": "victim-sensitive-marker",
+                        "consulta_pin": "654321",
+                    }
+                },
+            )
+        )
+        db.session.commit()
+        url, payload, headers = self._demo_request(
+            self.tenant,
+            key="municipio-cross-anon-session-0001",
+            question="Hay un bache peligroso frente a la escuela",
+        )
+        headers["X-Anon-Id"] = "attacker-anon-id"
+
+        with patch("routes.chat._procesar_chat") as processor:
+            response = self.client.post(url, json=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "municipio_chat_idempotency_scope_conflict",
+        )
+        self.assertNotIn("victim-sensitive-marker", str(response.get_json()))
+        self.assertNotIn("654321", str(response.get_json()))
+        processor.assert_not_called()
+        self.assertEqual(MunicipioChatIdempotencyReceipt.query.count(), 0)
+
+    def test_existing_session_from_other_anon_is_rejected_without_idempotency_key(self):
+        db.session.add(
+            ChatSessionContext(
+                chat_session_id="sid-municipio-idempotency",
+                tenant_id=self.tenant.id,
+                anon_id="victim-anon-id",
+                context_data={
+                    "last_user_message": "Hay un bache peligroso frente a la escuela",
+                    "last_user_action_id": "",
+                    "last_user_message_time": datetime.now(timezone.utc).isoformat(),
+                    "last_bot_response": {
+                        "message_body": "victim-sensitive-marker-no-key",
+                        "consulta_pin": "112233",
+                    },
+                },
+            )
+        )
+        db.session.commit()
+        url, payload, headers = self._demo_request(
+            self.tenant,
+            key="unused-without-idempotency-header",
+            question="Hay un bache peligroso frente a la escuela",
+        )
+        headers.pop("Idempotency-Key")
+        headers["X-Anon-Id"] = "attacker-anon-id"
+
+        response = self.client.post(url, json=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "municipio_chat_idempotency_scope_conflict",
+        )
+        self.assertNotIn("victim-sensitive-marker-no-key", str(response.get_json()))
+        self.assertNotIn("112233", str(response.get_json()))
+        self.assertEqual(MunicipioChatIdempotencyReceipt.query.count(), 0)
+        self.assertEqual(MunicipioTicket.query.count(), 0)
+
+    def test_authenticated_transition_requires_exact_anon_and_binds_user(self):
+        from routes.chat import _assert_existing_municipio_session_tenant
+        from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+        context = ChatSessionContext(
+            chat_session_id="sid-auth-transition",
+            tenant_id=self.tenant.id,
+            anon_id="anon-before-login",
+            context_data={},
+        )
+        db.session.add(context)
+        db.session.commit()
+
+        with self.assertRaises(IdempotencyScopeConflict):
+            _assert_existing_municipio_session_tenant(
+                chat_session_id=context.chat_session_id,
+                tenant_id=self.tenant.id,
+                current_user=self.admin,
+                anon_id="different-anon",
+                for_update=True,
+                bind_authenticated_transition=True,
+            )
+        db.session.rollback()
+
+        transitioned = _assert_existing_municipio_session_tenant(
+            chat_session_id=context.chat_session_id,
+            tenant_id=self.tenant.id,
+            current_user=self.admin,
+            anon_id="anon-before-login",
+            for_update=True,
+            bind_authenticated_transition=True,
+        )
+        self.assertTrue(transitioned)
+        db.session.commit()
+        db.session.expire_all()
+        self.assertEqual(
+            db.session.get(ChatSessionContext, context.chat_session_id).user_id,
+            self.admin.id,
+        )
+
+        other_user = User(
+            name="Otro vecino",
+            email="otro-vecino@test.com",
+            password_hash="hash",
+            rol="usuario",
+            tipo_chat="municipio",
+            tenant_id=self.tenant.id,
+        )
+        db.session.add(other_user)
+        db.session.commit()
+        with self.assertRaises(IdempotencyScopeConflict):
+            _assert_existing_municipio_session_tenant(
+                chat_session_id=context.chat_session_id,
+                tenant_id=self.tenant.id,
+                current_user=other_user,
+                anon_id="anon-before-login",
+                for_update=True,
+                bind_authenticated_transition=True,
+            )
 
     def test_racing_session_scope_conflict_discards_processing_receipt(self):
         _, tenant_b = self._create_tenant("municipio-idem-b", "idem-b")
@@ -364,6 +638,97 @@ class MunicipioChatIdempotencyTest(unittest.TestCase):
             {result[2] for result in results},
             {"accepted", "replayed"},
         )
+
+    def test_crashed_processing_receipt_requires_reconciliation_without_retry_loop(self):
+        url, payload, headers = self._demo_request(
+            self.tenant,
+            key="municipio-crash-reconciliation-0001",
+            question="Mensaje interrumpido",
+        )
+
+        with patch(
+            "routes.chat._procesar_chat",
+            side_effect=RuntimeError("simulated hard crash after durable claim"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "simulated hard crash"):
+                self.client.post(url, json=payload, headers=headers)
+
+        receipt = MunicipioChatIdempotencyReceipt.query.one()
+        self.assertEqual(receipt.status, receipt.STATUS_PROCESSING)
+
+        with patch("routes.chat._procesar_chat") as processor:
+            retry = self.client.post(url, json=payload, headers=headers)
+
+        self.assertEqual(retry.status_code, 503, retry.get_json())
+        self.assertEqual(
+            retry.get_json()["reason_code"],
+            "municipio_chat_idempotency_reconciliation_required",
+        )
+        self.assertFalse(retry.get_json()["retryable"])
+        self.assertIsNone(retry.headers.get("Retry-After"))
+        self.assertEqual(retry.headers.get("X-Idempotency-Status"), "rejected")
+        processor.assert_not_called()
+
+    def test_active_execution_lock_timeout_remains_retryable_425(self):
+        url, payload, headers = self._demo_request(
+            self.tenant,
+            key="municipio-active-lock-0001",
+            question="Mensaje con lock activo",
+        )
+
+        with patch(
+            "services.municipio_chat_idempotency.execution_lock",
+            side_effect=IdempotencyRequestInProgress("active execution lock"),
+        ), patch("routes.chat._procesar_chat") as processor:
+            response = self.client.post(url, json=payload, headers=headers)
+
+        self.assertEqual(response.status_code, 425, response.get_json())
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "municipio_chat_idempotency_in_progress",
+        )
+        self.assertTrue(response.get_json()["retryable"])
+        self.assertEqual(response.headers.get("Retry-After"), "1")
+        self.assertEqual(response.headers.get("X-Idempotency-Status"), "rejected")
+        self.assertEqual(MunicipioChatIdempotencyReceipt.query.count(), 0)
+        processor.assert_not_called()
+
+    def test_distinct_invalid_json_bodies_do_not_share_empty_body_hash(self):
+        url = (
+            f"/api/ask/municipio?tenant_slug={self.tenant.slug}"
+            f"&entityToken={self.admin.token}"
+        )
+        headers = {
+            "Origin": "https://www.chatboc.ar",
+            "X-Chat-Session-Id": "sid-invalid-json-idempotency",
+            "X-Anon-Id": "anon-invalid-json-idempotency",
+            "Idempotency-Key": "municipio-invalid-json-0001",
+        }
+
+        with patch(
+            "routes.chat._procesar_chat",
+            return_value=({"error": {"code": 400, "message": "JSON invalido"}}, 400),
+        ) as processor:
+            first = self.client.post(
+                url,
+                data=b'{"pregunta":',
+                content_type="application/json",
+                headers=headers,
+            )
+            conflict = self.client.post(
+                url,
+                data=b'{"pregunta":"otro"',
+                content_type="application/json",
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 400, first.get_json())
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(
+            conflict.get_json()["reason_code"],
+            "municipio_chat_idempotency_payload_conflict",
+        )
+        self.assertEqual(processor.call_count, 1)
 
     def test_same_tenant_key_is_isolated_by_chat_session(self):
         key = "municipio-cross-session-key-0001"

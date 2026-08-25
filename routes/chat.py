@@ -1,6 +1,7 @@
 import sys
 import os
 import hashlib
+import hmac
 import json
 import logging
 import random
@@ -347,7 +348,65 @@ def _resolve_demo_session_payload() -> dict:
     return payload if isinstance(payload, dict) else {}
 
 
+def _demo_session_idempotency_context() -> dict[str, str]:
+    """Return non-secret context that binds a request to one demo session.
+
+    Demo credentials supplied through headers or Authorization are not part of
+    the query/body canonicalization.  Persist only their digest inside the
+    request digest, never the raw bearer value.
+    """
+
+    auth_header = request.headers.get("Authorization") or ""
+    bearer = (
+        auth_header.split(None, 1)[1].strip()
+        if auth_header.lower().startswith("bearer ") and " " in auth_header
+        else ""
+    )
+    candidates = [
+        ("header:x-demo-session-id", request.headers.get("X-Demo-Session-Id")),
+        ("header:x-demo-session", request.headers.get("X-Demo-Session")),
+    ]
+    if getattr(g, "owner_resolution_source", None) != "jwt_widget_owner":
+        candidates.append(("authorization:bearer", bearer))
+
+    for source, candidate in candidates:
+        token = str(candidate or "").strip()
+        payload = decode_demo_session_token(token) if token else None
+        if token and isinstance(payload, dict):
+            return {
+                "demo_session_source": source,
+                "demo_session_token_sha256": hashlib.sha256(
+                    token.encode("utf-8")
+                ).hexdigest(),
+                "demo_session_tenant": str(
+                    payload.get("tenant_slug") or ""
+                ).strip().lower(),
+                "demo_session_sector": str(
+                    payload.get("sector") or ""
+                ).strip().lower(),
+            }
+    # Query/form/JSON credentials are already covered by canonical request
+    # fields. Omitting empty authorization context preserves existing hashes.
+    return {}
+
+
 def _invalid_demo_session_token_from_request(*, include_bearer: bool = True) -> str | None:
+    payload = _request_json_payload()
+    # These fields unambiguously claim to carry a demo credential.  Reject a
+    # malformed value even when it no longer resembles a JWT (for example, a
+    # truncated/tampered token) instead of silently falling back to another
+    # tenant credential and reaching an old replay receipt.
+    explicit_demo_candidates = (
+        request.headers.get("X-Demo-Session-Id"),
+        request.headers.get("X-Demo-Session"),
+        request.args.get("demo_session_id"),
+        payload.get("demo_session_id"),
+    )
+    for candidate in explicit_demo_candidates:
+        normalized = str(candidate or "").strip()
+        if normalized and not decode_demo_session_token(normalized):
+            return normalized
+
     for candidate in _demo_session_token_candidates_from_request(include_bearer=include_bearer):
         if _is_jwt_token(candidate) and not decode_demo_session_token(candidate):
             return candidate
@@ -2903,11 +2962,24 @@ def _municipio_idempotency_request_hash() -> str:
     from services.municipio_chat_idempotency import canonical_request_hash
 
     query_items = list(request.args.items(multi=True))
+    authorization_context = _demo_session_idempotency_context()
     if request.is_json:
+        json_payload = request.get_json(silent=True)
+        if json_payload is not None:
+            return canonical_request_hash(
+                endpoint="/api/ask/municipio",
+                query_items=query_items,
+                json_payload=json_payload,
+                authorization_context=authorization_context,
+            )
+        # Invalid JSON and the JSON literal ``null`` both deserialize to None
+        # under Flask's silent parser.  Hash the real bytes so distinct invalid
+        # bodies cannot collapse into the same empty-body identity.
         return canonical_request_hash(
             endpoint="/api/ask/municipio",
             query_items=query_items,
-            json_payload=request.get_json(silent=True),
+            raw_body=request.get_data(cache=True),
+            authorization_context=authorization_context,
         )
 
     if request.form or request.files:
@@ -2940,12 +3012,14 @@ def _municipio_idempotency_request_hash() -> str:
             query_items=query_items,
             form_items=form_items,
             file_items=file_items,
+            authorization_context=authorization_context,
         )
 
     return canonical_request_hash(
         endpoint="/api/ask/municipio",
         query_items=query_items,
         raw_body=request.get_data(cache=True),
+        authorization_context=authorization_context,
     )
 
 
@@ -2996,30 +3070,118 @@ def _apply_municipio_idempotency_headers(response, *, replayed: bool):
     return response
 
 
+def _assert_municipio_session_context_scope(
+    existing_context: ChatSessionContext,
+    *,
+    tenant_id: int | None,
+    current_user: Optional[User],
+    anon_id: Optional[str],
+    allow_authenticated_transition: bool,
+    bind_authenticated_transition: bool,
+) -> bool:
+    """Validate tenant and actor ownership for one existing chat context.
+
+    An authenticated user may claim their immediately preceding anonymous
+    session only by proving the exact anonymous identifier.  No request may
+    reuse another citizen's context merely because both belong to one tenant.
+    """
+
+    from services.municipio_chat_idempotency import IdempotencyScopeConflict
+
+    if tenant_id is not None:
+        try:
+            existing_tenant_id = int(existing_context.tenant_id)
+        except (TypeError, ValueError):
+            existing_tenant_id = None
+        if existing_tenant_id != int(tenant_id):
+            raise IdempotencyScopeConflict(
+                "La sesion indicada no pertenece al alcance validado. "
+                "No se realizo ninguna accion."
+            )
+
+    try:
+        existing_user_id = (
+            int(existing_context.user_id)
+            if existing_context.user_id is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        existing_user_id = None
+    try:
+        actor_user_id = (
+            int(getattr(current_user, "id", None))
+            if current_user is not None and getattr(current_user, "id", None) is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        actor_user_id = None
+
+    expected_anon_id = str(anon_id or "").strip()
+    existing_anon_id = str(existing_context.anon_id or "").strip()
+    anonymous_identity_matches = bool(
+        expected_anon_id
+        and existing_anon_id
+        and hmac.compare_digest(
+            existing_anon_id.encode("utf-8"),
+            expected_anon_id.encode("utf-8"),
+        )
+    )
+
+    if actor_user_id is None:
+        if existing_user_id is not None or not anonymous_identity_matches:
+            raise IdempotencyScopeConflict(
+                "La sesion indicada no pertenece al alcance validado. "
+                "No se realizo ninguna accion."
+            )
+        return False
+
+    if existing_user_id == actor_user_id:
+        return False
+    if (
+        existing_user_id is None
+        and allow_authenticated_transition
+        and anonymous_identity_matches
+    ):
+        if bind_authenticated_transition:
+            existing_context.user_id = actor_user_id
+            db.session.add(existing_context)
+            return True
+        return False
+
+    raise IdempotencyScopeConflict(
+        "La sesion indicada no pertenece al alcance validado. "
+        "No se realizo ninguna accion."
+    )
+
+
 def _assert_existing_municipio_session_tenant(
     *,
     chat_session_id: str,
     tenant_id: int,
-) -> None:
+    current_user: Optional[User],
+    anon_id: Optional[str],
+    for_update: bool = False,
+    bind_authenticated_transition: bool = False,
+) -> bool:
     """Fail closed before a keyed request can read a global session row."""
 
-    from services.municipio_chat_idempotency import IdempotencyScopeConflict
-
     ensure_chat_session_context_schema(db.session)
-    existing_context = ChatSessionContext.query.filter_by(
+    query = ChatSessionContext.query.filter_by(
         chat_session_id=chat_session_id
-    ).one_or_none()
+    )
+    if for_update:
+        query = query.with_for_update()
+    existing_context = query.one_or_none()
     if existing_context is None:
-        return
-    try:
-        existing_tenant_id = int(existing_context.tenant_id)
-    except (TypeError, ValueError):
-        existing_tenant_id = None
-    if existing_tenant_id != int(tenant_id):
-        raise IdempotencyScopeConflict(
-            "La sesion indicada no pertenece al tenant validado. "
-            "No se realizo ninguna accion."
-        )
+        return False
+    return _assert_municipio_session_context_scope(
+        existing_context,
+        tenant_id=tenant_id,
+        current_user=current_user,
+        anon_id=anon_id,
+        allow_authenticated_transition=True,
+        bind_authenticated_transition=bind_authenticated_transition,
+    )
 
 
 def _municipio_chat_with_idempotency(
@@ -3032,6 +3194,7 @@ def _municipio_chat_with_idempotency(
 
     from services.municipio_chat_idempotency import (
         IdempotencyPayloadConflict,
+        IdempotencyReconciliationRequired,
         IdempotencyReplayUnavailable,
         IdempotencyRequestInProgress,
         IdempotencyResponseExpired,
@@ -3049,12 +3212,28 @@ def _municipio_chat_with_idempotency(
 
     raw_key = request.headers.get("Idempotency-Key")
     if raw_key in (None, ""):
-        return _procesar_chat(
-            "municipio",
-            current_user=current_user,
-            owner_user=owner_user,
-            anon_id=anon_id,
+        try:
+            return _procesar_chat(
+                "municipio",
+                current_user=current_user,
+                owner_user=owner_user,
+                anon_id=anon_id,
+            )
+        except IdempotencyScopeConflict as exc:
+            db.session.rollback()
+            return _demo_session_error_response(exc.reason_code, str(exc), 409)
+
+    invalid_demo_session_token = _invalid_demo_session_token_from_request(
+        include_bearer=getattr(g, "owner_resolution_source", None) != "jwt_widget_owner"
+    )
+    if invalid_demo_session_token:
+        return _municipio_idempotency_error_response(
+            reason_code="demo_session_expired",
+            message="La sesion de demo no es valida o vencio. Inicia una demo nueva.",
+            status_code=400,
+            retryable=False,
         )
+
     try:
         idempotency_key = validate_idempotency_key(raw_key)
     except InvalidIdempotencyKey as exc:
@@ -3085,6 +3264,8 @@ def _municipio_chat_with_idempotency(
         _assert_existing_municipio_session_tenant(
             chat_session_id=chat_session_id,
             tenant_id=tenant.id,
+            current_user=current_user,
+            anon_id=anon_id,
         )
     except IdempotencyScopeConflict as exc:
         db.session.rollback()
@@ -3161,8 +3342,18 @@ def _municipio_chat_with_idempotency(
     try:
         with execution_lock(identity):
             maybe_expire_completed_response_snapshots()
+            actor_transitioned = _assert_existing_municipio_session_tenant(
+                chat_session_id=chat_session_id,
+                tenant_id=tenant.id,
+                current_user=current_user,
+                anon_id=anon_id,
+                for_update=True,
+                bind_authenticated_transition=True,
+            )
             decision = claim_or_replay(identity)
             if decision.replayed:
+                if actor_transitioned:
+                    db.session.commit()
                 payload, status_code, response_request_id = replay_snapshot(
                     decision.receipt_id
                 )
@@ -3248,6 +3439,17 @@ def _municipio_chat_with_idempotency(
             ),
             status_code=425,
             retryable=True,
+        )
+    except IdempotencyReconciliationRequired as exc:
+        db.session.rollback()
+        return _municipio_idempotency_error_response(
+            reason_code=exc.reason_code,
+            message=(
+                "La ejecucion anterior termino sin una respuesta verificable. "
+                "No se repetiran acciones automaticamente; se requiere conciliacion."
+            ),
+            status_code=503,
+            retryable=False,
         )
     except IdempotencyResponseExpired as exc:
         db.session.rollback()
@@ -3352,9 +3554,16 @@ def _procesar_chat(
     # Failsafe: make sure schema is aligned even if migrations lag behind
     ensure_chat_session_context_schema(db.session)
     try:
-        chat_context_obj = ChatSessionContext.query.filter_by(
+        chat_context_query = ChatSessionContext.query.filter_by(
             chat_session_id=chat_session_id_header
-        ).first()
+        )
+        if (
+            tipo_chat_fijo == "municipio"
+            and _idempotency_tenant_id is None
+            and current_user is not None
+        ):
+            chat_context_query = chat_context_query.with_for_update()
+        chat_context_obj = chat_context_query.first()
     except ProgrammingError as exc:
         current_app.logger.warning(
             "[CHAT] tenant_id missing when querying chat_session_context; "
@@ -3394,18 +3603,19 @@ def _procesar_chat(
             200,
         )
 
-    if chat_context_obj is not None and _idempotency_tenant_id is not None:
-        try:
-            context_tenant_id = int(chat_context_obj.tenant_id)
-        except (TypeError, ValueError):
-            context_tenant_id = None
-        if context_tenant_id != _idempotency_tenant_id:
-            from services.municipio_chat_idempotency import IdempotencyScopeConflict
-
-            raise IdempotencyScopeConflict(
-                "La sesion indicada no pertenece al tenant validado. "
-                "No se realizo ninguna accion."
-            )
+    if chat_context_obj is not None and (
+        tipo_chat_fijo == "municipio" or _idempotency_tenant_id is not None
+    ):
+        actor_transitioned = _assert_municipio_session_context_scope(
+            chat_context_obj,
+            tenant_id=_idempotency_tenant_id,
+            current_user=current_user,
+            anon_id=anon_id,
+            allow_authenticated_transition=_idempotency_tenant_id is None,
+            bind_authenticated_transition=_idempotency_tenant_id is None,
+        )
+        if actor_transitioned:
+            db.session.commit()
 
     if not chat_context_obj:
         current_app.logger.info(
@@ -4705,18 +4915,15 @@ def _procesar_chat(
             db.session.add(chat_context_obj)
             # No hacer commit aquí todavía, se hará después de procesar el chat
         else:
-            if _idempotency_tenant_id is not None:
-                try:
-                    context_tenant_id = int(chat_context_obj.tenant_id)
-                except (TypeError, ValueError):
-                    context_tenant_id = None
-                if context_tenant_id != _idempotency_tenant_id:
-                    from services.municipio_chat_idempotency import IdempotencyScopeConflict
-
-                    raise IdempotencyScopeConflict(
-                        "La sesion indicada no pertenece al tenant validado. "
-                        "No se realizo ninguna accion."
-                    )
+            if tipo_chat_fijo == "municipio" or _idempotency_tenant_id is not None:
+                _assert_municipio_session_context_scope(
+                    chat_context_obj,
+                    tenant_id=_idempotency_tenant_id,
+                    current_user=current_user,
+                    anon_id=anon_id,
+                    allow_authenticated_transition=False,
+                    bind_authenticated_transition=False,
+                )
             current_app.logger.info(
                 "ChatSessionContext cargado context_id=%s user_id=%s has_anon_id=%s",
                 _safe_internal_log_id(getattr(chat_context_obj, "id", None)),
