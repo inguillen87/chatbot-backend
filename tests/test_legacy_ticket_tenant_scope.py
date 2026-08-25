@@ -10,6 +10,7 @@ from models import MunicipioTicket, TenantProfile, TicketComentario, User, db
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     municipio_ticket_belongs_to_tenant,
+    normalize_municipio_ticket_write_scope,
     resolve_municipio_ticket_access_tenant,
     scoped_municipio_ticket_query,
 )
@@ -239,3 +240,67 @@ def test_attachment_actor_with_conflicting_legacy_owner_ids_fails_closed(app, cl
     db.session.commit()
 
     assert _municipio_tenant_for_actor(employee) is None
+
+
+def test_municipal_ticket_never_trusts_an_explicit_or_legacy_pyme_tenant(
+    app,
+    client,
+):
+    del app, client
+    pyme_owner = User(
+        name="PYME owner",
+        email="municipal-ticket-pyme-owner@test.com",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    pyme_owner.set_password("scope-test-secret")
+    db.session.add(pyme_owner)
+    db.session.flush()
+    pyme_tenant = TenantProfile(
+        slug="municipal-ticket-cross-domain",
+        nombre="Cross-domain PYME",
+        tipo="pyme",
+        pyme_id=pyme_owner.id,
+        plan="full",
+    )
+    db.session.add(pyme_tenant)
+    db.session.flush()
+
+    explicit_wrong_scope = _legacy_ticket(
+        pyme_owner,
+        tenant_id=pyme_tenant.id,
+        number="M-SCOPE-PYME-EXPLICIT",
+    )
+    legacy_wrong_scope = _legacy_ticket(
+        pyme_owner,
+        number="M-SCOPE-PYME-LEGACY",
+    )
+
+    assert (
+        scoped_municipio_ticket_query(pyme_tenant)
+        .filter_by(id=explicit_wrong_scope.id)
+        .first()
+        is None
+    )
+    assert not municipio_ticket_belongs_to_tenant(
+        explicit_wrong_scope,
+        pyme_tenant,
+    )
+
+    with pytest.raises(TicketTenantScopeError) as explicit_error:
+        resolve_municipio_ticket_access_tenant(explicit_wrong_scope)
+    assert explicit_error.value.code == "ticket_tenant_incompatible"
+
+    with pytest.raises(TicketTenantScopeError) as legacy_error:
+        resolve_municipio_ticket_access_tenant(legacy_wrong_scope)
+    assert legacy_error.value.code == "ticket_tenant_incompatible"
+
+    with pytest.raises(TicketTenantScopeError) as write_error:
+        normalize_municipio_ticket_write_scope(
+            {
+                "tenant_id": pyme_tenant.id,
+                "municipio_id": pyme_owner.id,
+                "pregunta": "No debe adoptar un tenant PYME",
+            }
+        )
+    assert write_error.value.code == "ticket_tenant_incompatible"
