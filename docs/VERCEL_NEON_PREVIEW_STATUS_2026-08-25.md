@@ -26,11 +26,11 @@ la verificación remota completa con escritura controlada.
 | --- | --- | --- |
 | Inventario y aislamiento | Completa | Trabajo realizado en ramas/worktrees aislados; el DNS público de API continúa en Render. |
 | Neon QA | Completa | Rama QA: 171 tablas y 53.220 filas. Neon principal: 170 tablas y 52.751 filas, todavía una revisión Alembic detrás. La diferencia de QA incluye tráfico de prueba y no debe fusionarse como datos de Producción. |
-| Backend Vercel Preview | Completa | Deployment `dpl_EKUZe4NHX5WvjZRLiv9iqcEhbTrc`, región `gru1`, estado `Ready`, runtime `0a5fd6faa`. |
+| Backend Vercel Preview | Completa | Deployment `dpl_CpkSoRTiAToWjwep3YFDtBXwX78g`, región `gru1`, estado `Ready`, construido desde el worktree limpio en `b172f4ae4`. El alias `api-preview.chatboc.ar` fue verificado contra ese deployment. |
 | Frontend Vercel Preview | Completa | Deployment `dpl_FyqvHD4DNppT3WkboA2LxCH33KWv`, estado `Ready`, commit `80d3ada8`. |
 | Demo ejecutiva y territorial | Completa en Preview | Contrato `demo.admin_preview.v1`, mapa MapLibre, KPIs reconciliados y responsive. |
-| Aceptación remota read-only | Completa | 3 pruebas pasaron y 1 prueba durable quedó omitida por `WRITE_QA=0`; sin escrituras. |
-| Arranque en frío | En optimización | Preview actual: aproximadamente 16 s en frío y 0,2–0,4 s activo. La optimización local reduce el factory de 4,56 s a 2,34 s en el harness focal; una medición independiente de proceso completo dio mediana 2,91 s. Falta medirla en un nuevo Preview. |
+| Aceptación remota read-only | Completa | Contra el deployment nuevo: 3 pruebas pasaron y 1 prueba durable quedó omitida por `WRITE_QA=0`; sin escrituras. Mapa, realtime directo, responsive, QR y URLs WhatsApp quedaron verificados. |
+| Arranque en frío | Mejorado, todavía pendiente estructural | El primer health del deployment nuevo midió 14,24 s; tres requests activos midieron 0,48 s, 0,21 s y 0,38 s. Mejora respecto de ~16 s, pero todavía requiere precalentamiento para la reunión. |
 | Candidato Production | Revertido | `dpl_8AAiQbu1oWFZLLDyfFLcYfe4T5Z5` arrancó y respondió health, pero usó la base Render. Se revirtió al deployment anterior antes de cualquier corte de DNS. |
 | Seguridad de cron | Corregida en código/configuración futura | `VERCEL_OUTBOX_CRON_ENABLED=false` por defecto; 13 invocaciones del candidato finalizaron a las 08:11:15 UTC y no reaparecieron tras el rollback. WhatsApp quedó sin efectos; los efectos de encuesta requieren reconciliación antes del corte. |
 | Variables Production futuras | Parcial | `DATABASE_URL` y `SQLALCHEMY_DATABASE_URI` fueron sincronizadas explícitamente desde `NEON_DATABASE_URL` pooled; `ALEMBIC_DB_URL` y `MIGRATIONS_DATABASE_URL` desde la URL directa; `SOCKETIO_MESSAGE_QUEUE_URL` desde `REDIS_URL`. Los valores no se imprimieron y solo aplican a deployments nuevos. |
