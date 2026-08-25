@@ -1580,7 +1580,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(enabled_tools["catalog"].get("items"))
         self.assertTrue(enabled_tools["price_list"].get("items"))
         self.assertTrue(enabled_tools["faq"].get("items"))
-        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catalogo")
+        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catálogo")
         self.assertTrue(enabled_tools["catalog"].get("action_url"))
         self.assertEqual(enabled_tools["price_list"].get("action_label"), "Ver lista de precios")
         self.assertTrue(enabled_tools["price_list"].get("action_url"))
@@ -1647,7 +1647,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("contact", enabled_tools)
         self.assertIn("hours", enabled_tools)
         self.assertIn("price_list", enabled_tools)
-        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicacion")
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicación")
         self.assertEqual(enabled_tools["location"].get("tool_mode"), "chat_action")
         self.assertEqual(enabled_tools["location"].get("action_id"), "consultar_ubicacion")
         self.assertFalse(enabled_tools["location"].get("action_url"))
@@ -1655,6 +1655,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(enabled_tools["contact"].get("tool_mode"), "chat_action")
         self.assertEqual(enabled_tools["contact"].get("action_id"), "consultar_contacto")
         self.assertFalse(enabled_tools["contact"].get("action_url"))
+        self.assertEqual(enabled_tools["hours"].get("description"), "Horarios de atención configurados para esta demostración.")
         self.assertIn("-32.8895%2C-68.8458", (tools.get("locations") or [{}])[0].get("maps_url") or "")
         self.assertEqual((tools.get("contact") or {}).get("phone"), "+5492611111111")
         self.assertEqual((tools.get("contact") or {}).get("email"), "ventas@ferreteria.example.com")
@@ -1684,12 +1685,28 @@ class ApiV2FoundationTest(unittest.TestCase):
         tools = ((payload.get("workspace") or {}).get("rubro_tools") or {})
         enabled_tools = {item.get("id"): item for item in tools.get("enabled_tools") or []}
         locations = tools.get("locations") or []
+        catalog_items = {item.get("id"): item for item in enabled_tools["catalog"].get("items") or []}
 
         self.assertEqual(tools.get("contract_version"), "demo.rubro_tools.v1")
         self.assertIn("location", enabled_tools)
         self.assertIn("contact", enabled_tools)
         self.assertTrue(locations)
-        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicacion")
+        self.assertEqual(enabled_tools["catalog"].get("label"), "Catálogo")
+        self.assertEqual(enabled_tools["catalog"].get("action_label"), "Abrir catálogo")
+        self.assertEqual(enabled_tools["catalog"].get("description"), "Recursos disponibles para productos, servicios o trámites.")
+        self.assertEqual(enabled_tools["location"].get("label"), "Ubicación")
+        self.assertEqual(enabled_tools["location"].get("action_label"), "Consultar ubicación")
+        self.assertEqual(
+            enabled_tools["location"].get("description"),
+            "Direcciones disponibles en la demostración; las nuevas ubicaciones se envían desde el chat.",
+        )
+        self.assertEqual(enabled_tools["contact"].get("label"), "Teléfono y contacto")
+        self.assertEqual(enabled_tools["contact"].get("description"), "Canales de contacto configurados para esta demostración.")
+        self.assertEqual((enabled_tools["contact"].get("fields") or [])[0].get("label"), "Teléfono")
+        self.assertEqual(catalog_items["tramites_web"].get("label"), "Trámites online")
+        self.assertEqual(catalog_items["tramites_web"].get("description"), "Portal público de trámites.")
+        self.assertEqual(catalog_items["tramites_web"].get("cta_label"), "Abrir trámites")
+        self.assertEqual(catalog_items["sitio_oficial"].get("description"), "Sitio público del organismo.")
         self.assertEqual(enabled_tools["location"].get("tool_mode"), "chat_action")
         self.assertEqual(enabled_tools["location"].get("action_id"), "consultar_ubicacion")
         self.assertFalse(enabled_tools["location"].get("action_url"))

@@ -858,11 +858,11 @@ def _demo_rubro_tools_contract(
             government_links.append(
                 {
                     "id": "tramites_web",
-                    "label": "Tramites online",
+                    "label": "Trámites online",
                     "kind": "link",
                     "url": str(config.get("tramites_web_url")),
-                    "description": "Portal publico de tramites.",
-                    "cta_label": "Abrir tramites",
+                    "description": "Portal público de trámites.",
+                    "cta_label": "Abrir trámites",
                 }
             )
         if config.get("web_url"):
@@ -872,7 +872,7 @@ def _demo_rubro_tools_contract(
                     "label": "Sitio oficial",
                     "kind": "link",
                     "url": str(config.get("web_url")),
-                    "description": "Sitio publico del organismo.",
+                    "description": "Sitio público del organismo.",
                     "cta_label": "Abrir sitio",
                 }
             )
@@ -899,12 +899,12 @@ def _demo_rubro_tools_contract(
     tools = [
         _demo_tool_contract(
             key="catalog",
-            label="Catalogo",
-            description="Recursos publicados para productos, servicios o tramites.",
+            label="Catálogo",
+            description="Recursos disponibles para productos, servicios o trámites.",
             enabled=bool(resources),
             items=resources,
             intent="ver_catalogo",
-            action_label="Abrir catalogo" if resources else None,
+            action_label="Abrir catálogo" if resources else None,
             action_url=_first_demo_item_url(resources, "url", "href"),
             tool_mode="downloadable",
             fields=[{"label": "Recursos", "value": len(resources)}] if resources else [],
@@ -923,26 +923,26 @@ def _demo_rubro_tools_contract(
         ),
         _demo_tool_contract(
             key="location",
-            label="Ubicacion",
-            description="Direcciones publicadas por el rubro; las nuevas ubicaciones se envian dentro del chat.",
+            label="Ubicación",
+            description="Direcciones disponibles en la demostración; las nuevas ubicaciones se envían desde el chat.",
             enabled=bool(locations),
             items=locations,
             intent="consultar_ubicacion",
-            action_label="Consultar ubicacion" if locations else None,
+            action_label="Consultar ubicación" if locations else None,
             tool_mode="chat_action",
             fields=[{"label": "Ubicaciones", "value": len(locations)}] if locations else [],
         ),
         _demo_tool_contract(
             key="contact",
-            label="Telefono y contacto",
-            description="Canales reales o configurados para contacto.",
+            label="Teléfono y contacto",
+            description="Canales de contacto configurados para esta demostración.",
             enabled=contact_enabled,
             data=contact if contact_enabled else None,
             intent="consultar_contacto",
             action_label="Contactar" if contact_enabled else None,
             tool_mode="chat_action",
             fields=[
-                {"label": "Telefono", "value": contact.get("phone")},
+                {"label": "Teléfono", "value": contact.get("phone")},
                 {"label": "WhatsApp", "value": contact.get("whatsapp")},
                 {"label": "Email", "value": contact.get("email")},
                 {"label": "Web", "value": contact.get("website")},
@@ -951,7 +951,7 @@ def _demo_rubro_tools_contract(
         _demo_tool_contract(
             key="hours",
             label="Horarios",
-            description="Horarios de atencion publicados por el rubro.",
+            description="Horarios de atención configurados para esta demostración.",
             enabled=bool(hours),
             data=hours if hours else None,
             intent="consultar_horarios",
