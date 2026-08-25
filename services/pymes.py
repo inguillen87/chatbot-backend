@@ -67,7 +67,10 @@ from services.education_contracts import (
     education_prompt_for_intent,
     is_education_tenant,
 )
-from services.demo_surveys import build_demo_survey_chat_menu
+from services.demo_surveys import (
+    build_demo_survey_chat_menu,
+    resolve_demo_public_frontend_base_url,
+)
 from services.source_event_context import (
     SOURCE_EVENT_CONTEXT_FIELDS,
     bind_source_event_context,
@@ -3033,15 +3036,7 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         demo_sector = "educacion" if is_education_context else "empresas"
         if isinstance(demo_metadata, dict) and demo_metadata.get("sector"):
             demo_sector = str(demo_metadata.get("sector") or demo_sector)
-        public_base_url = "https://www.chatboc.ar"
-        if current_app:
-            configured_public_base = (
-                current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
-                or current_app.config.get("FRONTEND_URL")
-                or current_app.config.get("PUBLIC_BASE_URL")
-            )
-            if isinstance(configured_public_base, str) and configured_public_base.strip():
-                public_base_url = configured_public_base.rstrip("/")
+        public_base_url = resolve_demo_public_frontend_base_url(current_app.config)
         menu_payload = build_demo_survey_chat_menu(
             sector=demo_sector,
             tenant_slug=tenant_slug or getattr(tenant_profile, "slug", None) or rubro_slug,

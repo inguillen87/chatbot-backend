@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus
 import hashlib
 import ipaddress
 import json
@@ -36,7 +36,10 @@ from services.demo_pillar_catalog import (
     sector_for_rubro,
 )
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract
-from services.demo_surveys import build_demo_surveys_votings_contract
+from services.demo_surveys import (
+    build_demo_surveys_votings_contract,
+    resolve_demo_public_frontend_base_url,
+)
 from services.education_contracts import (
     build_education_admin_menu,
     build_education_profile,
@@ -1742,21 +1745,7 @@ def _openai_runtime_for_demo(sector: str, allowed_actions: list[dict[str, Any]])
 def _demo_public_frontend_base_url() -> str:
     """Resolve links for the deployment serving the current demo contract."""
 
-    raw = (
-        current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
-        or current_app.config.get("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL")
-        or current_app.config.get("PUBLIC_FRONTEND_URL")
-        or current_app.config.get("FRONTEND_URL")
-        or "https://www.chatboc.ar"
-    )
-    value = str(raw or "").strip().rstrip("/")
-    parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        current_app.logger.warning(
-            "Ignoring invalid public frontend base for demo survey links"
-        )
-        return "https://www.chatboc.ar"
-    return value
+    return resolve_demo_public_frontend_base_url(current_app.config)
 
 
 def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:

@@ -3,9 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 from services.demo_pillar_catalog import normalize_demo_sector
 from services.survey_response_provenance import build_survey_response_provenance
@@ -15,6 +16,60 @@ DEMO_SURVEY_CONTRACT_VERSION = "demo.surveys_votings.v1"
 DEMO_SURVEY_PAGE_SIZE = 5
 DEMO_SURVEY_RESPONSE_COUNT = 100
 _SUPPORTED_SECTORS = {"gobierno", "educacion", "empresas"}
+DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN = "https://www.chatboc.ar"
+
+
+def resolve_demo_public_frontend_base_url(
+    config: Mapping[str, Any] | None = None,
+    *,
+    fallback: str = DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN,
+) -> str:
+    """Resolve one safe frontend origin for every demo survey/share surface.
+
+    The backend can run in a different Vercel project, so request.host_url is
+    not a safe frontend fallback. Only exact HTTP(S) origins are accepted;
+    credentials, wildcards, paths, queries and fragments fail closed. Plain
+    HTTP is reserved for local development.
+    """
+
+    keys = (
+        "PUBLIC_ENCUESTAS_CANONICAL_BASE_URL",
+        "PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL",
+        "PUBLIC_FRONTEND_URL",
+        "FRONTEND_URL",
+        "APP_BASE_URL",
+        "PUBLIC_BASE_URL",
+    )
+    candidates = [config.get(key) for key in keys] if config is not None else []
+    candidates.append(fallback)
+
+    for raw in candidates:
+        value = str(raw or "").strip().rstrip("/")
+        if not value:
+            continue
+        parsed = urlparse(value)
+        hostname = str(parsed.hostname or "").strip().lower()
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not hostname
+            or "*" in hostname
+            or parsed.username
+            or parsed.password
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or parsed.path not in {"", "/"}
+        ):
+            continue
+        if parsed.scheme == "http" and hostname not in {"localhost", "127.0.0.1", "::1"}:
+            continue
+        try:
+            parsed.port
+        except ValueError:
+            continue
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    return DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN
 
 
 def _slug_part(value: Any, fallback: str = "demo") -> str:
@@ -324,7 +379,9 @@ def _demo_response_provenance() -> dict[str, Any]:
 
 
 def _demo_survey_links(slug: str, public_base_url: str) -> dict[str, Any]:
-    public_base = str(public_base_url or "https://www.chatboc.ar").rstrip("/")
+    public_base = resolve_demo_public_frontend_base_url(
+        {"PUBLIC_ENCUESTAS_CANONICAL_BASE_URL": public_base_url}
+    )
     public_page_path = f"/e/{slug}"
     public_page_url = f"{public_base}{public_page_path}"
     qr_endpoint = f"/api/public/encuestas/v1/{slug}/qr?size=320"

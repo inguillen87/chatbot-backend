@@ -53,7 +53,10 @@ from services.common_utils import validar_email, validar_telefono, formatear_tel
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
 from services.demo_municipio_runtime import handle_demo_municipio_message
-from services.demo_surveys import build_demo_survey_chat_menu
+from services.demo_surveys import (
+    build_demo_survey_chat_menu,
+    resolve_demo_public_frontend_base_url,
+)
 from services.notifications import enviar_notificacion_sms, enviar_notificacion_whatsapp_con_plantilla
 from services.email_service import enviar_email
 from services.conversation_resolver import ConversationResolver
@@ -1218,6 +1221,7 @@ def _demo_widget_runtime_response(
                 or "demo"
             ),
             channel=str(contexto_chat.get("channel") or "widget"),
+            public_base_url=resolve_demo_public_frontend_base_url(current_app.config),
             page=page,
         )
         message_body = str(menu_payload.get("message_body") or "Estas son las encuestas y votaciones disponibles.").strip()

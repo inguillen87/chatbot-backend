@@ -21,6 +21,7 @@ from services.demo_surveys import (
     build_demo_live_results_payload,
     build_demo_survey_chat_menu,
     build_demo_surveys_votings_contract,
+    resolve_demo_public_frontend_base_url,
 )
 from services.response_formatter import build_interactive_response
 
@@ -314,6 +315,25 @@ def test_demo_survey_chat_menu_lists_five_with_whatsapp_vote_actions():
     assert any(option.get("action_id") == "mostrar_menu_encuestas::2" for option in context_options)
     assert any(action.startswith("chatboc_survey_open::") for action in action_ids)
     assert not any(action.startswith("chatboc_survey_share::") for action in action_ids)
+
+
+def test_demo_public_frontend_resolver_is_exact_and_fail_closed():
+    preview = "https://chatboc-r2-preview.vercel.app"
+    assert resolve_demo_public_frontend_base_url(
+        {"PUBLIC_ENCUESTAS_CANONICAL_BASE_URL": f"{preview}/"}
+    ) == preview
+    assert resolve_demo_public_frontend_base_url(
+        {"PUBLIC_ENCUESTAS_CANONICAL_BASE_URL": "https://attacker.example/path"}
+    ) == "https://www.chatboc.ar"
+    assert resolve_demo_public_frontend_base_url(
+        {"PUBLIC_ENCUESTAS_CANONICAL_BASE_URL": "https://*.vercel.app"}
+    ) == "https://www.chatboc.ar"
+    assert resolve_demo_public_frontend_base_url(
+        {"PUBLIC_ENCUESTAS_CANONICAL_BASE_URL": "http://preview.example"}
+    ) == "https://www.chatboc.ar"
+    assert resolve_demo_public_frontend_base_url(
+        {"PUBLIC_ENCUESTAS_CANONICAL_BASE_URL": "http://localhost:5173"}
+    ) == "http://localhost:5173"
 
 
 def test_respuestas_alias_reuses_handler(client, monkeypatch):

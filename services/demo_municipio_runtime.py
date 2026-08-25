@@ -5,10 +5,14 @@ import re
 import unicodedata
 from typing import Any
 
+from flask import current_app, has_app_context
 from sqlalchemy.orm.attributes import flag_modified
 
 from models import ChatSessionContext, MunicipioTicket, TenantProfile, TicketComentario, User, db
-from services.demo_surveys import build_demo_survey_chat_menu
+from services.demo_surveys import (
+    build_demo_survey_chat_menu,
+    resolve_demo_public_frontend_base_url,
+)
 from services.tenant_ticket_scope import (
     municipio_ticket_belongs_to_tenant,
     resolve_unique_tenant_for_owner,
@@ -499,6 +503,9 @@ def _response_for_survey(
         tenant_slug=str(tenant_slug),
         rubro=str((demo_session_payload or {}).get("rubro") or getattr(tenant, "slug", None) or "municipio"),
         channel=DEMO_MUNICIPIO_CHANNEL,
+        public_base_url=resolve_demo_public_frontend_base_url(
+            current_app.config if has_app_context() else None
+        ),
         page=page,
     )
     message = str(menu_payload.get("message_body") or "Estas son las encuestas y votaciones disponibles.").strip()

@@ -1180,6 +1180,9 @@ class ApiV2FoundationTest(unittest.TestCase):
     def test_ask_demo_menu_surveys_returns_seeded_links(self):
         from routes.v2.tenants import create_demo_session_token
 
+        preview_frontend = "https://chatboc-r2-preview.vercel.app"
+        self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = preview_frontend
+
         owner = User(name="Municipio Surveys", email="municipio-surveys@test.com", password_hash="hash", tipo_chat="municipio", rol="admin")
         db.session.add(owner)
         db.session.flush()
@@ -1210,8 +1213,15 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(len(payload.get("demo_surveys") or []), 5)
         survey_contract = (payload.get("data") or {}).get("surveys_votings") or {}
         self.assertEqual(survey_contract.get("total_available"), 6)
-        self.assertIn("Abrir: https://www.chatboc.ar/e/", payload.get("message_body") or "")
+        self.assertIn(f"Abrir: {preview_frontend}/e/", payload.get("message_body") or "")
+        self.assertNotIn("https://www.chatboc.ar/e/", payload.get("message_body") or "")
         self.assertIn("Compartir por WhatsApp: https://wa.me/", payload.get("message_body") or "")
+        self.assertTrue(
+            all(
+                str(item.get("public_url") or "").startswith(f"{preview_frontend}/e/")
+                for item in payload.get("demo_surveys") or []
+            )
+        )
         self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in payload.get("demo_surveys") or []))
         self.assertEqual((payload.get("pagination") or {}).get("next_action_id"), "mostrar_menu_encuestas::2")
 

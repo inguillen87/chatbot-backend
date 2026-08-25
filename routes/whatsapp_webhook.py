@@ -86,7 +86,10 @@ from services.reclamo_turn_semantics import (
 )
 from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
-from services.demo_surveys import build_demo_survey_chat_menu
+from services.demo_surveys import (
+    build_demo_survey_chat_menu,
+    resolve_demo_public_frontend_base_url,
+)
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 from services.whatsapp_flow_submissions import (
     FlowSubmissionValidationError,
@@ -1232,9 +1235,10 @@ def _remember_chatboc_demo_sector(session_context: ChatSessionContext, sector: s
 
 def _chatboc_demo_survey_url(slug: str, *, source: str = "whatsapp_demo") -> str:
     clean_slug = str(slug or "").strip().strip("/")
+    public_base = resolve_demo_public_frontend_base_url(current_app.config)
     if not clean_slug:
-        return "https://www.chatboc.ar/encuestas"
-    return f"https://www.chatboc.ar/e/{clean_slug}?source={source}&demo_participation=1"
+        return f"{public_base}/encuestas"
+    return f"{public_base}/e/{clean_slug}?source={source}&demo_participation=1"
 
 
 def _chatboc_demo_survey_share_url(slug: str) -> str:
@@ -1455,6 +1459,7 @@ def _build_chatboc_surveys_payload(action_id: str, session_context: ChatSessionC
         tenant_slug=CHATBOC_DEMO_TENANT_SLUG,
         rubro=sector,
         channel="whatsapp",
+        public_base_url=resolve_demo_public_frontend_base_url(current_app.config),
         page=page,
         page_size=3,
     )
