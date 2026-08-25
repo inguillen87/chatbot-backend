@@ -140,7 +140,8 @@ class AnalyticsService:
                  MunicipioTicket.categoria, func.count(MunicipioTicket.id)
              ).filter(
                  MunicipioTicket.tenant_id == tenant_id,
-                 MunicipioTicket.fecha >= start_date
+                 MunicipioTicket.fecha >= start_date,
+                 MunicipioTicket.fecha <= end_date,
              ).group_by(MunicipioTicket.categoria).order_by(desc(func.count(MunicipioTicket.id))).limit(5)
              top_categories = [{"category": row[0] or "Sin categoría", "count": row[1]} for row in cat_query.all()]
         elif context == 'pyme':
@@ -150,7 +151,8 @@ class AnalyticsService:
                  PymePedido.estado, func.count(PymePedido.id) # Use status as "category" for orders for now
              ).filter(
                  PymePedido.tenant_id == tenant_id,
-                 PymePedido.fecha >= start_date
+                 PymePedido.fecha >= start_date,
+                 PymePedido.fecha <= end_date,
              ).group_by(PymePedido.estado).limit(5)
              top_categories = [{"category": row[0], "count": row[1]} for row in cat_query.all()]
 
@@ -159,7 +161,8 @@ class AnalyticsService:
         if context == 'pyme':
             orders_count = db.session.query(PymePedido).filter(
                 PymePedido.tenant_id == tenant_id,
-                PymePedido.fecha >= start_date
+                PymePedido.fecha >= start_date,
+                PymePedido.fecha <= end_date,
             ).count()
             # unique conversations
             if active_users > 0:
@@ -286,7 +289,14 @@ class AnalyticsService:
             "claims_by_hour": claims_by_hour
         }
 
-    def get_commerce_analytics(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
+    def get_commerce_analytics(
+        self,
+        tenant_id: int,
+        start_date: datetime,
+        end_date: datetime,
+        *,
+        product_sample_limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
         Dedicated analytics for PyMEs: revenue, AOV, sales by product, heatmap.
         Also includes Lead Source and Chat Conversion.
@@ -331,31 +341,88 @@ class AnalyticsService:
             AnalyticsEvent.timestamp >= start_date,
             AnalyticsEvent.timestamp <= end_date,
             AnalyticsEvent.channel.isnot(None)
-        ).group_by(AnalyticsEvent.channel).all()
+        ).group_by(AnalyticsEvent.channel).limit(50)
 
-        lead_source = [{"source": row.channel or "unknown", "count": row[1]} for row in channel_stats]
+        lead_source = [
+            {"source": row.channel or "unknown", "count": row[1]}
+            for row in channel_stats
+        ]
 
         # 5. Sales by Product
         # Attempt to aggregate in Python (MVP approach)
         # Fetch only necessary fields
-        raw_orders = orders_query.with_entities(PymePedido.detalles).all()
+        bounded_product_sample_limit = None
+        max_order_detail_chars = None
+        max_product_items = None
+        if product_sample_limit is not None:
+            if isinstance(product_sample_limit, bool):
+                raise ValueError("product_sample_limit must be between 1 and 500")
+            try:
+                bounded_product_sample_limit = int(product_sample_limit)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    "product_sample_limit must be between 1 and 500"
+                ) from exc
+            if bounded_product_sample_limit < 1 or bounded_product_sample_limit > 500:
+                raise ValueError("product_sample_limit must be between 1 and 500")
+            max_order_detail_chars = 16_000
+            max_product_items = 5_000
+            raw_orders_query = orders_query.with_entities(
+                func.substr(
+                    PymePedido.detalles,
+                    1,
+                    max_order_detail_chars,
+                ).label("detalles"),
+                func.length(PymePedido.detalles).label("details_length"),
+            ).order_by(
+                PymePedido.fecha.desc(),
+                PymePedido.id.desc(),
+            ).limit(bounded_product_sample_limit)
+        else:
+            raw_orders_query = orders_query.with_entities(
+                PymePedido.detalles
+            ).order_by(
+                PymePedido.fecha.desc(),
+                PymePedido.id.desc(),
+            )
+        raw_orders = list(raw_orders_query)
         product_counts = {}
+        skipped_large_order_details = 0
+        parsed_product_items = 0
+        product_item_budget_exhausted = False
 
         for row in raw_orders:
             try:
+                if (
+                    max_order_detail_chars is not None
+                    and int(row.details_length or 0) > max_order_detail_chars
+                ):
+                    skipped_large_order_details += 1
+                    continue
                 detalles = json.loads(row.detalles) if row.detalles else []
                 if isinstance(detalles, list):
                     for item in detalles:
+                        if (
+                            max_product_items is not None
+                            and parsed_product_items >= max_product_items
+                        ):
+                            product_item_budget_exhausted = True
+                            break
                         # item structure varies. assume 'nombre' or 'product_name'
                         p_name = item.get('nombre') or item.get('title') or "Unknown"
+                        if bounded_product_sample_limit is not None:
+                            p_name = str(p_name)[:200]
                         qty = item.get('cantidad', 1)
                         try:
                             qty = int(qty)
                         except:
                             qty = 1
                         product_counts[p_name] = product_counts.get(p_name, 0) + qty
+                        parsed_product_items += 1
             except:
                 pass
+            if product_item_budget_exhausted:
+                break
 
         # Sort top 10
         sorted_products = sorted(product_counts.items(), key=lambda x: x[1], reverse=True)[:10]
@@ -376,11 +443,11 @@ class AnalyticsService:
             PymePedido.tenant_id == tenant_id,
             PymePedido.fecha >= start_date,
             PymePedido.fecha <= end_date
-        ).group_by('hour').all()
+        ).group_by('hour').limit(24)
 
         sales_by_hour = [{"hour": int(row.hour), "count": row.count} for row in sales_by_hour_query]
 
-        return {
+        result = {
             "revenue": float(total_revenue),
             "average_ticket": float(average_ticket),
             "conversion_rate": float(round(conversion_rate, 2)),
@@ -390,6 +457,18 @@ class AnalyticsService:
             "sales_by_hour": sales_by_hour,
             "lead_source": lead_source
         }
+        if bounded_product_sample_limit is not None:
+            result["data_coverage"] = {
+                "sales_by_product": "bounded_recent_order_sample",
+                "order_sample_limit": bounded_product_sample_limit,
+                "total_orders": int(total_orders),
+                "max_order_detail_chars": max_order_detail_chars,
+                "skipped_large_order_details": skipped_large_order_details,
+                "max_product_items": max_product_items,
+                "parsed_product_items": parsed_product_items,
+                "product_item_budget_exhausted": product_item_budget_exhausted,
+            }
+        return result
 
     def get_benchmarks(self, tenant_id: int, start_date: datetime, end_date: datetime) -> Dict[str, Any]:
         """
@@ -629,31 +708,165 @@ class AnalyticsService:
             for vote in vote_rows
         ]
 
-    def get_cached_report(self, tenant_id: int, report_type: str, max_age_hours: int = 24) -> Optional[Dict]:
+    @staticmethod
+    def _canonical_report_period(value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+
+    @staticmethod
+    def _unwrap_report_cache_payload(
+        payload: Any,
+        *,
+        report_type: str,
+        generated_at: Optional[datetime] = None,
+        source: Optional[str] = None,
+        period_start: Optional[datetime] = None,
+        period_end: Optional[datetime] = None,
+        contract_version: str = "analytics.report_cache.v1",
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("contract_version") != contract_version:
+            if source is None and period_start is None and period_end is None:
+                result = dict(payload)
+                result.setdefault(
+                    "_report_metadata",
+                    {
+                        "contract_version": "analytics.report_cache.legacy",
+                        "source": "legacy",
+                        "period_start": None,
+                        "period_end": None,
+                        "period_key": None,
+                        "report_type": report_type,
+                        "generated_at": (
+                            AnalyticsService._canonical_report_period(generated_at)
+                            if generated_at is not None
+                            else None
+                        ),
+                    },
+                )
+                return result
+            return None
+        if payload.get("report_type") != report_type:
+            return None
+        if source is not None and payload.get("source") != source:
+            return None
+        if period_start is not None and payload.get("period_start") != (
+            AnalyticsService._canonical_report_period(period_start)
+        ):
+            return None
+        if period_end is not None and payload.get("period_end") != (
+            AnalyticsService._canonical_report_period(period_end)
+        ):
+            return None
+        report = payload.get("report")
+        if not isinstance(report, dict):
+            return None
+        result = dict(report)
+        result["_report_metadata"] = {
+            "contract_version": payload["contract_version"],
+            "source": payload.get("source"),
+            "period_start": payload.get("period_start"),
+            "period_end": payload.get("period_end"),
+            "period_key": payload.get("period_key"),
+            "report_type": payload.get("report_type"),
+            "generated_at": (
+                AnalyticsService._canonical_report_period(generated_at)
+                if generated_at is not None
+                else None
+            ),
+        }
+        return result
+
+    def get_cached_report(
+        self,
+        tenant_id: int,
+        report_type: str,
+        max_age_hours: int = 24,
+        *,
+        source: Optional[str] = None,
+        period_start: Optional[datetime] = None,
+        period_end: Optional[datetime] = None,
+    ) -> Optional[Dict]:
         """
         Retrieves a valid cached AI report from AnalyticsEvent.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
-        event = db.session.query(AnalyticsEvent).filter(
+        events = db.session.query(AnalyticsEvent).filter(
             AnalyticsEvent.tenant_id == tenant_id,
             AnalyticsEvent.event_type == f"ai_report_{report_type}",
             AnalyticsEvent.timestamp >= cutoff
-        ).order_by(desc(AnalyticsEvent.timestamp)).first()
+        ).order_by(desc(AnalyticsEvent.timestamp)).limit(50).all()
 
-        if event and event.payload:
-            return event.payload
+        for event in events:
+            cached = self._unwrap_report_cache_payload(
+                event.payload,
+                report_type=report_type,
+                generated_at=event.timestamp,
+                source=source,
+                period_start=period_start,
+                period_end=period_end,
+            )
+            if cached is not None:
+                return cached
         return None
 
-    def cache_report(self, tenant_id: int, report_type: str, data: Dict):
+    def get_cached_weekly_report(
+        self,
+        tenant_id: int,
+        report_type: str,
+        max_age_hours: int = 24 * 7,
+    ) -> Optional[Dict]:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        events = db.session.query(AnalyticsEvent).filter(
+            AnalyticsEvent.tenant_id == tenant_id,
+            AnalyticsEvent.event_type == f"weekly_ai_report_{report_type}",
+            AnalyticsEvent.timestamp >= cutoff,
+        ).order_by(desc(AnalyticsEvent.timestamp)).limit(10).all()
+        for event in events:
+            cached = self._unwrap_report_cache_payload(
+                event.payload,
+                report_type=report_type,
+                generated_at=event.timestamp,
+                source="scheduled_weekly",
+                contract_version="weekly.analytics_report_cache.v1",
+            )
+            if cached is not None:
+                return cached
+        return None
+
+    def cache_report(
+        self,
+        tenant_id: int,
+        report_type: str,
+        data: Dict,
+        *,
+        source: Optional[str] = None,
+        period_start: Optional[datetime] = None,
+        period_end: Optional[datetime] = None,
+    ):
         """
         Saves an AI report to AnalyticsEvent for caching.
         """
+        payload: Dict[str, Any] = data
+        if source is not None:
+            if period_start is None or period_end is None:
+                raise ValueError("period_start and period_end are required")
+            payload = {
+                "contract_version": "analytics.report_cache.v1",
+                "source": source,
+                "period_start": self._canonical_report_period(period_start),
+                "period_end": self._canonical_report_period(period_end),
+                "report_type": report_type,
+                "report": data,
+            }
         self.log_event(
             tenant_id=tenant_id,
             event_type=f"ai_report_{report_type}",
             channel="system",
-            payload=data
+            payload=payload,
         )
 
 analytics_service = AnalyticsService()

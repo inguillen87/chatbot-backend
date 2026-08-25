@@ -704,52 +704,12 @@ def register_commands(app):
 
     @app.cli.command("generate-weekly-reports")
     def generate_weekly_reports():
-        """Generates cached AI reports for all active tenants."""
-        from models import TenantProfile
-        from services.analytics_service import analytics_service
-        from services.openai_bridge import generate_analytics_report
-        from datetime import datetime, timedelta
+        """Drain bounded, at-most-once batches in a long-lived cron process."""
+        from services.weekly_analytics_reports import run_weekly_analytics_drain
 
-        cli_logger.info("Starting weekly report generation...")
-
-        with app.app_context():
-            tenants = TenantProfile.query.filter_by(is_active=True).all()
-            now = datetime.utcnow()
-            start_date = now - timedelta(days=7)
-
-            for tenant in tenants:
-                try:
-                    cli_logger.info(f"Processing tenant {tenant.slug}...")
-
-                    # 1. Check if recently generated
-                    cached = analytics_service.get_cached_report(tenant.id, f"consultant_{tenant.tipo}", max_age_hours=24)
-                    if cached:
-                        cli_logger.info(f"Report already fresh for {tenant.slug}.")
-                        continue
-
-                    # 2. Aggregate stats
-                    summary = analytics_service.get_summary(
-                        tenant_id=tenant.id,
-                        start_date=start_date,
-                        end_date=now,
-                        context=tenant.tipo
-                    )
-
-                    if tenant.tipo == 'pyme':
-                        commerce = analytics_service.get_commerce_analytics(
-                            tenant_id=tenant.id,
-                            start_date=start_date,
-                            end_date=now
-                        )
-                        summary.update(commerce)
-
-                    # 3. Generate & Cache
-                    report = generate_analytics_report(summary, tenant_type=tenant.tipo)
-                    analytics_service.cache_report(tenant.id, f"consultant_{tenant.tipo}", report)
-
-                    cli_logger.info(f"Generated report for {tenant.slug}.")
-
-                except Exception as e:
-                    cli_logger.error(f"Error processing {tenant.slug}: {e}")
-
-        cli_logger.info("Weekly report generation complete.")
+        report = run_weekly_analytics_drain(app)
+        click.echo(json.dumps(report, sort_keys=True))
+        if report.get("ok") is not True:
+            raise click.ClickException(
+                f"weekly analytics incomplete: status={report.get('status', 'failed')}"
+            )

@@ -26,11 +26,17 @@ JOBS = (
 )
 
 
-def _app(*, secret: str = CRON_SECRET, enabled: bool = True) -> Flask:
+def _app(
+    *,
+    secret: str = CRON_SECRET,
+    enabled: bool = True,
+    weekly_enabled: bool = False,
+) -> Flask:
     app = Flask(__name__)
     app.config.update(
         CRON_SECRET=secret,
         VERCEL_MAINTENANCE_CRONS_ENABLED=enabled,
+        VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED=weekly_enabled,
     )
     app.register_blueprint(internal_cron_bp)
     return app
@@ -52,8 +58,10 @@ def _fake_module(module_name: str, function_name: str, result: dict):
 
 def test_maintenance_cutover_flag_defaults_fail_closed():
     assert Config.VERCEL_MAINTENANCE_CRONS_ENABLED is False
+    assert Config.VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED is False
     env_example = (REPOSITORY_ROOT / ".env.example").read_text("utf-8").splitlines()
     assert "VERCEL_MAINTENANCE_CRONS_ENABLED=false" in env_example
+    assert "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED=false" in env_example
 
 
 @pytest.mark.parametrize(("path", "service_module"), JOBS)
@@ -263,3 +271,138 @@ def test_maintenance_failure_response_does_not_expose_exception_detail(
     assert private_detail not in response.get_data(as_text=True)
     assert private_detail not in caplog.text
     run.assert_called_once()
+
+
+def test_weekly_analytics_rejects_before_service_import_without_authorization():
+    app = _app(weekly_enabled=True)
+    with patch.dict(sys.modules, {"services.weekly_analytics_reports": None}):
+        response = app.test_client().get(
+            "/api/internal/cron/weekly-analytics-report"
+        )
+
+    assert response.status_code == 401
+    assert response.get_json()["status"] == "unauthorized"
+
+
+def test_weekly_analytics_stays_inert_before_independent_cutover():
+    app = _app(weekly_enabled=False)
+    with patch.dict(sys.modules, {"services.weekly_analytics_reports": None}):
+        response = _authorized_get(
+            app,
+            "/api/internal/cron/weekly-analytics-report",
+        )
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "contract_version": "internal.cron.activation.v1",
+        "executed": False,
+        "reason_code": "vercel_weekly_analytics_cron_disabled",
+        "status": "disabled",
+    }
+
+
+def test_weekly_analytics_invokes_runner_and_redacts_internal_details():
+    private_detail = "redis://private:secret@cache.internal/0"
+    module, run = _fake_module(
+        "services.weekly_analytics_reports",
+        "run_weekly_analytics_batch",
+        {
+            "contract_version": "weekly.analytics_report_run.v1",
+            "ok": True,
+            "status": "completed",
+            "batch_limit": 10,
+            "selected": 2,
+            "provider_attempts": 2,
+            "reports_generated": 2,
+            "contended": 0,
+            "failed_before_provider": 0,
+            "provider_uncertain": 0,
+            "reservation_failures": 0,
+            "unresolved_reservations": 0,
+            "has_more": False,
+            "private_detail": private_detail,
+            "tenant_ids": [22, 31],
+        },
+    )
+    app = _app(weekly_enabled=True)
+
+    with patch.dict(sys.modules, {module.__name__: module}):
+        response = _authorized_get(
+            app,
+            "/api/internal/cron/weekly-analytics-report",
+        )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "contract_version": "internal.weekly_analytics_cron.v1",
+        "executed": True,
+        "job": "weekly_analytics_report",
+        "ok": True,
+        "status": "completed",
+        "batch_limit": 10,
+        "selected": 2,
+        "provider_attempts": 2,
+        "reports_generated": 2,
+        "contended": 0,
+        "failed_before_provider": 0,
+        "provider_uncertain": 0,
+        "reservation_failures": 0,
+        "unresolved_reservations": 0,
+        "has_more": False,
+    }
+    assert private_detail not in response.get_data(as_text=True)
+    run.assert_called_once_with(app)
+
+
+def test_weekly_analytics_batch_progress_is_a_successful_cron_tick():
+    module, run = _fake_module(
+        "services.weekly_analytics_reports",
+        "run_weekly_analytics_batch",
+        {
+            "contract_version": "weekly.analytics_report_run.v1",
+            "ok": True,
+            "status": "batch_limit_reached",
+            "batch_limit": 5,
+            "selected": 5,
+            "provider_attempts": 5,
+            "reports_generated": 5,
+            "contended": 0,
+            "failed_before_provider": 0,
+            "provider_uncertain": 0,
+            "reservation_failures": 0,
+            "unresolved_reservations": 0,
+            "has_more": True,
+        },
+    )
+    app = _app(weekly_enabled=True)
+
+    with patch.dict(sys.modules, {module.__name__: module}):
+        response = _authorized_get(
+            app,
+            "/api/internal/cron/weekly-analytics-report",
+        )
+
+    assert response.status_code == 200
+    assert response.get_json()["status"] == "batch_limit_reached"
+    assert response.get_json()["has_more"] is True
+    run.assert_called_once_with(app)
+
+
+def test_weekly_analytics_error_response_redacts_exception_detail(caplog):
+    private_detail = "provider-key-must-not-leak"
+    module = ModuleType("services.weekly_analytics_reports")
+    run = Mock(side_effect=RuntimeError(private_detail))
+    module.run_weekly_analytics_batch = run
+    app = _app(weekly_enabled=True)
+
+    with patch.dict(sys.modules, {module.__name__: module}):
+        response = _authorized_get(
+            app,
+            "/api/internal/cron/weekly-analytics-report",
+        )
+
+    assert response.status_code == 503
+    assert response.get_json()["status"] == "failed"
+    assert private_detail not in response.get_data(as_text=True)
+    assert private_detail not in caplog.text
+    run.assert_called_once_with(app)

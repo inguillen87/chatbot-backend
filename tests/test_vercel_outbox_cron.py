@@ -230,6 +230,10 @@ def test_vercel_config_declares_bounded_internal_crons():
             "path": "/api/internal/cron/survey-privacy-retention",
             "schedule": "17 3 * * *",
         },
+        {
+            "path": "/api/internal/cron/weekly-analytics-report",
+            "schedule": "0 * * * 0",
+        },
     ]
 
 

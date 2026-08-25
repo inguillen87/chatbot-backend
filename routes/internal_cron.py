@@ -40,6 +40,10 @@ def _maintenance_crons_are_enabled() -> bool:
     return current_app.config.get("VERCEL_MAINTENANCE_CRONS_ENABLED") is True
 
 
+def _weekly_analytics_cron_is_enabled() -> bool:
+    return current_app.config.get("VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED") is True
+
+
 def _json_no_store(payload: dict, status_code: int):
     response = jsonify(payload)
     response.status_code = status_code
@@ -63,6 +67,30 @@ def _maintenance_gate():
                 "contract_version": "internal.cron.activation.v1",
                 "executed": False,
                 "reason_code": "vercel_maintenance_crons_disabled",
+                "status": "disabled",
+            },
+            503,
+        )
+
+    return None
+
+
+def _weekly_analytics_gate():
+    if not _has_valid_cron_authorization():
+        return _json_no_store(
+            {
+                "contract_version": "internal.cron.authorization.v1",
+                "status": "unauthorized",
+            },
+            401,
+        )
+
+    if not _weekly_analytics_cron_is_enabled():
+        return _json_no_store(
+            {
+                "contract_version": "internal.cron.activation.v1",
+                "executed": False,
+                "reason_code": "vercel_weekly_analytics_cron_disabled",
                 "status": "disabled",
             },
             503,
@@ -265,6 +293,108 @@ def survey_privacy_retention():
             503,
         )
     return _json_no_store(payload, 503 if exhausted else 200)
+
+
+@internal_cron_bp.get("/weekly-analytics-report")
+def weekly_analytics_report():
+    gate_response = _weekly_analytics_gate()
+    if gate_response is not None:
+        return gate_response
+
+    try:
+        from services.weekly_analytics_reports import run_weekly_analytics_batch
+
+        report = run_weekly_analytics_batch(current_app._get_current_object())
+        if (
+            report.get("contract_version") != "weekly.analytics_report_run.v1"
+            or not isinstance(report.get("ok"), bool)
+            or not isinstance(report.get("has_more"), bool)
+            or report.get("status")
+            not in {
+                "completed",
+                "contended",
+                "batch_limit_reached",
+                "degraded",
+                "configuration_unavailable",
+                "database_unavailable",
+            }
+        ):
+            raise RuntimeError("weekly_analytics_report_invalid")
+        payload = {
+            "contract_version": "internal.weekly_analytics_cron.v1",
+            "executed": _report_count(
+                report,
+                "provider_attempts",
+                maximum=10,
+            )
+            > 0,
+            "job": "weekly_analytics_report",
+            "ok": report["ok"],
+            "status": report["status"],
+            "batch_limit": _report_count(report, "batch_limit", maximum=10),
+            "selected": _report_count(report, "selected", maximum=10),
+            "provider_attempts": _report_count(
+                report,
+                "provider_attempts",
+                maximum=10,
+            ),
+            "reports_generated": _report_count(
+                report,
+                "reports_generated",
+                maximum=10,
+            ),
+            "contended": _report_count(report, "contended", maximum=10),
+            "failed_before_provider": _report_count(
+                report,
+                "failed_before_provider",
+                maximum=10,
+            ),
+            "provider_uncertain": _report_count(
+                report,
+                "provider_uncertain",
+                maximum=10,
+            ),
+            "reservation_failures": _report_count(
+                report,
+                "reservation_failures",
+                maximum=10,
+            ),
+            "unresolved_reservations": _report_count(
+                report,
+                "unresolved_reservations",
+            ),
+            "has_more": report["has_more"],
+        }
+        if (
+            payload["ok"]
+            is not (payload["status"] in {"completed", "batch_limit_reached"})
+            or payload["provider_attempts"] > payload["selected"]
+            or payload["reports_generated"] > payload["provider_attempts"]
+            or payload["provider_uncertain"] > payload["provider_attempts"]
+            or payload["reports_generated"] + payload["provider_uncertain"]
+            > payload["provider_attempts"]
+            or (
+                payload["status"] != "configuration_unavailable"
+                and payload["batch_limit"] < 1
+            )
+        ):
+            raise RuntimeError("weekly_analytics_report_invalid")
+    except Exception as exc:
+        current_app.logger.error(
+            "Weekly analytics cron failed; error_type=%s",
+            type(exc).__name__,
+        )
+        return _json_no_store(
+            {
+                "contract_version": "internal.weekly_analytics_cron.v1",
+                "executed": False,
+                "job": "weekly_analytics_report",
+                "ok": False,
+                "status": "failed",
+            },
+            503,
+        )
+    return _json_no_store(payload, 200 if report["ok"] else 503)
 
 
 __all__ = ["internal_cron_bp"]

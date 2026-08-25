@@ -746,6 +746,28 @@ class Config:
         False,
         "VERCEL_MAINTENANCE_CRONS_ENABLED",
     )
+    # Paid weekly AI reports are fenced independently from both outbox and
+    # destructive maintenance ownership.
+    VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED = _env_flag(
+        False,
+        "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED",
+    )
+    WEEKLY_ANALYTICS_RESERVATION_REDIS_URL = os.getenv(
+        "WEEKLY_ANALYTICS_RESERVATION_REDIS_URL",
+        "",
+    ).strip()
+    WEEKLY_ANALYTICS_MAX_TENANTS_PER_RUN = os.getenv(
+        "WEEKLY_ANALYTICS_MAX_TENANTS_PER_RUN",
+        "5",
+    )
+    WEEKLY_ANALYTICS_MAX_BATCHES_PER_DRAIN = os.getenv(
+        "WEEKLY_ANALYTICS_MAX_BATCHES_PER_DRAIN",
+        "12",
+    )
+    WEEKLY_ANALYTICS_RESERVATION_TTL_SECONDS = os.getenv(
+        "WEEKLY_ANALYTICS_RESERVATION_TTL_SECONDS",
+        "900",
+    )
     # Dedicated/versioned HMAC boundary for TenantTicket intake receipts.  It
     # intentionally has no SECRET_KEY fallback: creation and tracking fail
     # closed when it is absent or shorter than 32 UTF-8 bytes.
