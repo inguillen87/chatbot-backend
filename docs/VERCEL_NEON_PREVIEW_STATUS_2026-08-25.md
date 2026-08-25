@@ -8,6 +8,35 @@ para retirar Render. El DNS público no fue movido.
 
 El frontend y el backend están desplegados en Vercel Preview, integrados entre sí y validados contra una copia QA en Neon. La demo de gobierno incluye tablero ejecutivo, encuesta, reclamos/casos, mapa territorial, analítica, QR/WhatsApp y tiempo real. Los datos sintéticos están identificados como demostración y no se presentan como verdad municipal.
 
+### Corte Preview vigente — 2026-08-25 20:55 ART
+
+- Frontend: SHA `6b0f82801a5c111607e6e1d119f8dd0a88a8ef96`, deployment
+  `dpl_84riKfMqv3S2Z1sYgMZ8muZDZsaz`, alias
+  `https://chatboc-r2-preview.vercel.app`.
+- Backend: SHA `94ff071fd95a2e1e7670837968e7a363f9c97bb4`, deployment
+  `dpl_FEHGefYVJny3Hig3i7hLD22yF28D`, región `gru1`, alias
+  `https://api-preview.chatboc.ar`. El SHA exacto fue inyectado como variable
+  de runtime y quedó comprobado por `GET /api/version`; `GET /api/health`
+  respondió `status=ok`.
+- El tablero sin actividad de sesión conserva el escenario explícitamente
+  sintético: 184 reclamos, cinco puntos territoriales y encuesta 101 = 100 base
+  sintética + 1 participación demo durable, con 0 respuestas ciudadanas
+  verificadas.
+- El tablero con actividad vinculada usa `mixed_partitioned`: publica tres KPIs
+  observados de sesión —reclamos, reclamos geolocalizados y evidencias— con
+  denominadores y procedencia `demo.metric_provenance.v1`; la encuesta se
+  mantiene como partición sintética independiente y no se suma ni promedia con
+  esos valores.
+- Canario QA controlado: el reclamo sintético #419 fue aceptado una vez y el
+  replay idempotente devolvió el mismo ticket sin duplicarlo; tracking público
+  respondió 200 y la proyección de sesión mostró 1 reclamo, 1 geolocalizado,
+  1 evidencia y 1 punto de mapa.
+- Validación: 35/35 pruebas focales de reclamos/seguimiento/votación/métricas,
+  7/7 contratos de Preview y 1/1 E2E Chromium remoto. El frontend había pasado
+  además 81/81 pruebas focales, typecheck y build antes del deployment vigente.
+- Producción, Neon principal, DNS de `api.chatboc.ar` y Render permanecen sin
+  cambios. El canario anterior se ejecutó únicamente contra Preview/Neon QA.
+
 `chatboc.ar` ya se sirve desde Vercel, pero `api.chatboc.ar` continúa apuntando a
 Render. Un candidato de backend Vercel Production expuso dos gates P0 antes del
 corte: estaba conectado a PostgreSQL de Render por precedencia de variables y
@@ -31,10 +60,10 @@ remota completa con escritura controlada.
 | Inventario y aislamiento | Completa | Trabajo realizado en ramas/worktrees aislados; el DNS público de API continúa en Render. |
 | Neon QA | Completa | QA y principal permanecen sin promover. Neon principal: 171 tablas, 52.751 filas inventariadas y revisión `20260825_demo_survey_participation_v1`. La rama temporal `br-falling-wind-actm4mcu` fue creada desde principal para el ensayo final. |
 | Ensayo Neon de migraciones | Completa | Preflight inicial: 171 tablas, 52.751 filas, dos revisiones pendientes, 0/3 tickets reparados y tabla de idempotencia ausente. Preflight final: 172 tablas, misma suma de filas, revisión `20260825_chat_idempotency_v1`, 3/3 tickets reparados, tabla e índice presentes, `ready=true`. Principal fue reconsultada después y permaneció intacta. |
-| Backend Vercel Preview | Completa | Deployment `dpl_FJirKYFqLL1Sp4xLGVqEw8SEEYUW`, región `gru1`, estado `Ready`, construido desde el SHA exacto `a17e90a6be20069655dcf91d0e434a6a2e518291`. El alias `api-preview.chatboc.ar` fue verificado contra ese deployment. |
-| Frontend Vercel Preview | Completa | Deployment `dpl_7FVuJ3vZraWgqDHus13UAFb472cS`, estado `Ready`, SHA exacto `8db5f226317a08591096b491b3d8fb6b62dbfe8a`; el HTML del alias y de la URL inmutable tuvo el mismo SHA-256 (`8cbfb633092de660dfa0dec67e3270fe3db86dffddbfc21daf73d826e97cc4c5`) y cero referencias al backend de Producción. |
+| Backend Vercel Preview | Completa | Deployment `dpl_FEHGefYVJny3Hig3i7hLD22yF28D`, región `gru1`, estado `Ready`, SHA runtime exacto `94ff071fd95a2e1e7670837968e7a363f9c97bb4`; `api-preview.chatboc.ar`, `/api/version` y `/api/health` fueron verificados. |
+| Frontend Vercel Preview | Completa | Deployment `dpl_84riKfMqv3S2Z1sYgMZ8muZDZsaz`, estado `Ready`, SHA exacto `6b0f82801a5c111607e6e1d119f8dd0a88a8ef96`; el artefacto Preview conserva ocho rewrites hacia `api-preview.chatboc.ar` y cero referencias al backend de Producción. |
 | Demo ejecutiva y territorial | Completa en Preview | Contrato `demo.admin_preview.v1`; mapa MapLibre híbrido calor/puntos con escala y controles, panel ejecutivo de encuestas con líder/brecha/distribución/cortes soportados, KPIs reconciliados, disclosure sintético y responsive. La guía flotante fue retirada de `/demo` para no obstruir la presentación. |
-| Aceptación remota read-only | Completa | Contratos de versión/readiness/admin Preview, encuesta, resultados, sesión y menú pasaron por frontend y backend. Desktop y móvil quedaron sin errores de página ni respuestas HTTP `>=400`; en 390 px no hubo desborde horizontal. Axe reportó 0 violaciones automáticas; desktop CLS 0/FCP 96 ms/LCP 212 ms y móvil CLS 0/FCP 92 ms/LCP 224 ms. WhatsApp quedó comprobado hasta launcher/capacidades, sin enviar un mensaje real. |
+| Aceptación remota | Completa en Preview | Contratos de versión/readiness/admin Preview, encuesta, resultados, sesión y menú pasaron por frontend y backend. Desktop y móvil quedaron sin errores de página ni respuestas HTTP `>=400`; en 390 px no hubo desborde horizontal y WhatsApp abierto tuvo 0 violaciones axe. Un canario acotado comprobó reclamo -> idempotencia -> tracking -> KPI de sesión -> mapa. No se envió un mensaje WhatsApp real. |
 | Arranque en frío | Mejorado, todavía pendiente estructural | El primer health del deployment nuevo midió 14,24 s; tres requests activos midieron 0,48 s, 0,21 s y 0,38 s. Mejora respecto de ~16 s, pero todavía requiere precalentamiento para la reunión. |
 | Candidato Production | Revertido | `dpl_8AAiQbu1oWFZLLDyfFLcYfe4T5Z5` arrancó y respondió health, pero usó la base Render. Se revirtió al deployment anterior antes de cualquier corte de DNS. |
 | Seguridad de cron | Corregida en código/configuración futura | `VERCEL_OUTBOX_CRON_ENABLED=false` por defecto; 13 invocaciones del candidato finalizaron a las 08:11:15 UTC y no reaparecieron tras el rollback. WhatsApp quedó sin efectos; los efectos de encuesta requieren reconciliación antes del corte. |
