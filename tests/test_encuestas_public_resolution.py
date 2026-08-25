@@ -164,7 +164,7 @@ def test_public_demo_surveys_list_uses_seeded_contract(client):
     assert all(item["whatsapp_share_url"].startswith("https://wa.me/") for item in payload["items"])
 
 
-def test_junin_demo_heatmap_uses_junin_display_anchor():
+def test_junin_demo_heatmap_uses_canonical_junin_mendoza_anchor():
     payload = build_demo_live_results_payload(
         "demo-gobierno-junin-prioridades-barriales",
         public_base_url="https://www.chatboc.ar",
@@ -173,9 +173,19 @@ def test_junin_demo_heatmap_uses_junin_display_anchor():
     assert payload is not None
     points = payload["heatmap"]["points"]
     assert len(points) == 5
-    assert all(-34.64 <= point["lat"] <= -34.53 for point in points)
-    assert all(-61.01 <= point["lng"] <= -60.88 for point in points)
+    assert all(-33.19 <= point["lat"] <= -33.10 for point in points)
+    assert all(-68.54 <= point["lng"] <= -68.43 for point in points)
     assert payload["heatmap"]["source"] == "demo_seeded_responses"
+    assert payload["heatmap"]["jurisdiction"] == {
+        "contract_version": "demo.jurisdiction.v1",
+        "country": "Argentina",
+        "province": "Mendoza",
+        "municipality": "Junín",
+        "display_name": "Junín, Mendoza",
+        "center": {"lat": -33.144539, "lng": -68.485729},
+        "coordinate_reference": "WGS84",
+        "coordinate_source": "tenant_demo_profile",
+    }
     assert payload["heatmap"]["metadata"] == {
         "contract_version": "surveys.demo_seeding.v1",
         "source": "demo_seeded_responses",

@@ -128,6 +128,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertTrue(all(flag is False for flag in frontend_key_flags))
 
     def test_v2_demo_session_returns_workspace_contract(self):
+        self.app.config["PUBLIC_ENCUESTAS_CANONICAL_BASE_URL"] = (
+            "https://chatboc-r2-preview.vercel.app"
+        )
         owner = User(name="Demo Pyme", email="demo-pyme@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
         db.session.flush()
@@ -216,6 +219,14 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(((workspace.get("survey_voting") or {}).get("seed_policy") or {}).get("responses_per_item"), 100)
         self.assertEqual(len((workspace.get("survey_voting") or {}).get("items") or []), 5)
         self.assertTrue(all((item.get("seed") or {}).get("responses") == 100 for item in (workspace.get("survey_voting") or {}).get("items") or []))
+        self.assertTrue(
+            all(
+                (item.get("public_url") or "").startswith(
+                    "https://chatboc-r2-preview.vercel.app/e/"
+                )
+                for item in (workspace.get("survey_voting") or {}).get("items") or []
+            )
+        )
         self.assertTrue(any(action.get("action_id") == "mostrar_menu_encuestas" for action in workspace.get("primary_actions") or []))
         self.assertIn("/api/public/encuestas/v1/", (workspace.get("survey_voting") or {}).get("respond_endpoint") or "")
         self.assertIn("/api/public/encuestas/v1/", (workspace.get("survey_voting") or {}).get("results_endpoint") or "")

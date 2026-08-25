@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 import hashlib
 import ipaddress
 import json
@@ -1739,11 +1739,32 @@ def _openai_runtime_for_demo(sector: str, allowed_actions: list[dict[str, Any]])
     }
 
 
+def _demo_public_frontend_base_url() -> str:
+    """Resolve links for the deployment serving the current demo contract."""
+
+    raw = (
+        current_app.config.get("PUBLIC_ENCUESTAS_CANONICAL_BASE_URL")
+        or current_app.config.get("PUBLIC_ENCUESTAS_QR_TARGET_BASE_URL")
+        or current_app.config.get("PUBLIC_FRONTEND_URL")
+        or current_app.config.get("FRONTEND_URL")
+        or "https://www.chatboc.ar"
+    )
+    value = str(raw or "").strip().rstrip("/")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        current_app.logger.warning(
+            "Ignoring invalid public frontend base for demo survey links"
+        )
+        return "https://www.chatboc.ar"
+    return value
+
+
 def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector)
     demo_contract = build_demo_surveys_votings_contract(
         sector=normalized,
         tenant_slug=tenant_slug,
+        public_base_url=_demo_public_frontend_base_url(),
     )
     return {
         **demo_contract,

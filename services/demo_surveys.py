@@ -258,7 +258,8 @@ def _coordinate_base(sector: str, tenant_slug: str) -> tuple[float, float]:
     if normalized == "gobierno" and safe_tenant in {"junin", "junin-1"}:
         # Synthetic demo points must still render inside the municipality being
         # demonstrated. This is a display anchor, not a claim about real votes.
-        return -34.5889, -60.9462
+        # The canonical Junin demo is Junin, Mendoza (juninmendoza.gov.ar).
+        return -33.144539, -68.485729
     if normalized == "empresas":
         return -32.8895, -68.8458  # Mendoza Ciudad
     if normalized == "educacion":
@@ -266,6 +267,32 @@ def _coordinate_base(sector: str, tenant_slug: str) -> tuple[float, float]:
     # Generic synthetic anchor. Exact municipal coordinates require a
     # server-owned, verified jurisdiction profile and are not inferred here.
     return -34.6037, -58.3816
+
+
+def _demo_jurisdiction_metadata(sector: str, tenant_slug: str) -> dict[str, Any]:
+    normalized = normalize_demo_sector(sector)
+    safe_tenant = _slug_part(tenant_slug, fallback="")
+    if normalized == "gobierno" and safe_tenant in {"junin", "junin-1"}:
+        return {
+            "contract_version": "demo.jurisdiction.v1",
+            "country": "Argentina",
+            "province": "Mendoza",
+            "municipality": "Junín",
+            "display_name": "Junín, Mendoza",
+            "center": {"lat": -33.144539, "lng": -68.485729},
+            "coordinate_reference": "WGS84",
+            "coordinate_source": "tenant_demo_profile",
+        }
+    return {
+        "contract_version": "demo.jurisdiction.v1",
+        "country": "Argentina",
+        "province": None,
+        "municipality": None,
+        "display_name": "Escenario demostrativo",
+        "center": None,
+        "coordinate_reference": "WGS84",
+        "coordinate_source": "generic_demo_anchor",
+    }
 
 
 def _demo_public_state(*, is_live_vote: bool = True) -> dict[str, Any]:
@@ -771,6 +798,7 @@ def build_demo_live_results_payload(
         "heatmap": {
             "points": heatmap_points,
             "source": "demo_seeded_responses",
+            "jurisdiction": _demo_jurisdiction_metadata(sector, tenant_slug),
             "metadata": {
                 "contract_version": "surveys.demo_seeding.v1",
                 "source": "demo_seeded_responses",
