@@ -1,11 +1,23 @@
 # services/qdrant_utils.py
+from __future__ import annotations
+
 import os
-from qdrant_client import QdrantClient, models
 import logging
-from typing import Optional
+from typing import Any, Optional
+
+from utils.lazy_module import LazyModule
+
+_qdrant_sdk = LazyModule("qdrant_client")
+models = LazyModule("qdrant_client.models")
+
+
+def QdrantClient(*args, **kwargs):
+    """Compatibility constructor that imports the SDK only on first use."""
+
+    return _qdrant_sdk.QdrantClient(*args, **kwargs)
 
 logger = logging.getLogger(__name__)
-qdrant_client_instance: Optional[QdrantClient] = None
+qdrant_client_instance: Optional[Any] = None
 
 
 def _flag_enabled(value: object) -> bool:
@@ -29,7 +41,7 @@ def _qdrant_network_allowed() -> bool:
         or _flag_enabled(os.getenv("QDRANT_ALLOW_NETWORK_IN_TESTS"))
     )
 
-def get_qdrant_client() -> Optional[QdrantClient]:
+def get_qdrant_client() -> Optional[Any]:
     """Devuelve una instancia singleton de ``QdrantClient``."""
 
     global qdrant_client_instance
@@ -128,7 +140,7 @@ def verificar_y_crear_coleccion_qdrant(
         return False
 
 
-def _verificar_y_crear_indices_default(client: QdrantClient, collection_name: str) -> None:
+def _verificar_y_crear_indices_default(client: Any, collection_name: str) -> None:
     """Crea los índices requeridos para las consultas.
 
     Asegura los campos para filtros:

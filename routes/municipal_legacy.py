@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 import os
 import unicodedata
 from io import BytesIO
 import importlib.util
 from typing import Any, Iterator, Pattern, Union
 
-import pandas as pd
 from flask import Blueprint, jsonify, request, current_app, send_file, g
 from utils.auth_helpers import token_requerido, admin_o_empleado_requerido
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,9 @@ from routes.tramites import listar_tramites, obtener_tramite
 from sqlalchemy import func, or_
 from models import Categoria, Conversacion, MunicipioTicket, MunicipioPost, User, db, TenantProfile
 from utils.municipio_utils import get_numeric_municipio_id
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 from routes.ticket import TICKET_ALLOWED_STATES
 from services.encuestas_service import list_public_encuestas_for_tenant, serialize_public_encuesta
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS

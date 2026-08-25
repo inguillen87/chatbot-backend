@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import hashlib
 import logging
@@ -10,12 +12,14 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
-import pandas as pd
 from flask import Blueprint, jsonify, request, session, g
 from flask_cors import cross_origin
 from sqlalchemy import func
 from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 from database import db
 from models import ArchivoAdjunto, CatalogoItem, MunicipioTicket, PedidoConversacional, TenantTicket, TicketComentario

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import hashlib
 import hmac
@@ -11,7 +13,6 @@ from typing import Any, Dict, Optional
 
 import httpx
 from flask import current_app, has_app_context
-from openai import OpenAI
 
 from services.llm_provider_network_policy import llm_provider_network_allowed
 
@@ -19,8 +20,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OPENAI_VISION_MODEL = "gpt-5.6-sol"
 _CLIENT_LOCK = threading.Lock()
-_OPENAI_CLIENT: Optional[OpenAI] = None
+_OPENAI_CLIENT: Optional[Any] = None
 _OPENAI_CLIENT_KEY_DIGEST: Optional[str] = None
+
+
+def OpenAI(*args: Any, **kwargs: Any) -> Any:
+    """Compatibility constructor that defers importing the provider SDK."""
+
+    from openai import OpenAI as OpenAIClient
+
+    return OpenAIClient(*args, **kwargs)
 
 
 class OpenAIAmbiguousVisionFailure(RuntimeError):
@@ -94,7 +103,7 @@ def _openai_model(default_model: str = DEFAULT_OPENAI_VISION_MODEL) -> str:
     )
 
 
-def _get_openai_client() -> OpenAI:
+def _get_openai_client() -> Any:
     """Build the SDK client lazily after Flask/dotenv configuration is loaded."""
 
     if not llm_provider_network_allowed("openai"):

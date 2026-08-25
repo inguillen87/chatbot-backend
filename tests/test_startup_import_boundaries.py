@@ -175,6 +175,71 @@ def test_app_factory_keeps_document_ai_and_spacy_out_of_startup():
     assert probe.returncode == 0, probe.stderr
 
 
+def test_app_factory_keeps_optional_provider_sdks_out_of_startup():
+    probe = _run_import_probe(
+        "import sys; from app import create_app; from config import TestingConfig; "
+        "app = create_app(TestingConfig); assert app.testing; "
+        "targets = ('openai', 'pandas', 'qdrant_client', 'cohere', "
+        "'google.cloud.documentai', 'google.cloud.documentai_v1', "
+        "'google.cloud.vision'); "
+        "loaded = lambda target: any(name == target or name.startswith(target + '.') "
+        "for name in sys.modules); "
+        "assert all(not loaded(target) for target in targets)",
+        flask_env="testing",
+        timeout=45,
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_upload_processor_defers_optional_processing_stack_until_first_use():
+    probe = _run_import_probe(
+        "import sys; import services.upload_processor; "
+        "targets = ('openai', 'pandas', 'qdrant_client', 'cohere', "
+        "'google.cloud.documentai', 'google.cloud.documentai_v1', "
+        "'google.cloud.vision'); "
+        "loaded = lambda target: any(name == target or name.startswith(target + '.') "
+        "for name in sys.modules); "
+        "assert all(not loaded(target) for target in targets); "
+        "assert 'services.document_processing_service' not in sys.modules; "
+        "assert 'services.vision_fallback_service' not in sys.modules; "
+        "assert 'services.catalog.registry' not in sys.modules; "
+        "assert 'services.qdrant_search' not in sys.modules"
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_lazy_module_loads_dependency_on_first_attribute_use():
+    probe = _run_import_probe(
+        "import sys; sys.modules.pop('fractions', None); "
+        "from utils.lazy_module import LazyModule; "
+        "fractions = LazyModule('fractions'); "
+        "assert 'fractions' not in sys.modules; "
+        "assert fractions.Fraction(1, 2).numerator == 1; "
+        "assert 'fractions' in sys.modules"
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_llm_utils_legacy_document_export_loads_document_ai_only_on_demand():
+    probe = _run_import_probe(
+        "import sys; import services.llm_utils as llm_utils; "
+        "loaded = lambda target: any(name == target or name.startswith(target + '.') "
+        "for name in sys.modules); "
+        "assert not loaded('google.cloud.documentai'); "
+        "assert not loaded('google.cloud.documentai_v1'); "
+        "from services.llm_utils import Document; "
+        "assert Document is llm_utils.documentai.Document; "
+        "assert loaded('google.cloud.documentai'); "
+        "assert loaded('google.cloud.documentai_v1')"
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_logic_keeps_legacy_rubro_exports():
     probe = _run_import_probe(
         "from services import logic; from services import rubro_classification as leaf; "

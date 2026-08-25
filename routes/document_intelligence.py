@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 import io
 import logging
 import re
 import uuid
 from typing import Any, List, Optional
 
-import pandas as pd
 import pdfplumber
 from flask import Blueprint, jsonify, request
 
@@ -19,6 +20,9 @@ from services.vision_fallback_service import (
     analyze_image_text,
     analyze_text_structured,
 )
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 logger = logging.getLogger(__name__)
 

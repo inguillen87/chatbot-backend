@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from types import SimpleNamespace
 import os
@@ -8,10 +10,12 @@ from .qdrant_utils import get_qdrant_client, verificar_y_crear_coleccion_qdrant
 from .embedding_service import embed_textos_llm as embed_textos
 
 # from collections import Counter # Ya está importado arriba
-from qdrant_client.http import models as qdrant_models
 from models import CatalogoItem, db
 from .common_utils import limpiar_texto_base, unir_codigos_alfa_numericos # Changed from .utils
 from .herramientas_municipio import normalizar_texto
+from utils.lazy_module import LazyModule
+
+qdrant_models = LazyModule("qdrant_client.http.models")
 
 # Permite ajustar el número de resultados devueltos desde una variable de entorno.
 DEFAULT_SEARCH_LIMIT = int(os.getenv("CATALOGO_RESULT_LIMIT", "5"))

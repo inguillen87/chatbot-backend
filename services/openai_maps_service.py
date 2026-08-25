@@ -4,7 +4,6 @@ import logging
 from typing import Iterable, Mapping
 
 import httpx
-import openai
 
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TERRA_MODEL,
@@ -12,6 +11,9 @@ from services.openai_model_defaults import (
     resolve_openai_model,
 )
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from utils.lazy_module import LazyModule
+
+openai = LazyModule("openai")
 
 logger = logging.getLogger(__name__)
 
