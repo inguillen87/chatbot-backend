@@ -547,6 +547,30 @@ def _existing_attachment(
     ).first()
 
 
+def _locked_discard_attachment(
+    *,
+    claims: dict[str, Any],
+    scope: DirectUploadScope,
+) -> ArchivoAdjunto | None:
+    """Lock the one attachment row that this signed upload intent can own."""
+
+    query = ArchivoAdjunto.query.filter_by(
+        url=claims["final_key"],
+        tipo="chat_adjunto",
+        user_id=scope.attachment_user_id,
+        session_id=scope.session_id,
+    ).with_for_update()
+    matches = query.limit(2).all()
+    if len(matches) > 1:
+        raise DirectAttachmentUploadError(
+            "direct_upload_state_conflict",
+            "La carga directa tiene un estado persistido ambiguo.",
+            409,
+            retryable=False,
+        )
+    return matches[0] if matches else None
+
+
 def _acquire_completion_lock(upload_id: object) -> None:
     """Serialize completion for one intent across Vercel instances on Postgres."""
 
@@ -611,6 +635,148 @@ def _raise_object_storage_unavailable(exc: Exception) -> NoReturn:
         retryable=True,
         retry_after_seconds=OBJECT_STORAGE_RETRY_AFTER_SECONDS,
     ) from exc
+
+
+def _discard_object_presence(storage: R2Service, key: object) -> bool:
+    """Return definitive object presence, failing closed on an ambiguous HEAD."""
+
+    try:
+        return storage.head_object(str(key)) is not None
+    except R2ObjectStorageUnavailableError as exc:
+        _raise_object_storage_unavailable(exc)
+
+
+def _delete_and_confirm_object_absent(storage: R2Service, key: object) -> None:
+    """Delete one exact signed key and require a definitive absent HEAD."""
+
+    normalized_key = str(key or "").strip()
+    if not normalized_key:
+        raise DirectAttachmentUploadError(
+            "invalid_upload_intent",
+            "La intencion de carga no es valida.",
+            400,
+            retryable=False,
+        )
+
+    try:
+        storage.delete_object(normalized_key)
+    except Exception:
+        # R2Service normally converts DELETE failures into False.  A custom
+        # implementation may still raise; the authoritative follow-up HEAD
+        # below decides whether retrying is necessary.
+        current_app.logger.exception(
+            "[direct-upload] Object DELETE raised during signed discard"
+        )
+
+    try:
+        remaining = storage.head_object(normalized_key)
+    except R2ObjectStorageUnavailableError as exc:
+        _raise_object_storage_unavailable(exc)
+    if remaining is not None:
+        db.session.rollback()
+        raise DirectAttachmentUploadError(
+            "object_discard_temporarily_unavailable",
+            "No se pudo confirmar la eliminacion del adjunto en R2.",
+            503,
+            retryable=True,
+            retry_after_seconds=OBJECT_STORAGE_RETRY_AFTER_SECONDS,
+        )
+
+
+def discard_direct_attachment_upload(
+    payload: dict[str, Any],
+    *,
+    scope: DirectUploadScope,
+    storage: R2Service | None = None,
+) -> dict[str, Any]:
+    """Discard one signed direct upload without deleting consumed evidence.
+
+    The same intent token, authoritative tenant/session scope and Postgres
+    advisory lock used by completion identify the only row and R2 keys this
+    operation may remove.  R2 absence is established before deleting the DB
+    row, so an inconclusive storage failure leaves a retryable durable record.
+    """
+
+    storage = storage or r2_service
+    if not storage.is_configured:
+        raise DirectAttachmentUploadError(
+            "object_storage_unavailable",
+            "El almacenamiento de adjuntos no esta disponible temporalmente.",
+            503,
+        )
+
+    claims = _token_claims(payload.get("intent_token"))
+    _assert_scope_matches(scope, claims)
+    _acquire_completion_lock(claims.get("upload_id"))
+    attachment = _locked_discard_attachment(claims=claims, scope=scope)
+    if attachment is not None and (
+        attachment.municipio_ticket_id is not None
+        or attachment.pyme_ticket_id is not None
+        or getattr(attachment, "comentario_asociado", None) is not None
+    ):
+        db.session.rollback()
+        raise DirectAttachmentUploadError(
+            "attachment_already_associated",
+            "El adjunto ya esta asociado a un ticket y no puede descartarse.",
+            409,
+            retryable=False,
+        )
+
+    temporary_was_present = _discard_object_presence(
+        storage,
+        claims["temporary_key"],
+    )
+    final_was_present = _discard_object_presence(storage, claims["final_key"])
+
+    # Always issue both deletes, even after an absent preflight HEAD, to close
+    # the practical race window with a PUT that was already in flight.
+    _delete_and_confirm_object_absent(storage, claims["temporary_key"])
+    _delete_and_confirm_object_absent(storage, claims["final_key"])
+
+    attachment_was_present = attachment is not None
+    if attachment is not None:
+        try:
+            db.session.delete(attachment)
+            db.session.commit()
+        except Exception as exc:
+            db.session.rollback()
+            raise DirectAttachmentUploadError(
+                "attachment_discard_persistence_failed",
+                "No se pudo confirmar la eliminacion del registro del adjunto.",
+                503,
+                retryable=True,
+                retry_after_seconds=OBJECT_STORAGE_RETRY_AFTER_SECONDS,
+            ) from exc
+    else:
+        db.session.commit()
+
+    persisted = _locked_discard_attachment(claims=claims, scope=scope)
+    if persisted is not None:
+        db.session.rollback()
+        raise DirectAttachmentUploadError(
+            "attachment_discard_persistence_failed",
+            "No se pudo confirmar la eliminacion del registro del adjunto.",
+            503,
+            retryable=True,
+            retry_after_seconds=OBJECT_STORAGE_RETRY_AFTER_SECONDS,
+        )
+    db.session.commit()
+
+    return {
+        "ok": True,
+        "contract_version": DIRECT_UPLOAD_CONTRACT_VERSION,
+        "operation": "discard_direct_upload",
+        "idempotent": not (
+            attachment_was_present
+            or temporary_was_present
+            or final_was_present
+        ),
+        "absence_confirmed": {
+            "database": True,
+            "temporary_object": True,
+            "final_object": True,
+        },
+    }
 
 
 def complete_direct_attachment_upload(

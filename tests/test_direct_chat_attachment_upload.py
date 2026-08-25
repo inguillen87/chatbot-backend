@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from io import BytesIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -8,10 +9,12 @@ from botocore.exceptions import ClientError
 
 from app import create_app, db
 from config import Config
-from models import ArchivoAdjunto, TenantProfile, User
+from models import ArchivoAdjunto, MunicipioTicket, TenantProfile, User
 from routes import archivos as archivos_route
+from routes.v2.tenants import create_demo_session_token
 from services import direct_attachment_upload
 from services.r2_service import R2ObjectStorageUnavailableError, R2Service
+from utils.demo_session import stable_demo_chat_session_id
 
 
 class TestConfig(Config):
@@ -46,6 +49,14 @@ class _InMemoryR2Client:
 
     def head_object(self, *, Bucket, Key):
         del Bucket
+        if Key not in self.objects:
+            raise ClientError(
+                {
+                    "Error": {"Code": "NoSuchKey"},
+                    "ResponseMetadata": {"HTTPStatusCode": 404},
+                },
+                "HeadObject",
+            )
         self.objects[Key].setdefault("ETag", f'"etag-{Key}"')
         return dict(self.objects[Key])
 
@@ -112,6 +123,7 @@ class TestDirectChatAttachmentUpload:
             nombre="Municipio Direct",
             tipo="municipio",
             municipio_id=self.owner.id,
+            configuracion={"public_demo_uploads_enabled": True},
         )
         db.session.add(self.tenant)
         db.session.commit()
@@ -172,6 +184,152 @@ class TestDirectChatAttachmentUpload:
         }
         response = self._post(payload)
         return response, response.get_json()
+
+    def _complete_upload_for_discard(self):
+        _, prepared = self._prepare()
+        temporary_key = self.storage_client.presigned_calls[-1]["params"]["Key"]
+        self.storage_client.objects[temporary_key] = {
+            "ContentLength": 4,
+            "ContentType": "image/png",
+            "ETag": '"original-etag"',
+        }
+        complete_response = self._post(
+            {
+                "operation": "complete_direct_upload",
+                "intent_token": prepared["intent_token"],
+            }
+        )
+        assert complete_response.status_code == 200
+        final_key = self.storage_client.copy_calls[-1]["Key"]
+        return prepared, temporary_key, final_key, ArchivoAdjunto.query.one()
+
+    def test_discard_removes_exact_row_and_both_objects_then_replays_idempotently(self):
+        prepared, temporary_key, final_key, attachment = (
+            self._complete_upload_for_discard()
+        )
+        attachment_id = attachment.id
+        # A late PUT using the still-live presigned URL must be removed too.
+        self.storage_client.objects[temporary_key] = {
+            "ContentLength": 4,
+            "ContentType": "image/png",
+            "ETag": '"late-put-etag"',
+        }
+        discard_payload = {
+            "operation": "discard_direct_upload",
+            "intent_token": prepared["intent_token"],
+        }
+
+        response = self._post(discard_payload)
+        payload = response.get_json()
+
+        assert response.status_code == 200
+        assert payload["operation"] == "discard_direct_upload"
+        assert payload["idempotent"] is False
+        assert payload["absence_confirmed"] == {
+            "database": True,
+            "temporary_object": True,
+            "final_object": True,
+        }
+        assert db.session.get(ArchivoAdjunto, attachment_id) is None
+        assert temporary_key not in self.storage_client.objects
+        assert final_key not in self.storage_client.objects
+
+        replay_response = self._post(discard_payload)
+        replay = replay_response.get_json()
+
+        assert replay_response.status_code == 200
+        assert replay["idempotent"] is True
+        assert replay["absence_confirmed"] == payload["absence_confirmed"]
+        assert ArchivoAdjunto.query.count() == 0
+
+    def test_discard_rejects_cross_session_scope_before_db_or_r2_mutation(self):
+        prepared, temporary_key, final_key, attachment = (
+            self._complete_upload_for_discard()
+        )
+        delete_count = len(self.storage_client.delete_calls)
+
+        response = self._post(
+            {
+                "operation": "discard_direct_upload",
+                "intent_token": prepared["intent_token"],
+            },
+            session_id="different-chat-session",
+        )
+
+        assert response.status_code == 409
+        assert response.get_json()["code"] == "upload_scope_mismatch"
+        assert db.session.get(ArchivoAdjunto, attachment.id) is not None
+        assert final_key in self.storage_client.objects
+        assert temporary_key not in self.storage_client.objects
+        assert len(self.storage_client.delete_calls) == delete_count
+
+    def test_discard_rejects_an_attachment_already_associated_to_a_ticket(self):
+        prepared, _, final_key, attachment = self._complete_upload_for_discard()
+        ticket = MunicipioTicket(
+            pregunta="Reclamo con evidencia",
+            municipio_id=self.owner.id,
+            tenant_id=self.tenant.id,
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        attachment.municipio_ticket_id = ticket.id
+        db.session.commit()
+        delete_count = len(self.storage_client.delete_calls)
+
+        response = self._post(
+            {
+                "operation": "discard_direct_upload",
+                "intent_token": prepared["intent_token"],
+            }
+        )
+
+        payload = response.get_json()
+        assert response.status_code == 409
+        assert payload["code"] == "attachment_already_associated"
+        assert payload["retryable"] is False
+        assert db.session.get(ArchivoAdjunto, attachment.id) is not None
+        assert final_key in self.storage_client.objects
+        assert len(self.storage_client.delete_calls) == delete_count
+
+    def test_discard_keeps_db_row_on_r2_failure_and_retry_finishes_cleanup(self):
+        prepared, _, final_key, attachment = self._complete_upload_for_discard()
+        attachment_id = attachment.id
+        real_delete = self.storage.delete_object
+        failed = False
+
+        def fail_final_delete_once(key):
+            nonlocal failed
+            if key == final_key and not failed:
+                failed = True
+                return False
+            return real_delete(key)
+
+        discard_payload = {
+            "operation": "discard_direct_upload",
+            "intent_token": prepared["intent_token"],
+        }
+        with patch.object(
+            self.storage,
+            "delete_object",
+            side_effect=fail_final_delete_once,
+        ):
+            failed_response = self._post(discard_payload)
+
+        failed_payload = failed_response.get_json()
+        assert failed_response.status_code == 503
+        assert failed_payload["code"] == "object_discard_temporarily_unavailable"
+        assert failed_payload["retryable"] is True
+        assert failed_response.headers["Retry-After"] == "5"
+        assert db.session.get(ArchivoAdjunto, attachment_id) is not None
+        assert final_key in self.storage_client.objects
+
+        retry_response = self._post(discard_payload)
+        retry_payload = retry_response.get_json()
+
+        assert retry_response.status_code == 200
+        assert retry_payload["idempotent"] is False
+        assert db.session.get(ArchivoAdjunto, attachment_id) is None
+        assert final_key not in self.storage_client.objects
 
     def test_prepare_and_complete_are_scoped_and_completion_is_idempotent(self):
         prepare_response, prepared = self._prepare()
@@ -254,6 +412,313 @@ class TestDirectChatAttachmentUpload:
         assert payload["operation"] == "prepare_direct_upload"
         assert payload["upload"]["headers"] == {"Content-Type": "image/png"}
         assert response.headers["X-Anon-Id"] == "anonymous-direct-http"
+
+    def _post_public_demo_prepare(
+        self,
+        demo_session_id: str,
+        *,
+        tenant_slug: str | None = None,
+        chat_session_id: str | None = None,
+    ):
+        return self._post_public_demo(
+            {
+                "operation": "prepare_direct_upload",
+                "filename": "evidencia-demo.png",
+                "mime_type": "image/png",
+                "size_bytes": 4,
+            },
+            demo_session_id,
+            tenant_slug=tenant_slug,
+            chat_session_id=chat_session_id,
+        )
+
+    def _post_public_demo(
+        self,
+        payload: dict,
+        demo_session_id: str,
+        *,
+        tenant_slug: str | None = None,
+        chat_session_id: str | None = None,
+    ):
+        headers = {
+            "X-Anon-Id": "anonymous-demo-upload",
+            "X-Demo-Session-Id": demo_session_id,
+            "X-Chat-Session-Id": chat_session_id
+            or stable_demo_chat_session_id(demo_session_id),
+        }
+        if tenant_slug is not None:
+            headers["X-Tenant-Slug"] = tenant_slug
+        with patch(
+            "services.direct_attachment_upload.r2_service",
+            self.storage,
+        ), patch(
+            "services.attachment_delivery.r2_service",
+            self.storage,
+        ):
+            return self.app.test_client().post(
+                "/archivos/upload/chat_attachment",
+                json=payload,
+                headers=headers,
+            )
+
+    def test_prepare_accepts_a_signed_public_demo_session_bound_to_tenant_and_chat(self):
+        demo_session_id = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="municipio",
+        )
+
+        response = self._post_public_demo_prepare(
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+        )
+
+        payload = response.get_json()
+        assert response.status_code == 200
+        assert payload["operation"] == "prepare_direct_upload"
+        assert payload["upload"]["headers"] == {"Content-Type": "image/png"}
+        assert response.headers["X-Anon-Id"] == "anonymous-demo-upload"
+
+    def test_signed_public_demo_prepare_complete_and_replay_keep_the_same_scope(self):
+        demo_session_id = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="municipio",
+        )
+        chat_session_id = stable_demo_chat_session_id(demo_session_id)
+        prepare_response = self._post_public_demo_prepare(
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id=chat_session_id,
+        )
+        prepared = prepare_response.get_json()
+        temporary_key = self.storage_client.presigned_calls[-1]["params"]["Key"]
+        self.storage_client.objects[temporary_key] = {
+            "ContentLength": 4,
+            "ContentType": "image/png",
+        }
+        complete_payload = {
+            "operation": "complete_direct_upload",
+            "intent_token": prepared["intent_token"],
+        }
+
+        completed_response = self._post_public_demo(
+            complete_payload,
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id=chat_session_id,
+        )
+        replay_response = self._post_public_demo(
+            complete_payload,
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id=chat_session_id,
+        )
+
+        completed = completed_response.get_json()
+        replay = replay_response.get_json()
+        assert completed_response.status_code == 200
+        assert replay_response.status_code == 200
+        assert completed["idempotent"] is False
+        assert replay["idempotent"] is True
+        assert replay["attachmentInfo"]["id"] == completed["attachmentInfo"]["id"]
+        attachment = ArchivoAdjunto.query.one()
+        assert attachment.user_id == self.owner.id
+        assert attachment.session_id == chat_session_id
+
+        renewed_demo_session = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="municipio",
+        )
+        renewed_response = self._post_public_demo(
+            complete_payload,
+            renewed_demo_session,
+            tenant_slug=self.tenant.slug,
+        )
+        assert renewed_response.status_code == 409
+        assert renewed_response.get_json()["code"] == "upload_scope_mismatch"
+        assert ArchivoAdjunto.query.count() == 1
+
+    def test_signed_public_demo_can_discard_its_completed_upload_and_replay(self):
+        demo_session_id = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="municipio",
+        )
+        chat_session_id = stable_demo_chat_session_id(demo_session_id)
+        prepared_response = self._post_public_demo_prepare(
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id=chat_session_id,
+        )
+        prepared = prepared_response.get_json()
+        temporary_key = self.storage_client.presigned_calls[-1]["params"]["Key"]
+        self.storage_client.objects[temporary_key] = {
+            "ContentLength": 4,
+            "ContentType": "image/png",
+            "ETag": '"demo-etag"',
+        }
+        complete_response = self._post_public_demo(
+            {
+                "operation": "complete_direct_upload",
+                "intent_token": prepared["intent_token"],
+            },
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id=chat_session_id,
+        )
+        assert complete_response.status_code == 200
+        final_key = self.storage_client.copy_calls[-1]["Key"]
+        discard_payload = {
+            "operation": "discard_direct_upload",
+            "intent_token": prepared["intent_token"],
+        }
+
+        discarded_response = self._post_public_demo(
+            discard_payload,
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id=chat_session_id,
+        )
+        replay_response = self._post_public_demo(
+            discard_payload,
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id=chat_session_id,
+        )
+
+        assert discarded_response.status_code == 200
+        assert discarded_response.get_json()["idempotent"] is False
+        assert replay_response.status_code == 200
+        assert replay_response.get_json()["idempotent"] is True
+        assert ArchivoAdjunto.query.count() == 0
+        assert temporary_key not in self.storage_client.objects
+        assert final_key not in self.storage_client.objects
+
+    def test_signed_demo_upload_is_rejected_for_an_active_non_demo_tenant(self):
+        production_owner = User(
+            rol="admin",
+            name="Municipio Productivo",
+            email="production-upload@example.test",
+            password_hash="hash",
+            tipo_chat="municipio",
+        )
+        db.session.add(production_owner)
+        db.session.flush()
+        production_tenant = TenantProfile(
+            slug="municipio-productivo",
+            nombre="Municipio Productivo",
+            tipo="municipio",
+            municipio_id=production_owner.id,
+            is_active=True,
+            configuracion={},
+        )
+        db.session.add(production_tenant)
+        db.session.commit()
+        demo_session_id = create_demo_session_token(
+            tenant_slug=production_tenant.slug,
+            sector="gobierno",
+            rubro="municipio",
+        )
+
+        response = self._post_public_demo_prepare(
+            demo_session_id,
+            tenant_slug=production_tenant.slug,
+        )
+
+        assert response.status_code == 403
+        assert response.get_json()["code"] == "demo_upload_not_allowed"
+        assert self.storage_client.presigned_calls == []
+
+    def test_signed_public_demo_multipart_upload_resolves_the_same_owner(self):
+        demo_session_id = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="municipio",
+        )
+        chat_session_id = stable_demo_chat_session_id(demo_session_id)
+        attachment = SimpleNamespace(
+            id=404,
+            url="/static/uploads/evidencia-demo.png",
+            mime="image/png",
+            tamano=4,
+            nombre_original="evidencia-demo.png",
+            filename="evidencia-demo.png",
+        )
+        headers = {
+            "X-Anon-Id": "anonymous-demo-multipart",
+            "X-Demo-Session-Id": demo_session_id,
+            "X-Chat-Session-Id": chat_session_id,
+            "X-Tenant-Slug": self.tenant.slug,
+        }
+        with patch(
+            "routes.archivos.create_attachment_with_thumbnail",
+            return_value=attachment,
+        ) as create_attachment_mock:
+            response = self.app.test_client().post(
+                "/archivos/upload/chat_attachment",
+                data={"file": (BytesIO(b"fake"), "evidencia-demo.png", "image/png")},
+                content_type="multipart/form-data",
+                headers=headers,
+            )
+
+        assert response.status_code == 200
+        create_attachment_mock.assert_called_once()
+        call_kwargs = create_attachment_mock.call_args.kwargs
+        assert call_kwargs["user_id"] == self.owner.id
+        assert call_kwargs["session_id"] == chat_session_id
+        assert call_kwargs["file_storage"].filename == "evidencia-demo.png"
+
+    def test_prepare_rejects_demo_tenant_or_chat_session_mismatch_before_r2(self):
+        demo_session_id = create_demo_session_token(
+            tenant_slug=self.tenant.slug,
+            sector="gobierno",
+            rubro="municipio",
+        )
+
+        foreign_tenant_response = self._post_public_demo_prepare(
+            demo_session_id,
+            tenant_slug="otro-municipio",
+        )
+        foreign_chat_response = self._post_public_demo_prepare(
+            demo_session_id,
+            tenant_slug=self.tenant.slug,
+            chat_session_id="sid_tampered_ñ",
+        )
+
+        assert foreign_tenant_response.status_code == 409
+        assert foreign_tenant_response.get_json()["code"] == "upload_scope_mismatch"
+        assert foreign_chat_response.status_code == 409
+        assert foreign_chat_response.get_json()["code"] == "upload_scope_mismatch"
+        assert self.storage_client.presigned_calls == []
+
+    def test_prepare_rejects_an_invalid_demo_session_and_tenant_header_alone(self):
+        invalid_response = self._post_public_demo_prepare(
+            "invalid-demo-token",
+            tenant_slug=self.tenant.slug,
+            chat_session_id="sid_invalid",
+        )
+        tenant_only_response = self.app.test_client().post(
+            "/archivos/upload/chat_attachment",
+            json={
+                "operation": "prepare_direct_upload",
+                "filename": "evidencia-demo.png",
+                "mime_type": "image/png",
+                "size_bytes": 4,
+            },
+            headers={
+                "X-Anon-Id": "anonymous-tenant-only",
+                "X-Tenant-Slug": self.tenant.slug,
+                "X-Chat-Session-Id": "chat-tenant-only",
+            },
+        )
+
+        assert invalid_response.status_code == 403
+        assert invalid_response.get_json()["code"] == "demo_session_expired"
+        assert tenant_only_response.status_code == 403
+        assert tenant_only_response.get_json()["code"] == "tenant_scope_required"
+        assert self.storage_client.presigned_calls == []
 
     def test_complete_rejects_a_different_chat_session_before_r2_calls(self):
         _, prepared = self._prepare()

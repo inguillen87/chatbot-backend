@@ -1851,6 +1851,9 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertIn("request_id", payload)
 
     def test_demo_chat_alias_returns_chat_response_contract_with_lead_shape(self):
+        from routes.v2.tenants import create_demo_session_token
+        from utils.demo_session import stable_demo_chat_session_id
+
         owner = User(name="Colegio Demo", email="colegio-chat-contract@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
         db.session.flush()
@@ -1871,6 +1874,12 @@ class ApiV2FoundationTest(unittest.TestCase):
             "botones": [{"texto": "Ver seguimiento", "action_id": "tracking"}],
             "ticket_id": 456,
         }
+        demo_session_id = create_demo_session_token(
+            tenant_slug="colegio-demo",
+            sector="educacion",
+            rubro="colegios",
+        )
+        chat_session_id = stable_demo_chat_session_id(demo_session_id)
         with patch("services.pymes.responder_pyme", return_value=backend_payload):
             resp = self.client.post(
                 "/api/ask/pyme?tenant_slug=colegio-demo",
@@ -1882,8 +1891,8 @@ class ApiV2FoundationTest(unittest.TestCase):
                 },
                 headers={
                     "Origin": "https://www.chatboc.ar",
-                    "X-Chat-Session-Id": "demo-chat-contract-1",
-                    "X-Demo-Session-Id": "demo-chat-contract-1",
+                    "X-Chat-Session-Id": chat_session_id,
+                    "X-Demo-Session-Id": demo_session_id,
                     "X-Tenant-Slug": "colegio-demo",
                     "X-Request-Id": "chat-contract-1",
                 },
@@ -1894,7 +1903,7 @@ class ApiV2FoundationTest(unittest.TestCase):
         payload = resp.get_json()
         self.assertEqual(payload.get("contract_version"), "chat.response.v1")
         self.assertEqual(payload.get("request_id"), "chat-contract-1")
-        self.assertEqual(payload.get("conversation_id"), "demo-chat-contract-1")
+        self.assertEqual(payload.get("conversation_id"), chat_session_id)
         self.assertEqual(payload.get("message"), "Perfecto, dejo el caso preparado para secretaria.")
         self.assertIsInstance(payload.get("messages"), list)
         self.assertEqual((payload.get("lead") or {}).get("ticket_id"), 456)
