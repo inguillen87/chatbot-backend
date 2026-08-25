@@ -234,17 +234,6 @@ class ApiV2FoundationTest(unittest.TestCase):
             self.assertEqual(session_response.status_code, 200, scope)
             self.assertEqual(session_response.get_json().get("tenant_slug"), tenant.slug)
 
-        legacy_alias_response = self.client.post(
-            "/api/v2/demo/session",
-            json={
-                "sector": "educacion",
-                "tenant_slug": "colegio-demo",
-                "response_profile": "widget",
-            },
-        )
-        self.assertEqual(legacy_alias_response.status_code, 200)
-        self.assertEqual(legacy_alias_response.get_json().get("tenant_slug"), tenant.slug)
-
         for wrong_tenant_slug in ("unknown-school", "bodega", "municipio"):
             wrong_slug_response = self.client.post(
                 "/api/v2/demo/session",
@@ -275,6 +264,40 @@ class ApiV2FoundationTest(unittest.TestCase):
                 mismatched_response.get_json().get("reason_code"),
                 "validation_error",
             )
+
+    def test_v2_demo_session_legacy_education_alias_resolves_real_active_tenant(self):
+        owner = User(
+            name="Colegio Alias Target",
+            email="catalog-education-alias@test.com",
+            password_hash="hash",
+            tipo_chat="pyme",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="education-alias-target",
+            nombre="Colegio Alias Target",
+            tipo="pyme",
+            pyme_id=owner.id,
+            is_active=True,
+            vertical="educacion",
+            capabilities_json={"education": {"enabled": True}},
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/v2/demo/session",
+            json={
+                "sector": "educacion",
+                "tenant_slug": "colegio-demo",
+                "response_profile": "widget",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json().get("tenant_slug"), tenant.slug)
+        self.assertIsNone(TenantProfile.query.filter_by(slug="colegio-demo").first())
 
     def test_v2_demo_catalog_marks_education_unavailable_without_active_education_tenant(self):
         business_owner = User(

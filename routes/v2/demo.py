@@ -1304,8 +1304,15 @@ def _active_education_tenant_for_demo_slug(tenant_slug: str) -> TenantProfile | 
 
 
 def _is_education_demo_alias(value: Any) -> bool:
-    slug = _payload_slug(value)
-    return slug in {"colegio_demo", "colegios", "colegio", "educacion"} or sector_for_rubro(slug) == "educacion"
+    tenant_slug = _payload_tenant_slug(value)
+    rubro_slug = _payload_slug(value)
+    return tenant_slug in {
+        "colegio-demo",
+        "colegio_demo",
+        "colegios",
+        "colegio",
+        "educacion",
+    } or sector_for_rubro(rubro_slug) == "educacion"
 
 
 def _normalize_rubro(item: dict[str, Any]) -> dict[str, Any]:
