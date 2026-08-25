@@ -24,6 +24,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 import json
+import math
 import os
 from typing import Any
 
@@ -920,6 +921,203 @@ def build_durable_demo_live_results_payload(
     return merge_demo_participation_into_live_results(base_payload, aggregate)
 
 
+def _non_negative_contract_count(value: Any, *, field: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"demo survey {field} is invalid") from exc
+    if parsed < 0:
+        raise ValueError(f"demo survey {field} is invalid")
+    return parsed
+
+
+def _merge_durable_live_results_into_demo_item(
+    item: Mapping[str, Any],
+    live_results: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a durable live-results summary into one admin demo item.
+
+    The immutable seed and the Preview-only interaction ledger remain explicit
+    partitions.  Demographic and geographic segments continue to describe only
+    the deterministic seed because the minimized durable receipt intentionally
+    stores neither demographics nor location.
+    """
+
+    merged_item = deepcopy(dict(item))
+    slug = str(merged_item.get("slug") or "").strip().lower()
+    live_slug = str(live_results.get("slug") or "").strip().lower()
+    if not slug or slug != live_slug:
+        raise ValueError("demo survey item does not match live-results slug")
+    if live_results.get("durable_demo_participation") is not True:
+        raise ValueError("demo survey live-results are not durable")
+
+    seeded_count = _non_negative_contract_count(
+        live_results.get("seeded_responses"),
+        field="seeded_responses",
+    )
+    interactive_count = _non_negative_contract_count(
+        live_results.get("interactive_demo_responses"),
+        field="interactive_demo_responses",
+    )
+    total_count = _non_negative_contract_count(
+        live_results.get("total_respuestas"),
+        field="total_respuestas",
+    )
+    if total_count != seeded_count + interactive_count:
+        raise ValueError("demo survey response partitions do not equal total")
+
+    questions = live_results.get("preguntas")
+    if not isinstance(questions, Mapping) or len(questions) != 1:
+        raise ValueError("demo survey live-results require one question")
+    raw_question = next(iter(questions.values()))
+    if not isinstance(raw_question, Mapping):
+        raise ValueError("demo survey live-results question is invalid")
+    raw_live_options = raw_question.get("opciones")
+    if not isinstance(raw_live_options, list) or not raw_live_options:
+        raise ValueError("demo survey live-results options are invalid")
+
+    results = (
+        deepcopy(dict(merged_item.get("results") or {}))
+        if isinstance(merged_item.get("results"), Mapping)
+        else {}
+    )
+    raw_result_options = results.get("options")
+    if not isinstance(raw_result_options, list) or len(raw_result_options) != len(raw_live_options):
+        raise ValueError("demo survey item options do not match live-results")
+
+    merged_options: list[dict[str, Any]] = []
+    for raw_result_option, raw_live_option in zip(raw_result_options, raw_live_options):
+        if not isinstance(raw_result_option, Mapping) or not isinstance(raw_live_option, Mapping):
+            raise ValueError("demo survey result option is invalid")
+        option = deepcopy(dict(raw_result_option))
+        result_label = str(option.get("label") or option.get("texto") or "").strip()
+        live_label = str(raw_live_option.get("label") or raw_live_option.get("texto") or "").strip()
+        if result_label and live_label and result_label != live_label:
+            raise ValueError("demo survey option ordering does not match live-results")
+        votes = _non_negative_contract_count(
+            raw_live_option.get("votos"),
+            field="option votes",
+        )
+        try:
+            raw_percentage = float(raw_live_option.get("porcentaje") or 0)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("demo survey option percentage is invalid") from exc
+        if not math.isfinite(raw_percentage):
+            raise ValueError("demo survey option percentage is invalid")
+        percentage = max(0.0, min(100.0, raw_percentage))
+        option.update(
+            {
+                "label": live_label or result_label,
+                "count": votes,
+                "votos": votes,
+                "porcentaje": percentage,
+            }
+        )
+        merged_options.append(option)
+
+    composition = deepcopy(dict(live_results.get("demo_data_composition") or {}))
+    if _non_negative_contract_count(
+        composition.get("verified_citizen_responses", 0),
+        field="verified_citizen_responses",
+    ) != 0:
+        raise ValueError("demo survey cannot claim verified citizen responses")
+
+    results.update(
+        {
+            "seeded_responses": seeded_count,
+            "interactive_demo_responses": interactive_count,
+            "total_respuestas": total_count,
+            "verified_citizen_responses": 0,
+            "options": merged_options,
+            "data_provenance": deepcopy(live_results.get("data_provenance") or {}),
+            "response_provenance": deepcopy(live_results.get("response_provenance") or {}),
+            "demo_data_composition": composition,
+            "persistence": deepcopy(live_results.get("persistence") or {}),
+            "segment_scope": "seeded_synthetic_responses_only",
+            "unsegmented_interactive_demo_responses": interactive_count,
+        }
+    )
+    merged_item.update(
+        {
+            "results": results,
+            "seeded_responses": seeded_count,
+            "interactive_demo_responses": interactive_count,
+            "total_respuestas": total_count,
+            "verified_citizen_responses": 0,
+            "durable_demo_participation": True,
+            "municipal_truth": False,
+            "data_provenance": deepcopy(live_results.get("data_provenance") or {}),
+            "response_provenance": deepcopy(live_results.get("response_provenance") or {}),
+            "demo_data_composition": composition,
+            "persistence": deepcopy(live_results.get("persistence") or {}),
+        }
+    )
+
+    analytics = (
+        deepcopy(dict(merged_item.get("analytics_summary") or {}))
+        if isinstance(merged_item.get("analytics_summary"), Mapping)
+        else {}
+    )
+    analytics["responses"] = total_count
+    analytics["seeded_responses"] = seeded_count
+    analytics["interactive_demo_responses"] = interactive_count
+    analytics["verified_citizen_responses"] = 0
+    analytics["top_option"] = deepcopy(
+        max(merged_options, key=lambda option: int(option.get("count") or 0))
+    )
+    merged_item["analytics_summary"] = analytics
+    return merged_item
+
+
+def enrich_demo_survey_voting_with_durable_participation(
+    survey_voting: Mapping[str, Any],
+    *,
+    public_base_url: str = "https://www.chatboc.ar",
+) -> dict[str, Any]:
+    """Return an atomic, read-only durable projection for an admin contract.
+
+    The caller owns fallback behavior.  This function either enriches every
+    listed demo item from the same durable source used by ``live-results`` or
+    raises without mutating the supplied baseline contract.
+    """
+
+    _require_enabled()
+    enriched = deepcopy(dict(survey_voting))
+    live_by_slug: dict[str, dict[str, Any]] = {}
+
+    def _enrich_item(raw_item: Any) -> dict[str, Any]:
+        if not isinstance(raw_item, Mapping):
+            raise ValueError("demo survey contract item is invalid")
+        slug = str(raw_item.get("slug") or "").strip().lower()
+        if not slug:
+            raise ValueError("demo survey contract item has no slug")
+        if slug not in live_by_slug:
+            live = build_durable_demo_live_results_payload(
+                slug,
+                public_base_url=public_base_url,
+            )
+            if live is None:
+                raise ValueError("demo survey live-results are unavailable")
+            live_by_slug[slug] = live
+        return _merge_durable_live_results_into_demo_item(raw_item, live_by_slug[slug])
+
+    for collection_name in ("items", "all_items"):
+        raw_collection = enriched.get(collection_name)
+        if raw_collection is None:
+            continue
+        if not isinstance(raw_collection, list):
+            raise ValueError("demo survey item collection is invalid")
+        enriched[collection_name] = [_enrich_item(item) for item in raw_collection]
+
+    if not live_by_slug:
+        raise ValueError("demo survey contract has no items")
+    enriched["durable_demo_participation"] = True
+    enriched["municipal_truth"] = False
+    enriched["composition_scope"] = "per_item_partitioned"
+    enriched["verified_citizen_responses"] = 0
+    return enriched
+
+
 def build_durable_demo_public_survey_payload(
     slug: str,
     *,
@@ -1068,6 +1266,7 @@ __all__ = [
     "build_durable_demo_public_survey_payload",
     "demo_survey_participation_gate",
     "durable_demo_survey_participation_enabled",
+    "enrich_demo_survey_voting_with_durable_participation",
     "find_demo_survey_participation_replay",
     "get_demo_survey_participation_aggregate",
     "merge_demo_participation_into_live_results",

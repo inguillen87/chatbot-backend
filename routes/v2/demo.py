@@ -1789,6 +1789,47 @@ def _survey_voting_for_demo(sector: str, tenant_slug: str) -> dict[str, Any]:
     }
 
 
+def _admin_preview_survey_voting(
+    survey_voting: dict[str, Any],
+) -> dict[str, Any]:
+    """Use the durable Preview read model when available, otherwise the seed.
+
+    This enrichment is deliberately optional and read-only for the executive
+    surface.  Public submission endpoints keep their stricter fail-closed
+    behavior, while an unavailable aggregate must not turn the admin Preview
+    GET into a 500 or relabel the deterministic seed as municipal evidence.
+    """
+
+    try:
+        from services.demo_survey_participation import (
+            durable_demo_survey_participation_enabled,
+            enrich_demo_survey_voting_with_durable_participation,
+        )
+
+        if not durable_demo_survey_participation_enabled():
+            return survey_voting
+        return enrich_demo_survey_voting_with_durable_participation(
+            survey_voting,
+            public_base_url=_demo_public_frontend_base_url(),
+        )
+    except Exception as exc:
+        # The baseline contract is deterministic, synthetic and already truth
+        # labeled.  Never leak database details or make this read surface fail
+        # because the optional Preview aggregate is unavailable.
+        current_app.logger.warning(
+            "Durable demo survey admin projection unavailable; preserving synthetic baseline (%s)",
+            type(exc).__name__,
+        )
+        fallback = dict(survey_voting)
+        fallback["durable_demo_participation"] = False
+        fallback["durable_demo_participation_state"] = (
+            "read_unavailable_synthetic_baseline"
+        )
+        fallback["municipal_truth"] = False
+        fallback["verified_citizen_responses"] = 0
+        return fallback
+
+
 def _commercial_demo_bundle(
     *,
     sector: str,
@@ -2770,7 +2811,11 @@ def _admin_preview_for_sector(
         "wow_flows": commercial["wow_flows"],
         "live_modules": commercial["live_modules"],
         "openai_runtime": commercial["openai_runtime"],
-        "survey_voting": commercial["survey_voting"],
+        "survey_voting": (
+            _admin_preview_survey_voting(commercial["survey_voting"])
+            if normalized == "gobierno"
+            else commercial["survey_voting"]
+        ),
         "catalog": {
             "enabled": True,
             "title": preset["catalog_title"],

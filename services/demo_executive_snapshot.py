@@ -100,10 +100,30 @@ def _survey_snapshot_summary(survey_voting: dict[str, Any]) -> dict[str, Any]:
     raw_items = survey_voting.get("items") or survey_voting.get("all_items") or []
     item = next((entry for entry in raw_items if isinstance(entry, dict)), {})
     results = item.get("results") if isinstance(item.get("results"), dict) else {}
-    total = _as_non_negative_int(
-        results.get("total_respuestas")
-        or results.get("seeded_responses")
-        or (survey_voting.get("seed_policy") or {}).get("responses_per_item")
+    seeded_responses = _as_non_negative_int(
+        results.get("seeded_responses")
+        if results.get("seeded_responses") is not None
+        else item.get("seeded_responses")
+        if item.get("seeded_responses") is not None
+        else (survey_voting.get("seed_policy") or {}).get("responses_per_item")
+    )
+    has_interactive_partition = (
+        "interactive_demo_responses" in results
+        or "interactive_demo_responses" in item
+    )
+    interactive_demo_responses = _as_non_negative_int(
+        results.get("interactive_demo_responses")
+        if results.get("interactive_demo_responses") is not None
+        else item.get("interactive_demo_responses")
+    )
+    total = (
+        seeded_responses + interactive_demo_responses
+        if has_interactive_partition
+        else _as_non_negative_int(
+            results.get("total_respuestas")
+            if results.get("total_respuestas") is not None
+            else seeded_responses
+        )
     )
     options = [
         option
@@ -122,6 +142,10 @@ def _survey_snapshot_summary(survey_voting: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": str(item.get("titulo") or item.get("title") or "encuesta demostrativa"),
         "total": total,
+        "seeded_responses": seeded_responses,
+        "interactive_demo_responses": interactive_demo_responses,
+        "verified_citizen_responses": 0,
+        "partitioned": has_interactive_partition,
         "top_label": str(top_option.get("label") or top_option.get("texto") or "Sin resultados"),
         "top_percentage": top_percentage,
     }
@@ -129,6 +153,25 @@ def _survey_snapshot_summary(survey_voting: dict[str, Any]) -> dict[str, Any]:
 
 def _format_percentage(value: float) -> str:
     return f"{value:g}%"
+
+
+def _survey_composition_detail(survey_summary: dict[str, Any]) -> str:
+    if survey_summary.get("partitioned"):
+        return (
+            f"{survey_summary['seeded_responses']} base sintética + "
+            f"{survey_summary['interactive_demo_responses']} participaciones demo = "
+            f"{survey_summary['total']} total; 0 respuestas ciudadanas verificadas"
+        )
+    return f"Base sintética de {survey_summary['title']}"
+
+
+def _survey_composition_fields(survey_summary: dict[str, Any]) -> dict[str, int]:
+    return {
+        "seeded_responses": survey_summary["seeded_responses"],
+        "interactive_demo_responses": survey_summary["interactive_demo_responses"],
+        "total_respuestas": survey_summary["total"],
+        "verified_citizen_responses": 0,
+    }
 
 
 def _synthetic_cards(survey_summary: dict[str, Any]) -> list[dict[str, Any]]:
@@ -161,9 +204,14 @@ def _synthetic_cards(survey_summary: dict[str, Any]) -> list[dict[str, Any]]:
             "id": "survey_participation",
             "label": "Respuestas en encuesta demo",
             "value": str(survey_summary["total"]),
-            "detail": f"Base sintética de {survey_summary['title']}",
-            "period": "muestra determinística simulada",
+            "detail": _survey_composition_detail(survey_summary),
+            "period": (
+                "base sintética + participaciones Preview"
+                if survey_summary.get("partitioned")
+                else "muestra determinística simulada"
+            ),
             "data_mode": _SYNTHETIC_DATA_MODE,
+            **_survey_composition_fields(survey_summary),
         },
     ]
 
@@ -201,13 +249,19 @@ def _synthetic_metrics(survey_summary: dict[str, Any]) -> list[dict[str, Any]]:
             "id": "survey_valid_votes",
             "label": "Participación en encuesta",
             "value": survey_summary["total"],
-            "unit": "respuestas sintéticas",
+            "unit": (
+                "respuestas demo"
+                if survey_summary.get("partitioned")
+                else "respuestas sintéticas"
+            ),
             "detail": (
+                f"{_survey_composition_detail(survey_summary)}. "
                 f"{survey_summary['top_label']} lidera con "
                 f"{_format_percentage(survey_summary['top_percentage'])}"
             ),
             "period": survey_summary["title"],
             "data_mode": _SYNTHETIC_DATA_MODE,
+            **_survey_composition_fields(survey_summary),
         },
     ]
 
@@ -255,13 +309,14 @@ def _synthetic_timeline(survey_summary: dict[str, Any]) -> list[dict[str, Any]]:
             "time": "12:00",
             "label": "Corte ejecutivo de prioridades barriales",
             "detail": (
-                f"{survey_summary['total']} respuestas sintéticas; "
+                f"{_survey_composition_detail(survey_summary)}. "
                 f"{survey_summary['top_label']} lidera con "
                 f"{_format_percentage(survey_summary['top_percentage'])}"
             ),
             "status": "in_progress",
             "channel": "survey",
             "data_mode": _SYNTHETIC_DATA_MODE,
+            **_survey_composition_fields(survey_summary),
         },
     ]
 

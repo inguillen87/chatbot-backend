@@ -16,7 +16,10 @@ from app import create_app
 from config import Config
 from database import db
 from models import DemoSurveyParticipation, EncRespuesta
-from services.demo_surveys import build_demo_public_survey_payload
+from services.demo_surveys import (
+    build_demo_public_survey_payload,
+    build_demo_surveys_votings_contract,
+)
 from services.encuestas_service import EncuestaError
 import services.demo_survey_participation as participation
 
@@ -489,6 +492,25 @@ def test_live_results_overlay_increments_option_and_keeps_provenance_truthful(de
     assert live["heatmap"]["metadata"]["mapped_seeded_responses"] == 100
     assert live["heatmap"]["metadata"]["unmapped_interactive_demo_responses"] == 1
     assert question["id"] in live["preguntas"]
+
+
+@pytest.mark.parametrize("non_finite_percentage", [float("nan"), float("inf"), float("-inf")])
+def test_admin_projection_rejects_non_finite_percentages(
+    demo_app,
+    non_finite_percentage,
+):
+    contract = build_demo_surveys_votings_contract(
+        sector="gobierno",
+        tenant_slug="junin",
+    )
+    item = contract["items"][0]
+    live = participation.build_durable_demo_live_results_payload(item["slug"])
+    assert live is not None
+    question = next(iter(live["preguntas"].values()))
+    question["opciones"][0]["porcentaje"] = non_finite_percentage
+
+    with pytest.raises(ValueError, match="percentage is invalid"):
+        participation._merge_durable_live_results_into_demo_item(item, live)
 
 
 def test_model_unique_constraint_keeps_one_receipt(demo_app):
