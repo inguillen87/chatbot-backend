@@ -34,10 +34,30 @@ from services.tenant_ticket_scope import (
 )
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
+from utils.lazy_module import LazyModule
 from utils.upload_limits import set_upload_request_limit
-from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
-from google.cloud import storage
-from services.google_vision_service import analyze_image_from_content
+
+storage = LazyModule("google.cloud.storage")
+
+
+class _LazyFileAnalysisTask:
+    def delay(self, *args, **kwargs):
+        from services.analisis_archivo_service import (
+            tarea_analizar_contenido_archivo as implementation,
+        )
+
+        return implementation.delay(*args, **kwargs)
+
+
+tarea_analizar_contenido_archivo = _LazyFileAnalysisTask()
+
+
+def analyze_image_from_content(*args, **kwargs):
+    """Load the optional Google Vision stack only for an image analysis."""
+
+    from services.google_vision_service import analyze_image_from_content as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def procesar_catalogo_pdf_google(*args, **kwargs):

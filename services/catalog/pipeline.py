@@ -5,7 +5,6 @@ import os
 from typing import Any, Dict
 
 from services.catalog.registry import registry as catalog_registry
-from services.document_processing_service import document_processing_service
 from services.vision_fallback_service import analyze_image_smart
 from utils.lazy_module import LazyModule
 
@@ -20,6 +19,8 @@ class CatalogPipeline:
                 with open(file_path, "rb") as f:
                     vision = analyze_image_smart(f.read())
                 return vision.get("full_text_annotation", {}).get("description", "")
+
+            from services.document_processing_service import document_processing_service
 
             with open(file_path, "rb") as f:
                 result = document_processing_service.process_document(

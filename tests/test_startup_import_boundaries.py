@@ -193,6 +193,35 @@ def test_app_factory_keeps_optional_provider_sdks_out_of_startup():
     assert probe.returncode == 0, probe.stderr
 
 
+def test_app_factory_keeps_storage_and_document_processors_out_of_startup():
+    probe = _run_import_probe(
+        "import os, sys; os.environ.update({"
+        "'R2_ENDPOINT_URL': 'https://r2.example.test', "
+        "'R2_ACCESS_KEY_ID': 'test-access', "
+        "'R2_SECRET_ACCESS_KEY': 'test-secret', "
+        "'R2_BUCKET_NAME': 'test-bucket', "
+        "'CLOUDINARY_CLOUD_NAME': 'test-cloud', "
+        "'CLOUDINARY_API_KEY': 'test-key', "
+        "'CLOUDINARY_API_SECRET': 'test-secret', "
+        "'GCS_ENABLED': 'true'}); "
+        "from app import create_app; from config import TestingConfig; "
+        "app = create_app(TestingConfig); assert app.testing; "
+        "targets = ('boto3', 'cloudinary', 'google.cloud.storage', 'fitz', "
+        "'pdfplumber', 'docx', 'bs4'); "
+        "loaded = lambda target: any(name == target or name.startswith(target + '.') "
+        "for name in sys.modules); "
+        "assert all(not loaded(target) for target in targets); "
+        "assert 'services.thumbnail_service' not in sys.modules; "
+        "assert 'services.analisis_archivo_service' not in sys.modules; "
+        "assert 'services.scraper_avanzado' not in sys.modules",
+        flask_env="testing",
+        timeout=45,
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_upload_processor_defers_optional_processing_stack_until_first_use():
     probe = _run_import_probe(
         "import sys; import services.upload_processor; "

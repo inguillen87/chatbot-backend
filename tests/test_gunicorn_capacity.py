@@ -29,6 +29,16 @@ def test_vercel_image_defaults_to_single_worker_and_32_threads() -> None:
     assert "GUNICORN_THREADS=32" in dockerfile
 
 
+def test_vercel_image_precompiles_application_after_copy() -> None:
+    dockerfile = (REPO_ROOT / "Dockerfile.vercel").read_text(encoding="utf-8")
+
+    copy_index = dockerfile.index("COPY . .")
+    compile_index = dockerfile.index("RUN python -m compileall -q -j 0 /app")
+    command_index = dockerfile.index('CMD ["sh"')
+
+    assert copy_index < compile_index < command_index
+
+
 def test_gunicorn_default_has_safe_minimum_socket_capacity() -> None:
     config = _load_config()
 

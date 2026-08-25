@@ -36,7 +36,6 @@ from services.order_idempotency import (
 )
 from services.pyme_menu import get_pyme_menu_payload
 from services.config_loader import cargar_configuracion_pyme
-from services.document_processing_service import document_processing_service
 from services.marketplace_analytics import track_marketplace_event
 from services.qdrant_search import buscar_catalogo_qdrant, CATALOGO_PYME
 from utils.money_ar import format_ars, parse_ars
@@ -2024,6 +2023,8 @@ def handle_pdf_payload(
     processing_result: Optional[Dict[str, Any]] = None
     if not analysis_data and pdf_info.get("id"):
         try:
+            from services.document_processing_service import document_processing_service
+
             processing_result = document_processing_service.process_document_by_id(pdf_info["id"])
         except Exception as exc:  # pragma: no cover - logged for observability
             logger.warning("Error procesando PDF %s: %s", pdf_info.get("id"), exc)

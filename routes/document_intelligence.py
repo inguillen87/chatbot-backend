@@ -6,7 +6,6 @@ import re
 import uuid
 from typing import Any, List, Optional
 
-import pdfplumber
 from flask import Blueprint, jsonify, request
 
 from models import CatalogoItem, CatalogUpload, db
@@ -23,6 +22,7 @@ from services.vision_fallback_service import (
 from utils.lazy_module import LazyModule
 
 pd = LazyModule("pandas")
+pdfplumber = LazyModule("pdfplumber")
 
 logger = logging.getLogger(__name__)
 

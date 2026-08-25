@@ -25,6 +25,11 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY . .
 
+# Bake application bytecode into the immutable image. The runtime intentionally
+# disables bytecode writes, so without this step every cold instance recompiles
+# the full Flask route tree before Gunicorn can become ready.
+RUN python -m compileall -q -j 0 /app
+
 RUN mkdir -p /app/instance /app/logs /app/temp_uploads /tmp/chatboc
 
 CMD ["sh", "-c", "if [ -n \"${GOOGLE_SERVICE_ACCOUNT_JSON:-}\" ]; then umask 077; printf '%s' \"$GOOGLE_SERVICE_ACCOUNT_JSON\" > /tmp/google_service_key.json; export GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_key.json; fi; exec gunicorn --config gunicorn.conf.py --bind 0.0.0.0:${PORT:-80} app:app"]

@@ -1,11 +1,10 @@
 import os
 import logging
 import re
+import threading
 import unicodedata
 import uuid
 from pathlib import PurePath
-import boto3
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from urllib.parse import quote, unquote, urlparse
 
@@ -170,19 +169,54 @@ class R2Service:
         self.region_name = os.environ.get("R2_REGION", "auto")
 
         self.client = None
-        if self.endpoint_url and self.access_key_id and self.secret_access_key:
+        self._client_initialization_attempted = False
+        self._client_lock = threading.Lock()
+
+    def _create_client(self):
+        """Import boto3 and build the client only for the first object operation."""
+
+        import boto3
+        from botocore.config import Config
+
+        return boto3.client(
+            "s3",
+            endpoint_url=self.endpoint_url,
+            aws_access_key_id=self.access_key_id,
+            aws_secret_access_key=self.secret_access_key,
+            region_name=self.region_name,
+            config=Config(signature_version="s3v4"),
+        )
+
+    def _get_client(self):
+        client = self.client
+        if client is not None:
+            return client
+        if self._client_initialization_attempted:
+            return None
+        if not (
+            self.endpoint_url
+            and self.access_key_id
+            and self.secret_access_key
+            and self.bucket_name
+        ):
+            return None
+
+        with self._client_lock:
+            if self.client is not None:
+                return self.client
+            if self._client_initialization_attempted:
+                return None
+            self._client_initialization_attempted = True
             try:
-                self.client = boto3.client(
-                    's3',
-                    endpoint_url=self.endpoint_url,
-                    aws_access_key_id=self.access_key_id,
-                    aws_secret_access_key=self.secret_access_key,
-                    region_name=self.region_name,
-                    config=Config(signature_version='s3v4')
+                self.client = self._create_client()
+                logger.info("R2 client initialized successfully")
+            except Exception as exc:
+                logger.error(
+                    "Failed to initialize R2 client error_type=%s",
+                    type(exc).__name__,
                 )
-                logger.info("R2 Client initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize R2 client: {e}")
+                self.client = None
+            return self.client
 
     def generate_key(self, filename, tenant_slug, context_type="general"):
         """
@@ -253,7 +287,7 @@ class R2Service:
     def is_configured(self):
         """Return whether object operations can be executed safely."""
 
-        return bool(self.client and self.bucket_name)
+        return bool(self._get_client() and self.bucket_name)
 
     def generate_presigned_upload_url(
         self,
@@ -288,7 +322,7 @@ class R2Service:
         ttl = max(60, min(ttl, 900))
 
         try:
-            return self.client.generate_presigned_url(
+            return self._get_client().generate_presigned_url(
                 "put_object",
                 Params={
                     "Bucket": self.bucket_name,
@@ -320,7 +354,7 @@ class R2Service:
                 "R2 HEAD is unavailable because storage is not configured"
             )
         try:
-            return self.client.head_object(Bucket=self.bucket_name, Key=safe_key)
+            return self._get_client().head_object(Bucket=self.bucket_name, Key=safe_key)
         except ClientError as exc:
             error_code, _ = _client_error_code_and_status(exc)
             if error_code in _R2_DEFINITE_NOT_FOUND_CODES:
@@ -375,7 +409,7 @@ class R2Service:
             )
 
         try:
-            self.client.copy_object(
+            self._get_client().copy_object(
                 Bucket=self.bucket_name,
                 Key=safe_destination,
                 CopySource={"Bucket": self.bucket_name, "Key": safe_source},
@@ -425,7 +459,7 @@ class R2Service:
         if not self.is_configured or not safe_key:
             return False
         try:
-            self.client.delete_object(Bucket=self.bucket_name, Key=safe_key)
+            self._get_client().delete_object(Bucket=self.bucket_name, Key=safe_key)
             return True
         except (BotoCoreError, ClientError) as exc:
             logger.warning(
@@ -441,7 +475,8 @@ class R2Service:
             return False
 
     def generate_presigned_download_url(self, key, expires_in=None):
-        if not self.client or not self.bucket_name or not key:
+        client = self._get_client()
+        if not client or not self.bucket_name or not key:
             return None
 
         try:
@@ -451,7 +486,7 @@ class R2Service:
         ttl = max(60, min(ttl, 3600))
 
         try:
-            return self.client.generate_presigned_url(
+            return client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket_name, "Key": key},
                 ExpiresIn=ttl,
@@ -482,7 +517,7 @@ class R2Service:
         Returns:
             str: Public URL of the uploaded file, or None if upload fails.
         """
-        if not self.client or not self.bucket_name:
+        if not self._get_client() or not self.bucket_name:
             logger.warning("R2 is not configured or initialized.")
             return None
 
@@ -493,7 +528,8 @@ class R2Service:
         """
         Uploads a file with a specific key.
         """
-        if not self.client or not self.bucket_name:
+        client = self._get_client()
+        if not client or not self.bucket_name:
             return None
 
         try:
@@ -502,7 +538,7 @@ class R2Service:
                 'CacheControl': cache_control_for_key(key, content_type),
             }
 
-            self.client.upload_fileobj(
+            client.upload_fileobj(
                 file_obj,
                 self.bucket_name,
                 key,

@@ -704,7 +704,6 @@ def categorizar_reclamo_por_palabra_clave(texto_usuario: str) -> str:
 
 
 from services.google_search import google_search
-from services.scraper_avanzado import extraer_noticias
 from datetime import datetime, timedelta, timezone
 from utils.time_utils import get_local_now
 

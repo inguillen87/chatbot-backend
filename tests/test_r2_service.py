@@ -82,6 +82,27 @@ def _client_error(code, status_code):
     )
 
 
+def test_configured_service_builds_r2_client_only_on_first_operation():
+    client = _RecordingS3Client()
+    environment = {
+        "R2_ENDPOINT_URL": "https://r2.example.test",
+        "R2_ACCESS_KEY_ID": "test-access-key",
+        "R2_SECRET_ACCESS_KEY": "test-secret-key",
+        "R2_BUCKET_NAME": "chatboc-assets",
+    }
+
+    with patch.dict("os.environ", environment, clear=True):
+        service = R2Service()
+
+    assert service.client is None
+    with patch.object(service, "_create_client", return_value=client) as create_client:
+        assert service.is_configured is True
+        assert service.is_configured is True
+
+    create_client.assert_called_once_with()
+    assert service.client is client
+
+
 def test_r2_upload_marks_audio_assets_as_long_lived_cacheable():
     client = _RecordingS3Client()
     service = _configured_service(client)
