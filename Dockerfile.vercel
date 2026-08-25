@@ -12,9 +12,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# Keep the Vercel web container free of FFmpeg until a reachable runtime flow
+# requires it. WhatsApp audio is sent directly to provider STT, while the
+# legacy video-frame helpers have no production caller. Render retains FFmpeg
+# through build.sh for its separate runtime contract.
 
 COPY requirements.txt requirements-ai-oss.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
