@@ -15,6 +15,45 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_R2_SIGNED_URL_TTL_SECONDS = 900
+DEFAULT_R2_UPLOAD_URL_TTL_SECONDS = 600
+
+
+class R2SourceObjectChangedError(RuntimeError):
+    """Raised when a conditional promotion observes a different source ETag."""
+
+
+class R2ObjectStorageUnavailableError(RuntimeError):
+    """Raised when R2 cannot give a definitive answer for an object operation."""
+
+
+_R2_DEFINITE_NOT_FOUND_CODES = {
+    "404",
+    "nosuchkey",
+    "nosuchobject",
+    "notfound",
+}
+_R2_COPY_PRECONDITION_CODES = {
+    "412",
+    "conditionalrequestconflict",
+    "preconditionfailed",
+}
+
+
+def _client_error_code_and_status(exc):
+    response = exc.response if isinstance(getattr(exc, "response", None), dict) else {}
+    error = response.get("Error") if isinstance(response.get("Error"), dict) else {}
+    response_metadata = (
+        response.get("ResponseMetadata")
+        if isinstance(response.get("ResponseMetadata"), dict)
+        else {}
+    )
+    error_code = str(error.get("Code") or "").strip().lower()
+    try:
+        status_code = int(response_metadata.get("HTTPStatusCode") or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    return error_code, status_code
+
 
 SENSITIVE_R2_CONTEXTS = {
     "adjunto",
@@ -209,6 +248,197 @@ class R2Service:
 
     def is_public_asset_key(self, key, content_type=None):
         return cache_control_for_key(key, content_type).startswith("public")
+
+    @property
+    def is_configured(self):
+        """Return whether object operations can be executed safely."""
+
+        return bool(self.client and self.bucket_name)
+
+    def generate_presigned_upload_url(
+        self,
+        key,
+        content_type,
+        content_length,
+        expires_in=None,
+    ):
+        """Create a short-lived, MIME- and length-bound PUT URL."""
+
+        safe_key = normalise_r2_object_key(key)
+        normalized_content_type = str(content_type or "").split(";", 1)[0].strip().lower()
+        if isinstance(content_length, bool):
+            normalized_content_length = 0
+        else:
+            try:
+                normalized_content_length = int(content_length)
+            except (TypeError, ValueError):
+                normalized_content_length = 0
+        if (
+            not self.is_configured
+            or not safe_key
+            or not normalized_content_type
+            or normalized_content_length <= 0
+        ):
+            return None
+
+        try:
+            ttl = int(expires_in or DEFAULT_R2_UPLOAD_URL_TTL_SECONDS)
+        except (TypeError, ValueError):
+            ttl = DEFAULT_R2_UPLOAD_URL_TTL_SECONDS
+        ttl = max(60, min(ttl, 900))
+
+        try:
+            return self.client.generate_presigned_url(
+                "put_object",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": safe_key,
+                    "ContentType": normalized_content_type,
+                    "ContentLength": normalized_content_length,
+                },
+                ExpiresIn=ttl,
+            )
+        except (BotoCoreError, ClientError) as exc:
+            logger.error(
+                "R2 upload URL generation failed error_type=%s",
+                type(exc).__name__,
+            )
+            return None
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 upload URL generation failure error_type=%s",
+                type(exc).__name__,
+            )
+            return None
+
+    def head_object(self, key):
+        """Return metadata, ``None`` for definite absence, or a typed outage."""
+
+        safe_key = normalise_r2_object_key(key)
+        if not self.is_configured or not safe_key:
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD is unavailable because storage is not configured"
+            )
+        try:
+            return self.client.head_object(Bucket=self.bucket_name, Key=safe_key)
+        except ClientError as exc:
+            error_code, _ = _client_error_code_and_status(exc)
+            if error_code in _R2_DEFINITE_NOT_FOUND_CODES:
+                return None
+            logger.error(
+                "R2 HEAD unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD did not return a definitive result"
+            ) from exc
+        except BotoCoreError as exc:
+            logger.error(
+                "R2 HEAD unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD did not return a definitive result"
+            ) from exc
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 HEAD failure error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 HEAD did not return a definitive result"
+            ) from exc
+
+    def copy_object(
+        self,
+        source_key,
+        destination_key,
+        content_type,
+        *,
+        source_etag,
+    ):
+        """Promote a temporary object only if its trusted HEAD ETag still matches."""
+
+        safe_source = normalise_r2_object_key(source_key)
+        safe_destination = normalise_r2_object_key(destination_key)
+        normalized_content_type = str(content_type or "").split(";", 1)[0].strip().lower()
+        normalized_source_etag = str(source_etag or "").strip()
+        if (
+            not self.is_configured
+            or not safe_source
+            or not safe_destination
+            or not normalized_content_type
+            or not normalized_source_etag
+        ):
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY is unavailable because its contract is incomplete"
+            )
+
+        try:
+            self.client.copy_object(
+                Bucket=self.bucket_name,
+                Key=safe_destination,
+                CopySource={"Bucket": self.bucket_name, "Key": safe_source},
+                CopySourceIfMatch=normalized_source_etag,
+                MetadataDirective="REPLACE",
+                ContentType=normalized_content_type,
+                CacheControl=cache_control_for_key(
+                    safe_destination,
+                    normalized_content_type,
+                ),
+            )
+            return True
+        except ClientError as exc:
+            error_code, status_code = _client_error_code_and_status(exc)
+            if status_code == 412 or error_code in _R2_COPY_PRECONDITION_CODES:
+                raise R2SourceObjectChangedError(
+                    "R2 source object changed before conditional copy"
+                ) from exc
+            logger.error(
+                "R2 COPY unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY did not return a definitive result"
+            ) from exc
+        except BotoCoreError as exc:
+            logger.error(
+                "R2 COPY unavailable error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY did not return a definitive result"
+            ) from exc
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 copy failure error_type=%s",
+                type(exc).__name__,
+            )
+            raise R2ObjectStorageUnavailableError(
+                "R2 COPY did not return a definitive result"
+            ) from exc
+
+    def delete_object(self, key):
+        """Best-effort deletion for temporary or superseded objects."""
+
+        safe_key = normalise_r2_object_key(key)
+        if not self.is_configured or not safe_key:
+            return False
+        try:
+            self.client.delete_object(Bucket=self.bucket_name, Key=safe_key)
+            return True
+        except (BotoCoreError, ClientError) as exc:
+            logger.warning(
+                "R2 delete failed error_type=%s",
+                type(exc).__name__,
+            )
+            return False
+        except Exception as exc:
+            logger.error(
+                "Unexpected R2 delete failure error_type=%s",
+                type(exc).__name__,
+            )
+            return False
 
     def generate_presigned_download_url(self, key, expires_in=None):
         if not self.client or not self.bucket_name or not key:

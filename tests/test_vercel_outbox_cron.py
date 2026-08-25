@@ -219,3 +219,16 @@ def test_application_registers_the_internal_cron_blueprint(client):
 
     assert response.status_code == 200
     run.assert_called_once_with(client.application)
+
+
+def test_r2_bucket_bootstrap_route_is_not_registered(client):
+    response = client.post(
+        "/api/internal/cron/r2-bucket-bootstrap",
+        json={
+            "mode": "apply",
+            "policy_version": "chatboc.r2_direct_upload.v1",
+        },
+        headers={"Authorization": f"Bearer {CRON_SECRET}"},
+    )
+
+    assert response.status_code == 404

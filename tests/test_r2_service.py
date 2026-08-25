@@ -3,11 +3,17 @@ import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from botocore.exceptions import ClientError
 from flask import g
+import pytest
 from werkzeug.datastructures import FileStorage
 
 import services.gcs_service as gcs_service
-from services.r2_service import R2Service
+from services.r2_service import (
+    R2ObjectStorageUnavailableError,
+    R2Service,
+    R2SourceObjectChangedError,
+)
 from services.attachment_delivery import serialize_attachment_for_delivery
 import services.attachment_delivery as attachment_delivery
 
@@ -16,6 +22,9 @@ class _RecordingS3Client:
     def __init__(self):
         self.calls = []
         self.presigned_calls = []
+        self.head_calls = []
+        self.copy_calls = []
+        self.delete_calls = []
 
     def upload_fileobj(self, file_obj, bucket_name, key, ExtraArgs=None):
         self.calls.append(
@@ -37,6 +46,22 @@ class _RecordingS3Client:
         )
         return f"https://r2-signed.example/{Params['Key']}?ttl={ExpiresIn}"
 
+    def head_object(self, **kwargs):
+        self.head_calls.append(dict(kwargs))
+        return {
+            "ContentLength": 4,
+            "ContentType": "image/png",
+            "ETag": '"source-etag"',
+        }
+
+    def copy_object(self, **kwargs):
+        self.copy_calls.append(dict(kwargs))
+        return {"CopyObjectResult": {"ETag": "etag"}}
+
+    def delete_object(self, **kwargs):
+        self.delete_calls.append(dict(kwargs))
+        return {}
+
 
 def _configured_service(client):
     with patch.dict("os.environ", {}, clear=True):
@@ -45,6 +70,16 @@ def _configured_service(client):
     service.bucket_name = "chatboc-assets"
     service.public_base_url = "https://cdn.chatboc.ar"
     return service
+
+
+def _client_error(code, status_code):
+    return ClientError(
+        {
+            "Error": {"Code": code},
+            "ResponseMetadata": {"HTTPStatusCode": status_code},
+        },
+        "R2ObjectOperation",
+    )
 
 
 def test_r2_upload_marks_audio_assets_as_long_lived_cacheable():
@@ -222,6 +257,124 @@ def test_r2_resolve_download_url_uses_signed_url_for_private_reclamo_asset():
             "expires_in": 3600,
         }
     ]
+
+
+def test_r2_direct_upload_operations_bind_mime_and_keep_final_attachment_private():
+    client = _RecordingS3Client()
+    service = _configured_service(client)
+    temporary_key = "uploads/junin/chat-attachments/upload.png"
+    final_key = "general/attachments/junin/final.png"
+
+    upload_url = service.generate_presigned_upload_url(
+        temporary_key,
+        "image/png",
+        4,
+        expires_in=999999,
+    )
+    metadata = service.head_object(temporary_key)
+    copied = service.copy_object(
+        temporary_key,
+        final_key,
+        "image/png",
+        source_etag='"source-etag"',
+    )
+    deleted = service.delete_object(temporary_key)
+
+    assert upload_url.endswith("?ttl=900")
+    assert client.presigned_calls[-1] == {
+        "operation": "put_object",
+        "params": {
+            "Bucket": "chatboc-assets",
+            "Key": temporary_key,
+            "ContentType": "image/png",
+            "ContentLength": 4,
+        },
+        "expires_in": 900,
+    }
+    assert metadata == {
+        "ContentLength": 4,
+        "ContentType": "image/png",
+        "ETag": '"source-etag"',
+    }
+    assert copied is True
+    assert client.copy_calls == [
+        {
+            "Bucket": "chatboc-assets",
+            "Key": final_key,
+            "CopySource": {
+                "Bucket": "chatboc-assets",
+                "Key": temporary_key,
+            },
+            "CopySourceIfMatch": '"source-etag"',
+            "MetadataDirective": "REPLACE",
+            "ContentType": "image/png",
+            "CacheControl": "private, no-store",
+        }
+    ]
+    assert deleted is True
+    assert client.delete_calls == [
+        {"Bucket": "chatboc-assets", "Key": temporary_key}
+    ]
+
+
+def test_r2_head_returns_none_only_for_definite_object_not_found():
+    client = _RecordingS3Client()
+    service = _configured_service(client)
+
+    with patch.object(
+        client,
+        "head_object",
+        side_effect=_client_error("NoSuchKey", 404),
+    ):
+        assert service.head_object("uploads/junin/missing.png") is None
+
+
+@pytest.mark.parametrize(
+    ("code", "status_code"),
+    (("AccessDenied", 403), ("SlowDown", 503), ("Unknown", 0)),
+)
+def test_r2_head_raises_typed_unavailability_for_non_definitive_errors(
+    code,
+    status_code,
+):
+    client = _RecordingS3Client()
+    service = _configured_service(client)
+
+    with patch.object(
+        client,
+        "head_object",
+        side_effect=_client_error(code, status_code),
+    ), pytest.raises(R2ObjectStorageUnavailableError):
+        service.head_object("uploads/junin/evidence.png")
+
+
+def test_r2_copy_distinguishes_transient_failure_from_etag_race():
+    client = _RecordingS3Client()
+    service = _configured_service(client)
+
+    with patch.object(
+        client,
+        "copy_object",
+        side_effect=_client_error("ServiceUnavailable", 503),
+    ), pytest.raises(R2ObjectStorageUnavailableError):
+        service.copy_object(
+            "uploads/junin/source.png",
+            "general/attachments/junin/final.png",
+            "image/png",
+            source_etag='"source-etag"',
+        )
+
+    with patch.object(
+        client,
+        "copy_object",
+        side_effect=_client_error("PreconditionFailed", 412),
+    ), pytest.raises(R2SourceObjectChangedError):
+        service.copy_object(
+            "uploads/junin/source.png",
+            "general/attachments/junin/final.png",
+            "image/png",
+            source_etag='"source-etag"',
+        )
 
 
 def test_r2_extracts_object_key_from_public_cdn_url():

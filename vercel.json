@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "container",
   "fluid": true,
-  "regions": ["pdx1"],
+  "regions": ["gru1"],
   "crons": [
     {
       "path": "/api/internal/cron/outbox-reconciliation",

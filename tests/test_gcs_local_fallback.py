@@ -133,3 +133,17 @@ def test_local_fallback_uses_backend_url_for_private_hosts(tmp_path):
     assert "privado" in result["original_url"]
     thumb_meta = result.get("thumb_meta") or {}
     assert thumb_meta.get("url", "").startswith("https://api.chatboc.ar/")
+
+
+def test_local_fallback_fails_closed_on_vercel(tmp_path, monkeypatch):
+    app = Flask(__name__)
+    upload_dir = tmp_path / "uploads"
+    app.config["LOCAL_UPLOAD_FOLDER"] = str(upload_dir)
+    monkeypatch.setenv("VERCEL", "1")
+
+    with app.app_context():
+        with app.test_request_context("/archivos/upload/chat_attachment"):
+            result = guardar_adjunto_y_thumbnail(_make_image_file("stateless.jpg"))
+
+    assert result is None
+    assert not upload_dir.exists()

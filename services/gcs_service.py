@@ -647,8 +647,14 @@ def _save_to_local(
     thumb_meta: dict | None,
     *,
     entity_subdir: str | None = None,
-) -> dict:
+) -> dict | None:
     """Save files to the local filesystem when GCS is unavailable."""
+    if os.getenv("VERCEL") or os.getenv("VERCEL_ENV"):
+        logger.error(
+            "Local upload fallback is disabled on the stateless Vercel runtime."
+        )
+        return None
+
     base_dir = _resolve_local_upload_base()
     entity_dir = _determine_fallback_subdir(entity_subdir)
     upload_dir = os.path.join(base_dir, entity_dir) if entity_dir else base_dir
@@ -952,6 +958,8 @@ def upload_to_gcs(
             None,
             None,
         )
+        if not local:
+            return None
         return {
             "unique_name": local["unique_name"],
             "public_url": local["original_url"],

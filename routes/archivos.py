@@ -18,6 +18,13 @@ from services.gcs_service import (
 )
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.attachment_service import create_attachment_with_thumbnail
+from services.direct_attachment_upload import (
+    DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
+    DirectAttachmentUploadError,
+    complete_direct_attachment_upload,
+    prepare_direct_attachment_upload,
+    resolve_direct_upload_scope,
+)
 from services.archivo_service import guardar_archivo_adjunto_ticket
 from services.employee_ticket_access import employee_ticket_category_access_allows
 from services.ticket_service import servicio_tickets
@@ -750,6 +757,75 @@ def upload_chat_attachment(current_user=None, anon_id=None, owner_user=None):
         response.status_code = status
         response.headers["X-Request-Id"] = request_id
         return response
+
+    def _direct_json(payload: dict, status: int = 200):
+        response = _json(payload, status)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        return response
+
+    if request.is_json:
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return _direct_json(
+                {
+                    "ok": False,
+                    "contract_version": DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
+                    "code": "invalid_json_payload",
+                    "error": "El cuerpo JSON no es valido.",
+                    "retryable": False,
+                },
+                400,
+            )
+
+        operation = str(payload.get("operation") or "").strip().lower()
+        if operation not in {"prepare_direct_upload", "complete_direct_upload"}:
+            return _direct_json(
+                {
+                    "ok": False,
+                    "contract_version": DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
+                    "code": "unsupported_upload_operation",
+                    "error": "La operacion de carga directa no es valida.",
+                    "retryable": False,
+                },
+                400,
+            )
+
+        try:
+            scope = resolve_direct_upload_scope(
+                current_user=current_user,
+                owner_user=owner_user,
+                anon_id=anon_id,
+            )
+            if operation == "prepare_direct_upload":
+                result = prepare_direct_attachment_upload(
+                    payload,
+                    scope=scope,
+                    allowed_mime_types=ALLOWED_CHAT_MIMES,
+                    max_file_bytes=STORAGE_MAX_FILE_SIZE,
+                )
+            else:
+                result = complete_direct_attachment_upload(
+                    payload,
+                    scope=scope,
+                )
+            return _direct_json(result, 200)
+        except DirectAttachmentUploadError as exc:
+            error_payload = {
+                "ok": False,
+                "contract_version": DIRECT_UPLOAD_ERROR_CONTRACT_VERSION,
+                "code": exc.code,
+                "error": exc.message,
+                "retryable": exc.retryable,
+            }
+            if exc.code == "file_too_large":
+                error_payload["max_file_bytes"] = int(STORAGE_MAX_FILE_SIZE)
+            if exc.rate_limit:
+                error_payload["rate_limit"] = exc.rate_limit
+            response = _direct_json(error_payload, exc.status_code)
+            if exc.retry_after_seconds > 0:
+                response.headers["Retry-After"] = str(exc.retry_after_seconds)
+            return response
 
     if 'file' not in request.files:
         return _json({"error": "No se encontro el campo de archivo file"}, 400)
