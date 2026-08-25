@@ -1139,6 +1139,28 @@ def build_demo_survey_chat_menu(
         page=page,
         page_size=page_size or DEMO_SURVEY_PAGE_SIZE,
     )
+    try:
+        from services.demo_survey_participation import (
+            durable_demo_survey_participation_enabled,
+            enrich_demo_survey_voting_with_durable_participation,
+        )
+
+        if durable_demo_survey_participation_enabled():
+            contract = enrich_demo_survey_voting_with_durable_participation(
+                contract,
+                public_base_url=public_base_url,
+            )
+    except Exception:
+        # The chat menu remains available with its deterministic and explicitly
+        # synthetic baseline if the optional Preview aggregate cannot be read.
+        # Public voting endpoints keep their stricter persistence gate.
+        contract = {
+            **contract,
+            "durable_demo_participation": False,
+            "durable_demo_participation_state": "read_unavailable_synthetic_baseline",
+            "municipal_truth": False,
+            "verified_citizen_responses": 0,
+        }
     labels = _sector_labels(contract["sector"])
     normalized_channel = str(channel or "").strip().lower()
     is_whatsapp = normalized_channel in {"wa", "whatsapp", "twilio", "twilio_whatsapp"} or "whatsapp" in normalized_channel
@@ -1149,7 +1171,10 @@ def build_demo_survey_chat_menu(
             "y despues ves resultados demo."
         )
     else:
-        lines.append("Cada demo trae 100 respuestas sinteticas para ver resultados reales de UX.")
+        lines.append(
+            "Cada consulta parte de 100 respuestas sinteticas y separa las "
+            "participaciones interactivas de Preview."
+        )
     for index, item in enumerate(contract.get("items") or [], start=1):
         title = item.get("titulo") or item.get("slug")
         public_url = item.get("public_url")

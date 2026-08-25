@@ -19,6 +19,7 @@ from database import db
 from models import DemoSurveyParticipation, EncRespuesta
 from services.demo_surveys import (
     build_demo_public_survey_payload,
+    build_demo_survey_chat_menu,
     build_demo_surveys_votings_contract,
 )
 from services.encuestas_service import EncuestaError
@@ -531,6 +532,30 @@ def test_admin_projection_rejects_non_finite_percentages(
 
     with pytest.raises(ValueError, match="percentage is invalid"):
         participation._merge_durable_live_results_into_demo_item(item, live)
+
+
+def test_chat_menu_reconciles_durable_preview_participation(demo_app):
+    participation.persist_demo_survey_participation(
+        SLUG,
+        _submission(),
+        submission_id=SUBMISSION_ID,
+    )
+
+    menu = build_demo_survey_chat_menu(
+        sector="gobierno",
+        tenant_slug="junin",
+        public_base_url="https://chatboc-r2-preview.vercel.app",
+    )
+    contract = menu["data"]["surveys_votings"]
+    first = contract["items"][0]
+
+    assert contract["durable_demo_participation"] is True
+    assert first["results"]["seeded_responses"] == 100
+    assert first["results"]["interactive_demo_responses"] == 1
+    assert first["results"]["total_respuestas"] == 101
+    assert first["analytics_summary"]["responses"] == 101
+    assert first["verified_citizen_responses"] == 0
+    assert "separa las participaciones interactivas de Preview" in menu["message_body"]
 
 
 def test_committed_demo_vote_emits_v2_events_only_to_tenant_scoped_room(demo_app):
