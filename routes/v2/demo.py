@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote_plus
 import hashlib
+import hmac
 import ipaddress
 import json
 import uuid
@@ -47,7 +48,7 @@ from services.education_contracts import (
     fold_text,
     is_education_tenant,
 )
-from routes.v2.tenants import create_demo_session_token
+from routes.v2.tenants import create_demo_session_token, decode_demo_session_token
 
 v2_demo_bp = Blueprint("v2_demo", __name__, url_prefix="/api/v2/demo")
 demo_compat_bp = Blueprint("demo_compat", __name__)
@@ -2456,10 +2457,15 @@ def _resolve_preview_tenant(tenant_slug: str) -> TenantProfile | None:
 
 
 def _recent_demo_municipio_tickets(tenant_slug: str, chat_session_id: str = "") -> list[MunicipioTicket]:
+    # Demo activity is private to the exact browser session that created it.
+    # Never fall back to a tenant-wide feed when session identity is absent.
+    session_filter = str(chat_session_id or "").strip()
+    if not session_filter:
+        return []
+
     tenant = _resolve_preview_tenant(tenant_slug)
     if tenant is None:
         return []
-    session_filter = str(chat_session_id or "").strip()
     query = (
         scoped_municipio_ticket_query(tenant)
         .order_by(MunicipioTicket.fecha.desc())
@@ -2474,6 +2480,46 @@ def _recent_demo_municipio_tickets(tenant_slug: str, chat_session_id: str = "") 
                     continue
             tickets.append(ticket)
     return tickets[:10]
+
+
+def _validated_demo_preview_chat_session_id(
+    *,
+    demo_session_id: str,
+    chat_session_id: str,
+    tenant_slug: str,
+    sector: str,
+) -> str:
+    """Return the bound chat session only for a valid signed demo session."""
+
+    demo_token = str(demo_session_id or "").strip()
+    candidate_chat_session_id = str(chat_session_id or "").strip()
+    requested_tenant_slug = str(tenant_slug or "").strip().lower()
+    if not demo_token or not candidate_chat_session_id or not requested_tenant_slug:
+        return ""
+
+    token_payload = decode_demo_session_token(demo_token)
+    if not token_payload:
+        return ""
+
+    token_tenant_slug = str(token_payload.get("tenant_slug") or "").strip().lower()
+    if not token_tenant_slug or not hmac.compare_digest(
+        token_tenant_slug.encode("utf-8"),
+        requested_tenant_slug.encode("utf-8"),
+    ):
+        return ""
+
+    token_sector = normalize_demo_sector(str(token_payload.get("sector") or ""))
+    requested_sector = normalize_demo_sector(sector or requested_tenant_slug)
+    if token_sector != requested_sector:
+        return ""
+
+    expected_chat_session_id = _stable_demo_chat_session_id(demo_token)
+    if not hmac.compare_digest(
+        expected_chat_session_id.encode("utf-8"),
+        candidate_chat_session_id.encode("utf-8"),
+    ):
+        return ""
+    return expected_chat_session_id
 
 
 def _apply_gobierno_session_activity(preset: dict[str, Any], tenant_slug: str, chat_session_id: str = "") -> dict[str, Any]:
@@ -2731,10 +2777,31 @@ def demo_admin_preview_v2():
         return _options_response()
 
     sector = request.args.get("sector") or request.args.get("pilar") or request.args.get("vertical") or ""
-    tenant_slug = request.args.get("tenant_slug") or request.args.get("tenant") or ""
-    chat_session_id = request.args.get("chat_session_id") or request.headers.get("X-Chat-Session-Id") or ""
+    demo_session_id = (
+        request.args.get("demo_session_id")
+        or request.headers.get("X-Demo-Session-Id")
+        or request.headers.get("X-Demo-Session")
+        or ""
+    )
+    demo_session_payload = decode_demo_session_token(str(demo_session_id or "")) or {}
+    tenant_slug = (
+        request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or demo_session_payload.get("tenant_slug")
+        or ""
+    )
+    chat_session_id = _validated_demo_preview_chat_session_id(
+        demo_session_id=str(demo_session_id or ""),
+        chat_session_id=(
+            request.args.get("chat_session_id")
+            or request.headers.get("X-Chat-Session-Id")
+            or ""
+        ),
+        tenant_slug=str(tenant_slug or ""),
+        sector=str(sector or demo_session_payload.get("sector") or ""),
+    )
     if not sector:
-        sector = sector_for_rubro(tenant_slug) or tenant_slug or "empresas"
+        sector = demo_session_payload.get("sector") or sector_for_rubro(tenant_slug) or tenant_slug or "empresas"
     return _json_response(
         _admin_preview_for_sector(
             sector,

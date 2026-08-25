@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from unittest.mock import patch
@@ -451,6 +452,199 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual(payload.get("metrics"), [])
         self.assertEqual((payload.get("map") or {}).get("enabled"), False)
         self.assertEqual((payload.get("map") or {}).get("points"), [])
+
+    def _demo_preview_ticket(self, *, tenant, owner, chat_session_id, ticket_number, address):
+        ticket = MunicipioTicket(
+            tenant_id=tenant.id,
+            municipio_id=owner.id,
+            user_id=owner.id,
+            nro_ticket=ticket_number,
+            consulta_pin=f"pin-{ticket_number}",
+            pregunta="Reclamo aislado de prueba",
+            asunto="Reclamo demo",
+            categoria="Alumbrado publico",
+            estado="nuevo",
+            canal_ingreso="web_demo_widget",
+            direccion=address,
+            latitud=-34.61,
+            longitud=-58.44,
+            detalles=json.dumps(
+                {
+                    "demo_runtime": True,
+                    "source": "demo_municipio_runtime",
+                    "chat_session_id": chat_session_id,
+                }
+            ),
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        return ticket
+
+    def _demo_preview_tenant(self, slug="municipio-preview-scope"):
+        owner = User(
+            name="Municipio Preview Scope",
+            email=f"{slug}@test.com",
+            password_hash="hash",
+            tipo_chat="municipio",
+            rol="admin",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug=slug,
+            nombre="Municipio Preview Scope",
+            tipo="municipio",
+            municipio_id=owner.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+        return owner, tenant
+
+    def test_demo_admin_preview_without_bound_session_is_empty(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-missing")
+        demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-missing",
+        )
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=_stable_demo_chat_session_id(demo_session_id),
+            ticket_number="710001",
+            address="Direccion privada de sesion",
+        )
+
+        response = self.client.get(
+            f"/api/v2/demo/admin-preview?sector=gobierno&tenant_slug={tenant.slug}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse((payload.get("session_activity") or {}).get("has_session_data"))
+        self.assertEqual((payload.get("session_activity") or {}).get("items"), [])
+        self.assertEqual((payload.get("map") or {}).get("points"), [])
+        self.assertNotIn("710001", str(payload))
+        self.assertNotIn("Direccion privada de sesion", str(payload))
+
+    def test_demo_admin_preview_rejects_foreign_or_invalid_session_binding(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-foreign")
+        own_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-own",
+        )
+        foreign_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-foreign",
+        )
+        foreign_tenant_demo_session_id = create_demo_session_token(
+            tenant_slug="otro-municipio",
+            sector="gobierno",
+            rubro="gobierno-foreign-tenant",
+        )
+        foreign_sector_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="empresas",
+            rubro="empresas-foreign-sector",
+        )
+        own_chat_session_id = _stable_demo_chat_session_id(own_demo_session_id)
+        foreign_chat_session_id = _stable_demo_chat_session_id(foreign_demo_session_id)
+        foreign_tenant_chat_session_id = _stable_demo_chat_session_id(foreign_tenant_demo_session_id)
+        foreign_sector_chat_session_id = _stable_demo_chat_session_id(foreign_sector_demo_session_id)
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=foreign_chat_session_id,
+            ticket_number="710002",
+            address="Direccion de otra sesion",
+        )
+
+        cases = (
+            (own_demo_session_id, foreign_chat_session_id),
+            (foreign_tenant_demo_session_id, foreign_tenant_chat_session_id),
+            (foreign_sector_demo_session_id, foreign_sector_chat_session_id),
+            ("demo-session-token-invalid", foreign_chat_session_id),
+            (own_demo_session_id, own_chat_session_id + "-tampered"),
+        )
+        for demo_session_id, chat_session_id in cases:
+            with self.subTest(demo_session_id=demo_session_id[:12], chat_session_id=chat_session_id):
+                response = self.client.get(
+                    "/api/v2/demo/admin-preview",
+                    query_string={
+                        "sector": "gobierno",
+                        "tenant_slug": tenant.slug,
+                        "demo_session_id": demo_session_id,
+                        "chat_session_id": chat_session_id,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertFalse((payload.get("session_activity") or {}).get("has_session_data"))
+                self.assertEqual((payload.get("session_activity") or {}).get("items"), [])
+                self.assertEqual((payload.get("map") or {}).get("points"), [])
+                self.assertNotIn("710002", str(payload))
+                self.assertNotIn("Direccion de otra sesion", str(payload))
+
+    def test_demo_admin_preview_returns_only_valid_bound_session_activity(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-valid")
+        valid_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-valid",
+        )
+        foreign_demo_session_id = create_demo_session_token(
+            tenant_slug=tenant.slug,
+            sector="gobierno",
+            rubro="gobierno-other",
+        )
+        valid_chat_session_id = _stable_demo_chat_session_id(valid_demo_session_id)
+        foreign_chat_session_id = _stable_demo_chat_session_id(foreign_demo_session_id)
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=valid_chat_session_id,
+            ticket_number="710003",
+            address="Direccion de la sesion valida",
+        )
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=foreign_chat_session_id,
+            ticket_number="710004",
+            address="Direccion de la sesion ajena",
+        )
+
+        response = self.client.get(
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": tenant.slug,
+                "demo_session_id": valid_demo_session_id,
+                "chat_session_id": valid_chat_session_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue((payload.get("session_activity") or {}).get("has_session_data"))
+        items = (payload.get("session_activity") or {}).get("items") or []
+        self.assertEqual([item.get("ticket_code") for item in items], ["710003"])
+        points = (payload.get("map") or {}).get("points") or []
+        self.assertEqual([point.get("ticket_code") for point in points], ["710003"])
+        self.assertNotIn("710004", str(payload))
+        self.assertNotIn("Direccion de la sesion ajena", str(payload))
 
     def test_v2_demo_catalog_asset_alias_serves_pdf(self):
         resp = self.client.get("/api/v2/demo/catalog-assets/colegio-demo.pdf")
@@ -1321,7 +1515,13 @@ class ApiV2FoundationTest(unittest.TestCase):
 
         chat_session_id = (payload.get("session") or {}).get("chat_session_id")
         preview = self.client.get(
-            f"/api/v2/demo/admin-preview?sector=gobierno&tenant_slug=municipio&chat_session_id={chat_session_id}"
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": "municipio",
+                "chat_session_id": chat_session_id,
+                "demo_session_id": demo_session_id,
+            },
         )
         self.assertEqual(preview.status_code, 200)
         preview_payload = preview.get_json()
