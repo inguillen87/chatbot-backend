@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 import json
 import os
 import unittest
@@ -439,6 +440,101 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertNotEqual(payload.get("demo_session_id"), payload.get("chat_session_id"))
         self.assertLessEqual(len(payload.get("chat_session_id") or ""), 36)
 
+    def test_demo_sessions_created_in_same_second_have_unique_jwt_jti_and_chat_session(self):
+        from routes.v2.tenants import decode_demo_session_token
+
+        owner = User(
+            name="Demo Unique Session",
+            email="demo-unique-session@test.com",
+            password_hash="hash",
+            tipo_chat="municipio",
+            rol="admin",
+        )
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="municipio-unique-session",
+            nombre="Municipio Unique Session",
+            tipo="municipio",
+            municipio_id=owner.id,
+            is_active=True,
+        )
+        db.session.add(tenant)
+        db.session.commit()
+
+        frozen_now = datetime.now(timezone.utc).replace(microsecond=0)
+        with patch("routes.v2.tenants.datetime") as clock:
+            clock.now.return_value = frozen_now
+            first = self.client.post(
+                "/api/v2/demo/session",
+                json={
+                    "sector": "gobierno",
+                    "tenant_slug": tenant.slug,
+                    "rubro": "gobierno",
+                },
+            )
+            second = self.client.post(
+                "/api/v2/demo/session",
+                json={
+                    "sector": "gobierno",
+                    "tenant_slug": tenant.slug,
+                    "rubro": "gobierno",
+                },
+            )
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        first_payload = first.get_json()
+        second_payload = second.get_json()
+        self.assertNotEqual(
+            first_payload.get("demo_session_id"),
+            second_payload.get("demo_session_id"),
+        )
+        self.assertNotEqual(
+            first_payload.get("chat_session_id"),
+            second_payload.get("chat_session_id"),
+        )
+
+        first_claims = decode_demo_session_token(first_payload.get("demo_session_id"))
+        second_claims = decode_demo_session_token(second_payload.get("demo_session_id"))
+        self.assertIsNotNone(first_claims)
+        self.assertIsNotNone(second_claims)
+        self.assertRegex(first_claims.get("jti") or "", r"^[0-9a-f]{64}$")
+        self.assertRegex(second_claims.get("jti") or "", r"^[0-9a-f]{64}$")
+        self.assertNotEqual(first_claims.get("jti"), second_claims.get("jti"))
+
+    def test_demo_session_decoder_validates_new_jti_and_preserves_legacy_expiry_contract(self):
+        from routes.v2.tenants import _sign_demo_session, decode_demo_session_token
+
+        now = datetime.now(timezone.utc)
+        base_payload = {
+            "kind": "demo_session",
+            "tenant_slug": "municipio",
+            "sector": "gobierno",
+            "rubro": "gobierno",
+            "iat": now,
+            "exp": now + timedelta(hours=1),
+        }
+        legacy_token = _sign_demo_session(dict(base_payload))
+        malformed_jti_token = _sign_demo_session(
+            {**base_payload, "jti": "predictable-demo-session-id"}
+        )
+        expired_token = _sign_demo_session(
+            {
+                **base_payload,
+                "jti": "a" * 64,
+                "iat": now - timedelta(hours=2),
+                "exp": now - timedelta(hours=1),
+            }
+        )
+
+        self.assertEqual(
+            (decode_demo_session_token(legacy_token) or {}).get("tenant_slug"),
+            "municipio",
+        )
+        self.assertIsNone(decode_demo_session_token(malformed_jti_token))
+        self.assertIsNone(decode_demo_session_token(expired_token))
+
     def test_demo_session_canonical_and_legacy_aliases_delegate_to_v2_with_cors(self):
         owner = User(name="Colegio Demo", email="colegio-compat@test.com", password_hash="hash", tipo_chat="pyme")
         db.session.add(owner)
@@ -702,6 +798,71 @@ class ApiV2FoundationTest(unittest.TestCase):
         self.assertEqual([point.get("ticket_code") for point in points], ["710003"])
         self.assertNotIn("710004", str(payload))
         self.assertNotIn("Direccion de la sesion ajena", str(payload))
+
+    def test_demo_admin_preview_binding_isolated_between_same_second_sessions(self):
+        from routes.v2.demo import _stable_demo_chat_session_id
+        from routes.v2.tenants import create_demo_session_token
+
+        owner, tenant = self._demo_preview_tenant("municipio-preview-same-second")
+        frozen_now = datetime.now(timezone.utc).replace(microsecond=0)
+        with patch("routes.v2.tenants.datetime") as clock:
+            clock.now.return_value = frozen_now
+            first_demo_session_id = create_demo_session_token(
+                tenant_slug=tenant.slug,
+                sector="gobierno",
+                rubro="gobierno",
+            )
+            second_demo_session_id = create_demo_session_token(
+                tenant_slug=tenant.slug,
+                sector="gobierno",
+                rubro="gobierno",
+            )
+
+        first_chat_session_id = _stable_demo_chat_session_id(first_demo_session_id)
+        second_chat_session_id = _stable_demo_chat_session_id(second_demo_session_id)
+        self.assertNotEqual(first_demo_session_id, second_demo_session_id)
+        self.assertNotEqual(first_chat_session_id, second_chat_session_id)
+        self._demo_preview_ticket(
+            tenant=tenant,
+            owner=owner,
+            chat_session_id=first_chat_session_id,
+            ticket_number="710005",
+            address="Direccion aislada con reloj congelado",
+        )
+
+        foreign_binding = self.client.get(
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": tenant.slug,
+                "demo_session_id": second_demo_session_id,
+                "chat_session_id": first_chat_session_id,
+            },
+        )
+        own_binding = self.client.get(
+            "/api/v2/demo/admin-preview",
+            query_string={
+                "sector": "gobierno",
+                "tenant_slug": tenant.slug,
+                "demo_session_id": first_demo_session_id,
+                "chat_session_id": first_chat_session_id,
+            },
+        )
+
+        self.assertEqual(foreign_binding.status_code, 200)
+        self.assertFalse(
+            (foreign_binding.get_json().get("session_activity") or {}).get(
+                "has_session_data"
+            )
+        )
+        self.assertNotIn("710005", str(foreign_binding.get_json()))
+        self.assertEqual(own_binding.status_code, 200)
+        self.assertTrue(
+            (own_binding.get_json().get("session_activity") or {}).get(
+                "has_session_data"
+            )
+        )
+        self.assertIn("710005", str(own_binding.get_json()))
 
     def test_v2_demo_catalog_asset_alias_serves_pdf(self):
         resp = self.client.get("/api/v2/demo/catalog-assets/colegio-demo.pdf")
