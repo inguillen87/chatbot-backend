@@ -1,25 +1,41 @@
-# Chatboc Vercel + Neon — estado verificable de Preview
+# Chatboc Vercel + Neon — estado verificable de migración
 
 Fecha de corte: 2026-08-25
-Alcance: entorno Preview y rama Neon QA. Producción y Render quedan fuera de este corte.
+Alcance: Preview validado, auditoría de candidato Production y gates pendientes
+para retirar Render. El DNS público no fue movido.
 
 ## Resultado ejecutivo
 
 El frontend y el backend están desplegados en Vercel Preview, integrados entre sí y validados contra una copia QA en Neon. La demo de gobierno incluye tablero ejecutivo, encuesta, reclamos/casos, mapa territorial, analítica, QR/WhatsApp y tiempo real. Los datos sintéticos están identificados como demostración y no se presentan como verdad municipal.
 
-No se autorizó todavía el corte de Producción ni la baja de Render. Esos pasos requieren completar los gates externos y una verificación con escritura controlada.
+`chatboc.ar` ya se sirve desde Vercel, pero `api.chatboc.ar` continúa apuntando a
+Render. Un candidato de backend Vercel Production expuso dos gates P0 antes del
+corte: estaba conectado a PostgreSQL de Render por precedencia de variables y
+Vercel activó el cron declarado apenas publicó el deployment. El candidato fue
+revertido y no se movió DNS. Las variables de futuros deployments fueron
+corregidas para Neon principal, la cola Socket.IO quedó sincronizada con Redis y
+el cron queda fail-closed hasta una activación explícita.
+
+No se debe apagar Render todavía. Antes faltan aplicar la única migración de
+esquema pendiente en Neon principal, cerrar la paridad de workers/crons y ejecutar
+la verificación remota completa con escritura controlada.
 
 ## Evidencia por fase
 
 | Fase | Estado | Evidencia |
 | --- | --- | --- |
-| Inventario y aislamiento | Completa | Trabajo realizado en ramas/worktrees aislados; Producción y Render sin cambios. |
-| Neon QA | Completa | Rama QA validada con 170 tablas y 52.751 filas; rama principal sin mutaciones. |
+| Inventario y aislamiento | Completa | Trabajo realizado en ramas/worktrees aislados; el DNS público de API continúa en Render. |
+| Neon QA | Completa | Rama QA: 171 tablas y 53.220 filas. Neon principal: 170 tablas y 52.751 filas, todavía una revisión Alembic detrás. La diferencia de QA incluye tráfico de prueba y no debe fusionarse como datos de Producción. |
 | Backend Vercel Preview | Completa | Deployment `dpl_EKUZe4NHX5WvjZRLiv9iqcEhbTrc`, región `gru1`, estado `Ready`, runtime `0a5fd6faa`. |
 | Frontend Vercel Preview | Completa | Deployment `dpl_FyqvHD4DNppT3WkboA2LxCH33KWv`, estado `Ready`, commit `80d3ada8`. |
 | Demo ejecutiva y territorial | Completa en Preview | Contrato `demo.admin_preview.v1`, mapa MapLibre, KPIs reconciliados y responsive. |
 | Aceptación remota read-only | Completa | 3 pruebas pasaron y 1 prueba durable quedó omitida por `WRITE_QA=0`; sin escrituras. |
-| Arranque en frío | Mitigado, no resuelto estructuralmente | Primer request tras scale-to-zero: aproximadamente 16 s. Requests activos: aproximadamente 0,2–0,4 s. |
+| Arranque en frío | En optimización | Preview actual: aproximadamente 16 s en frío y 0,2–0,4 s activo. La optimización local reduce el factory de 4,56 s a 2,34 s en el harness focal; una medición independiente de proceso completo dio mediana 2,91 s. Falta medirla en un nuevo Preview. |
+| Candidato Production | Revertido | `dpl_8AAiQbu1oWFZLLDyfFLcYfe4T5Z5` arrancó y respondió health, pero usó la base Render. Se revirtió al deployment anterior antes de cualquier corte de DNS. |
+| Seguridad de cron | Corregida en código/configuración futura | `VERCEL_OUTBOX_CRON_ENABLED=false` por defecto; 13 invocaciones del candidato finalizaron a las 08:11:15 UTC y no reaparecieron tras el rollback. WhatsApp quedó sin efectos; los efectos de encuesta requieren reconciliación antes del corte. |
+| Variables Production futuras | Parcial | `DATABASE_URL` y `SQLALCHEMY_DATABASE_URI` fueron sincronizadas explícitamente desde `NEON_DATABASE_URL` pooled; `ALEMBIC_DB_URL` y `MIGRATIONS_DATABASE_URL` desde la URL directa; `SOCKETIO_MESSAGE_QUEUE_URL` desde `REDIS_URL`. Los valores no se imprimieron y solo aplican a deployments nuevos. |
+| Paridad operativa Render | Parcial | Los 3 workers permanentes quedan cubiertos por ciclos acotados del cron de outbox. WhatsApp payload retention y survey privacy ya tienen cron Vercel con horarios equivalentes, bearer y gate destructivo independiente en `false`. Falta validar todo remotamente y reemplazar el reporte semanal. |
+| Reporte semanal | Bloqueado correctamente | El comando actual carga todos los tenants sin límite y no posee lease ni unicidad idempotente. No fue expuesto como endpoint ni agendado en Vercel para evitar llamadas duplicadas a proveedores. |
 | Turnstile real | Pendiente externo | Requiere completar la autorización de Cloudflare y probar el desafío humano real. |
 | Producción y retiro de Render | Pendiente | No ejecutar hasta completar backup, migración final, smoke con escritura, webhooks y rollback. |
 
@@ -52,14 +68,25 @@ Iniciarlo entre dos y cinco minutos antes de la presentación y mantener esa ter
 
 ## Gates antes de apagar Render
 
-1. Crear backup verificable de la base origen y registrar conteos/constraints críticos.
-2. Ejecutar la migración final hacia la rama/base Neon destinada a Producción.
-3. Migrar variables de entorno sin imprimir secretos y comprobar que no quedan referencias a Render.
-4. Desplegar un SHA exacto de backend y frontend en Vercel Production.
-5. Validar health, autenticación, tenant isolation, encuesta, reclamo, analítica, subida de archivos y tiempo real.
-6. Ejecutar una participación/voto QA durable y reconciliarla en UI, API y base.
-7. Validar webhooks reales de WhatsApp/Twilio y Turnstile con evidencia externa.
-8. Confirmar rollback a Render o al deployment previo durante la ventana de corte.
-9. Recién después, detener y eliminar los servicios pagos de Render.
+1. Crear una rama/backup verificable de Neon principal y registrar revisión
+   Alembic, conteos, constraints y LSN.
+2. Aplicar exclusivamente `20260825_demo_survey_participation_v1` a Neon
+   principal y verificar 171 tablas, tabla vacía, índices y trigger inmutable.
+3. Cerrar la paridad de los 3 workers y 3 cron declarados en `render.yaml`; no
+   asumir que un web container reemplaza procesos permanentes.
+4. Confirmar por nombres/targets todas las variables de Production sin imprimir
+   secretos y comprobar que no quedan referencias a Render.
+5. Desplegar un SHA exacto del backend con cron desactivado y restaurar/verificar
+   el alias `api-preview.chatboc.ar`, que el proyecto puede reasignar durante un
+   deployment Production.
+6. Validar health, autenticación, tenant isolation, encuesta, reclamo, analítica,
+   subida de archivos, QR/WhatsApp y tiempo real contra Neon principal.
+7. Activar cron de forma controlada, ejecutar una escritura canaria idempotente y
+   reconciliar UI, API, base, logs y proveedores.
+8. Validar webhooks reales de WhatsApp/Twilio y Turnstile con evidencia externa.
+9. Mover `api.chatboc.ar`, observar y probar rollback a Render durante la ventana
+   de corte.
+10. Recién después, detener los workers/web de Render y eliminar el servicio pago
+    cuando el período de rollback acordado haya terminado.
 
 Un deployment `Ready` prueba que Vercel construyó y arrancó el artefacto; no reemplaza la evidencia completa UI → API → DB → proveedor.
