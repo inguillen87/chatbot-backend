@@ -22,12 +22,10 @@ import jwt
 import os
 import re
 
-SOCKET_CORS_ORIGINS = list(
-    dict.fromkeys(
-        list(SOCKET_CORS_ALLOWED_ORIGINS)
-        + ["https://chatboc.ar", "https://www.chatboc.ar"]
-    )
-)
+# ``config`` is the single validation boundary for Socket.IO origins.  Keeping
+# the runtime list derived exclusively from it prevents a later hard-coded
+# origin from bypassing the exact-origin / HTTPS checks used in production.
+SOCKET_CORS_ORIGINS = list(dict.fromkeys(SOCKET_CORS_ALLOWED_ORIGINS))
 
 TICKET_OPERATOR_ROLES = {"admin", "empleado", "manager", "supervisor"}
 PUBLIC_TICKET_COMMENT_ORIGINS = {

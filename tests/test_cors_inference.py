@@ -131,6 +131,14 @@ class TestCorsInference(TestCase):
                 "https://chatboc-r2-preview.vercel.app",
                 cfg.SOCKET_CORS_ALLOWED_ORIGINS,
             )
+            self.assertIn(
+                "https://chatboc.ar",
+                cfg.SOCKET_CORS_ALLOWED_ORIGINS,
+            )
+            self.assertIn(
+                "https://www.chatboc.ar",
+                cfg.SOCKET_CORS_ALLOWED_ORIGINS,
+            )
             self.assertEqual(
                 cfg.SOCKET_CORS_ALLOWED_ORIGINS.count(
                     "https://chatboc-r2-preview.vercel.app"
@@ -167,11 +175,17 @@ class TestCorsInference(TestCase):
             engine_origins = (
                 socket_service.socketio.server.eio.cors_allowed_origins or []
             )
+            assert "https://chatboc.ar" in engine_origins
+            assert "https://www.chatboc.ar" in engine_origins
             assert "https://chatboc-r2-preview.vercel.app" in engine_origins
             assert "https://attacker.vercel.app" not in engine_origins
 
             client = app.test_client()
             endpoint = "/api/socket.io/?EIO=4&transport=polling"
+            production = client.get(
+                endpoint,
+                headers={"Origin": "https://www.chatboc.ar"},
+            )
             preview = client.get(
                 endpoint,
                 headers={"Origin": "https://chatboc-r2-preview.vercel.app"},
@@ -180,9 +194,21 @@ class TestCorsInference(TestCase):
                 endpoint,
                 headers={"Origin": "https://attacker.vercel.app"},
             )
+            assert production.status_code == 200, production.status_code
+            assert (
+                production.headers.get("Access-Control-Allow-Origin")
+                == "https://www.chatboc.ar"
+            )
+            assert production.headers.get("Access-Control-Allow-Credentials") == "true"
             assert preview.status_code == 200, preview.status_code
+            assert (
+                preview.headers.get("Access-Control-Allow-Origin")
+                == "https://chatboc-r2-preview.vercel.app"
+            )
+            assert preview.headers.get("Access-Control-Allow-Credentials") == "true"
             assert attacker.status_code == 400, attacker.status_code
-            print("SOCKET_CORS_STATUSES=200,400")
+            assert attacker.headers.get("Access-Control-Allow-Origin") is None
+            print("SOCKET_CORS_STATUSES=200,200,400")
             """
         )
         runtime_env = os.environ.copy()
@@ -208,4 +234,4 @@ class TestCorsInference(TestCase):
         )
         diagnostic_tail = (completed.stdout + completed.stderr)[-2000:]
         self.assertEqual(completed.returncode, 0, diagnostic_tail)
-        self.assertIn("SOCKET_CORS_STATUSES=200,400", completed.stdout)
+        self.assertIn("SOCKET_CORS_STATUSES=200,200,400", completed.stdout)

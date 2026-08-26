@@ -420,15 +420,30 @@ def assert_publication_allowed(encuesta: EncEncuesta) -> dict[str, Any]:
     reason = contract["reason_code"]
     if not contract["configuration_valid"]:
         reason = "survey_jurisdiction_gate_configuration_invalid"
+    action_hint = {
+        "survey_jurisdiction_gate_configuration_invalid": (
+            "fix_survey_jurisdiction_gate_configuration"
+        ),
+        "survey_tenant_jurisdiction_unverified": (
+            "configure_verified_tenant_jurisdiction"
+        ),
+        "survey_jurisdiction_unbound": (
+            "bind_verified_tenant_jurisdiction_then_review"
+        ),
+        "survey_jurisdiction_binding_conflict": (
+            "duplicate_and_review_for_verified_jurisdiction"
+        ),
+        "survey_content_receipt_integrity_failed": "contact_support",
+    }.get(reason, "review_exact_survey_content")
     raise SurveyJurisdictionError(
         "La publicación está bloqueada por el control institucional de jurisdicción",
         reason_code=reason,
-        action_hint=(
-            "fix_survey_jurisdiction_gate_configuration"
-            if not contract["configuration_valid"]
-            else "review_exact_survey_content"
-        ),
-        extra={"jurisdiction": contract},
+        action_hint=action_hint,
+        extra={
+            "survey_id": int(encuesta.id),
+            "current_state": str(encuesta.estado or "unknown"),
+            "jurisdiction": contract,
+        },
     )
 
 

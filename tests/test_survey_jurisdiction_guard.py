@@ -292,7 +292,71 @@ def test_any_content_update_invalidates_review_and_conflict_fails_closed(client)
         with pytest.raises(SurveyJurisdictionError) as conflict:
             assert_publication_allowed(survey)
         assert conflict.value.reason_code == "survey_jurisdiction_binding_conflict"
+        assert conflict.value.action_hint == (
+            "duplicate_and_review_for_verified_jurisdiction"
+        )
         db.session.rollback()
+
+
+def test_legacy_admin_publish_route_explains_cross_jurisdiction_conflict(
+    client,
+    monkeypatch,
+):
+    """A mismatched legacy row must fail closed with a usable recovery path."""
+
+    import config.feature_flags as feature_flags
+    import routes.encuestas_admin as admin_routes
+
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(admin_routes, "FEATURE_ENCUESTAS", True)
+
+    with client.application.app_context():
+        user, tenant = _user_and_tenant(verified=True)
+        client.application.config["SURVEY_JURISDICTION_GATE_MODE"] = (
+            "enforce_publish"
+        )
+        client.application.config["SURVEY_JURISDICTION_GATE_TENANT_IDS"] = str(
+            tenant.id
+        )
+        survey = create_encuesta(_payload("Consulta de otra jurisdicción"), user)
+        survey.jurisdiction_ref = "ar:tf:ushuaia"
+        db.session.commit()
+        survey_id = int(survey.id)
+        token = jwt.encode(
+            {
+                "user_id": user.id,
+                "rol": user.rol,
+                "tenant_slug": tenant.slug,
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+            client.application.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Tenant-Slug": tenant.slug,
+        }
+
+    response = client.post(
+        f"/api/admin/encuestas/{survey_id}/publicar",
+        query_string={"tenant_slug": tenant.slug, "tenant": tenant.slug},
+        headers=headers,
+    )
+
+    assert response.status_code == 409, response.get_json()
+    payload = response.get_json()
+    assert payload["reason_code"] == "survey_jurisdiction_binding_conflict"
+    assert payload["action_hint"] == (
+        "duplicate_and_review_for_verified_jurisdiction"
+    )
+    assert payload["survey_id"] == survey_id
+    assert payload["current_state"] == "borrador"
+    assert payload["jurisdiction"]["tenant_jurisdiction_ref"] == "ar:ba:junin"
+    assert payload["jurisdiction"]["survey_jurisdiction_ref"] == "ar:tf:ushuaia"
+    assert payload["jurisdiction"]["allowed_to_publish"] is False
+
+    with client.application.app_context():
+        assert db.session.get(EncEncuesta, survey_id).estado == "borrador"
 
 
 def test_visibility_rollout_hides_unreviewed_preexisting_public_content(client):
