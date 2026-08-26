@@ -16,6 +16,14 @@ from models import (
     TicketComentario,
     User,
 )
+from utils.roles import (
+    PERM_MANAGE_CATALOG,
+    PERM_VIEW_STATS,
+    ROLE_ANALYTICS_VIEWER,
+    ROLE_CATALOG_MANAGER,
+    canonical_role,
+    has_permission,
+)
 
 
 def _auth_headers(user: User) -> dict[str, str]:
@@ -72,6 +80,178 @@ def test_backoffice_navigation_exposes_role_based_modules(client):
     assert payload["surveys_overview"]["route"] == "/admin/encuestas"
     action_ids = {item["id"] for item in payload["actions"]}
     assert {"export_backoffice", "executive_summary"}.issubset(action_ids)
+
+
+def test_backoffice_navigation_limits_analytics_viewer_to_analytics_modules(
+    client,
+    monkeypatch,
+):
+    viewer = User(
+        email="backoffice-analytics-viewer@test.com",
+        name="Analytics Viewer",
+        rol="analytics_viewer",
+        tipo_chat="municipio",
+        tenant_slug="analytics-viewer-tenant",
+    )
+    viewer.set_password("pw")
+    db.session.add(viewer)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="analytics-viewer-tenant",
+        nombre="Analytics Viewer Tenant",
+        tipo="municipio",
+        municipio_id=viewer.id,
+        plan="enterprise",
+        capabilities_json={"statistics": True, "advanced_analytics": True},
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    def unexpected_operational_query(*_args, **_kwargs):
+        raise AssertionError("navigation-only roles must not query operational data")
+
+    monkeypatch.setattr("routes.backoffice._operations_counts", unexpected_operational_query)
+    monkeypatch.setattr("routes.backoffice._surveys_overview", unexpected_operational_query)
+
+    response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(viewer),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert canonical_role(viewer.rol) == ROLE_ANALYTICS_VIEWER
+    assert has_permission(viewer.rol, PERM_VIEW_STATS) is True
+    assert payload["role"] == ROLE_ANALYTICS_VIEWER
+    modules = {item["id"]: item for item in payload["modules"]}
+    assert set(modules) == {"reports", "advanced_analytics"}
+    assert modules["reports"]["enabled"] is True
+    assert modules["advanced_analytics"]["enabled"] is True
+    assert payload["actions"] == []
+    assert "surveys_overview" not in payload
+
+    summary = client.get(
+        "/api/app/backoffice/summary",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(viewer),
+    )
+    assert summary.status_code == 403
+    assert summary.get_json()["reason_code"] == "backoffice_operator_required"
+
+
+def test_backoffice_navigation_limits_catalog_manager_to_catalog_without_operations(
+    client,
+    monkeypatch,
+):
+    manager = User(
+        email="backoffice-catalog-manager@test.com",
+        name="Catalog Manager",
+        rol="catalog_manager",
+        tipo_chat="pyme",
+        tenant_slug="catalog-manager-tenant",
+    )
+    manager.set_password("pw")
+    db.session.add(manager)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="catalog-manager-tenant",
+        nombre="Catalog Manager Tenant",
+        tipo="pyme",
+        pyme_id=manager.id,
+        plan="pro",
+        capabilities_json={"catalog": True},
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    def unexpected_operational_query(*_args, **_kwargs):
+        raise AssertionError("catalog navigation must not query operational data")
+
+    monkeypatch.setattr("routes.backoffice._operations_counts", unexpected_operational_query)
+    monkeypatch.setattr("routes.backoffice._surveys_overview", unexpected_operational_query)
+
+    response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(manager),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert canonical_role(manager.rol) == ROLE_CATALOG_MANAGER
+    assert has_permission(manager.rol, PERM_MANAGE_CATALOG) is True
+    assert has_permission(manager.rol, PERM_VIEW_STATS) is False
+    assert payload["role"] == ROLE_CATALOG_MANAGER
+    assert payload["actions"] == []
+    assert "analytics_modes" not in payload
+    assert "surveys_overview" not in payload
+    assert [item["id"] for item in payload["modules"]] == ["catalog"]
+    catalog = payload["modules"][0]
+    assert catalog["enabled"] is True
+    assert catalog["route"] == "/perfil?tab=catalogo"
+
+
+def test_backoffice_navigation_special_roles_respect_tenant_capabilities(client):
+    analytics_viewer = User(
+        email="backoffice-analytics-locked@test.com",
+        name="Analytics Locked",
+        rol="analytics_viewer",
+        tipo_chat="municipio",
+        tenant_slug="special-roles-locked",
+    )
+    analytics_viewer.set_password("pw")
+    catalog_manager = User(
+        email="backoffice-catalog-locked@test.com",
+        name="Catalog Locked",
+        rol="catalog_manager",
+        tipo_chat="municipio",
+        tenant_slug="special-roles-locked",
+    )
+    catalog_manager.set_password("pw")
+    db.session.add_all([analytics_viewer, catalog_manager])
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="special-roles-locked",
+        nombre="Special Roles Locked",
+        tipo="municipio",
+        municipio_id=analytics_viewer.id,
+        plan="free",
+        capabilities_json={
+            "statistics": False,
+            "advanced_analytics": False,
+            "catalog": False,
+        },
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    analytics_viewer.tenant_id = tenant.id
+    catalog_manager.tenant_id = tenant.id
+    db.session.commit()
+
+    analytics_response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(analytics_viewer),
+    )
+    assert analytics_response.status_code == 200
+    analytics_modules = {
+        item["id"]: item for item in analytics_response.get_json()["modules"]
+    }
+    assert set(analytics_modules) == {"reports", "advanced_analytics"}
+    assert all(module["enabled"] is False for module in analytics_modules.values())
+
+    catalog_response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(catalog_manager),
+    )
+    assert catalog_response.status_code == 200
+    assert catalog_response.get_json()["modules"][0]["id"] == "catalog"
+    assert catalog_response.get_json()["modules"][0]["enabled"] is False
 
 
 def test_backoffice_summary_counts_real_operations_and_surveys(client):
