@@ -45,6 +45,8 @@ from services.tenant_ticket_scope import (
 )
 from utils.auth_helpers import token_requerido
 from utils.roles import (
+    ROLE_ANALYTICS_VIEWER,
+    ROLE_CATALOG_MANAGER,
     ROLE_EMPLEADO,
     ROLE_SUPERADMIN,
     ROLE_TENANT_ADMIN,
@@ -513,7 +515,13 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
     maps_access = _feature_access(access, "heatmaps")
     maps_enabled = bool(maps_access.get("enabled")) and _capability_enabled(capabilities, "maps", default=maps_default)
     analytics_access = _feature_access(access, "analytics_dashboard")
+    catalog_access = _feature_access(access, "catalog_management")
     comments_access = _feature_access(access, "comments_inbox")
+    catalog_enabled = bool(catalog_access.get("enabled")) and _capability_enabled(
+        capabilities,
+        "catalog",
+        default=_capability_enabled(capabilities, "catalog_management", default=True),
+    )
 
     modules = [
         {
@@ -569,6 +577,16 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "access": analytics_access,
             "priority": 6,
         },
+        {
+            "id": "catalog",
+            "label": "Catálogo e inventario",
+            "description": "Productos, precios, stock y publicación comercial.",
+            "route": "/perfil?tab=catalogo",
+            "enabled": role in {ROLE_TENANT_ADMIN, ROLE_SUPERADMIN, ROLE_CATALOG_MANAGER}
+            and catalog_enabled,
+            "access": catalog_access,
+            "priority": 7,
+        },
     ]
     return sorted(modules, key=lambda item: int(item.get("priority") or 999))
 
@@ -608,7 +626,56 @@ def _backoffice_actions(tenant: TenantProfile, *, analytics_modes: dict[str, Any
 
 
 def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: str) -> dict[str, Any]:
+    role = canonical_role(getattr(current_user, "rol", None)) or "usuario"
     analytics_modes = _analytics_modes(tenant, current_user)
+
+    # These frontend roles are deliberately navigation-only here. Build their
+    # contracts without querying or serializing tickets, orders, surveys, or
+    # any other operational tenant data.
+    if role in {ROLE_ANALYTICS_VIEWER, ROLE_CATALOG_MANAGER}:
+        modules = _modules_for(
+            tenant,
+            current_user,
+            analytics_modes=analytics_modes,
+            surveys={},
+            counts={"geo_points": 0},
+        )
+        allowed_module_ids = (
+            {"reports", "advanced_analytics"}
+            if role == ROLE_ANALYTICS_VIEWER
+            else {"catalog"}
+        )
+        scoped_modules: list[dict[str, Any]] = []
+        for module in modules:
+            if module.get("id") not in allowed_module_ids:
+                continue
+            scoped_module = dict(module)
+            if role == ROLE_ANALYTICS_VIEWER and module.get("id") == "reports":
+                scoped_module["enabled"] = bool(
+                    module.get("enabled")
+                    and isinstance(module.get("access"), dict)
+                    and module["access"].get("enabled")
+                )
+            scoped_modules.append(scoped_module)
+        payload = {
+            "contract_version": "backoffice.navigation.v1",
+            "tenant_slug": tenant.slug,
+            "tenant": {
+                "id": tenant.id,
+                "slug": tenant.slug,
+                "name": tenant.nombre,
+                "scope": _tenant_scope(tenant),
+                "plan": tenant.plan,
+            },
+            "role": role,
+            "modules": scoped_modules,
+            "actions": [],
+            "request_id": request_id,
+        }
+        if role == ROLE_ANALYTICS_VIEWER:
+            payload["analytics_modes"] = analytics_modes
+        return payload
+
     surveys = _surveys_overview(
         tenant,
         since=datetime.now(timezone.utc) - timedelta(days=90),
@@ -625,7 +692,7 @@ def _navigation_payload(current_user: User, tenant: TenantProfile, request_id: s
             "scope": _tenant_scope(tenant),
             "plan": tenant.plan,
         },
-        "role": canonical_role(getattr(current_user, "rol", None)) or "usuario",
+        "role": role,
         "modules": _modules_for(tenant, current_user, analytics_modes=analytics_modes, surveys=surveys, counts=counts),
         "analytics_modes": analytics_modes,
         "surveys_overview": surveys,
@@ -700,7 +767,7 @@ def _summary_payload(current_user: User, tenant: TenantProfile, request_id: str)
 @token_requerido
 def backoffice_navigation(current_user: User):
     request_id = _request_id()
-    role_error = _operator_role_error(current_user, request_id)
+    role_error = _navigation_role_error(current_user, request_id)
     if role_error:
         return role_error
     tenant = _resolve_tenant(current_user)
@@ -856,6 +923,15 @@ def _operator_role_error(current_user: User, request_id: str):
         status=403,
         request_id=request_id,
     )
+
+
+def _navigation_role_error(current_user: User, request_id: str):
+    """Allow narrowly scoped frontend roles only on the navigation contract."""
+
+    role = canonical_role(getattr(current_user, "rol", None))
+    if role in {ROLE_ANALYTICS_VIEWER, ROLE_CATALOG_MANAGER}:
+        return None
+    return _operator_role_error(current_user, request_id)
 
 
 def _requested_scope(tenant: TenantProfile) -> str:
