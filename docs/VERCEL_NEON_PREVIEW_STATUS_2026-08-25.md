@@ -8,32 +8,48 @@ para retirar Render. El DNS público no fue movido.
 
 El frontend y el backend están desplegados en Vercel Preview, integrados entre sí y validados contra una copia QA en Neon. La demo de gobierno incluye tablero ejecutivo, encuesta, reclamos/casos, mapa territorial, analítica, QR/WhatsApp y tiempo real. Los datos sintéticos están identificados como demostración y no se presentan como verdad municipal.
 
-### Corte Preview vigente — 2026-08-25 20:55 ART
+### Corte Preview vigente — 2026-08-25 21:52 ART
 
-- Frontend: SHA `6b0f82801a5c111607e6e1d119f8dd0a88a8ef96`, deployment
-  `dpl_84riKfMqv3S2Z1sYgMZ8muZDZsaz`, alias
+- Frontend: SHA `bc4d63397a486bfd242d893d6a4de3df0f72bc60`, deployment
+  `dpl_3xQicnoxfFpxVG25c7p31RzxT9XM`, alias
   `https://chatboc-r2-preview.vercel.app`.
-- Backend: SHA `94ff071fd95a2e1e7670837968e7a363f9c97bb4`, deployment
-  `dpl_FEHGefYVJny3Hig3i7hLD22yF28D`, región `gru1`, alias
-  `https://api-preview.chatboc.ar`. El SHA exacto fue inyectado como variable
-  de runtime y quedó comprobado por `GET /api/version`; `GET /api/health`
-  respondió `status=ok`.
-- El tablero sin actividad de sesión conserva el escenario explícitamente
-  sintético: 184 reclamos, cinco puntos territoriales y encuesta 101 = 100 base
-  sintética + 1 participación demo durable, con 0 respuestas ciudadanas
-  verificadas.
+- Backend: SHA `279638d16bc6fb6698aabcae86559b296b9c0f5e`, deployment
+  `dpl_Hf7FjxohZZhc5ZFigS2Z3sG6L2Kd`, región `gru1`, alias
+  `https://api-preview.chatboc.ar`. `GET /api/version` comprobó esos dos
+  SHA tanto directo como atravesando el frontend; `GET /api/health` respondió
+  `status=ok`, `db=connected`.
+- Neon Preview real: rama `br-soft-bird-ac2sghha` del proyecto
+  `nameless-rain-94060889`. El principal `br-dark-silence-acmnikpq` no fue
+  modificado.
+- Se crearon de forma idempotente tres borradores institucionales Junín en la
+  rama Preview, IDs 636–638, tenant 22 y propietario 4. Cada uno conserva cero
+  respuestas persistidas y un recibo de contenido; no hubo publicación oficial.
+- El menú demostrativo publica primero los tres escenarios Junín: prioridades
+  barriales (`votacion`), obras y servicios a 90 días (`encuesta`) y trámites y
+  atención digital (`encuesta`). Cada espejo demostrativo declara 100 respuestas
+  sintéticas, 0 respuestas ciudadanas verificadas, cinco puntos territoriales,
+  `official=false` y `municipal_truth=false`.
+- La experiencia de 30 segundos conecta atención omnicanal, CRM/reclamos,
+  encuestas/votaciones y analítica territorial dentro del mismo workspace.
+  El mapa vigente es cartográfico MapLibre/MapTiler/OpenStreetMap con capas
+  calor + puntos, densidad y puntos, volumen, coordenadas, fuente y disclaimer.
 - El tablero con actividad vinculada usa `mixed_partitioned`: publica tres KPIs
   observados de sesión —reclamos, reclamos geolocalizados y evidencias— con
   denominadores y procedencia `demo.metric_provenance.v1`; la encuesta se
   mantiene como partición sintética independiente y no se suma ni promedia con
   esos valores.
-- Canario QA controlado: el reclamo sintético #419 fue aceptado una vez y el
-  replay idempotente devolvió el mismo ticket sin duplicarlo; tracking público
-  respondió 200 y la proyección de sesión mostró 1 reclamo, 1 geolocalizado,
-  1 evidencia y 1 punto de mapa.
-- Validación: 35/35 pruebas focales de reclamos/seguimiento/votación/métricas,
-  7/7 contratos de Preview y 1/1 E2E Chromium remoto. El frontend había pasado
-  además 81/81 pruebas focales, typecheck y build antes del deployment vigente.
+- Validación local del incremento: backend 65/65 pruebas; frontend 37/37 pruebas
+  focales, typecheck y build. Validación remota: aliases `Ready`, versión y
+  health 200, contrato sandbox y detalle/resultados de los tres escenarios 200,
+  navegación CRM/encuestas/analítica, página pública, login sin credenciales y
+  mapa real. En 390 px no hubo desborde horizontal.
+- Una carga nueva con el cache caliente quedó interactiva en 408 ms y sin
+  warnings ni errores de consola. El primer acceso frío todavía debe incluirse
+  en el precalentamiento de reunión documentado más abajo.
+- No se envió un mensaje WhatsApp ni un voto/reclamo remoto en este corte. No se
+  modificaron números, remitentes, proveedores, asociaciones de canal ni
+  configuración Twilio/WhatsApp; la separación preexistente entre canal
+  operativo y destinos demostrativos se preservó sin reinterpretarla.
 - Producción, Neon principal, DNS de `api.chatboc.ar` y Render permanecen sin
   cambios. El canario anterior se ejecutó únicamente contra Preview/Neon QA.
 
@@ -58,13 +74,13 @@ remota completa con escritura controlada.
 | Fase | Estado | Evidencia |
 | --- | --- | --- |
 | Inventario y aislamiento | Completa | Trabajo realizado en ramas/worktrees aislados; el DNS público de API continúa en Render. |
-| Neon QA | Completa | QA y principal permanecen sin promover. Neon principal: 171 tablas, 52.751 filas inventariadas y revisión `20260825_demo_survey_participation_v1`. La rama temporal `br-falling-wind-actm4mcu` fue creada desde principal para el ensayo final. |
+| Neon QA | Completa | Preview sirve desde `br-soft-bird-ac2sghha`; allí quedaron los borradores Junín 636–638 con cero respuestas persistidas. Neon principal `br-dark-silence-acmnikpq` permaneció intacta. |
 | Ensayo Neon de migraciones | Completa | Preflight inicial: 171 tablas, 52.751 filas, dos revisiones pendientes, 0/3 tickets reparados y tabla de idempotencia ausente. Preflight final: 172 tablas, misma suma de filas, revisión `20260825_chat_idempotency_v1`, 3/3 tickets reparados, tabla e índice presentes, `ready=true`. Principal fue reconsultada después y permaneció intacta. |
-| Backend Vercel Preview | Completa | Deployment `dpl_FEHGefYVJny3Hig3i7hLD22yF28D`, región `gru1`, estado `Ready`, SHA runtime exacto `94ff071fd95a2e1e7670837968e7a363f9c97bb4`; `api-preview.chatboc.ar`, `/api/version` y `/api/health` fueron verificados. |
-| Frontend Vercel Preview | Completa | Deployment `dpl_84riKfMqv3S2Z1sYgMZ8muZDZsaz`, estado `Ready`, SHA exacto `6b0f82801a5c111607e6e1d119f8dd0a88a8ef96`; el artefacto Preview conserva ocho rewrites hacia `api-preview.chatboc.ar` y cero referencias al backend de Producción. |
-| Demo ejecutiva y territorial | Completa en Preview | Contrato `demo.admin_preview.v1`; mapa MapLibre híbrido calor/puntos con escala y controles, panel ejecutivo de encuestas con líder/brecha/distribución/cortes soportados, KPIs reconciliados, disclosure sintético y responsive. La guía flotante fue retirada de `/demo` para no obstruir la presentación. |
-| Aceptación remota | Completa en Preview | Contratos de versión/readiness/admin Preview, encuesta, resultados, sesión y menú pasaron por frontend y backend. Desktop y móvil quedaron sin errores de página ni respuestas HTTP `>=400`; en 390 px no hubo desborde horizontal y WhatsApp abierto tuvo 0 violaciones axe. Un canario acotado comprobó reclamo -> idempotencia -> tracking -> KPI de sesión -> mapa. No se envió un mensaje WhatsApp real. |
-| Arranque en frío | Mejorado, todavía pendiente estructural | El primer health del deployment nuevo midió 14,24 s; tres requests activos midieron 0,48 s, 0,21 s y 0,38 s. Mejora respecto de ~16 s, pero todavía requiere precalentamiento para la reunión. |
+| Backend Vercel Preview | Completa | Deployment `dpl_Hf7FjxohZZhc5ZFigS2Z3sG6L2Kd`, región `gru1`, estado `Ready`, SHA runtime exacto `279638d16bc6fb6698aabcae86559b296b9c0f5e`; alias, versión, health y conexión DB fueron verificados. |
+| Frontend Vercel Preview | Completa | Deployment `dpl_3xQicnoxfFpxVG25c7p31RzxT9XM`, estado `Ready`, SHA exacto `bc4d63397a486bfd242d893d6a4de3df0f72bc60`; el artefacto conserva ocho rewrites hacia Preview y cero rutas al backend de Producción. |
+| Demo ejecutiva y territorial | Completa en Preview | Recorrido de 30 segundos, tres escenarios Junín, CRM de reclamos, KPIs con fuente/base y mapa MapLibre híbrido calor/puntos con escala, capas, ranking y procedencia. Todos los datos sintéticos están declarados como no oficiales. |
+| Aceptación remota | Completa en Preview | Contratos de versión/health/sandbox y las tres encuestas pasaron por frontend y backend. Desktop y móvil quedaron sin overflow; CRM, encuestas, analítica, mapa y login cargaron. La página pública de votación se probó sin enviar respuesta y no se envió un mensaje WhatsApp. |
+| Arranque en frío | Mejorado, todavía pendiente estructural | Una primera resolución pública superó el timeout seguro de 5 s; después del warm-up, una pestaña nueva quedó interactiva en 408 ms y sin warnings/errores. Para la reunión sigue siendo obligatorio el precalentamiento. |
 | Candidato Production | Revertido | `dpl_8AAiQbu1oWFZLLDyfFLcYfe4T5Z5` arrancó y respondió health, pero usó la base Render. Se revirtió al deployment anterior antes de cualquier corte de DNS. |
 | Seguridad de cron | Corregida en código/configuración futura | `VERCEL_OUTBOX_CRON_ENABLED=false` por defecto; 13 invocaciones del candidato finalizaron a las 08:11:15 UTC y no reaparecieron tras el rollback. WhatsApp quedó sin efectos; los efectos de encuesta requieren reconciliación antes del corte. |
 | Variables Production futuras | Parcial | `DATABASE_URL` y `SQLALCHEMY_DATABASE_URI` fueron sincronizadas explícitamente desde `NEON_DATABASE_URL` pooled; `ALEMBIC_DB_URL` y `MIGRATIONS_DATABASE_URL` desde la URL directa; `SOCKETIO_MESSAGE_QUEUE_URL` desde `REDIS_URL`. Los valores no se imprimieron y solo aplican a deployments nuevos. |
@@ -76,7 +92,9 @@ remota completa con escritura controlada.
 ## URLs correctas de Preview
 
 - Demo ejecutiva: `https://chatboc-r2-preview.vercel.app/demo?sector=gobierno&rubro=municipio&tenant_slug=junin&remote_preview_qa=1`
-- Encuesta territorial Junín: `https://chatboc-r2-preview.vercel.app/e/demo-gobierno-junin-prioridades-barriales?tenant_slug=junin`
+- Votación territorial Junín: `https://chatboc-r2-preview.vercel.app/e/demo-gobierno-junin-participa-prioridades-barriales`
+- Encuesta de obras y servicios: `https://chatboc-r2-preview.vercel.app/e/demo-gobierno-junin-90-dias-obras-servicios`
+- Encuesta de trámites y atención: `https://chatboc-r2-preview.vercel.app/e/demo-gobierno-junin-digital-tramites-atencion`
 - Backend de Preview: `https://api-preview.chatboc.ar`
 - Health de Preview: `https://api-preview.chatboc.ar/api/health`
 
