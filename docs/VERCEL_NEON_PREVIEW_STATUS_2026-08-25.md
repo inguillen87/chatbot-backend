@@ -8,13 +8,14 @@ para retirar Render. El DNS público no fue movido.
 
 El frontend y el backend están desplegados en Vercel Preview, integrados entre sí y validados contra una copia QA en Neon. La demo de gobierno incluye tablero ejecutivo, encuesta, reclamos/casos, mapa territorial, analítica, QR/WhatsApp y tiempo real. Los datos sintéticos están identificados como demostración y no se presentan como verdad municipal.
 
-### Corte Preview vigente — 2026-08-25 21:52 ART
+### Corte Preview vigente — 2026-08-25 22:34 ART
 
-- Frontend: SHA `bc4d63397a486bfd242d893d6a4de3df0f72bc60`, deployment
-  `dpl_3xQicnoxfFpxVG25c7p31RzxT9XM`, alias
-  `https://chatboc-r2-preview.vercel.app`.
-- Backend: SHA `279638d16bc6fb6698aabcae86559b296b9c0f5e`, deployment
-  `dpl_Hf7FjxohZZhc5ZFigS2Z3sG6L2Kd`, región `gru1`, alias
+- Frontend funcional: SHA `be1cf8da8c801744d6410443307516fc7255aca1`,
+  deployment `dpl_DmkAoJ3f9w2hF7rdok3CLkCVYvGT`, alias
+  `https://chatboc-r2-preview.vercel.app`. El gate E2E posterior quedó
+  versionado en `27a7add9d775cb997b95f8addfd2dcb3c220ad97` sin cambiar el bundle.
+- Backend: SHA `94bb22cf2f2ca54ab11a20d489f4ba05e855e53b`, deployment
+  `dpl_h6MbkRSmyj1hBEgSTdnCB7EAcRjb`, región `gru1`, alias
   `https://api-preview.chatboc.ar`. `GET /api/version` comprobó esos dos
   SHA tanto directo como atravesando el frontend; `GET /api/health` respondió
   `status=ok`, `db=connected`.
@@ -33,19 +34,22 @@ El frontend y el backend están desplegados en Vercel Preview, integrados entre 
   encuestas/votaciones y analítica territorial dentro del mismo workspace.
   El mapa vigente es cartográfico MapLibre/MapTiler/OpenStreetMap con capas
   calor + puntos, densidad y puntos, volumen, coordenadas, fuente y disclaimer.
+  Su teardown ya no dispara una rotación de estilo al abortar requests internos.
 - El tablero con actividad vinculada usa `mixed_partitioned`: publica tres KPIs
   observados de sesión —reclamos, reclamos geolocalizados y evidencias— con
   denominadores y procedencia `demo.metric_provenance.v1`; la encuesta se
   mantiene como partición sintética independiente y no se suma ni promedia con
   esos valores.
-- Validación local del incremento: backend 65/65 pruebas; frontend 37/37 pruebas
-  focales, typecheck y build. Validación remota: aliases `Ready`, versión y
-  health 200, contrato sandbox y detalle/resultados de los tres escenarios 200,
-  navegación CRM/encuestas/analítica, página pública, login sin credenciales y
-  mapa real. En 390 px no hubo desborde horizontal.
-- Una carga nueva con el cache caliente quedó interactiva en 408 ms y sin
-  warnings ni errores de consola. El primer acceso frío todavía debe incluirse
-  en el precalentamiento de reunión documentado más abajo.
+- Validación local acumulada: backend 65/65 pruebas; frontend 26/26 pruebas de
+  bootstrap/Preview y 10/10 de ciclo de vida del mapa, typecheck y build.
+  Validación remota final: aliases `Ready`, versión/health y 18/18 requests de
+  contrato por frontend/backend en 200; E2E Chromium 1/1 con CRM, mapa canvas
+  real, nueve encuestas, responsive 390 px, cero errores API/página, cero
+  warnings Clerk/MapLibre y cero requests a `/auth/clerk/config` en la URL QA.
+- La presentación QA explícita ya no espera el bootstrap opcional de Clerk; al
+  salir a login o rutas privadas se restaura la topología autenticada mediante
+  recarga. El backend todavía puede medir ~8–10 s en frío; caliente quedó entre
+  ~0,2 y 0,9 s, por lo que sigue vigente el precalentamiento documentado abajo.
 - No se envió un mensaje WhatsApp ni un voto/reclamo remoto en este corte. No se
   modificaron números, remitentes, proveedores, asociaciones de canal ni
   configuración Twilio/WhatsApp; la separación preexistente entre canal
@@ -76,11 +80,11 @@ remota completa con escritura controlada.
 | Inventario y aislamiento | Completa | Trabajo realizado en ramas/worktrees aislados; el DNS público de API continúa en Render. |
 | Neon QA | Completa | Preview sirve desde `br-soft-bird-ac2sghha`; allí quedaron los borradores Junín 636–638 con cero respuestas persistidas. Neon principal `br-dark-silence-acmnikpq` permaneció intacta. |
 | Ensayo Neon de migraciones | Completa | Preflight inicial: 171 tablas, 52.751 filas, dos revisiones pendientes, 0/3 tickets reparados y tabla de idempotencia ausente. Preflight final: 172 tablas, misma suma de filas, revisión `20260825_chat_idempotency_v1`, 3/3 tickets reparados, tabla e índice presentes, `ready=true`. Principal fue reconsultada después y permaneció intacta. |
-| Backend Vercel Preview | Completa | Deployment `dpl_Hf7FjxohZZhc5ZFigS2Z3sG6L2Kd`, región `gru1`, estado `Ready`, SHA runtime exacto `279638d16bc6fb6698aabcae86559b296b9c0f5e`; alias, versión, health y conexión DB fueron verificados. |
-| Frontend Vercel Preview | Completa | Deployment `dpl_3xQicnoxfFpxVG25c7p31RzxT9XM`, estado `Ready`, SHA exacto `bc4d63397a486bfd242d893d6a4de3df0f72bc60`; el artefacto conserva ocho rewrites hacia Preview y cero rutas al backend de Producción. |
+| Backend Vercel Preview | Completa | Deployment `dpl_h6MbkRSmyj1hBEgSTdnCB7EAcRjb`, región `gru1`, estado `Ready`, SHA runtime exacto `94bb22cf2f2ca54ab11a20d489f4ba05e855e53b`; alias, versión, health y conexión DB fueron verificados. |
+| Frontend Vercel Preview | Completa | Deployment `dpl_DmkAoJ3f9w2hF7rdok3CLkCVYvGT`, estado `Ready`, SHA funcional `be1cf8da8c801744d6410443307516fc7255aca1`; el artefacto conserva ocho rewrites hacia Preview y cero rutas al backend de Producción. |
 | Demo ejecutiva y territorial | Completa en Preview | Recorrido de 30 segundos, tres escenarios Junín, CRM de reclamos, KPIs con fuente/base y mapa MapLibre híbrido calor/puntos con escala, capas, ranking y procedencia. Todos los datos sintéticos están declarados como no oficiales. |
-| Aceptación remota | Completa en Preview | Contratos de versión/health/sandbox y las tres encuestas pasaron por frontend y backend. Desktop y móvil quedaron sin overflow; CRM, encuestas, analítica, mapa y login cargaron. La página pública de votación se probó sin enviar respuesta y no se envió un mensaje WhatsApp. |
-| Arranque en frío | Mejorado, todavía pendiente estructural | Una primera resolución pública superó el timeout seguro de 5 s; después del warm-up, una pestaña nueva quedó interactiva en 408 ms y sin warnings/errores. Para la reunión sigue siendo obligatorio el precalentamiento. |
+| Aceptación remota | Completa en Preview | 18/18 requests HTTP 200 y E2E Chromium 1/1: CRM, nueve encuestas, tres escenarios Junín prioritarios, canvas MapLibre, accesibilidad, 390 px sin overflow y cero errores/warnings relevantes. No se ingresaron credenciales, no se votó y no se envió WhatsApp. |
+| Arranque en frío | Mejorado, todavía pendiente estructural | La URL QA ya no espera el bootstrap Clerk y no solicita `/auth/clerk/config`; el backend conserva picos fríos de ~8–10 s y respuestas calientes de ~0,2–0,9 s. Para la reunión sigue siendo obligatorio el precalentamiento. |
 | Candidato Production | Revertido | `dpl_8AAiQbu1oWFZLLDyfFLcYfe4T5Z5` arrancó y respondió health, pero usó la base Render. Se revirtió al deployment anterior antes de cualquier corte de DNS. |
 | Seguridad de cron | Corregida en código/configuración futura | `VERCEL_OUTBOX_CRON_ENABLED=false` por defecto; 13 invocaciones del candidato finalizaron a las 08:11:15 UTC y no reaparecieron tras el rollback. WhatsApp quedó sin efectos; los efectos de encuesta requieren reconciliación antes del corte. |
 | Variables Production futuras | Parcial | `DATABASE_URL` y `SQLALCHEMY_DATABASE_URI` fueron sincronizadas explícitamente desde `NEON_DATABASE_URL` pooled; `ALEMBIC_DB_URL` y `MIGRATIONS_DATABASE_URL` desde la URL directa; `SOCKETIO_MESSAGE_QUEUE_URL` desde `REDIS_URL`. Los valores no se imprimieron y solo aplican a deployments nuevos. |
