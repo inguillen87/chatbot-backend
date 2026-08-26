@@ -2,12 +2,15 @@ import os
 import openai
 import logging
 import uuid
-import httpx
 from cachetools import TTLCache
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TTS_MODEL,
     resolve_openai_model,
 )
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 

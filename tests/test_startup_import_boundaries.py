@@ -270,6 +270,88 @@ def test_lazy_module_loads_dependency_on_first_attribute_use():
     assert probe.returncode == 0, probe.stderr
 
 
+def test_vercel_web_create_app_installs_stub_without_migration_cli_stack():
+    probe = _run_import_probe(
+        "import os, sys; "
+        "os.environ['VERCEL'] = '1'; "
+        "os.environ.pop('FLASK_RUN_FROM_CLI', None); "
+        "os.environ.pop('FLASK_MIGRATIONS_ONLY', None); "
+        "os.environ['DATABASE_URL'] = ('postgresql+psycopg://probe:probe@' "
+        "'127.0.0.1:1/probe?sslmode=require&connect_timeout=1'); "
+        "from cachelib.simple import SimpleCache; import app as app_module; "
+        "from config import Config; "
+        "ProbeConfig = type('VercelWebProbeConfig', (Config,), {"
+        "'SQLALCHEMY_DATABASE_URI': os.environ['DATABASE_URL'], "
+        "'SESSION_TYPE': 'cachelib', "
+        "'SESSION_CACHELIB': SimpleCache(default_timeout=300), "
+        "'SOCKETIO_MESSAGE_QUEUE_URL': '', "
+        "'ENABLE_RUNTIME_SCHEMA_SYNC': False, "
+        "'ENABLE_RUNTIME_TENANT_INIT': False, "
+        "'SKIP_INIT_TENANTS': True}); "
+        "web_app = app_module.create_app(ProbeConfig); import extensions; "
+        "assert web_app.extensions['migrate'] is extensions.migrate; "
+        "assert 'flask_migrate' not in sys.modules; "
+        "assert 'alembic' not in sys.modules; "
+        "assert type(extensions.migrate).__name__ == '_WebRuntimeMigrate'",
+        timeout=45,
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_vercel_cli_flag_keeps_real_migration_extension():
+    probe = _run_import_probe(
+        "import os, sys; os.environ['VERCEL'] = '1'; "
+        "os.environ['FLASK_RUN_FROM_CLI'] = 'true'; import extensions; "
+        "assert 'flask_migrate' in sys.modules; "
+        "assert type(extensions.migrate).__name__ == 'Migrate'"
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_vercel_migrations_only_create_app_registers_real_cli_without_db():
+    probe = _run_import_probe(
+        "import os, sys; os.environ['VERCEL'] = '1'; "
+        "os.environ['FLASK_MIGRATIONS_ONLY'] = '1'; "
+        "os.environ.pop('FLASK_RUN_FROM_CLI', None); "
+        "os.environ['DATABASE_URL'] = ('postgresql+psycopg://probe:probe@' "
+        "'127.0.0.1:1/probe?sslmode=require&connect_timeout=1'); "
+        "import app as app_module; from config import Config; "
+        "ProbeConfig = type('VercelMigrationsProbeConfig', (Config,), {"
+        "'SQLALCHEMY_DATABASE_URI': os.environ['DATABASE_URL'], "
+        "'ENABLE_RUNTIME_SCHEMA_SYNC': False, "
+        "'ENABLE_RUNTIME_TENANT_INIT': False, "
+        "'SKIP_INIT_TENANTS': True}); "
+        "cli_app = app_module.create_app(ProbeConfig); import extensions; "
+        "assert 'flask_migrate' in sys.modules; "
+        "assert 'alembic' in sys.modules; "
+        "assert type(extensions.migrate).__name__ == 'Migrate'; "
+        "assert cli_app.extensions['migrate'].db is extensions.db; "
+        "assert 'db' in cli_app.cli.commands",
+        timeout=45,
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
+def test_app_factory_keeps_outbound_http_provider_modules_lazy():
+    probe = _run_import_probe(
+        "import sys; from app import create_app; from config import TestingConfig; "
+        "app = create_app(TestingConfig); assert app.testing; "
+        "assert 'httpx' not in sys.modules; "
+        "assert 'google.oauth2.id_token' not in sys.modules; "
+        "assert 'google.auth.transport.requests' not in sys.modules",
+        flask_env="testing",
+        timeout=45,
+        disable_spacy=False,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+
+
 def test_llm_utils_legacy_document_export_loads_document_ai_only_on_demand():
     probe = _run_import_probe(
         "import sys; import services.llm_utils as llm_utils; "

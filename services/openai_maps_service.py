@@ -3,8 +3,6 @@ import json
 import logging
 from typing import Iterable, Mapping
 
-import httpx
-
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TERRA_MODEL,
     chat_completion_compatibility_options,
@@ -14,6 +12,7 @@ from services.llm_provider_network_policy import llm_provider_network_allowed
 from utils.lazy_module import LazyModule
 
 openai = LazyModule("openai")
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 

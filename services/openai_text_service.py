@@ -9,7 +9,10 @@ import os
 import threading
 from typing import Any
 
-import httpx
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 
 logger = logging.getLogger(__name__)

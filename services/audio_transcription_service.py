@@ -11,13 +11,16 @@ from threading import Lock
 
 import re
 import requests
-import httpx
 from typing import Any
 
 from collections import OrderedDict
 
 from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 

@@ -5,10 +5,12 @@ import logging
 import os
 from typing import Any, Dict, Tuple
 
-import httpx
-
 from services.chatbot_prompts import get_system_prompt
 from services.llm_provider_network_policy import require_llm_provider_network
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 

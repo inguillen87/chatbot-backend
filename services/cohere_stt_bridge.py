@@ -6,9 +6,11 @@ import logging
 import os
 from typing import Any
 
-import httpx
-
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 

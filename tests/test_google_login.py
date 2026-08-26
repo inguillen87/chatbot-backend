@@ -5,6 +5,38 @@ from unittest.mock import patch, MagicMock
 import services.google_auth as gauth
 
 class GoogleLoginTests(unittest.TestCase):
+    def test_google_auth_seam_is_patchable_without_loading_optional_sdk(self):
+        token_info = {
+            'aud': 'test-client-id',
+            'email': 'patched@example.com',
+        }
+
+        with patch.object(
+            gauth,
+            '_load_google_auth_module',
+            side_effect=ImportError('google-auth missing'),
+        ) as mock_loader:
+            with patch.object(
+                gauth.id_token,
+                'verify_oauth2_token',
+                return_value=token_info,
+            ) as mock_verify:
+                request = gauth.google_requests.Request()
+                result = gauth.id_token.verify_oauth2_token('idtoken', request)
+
+        self.assertEqual(result, token_info)
+        mock_verify.assert_called_once_with('idtoken', request)
+        mock_loader.assert_not_called()
+
+    def test_missing_google_auth_preserves_public_login_error(self):
+        with patch.object(
+            gauth,
+            '_load_google_auth_module',
+            side_effect=ImportError('google-auth missing'),
+        ):
+            with self.assertRaisesRegex(ValueError, 'Token de Google inválido'):
+                gauth.login_o_crear_usuario('idtoken')
+
     @patch.object(gauth, 'ALLOWED_CLIENT_IDS', ['test-client-id'])
     @patch.object(gauth.id_token, 'verify_oauth2_token')
     def test_crea_usuario_nuevo(self, mock_verify):

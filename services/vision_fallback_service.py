@@ -11,10 +11,13 @@ import threading
 from ast import literal_eval
 from typing import Any, Dict, Optional
 
-import httpx
 from flask import current_app, has_app_context
 
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 

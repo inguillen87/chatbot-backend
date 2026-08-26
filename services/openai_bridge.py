@@ -15,8 +15,6 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-import httpx
-
 from services.chatbot_prompts import get_system_prompt
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_SOL_MODEL,
@@ -24,6 +22,10 @@ from services.openai_model_defaults import (
 )
 from services.llm_provider_network_policy import require_llm_provider_network
 from services.openai_text_service import _privacy_safe_identifier
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 try:
     import tiktoken

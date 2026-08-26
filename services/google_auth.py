@@ -1,15 +1,54 @@
 import logging
 import uuid
 import os
-try:  # pragma: no cover - puede faltar google-auth en tests
-    from google.oauth2 import id_token
-    from google.auth.transport import requests as google_requests
-except Exception:  # pragma: no cover - define stubs
-    from types import SimpleNamespace
-    id_token = SimpleNamespace(verify_oauth2_token=lambda *a, **k: (_ for _ in ()).throw(ImportError("google-auth missing")))
-    google_requests = SimpleNamespace(Request=object)
+from importlib import import_module
+
 from models import User, db
 from services.user_service import set_user_profile_avatar
+
+
+def _load_google_auth_module(module_name: str):
+    """Load google-auth only when token verification actually runs."""
+
+    try:
+        return import_module(module_name)
+    except Exception as exc:  # pragma: no cover - depends on optional package
+        raise ImportError("google-auth missing") from exc
+
+
+class _DeferredGoogleRequest:
+    """Patch-friendly request proxy that keeps google-auth out of startup."""
+
+    def __init__(self, *args, **kwargs):
+        self._args = args
+        self._kwargs = kwargs
+        self._delegate = None
+
+    def _load(self):
+        if self._delegate is None:
+            requests_module = _load_google_auth_module(
+                "google.auth.transport.requests"
+            )
+            self._delegate = requests_module.Request(*self._args, **self._kwargs)
+        return self._delegate
+
+    def __call__(self, *args, **kwargs):
+        return self._load()(*args, **kwargs)
+
+
+class _GoogleRequestsFacade:
+    Request = _DeferredGoogleRequest
+
+
+class _GoogleIdTokenFacade:
+    def verify_oauth2_token(self, *args, **kwargs):
+        provider = _load_google_auth_module("google.oauth2.id_token")
+        return provider.verify_oauth2_token(*args, **kwargs)
+
+
+# Keep these module-level seams stable: login tests and integrations patch them.
+id_token = _GoogleIdTokenFacade()
+google_requests = _GoogleRequestsFacade()
 
 ALLOWED_CLIENT_IDS = []
 env_ids = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
