@@ -9,6 +9,7 @@ from flask import current_app, g, jsonify, make_response, request
 from werkzeug.exceptions import HTTPException
 from sqlalchemy import func
 
+from database import db
 from models import TenantProfile
 from utils.tenant import (
     get_current_tenant_profile,
@@ -77,7 +78,10 @@ def _tenant_slug_from_url(url: Optional[str]) -> Optional[str]:
 def _find_tenant_by_slug(slug: str) -> Optional[TenantProfile]:
     if not slug:
         return None
-    return TenantProfile.query.filter(func.lower(TenantProfile.slug) == slug.lower()).first()
+    return TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == slug.lower(),
+        TenantProfile.is_active.is_(True),
+    ).first()
 
 
 def _fallback_default_tenant() -> Optional[TenantProfile]:
@@ -93,20 +97,48 @@ def _fallback_default_tenant() -> Optional[TenantProfile]:
         if tenant:
             return tenant
 
-    return TenantProfile.query.order_by(TenantProfile.id.asc()).first()
+    return (
+        TenantProfile.query.filter(TenantProfile.is_active.is_(True))
+        .order_by(TenantProfile.id.asc())
+        .first()
+    )
 
 
 def _find_tenant_by_widget_token(token: str) -> Optional[TenantProfile]:
     if not token:
         return None
-    # Using the same logic as services/tenant_resolver.py
-    try:
-        return TenantProfile.query.filter(
-            TenantProfile.configuracion["widget_tokens"].astext.contains(token)
-        ).first()
-    except Exception:
-        # In case of database dialect issues (e.g. SQLite vs Postgres JSON)
+
+    normalized = str(token).strip()
+    if not normalized:
         return None
+
+    def _has_exact_token(tenant: TenantProfile) -> bool:
+        cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
+        configured = cfg.get("widget_tokens")
+        if isinstance(configured, str):
+            values = [configured]
+        elif isinstance(configured, (list, tuple, set)):
+            values = configured
+        else:
+            values = []
+        return any(str(value or "").strip() == normalized for value in values)
+
+    try:
+        candidates = TenantProfile.query.filter(
+            TenantProfile.is_active.is_(True),
+            TenantProfile.configuracion["widget_tokens"].astext.contains(normalized),
+        ).all()
+    except Exception:
+        candidates = []
+
+    matches = [tenant for tenant in candidates if _has_exact_token(tenant)]
+    if not matches:
+        matches = [
+            tenant
+            for tenant in TenantProfile.query.filter(TenantProfile.is_active.is_(True)).all()
+            if _has_exact_token(tenant)
+        ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _tenant_slug_from_path(path: str | None) -> Optional[str]:
@@ -195,7 +227,7 @@ def _tenant_slug_from_path(path: str | None) -> Optional[str]:
 def _resolve_tenant_profile() -> Optional[TenantProfile]:
     view_args = getattr(request, "view_args", None) or {}
 
-    slug = _normalize_slug(
+    raw_slug = (
         view_args.get("tenant_slug")
         or view_args.get("tenant")
         or view_args.get("slug")
@@ -207,6 +239,8 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         or _tenant_slug_from_path(request.path)
         or _tenant_slug_from_url(request.headers.get("Referer") or getattr(request, "referrer", None))
     )
+    slug = _normalize_slug(raw_slug)
+    unresolved_explicit_slug = False
     if slug:
         try:
             from services.tenant_resolver import apply_tenant_alias
@@ -218,15 +252,19 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         tenant = _find_tenant_by_slug(slug)
         if tenant:
             return tenant
+        unresolved_explicit_slug = True
 
     tenant_id = request.headers.get("X-Tenant-Id") or request.args.get("tenant_id")
-    if tenant_id:
+    if tenant_id and not unresolved_explicit_slug:
         try:
-            tenant = TenantProfile.query.get(int(tenant_id))
+            tenant = db.session.get(TenantProfile, int(tenant_id))
         except (TypeError, ValueError):
             tenant = None
-        if tenant:
+        if tenant and getattr(tenant, "is_active", True) is not False:
             return tenant
+        # A caller that supplied an explicit database identity must never be
+        # silently redirected to a token, host, viewer, or default tenant.
+        return None
 
     # Check for Widget Token (used by ChatWidget)
     widget_token = (
@@ -239,6 +277,16 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         tenant = _find_tenant_by_widget_token(widget_token)
         if tenant:
             return tenant
+        # Invalid and ambiguous tokens are authoritative failed selectors.
+        # Falling through here would expose whichever tenant is configured as
+        # the shared-platform default.
+        return None
+
+    # An explicit but unknown/inactive slug must never fall through to a host,
+    # authenticated viewer, configured default, or first-row tenant. A valid
+    # widget token above remains an intentional compatibility selector.
+    if unresolved_explicit_slug:
+        return None
 
     # Try resolving by slug hint (query params) using the shared resolver to honor
     # widget tokens and explicit slugs coming from the web widget/marketplace.
@@ -302,7 +350,7 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
         try:
             tenant = resolve_tenant_only(host=host, require_explicit_slug=False)
         except TenantResolutionError:
-            tenant = None
+            return None
 
         if tenant:
             return tenant
@@ -365,6 +413,19 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
 def tenant_middleware(app) -> None:
     @app.before_request
     def attach_tenant_profile() -> None:
+        # Reset every tenant alias at the beginning of each request. This also
+        # protects test/worker code that intentionally reuses an app context;
+        # a failed resolution must never inherit the previous request's tenant.
+        for key in (
+            "tenant_profile",
+            "tenant_profile_slug",
+            "current_tenant",
+            "current_tenant_slug",
+            "tenant_slug",
+            "tenant",
+        ):
+            g.pop(key, None)
+
         try:
             tenant = _resolve_tenant_profile()
         except Exception as exc:

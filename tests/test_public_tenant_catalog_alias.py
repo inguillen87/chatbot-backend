@@ -595,6 +595,197 @@ def test_public_widget_referrer_tenant_wins_over_stale_query_slug(client):
     assert cart_resp.status_code == 200
 
 
+def test_public_widget_concrete_slug_cannot_be_replaced_by_other_referrer(client):
+    tenant_a = _seed_pyme_tenant_with_catalog()
+    owner_b = User(email="owner-widget-b@test.com", name="Owner B", rol="admin", tipo_chat="pyme")
+    owner_b.set_password("pass")
+    db.session.add(owner_b)
+    db.session.flush()
+    tenant_b = TenantProfile(
+        slug="widget-tenant-b",
+        nombre="Widget Tenant B",
+        tipo="pyme",
+        plan="full",
+        pyme_id=owner_b.id,
+    )
+    db.session.add(tenant_b)
+    db.session.commit()
+
+    referer = f"https://www.chatboc.ar/t/{tenant_b.slug}"
+    cases = (
+        ("GET", "/api/public/widget-commerce-session", None),
+        ("GET", "/api/public/widget-user/tenant-history", None),
+        (
+            "POST",
+            "/api/public/widget-user/register",
+            {"name": "Conflicto", "email": "conflict@test.com"},
+        ),
+        ("POST", "/api/public/widget-user/link-session", {}),
+    )
+
+    for method, path, payload in cases:
+        response = client.open(
+            path,
+            method=method,
+            query_string={"tenant_slug": tenant_a.slug},
+            json=payload,
+            headers={
+                "Referer": referer,
+                "X-Chat-Session-Id": "chat_widget_conflict",
+                "X-Anon-Id": "anon_widget_conflict",
+            },
+        )
+        assert response.status_code == 404, (path, response.get_json())
+        assert response.get_json()["reason_code"] == "tenant_resolution_failed"
+
+
+def test_public_widget_generic_alias_can_use_concrete_referrer(client):
+    owner = User(email="owner-widget-ref@test.com", name="Owner Ref", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="widget-ref-tenant",
+        nombre="Widget Ref Tenant",
+        tipo="pyme",
+        plan="full",
+        pyme_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    referer = f"https://www.chatboc.ar/t/{tenant.slug}"
+    headers = {
+        "Referer": referer,
+        "X-Chat-Session-Id": "chat_widget_ref_allowed",
+        "X-Anon-Id": "anon_widget_ref_allowed",
+    }
+    query = {"tenant_slug": "municipio", "tenant": "municipio"}
+
+    commerce = client.get(
+        "/api/public/widget-commerce-session",
+        query_string=query,
+        headers=headers,
+    )
+    history = client.get(
+        "/api/public/widget-user/tenant-history",
+        query_string=query,
+        headers=headers,
+    )
+    register = client.post(
+        "/api/public/widget-user/register",
+        query_string=query,
+        json={"name": "Cliente Ref", "email": "cliente-ref@test.com"},
+        headers=headers,
+    )
+    link = client.post(
+        "/api/public/widget-user/link-session",
+        query_string=query,
+        json={},
+        headers=headers,
+    )
+
+    assert commerce.status_code == 200, commerce.get_json()
+    assert commerce.get_json()["tenant"]["slug"] == tenant.slug
+    assert history.status_code == 200, history.get_json()
+    assert history.get_json()["tenant_slug"] == tenant.slug
+    assert register.status_code == 200, register.get_json()
+    assert register.get_json()["tenant_slug"] == tenant.slug
+    assert link.status_code == 200, link.get_json()
+    assert link.get_json()["tenant_slug"] == tenant.slug
+
+
+def test_public_widget_slug_and_widget_token_conflict_fails_closed(client):
+    tenant_a = _seed_pyme_tenant_with_catalog()
+    owner_b = User(email="owner-widget-token@test.com", name="Owner Token", rol="admin", tipo_chat="pyme")
+    owner_b.set_password("pass")
+    db.session.add(owner_b)
+    db.session.flush()
+    tenant_b = TenantProfile(
+        slug="widget-token-tenant",
+        nombre="Widget Token Tenant",
+        tipo="pyme",
+        plan="full",
+        pyme_id=owner_b.id,
+        configuracion={"widget_tokens": ["widget-token-b"]},
+    )
+    db.session.add(tenant_b)
+    db.session.commit()
+
+    response = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={
+            "tenant_slug": tenant_a.slug,
+            "widget_token": "widget-token-b",
+        },
+        headers={
+            "X-Chat-Session-Id": "chat_widget_token_conflict",
+            "X-Anon-Id": "anon_widget_token_conflict",
+        },
+    )
+
+    assert response.status_code == 404, response.get_json()
+    assert response.get_json()["reason_code"] == "tenant_resolution_failed"
+
+
+def test_public_widget_rejects_conflicts_hidden_by_selector_precedence(client):
+    tenant_a = _seed_pyme_tenant_with_catalog()
+    tenant_a.configuracion = {"widget_tokens": ["widget-token-a"]}
+    owner_b = User(email="owner-widget-matrix@test.com", name="Owner Matrix", rol="admin", tipo_chat="pyme")
+    owner_b.set_password("pass")
+    db.session.add(owner_b)
+    db.session.flush()
+    tenant_b = TenantProfile(
+        slug="widget-matrix-b",
+        nombre="Widget Matrix B",
+        tipo="pyme",
+        plan="full",
+        pyme_id=owner_b.id,
+        configuracion={"widget_tokens": ["widget-token-b"]},
+    )
+    db.session.add(tenant_b)
+    db.session.commit()
+
+    conflicts = (
+        (
+            {"tenant_slug": tenant_a.slug},
+            {"X-Tenant-Slug": tenant_b.slug},
+        ),
+        (
+            {"tenant_slug": tenant_a.slug, "tenant": tenant_b.slug},
+            {},
+        ),
+        (
+            {"tenant_slug": tenant_a.slug, "widget_token": "widget-token-a"},
+            {"X-Widget-Token": "widget-token-b"},
+        ),
+    )
+    for query, extra_headers in conflicts:
+        response = client.get(
+            "/api/public/widget-commerce-session",
+            query_string=query,
+            headers={
+                "X-Chat-Session-Id": "chat_widget_matrix",
+                "X-Anon-Id": "anon_widget_matrix",
+                **extra_headers,
+            },
+        )
+        assert response.status_code == 404, (query, extra_headers, response.get_json())
+        assert response.get_json()["reason_code"] == "tenant_resolution_failed"
+
+    consistent = client.get(
+        "/api/public/widget-commerce-session",
+        query_string={"tenant_slug": tenant_a.slug, "tenant": tenant_a.slug},
+        headers={
+            "X-Tenant-Slug": tenant_a.slug,
+            "X-Chat-Session-Id": "chat_widget_matrix_same",
+            "X-Anon-Id": "anon_widget_matrix_same",
+        },
+    )
+    assert consistent.status_code == 200, consistent.get_json()
+    assert consistent.get_json()["tenant"]["slug"] == tenant_a.slug
+
+
 def test_reserved_public_slug_navigation_returns_reserved_json(client):
     resp = client.get("/api/public/tenants/precios/public-navigation", headers={"Origin": "https://www.chatboc.ar"})
 

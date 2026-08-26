@@ -813,7 +813,10 @@ def _resolve_tenant_profile_from_request(
     if owner_candidate is not None:
         direct_tenant_id = getattr(owner_candidate, "tenant_id", None)
         if direct_tenant_id not in (None, ""):
-            profile = TenantProfile.query.filter_by(id=direct_tenant_id).one_or_none()
+            profile = TenantProfile.query.filter_by(
+                id=direct_tenant_id,
+                is_active=True,
+            ).one_or_none()
             if profile is not None:
                 return profile
         profile = _profile_from_slug(getattr(owner_candidate, "tenant_slug", None))
@@ -1015,7 +1018,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return _public_error_response(err)
         tenant = (
-            TenantProfile.query.filter_by(id=tenant_id).one_or_none()
+            TenantProfile.query.filter_by(id=tenant_id, is_active=True).one_or_none()
             if tenant_id is not None
             else None
         )

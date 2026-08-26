@@ -6,6 +6,7 @@ from middleware.tenant_context import require_tenant
 from utils.auth_helpers import obtener_token, token_requerido, user_from_token
 from werkzeug.utils import secure_filename
 from services.tenant_resolver import resolve_tenant_and_user
+from utils.tenant_admin_access import can_manage_tenant_catalog
 from services.vision_extractor import extract_table_from_file
 from services.catalog_inventory import (
     inventory_columns_contract,
@@ -54,6 +55,14 @@ def _catalog_plan_required_response(tenant):
     )
     response.status_code = 403
     return response
+
+
+def _catalog_forbidden_response():
+    return _catalog_import_error(
+        "catalog_tenant_scope_forbidden",
+        "No tenes permisos para administrar el catalogo de este tenant.",
+        403,
+    )
 
 
 def _catalog_writes_allowed(tenant) -> bool:
@@ -422,8 +431,6 @@ def _persist_rows(owner_id: int, tenant_id: int, rows: list[dict]) -> int:
 
 
 def _legacy_catalog_current_user():
-    if current_app.config.get("TESTING"):
-        return None
     token = obtener_token()
     user = user_from_token(token) if token else None
     return user
@@ -443,7 +450,7 @@ def legacy_catalog_import_method_not_allowed():
 @catalog_import_bp.route('/api/admin/catalogo/importar', methods=['POST'])
 def legacy_catalog_import():
     current_user = _legacy_catalog_current_user()
-    if not current_app.config.get("TESTING") and not current_user:
+    if not current_user:
         return _catalog_import_error("token_missing", "Token de autenticacion requerido.", 401)
 
     upload = request.files.get("archivo") or request.files.get("file")
@@ -460,6 +467,9 @@ def legacy_catalog_import():
             "No se pudo resolver el tenant para importar el catalogo.",
             400,
         )
+
+    if not can_manage_tenant_catalog(current_user, tenant):
+        return _catalog_forbidden_response()
 
     if not _catalog_writes_allowed(tenant):
         return _catalog_plan_required_response(tenant)
@@ -543,6 +553,8 @@ def legacy_catalog_import():
 @require_tenant
 def create_import_session(current_user):
     tenant = g.tenant_profile
+    if not can_manage_tenant_catalog(current_user, tenant):
+        return _catalog_forbidden_response()
     if not _catalog_writes_allowed(tenant):
         return _catalog_plan_required_response(tenant)
 
@@ -639,6 +651,8 @@ def options_import_session(upload_id):
 @require_tenant
 def get_import_session(current_user, upload_id):
     tenant = g.tenant_profile
+    if not can_manage_tenant_catalog(current_user, tenant):
+        return _catalog_forbidden_response()
     upload = CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id).first()
     if not upload:
         return jsonify({"error": "Not found"}), 404
@@ -652,6 +666,8 @@ def get_import_session(current_user, upload_id):
 @require_tenant
 def update_import_preview(current_user, upload_id):
     tenant = g.tenant_profile
+    if not can_manage_tenant_catalog(current_user, tenant):
+        return _catalog_forbidden_response()
     if not _catalog_writes_allowed(tenant):
         return _catalog_plan_required_response(tenant)
 
@@ -682,6 +698,8 @@ def update_import_preview(current_user, upload_id):
 @require_tenant
 def commit_import_session(current_user, upload_id):
     tenant = g.tenant_profile
+    if not can_manage_tenant_catalog(current_user, tenant):
+        return _catalog_forbidden_response()
     if not _catalog_writes_allowed(tenant):
         return _catalog_plan_required_response(tenant)
 

@@ -2322,6 +2322,10 @@ def pedidos_desde_archivo():
             widget_token=widget_token,
         )
     except TenantResolutionError:
+        # An explicit public selector is authoritative. If it is invalid or
+        # inactive, never recover through the configured/default tenant.
+        if tenant_slug or tenant_id or widget_token:
+            return _json_error(404, "tenant_no_encontrado", "Tenant no encontrado")
         tenant, owner = _resolve_public_owner()
         resolved_as_anon = True
         if not tenant or not owner:

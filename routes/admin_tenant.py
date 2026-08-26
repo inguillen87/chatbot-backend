@@ -8,6 +8,7 @@ from datetime import datetime, timezone, timedelta
 from utils.auth_helpers import obtener_token, token_requerido, user_from_token
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
+from utils.tenant_admin_access import can_manage_tenant_control_plane
 from middleware.tenant_context import require_tenant
 from models import (
     CatalogoItem,
@@ -2503,6 +2504,9 @@ def update_tenant_config_bundle(current_user, slug):
     # IDOR Check (same logic as GET and other admin tenant endpoints)
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        reason_code = "tenant_inactive" if getattr(tenant, "is_active", True) is not True else "tenant_admin_required"
+        return jsonify({"error": "Unauthorized", "reason_code": reason_code}), 403
 
     data = request.json or {}
 
@@ -2565,6 +2569,11 @@ def assign_whatsapp_number(current_user, slug):
     # IDOR Check
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        reason_code = "tenant_inactive" if getattr(tenant, "is_active", True) is not True else "tenant_admin_required"
+        return jsonify({"error": "Unauthorized", "reason_code": reason_code}), 403
+    if not plan_allows_full_integrations(tenant):
+        return _integration_plan_required_response(tenant, "whatsapp_sender_management")
 
     number = assign_number_to_tenant(tenant)
     if not number:

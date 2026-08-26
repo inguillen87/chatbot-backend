@@ -80,7 +80,10 @@ def _lookup_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
 
     # Fast path: direct case-insensitive match
     tenant = (
-        TenantProfile.query.filter(func.lower(TenantProfile.slug) == normalized)
+        TenantProfile.query.filter(
+            func.lower(TenantProfile.slug) == normalized,
+            TenantProfile.is_active.is_(True),
+        )
         .order_by(TenantProfile.id.asc())
         .first()
     )
@@ -88,7 +91,7 @@ def _lookup_tenant_by_slug(slug: Optional[str]) -> Optional[TenantProfile]:
         return tenant
 
     # Fallback for slugs with accents/spacing variants stored in DB.
-    for candidate in TenantProfile.query.with_entities(TenantProfile).all():
+    for candidate in TenantProfile.query.filter(TenantProfile.is_active.is_(True)).all():
         candidate_slug = getattr(candidate, "slug", None)
         if candidate_slug and _normalize_slug(candidate_slug) == normalized:
             return candidate
@@ -121,7 +124,7 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
         or getattr(user, "tenant_profile_pyme", None)
     )
 
-    if tenant:
+    if tenant and getattr(tenant, "is_active", True) is True:
         return tenant
 
     # Algunos usuarios legacy sólo guardan ``municipio_id``/``pyme_id`` sin
@@ -131,13 +134,19 @@ def _tenant_for_user(user: Optional[User]) -> Optional[TenantProfile]:
     municipio_id = getattr(user, "municipio_id", None)
     pyme_id = getattr(user, "pyme_id", None)
     if municipio_id:
-        tenant = TenantProfile.query.filter_by(municipio_id=municipio_id).first()
+        tenant = TenantProfile.query.filter_by(
+            municipio_id=municipio_id,
+            is_active=True,
+        ).first()
         if tenant:
             g.tenant_profile = tenant
             g.tenant_profile_slug = getattr(tenant, "slug", None)
             return tenant
     if pyme_id:
-        tenant = TenantProfile.query.filter_by(pyme_id=pyme_id).first()
+        tenant = TenantProfile.query.filter_by(
+            pyme_id=pyme_id,
+            is_active=True,
+        ).first()
         if tenant:
             g.tenant_profile = tenant
             g.tenant_profile_slug = getattr(tenant, "slug", None)
@@ -159,6 +168,7 @@ def _first_tenant_with_owner() -> tuple[Optional[TenantProfile], Optional[User]]
 
     tenant = (
         TenantProfile.query.filter(
+            TenantProfile.is_active.is_(True),
             (TenantProfile.municipio_id.isnot(None)) | (TenantProfile.pyme_id.isnot(None))
         )
         .order_by(TenantProfile.id.asc())
@@ -244,6 +254,8 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
     """
 
     tenant = getattr(g, "tenant_profile", None)
+    if tenant is not None and getattr(tenant, "is_active", True) is not True:
+        tenant = None
     owner = getattr(tenant, "municipio", None) or getattr(tenant, "pyme", None)
     if owner:
         return tenant, owner
@@ -269,15 +281,6 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
         or referrer_slug
     )
     tenant_id = _coerce_int(request.headers.get("X-Tenant-Id") or request.args.get("tenant_id"))
-    has_explicit_hint = bool(
-        tenant_slug
-        or tenant_id
-        or request.headers.get("X-Widget-Token")
-        or request.args.get("widget_token")
-        or path_tenant_slug
-        or referrer_slug
-    )
-
     widget_token = (
         request.headers.get("X-Widget-Token")
         or request.headers.get("X-Entity-Token")
@@ -314,7 +317,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
                 return tenant, owner
 
     if tenant_id:
-        tenant = TenantProfile.query.get(tenant_id)
+        tenant = TenantProfile.query.filter_by(id=tenant_id, is_active=True).first()
         if tenant:
             owner = tenant.municipio or tenant.pyme
             if owner:
@@ -333,7 +336,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
             tenant = _tenant_for_user(owner)
             return tenant, owner
 
-    if require_explicit and not has_explicit_hint:
+    if require_explicit:
         return None, None
 
     default_tenant_slug = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")

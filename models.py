@@ -691,14 +691,19 @@ class TenantProfile(db.Model, TimestampMixin):
             # that breaks dark mode contrast (e.g. white or light gray).
             # We stick to the safe default dark secondary (#1f2937) unless explicitly overridden.
 
-        # Merge explicit theme_config
+        def _deep_merge(base: dict, update: dict) -> dict:
+            for key, value in update.items():
+                if isinstance(value, dict) and isinstance(base.get(key), dict):
+                    _deep_merge(base[key], value)
+                else:
+                    base[key] = copy.deepcopy(value)
+            return base
+
+        # Merge the complete explicit contract. Public consumers need behavior,
+        # content and advanced keys as well as the light/dark palette.
         if self.widget_settings and isinstance(self.widget_settings.theme_config, dict):
             stored = self.widget_settings.theme_config
-            config["mode"] = stored.get("mode", config["mode"])
-            if isinstance(stored.get("light"), dict):
-                config["light"].update(stored["light"])
-            if isinstance(stored.get("dark"), dict):
-                config["dark"].update(stored["dark"])
+            _deep_merge(config, stored)
 
         return config
 

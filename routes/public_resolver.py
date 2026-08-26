@@ -1730,8 +1730,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     welcome_title = cfg.get("widget_welcome_title") or cfg.get("welcome_title") or tenant.nombre
     welcome_subtitle = cfg.get("widget_welcome_subtitle") or cfg.get("welcome_subtitle") or "Asistente Virtual"
 
-    position = cfg.get("widget_position") or cfg.get("position")
-    border_radius = cfg.get("widget_border_radius") or cfg.get("border_radius")
+    theme_config = cfg.get("theme_config") if isinstance(cfg.get("theme_config"), dict) else {}
+    behavior_config = theme_config.get("behavior") if isinstance(theme_config.get("behavior"), dict) else {}
+    advanced_config = theme_config.get("advanced") if isinstance(theme_config.get("advanced"), dict) else {}
+    position = cfg.get("widget_position") or cfg.get("position") or behavior_config.get("position")
+    border_radius = cfg.get("widget_border_radius") or cfg.get("border_radius") or theme_config.get("border_radius")
     launcher_text = cfg.get("widget_launcher_text") or cfg.get("launcher_text")
     header_title = cfg.get("widget_header_title") or cfg.get("header_title")
     header_subtitle = cfg.get("widget_header_subtitle") or cfg.get("header_subtitle")
@@ -1747,7 +1750,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         or "https://www.chatboc.ar/iframe"
     )
 
-    right_offset = cfg.get("widget_right", "20px")
+    right_offset = cfg.get("widget_right") or cfg.get("side_offset") or behavior_config.get("side_offset") or "20px"
     left_offset = cfg.get("widget_left", right_offset)
 
     ux = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
@@ -1777,8 +1780,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-height": height,
         "data-closed-width": closed_size,
         "data-closed-height": closed_size,
-        "data-bottom": cfg.get("widget_bottom", "20px"),
-        "data-z-index": cfg.get("widget_z_index", "100000"),
+        "data-bottom": cfg.get("widget_bottom") or cfg.get("bottom") or behavior_config.get("bottom_offset") or "20px",
+        "data-z-index": cfg.get("widget_z_index") or advanced_config.get("z_index") or "100000",
         "data-endpoint": cfg.get("widget_endpoint") or tenant.tipo or "municipio",
         "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
         "data-primary-color": cfg.get("primary_color") or theme.get("primary"),
@@ -1788,7 +1791,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-surface-color": theme.get("surface"),
         "data-launcher-color": theme.get("launcher"),
         "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
-        "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
+        "data-logo-animation": cfg.get("widget_logo_animation") or theme_config.get("animation") or theme.get("animation"),
         "data-widget-preset": widget_preset,
         "data-motion-level": motion_level,
         "data-glassmorphism": str(glassmorphism).lower(),
