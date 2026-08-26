@@ -114,10 +114,12 @@ def _resolve_backend_version(
 ) -> str:
     """Resolve the deployed backend revision before manual fallbacks.
 
-    Platform-provided Git revisions are immutable for a deployment, while
-    ``BACKEND_VERSION`` can remain stale when environment variables are copied
-    between releases.  Vercel wins if both platform signals are present (for
-    example, after migrating Render variables into a Vercel project).
+    ``CHATBOC_DEPLOYMENT_REVISION`` is an immutable, deployment-scoped value
+    supplied by release automation. It is required for CLI/container releases,
+    where Vercel may expose the Git integration SHA instead of the local
+    worktree revision that produced the image. Platform-provided Git revisions
+    remain the next-best source, while ``BACKEND_VERSION`` is only a manual
+    fallback because copied project variables can become stale.
     """
 
     runtime_env = os.environ if environ is None else environ
@@ -128,6 +130,7 @@ def _resolve_backend_version(
         platform_revisions.append(runtime_env.get("RENDER_GIT_COMMIT"))
 
     return _coalesce_version(
+        runtime_env.get("CHATBOC_DEPLOYMENT_REVISION"),
         *platform_revisions,
         runtime_env.get("BACKEND_VERSION"),
         runtime_env.get("SOURCE_VERSION"),  # Heroku style

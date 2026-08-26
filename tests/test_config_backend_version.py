@@ -1,6 +1,20 @@
 from config import _resolve_backend_version
 
 
+def test_deployment_scoped_revision_wins_for_local_cli_container_release():
+    assert (
+        _resolve_backend_version(
+            {
+                "VERCEL": "1",
+                "CHATBOC_DEPLOYMENT_REVISION": "cli-worktree-release-sha",
+                "VERCEL_GIT_COMMIT_SHA": "stale-git-integration-sha",
+                "BACKEND_VERSION": "stale-manual-version",
+            }
+        )
+        == "cli-worktree-release-sha"
+    )
+
+
 def test_vercel_revision_wins_over_stale_manual_and_render_values():
     assert (
         _resolve_backend_version(
