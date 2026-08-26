@@ -547,14 +547,14 @@ def test_chat_menu_reconciles_durable_preview_participation(demo_app):
         public_base_url="https://chatboc-r2-preview.vercel.app",
     )
     contract = menu["data"]["surveys_votings"]
-    first = contract["items"][0]
+    participated = next(item for item in contract["all_items"] if item["slug"] == SLUG)
 
     assert contract["durable_demo_participation"] is True
-    assert first["results"]["seeded_responses"] == 100
-    assert first["results"]["interactive_demo_responses"] == 1
-    assert first["results"]["total_respuestas"] == 101
-    assert first["analytics_summary"]["responses"] == 101
-    assert first["verified_citizen_responses"] == 0
+    assert participated["results"]["seeded_responses"] == 100
+    assert participated["results"]["interactive_demo_responses"] == 1
+    assert participated["results"]["total_respuestas"] == 101
+    assert participated["analytics_summary"]["responses"] == 101
+    assert participated["verified_citizen_responses"] == 0
     assert "separa las participaciones interactivas de Preview" in menu["message_body"]
 
 

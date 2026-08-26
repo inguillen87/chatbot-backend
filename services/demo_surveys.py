@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import quote_plus, urlparse
 
 from services.demo_pillar_catalog import normalize_demo_sector
+from services.institutional_demo_surveys import build_junin_demo_templates
 from services.survey_response_provenance import build_survey_response_provenance
 
 
@@ -118,7 +119,11 @@ def _split_counts(total: int, labels: list[str], seed_key: str) -> list[dict[str
     return [{"label": label, "count": count} for label, count in zip(labels, counts)]
 
 
-def _templates_for_sector(sector: str) -> list[dict[str, Any]]:
+def _templates_for_sector(
+    sector: str,
+    *,
+    tenant_slug: str | None = None,
+) -> list[dict[str, Any]]:
     normalized = normalize_demo_sector(sector)
     if normalized == "educacion":
         return [
@@ -172,7 +177,7 @@ def _templates_for_sector(sector: str) -> list[dict[str, Any]]:
             },
         ]
     if normalized == "gobierno":
-        return [
+        base_templates = [
             {
                 "id": "prioridades-barriales",
                 "tipo": "votacion",
@@ -222,6 +227,9 @@ def _templates_for_sector(sector: str) -> list[dict[str, Any]]:
                 "opciones": ["Juegos", "Limpieza", "Seguridad", "Arbolado"],
             },
         ]
+        if _slug_part(tenant_slug, fallback="") == "junin":
+            return [*build_junin_demo_templates(), *base_templates]
+        return base_templates
     return [
         {
             "id": "preferencias-productos",
@@ -548,8 +556,9 @@ def _build_demo_item(
     public_base_url: str,
 ) -> dict[str, Any]:
     normalized = normalize_demo_sector(sector)
-    safe_tenant = _slug_part(tenant_slug or normalized)
-    slug = f"demo-{normalized}-{safe_tenant}-{template['id']}"
+    safe_tenant = _slug_part(template.get("tenant_slug") or tenant_slug or normalized)
+    explicit_slug = str(template.get("slug") or "").strip().lower()
+    slug = explicit_slug or f"demo-{normalized}-{safe_tenant}-{template['id']}"
     links = _demo_survey_links(slug, public_base_url)
     public_url = links["public_page_url"]
     share = _demo_share_contract(str(template.get("titulo") or "esta encuesta"), slug, public_base_url)
@@ -575,6 +584,13 @@ def _build_demo_item(
         "public_state": public_state,
         "estado_publico": public_state,
         "demo_mode": True,
+        "institutional_demo": bool(template.get("institutional_demo", False)),
+        "official": False,
+        "municipal_truth": False,
+        "data_mode": template.get("data_mode") or "synthetic_demo_scenario",
+        "content_origin": template.get("content_origin") or "seed_demo",
+        "content_origin_ref": template.get("content_origin_ref") or "backend_demo_contract",
+        "disclaimer": template.get("disclaimer") or "Datos sintéticos de demostración; no son estadísticas oficiales.",
         "data_provenance": results["data_provenance"],
         "response_provenance": results["response_provenance"],
         "es_votacion_envivo": template.get("tipo") == "votacion",
@@ -588,7 +604,11 @@ def _build_demo_item(
             "personas_random": DEMO_SURVEY_RESPONSE_COUNT,
             "deterministic": True,
             "real_people": False,
-            "source": "backend_demo_contract",
+            "source": (
+                "qa_preview_institutional_manifest"
+                if template.get("institutional_demo")
+                else "backend_demo_contract"
+            ),
         },
         "results": results,
         "analytics_summary": {
@@ -633,7 +653,10 @@ def _all_demo_items(
             tenant_slug=tenant_slug or normalized,
             public_base_url=public_base_url,
         )
-        for template in _templates_for_sector(normalized)
+        for template in _templates_for_sector(
+            normalized,
+            tenant_slug=tenant_slug,
+        )
     ]
 
 
@@ -650,7 +673,11 @@ def infer_demo_survey_context(slug: str | None) -> tuple[str, str] | None:
         prefix = f"demo-{sector}-"
         if not normalized_slug.startswith(prefix):
             continue
-        for template in _templates_for_sector(sector):
+        scoped_templates = build_junin_demo_templates() if sector == "gobierno" else []
+        for template in [*scoped_templates, *_templates_for_sector(sector)]:
+            explicit_slug = str(template.get("slug") or "").strip().lower()
+            if explicit_slug and normalized_slug == explicit_slug:
+                return sector, str(template.get("tenant_slug") or "junin")
             suffix = f"-{template['id']}"
             if normalized_slug.endswith(suffix):
                 tenant_slug = normalized_slug[len(prefix) : -len(suffix)]
