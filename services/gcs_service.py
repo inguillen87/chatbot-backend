@@ -544,6 +544,50 @@ storage = LazyModule("google.cloud.storage") if GCS_ENABLED else None
 
 BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on", "enabled"})
+
+
+def _vercel_durable_uploads_require_r2() -> bool:
+    """Return whether legacy upload entrypoints must persist exclusively in R2.
+
+    The switch is intentionally evaluated per call so a reversible environment
+    change does not require importing this module again. It defaults to false
+    to preserve the current provider fallback chain during the migration.
+    """
+
+    raw_value: Any = os.environ.get("VERCEL_DURABLE_UPLOADS_REQUIRE_R2")
+    if raw_value is None and has_app_context():
+        raw_value = current_app.config.get("VERCEL_DURABLE_UPLOADS_REQUIRE_R2")
+    return str(raw_value or "").strip().lower() in _TRUE_ENV_VALUES
+
+
+def _log_r2_required_failure(original_filename: str, detail: str) -> None:
+    """Log a fail-closed R2 decision without exposing storage credentials."""
+
+    message = (
+        "Durable upload rejected because R2 is required for %s: %s. "
+        "Secondary and local storage fallbacks were not attempted."
+    )
+    target_logger = current_app.logger if has_app_context() else logger
+    target_logger.error(message, original_filename, detail)
+
+
+def _cleanup_partial_r2_uploads(*keys: str | None) -> None:
+    """Best-effort cleanup when a multi-object R2 upload cannot complete."""
+
+    delete_object = getattr(r2_service, "delete_object", None)
+    if not callable(delete_object):
+        return
+    for key in keys:
+        if not key:
+            continue
+        try:
+            delete_object(key)
+        except Exception:
+            logger.warning(
+                "Unable to clean up a partial R2 upload.",
+                exc_info=True,
+            )
 
 
 def _read_upload_bytes_bounded(file_storage, *, max_bytes: int = MAX_FILE_SIZE) -> bytes:
@@ -903,6 +947,7 @@ def upload_to_gcs(
         file_storage,
         max_bytes=max_file_size,
     )
+    require_r2 = _vercel_durable_uploads_require_r2()
 
     # 1. R2 Upload Strategy
     try:
@@ -926,9 +971,15 @@ def upload_to_gcs(
                 "mimetype": file_storage.mimetype,
             }
         else:
+            if require_r2:
+                _log_r2_required_failure(original_filename, "upload returned no URL")
+                return None
             logger.warning(f"R2 upload failed for {original_filename}, attempting fallback.")
     except Exception as e:
         logger.error(f"R2 Upload Exception: {e}", exc_info=True)
+        if require_r2:
+            _log_r2_required_failure(original_filename, "upload raised an exception")
+            return None
 
     # 2. Cloudinary Fallback
     _ensure_cloudinary_initialized()
@@ -1118,6 +1169,7 @@ def guardar_adjunto_y_thumbnail(
         file_storage,
         max_bytes=max_file_size,
     )
+    require_r2 = _vercel_durable_uploads_require_r2()
 
     # Create a new stream for thumbnail generation
     file_stream_for_thumb = io.BytesIO(file_bytes)
@@ -1126,6 +1178,8 @@ def guardar_adjunto_y_thumbnail(
     )
 
     # 1. R2 Upload Strategy
+    r2_key: str | None = None
+    r2_thumb_key: str | None = None
     try:
         # Determine context/owner
         owner = getattr(g, 'current_user', None) or getattr(g, 'owner_user', None)
@@ -1153,6 +1207,13 @@ def guardar_adjunto_y_thumbnail(
                 )
                 if thumb_url:
                     thumb_meta["url"] = thumb_url
+                elif require_r2:
+                    _cleanup_partial_r2_uploads(r2_key, r2_thumb_key)
+                    _log_r2_required_failure(
+                        original_filename,
+                        "thumbnail upload returned no URL",
+                    )
+                    return None
 
             return {
                 "unique_name": unique_name,
@@ -1164,10 +1225,17 @@ def guardar_adjunto_y_thumbnail(
                 "thumbUrl": thumb_url,
             }
         else:
+            if require_r2:
+                _log_r2_required_failure(original_filename, "upload returned no URL")
+                return None
             logger.warning(f"R2 upload failed for {original_filename}, attempting fallback.")
 
     except Exception as e:
         logger.error(f"R2 Upload Exception: {e}", exc_info=True)
+        if require_r2:
+            _cleanup_partial_r2_uploads(r2_key, r2_thumb_key)
+            _log_r2_required_failure(original_filename, "upload raised an exception")
+            return None
         # Continue to fallbacks
 
     # 2. Cloudinary Fallback
