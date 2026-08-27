@@ -9,6 +9,10 @@ from botocore.exceptions import BotoCoreError, ClientError
 from urllib.parse import quote, unquote, urlparse
 
 from services.media_cache_policy import cache_control_for_key
+from services.outbox_execution_budget import (
+    outbox_execution_budget_active,
+    outbox_io_timeout_seconds,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -172,11 +176,19 @@ class R2Service:
         self._client_initialization_attempted = False
         self._client_lock = threading.Lock()
 
-    def _create_client(self):
+    def _create_client(self, *, timeout_seconds=None):
         """Import boto3 and build the client only for the first object operation."""
 
         import boto3
         from botocore.config import Config
+
+        config_kwargs = {"signature_version": "s3v4"}
+        if timeout_seconds is not None:
+            config_kwargs.update(
+                connect_timeout=float(timeout_seconds),
+                read_timeout=float(timeout_seconds),
+                retries={"total_max_attempts": 1, "mode": "standard"},
+            )
 
         return boto3.client(
             "s3",
@@ -184,10 +196,30 @@ class R2Service:
             aws_access_key_id=self.access_key_id,
             aws_secret_access_key=self.secret_access_key,
             region_name=self.region_name,
-            config=Config(signature_version="s3v4"),
+            config=Config(**config_kwargs),
         )
 
     def _get_client(self):
+        bounded_timeout = outbox_io_timeout_seconds()
+        if bounded_timeout is not None:
+            if not (
+                self.endpoint_url
+                and self.access_key_id
+                and self.secret_access_key
+                and self.bucket_name
+            ):
+                return None
+            try:
+                # Never reuse a warm process client whose botocore socket and
+                # retry policy predates the cron execution budget.
+                return self._create_client(timeout_seconds=bounded_timeout)
+            except Exception as exc:
+                logger.error(
+                    "Failed to initialize bounded R2 client error_type=%s",
+                    type(exc).__name__,
+                )
+                return None
+
         client = self.client
         if client is not None:
             return client
@@ -517,12 +549,15 @@ class R2Service:
         Returns:
             str: Public URL of the uploaded file, or None if upload fails.
         """
-        if not self._get_client() or not self.bucket_name:
+        if not self.bucket_name:
             logger.warning("R2 is not configured or initialized.")
             return None
 
         key = self.generate_key(filename, tenant_slug, context_type=context_type)
-        return self.upload_file_with_key(file_obj, key, content_type)
+        result = self.upload_file_with_key(file_obj, key, content_type)
+        if result is None:
+            logger.warning("R2 is not configured or the upload failed.")
+        return result
 
     def upload_file_with_key(self, file_obj, key, content_type):
         """
@@ -538,11 +573,21 @@ class R2Service:
                 'CacheControl': cache_control_for_key(key, content_type),
             }
 
+            upload_kwargs = {"ExtraArgs": extra_args}
+            if outbox_execution_budget_active():
+                from boto3.s3.transfer import TransferConfig
+
+                # The cron accepts at most one provider request per upload;
+                # multipart transfer would multiply the per-attempt timeout.
+                upload_kwargs["Config"] = TransferConfig(
+                    multipart_threshold=5 * 1024 * 1024 * 1024,
+                    use_threads=False,
+                )
             client.upload_fileobj(
                 file_obj,
                 self.bucket_name,
                 key,
-                ExtraArgs=extra_args
+                **upload_kwargs,
             )
 
             # Existing callers expect the upload result to be the configured
@@ -556,6 +601,14 @@ class R2Service:
         except Exception as e:
             logger.error(f"Unexpected error uploading to R2: {e}")
             return None
+        finally:
+            if outbox_execution_budget_active():
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
 # Singleton instance
 r2_service = R2Service()

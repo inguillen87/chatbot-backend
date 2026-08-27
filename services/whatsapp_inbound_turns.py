@@ -33,6 +33,7 @@ from models import (
     WhatsAppInboundTurn,
     WhatsAppOutboundAttempt,
 )
+from services.outbox_execution_budget import outbox_persistence_operation
 
 
 INBOUND_CONTRACT_VERSION = WhatsAppInboundTurn.CONTRACT_VERSION
@@ -1270,6 +1271,7 @@ def _normalize_result(result: Optional[Mapping[str, Any]]) -> Optional[dict[str,
     return dict(normalized)
 
 
+@outbox_persistence_operation
 def complete_whatsapp_inbound_turn(
     turn_id: Any,
     lease_token: Any,
@@ -1391,6 +1393,7 @@ def _retry_delay(attempt_count: int) -> int:
     return min(BASE_BACKOFF_SECONDS * (2**exponent), MAX_BACKOFF_SECONDS)
 
 
+@outbox_persistence_operation
 def _fail_whatsapp_inbound_turn(
     turn_id: Any,
     lease_token: Any,
@@ -1767,6 +1770,7 @@ def claim_next_whatsapp_outbound_attempt(
     return None
 
 
+@outbox_persistence_operation
 def accept_whatsapp_outbound_attempt(
     attempt_id: Any,
     lease_token: Any,
@@ -2018,6 +2022,7 @@ def reconcile_whatsapp_outbound_status(
         return True
 
 
+@outbox_persistence_operation
 def _fail_whatsapp_outbound_attempt(
     attempt_id: Any,
     lease_token: Any,
@@ -2131,6 +2136,7 @@ def dead_whatsapp_outbound_attempt(
     )
 
 
+@outbox_persistence_operation
 def uncertain_whatsapp_outbound_attempt(
     attempt_id: Any,
     lease_token: Any,

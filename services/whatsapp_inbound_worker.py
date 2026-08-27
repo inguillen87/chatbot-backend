@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from contextvars import copy_context
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -35,6 +36,10 @@ from celery_utils import celery_app
 from extensions import db
 from models import ProviderSender, TenantProfile, WhatsAppOutboundAttempt
 from services.llm_provider_network_policy import require_provider_network
+from services.outbox_execution_budget import (
+    outbox_persistence_budget,
+    outbox_twilio_http_client,
+)
 from services.provider_platform import is_sender_ready_status
 from services.twilio_tech_provider import (
     TwilioRuntimeCredentials,
@@ -270,8 +275,9 @@ class _InboundLeaseHeartbeat:
         self.interval = max(5.0, min(self.lease_seconds / 3.0, 60.0))
         self._stop = threading.Event()
         self._lost = threading.Event()
+        execution_context = copy_context()
         self._thread = threading.Thread(
-            target=self._run,
+            target=lambda: execution_context.run(self._run),
             name=f"whatsapp-lease-{claim.turn_id[:8]}",
             daemon=True,
         )
@@ -500,55 +506,56 @@ def process_whatsapp_inbound_claim(
             response = webhook_module.whatsapp_webhook()
 
         heartbeat.stop()
-        if not heartbeat.renew_now():
+        with outbox_persistence_budget():
+            if not heartbeat.renew_now():
+                return InboundProcessingResult(
+                    status="lost_lease",
+                    turn_id=claim.turn_id,
+                    tenant_id=claim.tenant_id,
+                    outbound_count=len(collector.outbound),
+                    error_code="inbound_lease_heartbeat_lost",
+                )
+
+            status_code = _response_status_code(response)
+            if status_code >= 500:
+                raise RuntimeError(f"webhook_replay_http_{status_code}")
+            if status_code >= 400:
+                raise WhatsAppWorkerScopeError(
+                    f"webhook_replay_rejected_{status_code}"
+                )
+
+            worker_result: dict[str, Any] = {
+                "contract_version": "whatsapp.worker_result.v1",
+                "response_status": status_code,
+                "outbound_count": len(collector.outbound),
+            }
+            if interview_consent_receipt is not None:
+                worker_result["interview_consent_receipt"] = (
+                    interview_consent_receipt
+                )
+
+            completion = complete_whatsapp_inbound_turn(
+                claim.turn_id,
+                claim.lease_token,
+                result=worker_result,
+                outbound=collector.outbound,
+            )
+            if not completion.completed:
+                return InboundProcessingResult(
+                    status="lost_lease",
+                    turn_id=claim.turn_id,
+                    tenant_id=claim.tenant_id,
+                    outbound_count=len(collector.outbound),
+                    response_status=status_code,
+                    error_code="completion_fence_rejected",
+                )
             return InboundProcessingResult(
-                status="lost_lease",
+                status="completed",
                 turn_id=claim.turn_id,
                 tenant_id=claim.tenant_id,
-                outbound_count=len(collector.outbound),
-                error_code="inbound_lease_heartbeat_lost",
-            )
-
-        status_code = _response_status_code(response)
-        if status_code >= 500:
-            raise RuntimeError(f"webhook_replay_http_{status_code}")
-        if status_code >= 400:
-            raise WhatsAppWorkerScopeError(
-                f"webhook_replay_rejected_{status_code}"
-            )
-
-        worker_result: dict[str, Any] = {
-            "contract_version": "whatsapp.worker_result.v1",
-            "response_status": status_code,
-            "outbound_count": len(collector.outbound),
-        }
-        if interview_consent_receipt is not None:
-            worker_result["interview_consent_receipt"] = (
-                interview_consent_receipt
-            )
-
-        completion = complete_whatsapp_inbound_turn(
-            claim.turn_id,
-            claim.lease_token,
-            result=worker_result,
-            outbound=collector.outbound,
-        )
-        if not completion.completed:
-            return InboundProcessingResult(
-                status="lost_lease",
-                turn_id=claim.turn_id,
-                tenant_id=claim.tenant_id,
-                outbound_count=len(collector.outbound),
+                outbound_count=len(completion.outbound_attempt_ids),
                 response_status=status_code,
-                error_code="completion_fence_rejected",
             )
-        return InboundProcessingResult(
-            status="completed",
-            turn_id=claim.turn_id,
-            tenant_id=claim.tenant_id,
-            outbound_count=len(completion.outbound_attempt_ids),
-            response_status=status_code,
-        )
     except WhatsAppWorkerScopeError as exc:
         heartbeat.stop()
         error_code = str(exc)
@@ -795,7 +802,17 @@ def dispatch_next_whatsapp_outbound_attempt(
             from routes.whatsapp_webhook import _send_twilio_message
 
             require_provider_network("twilio", app)
-            client = Client(credentials.account_sid, credentials.auth_token)
+            bounded_http_client = outbox_twilio_http_client()
+            client_kwargs = (
+                {"http_client": bounded_http_client}
+                if bounded_http_client is not None
+                else {}
+            )
+            client = Client(
+                credentials.account_sid,
+                credentials.auth_token,
+                **client_kwargs,
+            )
             provider_message = _send_twilio_message(client, **params)
         provider_sid = str(getattr(provider_message, "sid", None) or "").strip()
         if not provider_sid:

@@ -171,6 +171,23 @@ def test_r2_upload_file_generates_public_catalog_key_from_tenant_and_filename():
     assert client.calls[0]["extra_args"]["CacheControl"] == "public, max-age=604800"
 
 
+def test_r2_upload_file_uses_one_client_lookup_per_upload():
+    client = _RecordingS3Client()
+    service = _configured_service(client)
+
+    with patch.object(service, "_get_client", wraps=service._get_client) as get_client:
+        url = service.upload_file(
+            BytesIO(b"image"),
+            "luminaria.jpg",
+            "image/jpeg",
+            tenant_slug="junin",
+            context_type="reclamos",
+        )
+
+    assert url is not None
+    assert get_client.call_count == 1
+
+
 def test_r2_upload_file_uses_opaque_names_for_reclamo_attachments():
     client = _RecordingS3Client()
     service = _configured_service(client)

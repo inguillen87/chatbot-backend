@@ -124,6 +124,7 @@ from services.llm_provider_network_policy import (
     provider_network_allowed,
     require_provider_network,
 )
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from services.education_contracts import (
     build_education_case_ack_payload,
     build_education_pending_case,
@@ -2065,11 +2066,15 @@ def _download_twilio_media(
     """Download bounded provider media after the shared test-network gate."""
 
     require_provider_network("twilio")
+    bounded_timeout = outbox_io_timeout_seconds(timeout)
+    effective_timeout = (
+        bounded_timeout if bounded_timeout is not None else timeout
+    )
     response = requests.get(
         media_url,
         auth=auth,
         stream=True,
-        timeout=timeout,
+        timeout=effective_timeout,
     )
     try:
         response.raise_for_status()

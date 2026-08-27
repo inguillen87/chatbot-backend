@@ -41,6 +41,7 @@ from services.llm_provider_network_policy import (
     ProviderNetworkDisabledError,
     require_provider_network,
 )
+from services.outbox_execution_budget import outbox_twilio_http_client
 from services.provider_platform import is_sender_ready_status
 from services.message_templates import whatsapp_template_lifecycle
 from services.twilio_tech_provider import resolve_twilio_runtime_credentials
@@ -753,7 +754,17 @@ def send_prepared_tenant_twilio_message(
             "Tenant message blocked provider=twilio reason=test_network_disabled"
         )
         raise
-    client = Client(prepared.account_sid, prepared.auth_token)
+    bounded_http_client = outbox_twilio_http_client()
+    client_kwargs = (
+        {"http_client": bounded_http_client}
+        if bounded_http_client is not None
+        else {}
+    )
+    client = Client(
+        prepared.account_sid,
+        prepared.auth_token,
+        **client_kwargs,
+    )
     if on_provider_call_start is not None:
         on_provider_call_start()
     message = client.messages.create(**dict(prepared.params))

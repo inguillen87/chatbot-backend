@@ -23,6 +23,12 @@ from sqlalchemy import text
 
 from models import db
 from services.domain_effect_worker import run_domain_effect_worker
+from services.outbox_execution_budget import (
+    DEFAULT_CLEANUP_RESERVE_SECONDS,
+    activate_outbox_execution_budget,
+    install_outbox_database_timeout_hook,
+    outbox_execution_budget_active,
+)
 from services.survey_response_effect_worker import (
     run_survey_response_effect_worker,
 )
@@ -227,6 +233,8 @@ def _exclusive_reconciliation_lease(app: Any) -> Iterator[bool]:
                 raise OutboxReconciliationConfigurationError(
                     "outbox_reconciliation_requires_postgresql"
                 )
+            if outbox_execution_budget_active():
+                install_outbox_database_timeout_hook(engine)
             connection = engine.connect()
             transaction = connection.begin()
             acquired = connection.execute(
@@ -652,137 +660,146 @@ def run_outbox_reconciliation(
     has_more = False
 
     try:
-        with _exclusive_reconciliation_lease(app) as lease_acquired:
-            if not lease_acquired:
-                payload = _base_payload(
-                    limits=limits,
-                    status="contended",
-                    ok=True,
-                    elapsed_ms=round((clock() - started_at) * 1000),
-                )
-                payload.update(
-                    component_count=len(components),
-                    failed_component_count=0,
-                    attention_component_count=0,
-                    cycles_run=0,
-                    has_more=True,
-                    components=components,
-                )
-                return payload
+        with activate_outbox_execution_budget(
+            deadline_monotonic=deadline,
+            clock=clock,
+            cleanup_reserve_seconds=min(
+                DEFAULT_CLEANUP_RESERVE_SECONDS,
+                max(1.0, limits.time_budget_seconds / 3.0),
+            ),
+        ):
+            with _exclusive_reconciliation_lease(app) as lease_acquired:
+                if not lease_acquired:
+                    payload = _base_payload(
+                        limits=limits,
+                        status="contended",
+                        ok=True,
+                        elapsed_ms=round((clock() - started_at) * 1000),
+                    )
+                    payload.update(
+                        component_count=len(components),
+                        failed_component_count=0,
+                        attention_component_count=0,
+                        cycles_run=0,
+                        has_more=True,
+                        components=components,
+                    )
+                    return payload
 
-            # Change the first pipeline every UTC minute. Duplicate deliveries
-            # in one minute still contend on the DB lease, while sustained
-            # backlog cannot starve the same later pipeline every invocation.
-            invocation_offset = int(wall_clock() // 60) % len(specs)
-            for cycle_index in range(limits.max_cycles):
-                if clock() >= deadline:
-                    status = "time_budget_reached"
-                    has_more = True
-                    break
-
-                cycles_run += 1
-                cycle_processed = 0
-                cycle_failed = False
-                cycle_attention = False
-                offset = (invocation_offset + cycle_index) % len(specs)
-                ordered_specs = specs[offset:] + specs[:offset]
-                for spec_index, spec in enumerate(ordered_specs):
+                # Change the first pipeline every UTC minute. Duplicate
+                # deliveries in one minute still contend on the DB lease,
+                # while sustained backlog cannot starve the same later
+                # pipeline every invocation.
+                invocation_offset = int(wall_clock() // 60) % len(specs)
+                for cycle_index in range(limits.max_cycles):
                     if clock() >= deadline:
                         status = "time_budget_reached"
                         has_more = True
-                        for deferred in ordered_specs[spec_index:]:
-                            deferred_component = components[deferred.name]
-                            if deferred_component["attempts"] == 0:
-                                deferred_component["status"] = (
-                                    "deferred_time_budget"
-                                )
                         break
-                    component = components[spec.name]
-                    attempt_recorded = False
-                    try:
-                        report = _safe_report(spec.runner(), spec=spec)
-                        cycle_processed += _merge_component_report(
-                            component,
-                            report,
-                        )
-                        attempt_recorded = True
-                        if int(report.get("cycle_failures") or 0) > 0:
+
+                    cycles_run += 1
+                    cycle_processed = 0
+                    cycle_failed = False
+                    cycle_attention = False
+                    offset = (invocation_offset + cycle_index) % len(specs)
+                    ordered_specs = specs[offset:] + specs[:offset]
+                    for spec_index, spec in enumerate(ordered_specs):
+                        if clock() >= deadline:
+                            status = "time_budget_reached"
+                            has_more = True
+                            for deferred in ordered_specs[spec_index:]:
+                                deferred_component = components[deferred.name]
+                                if deferred_component["attempts"] == 0:
+                                    deferred_component["status"] = (
+                                        "deferred_time_budget"
+                                    )
+                            break
+                        component = components[spec.name]
+                        attempt_recorded = False
+                        try:
+                            report = _safe_report(spec.runner(), spec=spec)
+                            cycle_processed += _merge_component_report(
+                                component,
+                                report,
+                            )
+                            attempt_recorded = True
+                            if int(report.get("cycle_failures") or 0) > 0:
+                                cycle_failed = True
+                                failed_components.add(spec.name)
+                                component["status"] = "failed"
+                                component["error_type"] = (
+                                    "WorkerCycleFailure"
+                                )
+                                logger.error(
+                                    "[OUTBOX_RECONCILIATION] component_failed "
+                                    "component=%s error_type=WorkerCycleFailure",
+                                    spec.name,
+                                )
+                            elif component["status"] == "attention_required":
+                                cycle_attention = True
+                                attention_components.add(spec.name)
+                            elif int(report.get("fenced") or 0) > 0:
+                                cycle_failed = True
+                                failed_components.add(spec.name)
+                                component["status"] = "fenced"
+                                component["error_type"] = "WorkerFence"
+                                logger.warning(
+                                    "[OUTBOX_RECONCILIATION] component_fenced "
+                                    "component=%s count=%s",
+                                    spec.name,
+                                    int(report["fenced"]),
+                                )
+                            elif (
+                                int(report.get("retry_wait") or 0) > 0
+                                or int(report.get("recovered_retry_wait") or 0) > 0
+                            ):
+                                cycle_failed = True
+                                failed_components.add(spec.name)
+                                component["status"] = "retry_wait"
+                                component["error_type"] = "WorkerRetryWait"
+                                logger.warning(
+                                    "[OUTBOX_RECONCILIATION] component_retry_wait "
+                                    "component=%s count=%s",
+                                    spec.name,
+                                    int(report.get("retry_wait") or 0)
+                                    + int(report.get("recovered_retry_wait") or 0),
+                                )
+                        except Exception as exc:
                             cycle_failed = True
                             failed_components.add(spec.name)
+                            if not attempt_recorded:
+                                component["attempts"] += 1
+                                component["cycle_failures"] += 1
                             component["status"] = "failed"
-                            component["error_type"] = (
-                                "WorkerCycleFailure"
-                            )
+                            component["error_type"] = type(exc).__name__
                             logger.error(
                                 "[OUTBOX_RECONCILIATION] component_failed "
-                                "component=%s error_type=WorkerCycleFailure",
+                                "component=%s error_type=%s",
                                 spec.name,
+                                type(exc).__name__,
                             )
-                        elif component["status"] == "attention_required":
-                            cycle_attention = True
-                            attention_components.add(spec.name)
-                        elif int(report.get("fenced") or 0) > 0:
-                            cycle_failed = True
-                            failed_components.add(spec.name)
-                            component["status"] = "fenced"
-                            component["error_type"] = "WorkerFence"
-                            logger.warning(
-                                "[OUTBOX_RECONCILIATION] component_fenced "
-                                "component=%s count=%s",
-                                spec.name,
-                                int(report["fenced"]),
-                            )
-                        elif (
-                            int(report.get("retry_wait") or 0) > 0
-                            or int(report.get("recovered_retry_wait") or 0) > 0
-                        ):
-                            cycle_failed = True
-                            failed_components.add(spec.name)
-                            component["status"] = "retry_wait"
-                            component["error_type"] = "WorkerRetryWait"
-                            logger.warning(
-                                "[OUTBOX_RECONCILIATION] component_retry_wait "
-                                "component=%s count=%s",
-                                spec.name,
-                                int(report.get("retry_wait") or 0)
-                                + int(report.get("recovered_retry_wait") or 0),
-                            )
-                    except Exception as exc:
-                        cycle_failed = True
-                        failed_components.add(spec.name)
-                        if not attempt_recorded:
-                            component["attempts"] += 1
-                            component["cycle_failures"] += 1
-                        component["status"] = "failed"
-                        component["error_type"] = type(exc).__name__
-                        logger.error(
-                            "[OUTBOX_RECONCILIATION] component_failed "
-                            "component=%s error_type=%s",
-                            spec.name,
-                            type(exc).__name__,
-                        )
 
-                if cycle_failed:
-                    status = "degraded"
+                    if cycle_failed:
+                        status = "degraded"
+                        has_more = True
+                        break
+                    if cycle_attention:
+                        status = "degraded"
+                        has_more = True
+                        break
+                    if status == "time_budget_reached":
+                        break
+                    if cycle_processed == 0:
+                        status = "completed"
+                        has_more = False
+                        break
+                    if clock() >= deadline:
+                        status = "time_budget_reached"
+                        has_more = True
+                        break
+                else:
+                    status = "drain_limit_reached"
                     has_more = True
-                    break
-                if cycle_attention:
-                    status = "degraded"
-                    has_more = True
-                    break
-                if status == "time_budget_reached":
-                    break
-                if cycle_processed == 0:
-                    status = "completed"
-                    has_more = False
-                    break
-                if clock() >= deadline:
-                    status = "time_budget_reached"
-                    has_more = True
-                    break
-            else:
-                status = "drain_limit_reached"
-                has_more = True
     except Exception as exc:
         logger.error(
             "[OUTBOX_RECONCILIATION] reconciliation_unavailable error_type=%s",

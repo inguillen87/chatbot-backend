@@ -22,6 +22,7 @@ from services.openai_model_defaults import (
 )
 from services.llm_provider_network_policy import require_llm_provider_network
 from services.openai_text_service import _privacy_safe_identifier
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from utils.lazy_module import LazyModule
 
 
@@ -285,6 +286,9 @@ def _get_openai_client(app: Any = None) -> Any:
         raise LLMProviderPreRequestError("openai_timeout_invalid") from None
     if timeout_seconds <= 0:
         raise LLMProviderPreRequestError("openai_timeout_invalid")
+    bounded_timeout = outbox_io_timeout_seconds(timeout_seconds)
+    if bounded_timeout is not None:
+        timeout_seconds = bounded_timeout
 
     fingerprint_material = f"{api_key}\0{base_url}\0{timeout_seconds}"
     key_digest = hashlib.sha256(fingerprint_material.encode("utf-8")).hexdigest()
@@ -335,6 +339,9 @@ def _get_openai_responses_client(app: Any = None) -> Any:
         raise LLMProviderPreRequestError("openai_timeout_invalid") from None
     if timeout_seconds <= 0:
         raise LLMProviderPreRequestError("openai_timeout_invalid")
+    bounded_timeout = outbox_io_timeout_seconds(timeout_seconds)
+    if bounded_timeout is not None:
+        timeout_seconds = bounded_timeout
 
     default_headers = cloudflare_gateway.default_headers
     fingerprint_material = json.dumps(

@@ -23,6 +23,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from models import DomainEffectOutbox, db
+from services.outbox_execution_budget import outbox_persistence_operation
 
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]*$")
@@ -794,6 +795,7 @@ def _claim_next_domain_effect(
     return None
 
 
+@outbox_persistence_operation
 def _fenced_transition(
     claim: DomainEffectClaim,
     *,

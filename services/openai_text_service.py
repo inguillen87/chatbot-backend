@@ -10,6 +10,7 @@ import threading
 from typing import Any
 
 from utils.lazy_module import LazyModule
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 
 
 httpx = LazyModule("httpx")
@@ -76,7 +77,6 @@ def _get_openai_client() -> Any:
         logger.info("OpenAI text provider blocked reason=test_network_disabled")
         raise RuntimeError("OpenAI network access is disabled while TESTING is active")
 
-    key_digest = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
     try:
         timeout_seconds = max(
             1.0,
@@ -84,6 +84,12 @@ def _get_openai_client() -> Any:
         )
     except (TypeError, ValueError):
         timeout_seconds = 45.0
+    bounded_timeout = outbox_io_timeout_seconds(timeout_seconds)
+    if bounded_timeout is not None:
+        timeout_seconds = bounded_timeout
+    key_digest = hashlib.sha256(
+        f"{api_key}\0{timeout_seconds}".encode("utf-8")
+    ).hexdigest()
     global _OPENAI_CLIENT, _OPENAI_CLIENT_KEY_DIGEST
     with _CLIENT_LOCK:
         if _OPENAI_CLIENT is None or _OPENAI_CLIENT_KEY_DIGEST != key_digest:

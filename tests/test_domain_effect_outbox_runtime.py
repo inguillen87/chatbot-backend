@@ -27,6 +27,10 @@ from services.domain_effect_outbox import (
     stage_domain_effect,
     summarize_domain_effect_outbox,
 )
+from services.outbox_execution_budget import (
+    activate_outbox_execution_budget,
+    install_outbox_database_timeout_hook,
+)
 
 
 BASE_TIME = datetime(2026, 7, 29, 15, 0, tzinfo=timezone.utc)
@@ -345,6 +349,57 @@ def test_success_marks_io_before_delivery_and_only_persists_provider_hash(effect
         b"provider-private-id-456"
     ).hexdigest()
     assert "provider-private-id-456" not in str(row.result_json)
+
+
+@pytest.mark.parametrize(
+    ("provider_outcome", "expected_status", "summary_field"),
+    [
+        ("succeeded", DomainEffectOutbox.STATUS_SUCCEEDED, "succeeded"),
+        ("unknown", DomainEffectOutbox.STATUS_UNKNOWN, "unknown"),
+    ],
+)
+def test_provider_consuming_io_runway_still_persists_terminal_state_in_reserve(
+    effect_app,
+    provider_outcome,
+    expected_status,
+    summary_field,
+):
+    monotonic_now = [100.0]
+
+    def deliver():
+        # The provider started with safe runway, then returned exactly as the
+        # six-second cleanup reserve began.
+        monotonic_now[0] = 139.0
+        if provider_outcome == "unknown":
+            raise TimeoutError("provider outcome ambiguous")
+        return DeliveredDomainEffect(
+            provider_ref="provider-private-id-edge",
+            result={"ack_code": "accepted"},
+        )
+
+    registry = _registry(
+        lambda _claim: PreparedDomainEffect(deliver=deliver)
+    )
+    staged = _stage(registry)
+    db.session.commit()
+    install_outbox_database_timeout_hook(db.engine)
+
+    with activate_outbox_execution_budget(
+        deadline_monotonic=145.0,
+        clock=lambda: monotonic_now[0],
+    ):
+        summary = dispatch_domain_effects(
+            registry=registry,
+            intent_secret=INTENT_SECRET,
+            now=BASE_TIME,
+            limit=1,
+        )
+
+    row = _row(staged.effect_id)
+    assert getattr(summary, summary_field) == 1
+    assert row.status == expected_status
+    assert row.lease_token is None
+    assert row.processed_at is not None
 
 
 def test_explicit_preflight_skip_is_terminal_without_crossing_io_boundary(effect_app):

@@ -6,6 +6,8 @@ from typing import Any
 
 import requests
 
+from services.outbox_execution_budget import require_outbox_time_remaining
+
 
 class MediaDownloadTooLarge(ValueError):
     """The response body exceeds the configured media limit."""
@@ -33,6 +35,7 @@ def read_bounded_response_body(
     chunks: list[bytes] = []
     downloaded = 0
     for chunk in response.iter_content(chunk_size=max(1, int(chunk_size))):
+        require_outbox_time_remaining()
         if not chunk:
             continue
         downloaded += len(chunk)

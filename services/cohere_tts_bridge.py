@@ -8,6 +8,7 @@ import os
 import uuid
 from typing import Any
 
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from utils.lazy_module import LazyModule
 
 
@@ -129,7 +130,15 @@ def generar_audio_cohere(
             "Content-Type": "application/json",
         }
         timeout = float(os.getenv("COHERE_TTS_TIMEOUT", "60"))
-        with httpx.Client(timeout=timeout) as client:
+        bounded_timeout = outbox_io_timeout_seconds(timeout)
+        client_kwargs: dict[str, Any] = {
+            "timeout": bounded_timeout if bounded_timeout is not None else timeout,
+        }
+        if bounded_timeout is not None:
+            # httpx does not retry by default, but pinning an explicit transport
+            # keeps that invariant stable for the cron replay path.
+            client_kwargs["transport"] = httpx.HTTPTransport(retries=0)
+        with httpx.Client(**client_kwargs) as client:
             response = client.post(endpoint, json=payload, headers=headers)
         response.raise_for_status()
 

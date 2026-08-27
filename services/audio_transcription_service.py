@@ -17,6 +17,7 @@ from collections import OrderedDict
 
 from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from utils.lazy_module import LazyModule
 
 
@@ -355,6 +356,12 @@ def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
     client = _get_openai_client()
     if client is None:
         return None
+    bounded_timeout = outbox_io_timeout_seconds()
+    if bounded_timeout is not None:
+        client = client.with_options(
+            timeout=bounded_timeout,
+            max_retries=0,
+        )
 
     with io.BytesIO(audio_bytes) as audio_file:
         audio_file.name = filename

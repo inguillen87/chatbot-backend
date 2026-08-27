@@ -9,6 +9,7 @@ from services.omnichannel_message_policy import (
     OmnichannelMessagePolicyError,
     normalize_omnichannel_reply_body,
 )
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
@@ -19,6 +20,7 @@ from typing import Any, Optional, Set
 from urllib.parse import urlparse
 from uuid import UUID
 import jwt
+import contextlib
 import os
 import re
 
@@ -118,6 +120,48 @@ def build_fail_closed_socketio_redis_manager(
             "retry_on_timeout": False,
         },
     )
+
+
+def _emit_with_outbox_budget(
+    event_name: str,
+    payload: Any,
+    *,
+    room: str | None = None,
+) -> None:
+    """Use a short-lived bounded Redis publisher only inside the cron drain."""
+
+    # python-socketio's Redis manager performs up to two publish attempts.
+    # Divide the available slice so the retry pair remains inside the current
+    # cron runway instead of granting the full remainder to each attempt.
+    timeout_seconds = outbox_io_timeout_seconds(minimum_seconds=0.2)
+    if timeout_seconds is None:
+        socketio.emit(event_name, payload, room=room)
+        return
+
+    queue_url, channel, configured_timeout = _survey_realtime_queue_config()
+    if not queue_url:
+        # No network boundary exists for the in-process manager.
+        socketio.emit(event_name, payload, room=room)
+        return
+
+    bounded_timeout = max(
+        0.1,
+        min(timeout_seconds, configured_timeout) / 2,
+    )
+    manager = build_fail_closed_socketio_redis_manager(
+        queue_url,
+        channel=channel,
+        timeout_seconds=bounded_timeout,
+    )
+    try:
+        manager.emit(event_name, payload, room=room)
+    finally:
+        for resource_name in ("pubsub", "redis"):
+            resource = getattr(manager, resource_name, None)
+            close = getattr(resource, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
 
 
 def _survey_realtime_process_role() -> str:
@@ -790,7 +834,11 @@ def _emit_tenant_ticket_invalidation(data: Any) -> bool:
     if not room:
         current_app.logger.warning("Dropped unscoped tenant ticket invalidation")
         return False
-    socketio.emit("ticket_update", _build_tenant_ticket_invalidation(), room=room)
+    _emit_with_outbox_budget(
+        "ticket_update",
+        _build_tenant_ticket_invalidation(),
+        room=room,
+    )
     return True
 
 
@@ -815,7 +863,11 @@ def emit_new_chat_message(data: Any) -> None:
     if public_room:
         public_payload = _build_public_ticket_comment_event(data, public_room)
         if public_payload:
-            socketio.emit("new_chat_message", public_payload, room=public_room)
+            _emit_with_outbox_budget(
+                "new_chat_message",
+                public_payload,
+                room=public_room,
+            )
 
     if not _emit_tenant_ticket_invalidation(data):
         current_app.logger.warning(
@@ -1039,13 +1091,15 @@ def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = N
         legacy_payload = data.get("legacy_results")
         modern_payload = {key: value for key, value in data.items() if key != "legacy_results"}
         for room in rooms:
-            socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
-            socketio.emit('survey_update_v2', modern_payload, room=room)
-            socketio.emit('survey.vote.created', modern_payload, room=room)
+            _emit_with_outbox_budget(
+                'survey_update', legacy_payload or modern_payload, room=room
+            )
+            _emit_with_outbox_budget('survey_update_v2', modern_payload, room=room)
+            _emit_with_outbox_budget('survey.vote.created', modern_payload, room=room)
         return True
     for room in rooms:
-        socketio.emit('survey_update', data, room=room)
-        socketio.emit('survey.vote.created', data, room=room)
+        _emit_with_outbox_budget('survey_update', data, room=room)
+        _emit_with_outbox_budget('survey.vote.created', data, room=room)
     return True
 
 

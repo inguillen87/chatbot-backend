@@ -7,6 +7,7 @@ import os
 from typing import Any
 
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from utils.lazy_module import LazyModule
 
 
@@ -71,6 +72,9 @@ def transcribir_audio_cohere(audio_bytes: bytes, mime_type: str) -> str | None:
 
     headers = {"Authorization": f"Bearer {api_key}"}
     timeout = float(os.getenv("COHERE_STT_TIMEOUT", "60"))
+    bounded_timeout = outbox_io_timeout_seconds(timeout)
+    if bounded_timeout is not None:
+        timeout = bounded_timeout
 
     try:
         with httpx.Client(timeout=timeout) as client:

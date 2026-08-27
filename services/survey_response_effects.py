@@ -35,6 +35,7 @@ from models import (
     User,
 )
 from services.survey_response_provenance import SURVEY_RESPONSE_ORIGIN_REAL
+from services.outbox_execution_budget import outbox_persistence_operation
 
 
 EFFECT_ANALYTICS = "analytics.v1"
@@ -738,6 +739,7 @@ def _claim_effect(
     return token
 
 
+@outbox_persistence_operation
 def _finalize_effect(
     effect_id: int,
     lease_token: str,
@@ -789,6 +791,7 @@ def _retry_delay(attempt_count: int) -> int:
     return min(BASE_BACKOFF_SECONDS * (2**exponent), MAX_BACKOFF_SECONDS)
 
 
+@outbox_persistence_operation
 def _record_failure(
     effect_id: int,
     lease_token: str,
