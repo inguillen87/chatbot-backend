@@ -32,6 +32,10 @@ test_venv/
 sandbox_venv/
 .codex-venv/
 
+# Nunca versionar artefactos de ejecucion local: pueden contener secretos.
+.codex-run-logs/
+*.log
+
 # Pero permite que la estructura instance/ exista
 node_modules
 !data/estacionamiento/camaras.json
