@@ -9,6 +9,7 @@ from scripts.preflight_neon_cutover import (
     _failure_payload,
     _load_migration_directory,
     _migration_state,
+    _wal_position,
     _validate_environment_variable_name,
     _validate_neon_identity_value,
     _validate_neon_direct_url,
@@ -137,6 +138,73 @@ def test_failure_payload_never_contains_provider_detail():
         "error_type": "OperationalError",
     }
     assert secret not in str(payload)
+
+
+@pytest.mark.parametrize(
+    ("in_recovery", "wal_lsn", "expected_source", "expected_function"),
+    [
+        (False, "0/4C2D9B8", "current", "pg_current_wal_lsn()"),
+        (True, "0/4C2D790", "replay", "pg_last_wal_replay_lsn()"),
+    ],
+)
+def test_wal_position_supports_primary_and_read_replica(
+    in_recovery,
+    wal_lsn,
+    expected_source,
+    expected_function,
+):
+    statements = []
+
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one(self):
+            return self.value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class FakeConnection:
+        def execute(self, statement):
+            sql = str(statement)
+            statements.append(sql)
+            if "pg_is_in_recovery" in sql:
+                return FakeResult(in_recovery)
+            return FakeResult(wal_lsn)
+
+    state = _wal_position(FakeConnection())
+
+    assert state == {
+        "wal_lsn": wal_lsn,
+        "wal_lsn_source": expected_source,
+        "in_recovery": in_recovery,
+    }
+    assert expected_function in statements[1]
+
+
+def test_wal_position_fails_closed_when_replica_has_not_replayed_wal():
+    class FakeResult:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one(self):
+            return self.value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class FakeConnection:
+        calls = 0
+
+        def execute(self, _statement):
+            self.calls += 1
+            return FakeResult(True if self.calls == 1 else None)
+
+    with pytest.raises(PreflightFailure) as captured:
+        _wal_position(FakeConnection())
+
+    assert captured.value.reason_code == "database_wal_lsn_missing"
 
 
 def test_run_preflight_selects_psycopg_v3_explicitly(monkeypatch):

@@ -67,4 +67,3 @@ It is not used as an authentication primitive. Artifact authenticity and path
 integrity remain governed by the separately HMAC-SHA256-signed storage
 manifest. Final cutover requires a fresh signed snapshot, the same inclusion
 checks, a writer fence, application E2E, and a tested rollback.
-

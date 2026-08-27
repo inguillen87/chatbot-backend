@@ -288,6 +288,29 @@ def _critical_schema_state(
     }
 
 
+def _wal_position(connection: Connection) -> dict[str, Any]:
+    """Return a comparable WAL position for primaries and read replicas."""
+
+    in_recovery = bool(
+        connection.execute(text("SELECT pg_is_in_recovery()"))
+        .scalar_one()
+    )
+    wal_function = (
+        "pg_last_wal_replay_lsn()" if in_recovery else "pg_current_wal_lsn()"
+    )
+    wal_lsn_value = connection.execute(
+        text(f"SELECT {wal_function}::text")
+    ).scalar_one_or_none()
+    wal_lsn = str(wal_lsn_value or "").strip()
+    if not wal_lsn:
+        raise PreflightFailure("database_wal_lsn_missing")
+    return {
+        "wal_lsn": wal_lsn,
+        "wal_lsn_source": "replay" if in_recovery else "current",
+        "in_recovery": in_recovery,
+    }
+
+
 def _database_state(
     connection: Connection,
     *,
@@ -331,7 +354,7 @@ def _database_state(
         ).scalars()
     ]
 
-    wal_lsn = str(connection.execute(text("SELECT pg_current_wal_lsn()::text")).scalar_one())
+    wal = _wal_position(connection)
     server_version_num = str(
         connection.execute(text("SHOW server_version_num")).scalar_one()
     )
@@ -342,7 +365,7 @@ def _database_state(
             "branch_id": actual_branch_id,
         },
         "server_version_num": server_version_num,
-        "wal_lsn": wal_lsn,
+        **wal,
         "current_revisions": revisions,
         "table_count": len(table_names),
         "exact_row_count": sum(counts.values()),
