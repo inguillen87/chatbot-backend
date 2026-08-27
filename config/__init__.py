@@ -757,6 +757,15 @@ class Config:
     # Vercel sends this value as ``Authorization: Bearer ...`` to scheduled
     # endpoints. An empty value must never authorize an internal invocation.
     CRON_SECRET = os.getenv("CRON_SECRET", "")
+    # Historical marketplace OAuth/webhook routes trusted request-supplied
+    # tenant selectors.  Keep their migration marker false by default on every
+    # runtime (including Vercel and Render).  The routes remain fail-closed even
+    # if this is mistakenly enabled until signed, expiring, one-time OAuth
+    # state and tenant-bound provider credentials are implemented.
+    LEGACY_INTEGRATIONS_TRANSPORT_ENABLED = _env_flag(
+        False,
+        "LEGACY_INTEGRATIONS_TRANSPORT_ENABLED",
+    )
     # A Vercel Production deployment can become the active cron target before
     # DNS or database cutover. Keep reconciliation inert until the operator
     # explicitly confirms that the deployment owns the production workload.

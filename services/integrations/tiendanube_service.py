@@ -1,17 +1,19 @@
 """Tienda Nube Integration Service."""
-import requests
-import json
-from datetime import datetime, timezone
-from models import db, IntegrationAccount, MarketOrder
-from flask import current_app
+
+
+def _raise_legacy_transport_disabled():
+    raise RuntimeError("legacy_integration_transport_disabled")
+
 
 class TiendaNubeService:
     @staticmethod
-    def get_auth_url(tenant_id, redirect_uri):
-        app_id = current_app.config.get("TIENDANUBE_CLIENT_ID")
-        return f"https://www.tiendanube.com/apps/{app_id}/authorize?state={tenant_id}"
+    def get_auth_url(_tenant_id, _redirect_uri):
+        """Do not create OAuth URLs with request-derived tenant state."""
+
+        _raise_legacy_transport_disabled()
 
     @staticmethod
-    def handle_callback(tenant_id, code, redirect_uri):
-        # Implementation similar to ML but following TN specs
-        pass
+    def handle_callback(_tenant_id, _code, _redirect_uri):
+        """Do not exchange a code selected by an unsigned/replayable state."""
+
+        _raise_legacy_transport_disabled()

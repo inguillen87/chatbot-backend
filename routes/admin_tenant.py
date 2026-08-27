@@ -3478,48 +3478,32 @@ def connect_integration(current_user, slug, integration_type):
     if not _plan_allows_integrations(tenant):
         return _integration_plan_required_response(tenant, _integration_plan_feature_id(integration_type))
 
-    base_url = current_app.config.get("PUBLIC_BASE_URL", "https://chatboc.ar").rstrip("/")
+    # Marketplace OAuth used to put the plain tenant id in ``state``.  Keep
+    # those legacy entry points fail-closed until state is signed, expiring and
+    # backed by a one-time nonce store.  The WhatsApp branch below uses its own
+    # tenant-bound Tech Provider contract and is intentionally unaffected.
+    if integration_type.lower() in {'tiendanube', 'mercadolibre'}:
+        migration_flag_requested = bool(
+            current_app.config.get("LEGACY_INTEGRATIONS_TRANSPORT_ENABLED", False)
+        )
+        response = jsonify(
+            {
+                "contract_version": "tenant.integration.legacy_transport_disabled.v1",
+                "status": "disabled",
+                "reason_code": (
+                    "legacy_integration_secure_transport_unavailable"
+                    if migration_flag_requested
+                    else "legacy_oauth_connect_disabled"
+                ),
+                "retryable": False,
+                "next_action": "configure_tenant_bound_signed_provider_adapter",
+            }
+        )
+        response.status_code = 503 if migration_flag_requested else 404
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
-    # Uses Platform Credentials (configured in Render/Env) to generate the OAuth URL.
-    # The Client (Tenant Admin) clicks this URL, logs in to their account, and authorizes "Chatboc".
-    # We use the GENERIC callback URL defined in routes/integrations.py to allow a single app registration.
-    # The tenant context is preserved via the 'state' parameter (tenant.id).
-
-    if integration_type.lower() == 'tiendanube':
-        client_id = current_app.config.get("TIENDANUBE_CLIENT_ID")
-        if not client_id:
-            # Fallback for development or incomplete config - don't crash with 503
-            current_app.logger.warning("TIENDANUBE_CLIENT_ID not set. Integration unavailable.")
-            # Si estamos en modo desarrollo o no hay config, devolvemos un mock o un error 200 con mensaje
-            # Para evitar 422 que rompe el frontend, devolvemos un error manejable o un mensaje de demo
-            return jsonify({
-                "error": "platform_not_configured",
-                "message": "Falta TIENDANUBE_CLIENT_ID en el servidor. Contacte al administrador.",
-                "demo_mode": True
-            }), 200 # Cambiamos a 200 para que el frontend pueda manejarlo sin excepción
-
-        redirect_uri = f"{base_url}/api/integrations/tiendanube/callback"
-        # TiendaNube typically doesn't support 'state' in all docs, but standard OAuth does.
-        # We assume standard behavior or fallback to direct if needed.
-        auth_url = f"https://www.tiendanube.com/apps/authorize?client_id={client_id}&redirect_uri={redirect_uri}&state={tenant.id}"
-        return jsonify({"redirect_url": auth_url})
-
-    elif integration_type.lower() == 'mercadolibre':
-        client_id = current_app.config.get("ML_APP_ID")
-        if not client_id:
-             current_app.logger.warning("ML_APP_ID not set. Integration unavailable.")
-             return jsonify({
-                "error": "platform_not_configured",
-                "message": "Falta ML_APP_ID en el servidor. Contacte al administrador.",
-                "demo_mode": True
-            }), 200
-
-        redirect_uri = f"{base_url}/api/integrations/mercadolibre/callback"
-        # MercadoLibre supports 'state' perfectly.
-        auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&state={tenant.id}"
-        return jsonify({"redirect_url": auth_url})
-
-    elif integration_type.lower() == 'whatsapp':
+    if integration_type.lower() == 'whatsapp':
         contract = build_twilio_tech_provider_contract(tenant, current_app.config)
         embedded_signup = contract.get("embedded_signup") or {}
         setup_health = contract.get("setup_health") or {}
