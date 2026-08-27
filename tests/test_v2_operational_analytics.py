@@ -823,6 +823,71 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
 
         self.assertEqual({_commerce_request_kind(value) for value in supported}, supported)
 
+    def test_ticket_zones_require_explicit_territorial_fields(self):
+        from services.operational_intelligence import (
+            _municipio_ticket_record,
+            _pyme_ticket_record,
+            _tenant_ticket_record,
+        )
+
+        tenant_address_only = TenantTicket(
+            tenant_id=self.tenant.id,
+            descripcion="Direccion sin zona declarada",
+            datos_extra={"address": "Av. San Martin 123, Junin"},
+        )
+        tenant_with_barrio = TenantTicket(
+            tenant_id=self.tenant.id,
+            descripcion="Barrio declarado",
+            datos_extra={"address": "Av. San Martin 456, Junin", "barrio": "Centro"},
+        )
+        municipio_address_only = MunicipioTicket(
+            pregunta="Direccion municipal sin distrito",
+            direccion="Don Bosco 55, Junin",
+            datos_extra={"direccion": "Don Bosco 55, Junin"},
+        )
+        municipio_with_zona = MunicipioTicket(
+            pregunta="Zona municipal declarada",
+            direccion="Belgrano 200, Junin",
+            datos_extra={"zona": "Norte"},
+        )
+        pyme_address_only = PymeTicket(
+            pregunta="Direccion comercial sin zona",
+            nro_ticket=91001,
+            direccion="Mitre 800, Junin",
+            datos_extra={"address": "Mitre 800, Junin"},
+        )
+        pyme_with_distrito = PymeTicket(
+            pregunta="Distrito comercial declarado",
+            nro_ticket=91002,
+            direccion="Rivadavia 100, Junin",
+            datos_extra={"distrito": "Sur"},
+        )
+
+        self.assertEqual(_tenant_ticket_record(tenant_address_only).get("zone"), "sin_zona")
+        self.assertEqual(_tenant_ticket_record(tenant_with_barrio).get("zone"), "centro")
+        self.assertEqual(_municipio_ticket_record(municipio_address_only).get("zone"), "sin_zona")
+        self.assertEqual(_municipio_ticket_record(municipio_with_zona).get("zone"), "norte")
+        self.assertEqual(_pyme_ticket_record(pyme_address_only).get("zone"), "sin_zona")
+        self.assertEqual(_pyme_ticket_record(pyme_with_distrito).get("zone"), "sur")
+
+        for record in (
+            _tenant_ticket_record(tenant_address_only),
+            _municipio_ticket_record(municipio_address_only),
+            _pyme_ticket_record(pyme_address_only),
+        ):
+            self.assertTrue(record.get("address"))
+            self.assertNotEqual(record.get("zone"), record.get("address").lower())
+
+    def test_operations_heatmap_does_not_publish_unconfigured_official_boundaries(self):
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        geo_layers = (response.get_json().get("geo_layers") or {})
+        self.assertNotIn("boundaries", geo_layers)
+
     def test_operations_heatmap_returns_points_cells_and_layers(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())
 

@@ -1,4 +1,5 @@
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from flask import Flask
@@ -105,6 +106,56 @@ class PublicResolverWidgetConfigContractTestCase(unittest.TestCase):
         self.assertEqual(live_chat["availability_state"], "offline_accepting_messages")
         self.assertEqual(live_chat["cta"]["primary"]["action"], "queue_offline_message")
         self.assertEqual(live_chat["ui"]["primary_cta_label"], "Dejar mensaje")
+
+    def test_owner_phone_does_not_enable_whatsapp_or_claim_sender_binding(self):
+        tenant = _FakeTenant()
+        tenant.pyme = SimpleNamespace(telefono="+54 9 263 451-9821")
+
+        with self.app.app_context():
+            whatsapp = _support_channels_payload(tenant, {})["whatsapp"]
+
+        self.assertFalse(whatsapp["enabled"])
+        self.assertFalse(whatsapp["configured"])
+        self.assertFalse(whatsapp["sender_bound"])
+        self.assertFalse(whatsapp["realtime_bridge"])
+        self.assertIsNone(whatsapp["number"])
+        self.assertIsNone(whatsapp["operational_number"])
+        self.assertEqual(whatsapp["contact_number"], "+54 9 263 451-9821")
+        self.assertIsNone(whatsapp["number_source"])
+        self.assertEqual(whatsapp["reason_code"], "whatsapp_not_configured_owner_contact_only")
+
+    def test_explicit_support_whatsapp_is_contactable_but_not_a_backend_sender(self):
+        tenant = _FakeTenant()
+
+        with self.app.app_context():
+            whatsapp = _support_channels_payload(
+                tenant,
+                {"support_whatsapp": "+54 9 236 412-3456"},
+            )["whatsapp"]
+
+        self.assertTrue(whatsapp["enabled"])
+        self.assertTrue(whatsapp["configured"])
+        self.assertFalse(whatsapp["sender_bound"])
+        self.assertFalse(whatsapp["realtime_bridge"])
+        self.assertEqual(whatsapp["number_source"], "support_whatsapp")
+        self.assertEqual(whatsapp["url"], "https://wa.me/5492364123456")
+        self.assertEqual(whatsapp["reason_code"], "whatsapp_contact_only")
+
+    def test_tenant_sender_is_bound_without_claiming_verified_delivery(self):
+        tenant = _FakeTenant()
+        tenant.whatsapp_sender_id = "whatsapp:+17432643718"
+
+        with self.app.app_context():
+            whatsapp = _support_channels_payload(tenant, {})["whatsapp"]
+
+        self.assertTrue(whatsapp["enabled"])
+        self.assertTrue(whatsapp["sender_bound"])
+        self.assertTrue(whatsapp["realtime_bridge"])
+        self.assertFalse(whatsapp["delivery_verified"])
+        self.assertEqual(whatsapp["operational_number"], "whatsapp:+17432643718")
+        self.assertEqual(whatsapp["number_source"], "tenant_sender_id")
+        self.assertEqual(whatsapp["url"], "https://wa.me/17432643718")
+        self.assertEqual(whatsapp["reason_code"], "whatsapp_sender_bound_delivery_unverified")
 
     def test_widget_config_without_tenant_returns_platform_selector(self):
         response = self.client.get(

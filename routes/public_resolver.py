@@ -733,12 +733,35 @@ def _platform_widget_config_payload() -> dict:
 
 def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
     owner = tenant.pyme or tenant.municipio
-    whatsapp_number = (
-        cfg.get("support_whatsapp")
-        or cfg.get("whatsapp_phone")
-        or getattr(tenant, "whatsapp_sender_id", None)
-        or getattr(owner, "telefono", None)
+    support_whatsapp = str(cfg.get("support_whatsapp") or "").strip() or None
+    whatsapp_phone = str(cfg.get("whatsapp_phone") or "").strip() or None
+    configured_sender_id = str(cfg.get("whatsapp_sender_id") or "").strip() or None
+    tenant_sender_id = str(getattr(tenant, "whatsapp_sender_id", None) or "").strip() or None
+    owner_contact_number = str(getattr(owner, "telefono", None) or "").strip() or None
+
+    whatsapp_number = support_whatsapp or whatsapp_phone or configured_sender_id or tenant_sender_id
+    whatsapp_number_source = (
+        "support_whatsapp"
+        if support_whatsapp
+        else "whatsapp_phone"
+        if whatsapp_phone
+        else "config_sender_id"
+        if configured_sender_id
+        else "tenant_sender_id"
+        if tenant_sender_id
+        else None
     )
+    sender_bound = bool(configured_sender_id or tenant_sender_id)
+    whatsapp_digits = "".join(character for character in str(whatsapp_number or "") if character.isdigit())
+    whatsapp_url = f"https://wa.me/{whatsapp_digits}" if whatsapp_digits else None
+    if sender_bound:
+        whatsapp_reason_code = "whatsapp_sender_bound_delivery_unverified"
+    elif whatsapp_number:
+        whatsapp_reason_code = "whatsapp_contact_only"
+    elif owner_contact_number:
+        whatsapp_reason_code = "whatsapp_not_configured_owner_contact_only"
+    else:
+        whatsapp_reason_code = "whatsapp_not_configured"
     voice_enabled = _config_flag(cfg, "realtime_voice_enabled", default=True)
     realtime_voice = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
     realtime_voice["enabled"] = bool(voice_enabled)
@@ -772,8 +795,16 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
         "whatsapp": {
             "enabled": bool(whatsapp_number),
             "number": whatsapp_number,
+            "operational_number": whatsapp_number if sender_bound else None,
+            "contact_number": owner_contact_number,
+            "number_source": whatsapp_number_source,
+            "configured": bool(whatsapp_number),
+            "sender_bound": sender_bound,
+            "delivery_verified": False,
+            "reason_code": whatsapp_reason_code,
+            "url": whatsapp_url,
             "channel": "whatsapp",
-            "realtime_bridge": True,
+            "realtime_bridge": sender_bound,
             "trial_policy": _whatsapp_trial_policy(cfg),
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },

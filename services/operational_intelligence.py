@@ -340,6 +340,17 @@ def _record_address_from_metadata(metadata: dict[str, Any]) -> str | None:
     )
 
 
+def _record_zone_from_metadata(metadata: dict[str, Any]) -> str | None:
+    """Return only an explicitly declared territorial label.
+
+    Street addresses remain useful geocoding inputs, but they are not zones.
+    Keeping the two concepts separate prevents a private address from becoming
+    a misleading segment or an apparent official boundary in the heatmap.
+    """
+
+    return _clean_text(_first_value(metadata, "zone", "zona", "barrio", "distrito"))
+
+
 def _normalize_gender(value: Any) -> str:
     raw = _norm(value, "unknown")
     mapping = {
@@ -774,7 +785,7 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
         "category": _norm(ticket.categoria, "sin_categoria"),
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": extra.get("assignee_id"),
-        "zone": _norm(extra.get("zone") or extra.get("zona") or address, "sin_zona"),
+        "zone": _norm(_record_zone_from_metadata(extra), "sin_zona"),
         "address": address,
         "lat": ticket.latitud,
         "lng": ticket.longitud,
@@ -804,7 +815,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         "category": _norm(ticket.categoria, "sin_categoria"),
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
-        "zone": _norm(ticket.distrito or address, "sin_zona"),
+        "zone": _norm(ticket.distrito or _record_zone_from_metadata(metadata), "sin_zona"),
         "address": address,
         "lat": ticket.latitud,
         "lng": ticket.longitud,
@@ -820,9 +831,10 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
 def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
     address = _clean_text(getattr(ticket, "direccion", None))
+    metadata = _as_dict(getattr(ticket, "datos_extra", None))
     sla = _sla_observation(
         status=status,
-        metadata=_as_dict(getattr(ticket, "datos_extra", None)),
+        metadata=metadata,
         as_of=as_of,
     )
     return {
@@ -835,7 +847,7 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
         "category": _norm(ticket.categoria, "sin_categoria"),
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
-        "zone": _norm(address, "sin_zona"),
+        "zone": _norm(_record_zone_from_metadata(metadata), "sin_zona"),
         "address": address,
         "lat": getattr(ticket, "latitud", None),
         "lng": getattr(ticket, "longitud", None),
