@@ -24,6 +24,11 @@ from services.campaign_preparation_service import (
 )
 from services.contact_intake import is_placeholder_email, normalize_email
 from services.crm_intelligence import serialize_crm_contact
+from services.crm_output_safety import (
+    contains_crm_sensitive_content,
+    redact_crm_sensitive_text,
+    redact_crm_sensitive_value,
+)
 from socket_service import emit_crm_contact_update, emit_crm_notification_update
 from utils.roles import canonical_role, is_authorized_superadmin_user
 
@@ -229,9 +234,10 @@ def _serialize_cliente(
     real_email = normalize_email(raw_email)
     phone = _clean_phone(cliente.telefono or (contact.phone if contact else None))
     raw_name = cliente.name or ""
+    name_is_sensitive = contains_crm_sensitive_content(raw_name)
     name_is_message = _looks_like_message_name(raw_name)
     display_name = (contact.name if contact and contact.name else raw_name).strip()
-    if name_is_message or not display_name:
+    if name_is_message or name_is_sensitive or not display_name:
         display_name = "Contacto WhatsApp" if phone else "Contacto sin identificar"
     channel = _contact_channel(cliente, contact)
     source = _contact_source(cliente, contact)
@@ -245,9 +251,17 @@ def _serialize_cliente(
     payload = {
         "id": cliente.id,
         "name": display_name,
-        "raw_name": raw_name,
-        "name_quality": "message_excerpt" if name_is_message else "provided",
-        "profile_excerpt": raw_name if name_is_message else "",
+        "raw_name": redact_crm_sensitive_text(raw_name),
+        "name_quality": (
+            "sensitive_redacted"
+            if name_is_sensitive
+            else ("message_excerpt" if name_is_message else "provided")
+        ),
+        "profile_excerpt": (
+            redact_crm_sensitive_text(raw_name)
+            if name_is_message or name_is_sensitive
+            else ""
+        ),
         "email": real_email or "",
         "email_raw": raw_email,
         "email_is_placeholder": is_placeholder_email(raw_email),
@@ -364,7 +378,7 @@ def _contact_brief(contact: Contact | None) -> dict | None:
     prefs = contact.preferences if isinstance(contact.preferences, dict) else {}
     return {
         "id": contact.id,
-        "name": contact.name or "Contacto sin nombre",
+        "name": redact_crm_sensitive_text(contact.name) or "Contacto sin nombre",
         "phone": contact.phone,
         "email": contact.email if not is_placeholder_email(contact.email) else "",
         "type": contact.type,
@@ -392,9 +406,9 @@ def _serialize_campaign_event(
         "event_type": serialized_event_type,
         "channel": meta.get("channel") or event.channel,
         "status": meta.get("status"),
-        "reason": meta.get("reason"),
+        "reason": redact_crm_sensitive_text(meta.get("reason")),
         "direction": event.direction,
-        "content_preview": (event.content or "")[:180],
+        "content_preview": redact_crm_sensitive_text((event.content or "")[:180]),
         "created_at": _iso_or_none(event.created_at),
         "scheduled_for": meta.get("scheduled_for"),
         "min_interval_hours": meta.get("min_interval_hours"),
@@ -722,21 +736,21 @@ def get_contact_history(current_user, slug, contact_id):
     return jsonify({
         "contact": {
             "id": contact.id,
-            "name": contact.name,
+            "name": redact_crm_sensitive_text(contact.name),
             "phone": contact.phone,
             "tags": contact.tags,
-            "preferences": contact.preferences
+            "preferences": redact_crm_sensitive_value(contact.preferences)
         },
         "snapshot": {
-            "summary": snapshot.summary_text if snapshot else None,
-            "last_intent": snapshot.last_intent if snapshot else None,
-            "suggested_actions": snapshot.suggested_actions if snapshot else []
+            "summary": redact_crm_sensitive_text(snapshot.summary_text) if snapshot else None,
+            "last_intent": redact_crm_sensitive_text(snapshot.last_intent) if snapshot else None,
+            "suggested_actions": redact_crm_sensitive_value(snapshot.suggested_actions) if snapshot else []
         },
         "orders": [o.to_dict() for o in orders],
         "interactions": [{
             "channel": i.channel,
             "direction": i.direction,
-            "content": i.content,
+            "content": redact_crm_sensitive_text(i.content),
             "ts": i.created_at.isoformat()
         } for i in interactions]
     })
