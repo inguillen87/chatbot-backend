@@ -395,6 +395,58 @@ def _parse_ticket_details_payload(ticket_obj) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _ticket_display_description(ticket_obj) -> str:
+    """Return operator-facing copy without leaking structured ticket metadata.
+
+    ``detalles`` is a legacy dual-purpose column: older tickets store a human
+    description while newer runtimes persist JSON metadata there. Returning
+    that JSON as ``description`` makes the CRM render implementation details as
+    the case summary. Prefer explicit human fields from structured details,
+    then the citizen question, while preserving plain-text legacy details.
+    """
+
+    raw_details = getattr(ticket_obj, "detalles", None)
+    details = _parse_ticket_details_payload(ticket_obj)
+
+    if details:
+        for key in (
+            "description",
+            "descripcion",
+            "summary",
+            "resumen",
+            "consulta",
+            "message",
+            "mensaje",
+        ):
+            value = _clean_display_value(details.get(key))
+            if isinstance(value, str) and value[:1] not in {"{", "["}:
+                return value
+
+        for value in (
+            getattr(ticket_obj, "pregunta", None),
+            getattr(ticket_obj, "asunto", None),
+            getattr(ticket_obj, "categoria", None),
+        ):
+            cleaned = _clean_display_value(value)
+            if isinstance(cleaned, str):
+                return cleaned
+        return "Sin descripción disponible"
+
+    cleaned_details = _clean_display_value(raw_details)
+    if isinstance(cleaned_details, str) and cleaned_details[:1] not in {"{", "["}:
+        return cleaned_details
+
+    for value in (
+        getattr(ticket_obj, "pregunta", None),
+        getattr(ticket_obj, "asunto", None),
+        getattr(ticket_obj, "categoria", None),
+    ):
+        cleaned = _clean_display_value(value)
+        if isinstance(cleaned, str):
+            return cleaned
+    return "Sin descripción disponible"
+
+
 def _ticket_priority_payload(ticket_obj) -> dict[str, Any]:
     details = _parse_ticket_details_payload(ticket_obj)
     priority = (
@@ -2076,8 +2128,9 @@ def serialize_ticket_to_json(
     )
     contact_identity_visual = _identity_visual_fields(contact_identity)
 
-    # El campo 'description' debe ser 'detalles' si existe, sino 'pregunta'.
-    description = getattr(ticket, 'detalles', '') or getattr(ticket, 'pregunta', '')
+    # ``detalles`` can contain structured runtime metadata. The operator-facing
+    # description must remain human-readable and never expose raw JSON.
+    description = _ticket_display_description(ticket)
 
     if compact:
         historial_chat = []

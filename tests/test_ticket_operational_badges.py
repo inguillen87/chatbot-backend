@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import timedelta
 
@@ -54,6 +55,99 @@ class TicketOperationalBadgesTest(unittest.TestCase):
             {"id": "unassigned", "label": "Sin responsable", "tone": "warning"},
             payload["crm_queue"]["badges"],
         )
+
+    def test_ticket_payload_does_not_expose_runtime_json_as_case_summary(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="La luminaria de la plaza no enciende desde anoche.",
+            asunto="Demo reclamo - Alumbrado publico",
+            categoria="Luminarias",
+            nro_ticket="419",
+            estado="nuevo",
+            detalles=json.dumps(
+                {
+                    "demo_runtime": True,
+                    "source": "demo_municipio_runtime",
+                    "chat_session_id": "internal-session-id",
+                    "demo_session_payload": {"tenant_slug": "junin"},
+                }
+            ),
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio")
+
+        self.assertEqual(
+            payload["description"],
+            "La luminaria de la plaza no enciende desde anoche.",
+        )
+        self.assertNotIn("demo_runtime", payload["description"])
+        self.assertNotIn("chat_session_id", payload["description"])
+
+    def test_ticket_payload_uses_explicit_human_summary_from_structured_details(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="Necesito ayuda",
+            asunto="Consulta ciudadana",
+            categoria="Atencion",
+            nro_ticket="420",
+            estado="nuevo",
+            detalles=json.dumps(
+                {
+                    "summary": "Vecino solicita orientación para completar el trámite.",
+                    "source": "assisted_intake",
+                }
+            ),
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+
+        self.assertEqual(
+            payload["description"],
+            "Vecino solicita orientación para completar el trámite.",
+        )
+
+    def test_ticket_payload_preserves_legacy_plain_text_details(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="Consulta original",
+            categoria="Arbolado",
+            nro_ticket="421",
+            estado="nuevo",
+            detalles="Árbol caído sobre la vereda, sin cables comprometidos.",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+
+        self.assertEqual(
+            payload["description"],
+            "Árbol caído sobre la vereda, sin cables comprometidos.",
+        )
+
+    def test_ticket_payload_rejects_malformed_json_looking_details(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            pregunta="Bache peligroso frente a la escuela.",
+            categoria="Calles",
+            nro_ticket="422",
+            estado="nuevo",
+            detalles='{"demo_runtime": true, "chat_session_id":',
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+
+        self.assertEqual(
+            payload["description"],
+            "Bache peligroso frente a la escuela.",
+        )
+        self.assertNotIn("demo_runtime", payload["description"])
 
     def test_ticket_queue_contract_prioritizes_unread_customer_activity(self):
         ticket = MunicipioTicket(
