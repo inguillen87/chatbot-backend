@@ -21,7 +21,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from sqlalchemy import and_, case, func, or_, update
 from sqlalchemy.exc import IntegrityError
@@ -610,7 +610,11 @@ def _reward_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
     )
 
 
-def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
+def _realtime_outcome(
+    effect: SurveyResponseEffect,
+    *,
+    require_shared_realtime: bool = False,
+) -> _EffectOutcome:
     encuesta, _respuesta = _load_scoped_source(effect)
     payload = effect.payload_json if isinstance(effect.payload_json, dict) else {}
     if not bool(getattr(encuesta, "mostrar_resultados_envivo", False)):
@@ -639,7 +643,10 @@ def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
     # retry_wait/dead instead of recording a false ``emitted`` success.
     from socket_service import ensure_survey_realtime_transport_ready
 
-    transport = ensure_survey_realtime_transport_ready()
+    transport_kwargs: dict[str, Any] = {}
+    if require_shared_realtime:
+        transport_kwargs["require_shared"] = True
+    transport = ensure_survey_realtime_transport_ready(**transport_kwargs)
     from services.encuestas_service import emit_survey_response_update
 
     emitted = emit_survey_response_update(
@@ -659,13 +666,20 @@ def _realtime_outcome(effect: SurveyResponseEffect) -> _EffectOutcome:
     )
 
 
-def _execute_effect(effect: SurveyResponseEffect) -> _EffectOutcome:
+def _execute_effect(
+    effect: SurveyResponseEffect,
+    *,
+    require_shared_realtime: bool = False,
+) -> _EffectOutcome:
     if effect.effect_type == EFFECT_ANALYTICS:
         return _analytics_outcome(effect)
     if effect.effect_type == EFFECT_REWARD:
         return _reward_outcome(effect)
     if effect.effect_type == EFFECT_REALTIME:
-        return _realtime_outcome(effect)
+        realtime_kwargs: dict[str, Any] = {}
+        if require_shared_realtime:
+            realtime_kwargs["require_shared_realtime"] = True
+        return _realtime_outcome(effect, **realtime_kwargs)
     raise _PermanentEffectError("unsupported_effect_type")
 
 
@@ -822,6 +836,8 @@ def dispatch_survey_response_effects(
     limit: int = 50,
     now: Optional[datetime] = None,
     lease_seconds: int = LEASE_SECONDS,
+    should_continue: Optional[Callable[[], bool]] = None,
+    require_shared_realtime: bool = False,
 ) -> dict[str, Any]:
     """Claim and process due effects with lease fencing and bounded retries.
 
@@ -876,6 +892,8 @@ def dispatch_survey_response_effects(
     for effect_id in candidate_ids:
         if stats["claimed"] >= bounded_limit:
             break
+        if should_continue is not None and should_continue() is not True:
+            break
         lease_token = _claim_effect(
             effect_id,
             now=operation_now,
@@ -902,7 +920,10 @@ def dispatch_survey_response_effects(
         attempt_count = int(effect.attempt_count or 0)
         max_attempts = int(effect.max_attempts or DEFAULT_MAX_ATTEMPTS)
         try:
-            outcome = _execute_effect(effect)
+            execute_kwargs: dict[str, Any] = {}
+            if require_shared_realtime:
+                execute_kwargs["require_shared_realtime"] = True
+            outcome = _execute_effect(effect, **execute_kwargs)
             if not _finalize_effect(
                 effect_id,
                 lease_token,

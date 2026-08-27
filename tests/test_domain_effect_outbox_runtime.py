@@ -644,6 +644,60 @@ def test_expired_final_pre_io_lease_is_dead_instead_of_retried(effect_app):
     assert row.last_error_code == "lease_expired_attempts_exhausted"
 
 
+def test_stale_recovery_is_bounded_and_leaves_remaining_leases_for_next_tick(
+    effect_app,
+):
+    registry = _success_registry()
+    for index in range(5):
+        _stage(
+            registry,
+            aggregate_ref=str(5000 + index),
+            effect_key=f"ticket:{5000 + index}:email:requester",
+        )
+    db.session.commit()
+    for _ in range(5):
+        assert runtime._claim_next_domain_effect(
+            tenant_id=None,
+            lease_seconds=30,
+            now=BASE_TIME,
+            session=db.session,
+        ) is not None
+
+    recovered = recover_stale_domain_effects(
+        now=BASE_TIME + timedelta(seconds=31),
+        limit=2,
+    )
+
+    assert sum(recovered.values()) == 2
+    processing = db.session.scalar(
+        select(db.func.count(DomainEffectOutbox.id)).where(
+            DomainEffectOutbox.status == DomainEffectOutbox.STATUS_PROCESSING
+        )
+    )
+    assert processing == 3
+
+
+def test_expired_recovery_obeys_deadline_before_querying_effects(effect_app):
+    registry = _success_registry()
+    staged = _stage(registry)
+    db.session.commit()
+    assert runtime._claim_next_domain_effect(
+        tenant_id=None,
+        lease_seconds=30,
+        now=BASE_TIME,
+        session=db.session,
+    ) is not None
+
+    recovered = recover_stale_domain_effects(
+        now=BASE_TIME + timedelta(seconds=31),
+        limit=1,
+        should_continue=lambda: False,
+    )
+
+    assert recovered == {"unknown": 0, "retry_wait": 0, "dead": 0}
+    assert _row(staged.effect_id).status == DomainEffectOutbox.STATUS_PROCESSING
+
+
 def test_stale_lease_token_cannot_finalize_after_fence_moves(effect_app):
     registry = _success_registry()
     staged = _stage(registry)
@@ -836,7 +890,9 @@ def test_worker_must_not_begin_io_after_its_lease_has_expired(effect_app):
         # Simulate a slow preflight whose lease expires before provider I/O.
         db.session.execute(
             update(DomainEffectOutbox)
-            .where(DomainEffectOutbox.id == claim.effect_id)
+            .where(
+                DomainEffectOutbox.id.in_((claim.effect_id, other.effect_id))
+            )
             .values(leased_until=BASE_TIME - timedelta(seconds=1))
         )
         db.session.commit()
@@ -849,6 +905,18 @@ def test_worker_must_not_begin_io_after_its_lease_has_expired(effect_app):
         return PreparedDomainEffect(deliver=deliver)
 
     registry = _registry(prepare)
+    other = _stage(
+        registry,
+        aggregate_ref="other-expired-lease",
+        effect_key="ticket:other-expired-lease:email:requester",
+    )
+    db.session.commit()
+    assert runtime._claim_next_domain_effect(
+        tenant_id=None,
+        lease_seconds=30,
+        now=BASE_TIME,
+        session=db.session,
+    ) is not None
     staged = _stage(registry)
     db.session.commit()
 
@@ -866,3 +934,6 @@ def test_worker_must_not_begin_io_after_its_lease_has_expired(effect_app):
         DomainEffectOutbox.STATUS_RETRY_WAIT,
         DomainEffectOutbox.STATUS_DEAD,
     }
+    untouched = _row(other.effect_id)
+    assert untouched.status == DomainEffectOutbox.STATUS_PROCESSING
+    assert untouched.lease_token is not None

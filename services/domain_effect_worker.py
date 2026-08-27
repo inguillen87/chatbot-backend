@@ -8,7 +8,8 @@ import logging
 import os
 import signal
 import threading
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 from flask import current_app, has_app_context
 
@@ -79,6 +80,8 @@ def dispatch_domain_effect_batch(
     *,
     tenant_id: Optional[int] = None,
     limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Dispatch only tenants included in the explicit canary allowlist."""
 
@@ -137,6 +140,8 @@ def dispatch_domain_effect_batch(
     for tenant_index, current_tenant_id in enumerate(tenant_ids):
         if remaining <= 0:
             break
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         tenants_remaining = len(tenant_ids) - tenant_index
         # Reserve a deterministic fair share for every remaining canary.  A
         # tenant with a permanently full backlog must not consume the complete
@@ -150,19 +155,32 @@ def dispatch_domain_effect_batch(
             raise DomainEffectOutboxConfigurationError(
                 "domain_effect_worker_policy_mismatch"
             )
+        dispatch_kwargs: dict[str, Any] = {}
+        if deadline_monotonic is not None:
+            dispatch_kwargs["should_continue"] = (
+                lambda: clock() < deadline_monotonic
+            )
         summary = dispatch_domain_effects(
             registry=DOMAIN_EFFECT_WORKER_REGISTRY,
             intent_secret=policy.secret,
             tenant_id=current_tenant_id,
             limit=tenant_limit,
             lease_seconds=_configured_lease_seconds(),
+            **dispatch_kwargs,
         )
         report = summary.to_dict()
         report["tenant_id"] = current_tenant_id
         per_tenant.append(report)
         for key in totals:
             totals[key] += int(getattr(summary, key))
-        remaining -= int(summary.processed)
+        remaining -= int(summary.processed) + sum(
+            int(getattr(summary, key))
+            for key in (
+                "recovered_unknown",
+                "recovered_retry_wait",
+                "recovered_dead",
+            )
+        )
 
     return {
         "contract_version": "domain.effect_worker_batch.v1",
@@ -206,11 +224,26 @@ def run_domain_effect_worker(
     *,
     once: bool = False,
     stop_event: Optional[threading.Event] = None,
+    batch_limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Run the database poller used by a dedicated background process."""
 
     shutdown = stop_event or threading.Event()
-    totals = {"cycles": 0, "processed": 0, "unknown": 0, "dead": 0}
+    totals = {
+        "cycles": 0,
+        "processed": 0,
+        "succeeded": 0,
+        "skipped": 0,
+        "retry_wait": 0,
+        "unknown": 0,
+        "dead": 0,
+        "recovered_unknown": 0,
+        "recovered_retry_wait": 0,
+        "recovered_dead": 0,
+        "cycle_failures": 0,
+    }
     with app.app_context():
         resolve_domain_effect_outbox_canaries(current_app.config)
         _configured_batch_size()
@@ -229,15 +262,38 @@ def run_domain_effect_worker(
         while not shutdown.is_set():
             totals["cycles"] += 1
             try:
-                report = dispatch_domain_effect_batch()
-                totals["processed"] += int(report["processed"])
-                totals["unknown"] += int(report["unknown"])
-                totals["dead"] += int(report["dead"])
-                did_work = bool(report["processed"])
+                dispatch_kwargs: dict[str, Any] = {}
+                if batch_limit is not None:
+                    dispatch_kwargs["limit"] = batch_limit
+                if deadline_monotonic is not None:
+                    dispatch_kwargs.update(
+                        deadline_monotonic=deadline_monotonic,
+                        clock=clock,
+                    )
+                report = dispatch_domain_effect_batch(**dispatch_kwargs)
+                for key in (
+                    "processed",
+                    "succeeded",
+                    "skipped",
+                    "retry_wait",
+                    "unknown",
+                    "dead",
+                    "recovered_unknown",
+                    "recovered_retry_wait",
+                    "recovered_dead",
+                ):
+                    totals[key] += int(report.get(key) or 0)
+                did_work = bool(
+                    int(report["processed"])
+                    + int(report.get("recovered_unknown") or 0)
+                    + int(report.get("recovered_retry_wait") or 0)
+                    + int(report.get("recovered_dead") or 0)
+                )
                 db.session.remove()
             except Exception:
                 db.session.rollback()
                 db.session.remove()
+                totals["cycle_failures"] += 1
                 logger.exception("[DOMAIN_EFFECT_WORKER] poll_cycle_failed")
                 did_work = False
             if once:

@@ -21,8 +21,9 @@ import os
 import re
 import signal
 import threading
+import time
 from types import SimpleNamespace
-from typing import Any, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from flask import current_app, g, has_app_context
@@ -618,6 +619,8 @@ def process_whatsapp_inbound_stream(
     tenant_id: Optional[int] = None,
     stream_key: Optional[str] = None,
     limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Drain FIFO turns only for tenants in the explicit queue allowlist."""
 
@@ -638,12 +641,16 @@ def process_whatsapp_inbound_stream(
     for tenant_index, current_tenant_id in enumerate(tenant_ids):
         if remaining <= 0:
             break
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         tenants_remaining = len(tenant_ids) - tenant_index
         tenant_limit = max(
             1,
             (remaining + tenants_remaining - 1) // tenants_remaining,
         )
         for _ in range(tenant_limit):
+            if deadline_monotonic is not None and clock() >= deadline_monotonic:
+                break
             claim = claim_next_whatsapp_inbound_turn(
                 tenant_id=current_tenant_id,
                 stream_key=stream_key,
@@ -855,9 +862,13 @@ def dispatch_whatsapp_outbound_attempts(
     *,
     tenant_id: Optional[int] = None,
     limit: int = 20,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     for _ in range(max(1, min(int(limit or 1), 100))):
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         result = dispatch_next_whatsapp_outbound_attempt(tenant_id=tenant_id)
         if result.status == "idle":
             break
@@ -1050,14 +1061,25 @@ def run_whatsapp_durable_worker(
     once: bool = False,
     stop_event: Optional[threading.Event] = None,
     standby_when_legacy: bool = False,
+    inbound_limit: Optional[int] = None,
+    outbound_limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Run the authoritative DB poller for inbound turns and outbound sends."""
 
     shutdown = stop_event or threading.Event()
     totals = {
         "cycles": 0,
+        "processed": 0,
+        "inbound_processed": 0,
         "inbound_completed": 0,
+        "outbound_processed": 0,
         "outbound_accepted": 0,
+        "retry_wait": 0,
+        "unknown": 0,
+        "dead": 0,
+        "cycle_failures": 0,
     }
     with app.app_context():
         mode = str(
@@ -1105,18 +1127,52 @@ def run_whatsapp_durable_worker(
         while not shutdown.is_set():
             totals["cycles"] += 1
             try:
-                inbound = process_whatsapp_inbound_stream()
-                outbound = dispatch_whatsapp_outbound_attempts()
+                inbound_kwargs: dict[str, Any] = {}
+                outbound_kwargs: dict[str, Any] = {}
+                if inbound_limit is not None:
+                    inbound_kwargs["limit"] = inbound_limit
+                if outbound_limit is not None:
+                    outbound_kwargs["limit"] = outbound_limit
+                if deadline_monotonic is not None:
+                    deadline_kwargs = {
+                        "deadline_monotonic": deadline_monotonic,
+                        "clock": clock,
+                    }
+                    inbound_kwargs.update(deadline_kwargs)
+                    outbound_kwargs.update(deadline_kwargs)
+                inbound = process_whatsapp_inbound_stream(**inbound_kwargs)
+                outbound = dispatch_whatsapp_outbound_attempts(**outbound_kwargs)
+                inbound_processed = int(inbound.get("processed") or 0)
+                outbound_processed = int(outbound.get("processed") or 0)
+                totals["processed"] += inbound_processed + outbound_processed
+                totals["inbound_processed"] += inbound_processed
                 totals["inbound_completed"] += int(inbound.get("completed") or 0)
+                totals["outbound_processed"] += outbound_processed
                 totals["outbound_accepted"] += int(outbound.get("accepted") or 0)
+                statuses = [
+                    str(item.get("status") or "")
+                    for item in (
+                        list(inbound.get("results") or [])
+                        + list(outbound.get("results") or [])
+                    )
+                    if isinstance(item, dict)
+                ]
+                totals["retry_wait"] += sum(
+                    status == "retry_wait" for status in statuses
+                )
+                totals["dead"] += sum(status == "dead" for status in statuses)
+                totals["unknown"] += sum(
+                    status in {"send_uncertain", "lost_lease"}
+                    for status in statuses
+                )
                 did_work = bool(
-                    int(inbound.get("processed") or 0)
-                    or int(outbound.get("processed") or 0)
+                    inbound_processed or outbound_processed
                 )
                 db.session.remove()
             except Exception as exc:
                 db.session.rollback()
                 db.session.remove()
+                totals["cycle_failures"] += 1
                 logger.error(
                     "[WHATSAPP_WORKER] Durable poll cycle failed error_type=%s",
                     type(exc).__name__,

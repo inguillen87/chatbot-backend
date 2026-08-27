@@ -14,7 +14,8 @@ import os
 from pathlib import Path
 import signal
 import threading
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 from flask import current_app, has_app_context
 from sqlalchemy import func
@@ -66,7 +67,10 @@ def _database_schema_heads() -> frozenset[str]:
         return frozenset(str(head) for head in context.get_current_heads())
 
 
-def assert_survey_response_effect_worker_schema_current() -> None:
+def assert_survey_response_effect_worker_schema_current(
+    *,
+    required: bool = False,
+) -> None:
     """Fail before polling when the database is not at this release's head."""
 
     if bool(current_app.config.get("TESTING")):
@@ -75,7 +79,7 @@ def assert_survey_response_effect_worker_schema_current() -> None:
         current_app.config.get("CHATBOC_PROCESS_ROLE")
         or os.getenv("CHATBOC_PROCESS_ROLE", "")
     ).strip().lower()
-    if process_role != "survey-effect-worker":
+    if not required and process_role != "survey-effect-worker":
         return
 
     expected = _repository_schema_heads()
@@ -187,6 +191,9 @@ def _select_fair_tenants(
 def dispatch_survey_response_effect_batch(
     *,
     limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
+    require_shared_realtime: bool = False,
 ) -> dict[str, Any]:
     """Discover tenants and process one bounded, fairly divided DB batch."""
 
@@ -219,15 +226,25 @@ def dispatch_survey_response_effect_batch(
     for tenant_index, tenant_id in enumerate(selected_tenants):
         if remaining <= 0:
             break
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         tenants_remaining = len(selected_tenants) - tenant_index
         tenant_limit = max(
             1,
             (remaining + tenants_remaining - 1) // tenants_remaining,
         )
+        dispatch_kwargs: dict[str, Any] = {}
+        if deadline_monotonic is not None:
+            dispatch_kwargs["should_continue"] = (
+                lambda: clock() < deadline_monotonic
+            )
+        if require_shared_realtime:
+            dispatch_kwargs["require_shared_realtime"] = True
         report = dispatch_survey_response_effects(
             tenant_id=tenant_id,
             limit=tenant_limit,
             lease_seconds=lease_seconds,
+            **dispatch_kwargs,
         )
         safe_report = {
             key: int(report.get(key) or 0)
@@ -286,6 +303,11 @@ def run_survey_response_effect_worker(
     *,
     once: bool = False,
     stop_event: Optional[threading.Event] = None,
+    batch_limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
+    require_current_schema: bool = False,
+    require_shared_realtime: bool = False,
 ) -> dict[str, Any]:
     """Run the standalone poller used by the Render background worker."""
 
@@ -294,14 +316,19 @@ def run_survey_response_effect_worker(
         "cycles": 0,
         "claimed": 0,
         "processed": 0,
+        "succeeded": 0,
+        "skipped": 0,
         "retry_wait": 0,
         "dead": 0,
+        "fenced": 0,
         "cycle_failures": 0,
     }
     with app.app_context():
         # Validate every bound at startup. The first health query also fails
         # loudly if the migration/table is missing.
-        assert_survey_response_effect_worker_schema_current()
+        assert_survey_response_effect_worker_schema_current(
+            required=require_current_schema,
+        )
         _configured_batch_size()
         _configured_max_tenants()
         _configured_lease_seconds()
@@ -311,8 +338,26 @@ def run_survey_response_effect_worker(
         while not shutdown.is_set():
             totals["cycles"] += 1
             try:
-                report = dispatch_survey_response_effect_batch()
-                for key in ("claimed", "processed", "retry_wait", "dead"):
+                dispatch_kwargs: dict[str, Any] = {}
+                if batch_limit is not None:
+                    dispatch_kwargs["limit"] = batch_limit
+                if deadline_monotonic is not None:
+                    dispatch_kwargs.update(
+                        deadline_monotonic=deadline_monotonic,
+                        clock=clock,
+                    )
+                if require_shared_realtime:
+                    dispatch_kwargs["require_shared_realtime"] = True
+                report = dispatch_survey_response_effect_batch(**dispatch_kwargs)
+                for key in (
+                    "claimed",
+                    "processed",
+                    "succeeded",
+                    "skipped",
+                    "retry_wait",
+                    "dead",
+                    "fenced",
+                ):
                     totals[key] += int(report.get(key) or 0)
                 did_work = bool(int(report.get("claimed") or 0))
                 db.session.remove()

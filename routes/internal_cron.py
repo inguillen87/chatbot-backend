@@ -111,6 +111,145 @@ def _report_count(report: dict, key: str, *, maximum: int | None = None) -> int:
     return value
 
 
+def _validate_outbox_reconciliation_report(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise RuntimeError("outbox_reconciliation_report_invalid")
+    status = payload.get("status")
+    successful_statuses = {
+        "completed",
+        "contended",
+        "drain_limit_reached",
+        "time_budget_reached",
+    }
+    failed_statuses = {
+        "configuration_unavailable",
+        "degraded",
+        "reconciliation_unavailable",
+    }
+    if (
+        payload.get("contract_version") != "outbox.reconciliation.v2"
+        or not isinstance(payload.get("ok"), bool)
+        or not isinstance(payload.get("has_more"), bool)
+        or payload.get("idempotency") != "database_outbox_leases_and_fencing"
+        or payload.get("exclusive_lease")
+        != "postgresql_transaction_advisory_lock"
+        or not isinstance(payload.get("limits"), dict)
+        or status not in successful_statuses | failed_statuses
+        or payload["ok"] is not (status in successful_statuses)
+    ):
+        raise RuntimeError("outbox_reconciliation_report_invalid")
+    _report_count(payload, "elapsed_ms")
+
+    component_count = _report_count(payload, "component_count", maximum=3)
+    failed_count = _report_count(
+        payload,
+        "failed_component_count",
+        maximum=component_count,
+    )
+    attention_count = _report_count(
+        payload,
+        "attention_component_count",
+        maximum=component_count,
+    )
+    cycles_run = _report_count(payload, "cycles_run", maximum=20)
+    components = payload.get("components")
+    expected_component_names = {
+        "whatsapp",
+        "domain_effects",
+        "survey_effects",
+    }
+    if (
+        not isinstance(components, dict)
+        or len(components) != component_count
+        or failed_count + attention_count > component_count
+    ):
+        raise RuntimeError("outbox_reconciliation_report_invalid")
+
+    if status == "configuration_unavailable":
+        if (
+            components
+            or component_count != 0
+            or failed_count != 0
+            or attention_count != 0
+            or cycles_run != 0
+            or payload["has_more"] is not False
+        ):
+            raise RuntimeError("outbox_reconciliation_report_invalid")
+        return payload
+
+    if component_count != 3 or set(components) != expected_component_names:
+        raise RuntimeError("outbox_reconciliation_report_invalid")
+
+    allowed_component_statuses = {
+        "not_run",
+        "standby",
+        "idle",
+        "progress",
+        "retry_wait",
+        "fenced",
+        "failed",
+        "attention_required",
+        "deferred_time_budget",
+    }
+    failed_status_count = 0
+    attention_status_count = 0
+    for component in components.values():
+        if (
+            not isinstance(component, dict)
+            or component.get("status") not in allowed_component_statuses
+        ):
+            raise RuntimeError("outbox_reconciliation_report_invalid")
+        _report_count(component, "attempts", maximum=20)
+        _report_count(component, "cycle_failures", maximum=20)
+        if component["status"] in {"failed", "retry_wait", "fenced"}:
+            failed_status_count += 1
+        elif component["status"] == "attention_required":
+            attention_status_count += 1
+    if (
+        failed_status_count != failed_count
+        or attention_status_count != attention_count
+    ):
+        raise RuntimeError("outbox_reconciliation_report_invalid")
+
+    if status == "completed":
+        valid_status_shape = (
+            failed_count == 0
+            and attention_count == 0
+            and cycles_run > 0
+            and payload["has_more"] is False
+        )
+    elif status == "contended":
+        valid_status_shape = (
+            failed_count == 0
+            and attention_count == 0
+            and cycles_run == 0
+            and payload["has_more"] is True
+        )
+    elif status == "drain_limit_reached":
+        valid_status_shape = (
+            failed_count == 0
+            and attention_count == 0
+            and cycles_run > 0
+            and payload["has_more"] is True
+        )
+    elif status == "time_budget_reached":
+        valid_status_shape = (
+            failed_count == 0
+            and attention_count == 0
+            and payload["has_more"] is True
+        )
+    elif status == "degraded":
+        valid_status_shape = (
+            failed_count + attention_count > 0
+            and payload["has_more"] is True
+        )
+    else:
+        valid_status_shape = payload["has_more"] is True
+    if not valid_status_shape:
+        raise RuntimeError("outbox_reconciliation_report_invalid")
+    return payload
+
+
 @internal_cron_bp.get("/outbox-reconciliation")
 def outbox_reconciliation():
     if not _has_valid_cron_authorization():
@@ -141,7 +280,24 @@ def outbox_reconciliation():
     # standalone worker dependencies only to register this blueprint.
     from services.outbox_reconciliation import run_outbox_reconciliation
 
-    payload = run_outbox_reconciliation(current_app._get_current_object())
+    try:
+        payload = _validate_outbox_reconciliation_report(
+            run_outbox_reconciliation(current_app._get_current_object())
+        )
+    except Exception as exc:
+        current_app.logger.error(
+            "Outbox reconciliation failed; error_type=%s",
+            type(exc).__name__,
+        )
+        return _json_no_store(
+            {
+                "contract_version": "internal.outbox_reconciliation.v1",
+                "executed": True,
+                "ok": False,
+                "status": "failed",
+            },
+            503,
+        )
     response = jsonify(payload)
     response.status_code = 200 if payload.get("ok") is True else 503
     response.headers["Cache-Control"] = "no-store"

@@ -764,6 +764,36 @@ class Config:
         False,
         "VERCEL_OUTBOX_CRON_ENABLED",
     )
+    # The scheduled drain is intentionally smaller than the platform request
+    # limit.  Batches are effect-level leased/fenced and the coordinator holds
+    # a PostgreSQL transaction advisory lock so duplicate cron deliveries do
+    # not run overlapping consumers.
+    # Keep raw values here: a typo must make only the gated cron unavailable,
+    # not crash the web application while importing Config.
+    VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS = os.getenv(
+        "VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS",
+        "45",
+    )
+    VERCEL_OUTBOX_CRON_MAX_CYCLES = os.getenv(
+        "VERCEL_OUTBOX_CRON_MAX_CYCLES",
+        "4",
+    )
+    VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE",
+        "1",
+    )
+    VERCEL_OUTBOX_CRON_WHATSAPP_OUTBOUND_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_WHATSAPP_OUTBOUND_BATCH_SIZE",
+        "2",
+    )
+    VERCEL_OUTBOX_CRON_DOMAIN_EFFECT_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_DOMAIN_EFFECT_BATCH_SIZE",
+        "10",
+    )
+    VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE",
+        "25",
+    )
     # Destructive retention jobs need an independent production cutover.  A
     # scheduled deployment must remain inert until the operator explicitly
     # transfers ownership of maintenance work away from Render.
@@ -1635,6 +1665,56 @@ def validate_runtime_security(config: Any) -> list[str]:
         errors.append(
             "RATELIMIT_STORAGE_URI debe usar Redis compartido en el servicio web de Render."
         )
+
+    if getattr(config, "get", lambda *_: None)(
+        "VERCEL_OUTBOX_CRON_ENABLED",
+        False,
+    ) is True:
+        vercel_outbox_bounds = (
+            ("VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS", 5.0, 55.0, float, 45.0),
+            ("VERCEL_OUTBOX_CRON_MAX_CYCLES", 1, 20, int, 4),
+            (
+                "VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE",
+                1,
+                10,
+                int,
+                1,
+            ),
+            (
+                "VERCEL_OUTBOX_CRON_WHATSAPP_OUTBOUND_BATCH_SIZE",
+                1,
+                10,
+                int,
+                2,
+            ),
+            ("VERCEL_OUTBOX_CRON_DOMAIN_EFFECT_BATCH_SIZE", 1, 50, int, 10),
+            ("VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE", 1, 100, int, 25),
+        )
+        for key, minimum, maximum, cast, default_value in vercel_outbox_bounds:
+            raw_value = getattr(config, "get", lambda *_: None)(key, default_value)
+            try:
+                if isinstance(raw_value, bool):
+                    raise ValueError(key)
+                if cast is int:
+                    if isinstance(raw_value, int):
+                        value = raw_value
+                    elif (
+                        isinstance(raw_value, str)
+                        and raw_value.strip().lstrip("+-").isdigit()
+                    ):
+                        value = int(raw_value.strip())
+                    else:
+                        raise ValueError(key)
+                else:
+                    value = cast(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                errors.append(f"{key} invalido para reconciliacion Vercel.")
+                continue
+            if (
+                isinstance(value, float)
+                and not math.isfinite(value)
+            ) or value < minimum or value > maximum:
+                errors.append(f"{key} fuera de rango para reconciliacion Vercel.")
 
     raw_demo_seed_flag = getattr(config, "get", lambda *_: None)(
         "ALLOW_SURVEY_DEMO_SEEDING",

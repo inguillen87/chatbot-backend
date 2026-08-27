@@ -160,7 +160,10 @@ def _survey_realtime_queue_config() -> tuple[str, str, float]:
     return queue_url, channel, timeout
 
 
-def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
+def ensure_survey_realtime_transport_ready(
+    *,
+    require_shared: bool = False,
+) -> dict[str, Any]:
     """Verify the delivery boundary used by a durable realtime effect.
 
     The web process may use its in-process Socket.IO manager when no shared
@@ -175,7 +178,8 @@ def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
 
     process_role = _survey_realtime_process_role()
     queue_url, channel, timeout = _survey_realtime_queue_config()
-    shared_required = process_role == SURVEY_EFFECT_WORKER_ROLE
+    worker_role = process_role == SURVEY_EFFECT_WORKER_ROLE
+    shared_required = worker_role or require_shared
     if not queue_url:
         if shared_required:
             raise SurveyRealtimeTransportError(
@@ -217,11 +221,11 @@ def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
             "survey_realtime_shared_manager_channel_mismatch"
         )
     manager_write_only = bool(getattr(manager, "write_only", False))
-    if shared_required and not manager_write_only:
+    if worker_role and not manager_write_only:
         raise SurveyRealtimeTransportError(
             "survey_realtime_worker_manager_not_write_only"
         )
-    if not shared_required and manager_write_only:
+    if not worker_role and not require_shared and manager_write_only:
         raise SurveyRealtimeTransportError(
             "survey_realtime_web_manager_not_subscribed"
         )
