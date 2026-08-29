@@ -2256,6 +2256,11 @@ def serialize_ticket_to_json(
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
+        # Publish the canonical backing model so the frontend can select the
+        # collision-safe, atomic inbox endpoints instead of guessing from an
+        # integer ID shared by multiple ticket tables.
+        "source_model": "MunicipioTicket" if ticket_type == "municipio" else "PymeTicket",
+        "ticket_type": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
         "estado": estado_serializado,
@@ -3119,6 +3124,8 @@ def _serialize_ticket_details(ticket, ticket_type):
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "tipo": ticket_type,
+        "source_model": "MunicipioTicket" if ticket_type == "municipio" else "PymeTicket",
+        "ticket_type": ticket_type,
         "nro_ticket_original": ticket.nro_ticket, # Mantenemos el nro original por si acaso
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria_reclamo": getattr(ticket, 'categoria', ''),
