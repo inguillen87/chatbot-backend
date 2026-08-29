@@ -13,13 +13,12 @@ maintenance window. No step authorizes deleting Render or its database.
 | --- | --- |
 | Public API | Render web service, revision `8ced9216ff134951a0e3cb050c473e364c28be5c` |
 | Source of truth | Render PostgreSQL 18, not `/data/database.db` |
-| Source schema / inventory | `20260820_survey_content_jurisdiction_v1`; 170 public tables; 52,863 aggregate rows |
-| Neon main | `20260825_demo_survey_participation_v1`; 171 public tables; 52,751 aggregate rows |
-| Fenced Vercel candidate | `dpl_CK7KpRAWqDFhR5vkRnV8mc3fw11H`, revision `e8373ae1056aa5d5293aa40b9481bcc347d51347`, no public/custom alias; Vercel technical alias only |
+| Source schema / inventory | `20260820_survey_content_jurisdiction_v1`; 170 public tables; 52,864 aggregate rows in the latest read-only audit |
+| Neon rehearsal | Project `nameless-rain-94060889`, branch `br-floral-unit-acgqawl6`, database `render_rehearsal_20260829`; 173 public tables; 52,877 aggregate rows; it is not eligible to become the final database |
+| Fenced Vercel candidate | `dpl_C2qNUv9rZqHxn6Rc3YuDgbyqDyYi`, revision `df2702f25bcab24223c7e095a5cc4cfa5c101de2`; readiness passes and every unsafe HTTP/background write remains fenced |
 | Junin WhatsApp sender | official sender ending `3718` |
-| Wrong default found in Render | sandbox sender ending `8886`, offline |
-| Junin ownership model | official legacy mapping present; restored database lacks the exact production `provider_connection`/`provider_sender` binding |
-| Secondary Junin mapping | active legacy mapping ending `5678`; classification pending |
+| Junin ownership model | provider inspection sees exactly one official Junin WhatsApp sender, but the restored database lacks the exact ready `provider_connection`/`provider_sender` binding and the tenant profile sender field is empty |
+| Contact-phone boundary | Phone numbers stored on a user, employee or tenant contact profile are not WhatsApp sender evidence. No second Junin WhatsApp sender is certified by this runbook. |
 | Background processing | no active Render workers or cron services were found |
 | Public traffic | unchanged; Render is still the only public writer |
 
@@ -220,11 +219,12 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
 - [ ] Verify tenant isolation, expanded
       conversation, text reply, image/R2, location, form, survey, vote,
       analytics and heatmap against the certified database.
-- [ ] Register exactly the four approved Vercel cron definitions against the
-      approved deployment while fence is active and all three enable flags are
-      false. A build containing `vercel.json` is not evidence that the project
-      scheduler owns those jobs. The 2026-08-29 CLI audit still reports all
-      four definitions as `not deployed`; do not transfer job ownership yet.
+- [x] Register exactly the four approved Vercel cron definitions against the
+      fenced candidate while all three enable flags are false. The 2026-08-29
+      formal audit confirmed exactly four enabled registry definitions and
+      four runtime probes returning the background-writer fence contract.
+      This certifies registered, fail-closed ownership only; it does not
+      authorize transferring or enabling job effects.
 - [ ] Verify Twilio signatures and callbacks read-only before any live send.
 
 ### Evidence contract for Vercel cron ownership

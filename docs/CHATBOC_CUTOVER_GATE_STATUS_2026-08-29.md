@@ -16,6 +16,7 @@ and does not replace the signed evidence required by the production runbook.
 | Vercel cron registry | Four approved cron definitions are registered on the fenced candidate. All three execution enable flags remain false and all four runtime probes return the background-writer fence contract. |
 | Frontend Preview | Deployment `dpl_J1pPcn5hwCPpEm3m1s9LobXMTBb5`, revision `24dd991d0397170a19602bc6f4705178b3f8e1db`, is `READY` at `chatboc-r2-preview.vercel.app`; the compiled QA routes target `api-preview.chatboc.ar`, not the public Render API. |
 | Neon rehearsal identity | Project `nameless-rain-94060889`, branch `br-floral-unit-acgqawl6`, database `render_rehearsal_20260829`, migration head `20260829_global_writer_authority_v1`. Schema preflight passes. |
+| Ingress retry evidence | Revision `42e693d49434734969517b934f8274ce1d3044c3` records the optional Twilio retry token only as a versioned, domain-separated HMAC after signature validation. The raw header is never persisted or returned; the full focal module passes 49/49 tests. This is code/rehearsal evidence, not a real Junin replay certificate. |
 | Rollback contract | Offline manifest validator v2 exists and is test-covered. It validates evidence shape only; a real window-bound manifest is still required. |
 
 ## Blocking evidence
