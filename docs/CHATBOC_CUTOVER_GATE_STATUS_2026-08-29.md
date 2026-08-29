@@ -1,6 +1,6 @@
 # Chatboc Render to Vercel/Neon gate status
 
-Observed: 2026-08-29, approximately 19:20 ART.
+Observed: 2026-08-29, approximately 19:48 ART.
 
 Decision: **NO-GO for the production cutover and NO-GO for retiring Render.**
 
@@ -14,9 +14,9 @@ and does not replace the signed evidence required by the production runbook.
 | Public source | `api.chatboc.ar` still resolves to Render. Live backend revision is `8ced9216ff134951a0e3cb050c473e364c28be5c`; `/health` is HTTP 200. |
 | Fenced Vercel backend | Deployment `dpl_C2qNUv9rZqHxn6Rc3YuDgbyqDyYi` serves backend `df2702f25bcab24223c7e095a5cc4cfa5c101de2`; readiness passed and unsafe HTTP writes return the writer-fence contract. |
 | Vercel cron registry | Four approved cron definitions are registered on the fenced candidate and all four runtime probes return the background-writer fence contract. The current branch separates WhatsApp-payload retention from survey-privacy retention; the legacy umbrella flag no longer activates either route. These local controls are test-covered but are not yet evidence for the old deployed candidate. |
-| Frontend Preview | Deployment `dpl_53aiURmcxAbmwWGivX5Vnp2oURLr`, revision `1f2530f09183a7208caefb022ac26574142f8f47`, is `READY` at `chatboc-r2-preview.vercel.app`; the compiled QA routes target `api-preview.chatboc.ar`, not the public Render API. The build contains eight Preview rewrites, zero public Render rewrites and the exact revision in its served HTML. |
+| Frontend Preview | Deployment `dpl_GGhAddnRFiHMg6MuxxZeoHmM5g5n`, revision `c14166121975999cc32f8631ecc31b4c75a994d7`, is `READY` at `chatboc-r2-preview.vercel.app`; the compiled QA routes target `api-preview.chatboc.ar`, not the public Render API. The build contains eight Preview rewrites, zero public Render rewrites and the exact revision in its served HTML. |
 | Enterprise CRM Preview | Authenticated browser QA confirmed 80 Junin CRM people with history loaded from the contact-history endpoint or an explicit empty state, 63 backend cases in the operational queue, the expanded conversation workspace and an enabled text composer backed by the published omnichannel reply contract. No message, assignment or provider mutation was executed during QA. |
-| Territorial intelligence Preview | The operations heatmap v2 renders only two currently published points, reports 22.2% coverage and keeps rankings/comparisons disabled without official boundaries. Demo fallback is disabled; the UI exposes provenance, privacy and incomplete-geocoding evidence instead of manufacturing territorial coverage. |
+| Territorial intelligence Preview | Authenticated browser QA on revision `c1416612` renders only two currently published points, reports 22.2% coverage and keeps rankings/comparisons disabled without official boundaries. Demo fallback is disabled; partial provenance uses a warning state rather than verified styling, raw layer tokens are translated, singular/plural copy is corrected and the assisted summary suppresses unvalidated decision claims. |
 | Neon rehearsal identity | Project `nameless-rain-94060889`, branch `br-floral-unit-acgqawl6`, database `render_rehearsal_20260829`, migration head `20260829_global_writer_authority_v1`. Schema preflight passes. |
 | Ingress retry evidence | Revision `42e693d49434734969517b934f8274ce1d3044c3` records the optional Twilio retry token only as a versioned, domain-separated HMAC after signature validation. The raw header is never persisted or returned; the full focal module passes 49/49 tests. This is code/rehearsal evidence, not a real Junin replay certificate. |
 | Rollback contract | Offline manifest validator v2 exists and is test-covered. It validates evidence shape only; a real window-bound manifest is still required. |
