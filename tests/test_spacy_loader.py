@@ -16,3 +16,11 @@ def test_get_spacy_model_falls_back_to_blank_spanish(monkeypatch):
     assert nlp.vocab.vectors.shape[0] == 0
 
     spacy_loader.get_spacy_model.cache_clear()
+
+
+def test_lightweight_fallback_tokens_keep_document_cleanup_contract():
+    nlp = spacy_loader._BlankSpanishPipeline()
+
+    tokens = [token.text for token in nlp("  hola   mundo  ") if not token.is_space]
+
+    assert tokens == ["hola", "mundo"]

@@ -9,6 +9,9 @@ class _BlankToken:
     def __init__(self, text: str) -> None:
         self.text = text
         self.lemma_ = text
+        # Keep the lightweight fallback compatible with consumers that filter
+        # spaCy tokens before normalizing imported documents.
+        self.is_space = False
 
 
 class _BlankDoc(list):
