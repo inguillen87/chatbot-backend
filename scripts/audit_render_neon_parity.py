@@ -1,4 +1,4 @@
-"""Final, read-only Render SQLite to Neon content-parity auditor.
+"""Final, read-only Render SQLite/PostgreSQL to Neon content-parity auditor.
 
 The command opens an already-fenced SQLite snapshot with ``mode=ro`` and
 ``immutable=1``, forces ``PRAGMA query_only=ON``, and reads Neon inside one
@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Protocol, Sequence
 
 from sqlalchemy import create_engine, inspect as sa_inspect, text
-from sqlalchemy.engine import Connection, URL
+from sqlalchemy.engine import Connection, URL, make_url
 
 try:  # Works both as ``python -m scripts...`` and ``python scripts/...``.
     from scripts.preflight_neon_cutover import (
@@ -64,11 +64,16 @@ DEFAULT_POLICY_PATH = (
 DEFAULT_DATABASE_ENVIRONMENT_VARIABLE = "MIGRATIONS_DATABASE_URL"
 DEFAULT_PROJECT_ID_ENVIRONMENT_VARIABLE = "EXPECTED_NEON_PROJECT_ID"
 DEFAULT_BRANCH_ID_ENVIRONMENT_VARIABLE = "EXPECTED_NEON_BRANCH_ID"
+DEFAULT_SOURCE_HOST_FINGERPRINT_ENVIRONMENT_VARIABLE = (
+    "EXPECTED_SOURCE_HOST_FINGERPRINT_SHA256"
+)
 DEFAULT_FINGERPRINT_KEY_ENVIRONMENT_VARIABLE = "PARITY_AUDIT_HMAC_KEY"
 DEFAULT_MAX_ROWS_PER_TABLE = 1_000_000
 SAFE_EVIDENCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 SAFE_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]{0,127}$")
-POLICY_KEYS = {"contract_version", "excluded_tables", "table_rules"}
+SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+POLICY_REQUIRED_KEYS = {"contract_version", "excluded_tables", "table_rules"}
+POLICY_OPTIONAL_KEYS = {"allowed_destination_only_tables"}
 TABLE_RULE_KEYS = {
     "destination_authoritative_columns",
     "source_only_null_columns",
@@ -156,23 +161,93 @@ def _translate_preflight_failure(callback, *args, **kwargs):
         raise ParityAuditFailure(exc.reason_code) from exc
 
 
+def _validate_sha256_fingerprint(value: str, *, reason_code: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if not SHA256_PATTERN.fullmatch(normalized):
+        raise ParityAuditFailure(reason_code)
+    return normalized
+
+
+def _validate_source_postgresql_url(
+    raw_url: str,
+    *,
+    expected_host_fingerprint_sha256: str,
+) -> URL:
+    """Validate a direct, TLS PostgreSQL source without disclosing its host."""
+
+    try:
+        parsed = make_url(str(raw_url or "").strip())
+    except Exception as exc:
+        raise ParityAuditFailure("source_database_url_invalid") from exc
+
+    if parsed.get_backend_name() != "postgresql":
+        raise ParityAuditFailure("source_database_backend_not_postgresql")
+    host = str(parsed.host or "").strip().lower().rstrip(".")
+    if not host:
+        raise ParityAuditFailure("source_database_host_missing")
+    if host.endswith(".neon.tech"):
+        raise ParityAuditFailure("source_database_provider_must_not_be_neon")
+    sslmode = str(parsed.query.get("sslmode") or "").strip().lower()
+    if sslmode not in {"require", "verify-ca", "verify-full"}:
+        raise ParityAuditFailure("source_database_tls_not_required")
+    if not parsed.database:
+        raise ParityAuditFailure("source_database_name_missing")
+    if not parsed.username:
+        raise ParityAuditFailure("source_database_username_missing")
+
+    expected = _validate_sha256_fingerprint(
+        expected_host_fingerprint_sha256,
+        reason_code="expected_source_host_fingerprint_invalid",
+    )
+    actual = hashlib.sha256(host.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(actual, expected):
+        raise ParityAuditFailure("source_database_host_fingerprint_mismatch")
+    return parsed
+
+
+def _database_identity(parsed: URL) -> tuple[str, str]:
+    return (
+        str(parsed.host or "").strip().lower().rstrip("."),
+        str(parsed.database or ""),
+    )
+
+
+def _assert_distinct_source_and_destination(source: URL, destination: URL) -> None:
+    if _database_identity(source) == _database_identity(destination):
+        raise ParityAuditFailure("source_destination_database_identity_collision")
+
+
 def _load_policy(path: Path) -> dict[str, Any]:
     try:
         raw = path.read_bytes()
         parsed = tomllib.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise ParityAuditFailure("parity_policy_unreadable") from exc
-    if not isinstance(parsed, dict) or set(parsed) != POLICY_KEYS:
+    if (
+        not isinstance(parsed, dict)
+        or not POLICY_REQUIRED_KEYS.issubset(parsed)
+        or not set(parsed).issubset(POLICY_REQUIRED_KEYS | POLICY_OPTIONAL_KEYS)
+    ):
         raise ParityAuditFailure("parity_policy_schema_invalid")
     if parsed.get("contract_version") != "chatboc.render_neon_parity_policy.v1":
         raise ParityAuditFailure("parity_policy_contract_invalid")
 
     excluded_tables = parsed.get("excluded_tables")
     table_rules = parsed.get("table_rules")
-    if not isinstance(excluded_tables, dict) or not isinstance(table_rules, dict):
+    allowed_destination_only = parsed.get("allowed_destination_only_tables", {})
+    if (
+        not isinstance(excluded_tables, dict)
+        or not isinstance(table_rules, dict)
+        or not isinstance(allowed_destination_only, dict)
+    ):
         raise ParityAuditFailure("parity_policy_schema_invalid")
 
     for table_name, rationale in excluded_tables.items():
+        _validate_identifier(table_name, reason_code="parity_policy_identifier_invalid")
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise ParityAuditFailure("parity_policy_rationale_missing")
+
+    for table_name, rationale in allowed_destination_only.items():
         _validate_identifier(table_name, reason_code="parity_policy_identifier_invalid")
         if not isinstance(rationale, str) or not rationale.strip():
             raise ParityAuditFailure("parity_policy_rationale_missing")
@@ -216,6 +291,9 @@ def _policy_summary(policy: Mapping[str, Any]) -> dict[str, Any]:
         "contract_version": document["contract_version"],
         "sha256": policy["sha256"],
         "excluded_tables": sorted(document["excluded_tables"]),
+        "allowed_destination_only_tables": sorted(
+            document.get("allowed_destination_only_tables", {})
+        ),
         "table_rules": rules,
     }
 
@@ -303,10 +381,12 @@ class SqliteSnapshotReader:
 
 
 class PostgresSnapshotReader:
-    provider = "neon"
-
-    def __init__(self, connection: Connection):
+    def __init__(self, connection: Connection, *, provider: str = "neon"):
         self.connection = connection
+        self.provider = _validate_identifier(
+            provider,
+            reason_code="database_provider_identifier_invalid",
+        )
         self.inspector = sa_inspect(connection)
         self.preparer = connection.dialect.identifier_preparer
 
@@ -601,6 +681,7 @@ def _audit_table(
     destination_columns: Sequence[ColumnSpec],
     policy_document: Mapping[str, Any],
     hmac_key: bytes,
+    comparison_mode: str,
 ) -> dict[str, Any]:
     source_map = _column_map(source_columns)
     destination_map = _column_map(destination_columns)
@@ -608,6 +689,10 @@ def _audit_table(
     destination_authoritative = set(
         rule.get("destination_authoritative_columns", {})
     )
+    if comparison_mode == "exact" and destination_authoritative:
+        raise ParityAuditFailure(
+            "exact_mode_destination_authoritative_columns_forbidden"
+        )
     allowed_null_source_only = set(rule.get("source_only_null_columns", {}))
     source_only = sorted(set(source_map) - set(destination_map))
     unexpected_source_only = sorted(set(source_only) - allowed_null_source_only)
@@ -637,6 +722,7 @@ def _audit_table(
             "source": source_count,
             "destination": destination_count,
             "destination_includes_source_count": destination_count >= source_count,
+            "destination_equals_source_count": destination_count == source_count,
         },
         "schema": {
             "source_column_count": len(source_columns),
@@ -655,8 +741,10 @@ def _audit_table(
             "source_count": source_count,
             "matched_count": 0,
             "missing_count": source_count,
+            "extra_count": 0,
             "source_fingerprint_hmac_sha256": None,
             "matched_fingerprint_hmac_sha256": None,
+            "extra_fingerprint_hmac_sha256": None,
         },
         "cells": {
             "checked_count": 0,
@@ -707,6 +795,8 @@ def _audit_table(
         _assert_no_duplicate_keys(destination_keys)
         destination_by_key = dict(zip(destination_keys, destination_rows))
         matched_keys = [key for key in source_keys if key in destination_by_key]
+        source_key_set = set(source_keys)
+        extra_keys = [key for key in destination_keys if key not in source_key_set]
 
         source_cell_tokens: list[bytes] = []
         destination_cell_tokens: list[bytes] = []
@@ -741,16 +831,22 @@ def _audit_table(
                 else:
                     mismatch_by_column[column_name] += 1
 
-        table["comparison_mode"] = "primary_key_inclusion"
+        table["comparison_mode"] = (
+            "primary_key_exact" if comparison_mode == "exact" else "primary_key_inclusion"
+        )
         table["primary_key"].update(
             {
                 "matched_count": len(matched_keys),
                 "missing_count": len(source_keys) - len(matched_keys),
+                "extra_count": len(extra_keys),
                 "source_fingerprint_hmac_sha256": _aggregate_hmac(
                     hmac_key, f"{table_name}:source-primary-keys", source_keys
                 ),
                 "matched_fingerprint_hmac_sha256": _aggregate_hmac(
                     hmac_key, f"{table_name}:source-primary-keys", matched_keys
+                ),
+                "extra_fingerprint_hmac_sha256": _aggregate_hmac(
+                    hmac_key, f"{table_name}:destination-extra-primary-keys", extra_keys
                 ),
             }
         )
@@ -769,8 +865,17 @@ def _audit_table(
             }
         )
         table["parity"] = (
-            destination_count >= source_count
+            (
+                destination_count == source_count
+                if comparison_mode == "exact"
+                else destination_count >= source_count
+            )
             and table["primary_key"]["missing_count"] == 0
+            and (
+                table["primary_key"]["extra_count"] == 0
+                if comparison_mode == "exact"
+                else True
+            )
             and table["cells"]["mismatch_count"] == 0
         )
         return table
@@ -801,20 +906,35 @@ def _audit_table(
         max(0, count - destination_multiset.get(token, 0))
         for token, count in source_multiset.items()
     )
+    extra_rows = sum(
+        max(0, count - source_multiset.get(token, 0))
+        for token, count in destination_multiset.items()
+    )
     matched_tokens: list[bytes] = []
     for token, count in source_multiset.items():
         matched_tokens.extend([token] * min(count, destination_multiset.get(token, 0)))
-    table["comparison_mode"] = "unkeyed_row_multiset_inclusion"
+    extra_tokens: list[bytes] = []
+    for token, count in destination_multiset.items():
+        extra_tokens.extend([token] * max(0, count - source_multiset.get(token, 0)))
+    table["comparison_mode"] = (
+        "unkeyed_row_multiset_exact"
+        if comparison_mode == "exact"
+        else "unkeyed_row_multiset_inclusion"
+    )
     table["primary_key"].update(
         {
             "source_count": source_count,
             "matched_count": source_count - missing_rows,
             "missing_count": missing_rows,
+            "extra_count": extra_rows,
             "source_fingerprint_hmac_sha256": _aggregate_hmac(
                 hmac_key, f"{table_name}:source-rows", source_tokens
             ),
             "matched_fingerprint_hmac_sha256": _aggregate_hmac(
                 hmac_key, f"{table_name}:source-rows", matched_tokens
+            ),
+            "extra_fingerprint_hmac_sha256": _aggregate_hmac(
+                hmac_key, f"{table_name}:destination-extra-rows", extra_tokens
             ),
         }
     )
@@ -833,7 +953,15 @@ def _audit_table(
             ),
         }
     )
-    table["parity"] = destination_count >= source_count and missing_rows == 0
+    table["parity"] = (
+        (
+            destination_count == source_count
+            if comparison_mode == "exact"
+            else destination_count >= source_count
+        )
+        and missing_rows == 0
+        and (extra_rows == 0 if comparison_mode == "exact" else True)
+    )
     return table
 
 
@@ -844,12 +972,18 @@ def compare_snapshots(
     policy: Mapping[str, Any],
     hmac_key: bytes,
     max_rows_per_table: int,
+    comparison_mode: str = "source-inclusion",
 ) -> dict[str, Any]:
+    if comparison_mode not in {"source-inclusion", "exact"}:
+        raise ParityAuditFailure("comparison_mode_invalid")
     if max_rows_per_table < 1:
         raise ParityAuditFailure("max_rows_per_table_invalid")
     source_tables = source.table_names()
     destination_tables = destination.table_names()
     excluded = set(policy["document"]["excluded_tables"])
+    allowed_destination_only = set(
+        policy["document"].get("allowed_destination_only_tables", {})
+    )
     audited_tables = sorted(set(source_tables) - excluded)
     missing_tables = sorted(set(audited_tables) - set(destination_tables))
     source_counts = {table: source.count(table) for table in source_tables}
@@ -891,8 +1025,30 @@ def compare_snapshots(
                 destination_columns=destination.columns(table_name),
                 policy_document=policy["document"],
                 hmac_key=hmac_key,
+                comparison_mode=comparison_mode,
             )
         )
+
+    destination_only_tables = sorted(
+        set(destination_tables) - set(source_tables) - excluded
+    )
+    destination_only_evidence = [
+        {
+            "name": table_name,
+            "row_count": destination_counts[table_name],
+            "allowed_by_policy": table_name in allowed_destination_only,
+            "acceptable": (
+                destination_counts[table_name] == 0
+                or table_name in allowed_destination_only
+            ),
+        }
+        for table_name in destination_only_tables
+    ]
+    destination_only_blockers = [
+        item["name"]
+        for item in destination_only_evidence
+        if not item["acceptable"]
+    ]
 
     checked_cells = sum(
         int((item.get("cells") or {}).get("checked_count") or 0)
@@ -906,9 +1062,18 @@ def compare_snapshots(
         int((item.get("primary_key") or {}).get("missing_count") or 0)
         for item in table_evidence
     )
-    parity = not missing_tables and all(item["parity"] for item in table_evidence)
+    extra_keys = sum(
+        int((item.get("primary_key") or {}).get("extra_count") or 0)
+        for item in table_evidence
+    )
+    parity = (
+        not missing_tables
+        and all(item["parity"] for item in table_evidence)
+        and (not destination_only_blockers if comparison_mode == "exact" else True)
+    )
     return {
         "parity": parity,
+        "comparison_mode": comparison_mode,
         "inventory": {
             "source": {
                 "provider": source.provider,
@@ -927,11 +1092,16 @@ def compare_snapshots(
             "audited_source_table_count": len(audited_tables),
             "missing_destination_tables": missing_tables,
             "excluded_source_tables_present": sorted(set(source_tables) & excluded),
+            "destination_only_tables": destination_only_evidence,
+            "destination_only_nonempty_unapproved_tables": (
+                destination_only_blockers
+            ),
         },
         "summary": {
             "tables_checked": len(table_evidence),
             "tables_matching": sum(bool(item["parity"]) for item in table_evidence),
             "source_primary_keys_or_rows_missing": missing_keys,
+            "destination_primary_keys_or_rows_extra": extra_keys,
             "cells_checked": checked_cells,
             "cells_mismatched": mismatched_cells,
         },
@@ -939,12 +1109,13 @@ def compare_snapshots(
     }
 
 
-def _destination_state(
+def _configure_postgres_read_only_snapshot(
     connection: Connection,
     *,
-    expected_project_id: str,
-    expected_branch_id: str,
+    failure_reason_code: str,
 ) -> dict[str, Any]:
+    """Start and verify a bounded, repeatable, read-only PostgreSQL snapshot."""
+
     connection.execute(
         text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
     )
@@ -958,7 +1129,47 @@ def _destination_state(
         connection.execute(text("SHOW transaction_isolation")).scalar_one()
     ).lower()
     if not read_only or isolation != "repeatable read":
-        raise ParityAuditFailure("destination_transaction_not_read_only_snapshot")
+        raise ParityAuditFailure(failure_reason_code)
+    return {
+        "transaction_read_only": read_only,
+        "transaction_isolation": isolation,
+        "statement_timeout": "120s",
+        "lock_timeout": "2s",
+    }
+
+
+def _source_postgresql_state(
+    connection: Connection,
+    *,
+    parsed: URL,
+) -> dict[str, Any]:
+    transaction = _configure_postgres_read_only_snapshot(
+        connection,
+        failure_reason_code="source_transaction_not_read_only_snapshot",
+    )
+    host, database = _database_identity(parsed)
+    identity_fingerprint = hashlib.sha256(
+        f"{host}\0{database}".encode("utf-8")
+    ).hexdigest()
+    return {
+        "provider": "render_postgresql_snapshot",
+        "identity_redacted": True,
+        "database_identity_fingerprint_sha256": identity_fingerprint,
+        **transaction,
+        **_translate_preflight_failure(_wal_position, connection),
+    }
+
+
+def _destination_state(
+    connection: Connection,
+    *,
+    expected_project_id: str,
+    expected_branch_id: str,
+) -> dict[str, Any]:
+    transaction = _configure_postgres_read_only_snapshot(
+        connection,
+        failure_reason_code="destination_transaction_not_read_only_snapshot",
+    )
     identity = connection.execute(
         text(
             """
@@ -978,8 +1189,7 @@ def _destination_state(
         "provider": "neon",
         "project_id": project_id,
         "branch_id": branch_id,
-        "transaction_read_only": read_only,
-        "transaction_isolation": isolation,
+        **transaction,
         **_translate_preflight_failure(_wal_position, connection),
     }
 
@@ -994,7 +1204,7 @@ def _status_and_exit(*, parity: bool, writers_fenced: bool) -> tuple[str, int]:
 
 def run_audit(
     *,
-    source_path: Path,
+    source_path: Path | None,
     source_snapshot_id: str,
     writers_fenced: bool,
     writer_fence_evidence_id: str | None,
@@ -1004,6 +1214,9 @@ def run_audit(
     fingerprint_key: bytes,
     fingerprint_key_id: str,
     policy_path: Path,
+    source_database_url: str | None = None,
+    expected_source_host_fingerprint_sha256: str | None = None,
+    comparison_mode: str = "source-inclusion",
     max_rows_per_table: int = DEFAULT_MAX_ROWS_PER_TABLE,
 ) -> tuple[dict[str, Any], int]:
     source_snapshot_id = _validate_evidence_id(
@@ -1022,7 +1235,21 @@ def run_audit(
     elif writer_fence_evidence_id:
         raise ParityAuditFailure("writer_fence_attestation_inconsistent")
 
+    sqlite_selected = source_path is not None
+    postgres_selected = bool(str(source_database_url or "").strip())
+    if sqlite_selected == postgres_selected:
+        raise ParityAuditFailure("source_database_selection_invalid")
+
     parsed: URL = _translate_preflight_failure(_validate_neon_direct_url, database_url)
+    source_parsed: URL | None = None
+    if postgres_selected:
+        source_parsed = _validate_source_postgresql_url(
+            str(source_database_url),
+            expected_host_fingerprint_sha256=str(
+                expected_source_host_fingerprint_sha256 or ""
+            ),
+        )
+        _assert_distinct_source_and_destination(source_parsed, parsed)
     expected_project_id = _translate_preflight_failure(
         _validate_neon_identity_value,
         expected_project_id,
@@ -1034,34 +1261,102 @@ def run_audit(
         kind="branch",
     )
     policy = _load_policy(policy_path)
-    source_before = _sqlite_file_state(source_path)
     host = str(parsed.host or "").lower().rstrip(".")
-    engine = create_engine(
+    destination_engine = create_engine(
         parsed.set(drivername="postgresql+psycopg"),
         pool_pre_ping=True,
         pool_recycle=300,
     )
+    source_engine = None
+    if source_parsed is not None:
+        source_engine = create_engine(
+            source_parsed.set(drivername="postgresql+psycopg"),
+            pool_pre_ping=True,
+            pool_recycle=300,
+        )
+
+    source_state: dict[str, Any]
     try:
-        with _open_sqlite_snapshot(source_path) as sqlite_connection:
-            source = SqliteSnapshotReader(sqlite_connection)
-            with engine.connect() as connection:
-                with connection.begin():
-                    destination_state = _destination_state(
-                        connection,
-                        expected_project_id=expected_project_id,
-                        expected_branch_id=expected_branch_id,
+        if source_path is not None:
+            source_before = _sqlite_file_state(source_path)
+            with _open_sqlite_snapshot(source_path) as sqlite_connection:
+                source = SqliteSnapshotReader(sqlite_connection)
+                with destination_engine.connect() as destination_connection:
+                    with destination_connection.begin():
+                        destination_state = _destination_state(
+                            destination_connection,
+                            expected_project_id=expected_project_id,
+                            expected_branch_id=expected_branch_id,
+                        )
+                        comparison = compare_snapshots(
+                            source=source,
+                            destination=PostgresSnapshotReader(
+                                destination_connection,
+                                provider="neon",
+                            ),
+                            policy=policy,
+                            hmac_key=fingerprint_key,
+                            comparison_mode=comparison_mode,
+                            max_rows_per_table=max_rows_per_table,
+                        )
+            source_after = _sqlite_file_state(source_path)
+            _assert_file_stable(source_before, source_after)
+            source_state = {
+                "provider": "sqlite_immutable_snapshot",
+                "path_redacted": True,
+                "size_bytes": source_before["size_bytes"],
+                "sha256": source_before["sha256"],
+            }
+            scope = "render_sqlite_source_inclusion_in_neon"
+            read_only_guarantees = {
+                "source_mode": "sqlite_uri_mode_ro_immutable_query_only",
+                "source_sidecars_absent": True,
+                "source_stable_during_audit": True,
+                "destination_transaction_read_only": True,
+                "destination_transaction_isolation": "repeatable read",
+            }
+        else:
+            assert source_engine is not None and source_parsed is not None
+            with source_engine.connect() as source_connection:
+                with source_connection.begin():
+                    source_state = _source_postgresql_state(
+                        source_connection,
+                        parsed=source_parsed,
                     )
-                    comparison = compare_snapshots(
-                        source=source,
-                        destination=PostgresSnapshotReader(connection),
-                        policy=policy,
-                        hmac_key=fingerprint_key,
-                        max_rows_per_table=max_rows_per_table,
+                    source = PostgresSnapshotReader(
+                        source_connection,
+                        provider="render_postgresql_snapshot",
                     )
+                    with destination_engine.connect() as destination_connection:
+                        with destination_connection.begin():
+                            destination_state = _destination_state(
+                                destination_connection,
+                                expected_project_id=expected_project_id,
+                                expected_branch_id=expected_branch_id,
+                            )
+                            comparison = compare_snapshots(
+                                source=source,
+                                destination=PostgresSnapshotReader(
+                                    destination_connection,
+                                    provider="neon",
+                                ),
+                                policy=policy,
+                                hmac_key=fingerprint_key,
+                                comparison_mode=comparison_mode,
+                                max_rows_per_table=max_rows_per_table,
+                            )
+            scope = "render_postgresql_source_inclusion_in_neon"
+            read_only_guarantees = {
+                "source_mode": "postgresql_repeatable_read_read_only",
+                "source_transaction_read_only": True,
+                "source_transaction_isolation": "repeatable read",
+                "destination_transaction_read_only": True,
+                "destination_transaction_isolation": "repeatable read",
+            }
     finally:
-        engine.dispose()
-    source_after = _sqlite_file_state(source_path)
-    _assert_file_stable(source_before, source_after)
+        if source_engine is not None:
+            source_engine.dispose()
+        destination_engine.dispose()
 
     status, exit_code = _status_and_exit(
         parity=bool(comparison["parity"]),
@@ -1071,24 +1366,15 @@ def run_audit(
         "contract_version": CONTRACT_VERSION,
         "status": status,
         "certified": status == "certified",
-        "scope": "render_sqlite_source_inclusion_in_neon",
-        "read_only_guarantees": {
-            "source_mode": "sqlite_uri_mode_ro_immutable_query_only",
-            "source_sidecars_absent": True,
-            "source_stable_during_audit": True,
-            "destination_transaction_read_only": True,
-            "destination_transaction_isolation": "repeatable read",
-        },
+        "scope": scope,
+        "comparison_mode": comparison_mode,
+        "read_only_guarantees": read_only_guarantees,
         "attestations": {
             "writers_fenced": writers_fenced,
             "writer_fence_evidence_id": writer_fence_evidence_id,
             "source_snapshot_id": source_snapshot_id,
         },
-        "source_snapshot": {
-            "path_redacted": True,
-            "size_bytes": source_before["size_bytes"],
-            "sha256": source_before["sha256"],
-        },
+        "source_snapshot": source_state,
         "destination": {
             **destination_state,
             "connection_mode": "direct",
@@ -1128,11 +1414,18 @@ def _failure_payload(reason_code: str, *, error_type: str | None = None) -> dict
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source-sqlite", required=True)
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--source-sqlite")
+    source_group.add_argument("--source-database-environment-variable")
     parser.add_argument("--source-snapshot-id", required=True)
     parser.add_argument("--writers-fenced", action="store_true")
     parser.add_argument("--writer-fence-evidence-id")
     parser.add_argument("--fingerprint-key-id", required=True)
+    parser.add_argument(
+        "--comparison-mode",
+        choices=("source-inclusion", "exact"),
+        default="source-inclusion",
+    )
     parser.add_argument("--policy", default=str(DEFAULT_POLICY_PATH))
     parser.add_argument(
         "--database-environment-variable",
@@ -1149,6 +1442,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--fingerprint-key-environment-variable",
         default=DEFAULT_FINGERPRINT_KEY_ENVIRONMENT_VARIABLE,
+    )
+    parser.add_argument(
+        "--source-host-fingerprint-environment-variable",
+        default=DEFAULT_SOURCE_HOST_FINGERPRINT_ENVIRONMENT_VARIABLE,
     )
     parser.add_argument(
         "--max-rows-per-table",
@@ -1178,6 +1475,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         expected_project_id = os.environ.get(project_env, "")
         expected_branch_id = os.environ.get(branch_env, "")
         raw_fingerprint_key = os.environ.get(fingerprint_env, "")
+        source_database_url: str | None = None
+        expected_source_host_fingerprint_sha256: str | None = None
+        if args.source_database_environment_variable:
+            source_database_env = _translate_preflight_failure(
+                _validate_environment_variable_name,
+                args.source_database_environment_variable,
+            )
+            source_fingerprint_env = _translate_preflight_failure(
+                _validate_environment_variable_name,
+                args.source_host_fingerprint_environment_variable,
+            )
+            source_database_url = os.environ.get(source_database_env, "")
+            expected_source_host_fingerprint_sha256 = os.environ.get(
+                source_fingerprint_env,
+                "",
+            )
+            if not source_database_url:
+                raise ParityAuditFailure(
+                    "source_database_environment_variable_missing"
+                )
+            if not expected_source_host_fingerprint_sha256:
+                raise ParityAuditFailure(
+                    "expected_source_host_fingerprint_missing"
+                )
         if not database_url:
             raise ParityAuditFailure("database_environment_variable_missing")
         if not expected_project_id:
@@ -1186,7 +1507,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ParityAuditFailure("expected_neon_branch_id_missing")
         fingerprint_key = _fingerprint_key(raw_fingerprint_key)
         payload, exit_code = run_audit(
-            source_path=Path(args.source_sqlite),
+            source_path=Path(args.source_sqlite) if args.source_sqlite else None,
             source_snapshot_id=args.source_snapshot_id,
             writers_fenced=bool(args.writers_fenced),
             writer_fence_evidence_id=args.writer_fence_evidence_id,
@@ -1196,6 +1517,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             fingerprint_key=fingerprint_key,
             fingerprint_key_id=args.fingerprint_key_id,
             policy_path=Path(args.policy),
+            source_database_url=source_database_url,
+            expected_source_host_fingerprint_sha256=(
+                expected_source_host_fingerprint_sha256
+            ),
+            comparison_mode=args.comparison_mode,
             max_rows_per_table=args.max_rows_per_table,
         )
     except ParityAuditFailure as exc:

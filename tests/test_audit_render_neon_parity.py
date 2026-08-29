@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from sqlalchemy.engine import make_url
 
 from scripts.audit_render_neon_parity import (
     DEFAULT_POLICY_PATH,
@@ -16,19 +18,44 @@ from scripts.audit_render_neon_parity import (
     ColumnSpec,
     ParityAuditFailure,
     SqliteSnapshotReader,
+    _assert_distinct_source_and_destination,
     _canonical_sha256,
+    _configure_postgres_read_only_snapshot,
     _failure_payload,
     _fingerprint_key,
     _load_policy,
     _open_sqlite_snapshot,
     _sqlite_file_state,
     _status_and_exit,
+    _validate_source_postgresql_url,
     compare_snapshots,
     main,
 )
 
 
 HMAC_KEY = b"parity-test-key-that-is-at-least-32-bytes"
+
+
+class _ScalarResult:
+    def __init__(self, value):
+        self.value = value
+
+    def scalar_one(self):
+        return self.value
+
+
+class _ReadOnlyConnection:
+    def __init__(self):
+        self.statements = []
+
+    def execute(self, statement):
+        sql = str(statement)
+        self.statements.append(sql)
+        if sql == "SHOW transaction_read_only":
+            return _ScalarResult("on")
+        if sql == "SHOW transaction_isolation":
+            return _ScalarResult("repeatable read")
+        return _ScalarResult(None)
 
 
 class FakeReader:
@@ -154,6 +181,7 @@ def test_source_inclusion_allows_destination_growth_and_never_emits_cell_values(
         "tables_checked": 1,
         "tables_matching": 1,
         "source_primary_keys_or_rows_missing": 0,
+        "destination_primary_keys_or_rows_extra": 1,
         "cells_checked": 4,
         "cells_mismatched": 0,
     }
@@ -361,3 +389,257 @@ def test_cli_missing_environment_is_redacted(capsys, monkeypatch):
     assert exit_code == EXIT_CONFIGURATION_OR_RUNTIME_BLOCKED
     assert private_path not in output
     assert "database_environment_variable_missing" in output
+
+
+def test_source_postgresql_requires_pinned_non_neon_host_and_tls():
+    host = "render-source.internal.example"
+    fingerprint = hashlib.sha256(host.encode("utf-8")).hexdigest()
+    url = f"postgresql+psycopg://user:secret@{host}/app?sslmode=require"
+
+    parsed = _validate_source_postgresql_url(
+        url,
+        expected_host_fingerprint_sha256=fingerprint,
+    )
+
+    assert parsed.host == host
+    with pytest.raises(ParityAuditFailure) as mismatch:
+        _validate_source_postgresql_url(
+            url,
+            expected_host_fingerprint_sha256="0" * 64,
+        )
+    assert mismatch.value.reason_code == "source_database_host_fingerprint_mismatch"
+
+    neon_host = "ep-source.us-east-2.aws.neon.tech"
+    neon_url = f"postgresql://user:secret@{neon_host}/app?sslmode=require"
+    with pytest.raises(ParityAuditFailure) as neon:
+        _validate_source_postgresql_url(
+            neon_url,
+            expected_host_fingerprint_sha256=hashlib.sha256(
+                neon_host.encode("utf-8")
+            ).hexdigest(),
+        )
+    assert neon.value.reason_code == "source_database_provider_must_not_be_neon"
+
+    with pytest.raises(ParityAuditFailure) as no_tls:
+        _validate_source_postgresql_url(
+            f"postgresql://user:secret@{host}/app",
+            expected_host_fingerprint_sha256=fingerprint,
+        )
+    assert no_tls.value.reason_code == "source_database_tls_not_required"
+
+
+def test_same_source_and_destination_database_is_blocked():
+    source = make_url("postgresql://user:secret@db.example/app?sslmode=require")
+    destination = make_url(
+        "postgresql://other:secret@DB.EXAMPLE./app?sslmode=require"
+    )
+
+    with pytest.raises(ParityAuditFailure) as captured:
+        _assert_distinct_source_and_destination(source, destination)
+
+    assert captured.value.reason_code == (
+        "source_destination_database_identity_collision"
+    )
+
+
+def test_postgresql_snapshot_transaction_is_bounded_repeatable_and_read_only():
+    connection = _ReadOnlyConnection()
+
+    state = _configure_postgres_read_only_snapshot(
+        connection,
+        failure_reason_code="source_transaction_not_read_only_snapshot",
+    )
+
+    assert state["transaction_read_only"] is True
+    assert state["transaction_isolation"] == "repeatable read"
+    assert "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY" in (
+        connection.statements
+    )
+    assert "SET LOCAL statement_timeout = '120s'" in connection.statements
+    assert "SET LOCAL lock_timeout = '2s'" in connection.statements
+
+
+def test_cli_postgresql_source_missing_environment_is_redacted(
+    capsys,
+    monkeypatch,
+):
+    secret_url = "postgresql://user:private@render.example/app?sslmode=require"
+    monkeypatch.delenv("RENDER_SOURCE_DATABASE_URL", raising=False)
+    monkeypatch.setenv("EXPECTED_SOURCE_HOST_FINGERPRINT_SHA256", "0" * 64)
+
+    exit_code = main(
+        [
+            "--source-database-environment-variable",
+            "RENDER_SOURCE_DATABASE_URL",
+            "--source-snapshot-id",
+            "render-final-20260829-001",
+            "--fingerprint-key-id",
+            "parity-hmac-2026-08",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == EXIT_CONFIGURATION_OR_RUNTIME_BLOCKED
+    assert secret_url not in output
+    assert "source_database_environment_variable_missing" in output
+
+
+def test_cli_source_modes_are_mutually_exclusive():
+    with pytest.raises(SystemExit) as captured:
+        main(
+            [
+                "--source-sqlite",
+                "snapshot.db",
+                "--source-database-environment-variable",
+                "RENDER_SOURCE_DATABASE_URL",
+                "--source-snapshot-id",
+                "render-final-20260829-001",
+                "--fingerprint-key-id",
+                "parity-hmac-2026-08",
+            ]
+        )
+
+    assert captured.value.code == 2
+
+
+def test_exact_mode_rejects_extra_destination_keys_without_disclosing_values():
+    source, destination = _reader_pair(include_extra=True)
+
+    result = compare_snapshots(
+        source=source,
+        destination=destination,
+        policy=_policy(),
+        hmac_key=HMAC_KEY,
+        max_rows_per_table=100,
+        comparison_mode="exact",
+    )
+
+    table = result["tables"][0]
+    assert result["parity"] is False
+    assert table["comparison_mode"] == "primary_key_exact"
+    assert table["primary_key"]["extra_count"] == 1
+    assert len(table["primary_key"]["extra_fingerprint_hmac_sha256"]) == 64
+    serialized = json.dumps(result, sort_keys=True)
+    assert "destination-only row" not in serialized
+    assert "dato privado" not in serialized
+
+
+def test_exact_mode_rejects_unapproved_nonempty_destination_only_table():
+    schema = {"common": [ColumnSpec("id", "INTEGER", 1)]}
+    source = FakeReader("render_postgresql_snapshot", schema, {"common": [(1,)]})
+    destination = FakeReader(
+        "neon",
+        {**schema, "neon_extra": [ColumnSpec("id", "INTEGER", 1)]},
+        {"common": [(1,)], "neon_extra": [(99,)]},
+    )
+
+    result = compare_snapshots(
+        source=source,
+        destination=destination,
+        policy=_policy(),
+        hmac_key=HMAC_KEY,
+        max_rows_per_table=100,
+        comparison_mode="exact",
+    )
+
+    assert result["parity"] is False
+    assert result["inventory"][
+        "destination_only_nonempty_unapproved_tables"
+    ] == ["neon_extra"]
+
+    allowed_policy = {
+        **_policy(),
+        "document": {
+            **_policy()["document"],
+            "allowed_destination_only_tables": {
+                "neon_extra": "Reviewed Neon-only operational table."
+            },
+        },
+    }
+    allowed = compare_snapshots(
+        source=source,
+        destination=destination,
+        policy=allowed_policy,
+        hmac_key=HMAC_KEY,
+        max_rows_per_table=100,
+        comparison_mode="exact",
+    )
+    assert allowed["parity"] is True
+
+
+def test_final_cutover_policy_compares_municipio_ticket_estado():
+    policy = _load_policy(
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "render_neon_final_cutover_policy.v1.toml"
+    )
+
+    rule = policy["document"]["table_rules"]["municipio_ticket"]
+    assert rule.get("destination_authoritative_columns", {}) == {}
+    assert "archivo_url" in rule["source_only_null_columns"]
+    assert policy["document"]["allowed_destination_only_tables"] == {}
+
+    source = FakeReader(
+        "render_postgresql_snapshot",
+        {
+            "municipio_ticket": [
+                ColumnSpec("id", "INTEGER", 1),
+                ColumnSpec("estado", "TEXT"),
+                ColumnSpec("archivo_url", "TEXT"),
+            ]
+        },
+        {"municipio_ticket": [(1, "nuevo", None)]},
+    )
+    destination = FakeReader(
+        "neon",
+        {
+            "municipio_ticket": [
+                ColumnSpec("id", "BIGINT", 1),
+                ColumnSpec("estado", "TEXT"),
+            ]
+        },
+        {"municipio_ticket": [(1, "cerrado")]},
+    )
+    result = compare_snapshots(
+        source=source,
+        destination=destination,
+        policy=policy,
+        hmac_key=HMAC_KEY,
+        max_rows_per_table=100,
+        comparison_mode="exact",
+    )
+    assert result["parity"] is False
+    assert result["tables"][0]["cells"]["mismatch_count_by_column"] == {
+        "estado": 1
+    }
+
+
+def test_exact_mode_forbids_destination_authoritative_column_exclusions():
+    source, destination = _reader_pair(include_extra=False)
+    unsafe_policy = {
+        **_policy(),
+        "document": {
+            **_policy()["document"],
+            "table_rules": {
+                "example": {
+                    "destination_authoritative_columns": {
+                        "secret": "Unsafe in an exact final cutover."
+                    }
+                }
+            },
+        },
+    }
+
+    with pytest.raises(ParityAuditFailure) as captured:
+        compare_snapshots(
+            source=source,
+            destination=destination,
+            policy=unsafe_policy,
+            hmac_key=HMAC_KEY,
+            max_rows_per_table=100,
+            comparison_mode="exact",
+        )
+
+    assert captured.value.reason_code == (
+        "exact_mode_destination_authoritative_columns_forbidden"
+    )

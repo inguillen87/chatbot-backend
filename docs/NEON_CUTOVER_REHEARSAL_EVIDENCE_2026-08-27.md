@@ -262,3 +262,147 @@ in-flight work, captures the immutable final source snapshot, certifies signed
 content parity and only then applies the two rehearsed Neon migrations. Render
 must remain recoverable through canaries, provider validation, soak and a
 tested rollback.
+
+## Live Render source correction - 2026-08-29
+
+A read-only inspection of the authenticated Render control plane and a
+read-only transaction executed from the live web instance invalidated one
+earlier cutover assumption: the current Production writer source is Render
+PostgreSQL, not the persistent SQLite file.
+
+| Check | Live result |
+| --- | --- |
+| Public Render web service | `chatbot-backend` / `srv-d0rq2rp5pdvs738t3bhg` |
+| Deployed revision | `8ced9216ff134951a0e3cb050c473e364c28be5c` |
+| Tracked Git branch / auto-deploy | `main` / off |
+| Compute | Starter, 512 MB |
+| Recent stability signal | repeated 512 MB out-of-memory instance failures followed by recovery |
+| Runtime database | internal Render PostgreSQL over TLS |
+| Source migration revision | `20260820_survey_content_jurisdiction_v1` |
+| Source public tables / exact aggregate rows | 170 / 52,863 |
+| Source inventory fingerprint | `8be4669ab0dfa4829e470ce71db7d82c4c6a1e15779425881e9ecaf6efc6fb13` |
+| Render PostgreSQL service | `chatboc-postgres-28/11/2025` / `dpg-d4lusfali9vc73egvnq0-a` |
+| PostgreSQL recovery | three-day point-in-time recovery plus provider logical export |
+| Legacy disk artifact | `/data/database.db`, 1,933,312 bytes, WAL sidecar present |
+| Writer fence / standby flags | absent from the live web-service environment |
+
+The live service configuration also still uses the older direct
+`scripts/apply_migrations.py` predeploy command and an eventlet Gunicorn start
+command. It is not controlled by the newly hardened Blueprint declaration.
+Deploying the cutover revision without first replacing the live predeploy
+command could run an unbounded Alembic head upgrade against the Render source.
+
+The current Neon main inventory is 171 tables and 52,751 aggregate rows at
+`20260825_demo_survey_participation_v1`; its inventory fingerprint is
+`56cb88b08b89aeb7b71c66ad0b404d537fdc0f84caf65f7a71abb24516ce3f21`.
+The difference in revisions, table count, row count and fingerprints proves
+that schema-only migration is insufficient. It does not identify which source
+rows are missing, which destination-only rows must be preserved or how
+conflicting mutable records should be resolved.
+
+Consequently, the SQLite final-parity command remains valid only for legacy
+inclusion evidence and must not certify the Production cutover. The new P0 gate
+is a read-only PostgreSQL-to-PostgreSQL auditor plus an idempotent reconciliation
+plan rehearsed on an isolated Neon branch. Until that gate passes, do not set
+the Render fence, create the final logical export, migrate Neon main, move
+webhooks/DNS or retire Render.
+
+## Live WhatsApp and background-runtime correction - 2026-08-29
+
+The same read-only control-plane inspection found no active Render background
+worker or cron service. Production currently has one web process and no
+configured Redis/Celery or Socket.IO message-queue ownership. The workers and
+crons declared in the repository Blueprint are therefore desired-state code,
+not evidence of live execution. Their ownership must be established explicitly
+on Vercel; they cannot be described as a migration of an existing Render
+worker.
+
+Twilio reports two online production-capable senders, including the official
+Junin number ending `3718`. The current Render environment nevertheless uses
+an offline sandbox sender ending `8886` as
+`TWILIO_WHATSAPP_NUMBER`, while `TWILIO_PHONE_NUMBER` ends in `3718`.
+The public inbound webhook remains
+`https://api.chatboc.ar/webhook/whatsapp`. No webhook or message was changed
+or sent during this audit.
+
+A read-only ownership query against both Render PostgreSQL and Neon main
+returned the same structural result:
+
+- tenant `junin` is active and has one active legacy mapping for the official
+  `3718` sender;
+- it also has a second active legacy mapping ending `5678`, which remains
+  unclassified and must not be deleted implicitly;
+- the tenant has one Twilio provider connection with a credential reference,
+  but that connection is still marked `sandbox:provisioning_plan_ready`;
+- there is no `provider_sender` row and no tenant-profile sender bound to the
+  official number;
+- the legacy `municipio` tenant is also active but has no corresponding
+  provider connection or sender.
+
+This explains why the current webhook can still resolve Junin through the
+legacy mapping while the enterprise provider model is incomplete. The cutover
+must first reconcile one verified production `provider_sender` for tenant
+`junin`, retain or classify the `5678` mapping explicitly, and prove that
+the sandbox sender is not the outbound default. Copying the existing Render
+Twilio variables to Vercel would reproduce the defect.
+
+The latest inspected Twilio message page contained successful inbound and
+outbound traffic but also seven attachment failures with provider code
+`63019`. Text transport and media transport are separate gates: R2 object
+availability and Twilio media retrieval must pass a controlled canary before
+Render can be retired.
+
+## PostgreSQL parity and exact-migration rehearsal - 2026-08-29
+
+An isolated Neon read/write branch was created from main solely for cutover
+rehearsal. No application, Preview deployment, DNS record or webhook points to
+this branch.
+
+| Check | Result |
+| --- | --- |
+| Rehearsal branch | `cutover-rehearsal-20260829-a` / `br-floral-unit-acgqawl6` |
+| Rehearsal endpoint | `ep-billowing-star-acaw9usk` |
+| Baseline dry-run | `ready_to_apply`; no writes |
+| Applied revision 1 | `20260825_legacy_municipio_ticket_scope_repair_v1` |
+| Applied revision 2 | `20260825_chat_idempotency_v1` |
+| Transaction | one atomic transaction with advisory lock |
+| Legacy ticket postcheck | 3 present, 0 in source tenant, 3 in Junin |
+| Idempotency postcheck | table, columns, constraints and index present; 0 rows |
+| Final preflight | `ready`; exact head; 172 tables; 52,751 rows |
+| Content parity | deliberately not certified |
+
+The migration runner therefore passed a real Neon apply and postcheck without
+touching main. This proves the exact schema path; it does not prove that the
+existing Neon data contains all current Render records.
+
+A separate strict PostgreSQL-to-PostgreSQL audit compared the live Render
+source to this rehearsal branch in repeatable-read, read-only transactions.
+Because Render was not writer-fenced, this is diagnostic evidence only:
+
+| Metric | Result |
+| --- | --- |
+| Source / destination tables | 170 / 172 |
+| Source / destination aggregate rows | 52,863 / 52,751 |
+| Source tables audited | 169 (`alembic_version` excluded by policy) |
+| Exact matches | 157 |
+| Mismatching tables | 12 |
+| Source rows missing in Neon | 112 |
+| Destination extra rows | 0 |
+| Mismatching common cells | 812 |
+| Diagnostic evidence SHA-256 | `42fda9165d4b698c88cacdc3566b06ce966b05d3553db6322b288dd0a677f92e` |
+
+The 112 missing source rows are distributed across `admin_audit_log` (1),
+`analytics_events_v2` (28), `channel_session` (3),
+`chat_session_context` (3), `contact` (3), `contact_snapshot` (3),
+`conversation` (3), `flask_sessions` (48), `interaction_event` (6),
+`message` (12) and `ticket_realtime_state` (2). `municipio_ticket` has no
+missing or extra primary keys; its only three differences are the intentionally
+rehearsed tenant-scope repair. The two destination-only tables are empty and
+were not classified as data conflicts.
+
+This result is strong evidence that Neon is a lagging snapshot rather than an
+independent writer: there are no destination-extra rows, while recent session,
+conversation, contact, message and analytics records exist only in Render.
+It remains unsafe to switch traffic or run only Alembic. The final window must
+fence Render, capture a managed logical export, restore/reconcile that frozen
+source, rerun this exact audit and only then apply the two migrations.
