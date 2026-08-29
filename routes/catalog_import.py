@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from flask import Blueprint, request, jsonify, g, current_app
 from models import db, CatalogUpload, CatalogoItem, TenantCatalogMapping, TenantProfile
 from middleware.tenant_context import require_tenant
@@ -24,8 +26,11 @@ import logging
 import uuid
 import hashlib
 import re
-import pandas as pd
 from datetime import datetime, timezone
+
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
 logger = logging.getLogger(__name__)

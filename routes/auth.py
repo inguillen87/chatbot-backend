@@ -2,7 +2,7 @@
 
 from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
 from flask_cors import cross_origin
-from services.logic import es_rubro_publico, normalizar_rubro
+from services.rubro_classification import es_rubro_publico, normalizar_rubro
 import os
 import re
 import unicodedata
@@ -30,7 +30,6 @@ import jwt
 from jwt import algorithms as jwt_algorithms
 import base64
 from services.google_auth import login_o_crear_usuario
-from services.pymes import get_or_create_pyme_user_by_token
 from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import resolve_unique_tenant_for_owner
 from services.demo_registry import load_demo_rubros
@@ -3272,6 +3271,9 @@ def chatuser_register_panel():
     if not empresa_token:
         current_app.logger.warning("[chatuser_register_panel] Registration attempt failed: Falta empresa_token")
         return jsonify({"error": "Falta empresa_token"}), 400
+
+    # Keep the large commerce/chat stack off authentication startup imports.
+    from services.pymes import get_or_create_pyme_user_by_token
 
     owner_user = get_or_create_pyme_user_by_token(empresa_token.strip())
     if not owner_user:

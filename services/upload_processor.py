@@ -1,31 +1,15 @@
+from __future__ import annotations
+
 import os
 import uuid
 import logging
-import traceback
-import shutil
-import mimetypes
 from flask import Blueprint, request, jsonify, g
 from werkzeug.utils import secure_filename
 from extensions import db
-from models import CatalogoItem, User, Rubro, ArchivoAdjunto, CatalogUpload
-from services.embedding_service import embed_textos_llm as embed_textos
-
-from services.vision_fallback_service import analyze_image_smart
-from services.document_processing_service import document_processing_service
-from .common_utils import limpiar_texto_base, parse_cantidad_flexible, parse_precio_flexible
-
-# Import Registry
-from services.catalog.registry import registry as catalog_registry
-
-from services.qdrant_utils import (
-    get_qdrant_client,
-    verificar_y_crear_coleccion_qdrant,
-)
-from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO, coleccion_catalogo_para_rubro
-from services.logic import es_rubro_publico
+from models import CatalogoItem, User, ArchivoAdjunto, CatalogUpload
+from .common_utils import parse_cantidad_flexible, parse_precio_flexible
 from services.gcs_service import upload_to_gcs
-from qdrant_client import models as qdrant_models
-from typing import List, Dict, Any, Optional
+from typing import Optional
 
 upload_bp = Blueprint("upload_bp", __name__)
 logger = logging.getLogger(__name__)
@@ -33,6 +17,8 @@ logger = logging.getLogger(__name__)
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx", ".txt"}
 UPLOAD_FOLDER = os.path.join(os.getcwd(), "temp_uploads")
 CATALOGO_FOLDER = os.path.join("data", "catalogos")
+CATALOGO_PYME = "catalogo_pyme"
+CATALOGO_MUNICIPIO = "catalogo_municipio"
 
 def extension_valida(nombre_archivo: str) -> bool:
     return os.path.splitext(nombre_archivo)[1].lower() in ALLOWED_EXTENSIONS
@@ -84,9 +70,13 @@ def _extract_text_raw(path_archivo: str, mime_type: str) -> str:
     """Helper to extract raw text for the processor."""
     try:
         if "image" in mime_type:
+            from services.vision_fallback_service import analyze_image_smart
+
             with open(path_archivo, "rb") as f:
                 vision = analyze_image_smart(f.read())
             return vision.get("full_text_annotation", {}).get("description", "")
+
+        from services.document_processing_service import document_processing_service
 
         with open(path_archivo, "rb") as f:
             res = document_processing_service.process_document(f.read(), mime_type, os.path.basename(path_archivo))
@@ -112,6 +102,8 @@ def procesar_y_embedear_catalogo(
     logger.info(f"[UPLOAD_PROC] Iniciando v2 para user_id={user_id}, rubro='{pyme_rubro_nombre}'")
 
     # 1. Select Processor
+    from services.catalog.registry import registry as catalog_registry
+
     processor = catalog_registry.get_processor(pyme_rubro_nombre)
     logger.info(f"[UPLOAD_PROC] Processor seleccionado: {processor.slug}")
 
@@ -240,6 +232,10 @@ def procesar_y_embedear_catalogo(
                 "presentacion": extra_metadata.get("presentacion_original"),
             })
 
+        from qdrant_client import models as qdrant_models
+        from services.embedding_service import embed_textos_llm as embed_textos
+        from services.qdrant_utils import get_qdrant_client
+
         vectores = embed_textos(textos_embed)
 
         # Upsert logic (simplified from previous)
@@ -302,6 +298,8 @@ def subir_catalogo(current_user: Optional[User] = None):
             rubro_nombre = user.rubro.nombre
 
         # Determinar colección correcta
+        from services.qdrant_search import coleccion_catalogo_para_rubro
+
         coleccion_destino = coleccion_catalogo_para_rubro(rubro_nombre)
 
         count = procesar_y_embedear_catalogo(

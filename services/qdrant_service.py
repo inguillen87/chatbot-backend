@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 import logging
 import os
 import re
 import uuid
 from datetime import datetime
 from functools import lru_cache
-from qdrant_client import QdrantClient
-from qdrant_client.http import models as qdrant_models
 from typing import List, Optional, Dict, Any, Iterable, Tuple
 
 from services.common_utils import parse_precio_flexible, parse_cantidad_flexible
@@ -14,6 +14,14 @@ from services.qdrant_utils import (
     get_qdrant_client as get_qdrant_utils_client,
     verificar_y_crear_coleccion_qdrant,
 )
+from utils.lazy_module import LazyModule
+
+_qdrant_sdk = LazyModule("qdrant_client")
+qdrant_models = LazyModule("qdrant_client.http.models")
+
+
+def QdrantClient(*args, **kwargs):
+    return _qdrant_sdk.QdrantClient(*args, **kwargs)
 
 logger = logging.getLogger(__name__)
 

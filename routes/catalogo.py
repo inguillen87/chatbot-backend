@@ -30,7 +30,6 @@ from services.catalog_inventory import inventory_contract
 catalogo_bp = Blueprint('catalogo', __name__, url_prefix='/catalogo')
 
 from werkzeug.utils import secure_filename
-from services.intelligent_catalog_processor import IntelligentCatalogProcessor
 import tempfile
 
 @catalogo_bp.route('/upload/form', methods=['GET'])
@@ -71,6 +70,10 @@ def upload_catalog(user):
 
             try:
                 # Llamar al nuevo servicio de procesamiento inteligente
+                from services.intelligent_catalog_processor import (
+                    IntelligentCatalogProcessor,
+                )
+
                 processor = IntelligentCatalogProcessor(user_id=user.id)
                 success = processor.process_file(filepath, original_filename)
 

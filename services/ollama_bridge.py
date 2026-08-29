@@ -1,15 +1,22 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
 from typing import Any, Dict, Tuple
 
 import httpx
-from openai import OpenAI
 
 from services.chatbot_prompts import get_system_prompt
 from services.llm_provider_network_policy import require_llm_provider_network
 
 logger = logging.getLogger(__name__)
+
+
+def OpenAI(*args: Any, **kwargs: Any) -> Any:
+    from openai import OpenAI as OpenAIClient
+
+    return OpenAIClient(*args, **kwargs)
 
 
 def _truthy(value: object) -> bool:

@@ -1,11 +1,10 @@
 import os
 import logging
 import re
+import threading
 import unicodedata
 import uuid
 from pathlib import PurePath
-import boto3
-from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from urllib.parse import quote, unquote, urlparse
 
@@ -131,19 +130,54 @@ class R2Service:
         self.region_name = os.environ.get("R2_REGION", "auto")
 
         self.client = None
-        if self.endpoint_url and self.access_key_id and self.secret_access_key:
+        self._client_initialization_attempted = False
+        self._client_lock = threading.Lock()
+
+    def _create_client(self):
+        import boto3
+        from botocore.config import Config
+
+        return boto3.client(
+            "s3",
+            endpoint_url=self.endpoint_url,
+            aws_access_key_id=self.access_key_id,
+            aws_secret_access_key=self.secret_access_key,
+            region_name=self.region_name,
+            config=Config(signature_version="s3v4"),
+        )
+
+    def _get_client(self):
+        if self.client is not None:
+            return self.client
+        if not (
+            self.endpoint_url
+            and self.access_key_id
+            and self.secret_access_key
+            and self.bucket_name
+        ):
+            return None
+
+        with self._client_lock:
+            # Every configured caller must wait for the first initialization
+            # attempt to finish.  Checking ``_client_initialization_attempted``
+            # before acquiring the lock makes concurrent first-use requests
+            # return ``None`` while the winning thread is still creating a
+            # perfectly valid client.
+            if self.client is not None:
+                return self.client
+            if self._client_initialization_attempted:
+                return None
+            self._client_initialization_attempted = True
             try:
-                self.client = boto3.client(
-                    's3',
-                    endpoint_url=self.endpoint_url,
-                    aws_access_key_id=self.access_key_id,
-                    aws_secret_access_key=self.secret_access_key,
-                    region_name=self.region_name,
-                    config=Config(signature_version='s3v4')
+                self.client = self._create_client()
+                logger.info("R2 client initialized successfully")
+            except Exception as exc:
+                logger.error(
+                    "Failed to initialize R2 client error_type=%s",
+                    type(exc).__name__,
                 )
-                logger.info("R2 Client initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize R2 client: {e}")
+                self.client = None
+            return self.client
 
     def generate_key(self, filename, tenant_slug, context_type="general"):
         """
@@ -211,7 +245,8 @@ class R2Service:
         return cache_control_for_key(key, content_type).startswith("public")
 
     def generate_presigned_download_url(self, key, expires_in=None):
-        if not self.client or not self.bucket_name or not key:
+        client = self._get_client()
+        if not client or not self.bucket_name or not key:
             return None
 
         try:
@@ -221,7 +256,7 @@ class R2Service:
         ttl = max(60, min(ttl, 3600))
 
         try:
-            return self.client.generate_presigned_url(
+            return client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket_name, "Key": key},
                 ExpiresIn=ttl,
@@ -252,7 +287,7 @@ class R2Service:
         Returns:
             str: Public URL of the uploaded file, or None if upload fails.
         """
-        if not self.client or not self.bucket_name:
+        if not self._get_client() or not self.bucket_name:
             logger.warning("R2 is not configured or initialized.")
             return None
 
@@ -263,7 +298,8 @@ class R2Service:
         """
         Uploads a file with a specific key.
         """
-        if not self.client or not self.bucket_name:
+        client = self._get_client()
+        if not client or not self.bucket_name:
             return None
 
         try:
@@ -272,7 +308,7 @@ class R2Service:
                 'CacheControl': cache_control_for_key(key, content_type),
             }
 
-            self.client.upload_fileobj(
+            client.upload_fileobj(
                 file_obj,
                 self.bucket_name,
                 key,

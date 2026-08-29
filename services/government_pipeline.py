@@ -10,12 +10,14 @@ from statistics import mean, median
 from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
-import pandas as pd
 from flask import current_app, has_app_context
 import h3
 from extensions import db
 from models import MunicipioTicket, TenantProfile
 from services.employee_ticket_access import apply_employee_ticket_category_scope
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 from services.tenant_ticket_scope import (
     resolve_unique_tenant_for_owner,
     scoped_municipio_ticket_query,

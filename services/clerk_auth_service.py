@@ -24,7 +24,7 @@ from services.auth_notification_service import (
     send_verification_email,
 )
 from services.channel_activation import build_channel_activation_payload
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 from services.tenant_factory import create_tenant_from_template
 from services.user_service import get_user_profile_identity, set_user_profile_avatar
 from utils.auth_helpers import (

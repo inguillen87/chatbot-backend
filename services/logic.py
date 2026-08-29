@@ -14,20 +14,13 @@ from services.archivo_service import archivo_service
 # servicio_tickets se importa/usa en los handlers específicos (municipios.py, pymes.py)
 logger = logging.getLogger(__name__)
 
-# Rubros que deben usar la lógica de municipio/ente público
-RUBROS_PUBLICOS = {
-    "municipio",
-    "municipios",
-    "municipio inteligente",
-    "ong",
-    "gobierno",
-    "hospital_publico",
-    "entidad_publica",
-    "municipal",
-    "publico",
-    "municipalidad",
-    # Agregá acá los que consideres públicos
-}
+# Backward-compatible re-exports for legacy callers. Startup-sensitive
+# consumers import these helpers from the dependency-free leaf module.
+from services.rubro_classification import (
+    RUBROS_PUBLICOS,
+    es_rubro_publico,
+    normalizar_rubro,
+)
 
 MENU_KEYWORDS = {
     "ver_estado_reclamo": {"estado", "reclamo", "seguimiento"},
@@ -54,25 +47,7 @@ MENU_KEYWORDS = {
     "consultar_deportes": {"deportes", "ejercicio", "gimnasio"},
 }
 
-def normalizar_rubro(rubro) -> str:
-    """Devuelve el nombre del rubro en minúsculas."""
-    if not rubro:
-        return ""
-    if isinstance(rubro, str):
-        return rubro.strip().lower()
-    if hasattr(rubro, "clave") and getattr(rubro, "clave"):
-        return str(rubro.clave).strip().lower()
-    if hasattr(rubro, "nombre") and getattr(rubro, "nombre"):
-        return str(rubro.nombre).strip().lower()
-    return str(rubro).strip().lower()
-
-
 from .herramientas_municipio import normalizar_texto
-
-def es_rubro_publico(rubro) -> bool:
-    """Indica si un rubro pertenece a ``RUBROS_PUBLICOS``."""
-    return normalizar_rubro(rubro) in RUBROS_PUBLICOS
-
 
 from services.demo_response_engine import maybe_handle_demo_interaction
 from services.llm_utils import clasificar_entidad_con_llm

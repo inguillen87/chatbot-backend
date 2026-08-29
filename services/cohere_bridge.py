@@ -1,10 +1,12 @@
 import os
-import cohere
 import logging
 import json
 
 from services.chatbot_prompts import get_system_prompt
 from services.llm_provider_network_policy import require_llm_provider_network
+from utils.lazy_module import LazyModule
+
+cohere = LazyModule("cohere")
 
 logger = logging.getLogger(__name__)
 

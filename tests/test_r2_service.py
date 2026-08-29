@@ -1,5 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import re
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -45,6 +47,40 @@ def _configured_service(client):
     service.bucket_name = "chatboc-assets"
     service.public_base_url = "https://cdn.chatboc.ar"
     return service
+
+
+def test_r2_lazy_client_initialization_waits_for_concurrent_first_use():
+    service = R2Service()
+    service.endpoint_url = "https://r2.example.invalid"
+    service.access_key_id = "test-access-key"
+    service.secret_access_key = "test-secret-key"
+    service.bucket_name = "chatboc-assets"
+
+    expected_client = object()
+    initialization_started = Event()
+    release_initialization = Event()
+    create_calls = 0
+
+    def create_client():
+        nonlocal create_calls
+        create_calls += 1
+        initialization_started.set()
+        assert release_initialization.wait(timeout=5)
+        return expected_client
+
+    service._create_client = create_client
+
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        first = executor.submit(service._get_client)
+        assert initialization_started.wait(timeout=5)
+        followers = [executor.submit(service._get_client) for _ in range(19)]
+        release_initialization.set()
+        results = [first.result(timeout=5)] + [
+            future.result(timeout=5) for future in followers
+        ]
+
+    assert create_calls == 1
+    assert all(client is expected_client for client in results)
 
 
 def test_r2_upload_marks_audio_assets_as_long_lived_cacheable():

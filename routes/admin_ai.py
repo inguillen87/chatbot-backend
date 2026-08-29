@@ -8,7 +8,6 @@ from collections import Counter
 from dataclasses import replace
 from datetime import datetime
 from flask import Blueprint, abort, g, jsonify, request
-import pdfplumber
 
 from extensions import db
 from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TenantTicket, TicketComentario, User
@@ -32,7 +31,10 @@ from services.tenant_ticket_scope import (
     resolve_unique_tenant_for_owner,
 )
 from services.vision_fallback_service import analyze_image_text, analyze_text_structured
+from utils.lazy_module import LazyModule
 from utils.roles import ROLE_EMPLEADO, canonical_role
+
+pdfplumber = LazyModule("pdfplumber")
 
 admin_ai_bp = Blueprint("admin_ai_bp", __name__, url_prefix="/admin")
 

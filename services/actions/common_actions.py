@@ -130,8 +130,6 @@ class DerivarHumanoAction(BaseActionHandler):
                 "error_details": str(e),
             }
 
-from services.document_processing_service import DocumentProcessingService
-
 class ProcesarAdjuntoAction(BaseActionHandler):
     def execute(self, action_data: Dict[str, Any]) -> Dict[str, Any]:
         logger.info("Executing ProcesarAdjuntoAction supplied_fields=%s", sorted(map(str, action_data)))
@@ -141,6 +139,8 @@ class ProcesarAdjuntoAction(BaseActionHandler):
             return {"success": False, "message_to_user": "No se encontró un archivo para procesar."}
 
         try:
+            from services.document_processing_service import DocumentProcessingService
+
             processing_service = DocumentProcessingService()
             analysis_result = processing_service.process_document_by_id(archivo_id)
 

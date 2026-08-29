@@ -4,6 +4,8 @@ import uuid
 import io
 import re
 import shutil
+import sys
+import threading
 from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse, urljoin
@@ -11,10 +13,16 @@ from urllib.parse import urlparse, urljoin
 import requests
 from flask import current_app, has_app_context, has_request_context, request, g
 from werkzeug.utils import secure_filename
-from services.thumbnail_service import generar_thumbnail
 from services.r2_service import r2_service
+from utils.lazy_module import LazyModule
 
 logger = logging.getLogger(__name__)
+
+
+def generar_thumbnail(*args, **kwargs):
+    from services.thumbnail_service import generar_thumbnail as implementation
+
+    return implementation(*args, **kwargs)
 
 
 def _sanitize_path_segment(segment: str | None) -> str | None:
@@ -453,6 +461,7 @@ uploader = None
 CLOUDINARY_UPLOAD_OPTIONS: dict[str, Any] = {}
 _CLOUDINARY_DISABLED_REASON: str | None = None
 _CLOUDINARY_CONFIG_FINGERPRINT: tuple[str | None, str | None, str | None, str | None, str | None] | None = None
+_CLOUDINARY_INIT_LOCK = threading.Lock()
 
 
 def _current_cloudinary_fingerprint() -> tuple[str | None, str | None, str | None, str | None, str | None]:
@@ -476,23 +485,24 @@ def _ensure_cloudinary_initialized(force: bool = False) -> None:
     global _CLOUDINARY_DISABLED_REASON
     global _CLOUDINARY_CONFIG_FINGERPRINT
 
-    if force:
-        CLOUDINARY_ENABLED = None
-        uploader = None
-        CLOUDINARY_UPLOAD_OPTIONS = {}
-        _CLOUDINARY_DISABLED_REASON = None
-        _CLOUDINARY_CONFIG_FINGERPRINT = None
+    with _CLOUDINARY_INIT_LOCK:
+        if force:
+            CLOUDINARY_ENABLED = None
+            uploader = None
+            CLOUDINARY_UPLOAD_OPTIONS = {}
+            _CLOUDINARY_DISABLED_REASON = None
+            _CLOUDINARY_CONFIG_FINGERPRINT = None
 
-    fingerprint = _current_cloudinary_fingerprint()
+        fingerprint = _current_cloudinary_fingerprint()
 
-    if CLOUDINARY_ENABLED is not None and fingerprint == _CLOUDINARY_CONFIG_FINGERPRINT:
-        return
+        if CLOUDINARY_ENABLED is not None and fingerprint == _CLOUDINARY_CONFIG_FINGERPRINT:
+            return
 
-    enabled, configured_uploader, options = _init_cloudinary()
-    CLOUDINARY_ENABLED = enabled
-    uploader = configured_uploader
-    CLOUDINARY_UPLOAD_OPTIONS = options
-    _CLOUDINARY_CONFIG_FINGERPRINT = fingerprint
+        enabled, configured_uploader, options = _init_cloudinary()
+        CLOUDINARY_ENABLED = enabled
+        uploader = configured_uploader
+        CLOUDINARY_UPLOAD_OPTIONS = options
+        _CLOUDINARY_CONFIG_FINGERPRINT = fingerprint
 
 
 def refresh_cloudinary_configuration() -> None:
@@ -501,7 +511,11 @@ def refresh_cloudinary_configuration() -> None:
     _ensure_cloudinary_initialized(force=True)
 
 
-_ensure_cloudinary_initialized()
+# Some existing integrations inject a configured Cloudinary module before
+# importing this service. Preserve that seam without importing the SDK during
+# an ordinary application startup.
+if "cloudinary" in sys.modules:
+    _ensure_cloudinary_initialized()
 
 
 def _disable_cloudinary(reason: str) -> None:
@@ -528,10 +542,7 @@ GCS_ENABLED = os.environ.get("GCS_ENABLED", "false").lower() == "true"
 VERCEL_BLOB_RW_TOKEN = os.environ.get("VERCEL_BLOB_RW_TOKEN")
 VERCEL_BLOB_API = "https://api.vercel.com/v2/blob"
 
-if GCS_ENABLED:
-    from google.cloud import storage
-else:  # pragma: no cover - avoid import errors when disabled
-    storage = None
+storage = LazyModule("google.cloud.storage") if GCS_ENABLED else None
 
 BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "chatboc-files")
 MAX_FILE_SIZE = 15 * 1024 * 1024  # 15 MB

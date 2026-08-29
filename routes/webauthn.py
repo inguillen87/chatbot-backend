@@ -26,21 +26,43 @@ from utils.auth_helpers import (
     user_from_token,
     user_tenant_auth_allowed,
 )
+from utils.lazy_module import LazyModule
 from utils.roles import is_super_admin_role
-from webauthn import (
-    generate_authentication_options,
-    generate_registration_options,
-    verify_authentication_response,
-    verify_registration_response,
-)
-from webauthn.helpers import base64url_to_bytes, bytes_to_base64url, options_to_json
-from webauthn.helpers.structs import (
-    AttestationConveyancePreference,
-    AuthenticatorSelectionCriteria,
-    PublicKeyCredentialDescriptor,
-    ResidentKeyRequirement,
-    UserVerificationRequirement,
-)
+
+
+_webauthn = LazyModule("webauthn")
+_webauthn_helpers = LazyModule("webauthn.helpers")
+_webauthn_structs = LazyModule("webauthn.helpers.structs")
+
+
+# Preserve the established module-level seams used by tests and integrations
+# while deferring the WebAuthn/asn1 parsing stack until a passkey ceremony.
+def generate_authentication_options(*args, **kwargs):
+    return _webauthn.generate_authentication_options(*args, **kwargs)
+
+
+def generate_registration_options(*args, **kwargs):
+    return _webauthn.generate_registration_options(*args, **kwargs)
+
+
+def verify_authentication_response(*args, **kwargs):
+    return _webauthn.verify_authentication_response(*args, **kwargs)
+
+
+def verify_registration_response(*args, **kwargs):
+    return _webauthn.verify_registration_response(*args, **kwargs)
+
+
+def base64url_to_bytes(value):
+    return _webauthn_helpers.base64url_to_bytes(value)
+
+
+def bytes_to_base64url(value):
+    return _webauthn_helpers.bytes_to_base64url(value)
+
+
+def options_to_json(value):
+    return _webauthn_helpers.options_to_json(value)
 
 webauthn_bp = Blueprint("webauthn", __name__, url_prefix="/api/webauthn")
 
@@ -315,12 +337,12 @@ def _options_to_dict(options: Any) -> Dict[str, Any]:
     return serialized
 
 
-def _existing_credentials(user: User) -> List[PublicKeyCredentialDescriptor]:
-    descriptors: List[PublicKeyCredentialDescriptor] = []
+def _existing_credentials(user: User) -> List[Any]:
+    descriptors: List[Any] = []
     for credential in getattr(user, "webauthn_credentials", []) or []:
         try:
             descriptors.append(
-                PublicKeyCredentialDescriptor(
+                _webauthn_structs.PublicKeyCredentialDescriptor(
                     id=base64url_to_bytes(credential.credential_id)
                 )
             )
@@ -458,10 +480,10 @@ def register_options() -> Any:
             f"user-{user.id}" if user is not None else f"passkey-{user_handle_b64[:12]}"
         ),
         user_display_name=display_name,
-        attestation=AttestationConveyancePreference.NONE,
-        authenticator_selection=AuthenticatorSelectionCriteria(
-            resident_key=ResidentKeyRequirement.PREFERRED,
-            user_verification=UserVerificationRequirement.REQUIRED,
+        attestation=_webauthn_structs.AttestationConveyancePreference.NONE,
+        authenticator_selection=_webauthn_structs.AuthenticatorSelectionCriteria(
+            resident_key=_webauthn_structs.ResidentKeyRequirement.PREFERRED,
+            user_verification=_webauthn_structs.UserVerificationRequirement.REQUIRED,
         ),
         exclude_credentials=_existing_credentials(user) if user is not None else [],
     )
@@ -613,7 +635,7 @@ def login_options() -> Any:
     anon_id = _session_bound_anon_id()
     options = generate_authentication_options(
         rp_id=_rp_id(),
-        user_verification=UserVerificationRequirement.REQUIRED,
+        user_verification=_webauthn_structs.UserVerificationRequirement.REQUIRED,
     )
     session[_AUTHENTICATION_CHALLENGE_KEY] = bytes_to_base64url(options.challenge)
     session[_AUTHENTICATION_ISSUED_AT_KEY] = time.time()

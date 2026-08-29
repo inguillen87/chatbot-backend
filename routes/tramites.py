@@ -1,7 +1,10 @@
+import os
+
 from flask import Blueprint, jsonify, request, send_from_directory
 from services.tramites import buscar_tramites
-from services.municipio_responder import MUNICIPIO_ID
-import os
+
+
+MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
 
 tramites_bp = Blueprint('tramites', __name__, url_prefix='/tramites')
 
@@ -30,4 +33,3 @@ def descargar_tramites():
     directorio = os.path.dirname(ruta)
     archivo = os.path.basename(ruta)
     return send_from_directory(directorio, archivo, as_attachment=True)
-

@@ -14,7 +14,6 @@ import threading
 from typing import Any, Dict, List
 
 import httpx
-from openai import OpenAI
 
 from services.chatbot_prompts import get_system_prompt
 from services.openai_model_defaults import (
@@ -40,6 +39,12 @@ _CLIENT_LOCK = threading.Lock()
 _CLIENT_KEY_DIGEST: str | None = None
 _OPENAI_CLIENT: Any | None = None
 _CLIENT_IS_MANAGED = False  # Compatibility marker retained for older tests.
+
+
+def OpenAI(*args: Any, **kwargs: Any) -> Any:
+    from openai import OpenAI as OpenAIClient
+
+    return OpenAIClient(*args, **kwargs)
 
 
 class _LazyOpenAIClientProxy:

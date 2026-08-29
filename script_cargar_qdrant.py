@@ -3,7 +3,7 @@ import os
 from app import create_app
 from models import User
 from services.upload_processor import procesar_y_embedear_catalogo
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 from services.qdrant_search import CATALOGO_PYME, CATALOGO_MUNICIPIO
 
 if __name__ == "__main__":
@@ -31,4 +31,3 @@ if __name__ == "__main__":
             archivo, user_id, pyme_rubro_nombre=user.rubro.nombre if user.rubro else "generico", coleccion=coleccion
         )
         print(f"{cantidad} productos cargados en Qdrant")
-

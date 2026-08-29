@@ -24,10 +24,39 @@ from services.tenant_ticket_scope import (
 )
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
-from services.analisis_archivo_service import tarea_analizar_contenido_archivo # Nueva importación
-from google.cloud import storage
-from services.google_vision_service import analyze_image_from_content
-from services.google_docai import procesar_catalogo_pdf_google, procesar_catalogo_imagen_google
+from utils.lazy_module import LazyModule
+
+storage = LazyModule("google.cloud.storage")
+
+
+class _LazyFileAnalysisTask:
+    def delay(self, *args, **kwargs):
+        from services.analisis_archivo_service import (
+            tarea_analizar_contenido_archivo as implementation,
+        )
+
+        return implementation.delay(*args, **kwargs)
+
+
+tarea_analizar_contenido_archivo = _LazyFileAnalysisTask()
+
+
+def analyze_image_from_content(*args, **kwargs):
+    from services.google_vision_service import analyze_image_from_content as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def procesar_catalogo_pdf_google(*args, **kwargs):
+    from services.google_docai import procesar_catalogo_pdf_google as implementation
+
+    return implementation(*args, **kwargs)
+
+
+def procesar_catalogo_imagen_google(*args, **kwargs):
+    from services.google_docai import procesar_catalogo_imagen_google as implementation
+
+    return implementation(*args, **kwargs)
 
 archivos_bp = Blueprint('archivos_bp', __name__, url_prefix='/archivos')
 # Extensiones permitidas para evitar archivos ejecutables sospechosos
