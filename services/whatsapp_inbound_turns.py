@@ -749,6 +749,7 @@ def ingest_whatsapp_inbound_turn(
     session_identity_hmac: Any = None,
     payload_digest: Any = None,
     max_attempts: Any = DEFAULT_INBOUND_MAX_ATTEMPTS,
+    received_at: Optional[datetime] = None,
     now: Optional[datetime] = None,
 ) -> InboundTurnReceipt:
     """Persist or replay one inbound event in a short independent transaction."""
@@ -795,6 +796,9 @@ def ingest_whatsapp_inbound_turn(
         default=DEFAULT_INBOUND_MAX_ATTEMPTS,
     )
     operation_now = _coerce_utc(now)
+    original_received_at = (
+        _coerce_utc(received_at) if received_at is not None else operation_now
+    )
 
     with Session(bind=db.engine, expire_on_commit=False) as session:
         connection_id, sender_id = _validate_provider_scope(
@@ -869,7 +873,10 @@ def ingest_whatsapp_inbound_turn(
             attempt_count=0,
             max_attempts=resolved_max_attempts,
             available_at=operation_now,
-            received_at=operation_now,
+            # A buffered provider event may be persisted after a newer event.
+            # Keep its original receipt time so stream ordering survives replay;
+            # created_at/available_at still describe the local ingest attempt.
+            received_at=original_received_at,
             contract_version=INBOUND_CONTRACT_VERSION,
             created_at=operation_now,
             updated_at=operation_now,
@@ -987,7 +994,13 @@ def claim_next_whatsapp_inbound_turn(
     head_of_stream = ~exists().where(
         older.tenant_id == WhatsAppInboundTurn.tenant_id,
         older.stream_key == WhatsAppInboundTurn.stream_key,
-        older.id < WhatsAppInboundTurn.id,
+        or_(
+            older.received_at < WhatsAppInboundTurn.received_at,
+            and_(
+                older.received_at == WhatsAppInboundTurn.received_at,
+                older.id < WhatsAppInboundTurn.id,
+            ),
+        ),
         older.status.notin_(
             [WhatsAppInboundTurn.STATUS_COMPLETED, WhatsAppInboundTurn.STATUS_DEAD]
         ),

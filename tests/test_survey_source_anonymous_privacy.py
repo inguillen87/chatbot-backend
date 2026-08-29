@@ -5,6 +5,7 @@ import re
 import uuid
 
 import pytest
+from sqlalchemy.dialects import postgresql, sqlite
 
 from database import db
 from models import (
@@ -27,7 +28,10 @@ from services.encuestas_service import (
     serialize_public_encuesta,
     serialize_respuesta,
 )
-from services.survey_privacy import purge_expired_source_anonymous_responses
+from services.survey_privacy import (
+    _retention_candidate_query,
+    purge_expired_source_anonymous_responses,
+)
 from services.encuestas_analytics_service import calculate_live_results
 
 
@@ -366,6 +370,42 @@ def test_public_contract_explains_consent_retention_and_discarded_fields(client)
         assert {"dni", "phone", "ip", "lat", "lng", "metadata"}.issubset(
             set(privacy["discarded_before_persist"])
         )
+
+
+def test_retention_batch_claim_uses_postgres_skip_locked_and_keeps_sqlite_path(
+    client,
+):
+    operation_now = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+    with client.application.app_context():
+        locked_statement = _retention_candidate_query(
+            operation_now=operation_now,
+            tenant_id=4,
+            limit=37,
+            lock_for_purge=True,
+        ).statement
+        lock_contract = locked_statement._for_update_arg
+        assert lock_contract is not None
+        assert lock_contract.skip_locked is True
+
+        postgres_sql = " ".join(
+            str(locked_statement.compile(dialect=postgresql.dialect())).split()
+        ).upper()
+        assert "ORDER BY ENC_RESPUESTA.RETENTION_EXPIRES_AT ASC" in postgres_sql
+        assert "ENC_RESPUESTA.ID ASC" in postgres_sql
+        assert "FOR UPDATE SKIP LOCKED" in postgres_sql
+
+        sqlite_sql = " ".join(
+            str(locked_statement.compile(dialect=sqlite.dialect())).split()
+        ).upper()
+        assert "FOR UPDATE" not in sqlite_sql
+
+        dry_run_statement = _retention_candidate_query(
+            operation_now=operation_now,
+            tenant_id=4,
+            limit=37,
+            lock_for_purge=False,
+        ).statement
+        assert dry_run_statement._for_update_arg is None
 
 
 def test_retention_purge_waits_for_effects_then_deletes_response_evidence(

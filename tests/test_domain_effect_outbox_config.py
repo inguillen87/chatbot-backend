@@ -34,6 +34,7 @@ def test_vercel_outbox_cron_defaults_inert_and_accepts_bounded_settings():
     assert validate_runtime_security(
         _production_config(
             VERCEL_OUTBOX_CRON_ENABLED=True,
+            CRON_SECRET="c" * 32,
             VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS=45,
             VERCEL_OUTBOX_CRON_MAX_CYCLES=4,
             VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE=1,

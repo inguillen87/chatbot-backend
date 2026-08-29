@@ -15,6 +15,8 @@ class TestVercelR2DirectUploadSmokeScript(unittest.TestCase):
         source = SCRIPT.read_text(encoding="utf-8")
 
         self.assertIn('canaryPrefix = "r2-smoke-canary-$runId"', source)
+        self.assertIn('sessionId = "r2-$runId"', source)
+        self.assertNotIn('sessionId = "r2-smoke-$runId"', source)
         self.assertIn("0814f352fb86bdaf7e38beefd1272a41090e4e700dcdcbcb41898cdf1f6ee37c", source)
         self.assertIn("CHATBOC_SMOKE_BEARER_TOKEN", source)
         self.assertIn("AllowDemoAuthMutation", source)

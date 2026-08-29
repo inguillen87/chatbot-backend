@@ -4363,6 +4363,7 @@ class WhatsAppInboundTurn(db.Model):
             "ix_whatsapp_inbound_turn_stream_fifo",
             "tenant_id",
             "stream_key",
+            "received_at",
             "id",
         ),
         db.Index(

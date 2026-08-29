@@ -1,4 +1,4 @@
-"""Apply the two approved Chatboc Neon cutover revisions, fail closed.
+"""Apply the approved Chatboc Neon cutover revisions, fail closed.
 
 Dry-run is the default.  The database URL is read only from the environment
 variable explicitly named by ``--environment-variable``; this command never
@@ -45,11 +45,15 @@ CONTRACT_VERSION = "chatboc.neon_cutover_migrations.v1"
 INITIAL_REVISION = "20260825_demo_survey_participation_v1"
 REPAIR_REVISION = "20260825_legacy_municipio_ticket_scope_repair_v1"
 IDEMPOTENCY_REVISION = "20260825_chat_idempotency_v1"
-MIGRATION_STEPS = (REPAIR_REVISION, IDEMPOTENCY_REVISION)
+INBOUND_FIFO_REVISION = "20260829_inbound_fifo_v2"
+MIGRATION_STEPS = (REPAIR_REVISION, IDEMPOTENCY_REVISION, INBOUND_FIFO_REVISION)
 EXPECTED_MIGRATION_SOURCE_SHA256 = {
     REPAIR_REVISION: "956193d0258e4937b662d4b83d6d7f308ee4ea5f426eab41d5418b2bd0d11a7a",
     IDEMPOTENCY_REVISION: (
         "2d1e283b4db884a1b286b4587784cb7bcfbf40d2f2a368695035f0f427437c4d"
+    ),
+    INBOUND_FIFO_REVISION: (
+        "628863bf0bade2b7a61ec49d03ad0ebd175c92073fdceca6afcc60f26020d087"
     ),
 }
 
@@ -96,6 +100,13 @@ EXPECTED_IDEMPOTENCY_COLUMNS = {
     "completed_at",
     "expired_at",
 }
+EXPECTED_INBOUND_FIFO_INDEX = "ix_whatsapp_inbound_turn_stream_fifo"
+EXPECTED_INBOUND_FIFO_COLUMNS = (
+    "tenant_id",
+    "stream_key",
+    "received_at",
+    "id",
+)
 
 
 class CutoverMigrationFailure(RuntimeError):
@@ -246,29 +257,39 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         initial = script.get_revision(INITIAL_REVISION)
         repair = script.get_revision(REPAIR_REVISION)
         idempotency = script.get_revision(IDEMPOTENCY_REVISION)
+        inbound_fifo = script.get_revision(INBOUND_FIFO_REVISION)
     except Exception as exc:
         raise CutoverMigrationFailure("local_migration_graph_unreadable") from exc
 
-    if initial is None or repair is None or idempotency is None:
+    if (
+        initial is None
+        or repair is None
+        or idempotency is None
+        or inbound_fifo is None
+    ):
         raise CutoverMigrationFailure("local_cutover_revision_missing")
-    if script.get_heads() != [IDEMPOTENCY_REVISION]:
+    if script.get_heads() != [INBOUND_FIFO_REVISION]:
         raise CutoverMigrationFailure("local_migration_heads_not_exact")
     if repair.down_revision != INITIAL_REVISION:
         raise CutoverMigrationFailure("local_repair_down_revision_mismatch")
     if idempotency.down_revision != REPAIR_REVISION:
         raise CutoverMigrationFailure("local_idempotency_down_revision_mismatch")
+    if inbound_fifo.down_revision != IDEMPOTENCY_REVISION:
+        raise CutoverMigrationFailure("local_inbound_fifo_down_revision_mismatch")
     if set(initial.nextrev) != {REPAIR_REVISION}:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_initial")
     if set(repair.nextrev) != {IDEMPOTENCY_REVISION}:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_repair")
-    if set(idempotency.nextrev):
+    if set(idempotency.nextrev) != {INBOUND_FIFO_REVISION}:
+        raise CutoverMigrationFailure("local_cutover_graph_branches_at_idempotency")
+    if set(inbound_fifo.nextrev):
         raise CutoverMigrationFailure("local_cutover_graph_continues_after_target")
 
     try:
         path = [
             revision.revision
             for revision in reversed(
-                list(script.iterate_revisions(IDEMPOTENCY_REVISION, INITIAL_REVISION))
+                list(script.iterate_revisions(INBOUND_FIFO_REVISION, INITIAL_REVISION))
             )
         ]
     except Exception as exc:
@@ -278,7 +299,7 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
 
     source_fingerprints: dict[str, str] = {}
     graph_document: list[dict[str, str]] = []
-    for revision in (repair, idempotency):
+    for revision in (repair, idempotency, inbound_fifo):
         upgrade = getattr(revision.module, "upgrade", None)
         if not callable(upgrade):
             raise CutoverMigrationFailure("local_cutover_upgrade_missing")
@@ -395,6 +416,54 @@ def _index_names(connection: Connection, table_name: str) -> set[str]:
             ),
             {"table_name": table_name},
         ).scalars()
+    }
+
+
+def _index_contract(
+    connection: Connection,
+    *,
+    table_name: str,
+    index_name: str,
+) -> dict[str, Any] | None:
+    row = connection.execute(
+        text(
+            """
+            SELECT
+                ARRAY(
+                    SELECT pg_get_indexdef(index_row.indexrelid, ordinal, true)
+                    FROM generate_series(1, index_row.indnatts) AS ordinal
+                    ORDER BY ordinal
+                ) AS columns,
+                index_row.indisunique AS is_unique,
+                index_row.indisvalid AS is_valid,
+                index_row.indisready AS is_ready,
+                index_row.indpred IS NULL AS is_unfiltered,
+                index_row.indexprs IS NULL AS has_plain_columns,
+                index_row.indnatts = index_row.indnkeyatts AS has_no_included_columns
+            FROM pg_index index_row
+            JOIN pg_class index_relation
+              ON index_relation.oid = index_row.indexrelid
+            JOIN pg_class table_relation
+              ON table_relation.oid = index_row.indrelid
+            JOIN pg_namespace namespace
+              ON namespace.oid = table_relation.relnamespace
+            WHERE namespace.nspname = 'public'
+              AND table_relation.relname = :table_name
+              AND index_relation.relname = :index_name
+            """
+        ),
+        {"table_name": table_name, "index_name": index_name},
+    ).mappings().one_or_none()
+    if row is None:
+        return None
+    return {
+        "columns": tuple(str(value) for value in (row["columns"] or ())),
+        "is_unique": bool(row["is_unique"]),
+        "is_valid": bool(row["is_valid"]),
+        "is_ready": bool(row["is_ready"]),
+        "is_unfiltered": bool(row["is_unfiltered"]),
+        "has_plain_columns": bool(row["has_plain_columns"]),
+        "has_no_included_columns": bool(row["has_no_included_columns"]),
     }
 
 
@@ -634,6 +703,29 @@ def _assert_after_idempotency(connection: Connection) -> dict[str, Any]:
     }
 
 
+def _assert_after_inbound_fifo(connection: Connection) -> dict[str, Any]:
+    prior_contracts = _assert_after_idempotency(connection)
+    fifo_index = _index_contract(
+        connection,
+        table_name="whatsapp_inbound_turn",
+        index_name=EXPECTED_INBOUND_FIFO_INDEX,
+    )
+    if fifo_index != {
+        "columns": EXPECTED_INBOUND_FIFO_COLUMNS,
+        "is_unique": False,
+        "is_valid": True,
+        "is_ready": True,
+        "is_unfiltered": True,
+        "has_plain_columns": True,
+        "has_no_included_columns": True,
+    }:
+        raise CutoverMigrationFailure("database_inbound_fifo_index_postcheck_failed")
+    return {
+        **prior_contracts,
+        "inbound_fifo_index": fifo_index,
+    }
+
+
 def _apply_exact_revision(
     connection: Connection,
     *,
@@ -658,7 +750,7 @@ def _apply_exact_revision(
     finally:
         operations._remove_proxy()
 
-    # The two allowlisted upgrade functions must not manage Alembic state.
+    # The allowlisted upgrade functions must not manage Alembic state.
     _require_revision(connection, expected_current_revision)
     result = connection.execute(
         text(
@@ -732,6 +824,20 @@ def _execute_cutover_transaction(
         {
             "revision": IDEMPOTENCY_REVISION,
             "postcheck": _assert_after_idempotency(connection),
+        }
+    )
+
+    _apply_exact_revision(
+        connection,
+        plan=plan,
+        expected_current_revision=IDEMPOTENCY_REVISION,
+        target_revision=INBOUND_FIFO_REVISION,
+    )
+    revision_after = _require_revision(connection, INBOUND_FIFO_REVISION)
+    steps.append(
+        {
+            "revision": INBOUND_FIFO_REVISION,
+            "postcheck": _assert_after_inbound_fifo(connection),
         }
     )
     return {
@@ -821,7 +927,7 @@ def run_cutover(
         "plan": {
             "initial_revision": INITIAL_REVISION,
             "revisions": list(MIGRATION_STEPS),
-            "final_revision": IDEMPOTENCY_REVISION,
+            "final_revision": INBOUND_FIFO_REVISION,
             "graph_fingerprint_sha256": plan.graph_fingerprint_sha256,
             "migration_source_fingerprints_sha256": dict(
                 plan.source_fingerprints_sha256
@@ -880,7 +986,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Apply both exact revisions atomically. Omit for read-only dry-run.",
+        help="Apply all exact revisions atomically. Omit for read-only dry-run.",
     )
     return parser
 

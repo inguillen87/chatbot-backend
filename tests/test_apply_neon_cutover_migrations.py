@@ -104,7 +104,7 @@ def test_target_rejects_a_valid_neon_url_with_the_wrong_host_fingerprint():
     assert DIRECT_HOST not in str(captured.value)
 
 
-def test_local_graph_is_exactly_the_two_reviewed_revisions():
+def test_local_graph_is_exactly_the_three_reviewed_revisions():
     plan = cutover._load_exact_migration_plan(ROOT)
 
     assert list(plan.source_fingerprints_sha256) == list(cutover.MIGRATION_STEPS)
@@ -113,7 +113,42 @@ def test_local_graph_is_exactly_the_two_reviewed_revisions():
     )
     assert all(len(value) == 64 for value in plan.source_fingerprints_sha256.values())
     assert len(plan.graph_fingerprint_sha256) == 64
-    assert plan.script.get_heads() == [cutover.IDEMPOTENCY_REVISION]
+    assert plan.script.get_heads() == [cutover.INBOUND_FIFO_REVISION]
+
+
+def test_inbound_fifo_postcheck_requires_the_exact_ordered_plain_index(monkeypatch):
+    prior = {
+        "demo_survey_contract_valid": True,
+        "legacy_ticket_scope": {"rows_present": 3},
+        "idempotency_contract": {"table_present": True},
+    }
+    monkeypatch.setattr(cutover, "_assert_after_idempotency", lambda _connection: prior)
+    valid = {
+        "columns": cutover.EXPECTED_INBOUND_FIFO_COLUMNS,
+        "is_unique": False,
+        "is_valid": True,
+        "is_ready": True,
+        "is_unfiltered": True,
+        "has_plain_columns": True,
+        "has_no_included_columns": True,
+    }
+    monkeypatch.setattr(cutover, "_index_contract", lambda *_args, **_kwargs: valid)
+
+    state = cutover._assert_after_inbound_fifo(object())
+    assert state["inbound_fifo_index"] == valid
+
+    wrong_order = {
+        **valid,
+        "columns": ("tenant_id", "stream_key", "id", "received_at"),
+    }
+    monkeypatch.setattr(
+        cutover,
+        "_index_contract",
+        lambda *_args, **_kwargs: wrong_order,
+    )
+    with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+        cutover._assert_after_inbound_fifo(object())
+    assert captured.value.reason_code == "database_inbound_fifo_index_postcheck_failed"
 
 
 def test_apply_requires_three_distinct_approved_evidence_ids():
@@ -327,6 +362,11 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
         "_assert_after_idempotency",
         lambda _connection: {"idempotency": True},
     )
+    monkeypatch.setattr(
+        cutover,
+        "_assert_after_inbound_fifo",
+        lambda _connection: {"inbound_fifo": True},
+    )
     monkeypatch.setattr(cutover, "_apply_exact_revision", apply_exact)
     migration_plan = cutover._load_exact_migration_plan(ROOT)
 
@@ -340,7 +380,7 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
 
     assert calls == list(cutover.MIGRATION_STEPS)
     assert state["revision_before"] == cutover.INITIAL_REVISION
-    assert state["revision_after"] == cutover.IDEMPOTENCY_REVISION
+    assert state["revision_after"] == cutover.INBOUND_FIFO_REVISION
     assert state["advisory_lock_acquired"] is True
     assert [step["revision"] for step in state["steps"]] == list(
         cutover.MIGRATION_STEPS

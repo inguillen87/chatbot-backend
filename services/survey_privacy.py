@@ -57,6 +57,46 @@ def _bounded_limit(value: Any) -> int:
     return parsed
 
 
+def _retention_candidate_query(
+    *,
+    operation_now: datetime,
+    tenant_id: Optional[int],
+    limit: int,
+    lock_for_purge: bool,
+):
+    """Build the deterministic retention batch claim.
+
+    PostgreSQL keeps the selected response rows locked through the evidence
+    deletes, audit insert and commit below. ``SKIP LOCKED`` lets overlapping
+    Vercel cron invocations divide the backlog instead of purging and auditing
+    the same response twice. SQLAlchemy intentionally omits the clause for
+    SQLite, preserving the sequential single-writer test/runtime path.
+
+    Dry runs do not claim work because they return without a commit and must
+    not leave transaction-scoped row locks behind in a long-lived process.
+    """
+
+    non_terminal_effect_exists = exists().where(
+        SurveyResponseEffect.response_id == EncRespuesta.id,
+        SurveyResponseEffect.status.notin_(_TERMINAL_EFFECT_STATUSES),
+    )
+    query = EncRespuesta.query.filter(
+        EncRespuesta.privacy_mode == PRIVACY_MODE_SOURCE_ANONYMOUS,
+        EncRespuesta.retention_expires_at.isnot(None),
+        EncRespuesta.retention_expires_at <= operation_now,
+        ~non_terminal_effect_exists,
+    )
+    if tenant_id is not None:
+        query = query.filter(EncRespuesta.tenant_id == tenant_id)
+    query = query.order_by(
+        EncRespuesta.retention_expires_at.asc(),
+        EncRespuesta.id.asc(),
+    ).limit(limit)
+    if lock_for_purge:
+        query = query.with_for_update(skip_locked=True)
+    return query
+
+
 def purge_expired_source_anonymous_responses(
     *,
     now: Optional[datetime] = None,
@@ -97,23 +137,12 @@ def purge_expired_source_anonymous_responses(
         if parsed_tenant_id <= 0:
             raise ValueError("tenant_id must be a positive integer")
 
-    non_terminal_effect_exists = exists().where(
-        SurveyResponseEffect.response_id == EncRespuesta.id,
-        SurveyResponseEffect.status.notin_(_TERMINAL_EFFECT_STATUSES),
-    )
-    query = EncRespuesta.query.filter(
-        EncRespuesta.privacy_mode == PRIVACY_MODE_SOURCE_ANONYMOUS,
-        EncRespuesta.retention_expires_at.isnot(None),
-        EncRespuesta.retention_expires_at <= operation_now,
-        ~non_terminal_effect_exists,
-    )
-    if parsed_tenant_id is not None:
-        query = query.filter(EncRespuesta.tenant_id == parsed_tenant_id)
-
-    rows = query.order_by(
-        EncRespuesta.retention_expires_at.asc(),
-        EncRespuesta.id.asc(),
-    ).limit(bounded_limit).all()
+    rows = _retention_candidate_query(
+        operation_now=operation_now,
+        tenant_id=parsed_tenant_id,
+        limit=bounded_limit,
+        lock_for_purge=not dry_run,
+    ).all()
     response_ids = [int(row.id) for row in rows]
     tenant_ids = sorted({int(row.tenant_id) for row in rows})
     survey_ids_by_tenant: dict[int, set[int]] = {}

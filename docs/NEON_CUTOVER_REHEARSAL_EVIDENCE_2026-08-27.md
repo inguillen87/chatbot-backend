@@ -521,8 +521,9 @@ runtime-media paths; governed demo fixtures and configuration under the other
 ## Fenced Vercel candidate over the restored database - 2026-08-29
 
 Commit `d3067af02a3bc157c7adba4d7652599c097516ed` was pushed and deployed as a
-Production-target candidate with `--skip-domain`. It has no aliases and does
-not receive public traffic:
+Production-target candidate with `--skip-domain`. It has no public/custom
+alias and does not receive public traffic; Vercel still assigns its normal
+technical project alias:
 
 | Check | Result |
 | --- | --- |
@@ -535,7 +536,7 @@ not receive public traffic:
 | Junin read surface | public tenant profile returns `junin` / `Municipalidad de Junin` |
 | Write protection | unsafe POST returns no-store `503`, retryable, `Retry-After: 60` |
 | Background protection | outbox cron route returns no-store `503`, `cutover_writer_fence_enabled` |
-| Domain state | no aliases; `api.chatboc.ar` remains on Render revision `8ced9216...` |
+| Domain state | no public/custom alias; `api.chatboc.ar` remains on Render revision `8ced9216...` |
 
 The first no-alias build was rejected as release evidence because its public
 version endpoint inherited a stale manual version variable. It never received
@@ -547,3 +548,64 @@ Junin reads, readiness and both request/background fences. It does not certify
 authenticated CRM operations, R2 writes, the official WhatsApp sender, live
 Twilio callbacks, cron ownership, a rollback drill or the 24-hour soak. Those
 gates remain mandatory before any domain or webhook moves.
+
+## Isolated write canary and ownership audit - 2026-08-29
+
+A second Production-target deployment, `dpl_HNHRkZJCTF94Me7XxPhvqXMKXXG3`,
+was created without a public/custom alias against only the disposable restored
+Neon database. Its global fence was disabled solely for isolated application
+canaries; every cron, durable worker, WhatsApp notification transport, Twilio
+auto-provisioning and provider live-smoke flag remained disabled. It never
+received `api.chatboc.ar` traffic and no WhatsApp/Twilio message was sent.
+
+The approved 70-byte non-personal R2 fixture completed the full governed
+lifecycle: direct-upload prepare, exact CORS for `chatboc.ar`, `www.chatboc.ar`
+and the Preview origin, malicious-origin rejection, signed PUT, idempotent
+complete, signed GET `200`, raw public probe blocked, signed-intent discard,
+database/temporary/final-object absence, deleted signed GET `404` and
+idempotent delete replay. The initial attempt failed safely before upload
+because the smoke session ID exceeded the backend's 36-character contract;
+the client now keeps the full GUID in a 35-character ID and its regression
+test passes.
+
+An authenticated Junin administrator canary then proved the restored
+application surface without provider effects:
+
+| Check | Result |
+| --- | --- |
+| Admin identity | tenant `junin`, role `admin` |
+| Legacy ticket list | 12 items returned on page 1 |
+| Operational inbox | contract `backoffice.inbox_summary.v1`, 25 items |
+| Workflow metadata | contract `tickets.workflow.v1` |
+| Synthetic CRM case | one isolated `TenantTicket`, category `Luminarias` |
+| Assignment | actor took the ticket; assignee matches authenticated operator |
+| Workflow/conversation | status `in_progress`; one internal comment visible |
+| External effects | all providers disabled; no send attempted |
+
+The public demo identity was separately denied access to the ticket and
+backoffice surfaces with `demo_scope_denied`, which is the expected RBAC
+result. These canaries certify the isolated API path, not the final database,
+live sender, public frontend, or delivery callbacks.
+
+The Vercel scheduler audit found another mandatory gate: the project currently
+has an empty cron definition registry still associated with an older
+deployment. The two candidates contain four definitions in their build, but
+`--skip-domain` did not transfer scheduler ownership. Before cutover, the
+approved fenced deployment must register exactly those four definitions while
+all cron enable flags remain false, and project ownership must be re-audited.
+
+Finally, the inbound queue now has a reviewed FIFO correction: original
+provider `received_at` is preserved for delayed replay, head-of-stream is
+ordered by `(received_at, id)`, and the supporting index is introduced by
+`20260829_inbound_fifo_v2`. The exact revision was then applied incrementally
+to the same disposable rehearsal database from the approved predecessor
+`20260825_chat_idempotency_v1`. Postflight returned the new single head, 172
+public tables and the exact non-unique index columns
+`(tenant_id, stream_key, received_at, id)`.
+
+The attempt to create an additional post-FIFO Neon backup branch was refused
+by the provider because the project branch limit is already reached. No branch
+was deleted to make room. The existing pre-FIFO postmigration branch remains
+the rollback reference for this isolated rehearsal, while final cutover still
+requires explicit backup capacity and a new post-migration branch before
+traffic can move.

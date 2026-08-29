@@ -1695,6 +1695,22 @@ INSECURE_SECRET_MARKERS = {
     "una-llave-secreta-muy-segura-para-desarrollo-local",
 }
 
+VERCEL_CRON_SECRET_SECURITY_ERROR = (
+    "CRON_SECRET debe tener al menos 32 bytes cuando un cron de Vercel "
+    "esta habilitado en produccion."
+)
+
+
+def _has_minimum_utf8_secret_bytes(value: object, *, minimum: int) -> bool:
+    """Return whether a text secret has the required encoded byte length."""
+
+    if not isinstance(value, str):
+        return False
+    try:
+        return len(value.encode("utf-8")) >= minimum
+    except UnicodeEncodeError:
+        return False
+
 
 def validate_runtime_security(config: Any) -> list[str]:
     """Return runtime security errors for production-like environments."""
@@ -1722,6 +1738,20 @@ def validate_runtime_security(config: Any) -> list[str]:
         errors.append(
             "RATELIMIT_STORAGE_URI debe usar Redis compartido en el servicio web de Render."
         )
+
+    vercel_cron_flags = (
+        "VERCEL_OUTBOX_CRON_ENABLED",
+        "VERCEL_MAINTENANCE_CRONS_ENABLED",
+        "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED",
+    )
+    if any(
+        getattr(config, "get", lambda *_: None)(flag, False) is True
+        for flag in vercel_cron_flags
+    ) and not _has_minimum_utf8_secret_bytes(
+        getattr(config, "get", lambda *_: None)("CRON_SECRET", ""),
+        minimum=32,
+    ):
+        errors.append(VERCEL_CRON_SECRET_SECURITY_ERROR)
 
     if getattr(config, "get", lambda *_: None)(
         "VERCEL_OUTBOX_CRON_ENABLED",

@@ -114,7 +114,9 @@ if ($fileSha256 -ne "0814f352fb86bdaf7e38beefd1272a41090e4e700dcdcbcb41898cdf1f6
 $runId = [guid]::NewGuid().ToString("N")
 $canaryPrefix = "r2-smoke-canary-$runId"
 $canaryFilename = "$canaryPrefix.png"
-$sessionId = "r2-smoke-$runId"
+# The upload contract caps session ids at 36 characters. Keep the full GUID
+# entropy while reserving a short, recognizable smoke-test prefix (35 chars).
+$sessionId = "r2-$runId"
 
 $jwt = [string]$env:CHATBOC_SMOKE_BEARER_TOKEN
 $tenantSlug = $TenantSlug.Trim().ToLowerInvariant()

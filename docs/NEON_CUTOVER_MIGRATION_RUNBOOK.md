@@ -1,14 +1,15 @@
 # Neon cutover migration runner
 
 `scripts/apply_neon_cutover_migrations.py` is a deliberately narrow gate for
-the two revisions rehearsed for the Render-to-Neon cutover:
+the three revisions approved for the Render-to-Neon cutover:
 
 1. `20260825_legacy_municipio_ticket_scope_repair_v1`
 2. `20260825_chat_idempotency_v1`
+3. `20260829_inbound_fifo_v2`
 
 It accepts only the exact initial revision
 `20260825_demo_survey_participation_v1` and an unbranched local graph ending at
-the second revision. Canonical SHA-256 hashes pin the reviewed source of both
+the third revision. Canonical SHA-256 hashes pin the reviewed source of all
 migration files. It never upgrades to `head` or `heads`.
 
 ## Safety contract
@@ -27,14 +28,15 @@ migration files. It never upgrades to `head` or `heads`.
 - Apply mode holds a transaction-scoped advisory lock and uses fixed statement,
   lock, connect, and idle-transaction timeouts plus a fixed `public,pg_catalog`
   search path.
-- Both upgrades and every post-check run in one outer transaction. A deviation
+- All upgrades and every post-check run in one outer transaction. A deviation
   after either step aborts the transaction; no first-step partial commit is
   allowed.
 - Before writing, the runner requires all three evidence-backed ticket rows to
   still be scoped to `almacen`, the demo survey schema contract to be intact,
   and the idempotency table to be absent. It then verifies the single Alembic
   row after every step, all three repairs to `junin`, and the new table,
-  columns, index, constraints, and empty initial row count.
+  columns, index, constraints, empty initial row count, and the exact inbound
+  FIFO index `(tenant_id, stream_key, received_at, id)`.
 - Standard output is one compact redacted JSON object. It contains only
   aggregate checks and fingerprints, never the DSN, credentials, raw host,
   raw project ID, raw branch ID, evidence IDs, or database rows.
