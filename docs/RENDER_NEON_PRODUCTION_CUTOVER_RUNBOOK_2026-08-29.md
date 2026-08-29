@@ -186,9 +186,14 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
       is SQLite, direct PostgreSQL or lacks TLS, and verify the exact FIFO
       schema/index contract before an ACK-capable process can start.
 - [ ] Provision the independent durable ingress database, load its separated
-      encryption/HMAC secrets, run the signed remote persistence/replay drill
-      and prove the queue is empty before and after the controlled webhook
-      switch.
+      encryption, envelope HMAC and Twilio idempotency-token HMAC secrets, run
+      the signed remote persistence/replay drill and prove the queue is empty
+      before and after the controlled webhook switch. Follow
+      `docs/CUTOVER_WHATSAPP_INGRESS_CONTRACT.md`; never archive the raw
+      `I-Twilio-Idempotency-Token`.
+- [ ] Prove a signed request without the optional idempotency header remains
+      compatible, while a request carrying that header fails closed without an
+      ACK or database row when its dedicated HMAC secret is unavailable.
 - [x] Provision the isolated ingress database and verify exact schema plus a
       rolled-back DML probe through the pooled runtime DSN.
 - [x] Deploy the dedicated Vercel ingress with synthetic provider credentials;
@@ -304,9 +309,10 @@ canary report and provider configuration report.
       image and one form/vote interaction; then one reply from the ticket.
 - [ ] Prove one persisted inbound row per provider SID, one CRM/ticket effect,
       one outbound attempt and signed callback transitions through delivery.
-- [ ] Drain and replay every cutover-buffer receipt exactly once; match both
-      `MessageSid` and `I-Twilio-Idempotency-Token` evidence and leave the
-      buffer empty.
+- [ ] Drain and replay every cutover-buffer receipt exactly once; reconcile the
+      canonical `MessageSid` with versioned `token_hmac` evidence (never the raw
+      `I-Twilio-Idempotency-Token`) and leave the buffer empty. The token digest
+      is audit evidence only; `MessageSid` remains the deduplication boundary.
 - [ ] Confirm queues, `send_uncertain`, dead-letter and failed counters are
       zero before normal operation resumes.
 

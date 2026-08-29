@@ -26,6 +26,8 @@ schema_revision = Table(
     Column("applied_at", DateTime(timezone=True), nullable=False),
 )
 
+TWILIO_IDEMPOTENCY_HMAC_VERSION = "hmac-sha256.v1"
+
 buffered_whatsapp_ingress = Table(
     "cutover_whatsapp_ingress",
     metadata,
@@ -84,12 +86,40 @@ buffered_whatsapp_ingress = Table(
     ),
 )
 
+# The provider retry header is evidence, not an idempotency boundary.  Store
+# only a keyed, versioned digest in a separate append-only correlation table so
+# multiple Twilio retry tokens can point to the same canonical MessageSid
+# without weakening or changing the primary-key deduplication above.
+twilio_idempotency_evidence = Table(
+    "cutover_twilio_idempotency_evidence",
+    metadata,
+    Column("message_sid", String(64), primary_key=True),
+    Column("hmac_version", String(32), primary_key=True),
+    Column("token_hmac", String(64), primary_key=True),
+    Column("first_observed_at", DateTime(timezone=True), nullable=False),
+    Column("last_observed_at", DateTime(timezone=True), nullable=False),
+    Column("observation_count", Integer, nullable=False, server_default="1"),
+    CheckConstraint(
+        "hmac_version = 'hmac-sha256.v1' AND length(token_hmac) = 64",
+        name="ck_cutover_twilio_idempotency_evidence_digest",
+    ),
+    CheckConstraint(
+        "observation_count >= 1",
+        name="ck_cutover_twilio_idempotency_evidence_count",
+    ),
+)
+
 Index(
     "ix_cutover_whatsapp_ingress_due",
     buffered_whatsapp_ingress.c.status,
     buffered_whatsapp_ingress.c.available_at,
     buffered_whatsapp_ingress.c.received_at,
     buffered_whatsapp_ingress.c.message_sid,
+)
+Index(
+    "ix_cutover_twilio_idempotency_evidence_message",
+    twilio_idempotency_evidence.c.message_sid,
+    twilio_idempotency_evidence.c.first_observed_at,
 )
 Index(
     "ix_cutover_whatsapp_ingress_stream_fifo",

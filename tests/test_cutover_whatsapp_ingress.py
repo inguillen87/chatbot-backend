@@ -27,10 +27,16 @@ from cutover_ingress.core import (
 )
 from cutover_ingress.migration import (
     CUTOVER_INGRESS_SCHEMA_REVISION,
+    CUTOVER_INGRESS_SCHEMA_REVISION_V1,
     CutoverIngressMigrationError,
     migrate_cutover_ingress,
 )
-from cutover_ingress.schema import buffered_whatsapp_ingress, schema_revision
+from cutover_ingress.schema import (
+    TWILIO_IDEMPOTENCY_HMAC_VERSION,
+    buffered_whatsapp_ingress,
+    schema_revision,
+    twilio_idempotency_evidence,
+)
 from cutover_ingress.twilio_signature import TwilioInboundSignatureValidator
 
 
@@ -62,6 +68,7 @@ def _runtime_environment(database_url: str = POOLED_INGRESS_URL) -> dict[str, st
             {"active": _b64(b"e" * 32)}
         ),
         "CUTOVER_INGRESS_HMAC_KEY_B64": _b64(b"h" * 32),
+        "CUTOVER_INGRESS_IDEMPOTENCY_TOKEN_HMAC_KEY_B64": _b64(b"i" * 32),
     }
 
 
@@ -88,7 +95,11 @@ def _b64(value: bytes) -> str:
     return base64.b64encode(value).decode("ascii")
 
 
-def _settings(database_url: str) -> CutoverIngressSettings:
+def _settings(
+    database_url: str,
+    *,
+    idempotency_token_hmac_key: bytes | None = b"i" * 32,
+) -> CutoverIngressSettings:
     return CutoverIngressSettings(
         database_url=database_url,
         public_webhook_url=PUBLIC_URL,
@@ -100,6 +111,7 @@ def _settings(database_url: str) -> CutoverIngressSettings:
         active_encryption_key_id="key-2026-08",
         encryption_keys={"key-2026-08": b"e" * 32},
         envelope_hmac_key=b"h" * 32,
+        idempotency_token_hmac_key=idempotency_token_hmac_key,
         max_attempts=3,
         lease_seconds=60,
     )
@@ -136,9 +148,16 @@ def ingress(tmp_path):
         engine.dispose()
 
 
-def _signed_headers(payload: dict[str, str]) -> dict[str, str]:
+def _signed_headers(
+    payload: dict[str, str],
+    *,
+    idempotency_token: str | None = None,
+) -> dict[str, str]:
     signature = RequestValidator(AUTH_TOKEN).compute_signature(PUBLIC_URL, payload)
-    return {"X-Twilio-Signature": signature}
+    headers = {"X-Twilio-Signature": signature}
+    if idempotency_token is not None:
+        headers["I-Twilio-Idempotency-Token"] = idempotency_token
+    return headers
 
 
 def test_environment_requires_a_distinct_database(tmp_path):
@@ -170,6 +189,16 @@ def test_environment_accepts_rotation_keyring_and_separate_database(tmp_path):
     assert settings.database_url == ingress_url
     assert settings.active_encryption_key_id == "new"
     assert settings.encryption_keys["old"] == b"o" * 32
+    assert settings.idempotency_token_hmac_key == b"i" * 32
+
+
+def test_environment_keeps_idempotency_token_evidence_optional():
+    env = _runtime_environment()
+    env.pop("CUTOVER_INGRESS_IDEMPOTENCY_TOKEN_HMAC_KEY_B64")
+
+    settings = CutoverIngressSettings.from_environ(env)
+
+    assert settings.idempotency_token_hmac_key is None
 
 
 def test_environment_normalizes_standard_neon_url_to_bundled_psycopg_driver():
@@ -273,6 +302,32 @@ def test_migration_records_exact_revision_and_refuses_nonempty_unknown_database(
     unknown.dispose()
 
 
+def test_migration_upgrades_exact_v1_without_changing_message_sid_boundary(tmp_path):
+    engine = create_engine(f"sqlite:///{(tmp_path / 'schema-v1.sqlite3').as_posix()}")
+    with engine.begin() as connection:
+        schema_revision.create(connection)
+        buffered_whatsapp_ingress.create(connection)
+        connection.execute(
+            schema_revision.insert().values(
+                revision=CUTOVER_INGRESS_SCHEMA_REVISION_V1,
+                applied_at=BASE_TIME,
+            )
+        )
+
+    assert migrate_cutover_ingress(engine) == CUTOVER_INGRESS_SCHEMA_REVISION
+    with engine.connect() as connection:
+        assert connection.scalar(select(schema_revision.c.revision)) == (
+            CUTOVER_INGRESS_SCHEMA_REVISION
+        )
+        assert connection.scalar(
+            select(func.count()).select_from(twilio_idempotency_evidence)
+        ) == 0
+    assert [column.name for column in buffered_whatsapp_ingress.primary_key] == [
+        "message_sid"
+    ]
+    engine.dispose()
+
+
 def test_missing_partial_stream_lease_index_fails_preflight_and_startup(tmp_path):
     database_url = f"sqlite:///{(tmp_path / 'missing-index.sqlite3').as_posix()}"
     engine = create_engine(database_url, future=True)
@@ -299,17 +354,27 @@ def test_webhook_rejects_unsigned_or_invalid_signature_before_persistence(ingres
     _, engine, app, _ = ingress
     payload = _payload()
     with app.test_client() as client:
-        assert client.post("/webhook/whatsapp", data=payload).status_code == 403
+        assert client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers={"I-Twilio-Idempotency-Token": "raw-token-must-not-persist"},
+        ).status_code == 403
         assert (
             client.post(
                 "/webhook/whatsapp",
                 data=payload,
-                headers={"X-Twilio-Signature": "forged"},
+                headers={
+                    "X-Twilio-Signature": "forged",
+                    "I-Twilio-Idempotency-Token": "raw-token-must-not-persist",
+                },
             ).status_code
             == 403
         )
     with engine.connect() as connection:
         assert connection.scalar(select(func.count()).select_from(buffered_whatsapp_ingress)) == 0
+        assert connection.scalar(
+            select(func.count()).select_from(twilio_idempotency_evidence)
+        ) == 0
 
 
 def test_webhook_matches_twilio_default_https_port_fallback(ingress):
@@ -439,6 +504,162 @@ def test_webhook_persists_encrypted_before_ack_and_exact_duplicate_is_idempotent
         assert connection.scalar(select(func.count()).select_from(buffered_whatsapp_ingress)) == 1
 
 
+def test_same_twilio_idempotency_token_has_one_versioned_hmac_and_never_persists_raw(
+    ingress,
+):
+    _, engine, app, store = ingress
+    payload = _payload("84", body="Evidencia sin guardar el header sensible")
+    raw_token = "opaque-provider-retry-token-A"
+    headers = _signed_headers(payload, idempotency_token=raw_token)
+
+    with app.test_client() as client:
+        first = client.post("/webhook/whatsapp", data=payload, headers=headers)
+        duplicate = client.post("/webhook/whatsapp", data=payload, headers=headers)
+
+    assert first.status_code == duplicate.status_code == 200
+    with engine.connect() as connection:
+        main = connection.execute(
+            select(buffered_whatsapp_ingress).where(
+                buffered_whatsapp_ingress.c.message_sid == payload["MessageSid"]
+            )
+        ).mappings().one()
+        evidence = connection.execute(
+            select(twilio_idempotency_evidence).where(
+                twilio_idempotency_evidence.c.message_sid == payload["MessageSid"]
+            )
+        ).mappings().one()
+
+    assert evidence["hmac_version"] == TWILIO_IDEMPOTENCY_HMAC_VERSION
+    assert len(evidence["token_hmac"]) == 64
+    assert evidence["observation_count"] == 2
+    assert raw_token not in repr(dict(main))
+    assert raw_token not in repr(dict(evidence))
+    assert raw_token not in json.dumps(store._decrypt(main), sort_keys=True)
+    assert raw_token not in first.get_data(as_text=True)
+    assert raw_token not in duplicate.get_data(as_text=True)
+
+
+def test_different_twilio_idempotency_tokens_are_distinct_for_same_message_sid(
+    ingress,
+):
+    _, engine, app, _ = ingress
+    payload = _payload("85")
+
+    with app.test_client() as client:
+        first = client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers=_signed_headers(
+                payload,
+                idempotency_token="opaque-provider-retry-token-A",
+            ),
+        )
+        second = client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers=_signed_headers(
+                payload,
+                idempotency_token="opaque-provider-retry-token-B",
+            ),
+        )
+
+    assert first.status_code == second.status_code == 200
+    with engine.connect() as connection:
+        evidence = connection.execute(
+            select(twilio_idempotency_evidence).where(
+                twilio_idempotency_evidence.c.message_sid == payload["MessageSid"]
+            )
+        ).mappings().all()
+        main_count = connection.scalar(
+            select(func.count())
+            .select_from(buffered_whatsapp_ingress)
+            .where(buffered_whatsapp_ingress.c.message_sid == payload["MessageSid"])
+        )
+
+    assert main_count == 1
+    assert len(evidence) == 2
+    assert {row["message_sid"] for row in evidence} == {payload["MessageSid"]}
+    assert len({row["token_hmac"] for row in evidence}) == 2
+
+
+def test_absent_idempotency_token_is_compatible_without_hmac_secret(tmp_path):
+    database_url = f"sqlite:///{(tmp_path / 'optional-token.sqlite3').as_posix()}"
+    settings = _settings(database_url, idempotency_token_hmac_key=None)
+    engine = create_engine(database_url, future=True)
+    migrate_cutover_ingress(engine)
+    app = create_cutover_ingress_app(settings, engine=engine)
+    payload = _payload("86")
+
+    with app.test_client() as client:
+        response = client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers=_signed_headers(payload),
+        )
+
+    assert response.status_code == 200
+    with engine.connect() as connection:
+        assert connection.scalar(
+            select(func.count()).select_from(buffered_whatsapp_ingress)
+        ) == 1
+        assert connection.scalar(
+            select(func.count()).select_from(twilio_idempotency_evidence)
+        ) == 0
+    engine.dispose()
+
+
+def test_present_idempotency_token_without_hmac_secret_fails_before_persistence(
+    tmp_path,
+):
+    database_url = f"sqlite:///{(tmp_path / 'missing-token-key.sqlite3').as_posix()}"
+    settings = _settings(database_url, idempotency_token_hmac_key=None)
+    engine = create_engine(database_url, future=True)
+    migrate_cutover_ingress(engine)
+    app = create_cutover_ingress_app(settings, engine=engine)
+    payload = _payload("87")
+
+    with app.test_client() as client:
+        response = client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers=_signed_headers(
+                payload,
+                idempotency_token="opaque-provider-retry-token",
+            ),
+        )
+
+    assert response.status_code == 503
+    with engine.connect() as connection:
+        assert connection.scalar(
+            select(func.count()).select_from(buffered_whatsapp_ingress)
+        ) == 0
+        assert connection.scalar(
+            select(func.count()).select_from(twilio_idempotency_evidence)
+        ) == 0
+    engine.dispose()
+
+
+def test_invalid_idempotency_token_fails_closed_without_persistence(ingress):
+    _, engine, app, _ = ingress
+    payload = _payload("88")
+
+    with app.test_client() as client:
+        response = client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers=_signed_headers(payload, idempotency_token="x" * 513),
+        )
+
+    assert response.status_code == 422
+    with engine.connect() as connection:
+        assert connection.scalar(
+            select(func.count()).select_from(buffered_whatsapp_ingress)
+        ) == 0
+        assert connection.scalar(
+            select(func.count()).select_from(twilio_idempotency_evidence)
+        ) == 0
+
+
 def test_stream_key_matches_canonical_backend_derivation(ingress):
     from services.whatsapp_inbound_turns import derive_whatsapp_stream_key
 
@@ -460,9 +681,13 @@ def test_http_ack_is_emitted_only_after_committed_row_is_visible(ingress):
     original_persist = store.persist
     commit_observed_before_return = False
 
-    def persist_and_verify_commit(form):
+    def persist_and_verify_commit(form, *, idempotency_token=None):
         nonlocal commit_observed_before_return
-        receipt = original_persist(form, now=BASE_TIME)
+        receipt = original_persist(
+            form,
+            idempotency_token=idempotency_token,
+            now=BASE_TIME,
+        )
         # A distinct transaction can only see the row after Store.persist's
         # transaction committed.  The Flask handler cannot ACK before this
         # wrapper returns.

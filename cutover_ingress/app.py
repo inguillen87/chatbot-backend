@@ -14,6 +14,7 @@ from sqlalchemy import Engine, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from .core import (
+    CutoverIngressConfigurationError,
     CutoverIngressConflict,
     CutoverIngressIntegrityError,
     CutoverIngressSettings,
@@ -128,12 +129,20 @@ def create_cutover_ingress_app(
         if any(len(request.form.getlist(key)) != 1 for key in request.form.keys()):
             return _response("invalid webhook", 422)
         payload: Mapping[str, Any] = request.form.to_dict(flat=True)
+        # This provider header is audit evidence only; MessageSid remains the
+        # deduplication boundary. Read it only after the Twilio signature has
+        # passed, and never copy the raw value into the signed form envelope.
+        idempotency_token = request.headers.get("I-Twilio-Idempotency-Token")
         try:
-            store.persist(payload)
+            store.persist(payload, idempotency_token=idempotency_token)
         except CutoverIngressConflict:
             return _response("conflicting replay", 409)
         except CutoverIngressIntegrityError:
             return _response("invalid webhook", 422)
+        except CutoverIngressConfigurationError:
+            # If Twilio sends the header but the dedicated HMAC key is absent,
+            # do not ACK or persist a partially auditable request.
+            return _response("queue unavailable", 503)
         except SQLAlchemyError:
             # No ACK is emitted when durability is uncertain.
             return _response("queue unavailable", 503)

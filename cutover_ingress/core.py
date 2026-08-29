@@ -32,12 +32,18 @@ from urllib.parse import urlsplit
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import Engine, and_, create_engine, exists, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 
 from .migration import assert_cutover_ingress_schema
-from .schema import buffered_whatsapp_ingress
+from .schema import (
+    TWILIO_IDEMPOTENCY_HMAC_VERSION,
+    buffered_whatsapp_ingress,
+    twilio_idempotency_evidence,
+)
 
 
 CONTRACT_VERSION = "chatboc.cutover_whatsapp_ingress.v1"
@@ -54,6 +60,10 @@ DEFAULT_MAX_ATTEMPTS = 12
 DEFAULT_LEASE_SECONDS = 120
 MAX_FORM_FIELDS = 128
 MAX_FIELD_BYTES = 16 * 1024
+MAX_IDEMPOTENCY_TOKEN_BYTES = 512
+_IDEMPOTENCY_TOKEN_HMAC_DOMAIN = (
+    b"chatboc.cutover-ingress.twilio-idempotency-token:hmac-sha256.v1:\0"
+)
 
 _ACCOUNT_SID = re.compile(r"^AC[0-9a-fA-F]{32}$")
 _MESSAGE_SID = re.compile(r"^SM[0-9a-fA-F]{32}$")
@@ -61,6 +71,7 @@ _WHATSAPP_ADDRESS = re.compile(r"^whatsapp:\+[1-9][0-9]{7,14}$", re.I)
 _KEY_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,48}$")
 _FORM_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,127}$")
 _SAFE_ERROR = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,95}$")
+_TWILIO_IDEMPOTENCY_TOKEN = re.compile(r"^[\x21-\x7e]{1,512}$")
 
 
 class CutoverIngressConfigurationError(RuntimeError):
@@ -223,6 +234,7 @@ class CutoverIngressSettings:
     active_encryption_key_id: str
     encryption_keys: Mapping[str, bytes]
     envelope_hmac_key: bytes
+    idempotency_token_hmac_key: bytes | None = None
     max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     lease_seconds: int = DEFAULT_LEASE_SECONDS
@@ -295,6 +307,29 @@ class CutoverIngressSettings:
             raise CutoverIngressConfigurationError(
                 "cutover_ingress_cryptographic_keys_not_separated"
             )
+        idempotency_key = (
+            bytes(self.idempotency_token_hmac_key)
+            if self.idempotency_token_hmac_key is not None
+            else None
+        )
+        if idempotency_key is not None:
+            if len(idempotency_key) < 32:
+                raise CutoverIngressConfigurationError(
+                    "cutover_ingress_idempotency_token_hmac_key_invalid"
+                )
+            separated_values = (
+                bytes(self.envelope_hmac_key),
+                bytes(self.stream_hash_secret),
+                str(self.twilio_auth_token).encode("utf-8"),
+                *tuple(bytes(key) for key in keys.values()),
+            )
+            if any(
+                hmac.compare_digest(idempotency_key, candidate)
+                for candidate in separated_values
+            ):
+                raise CutoverIngressConfigurationError(
+                    "cutover_ingress_cryptographic_keys_not_separated"
+                )
         if not 1024 <= int(self.max_payload_bytes) <= 1024 * 1024:
             raise CutoverIngressConfigurationError(
                 "cutover_ingress_max_payload_bytes_invalid"
@@ -315,6 +350,7 @@ class CutoverIngressSettings:
         object.__setattr__(self, "public_webhook_url", parts.geturl())
         object.__setattr__(self, "expected_to", self.expected_to.lower())
         object.__setattr__(self, "encryption_keys", MappingProxyType(keys))
+        object.__setattr__(self, "idempotency_token_hmac_key", idempotency_key)
 
     @classmethod
     def from_environ(
@@ -413,6 +449,17 @@ class CutoverIngressSettings:
             envelope_hmac_key=_decode_b64_secret(
                 env.get("CUTOVER_INGRESS_HMAC_KEY_B64"),
                 code="cutover_ingress_hmac_key_invalid",
+            ),
+            idempotency_token_hmac_key=(
+                _decode_b64_secret(
+                    env.get("CUTOVER_INGRESS_IDEMPOTENCY_TOKEN_HMAC_KEY_B64"),
+                    code="cutover_ingress_idempotency_token_hmac_key_invalid",
+                )
+                if str(
+                    env.get("CUTOVER_INGRESS_IDEMPOTENCY_TOKEN_HMAC_KEY_B64")
+                    or ""
+                ).strip()
+                else None
             ),
             max_payload_bytes=max_payload,
             max_attempts=max_attempts,
@@ -591,7 +638,86 @@ class CutoverIngressStore:
             raise CutoverIngressIntegrityError("encrypted_payload_canonical_invalid")
         return normalized
 
-    def persist(self, payload: Mapping[str, Any], *, now: datetime | None = None) -> BufferedIngressReceipt:
+    def _idempotency_token_evidence(
+        self,
+        token: str | None,
+    ) -> tuple[str, str] | None:
+        if token is None:
+            return None
+        key = self.settings.idempotency_token_hmac_key
+        if key is None:
+            raise CutoverIngressConfigurationError(
+                "cutover_ingress_idempotency_token_hmac_key_missing"
+            )
+        rendered = str(token)
+        encoded = rendered.encode("utf-8")
+        if (
+            len(encoded) > MAX_IDEMPOTENCY_TOKEN_BYTES
+            or not _TWILIO_IDEMPOTENCY_TOKEN.fullmatch(rendered)
+        ):
+            raise CutoverIngressIntegrityError(
+                "twilio_idempotency_token_invalid"
+            )
+        digest = hmac.new(
+            key,
+            _IDEMPOTENCY_TOKEN_HMAC_DOMAIN + encoded,
+            hashlib.sha256,
+        ).hexdigest()
+        return TWILIO_IDEMPOTENCY_HMAC_VERSION, digest
+
+    def _record_idempotency_token_evidence(
+        self,
+        connection,
+        *,
+        message_sid: str,
+        evidence: tuple[str, str] | None,
+        now: datetime,
+    ) -> None:
+        if evidence is None:
+            return
+        version, digest = evidence
+        values = {
+            "message_sid": message_sid,
+            "hmac_version": version,
+            "token_hmac": digest,
+            "first_observed_at": now,
+            "last_observed_at": now,
+            "observation_count": 1,
+        }
+        index_elements = [
+            twilio_idempotency_evidence.c.message_sid,
+            twilio_idempotency_evidence.c.hmac_version,
+            twilio_idempotency_evidence.c.token_hmac,
+        ]
+        if connection.dialect.name == "postgresql":
+            statement = postgresql_insert(twilio_idempotency_evidence).values(
+                **values
+            )
+        elif connection.dialect.name == "sqlite":
+            statement = sqlite_insert(twilio_idempotency_evidence).values(**values)
+        else:
+            raise CutoverIngressConfigurationError(
+                "cutover_ingress_idempotency_evidence_database_unsupported"
+            )
+        connection.execute(
+            statement.on_conflict_do_update(
+                index_elements=index_elements,
+                set_={
+                    "last_observed_at": now,
+                    "observation_count": (
+                        twilio_idempotency_evidence.c.observation_count + 1
+                    ),
+                },
+            )
+        )
+
+    def persist(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        idempotency_token: str | None = None,
+        now: datetime | None = None,
+    ) -> BufferedIngressReceipt:
         normalized, encoded, digest = normalize_signed_form(
             payload,
             max_payload_bytes=self.settings.max_payload_bytes,
@@ -612,6 +738,9 @@ class CutoverIngressStore:
             raise CutoverIngressIntegrityError("destination_invalid")
         if not hmac.compare_digest(destination.lower(), self.settings.expected_to):
             raise CutoverIngressIntegrityError("destination_mismatch")
+        idempotency_evidence = self._idempotency_token_evidence(
+            idempotency_token
+        )
         stream_key = _derive_stream_key(
             secret=self.settings.stream_hash_secret,
             tenant_id=self.settings.tenant_id,
@@ -652,26 +781,41 @@ class CutoverIngressStore:
         try:
             with self.engine.begin() as connection:
                 connection.execute(buffered_whatsapp_ingress.insert().values(**values))
+                self._record_idempotency_token_evidence(
+                    connection,
+                    message_sid=message_sid,
+                    evidence=idempotency_evidence,
+                    now=operation_now,
+                )
         except IntegrityError:
-            with self.engine.connect() as connection:
+            with self.engine.begin() as connection:
                 existing = connection.execute(
                     select(buffered_whatsapp_ingress).where(
                         buffered_whatsapp_ingress.c.message_sid == message_sid
                     )
                 ).mappings().one_or_none()
-            if existing is None:
-                raise
-            immutable_match = (
-                hmac.compare_digest(str(existing["payload_digest"]), digest)
-                and hmac.compare_digest(str(existing["account_sid"]), account_sid)
-                and int(existing["tenant_id"]) == self.settings.tenant_id
-                and hmac.compare_digest(str(existing["stream_key"]), stream_key)
-            )
-            if not immutable_match:
-                raise CutoverIngressConflict("message_sid_payload_conflict") from None
-            # Verify the persisted envelope as well; an exact provider replay
-            # must not hide at-rest corruption.
-            self._decrypt(existing)
+                if existing is None:
+                    raise
+                immutable_match = (
+                    hmac.compare_digest(str(existing["payload_digest"]), digest)
+                    and hmac.compare_digest(str(existing["account_sid"]), account_sid)
+                    and int(existing["tenant_id"]) == self.settings.tenant_id
+                    and hmac.compare_digest(str(existing["stream_key"]), stream_key)
+                )
+                if not immutable_match:
+                    raise CutoverIngressConflict(
+                        "message_sid_payload_conflict"
+                    ) from None
+                # Verify the persisted envelope as well; an exact provider
+                # replay must not hide at-rest corruption. Evidence is recorded
+                # only after that verification and in the same transaction.
+                self._decrypt(existing)
+                self._record_idempotency_token_evidence(
+                    connection,
+                    message_sid=message_sid,
+                    evidence=idempotency_evidence,
+                    now=operation_now,
+                )
             return BufferedIngressReceipt(
                 outcome="duplicate",
                 message_sid=message_sid,
