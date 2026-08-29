@@ -155,9 +155,18 @@ class TwilioV2GetOnlyClient:
             )
         )
         require(allowed, "twilio_read_endpoint_not_allowlisted")
+        params: dict[str, str] | None = None
+        if url == SENDERS_URL:
+            # Twilio's v2 Channel Senders collection requires an explicit
+            # channel selector.  Omitting it returns HTTP 400 before the
+            # read-only snapshot can inspect the official WhatsApp sender.
+            params = {"Channel": CHANNEL, "PageSize": "1000"}
+        elif url == SERVICES_URL or url.endswith("/ChannelSenders"):
+            params = {"PageSize": "1000"}
+
         response = self._session.get(
             url,
-            params={"PageSize": "1000"} if url in {SENDERS_URL, SERVICES_URL} or url.endswith("/ChannelSenders") else None,
+            params=params,
             auth=(self.account_sid, self._auth_token),
             headers={"Accept": "application/json"},
             allow_redirects=False,

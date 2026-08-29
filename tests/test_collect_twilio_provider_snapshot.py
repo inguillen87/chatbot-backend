@@ -181,6 +181,10 @@ def test_network_client_exposes_only_allowlisted_get_without_redirects():
     assert len(session.calls) == 1
     url, kwargs = session.calls[0]
     assert url == collector.SENDERS_URL
+    assert kwargs["params"] == {
+        "Channel": "whatsapp",
+        "PageSize": "1000",
+    }
     assert kwargs["allow_redirects"] is False
     assert kwargs["auth"] == (ACCOUNT, "token-value")
     assert not hasattr(client, "post")
