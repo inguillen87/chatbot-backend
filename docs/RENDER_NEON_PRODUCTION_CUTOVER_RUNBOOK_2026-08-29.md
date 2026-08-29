@@ -327,8 +327,9 @@ Render uses Neon**. Do not resume writes against the old Render PostgreSQL.
       never executes an open-ended `upgrade head`. Live Render standby binding
       remains part of the unchecked configuration step above.
 - [ ] Require `VERCEL_DURABLE_UPLOADS_REQUIRE_R2=true` on both computes.
-- [ ] Pass `scripts/rehearse_compute_rollback.py --validate-only` with the
-      approved redacted manifest before the remote drill.
+- [ ] Pass `scripts/rehearse_compute_rollback.py --validate-only` with an
+      approved `chatboc.compute_rollback_rehearsal.v2` redacted manifest before
+      the remote drill. A v1 manifest is legacy and explicitly non-certifying.
 - [ ] Test the rollback route without enabling two writers.
 - [ ] Observe application errors, latency, database connections, R2 delivery,
       Twilio callbacks, queue age, OOM/restarts and business canaries.
@@ -344,6 +345,63 @@ Render uses Neon**. Do not resume writes against the old Render PostgreSQL.
       database are separate decisions; database deletion requires a later
       explicit sign-off after the retained export and Neon backup are tested.
 - [ ] Retire Render only after a rollback drill and explicit final sign-off.
+
+### Rollback manifest v2 evidence contract
+
+The validator is an **offline shape-and-binding gate**. It performs no provider,
+database, deployment, DNS, queue or storage action. `ready: true` means that the
+submitted v2 document is internally consistent and bound to evidence digests;
+it does not prove that an artifact is genuine and does not authorize a cutover,
+rollback or Render retirement. The decision owner must archive and independently
+verify every referenced artifact outside the application repository.
+
+Version 2 is mandatory for operational readiness and binds all of the following:
+
+| Manifest area | Mandatory binding |
+| --- | --- |
+| Window/release | Window ID, release ID, UTC start/deadline, approved full 40-character backend Git SHA and pre-window approval/identity evidence |
+| Neon | Project ID, branch ID, database, exact migration head, expected fingerprint, independently observed matching fingerprint and evidence for each observation |
+| Render standby | Same backend SHA and exact Neon identity/fingerprint, `verify-only` schema action and a separate standby evidence artifact |
+| R2 | `required` durable-upload policy and verified `put-get-delete` artifacts from both Vercel and Render against the same opaque target-identity SHA-256 |
+| Ingress | HTTPS endpoint without credentials/query parameters, committed source fingerprint, queue target/schema, empty pre/post drill depths and a non-empty replay with matched persisted/replayed counts and zero failures |
+| Authority states | Exact sequence `vercel_active`, `both_fenced`, `render_fenced`, `render_active`; authority epoch and owner in every state; one writer and one job owner in active states; zero owners during both freeze states |
+| Transitions | From/to state, before/after authority epoch and owner, plus one unique transition evidence artifact ordered between its two state attestations |
+
+Every evidence object must contain a unique bounded `id`, the exact expected
+`kind`, artifact `sha256`, UTC `captured_at`, and copies of the same `window_id`,
+`release_id` and full `backend_revision`. Operational evidence must fall inside
+the declared window. Approval and immutable release identity evidence must be
+captured no later than the window start. Evidence IDs, raw fingerprints,
+provider endpoints and infrastructure identities are never emitted by the
+validator; its output contains only aggregate checks and the digest of the
+exact input manifest.
+
+Authority epoch rules are fail-closed:
+
+1. `vercel_active` starts at an already-issued positive epoch.
+2. Entering `both_fenced` must advance the epoch and clear writer/job owners.
+3. The `render_fenced` standby attestation must preserve that same fenced epoch.
+4. Activating Render must advance the epoch again and assign both writer and
+   job ownership to Render only.
+
+Build the redacted manifest in the private evidence directory, never by
+copying database URLs, tokens, provider payloads, phone numbers or message
+bodies into it. Opaque infrastructure target identities must be SHA-256
+digests, while artifact content remains outside the manifest.
+
+```powershell
+& $py scripts/rehearse_compute_rollback.py `
+  --manifest $cutoverEvidenceDir\compute-rollback-v2.json `
+  --validate-only
+```
+
+Required success shape: exit `0`, contract
+`chatboc.compute_rollback_rehearsal.v2`, `ready: true`,
+`external_actions_performed: false`, four states with job-owner counts
+`1,0,0,1`, and three ordered transitions. Any v1 document exits blocked with
+`legacy_contract_non_certifying`. Do not create a synthetic passing manifest to
+clear this checklist: populate v2 only after the real, externally archived
+evidence exists.
 
 ## Immediate NO-GO conditions
 
