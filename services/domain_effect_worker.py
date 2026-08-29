@@ -14,6 +14,11 @@ from typing import Any, Callable, Optional
 from flask import current_app, has_app_context
 
 from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+    log_background_writer_fence,
+)
 from models import db
 from services.domain_effect_gate import (
     DomainEffectOutboxConfigurationError,
@@ -85,6 +90,23 @@ def dispatch_domain_effect_batch(
 ) -> dict[str, Any]:
     """Dispatch only tenants included in the explicit canary allowlist."""
 
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": "domain.effect_worker_batch.v1",
+            "status": "fenced",
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "unknown": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "recovered_unknown": 0,
+            "recovered_retry_wait": 0,
+            "recovered_dead": 0,
+            "tenants": [],
+        }
     if not has_app_context():
         raise DomainEffectOutboxConfigurationError("domain_effect_app_context_required")
     canaries = resolve_domain_effect_outbox_canaries(current_app.config)
@@ -194,6 +216,7 @@ def enqueue_domain_effect_dispatch(*, tenant_id: int) -> bool:
 
     if (
         not has_app_context()
+        or cutover_writer_fence_enabled(current_app.config)
         or current_app.testing
         or not bool(
             current_app.config.get(
@@ -244,6 +267,15 @@ def run_domain_effect_worker(
         "recovered_dead": 0,
         "cycle_failures": 0,
     }
+    if cutover_writer_fence_enabled(app.config):
+        report = {
+            **background_writer_fence_report("domain_effect_worker"),
+            **totals,
+        }
+        log_background_writer_fence(logger, report)
+        if not once and not shutdown.is_set():
+            shutdown.wait()
+        return report
     with app.app_context():
         resolve_domain_effect_outbox_canaries(current_app.config)
         _configured_batch_size()
@@ -312,16 +344,6 @@ def main() -> int:
 
     os.environ.setdefault("CHATBOC_PROCESS_ROLE", "domain-effect-worker")
     os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
-    from app import create_app
-    from config import Config
-
-    app = create_app(Config)
-    if args.health:
-        with app.app_context():
-            report = summarize_domain_effect_outbox(tenant_id=args.tenant_id)
-            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
-        return 0
-
     shutdown = threading.Event()
 
     def _stop(*_args: Any) -> None:
@@ -332,6 +354,37 @@ def main() -> int:
             signal.signal(signal_name, _stop)
         except (AttributeError, ValueError):
             pass
+    if cutover_writer_fence_enabled():
+        report = {
+            **background_writer_fence_report("domain_effect_worker"),
+            "cycles": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "unknown": 0,
+            "dead": 0,
+            "recovered_unknown": 0,
+            "recovered_retry_wait": 0,
+            "recovered_dead": 0,
+            "cycle_failures": 0,
+        }
+        log_background_writer_fence(logger, report)
+        if args.once or args.health or args.tenant_id is not None:
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        elif not shutdown.is_set():
+            shutdown.wait()
+        return 0
+
+    from app import create_app
+    from config import Config
+
+    app = create_app(Config)
+    if args.health:
+        with app.app_context():
+            report = summarize_domain_effect_outbox(tenant_id=args.tenant_id)
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        return 0
     if args.tenant_id is not None:
         with app.app_context():
             dispatch_domain_effect_batch(tenant_id=args.tenant_id)

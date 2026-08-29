@@ -14,8 +14,13 @@ import argparse
 import json
 import uuid
 
+from flask import current_app, has_app_context
 from sqlalchemy import exists
 
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
 from database import db
 from models import (
     AnalyticsEventV2,
@@ -70,6 +75,18 @@ def purge_expired_source_anonymous_responses(
     """
 
     operation_now = _utc(now)
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": RETENTION_PURGE_CONTRACT_VERSION,
+            "status": "fenced",
+            "dry_run": bool(dry_run),
+            "eligible": 0,
+            "deleted": 0,
+            "tenant_count": 0,
+            "cutoff_at": operation_now.isoformat(),
+        }
     bounded_limit = _bounded_limit(limit)
     parsed_tenant_id: Optional[int] = None
     if tenant_id is not None:
@@ -180,6 +197,20 @@ def run_retention_purge_batches(
     max_batches: int = 20,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    operation_now = _utc(now)
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": RETENTION_PURGE_CONTRACT_VERSION,
+            "status": "fenced",
+            "dry_run": bool(dry_run),
+            "batches": 0,
+            "eligible": 0,
+            "deleted": 0,
+            "cutoff_at": operation_now.isoformat(),
+            "exhausted_batch_budget": False,
+        }
     bounded_batch_size = _bounded_limit(batch_size)
     if isinstance(max_batches, bool):
         raise ValueError("max_batches must be an integer between 1 and 100")
@@ -193,7 +224,6 @@ def run_retention_purge_batches(
     total_eligible = 0
     total_deleted = 0
     batches = 0
-    operation_now = _utc(now)
     for _ in range(bounded_max_batches):
         batch = purge_expired_source_anonymous_responses(
             now=operation_now,
@@ -232,6 +262,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--max-batches", type=int, default=20)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+
+    if cutover_writer_fence_enabled():
+        print(
+            json.dumps(
+                {
+                    **background_writer_fence_report("survey_privacy_retention"),
+                    "batches": 0,
+                    "eligible": 0,
+                    "deleted": 0,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
 
     from app import create_app
 

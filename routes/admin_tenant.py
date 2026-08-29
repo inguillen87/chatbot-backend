@@ -5,6 +5,7 @@ from sqlalchemy import Numeric, and_, case, cast, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
+from cutover_writer_fence import cutover_writer_view
 from utils.auth_helpers import obtener_token, token_requerido, user_from_token
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
@@ -2363,6 +2364,7 @@ def get_tenant_config_bundle(current_user, slug):
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
 @admin_tenant_bp.route('/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def admin_tenant_catalog(current_user, slug):

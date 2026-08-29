@@ -11,6 +11,7 @@ from typing import Any
 from flask import Blueprint, Response, current_app, g, jsonify, request
 
 from config.feature_flags import FEATURE_ENCUESTAS
+from cutover_writer_fence import cutover_writer_view
 from database import db
 from models import AuditEvent
 from services.encuestas_analytics_service import (
@@ -596,6 +597,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
 
     bp.add_url_rule("/anomalies", view_func=anomalies, methods=["GET"])
 
+    @cutover_writer_view
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def export_view(current_user, encuesta_id: int):
@@ -633,6 +635,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
 
     bp.add_url_rule("/export.csv", view_func=export_view, methods=["GET"])
 
+    @cutover_writer_view
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def export_pdf_view(current_user, encuesta_id: int):

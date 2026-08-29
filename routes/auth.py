@@ -30,6 +30,7 @@ import time
 import jwt
 from jwt import algorithms as jwt_algorithms
 import base64
+from cutover_writer_fence import cutover_writer_view
 from services.google_auth import login_o_crear_usuario
 from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import resolve_unique_tenant_for_owner
@@ -3025,6 +3026,7 @@ def register():
 
 
 @auth_bp.route('/verify-email', methods=['GET'])
+@cutover_writer_view
 def verify_email():
     token = request.args.get('token')
     if not token:

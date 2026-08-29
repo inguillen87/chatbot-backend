@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 from sqlalchemy import func, or_, select, text
 
+from cutover_writer_fence import cutover_writer_fence_enabled
 from database import db
 from models import AnalyticsEvent, TenantProfile
 from services.analytics_service import (
@@ -417,6 +418,9 @@ def run_weekly_analytics_batch(
 ) -> dict[str, Any]:
     """Generate one bounded weekly batch with at-most-once provider attempts."""
 
+    if cutover_writer_fence_enabled(app.config):
+        return _empty_report(status="fenced", batch_limit=0)
+
     with app.app_context():
         try:
             batch_limit = _bounded_integer(
@@ -640,6 +644,24 @@ def run_weekly_analytics_drain(
     report_generator: Callable[[dict[str, Any], str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Drain multiple safe batches for long-lived cron runtimes such as Render."""
+
+    if cutover_writer_fence_enabled(app.config):
+        return {
+            "contract_version": WEEKLY_ANALYTICS_DRAIN_CONTRACT_VERSION,
+            "ok": False,
+            "status": "fenced",
+            "batch_budget": 0,
+            "batches_run": 0,
+            "selected": 0,
+            "provider_attempts": 0,
+            "reports_generated": 0,
+            "contended": 0,
+            "failed_before_provider": 0,
+            "provider_uncertain": 0,
+            "reservation_failures": 0,
+            "unresolved_reservations": 0,
+            "has_more": False,
+        }
 
     with app.app_context():
         try:

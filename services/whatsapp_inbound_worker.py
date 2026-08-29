@@ -33,6 +33,11 @@ from twilio.rest import Client
 from werkzeug.exceptions import HTTPException
 
 from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+    log_background_writer_fence,
+)
 from extensions import db
 from models import ProviderSender, TenantProfile, WhatsAppOutboundAttempt
 from services.llm_provider_network_policy import require_provider_network
@@ -631,6 +636,17 @@ def process_whatsapp_inbound_stream(
 ) -> dict[str, Any]:
     """Drain FIFO turns only for tenants in the explicit queue allowlist."""
 
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": "whatsapp.inbound_worker.v1",
+            "status": "fenced",
+            "processed": 0,
+            "completed": 0,
+            "results": [],
+        }
+
     tenant_ids = _worker_tenant_ids(tenant_id)
     if stream_key is not None and tenant_id is None:
         raise WhatsAppInboundDurabilityConfigurationError(
@@ -882,6 +898,16 @@ def dispatch_whatsapp_outbound_attempts(
     deadline_monotonic: Optional[float] = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": "whatsapp.outbound_worker.v1",
+            "status": "fenced",
+            "processed": 0,
+            "accepted": 0,
+            "results": [],
+        }
     results: list[dict[str, Any]] = []
     for _ in range(max(1, min(int(limit or 1), 100))):
         if deadline_monotonic is not None and clock() >= deadline_monotonic:
@@ -904,6 +930,8 @@ def enqueue_whatsapp_inbound_stream(*, tenant_id: int, stream_key: str) -> bool:
     """Best-effort broker wakeup; the committed DB queue remains authoritative."""
 
     if not has_app_context():
+        return False
+    if cutover_writer_fence_enabled(current_app.config):
         return False
     policy = resolve_whatsapp_inbound_durability_policy(
         current_app.config,
@@ -977,6 +1005,13 @@ def _blocked_payload_scrub_report(status: str) -> dict[str, Any]:
 
 def run_whatsapp_inbound_payload_scrub(*, limit: Optional[int] = None) -> dict[str, Any]:
     """Run one bounded, tenant-scoped retention batch after every safety gate."""
+
+    if cutover_writer_fence_enabled(current_app.config):
+        return {
+            **_blocked_payload_scrub_report("fenced"),
+            "executed": False,
+            "reason_code": "cutover_writer_fence_enabled",
+        }
 
     scrub_enabled = current_app.config.get(
         "WHATSAPP_INBOUND_PAYLOAD_SCRUB_ENABLED",
@@ -1098,6 +1133,16 @@ def run_whatsapp_durable_worker(
         "dead": 0,
         "cycle_failures": 0,
     }
+    if cutover_writer_fence_enabled(app.config):
+        report = {
+            **background_writer_fence_report("whatsapp_durable_worker"),
+            "mode": "fenced",
+            **totals,
+        }
+        log_background_writer_fence(logger, report)
+        if not once and not shutdown.is_set():
+            shutdown.wait()
+        return report
     with app.app_context():
         mode = str(
             current_app.config.get("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy")
@@ -1268,6 +1313,40 @@ def main() -> int:
 
     shutdown = threading.Event()
     _install_shutdown_handlers(shutdown)
+
+    if cutover_writer_fence_enabled():
+        report = {
+            **background_writer_fence_report(
+                "whatsapp_payload_retention"
+                if args.scrub_expired_payloads
+                else "whatsapp_durable_worker"
+            ),
+            "mode": "fenced",
+            "cycles": 0,
+            "processed": 0,
+            "inbound_processed": 0,
+            "inbound_completed": 0,
+            "outbound_processed": 0,
+            "outbound_accepted": 0,
+            "retry_wait": 0,
+            "unknown": 0,
+            "dead": 0,
+            "cycle_failures": 0,
+        }
+        if args.scrub_expired_payloads:
+            report.update(
+                tenant_count=0,
+                selected=0,
+                scrubbed=0,
+                completed_scrubbed=0,
+                dead_scrubbed=0,
+            )
+        log_background_writer_fence(logger, report)
+        if args.once or args.health or args.scrub_expired_payloads:
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        elif not shutdown.is_set():
+            shutdown.wait()
+        return 0
 
     durability_mode = str(
         os.getenv("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy") or "legacy"

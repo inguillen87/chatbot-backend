@@ -88,28 +88,64 @@ Validation: 24 focused tests passed, including primary/read-replica WAL
 selection, missing-WAL failure, migration graph validation and bounded legacy
 ticket repair.
 
-## HTTP writer fence prepared (not activated)
+## Full application writer fence prepared (not activated)
 
 The application now exposes an explicit, disabled-by-default
 `CUTOVER_WRITER_FENCE_ENABLED` control. When deliberately enabled for the
 maintenance window, every unsafe HTTP method (`POST`, `PUT`, `PATCH`, and
 `DELETE`) returns a no-store `503` contract with `Retry-After`, before auth,
 tenant resolution, uploads, webhook handlers, or route code can mutate state.
-`GET`, `HEAD`, and `OPTIONS` remain available for health/readiness and CORS
-checks.
+Truly read-only `GET`/`HEAD` routes and `OPTIONS` remain available for
+health/readiness and CORS checks. GET endpoints that create defaults, persist
+read-audit events, update verification state, poll a provider or otherwise
+flush/commit are explicitly marked as writers and return the same `503` before
+authentication, ORM access or provider setup. The four mutating Vercel internal
+cron paths are independently fenced before bearer validation or service import.
 
-This only fences HTTP writers. It does **not** prove quiescence on its own:
-Render workers, scheduled jobs, Vercel cron/effect ownership, and any external
-database writer must be stopped or independently fenced before taking the final
-snapshot. The flag has not been enabled on Render or Vercel Production.
+The same flag is propagated from the Render web service to the permanent
+WhatsApp, domain-effect and survey-effect workers, plus WhatsApp retention,
+survey retention and weekly analytics crons. A fenced permanent worker performs
+one signal-aware wait until shutdown, without database polling, broker wakeups
+or provider construction; `--once`/health invocations emit only a redacted,
+zero-count `fenced` report and exit successfully. Direct Celery entrypoints for
+the three durable effect pipelines also return zero-work fenced contracts.
+The two retention entrypoints, weekly analytics command and manual bounded
+survey-effect drain are fenced before their mutating service import/query. The
+generic campaign, image-analysis, notification, SLA, legacy survey-effect and
+file-analysis Celery entrypoints fence both enqueue helpers and task execution,
+including work that was already present in the broker.
+
+The flag is a **process-start snapshot**, not a dynamic distributed lock.
+Changing the Render web-service value or a Vercel variable does not prove that
+older processes loaded it, and `fromService` propagation alone is not an
+attestation. Every web, worker and cron generation must be redeployed/restarted;
+each permanent worker must emit the payload-free startup line
+`cutover_writer_fence_active` with the expected contract, component and
+`status=fenced`, and old generations must be shown terminated. Before the final
+snapshot, drain and attest zero in-flight transactions/provider calls. Freeze
+deployments and explicitly block migrations, manual seed commands, direct SQL
+sessions and any external writer. Render's declared `preDeployCommand` now runs
+`python -m scripts.run_predeploy_migrations`: it emits the same payload-free
+fence attestation and skips `flask db upgrade` when the flag is active or
+unrecognized; with an explicit false value it preserves the migration.
+
+This application fence still does **not** prove global quiescence on its own.
+Direct SQL sessions, migration/pre-deploy commands, provider-side retries and
+any writer outside these declared services remain operator-owned and must be
+inventoried and attested before taking the final snapshot. Do not deploy or run
+`flask db upgrade` while using the flag as the source-freeze boundary. The flag
+has not been enabled on Render or Vercel Production.
 
 ## Remaining cutover gates
 
 The preflight deliberately reports `content_parity_certified=false`. Render
 must remain active until all of the following are complete:
 
-1. Fence source writers and repeat the signed Render-to-Neon content inventory
-   against the final snapshot.
+1. Enable the shared application writer fence, redeploy/restart and attest every
+   process generation from its payload-free startup log, terminate old
+   generations, separately quiesce every out-of-band/direct writer, drain and
+   attest zero in-flight work, and repeat the signed Render-to-Neon content
+   inventory against the final snapshot.
 2. Take a final restorable backup at the cutover boundary and resolve the
    protected-branch plan limitation or document an equivalent retention guard.
 3. Apply the two rehearsed migrations to `main` only inside the approved

@@ -5,6 +5,7 @@ import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import AnalyticsEventV2, TenantTicket
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
@@ -423,6 +424,7 @@ def _resolve_tenant_or_error():
 
 
 @v2_tickets_bp.route("/tickets", methods=["GET"])
+@cutover_writer_view
 def list_tickets_v2():
     tenant, error = _resolve_tenant_or_error()
     if error:

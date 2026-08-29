@@ -11,7 +11,7 @@ services:
     # docs/render.deploy.quickcheck.md; changing this early blocks every deploy.
     healthCheckPath: /health
     buildCommand: "./build.sh"
-    preDeployCommand: "flask db upgrade"
+    preDeployCommand: "python -m scripts.run_predeploy_migrations"
     startCommand: "gunicorn --config gunicorn.conf.py --bind 0.0.0.0:$PORT app:app"
     plan: starter
     envVars:
@@ -23,6 +23,10 @@ services:
         value: production
       - key: FLASK_ENV
         value: production
+      # Shared maintenance-window fence. It is inert by default and is
+      # propagated to every background writer below from this web service.
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        value: "false"
       - key: BACKEND_URL
         value: https://api.chatboc.ar
       - key: PUBLIC_API_BASE_URL
@@ -406,6 +410,11 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: whatsapp-durable-worker
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
       - key: WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED
         value: "true"
       - key: DATABASE_URL
@@ -690,6 +699,11 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: whatsapp-payload-retention-cron
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
       - key: DATABASE_URL
         fromService:
           type: web
@@ -746,6 +760,11 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: domain-effect-worker
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
       - key: DATABASE_URL
         fromService:
           type: web
@@ -880,6 +899,11 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: survey-effect-worker
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
       - key: DATABASE_URL
         fromService:
           type: web
@@ -943,6 +967,11 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: survey-retention-cron
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
       - key: DATABASE_URL
         fromService:
           type: web
@@ -972,6 +1001,11 @@ services:
         value: production
       - key: CHATBOC_PROCESS_ROLE
         value: weekly-analytics-cron
+      - key: CUTOVER_WRITER_FENCE_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_WRITER_FENCE_ENABLED
       - key: DATABASE_URL
         fromService:
           type: web

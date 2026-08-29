@@ -11,6 +11,7 @@ from flask_cors import cross_origin
 from flask_login import current_user
 from sqlalchemy import func
 
+from cutover_writer_fence import cutover_writer_view
 from models import TenantProfile, User
 from routes.catalogo import listar_catalogo
 from services.catalog_seed import ensure_seed_catalog
@@ -363,6 +364,7 @@ def _resolve_public_owner(require_explicit: bool = False) -> Tuple[Optional[Tena
 
 
 @productos_bp.route("", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 @cross_origin(**_cors_kwargs())
 def obtener_productos():
     """Devuelve el catálogo de productos, autenticado o público."""

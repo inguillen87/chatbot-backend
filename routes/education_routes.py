@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, current_app, jsonify, request
 from sqlalchemy import func
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import AuditEvent, MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, User
 from models_education import (
@@ -698,6 +699,7 @@ def get_education_whatsapp_playbook(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/operations/summary", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_education_operations_summary(current_user, actor_principal=None):
     tenant, access_response = _education_admin_context(
@@ -714,6 +716,7 @@ def get_education_operations_summary(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/operations/heatmap", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_education_operations_heatmap(current_user, actor_principal=None):
     tenant, access_response = _education_admin_context(
@@ -1444,6 +1447,7 @@ def link_guardian_student(current_user, actor_principal=None):
 
 @education_bp.route("/api/v1/education/me/family-context", methods=["GET"])
 @education_bp.route("/api/v1/education/family/context", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_family_context(current_user, actor_principal=None):
     actor = actor_principal or current_user
@@ -1709,6 +1713,7 @@ def create_school_case(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/cases", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def list_school_cases(current_user, actor_principal=None):
     tenant, access_response = _education_admin_context(
@@ -1791,6 +1796,7 @@ def list_school_cases(current_user, actor_principal=None):
 
 
 @education_bp.route("/api/v1/education/cases/<int:case_id>", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 def get_school_case_detail(current_user, case_id: int, actor_principal=None):
     tenant, access_response = _education_admin_context(

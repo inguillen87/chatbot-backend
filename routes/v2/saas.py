@@ -16,6 +16,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.exceptions import RequestEntityTooLarge
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import (
     ArchivoAdjunto,
@@ -3336,6 +3337,7 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
 
 @v2_saas_bp.route("/whatsapp/tech-provider/sender-status", methods=["GET", "POST"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/sender-status", methods=["GET", "POST"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "super_admin")
 def whatsapp_tech_provider_sender_status_v2(current_user, tenant_slug: str | None = None):

@@ -13,6 +13,7 @@ from flask import Blueprint, abort, current_app, g, jsonify, render_template, re
 from sqlalchemy.exc import SQLAlchemyError
 from werkzeug.exceptions import HTTPException
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 
 from services.analytics.cache import analytics_cache
@@ -1377,6 +1378,7 @@ def analytics_templates():
 
 
 @analytics_bp.route("/identity/coverage", methods=["GET"])
+@cutover_writer_view
 def analytics_identity_coverage():
     filters = parse_filters(request.args)
     event_tenant_id, tenant_resolution = _resolve_identity_event_tenant_id(filters)

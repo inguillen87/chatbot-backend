@@ -13,6 +13,7 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy.exc import IntegrityError
 from twilio.rest import Client
 
+from cutover_writer_fence import cutover_writer_view
 from models import (
     AuditEvent,
     MessageTemplateRegistry,
@@ -1144,6 +1145,7 @@ def _twilio_access_lock_response(tenant, *, action: str):
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/rules", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def get_rules(user: User):

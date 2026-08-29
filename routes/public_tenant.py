@@ -8,6 +8,7 @@ import uuid
 from flask import Blueprint, request, jsonify, g, current_app, send_file
 from sqlalchemy import false, func, or_
 
+from cutover_writer_fence import cutover_writer_view
 from models import (
     CatalogoItem,
     ChatSessionContext,
@@ -1146,6 +1147,7 @@ def get_widget_config(slug):
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
 @public_tenant_bp.route('/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
+@cutover_writer_view
 def download_catalog(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True, "contract_version": "public.catalog_download.v1"}))
@@ -1231,6 +1233,7 @@ def download_catalog(slug):
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
 @public_tenant_bp.route('/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
+@cutover_writer_view
 def get_catalog(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))

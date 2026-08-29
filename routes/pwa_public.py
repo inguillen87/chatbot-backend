@@ -9,6 +9,7 @@ from flask import Blueprint, abort, g, jsonify, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func
 
+from cutover_writer_fence import cutover_writer_view
 from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig, WidgetSettings, MarketCartItem, PymePedido
 from middleware import require_tenant
 from services.encuestas_service import (
@@ -508,6 +509,7 @@ def _coerce_item_id(value: object) -> int | None:
 
 
 @pwa_public_bp.get("/catalog")
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_catalog():
     tenant = _require_tenant()
@@ -601,6 +603,7 @@ def public_cart_url():
 @pwa_public_bp.get("/cart")
 @pwa_public_bp.get("/cart/summary")
 @pwa_public_bp.get("/cart/items")
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_cart_summary():
     tenant = _require_tenant()

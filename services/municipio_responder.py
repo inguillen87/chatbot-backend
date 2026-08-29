@@ -88,7 +88,6 @@ from utils.validators import extract_email, extract_phone, extract_dni, extract_
 from utils.address_parse import split_ubicacion_y_distrito
 from .llm_utils import extract_complaint_details_llm, extract_multiple_contact_details_llm
 import math
-from services.tasks import process_image_for_chat_task
 from services.intent_classifier import IntentClassifier
 from services.multimodal_analyzer import analizar_imagen_con_fallback
 from services.subastas import listar_subastas_activas

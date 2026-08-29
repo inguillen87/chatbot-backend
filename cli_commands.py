@@ -9,6 +9,10 @@ import click
 from flask import current_app
 from flask.cli import with_appcontext
 
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
 from extensions import db
 
 # Logger para este módulo
@@ -211,6 +215,20 @@ def register_commands(app):
         codes are stable for automation: 0 completed, 1 operational failure,
         2 invalid arguments/scope, and 3 dead effects with --fail-on-dead.
         """
+
+        if cutover_writer_fence_enabled(current_app.config):
+            _echo_survey_effect_json(
+                {
+                    **background_writer_fence_report(
+                        "survey_response_effect_cli"
+                    ),
+                    "batches": 0,
+                    "totals": {
+                        field: 0 for field in _SURVEY_EFFECT_COUNTER_FIELDS
+                    },
+                }
+            )
+            return
 
         payload = _survey_effect_cli_payload(
             tenant_id=tenant_id,
@@ -705,6 +723,22 @@ def register_commands(app):
     @app.cli.command("generate-weekly-reports")
     def generate_weekly_reports():
         """Drain bounded, at-most-once batches in a long-lived cron process."""
+        if cutover_writer_fence_enabled(app.config):
+            click.echo(
+                json.dumps(
+                    {
+                        **background_writer_fence_report(
+                            "weekly_analytics_report"
+                        ),
+                        "batches": 0,
+                        "selected": 0,
+                        "provider_attempts": 0,
+                        "reports_generated": 0,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
         from services.weekly_analytics_reports import run_weekly_analytics_drain
 
         report = run_weekly_analytics_drain(app)

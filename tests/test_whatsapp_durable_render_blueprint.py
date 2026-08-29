@@ -27,7 +27,7 @@ def test_render_blueprint_keeps_whatsapp_durable_cutover_fail_closed():
     web = services["chatboc-backend"]
     web_env = _env_map(web)
 
-    assert web["preDeployCommand"] == "flask db upgrade"
+    assert web["preDeployCommand"] == "python -m scripts.run_predeploy_migrations"
     assert web_env["WHATSAPP_INBOUND_DURABILITY_MODE"]["value"] == "legacy"
     assert web_env["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"]["value"] == ""
     assert (

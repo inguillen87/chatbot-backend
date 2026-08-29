@@ -24,6 +24,11 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 
 from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+    log_background_writer_fence,
+)
 from models import SurveyResponseEffect, db
 from services.survey_response_effects import (
     dispatch_survey_response_effects,
@@ -197,6 +202,23 @@ def dispatch_survey_response_effect_batch(
 ) -> dict[str, Any]:
     """Discover tenants and process one bounded, fairly divided DB batch."""
 
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": SURVEY_RESPONSE_EFFECT_WORKER_BATCH_CONTRACT,
+            "status": "fenced",
+            "limit": 0,
+            "lease_seconds": 0,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+            "tenants": [],
+        }
     if not has_app_context():
         raise SurveyResponseEffectWorkerConfigurationError(
             "survey_response_effect_worker_app_context_required"
@@ -323,6 +345,15 @@ def run_survey_response_effect_worker(
         "fenced": 0,
         "cycle_failures": 0,
     }
+    if cutover_writer_fence_enabled(app.config):
+        report = {
+            **background_writer_fence_report("survey_response_effect_worker"),
+            **totals,
+        }
+        log_background_writer_fence(logger, report)
+        if not once and not shutdown.is_set():
+            shutdown.wait()
+        return report
     with app.app_context():
         # Validate every bound at startup. The first health query also fails
         # loudly if the migration/table is missing.
@@ -391,6 +422,37 @@ def main() -> int:
 
     os.environ.setdefault("CHATBOC_PROCESS_ROLE", "survey-effect-worker")
     os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
+    shutdown = threading.Event()
+
+    def _stop(*_args: Any) -> None:
+        shutdown.set()
+
+    for signal_name in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(signal_name, _stop)
+        except (AttributeError, ValueError):
+            pass
+
+    if cutover_writer_fence_enabled():
+        report = {
+            **background_writer_fence_report("survey_response_effect_worker"),
+            "cycles": 0,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+            "cycle_failures": 0,
+        }
+        log_background_writer_fence(logger, report)
+        if args.once or args.health:
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        elif not shutdown.is_set():
+            shutdown.wait()
+        return 0
+
     from app import create_app
     from config import Config
 
@@ -406,17 +468,6 @@ def main() -> int:
                 )
             )
         return 0
-
-    shutdown = threading.Event()
-
-    def _stop(*_args: Any) -> None:
-        shutdown.set()
-
-    for signal_name in (signal.SIGINT, signal.SIGTERM):
-        try:
-            signal.signal(signal_name, _stop)
-        except (AttributeError, ValueError):
-            pass
 
     run_survey_response_effect_worker(
         app,

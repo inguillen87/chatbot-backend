@@ -7,6 +7,7 @@ import uuid
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
 from datetime import datetime
+from cutover_writer_fence import cutover_writer_fence_enabled
 from utils.auth_helpers import anon_o_token_requerido
 from routes.auth import token_requerido
 from routes.v2.tenants import decode_demo_session_token
@@ -45,16 +46,20 @@ from utils.upload_limits import set_upload_request_limit
 storage = LazyModule("google.cloud.storage")
 
 
-class _LazyFileAnalysisTask:
-    def delay(self, *args, **kwargs):
-        from services.analisis_archivo_service import (
-            tarea_analizar_contenido_archivo as implementation,
-        )
+def _enqueue_file_content_analysis(*args, **kwargs):
+    """Lazy producer that refuses broker I/O while this process is fenced."""
 
-        return implementation.delay(*args, **kwargs)
+    try:
+        config = current_app.config
+    except RuntimeError:
+        config = None
+    if cutover_writer_fence_enabled(config):
+        return False
+    from services.analisis_archivo_service import (
+        enqueue_file_content_analysis as implementation,
+    )
 
-
-tarea_analizar_contenido_archivo = _LazyFileAnalysisTask()
+    return implementation(*args, **kwargs)
 
 
 def analyze_image_from_content(*args, **kwargs):
@@ -502,10 +507,11 @@ def subir_archivo(current_user):
 
             # Encolar tarea de análisis de archivo
             try:
-                tarea_analizar_contenido_archivo.delay(nuevo_adjunto.id)
-                current_app.logger.info(
-                    f"Tarea de análisis encolada para ArchivoAdjunto ID: {nuevo_adjunto.id}"
-                )
+                queued = _enqueue_file_content_analysis(nuevo_adjunto.id)
+                if queued is not False:
+                    current_app.logger.info(
+                        f"Tarea de análisis encolada para ArchivoAdjunto ID: {nuevo_adjunto.id}"
+                    )
             except Exception as e_celery:
                 current_app.logger.error(
                     f"Error al encolar tarea de análisis para ArchivoAdjunto ID: {nuevo_adjunto.id}. Error: {e_celery}",

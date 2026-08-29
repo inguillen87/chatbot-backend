@@ -2,17 +2,48 @@
 # Este archivo contiene tareas que se ejecutan en segundo plano.
 
 import logging
-from models import User, db # Asumo que tu modelo de usuario se llama User y tienes db
-from services.scraper_avanzado import extraer_info_contacto_web
-from services.webinfo import guardar_info_web # --- INTEGRADO: Importamos tu función ---
+import os
+from typing import List
+
+from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _task_writer_fence_enabled() -> bool:
+    """Read Flask config when available, falling back to the process env."""
+
+    try:
+        from flask import current_app
+
+        return cutover_writer_fence_enabled(current_app.config)
+    except RuntimeError:
+        return cutover_writer_fence_enabled()
+
+
+def _fenced_task_report(component: str, **zero_counters):
+    return {
+        **background_writer_fence_report(component),
+        **zero_counters,
+    }
+
 
 def actualizar_info_pyme_desde_web(user_id: int):
     """
     Toma el ID de un usuario (Pyme), busca su web en la DB, la scrapea,
     guarda la info completa en SitioWebInfo y actualiza los campos principales en User.
     """
+    if _task_writer_fence_enabled():
+        return _fenced_task_report("pyme_web_refresh", processed=0, provider_attempts=0)
+
+    from models import User, db
+    from services.scraper_avanzado import extraer_info_contacto_web
+    from services.webinfo import guardar_info_web
+
     pyme_user = User.query.get(user_id)
 
     if not pyme_user:
@@ -65,11 +96,6 @@ def actualizar_info_pyme_desde_web(user_id: int):
         db.session.rollback()
         logger.error(f"[TASK] Error al guardar cambios en la DB para user {user_id}: {e}")
 
-# --- Tarea para Envío de Campañas por Email ---
-from celery_utils import celery_app # Importar la instancia de Celery
-from services.email_service import enviar_email # Importar el servicio de email
-from typing import List
-
 @celery_app.task(name='tasks.enviar_campana_email', bind=True, max_retries=3, default_retry_delay=300) # 5 min delay
 def tarea_enviar_campana_email(
     self, # Es 'self' por bind=True
@@ -79,6 +105,13 @@ def tarea_enviar_campana_email(
     cuerpo_html: str,
     cuerpo_texto: str = ""
 ):
+    if _task_writer_fence_enabled():
+        return _fenced_task_report("campaign_email", sent=0, failed=0, provider_attempts=0)
+
+    from flask import current_app as flask_current_app
+    from models import User
+    from services.email_service import enviar_email
+
     logger.info(f"[CELERY_CAMPAIGN_TASK] Iniciando tarea de envío de campaña para empresa ID {empresa_id_solicitante} a {len(lista_ids_clientes_destinatarios)} clientes. Asunto: '{asunto}'")
 
     # Nota: Dentro de una tarea Celery, no tenemos acceso directo al 'current_app' de Flask de la misma forma.
@@ -92,7 +125,6 @@ def tarea_enviar_campana_email(
     # O el email_service.py podría tener un inicializador que tome la app config.
 
     # Asumiendo que la app Flask está disponible para la tarea Celery (común con Flask-Celery-Helper o configuración adecuada)
-    from flask import current_app as flask_current_app # Renombrar para evitar confusión con self
     if not flask_current_app:
         logger.error("[CELERY_CAMPAIGN_TASK] Contexto de aplicación Flask no disponible en tarea Celery. No se puede enviar email.")
         # Podríamos reintentar si es un problema temporal de contexto, pero usualmente es configuración.
@@ -140,16 +172,13 @@ def tarea_enviar_campana_email(
     logger.info(f"[CELERY_CAMPAIGN_TASK] Tarea de envío de campaña para empresa ID {empresa_id_solicitante} completada. Enviados: {emails_enviados_ok}, Errores: {emails_con_error}.")
     return {"status": "completado", "enviados_ok": emails_enviados_ok, "errores": emails_con_error}
 
-from services.interpretacion_imagen_service import interpretar_imagen_para_chat
-from models import ChatSessionContext
-from twilio.rest import Client
-import os
-from sqlalchemy.orm.attributes import flag_modified
-from services.llm_provider_network_policy import (
-    ProviderNetworkDisabledError,
-    require_provider_network,
-)
-from services.notification_orchestrator import NotificationOrchestrator
+
+def enqueue_campaign_email(**task_kwargs):
+    """Queue a campaign only while this process owns background writes."""
+
+    if _task_writer_fence_enabled():
+        return False
+    return tarea_enviar_campana_email.delay(**task_kwargs)
 
 
 def _send_image_analysis_twilio_message(
@@ -160,6 +189,15 @@ def _send_image_analysis_twilio_message(
     to_number,
     body,
 ):
+    if _task_writer_fence_enabled():
+        return None
+
+    from services.llm_provider_network_policy import (
+        ProviderNetworkDisabledError,
+        require_provider_network,
+    )
+    from twilio.rest import Client
+
     try:
         require_provider_network("twilio")
     except ProviderNetworkDisabledError:
@@ -177,7 +215,13 @@ def _send_image_analysis_twilio_message(
 
 @celery_app.task
 def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file_info_whatsapp, chat_session_id):
+    if _task_writer_fence_enabled():
+        return _fenced_task_report("image_chat_analysis", processed=0, provider_attempts=0)
+
+    from models import ChatSessionContext, db
+    from services.interpretacion_imagen_service import interpretar_imagen_para_chat
     from services.municipio_responder import CONTEXTO_MUNICIPIO, ConversationState
+    from sqlalchemy.orm.attributes import flag_modified
     """
     Celery task to process an image for a chat session.
     """
@@ -231,9 +275,21 @@ def process_image_for_chat_task(user_phone_number, client_user_id, uploaded_file
         )
 
 
+def enqueue_image_for_chat(*task_args, **task_kwargs):
+    if _task_writer_fence_enabled():
+        return False
+    return process_image_for_chat_task.delay(*task_args, **task_kwargs)
+
+
 @celery_app.task(name="tasks.dispatch_notifications", bind=True, max_retries=2, default_retry_delay=120)
 def dispatch_notifications_task(self, tenant_id: int, limit: int = 50):
     """Worker task to dispatch due notifications for a tenant."""
+    if _task_writer_fence_enabled():
+        return _fenced_task_report("notification_dispatch", processed=0, provider_attempts=0)
+
+    from models import db
+    from services.notification_orchestrator import NotificationOrchestrator
+
     try:
         orchestrator = NotificationOrchestrator(int(tenant_id))
         result = orchestrator.dispatch_due_notifications(limit=int(limit))
@@ -244,11 +300,20 @@ def dispatch_notifications_task(self, tenant_id: int, limit: int = 50):
         raise self.retry(exc=exc)
 
 
+def enqueue_notification_dispatch(tenant_id: int, limit: int = 50):
+    if _task_writer_fence_enabled():
+        return False
+    return dispatch_notifications_task.delay(tenant_id, limit=limit)
+
+
 @celery_app.task(name="tasks.v2_detect_sla_breaches", bind=True, max_retries=1, default_retry_delay=60)
 def v2_detect_sla_breaches_task(self, tenant_id: int):
     """Detect SLA breaches for TenantTicket v2 and emit audit events."""
+    if _task_writer_fence_enabled():
+        return _fenced_task_report("v2_sla_detection", processed=0)
+
     try:
-        from models import TenantProfile
+        from models import TenantProfile, db
         from services.v2.sla_service import detect_sla_breaches_for_tenant
 
         tenant = TenantProfile.query.get(int(tenant_id))
@@ -261,6 +326,12 @@ def v2_detect_sla_breaches_task(self, tenant_id: int):
     except Exception as exc:
         db.session.rollback()
         raise self.retry(exc=exc)
+
+
+def enqueue_v2_sla_detection(tenant_id: int):
+    if _task_writer_fence_enabled():
+        return False
+    return v2_detect_sla_breaches_task.delay(tenant_id)
 
 
 SURVEY_RESPONSE_EFFECT_TASK_NAME = "tasks.dispatch_survey_response_effects"
@@ -313,6 +384,8 @@ def _survey_response_effect_task_context(task) -> dict:
 def _rollback_survey_response_effect_task_session() -> None:
     """Best-effort cleanup that never masks the error that triggers retry."""
     try:
+        from models import db
+
         db.session.rollback()
     except Exception:
         logger.exception(
@@ -333,6 +406,16 @@ def dispatch_survey_response_effects_task(
     limit: int = SURVEY_RESPONSE_EFFECT_TASK_DEFAULT_LIMIT,
 ):
     """Dispatch a bounded batch of durable survey effects for one tenant."""
+    if _task_writer_fence_enabled():
+        return _fenced_task_report(
+            "survey_response_effect_dispatch",
+            claimed=0,
+            processed=0,
+            succeeded=0,
+            dead=0,
+            provider_attempts=0,
+        )
+
     normalized_tenant_id = _positive_tenant_id(tenant_id)
     bounded_limit = _bounded_survey_response_effect_limit(limit)
     task_context = _survey_response_effect_task_context(self)
@@ -394,3 +477,12 @@ def dispatch_survey_response_effects_task(
             type(exc).__name__,
         )
         raise self.retry(exc=exc)
+
+
+def enqueue_survey_response_effect_dispatch(
+    tenant_id: int,
+    limit: int = SURVEY_RESPONSE_EFFECT_TASK_DEFAULT_LIMIT,
+):
+    if _task_writer_fence_enabled():
+        return False
+    return dispatch_survey_response_effects_task.delay(tenant_id=tenant_id, limit=limit)

@@ -1,5 +1,6 @@
 import os
 from flask import Blueprint, request, jsonify, send_from_directory, render_template, g, url_for, redirect
+from cutover_writer_fence import cutover_writer_view
 from models import CatalogoItem, QA, ArchivoAdjunto, User, CatalogoModalidad, TenantProfile
 from routes.auth import token_requerido
 from socket_service import emit_tenant_update
@@ -487,6 +488,7 @@ def _agrupar_variantes(productos: list[dict]) -> list[dict]:
 
 
 @catalogo_bp.route('', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 def listar_catalogo(user, *args, **kwargs):
     categoria = request.args.get("categoria")

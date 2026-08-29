@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from flask import Blueprint, abort, current_app, g, jsonify, request
 
+from cutover_writer_fence import cutover_writer_view
 from models import AdminAuditLog, ChannelSession, Conversation, ConversationLinkRequest, Message, db
 from services.conversation_linking import ConversationLinkingService
 from socket_service import emit_conversation_linked
@@ -27,6 +28,7 @@ def _serialize_message(msg: Message) -> dict:
 
 
 @conversations_bp.route("/api/conversations/<string:conversation_id>/timeline", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def get_conversation_timeline(user, conversation_id):
@@ -217,6 +219,7 @@ def confirm_whatsapp_link(user):
 
 
 @conversations_bp.route("/api/conversations/link/<string:link_request_id>", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def get_link_request_status(user, link_request_id: str):

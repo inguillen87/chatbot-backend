@@ -6,6 +6,11 @@ import hmac
 
 from flask import Blueprint, current_app, jsonify, request
 
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
+
 
 internal_cron_bp = Blueprint(
     "internal_cron",
@@ -48,6 +53,20 @@ def _json_no_store(payload: dict, status_code: int):
     response = jsonify(payload)
     response.status_code = status_code
     response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@internal_cron_bp.before_request
+def _enforce_cutover_writer_fence():
+    """Fence mutating GET crons before auth, service imports or I/O."""
+
+    if not cutover_writer_fence_enabled(current_app.config):
+        return None
+    response = _json_no_store(
+        background_writer_fence_report("internal_cron"),
+        503,
+    )
+    response.headers["Retry-After"] = "60"
     return response
 
 
