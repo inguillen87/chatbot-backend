@@ -181,12 +181,20 @@ read-only and returned the expected `migration_required` NO-GO contract:
 
 Preview was also refreshed without changing Production:
 
-- backend deployment `dpl_4fJR3NapEiakx5nkukdDwARgV8K7`, exposed only at
-  `api-preview.chatboc.ar`;
-- frontend deployment `dpl_2ZZsk82X4WpmEFmH3jiFsJtSQDGi`, exposed only at
-  `chatboc-r2-preview.vercel.app`;
+- backend deployment `dpl_6ca33mfeK18ijsjbCh1HCm4J1kbA`, built from immutable
+  revision `84021daf003291aa479e9f72d4f836c2bfe16e04` and exposed only at
+  `api-preview.chatboc.ar` with the writer fence explicitly disabled;
+- frontend deployment `dpl_2xQVQL1QVNJJ5TbZjoTsSm1KNjMY`, built from revision
+  `8ab9a96d` and exposed only at `chatboc-r2-preview.vercel.app`;
 - backend health returned `200`, database connected; runtime readiness returned
-  `ready=true` for PostgreSQL and Redis;
+  `ready=true` for PostgreSQL and Redis; `/api/version` returned the exact
+  immutable backend revision above;
+- all four internal cron routes returned `401` without authorization, while a
+  marked mutating GET and an unsafe POST followed their normal unfenced
+  validation paths (`400`, never the maintenance `503`);
+- 161 focused local tests covering the HTTP/background fence, workers, queues,
+  Render blueprints and Vercel cron contracts passed independently before the
+  deployment; Python compilation and `git diff --check` also passed;
 - the frontend build compiled eight audited Preview rewrites, zero Production
   backend references, same-origin browser API traffic and the direct Preview
   Socket.IO origin;
