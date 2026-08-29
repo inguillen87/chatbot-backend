@@ -10,6 +10,7 @@ from urllib.parse import quote_plus, urlencode
 import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
+from cutover_writer_fence import cutover_writer_view
 from sqlalchemy.exc import IntegrityError
 
 from extensions import db, limiter
@@ -2969,6 +2970,7 @@ def close_survey_v2(current_user, survey_id: int):
 
 
 @v2_surveys_bp.route("/surveys/<int:survey_id>/analytics", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def survey_analytics_v2(current_user, survey_id: int):

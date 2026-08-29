@@ -274,19 +274,61 @@ def resolve_database_uri(
 
     runtime_env = os.environ if environ is None else environ
     configured = str(runtime_env.get("DATABASE_URL") or "").strip()
+    render_standby_required = (
+        is_render_runtime(runtime_env)
+        and render_standby_mode_enabled(runtime_env)
+    )
     if configured:
+        if render_standby_required:
+            _validate_render_standby_database_uri(configured)
         return configured
     if is_vercel_runtime(runtime_env):
         raise RuntimeError(
             "DATABASE_URL es obligatoria en Vercel; SQLite efimero no es un almacenamiento valido."
         )
     if is_render_runtime(runtime_env):
+        if render_standby_required:
+            raise RuntimeError(
+                "DATABASE_URL PostgreSQL de Neon es obligatoria en el standby de Render."
+            )
         return "sqlite:////data/database.db?check_same_thread=False"
 
     resolved_base = base_dir or basedir
     local_db_path = os.path.join(resolved_base, "instance", "database.db")
     os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
     return f"sqlite:///{local_db_path}?check_same_thread=False"
+
+
+def render_standby_mode_enabled(
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Return whether Render must behave as a recoverable Neon standby.
+
+    Missing or explicitly false preserves the legacy Render configuration while
+    the cutover is being prepared. A present malformed value fails closed so a
+    typo cannot silently reactivate the obsolete SQLite fallback.
+    """
+
+    runtime_env = os.environ if environ is None else environ
+    raw_value = runtime_env.get("CHATBOC_RENDER_STANDBY_MODE")
+    if raw_value is None:
+        return False
+    normalized = str(raw_value).strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _validate_render_standby_database_uri(uri: str) -> None:
+    """Require a PostgreSQL Neon runtime database without leaking credentials."""
+
+    parsed = urlparse(str(uri or "").strip())
+    scheme = str(parsed.scheme or "").lower()
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    if not scheme.startswith("postgres") or not host.endswith(".neon.tech"):
+        raise RuntimeError(
+            "DATABASE_URL del standby de Render debe apuntar a PostgreSQL en Neon."
+        )
 
 
 def _env_fail_closed_hold(default: bool, name: str) -> bool:

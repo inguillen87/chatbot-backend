@@ -441,6 +441,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
 
     bp.add_url_rule("/alerts", view_func=alerts, methods=["GET"])
 
+    @cutover_writer_view
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def brief(current_user, encuesta_id: int):
@@ -459,6 +460,7 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
 
 
 
+    @cutover_writer_view
     @token_requerido
     @require_role("admin", "empleado", "super_admin")
     def dashboard(current_user, encuesta_id: int):

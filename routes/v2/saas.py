@@ -2719,6 +2719,7 @@ def whatsapp_flow_runtime_v2(current_user, tenant_slug: str | None = None):
 
 @v2_saas_bp.route("/integrations/whatsapp/status", methods=["GET"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/integrations/whatsapp/status", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def whatsapp_provider_status_v2(current_user, tenant_slug: str | None = None):
@@ -4155,6 +4156,7 @@ def _resolve_smoke_tenant(current_user: User, tenant_slug: str | None = None) ->
 @v2_saas_bp.route("/production-smoke", methods=["GET"])
 @v2_saas_bp.route("/platform/production-smoke", methods=["GET"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/production-smoke", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "super_admin")
 def production_smoke_v2(current_user, tenant_slug: str | None = None):

@@ -10,6 +10,7 @@ import uuid
 from flask import Blueprint, Response, current_app, has_request_context, jsonify, request
 
 import config.feature_flags as feature_flags
+from cutover_writer_fence import cutover_writer_view
 from models import TenantTicket
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
@@ -773,6 +774,7 @@ def operations_freshness_v2(current_user):
 
 
 @v2_analytics_bp.route("/operations/executive-summary", methods=["GET", "POST"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def operations_executive_summary_v2(current_user):

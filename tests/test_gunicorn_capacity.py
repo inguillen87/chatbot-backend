@@ -45,6 +45,7 @@ def test_gunicorn_default_has_safe_minimum_socket_capacity() -> None:
     assert config["worker_class"] == "gthread"
     assert config["workers"] == 1
     assert config["threads"] == 100
+    assert config["graceful_timeout"] == 285
 
 
 def test_vercel_runtime_defaults_to_bounded_32_thread_capacity() -> None:
@@ -111,6 +112,31 @@ def test_gunicorn_preserves_explicit_timeout_override() -> None:
     assert config["timeout"] == 321
 
 
+def test_gunicorn_preserves_bounded_graceful_timeout_override() -> None:
+    config = _load_config(
+        GUNICORN_TIMEOUT="300",
+        GUNICORN_GRACEFUL_TIMEOUT="240",
+    )
+
+    assert config["graceful_timeout"] == 240
+
+
+@pytest.mark.parametrize("configured", ["0", "-1"])
+def test_gunicorn_rejects_non_positive_graceful_timeout(configured: str) -> None:
+    with pytest.raises(RuntimeError, match="must be greater than zero"):
+        _load_config(GUNICORN_GRACEFUL_TIMEOUT=configured)
+
+
+def test_gunicorn_rejects_graceful_timeout_above_hard_timeout() -> None:
+    with pytest.raises(RuntimeError, match="must not exceed GUNICORN_TIMEOUT"):
+        _load_config(GUNICORN_TIMEOUT="60", GUNICORN_GRACEFUL_TIMEOUT="61")
+
+
 def test_gunicorn_rejects_non_integer_timeout_override() -> None:
     with pytest.raises(RuntimeError, match="GUNICORN_TIMEOUT must be an integer"):
         _load_config(GUNICORN_TIMEOUT="slow")
+
+
+def test_gunicorn_rejects_non_integer_graceful_timeout_override() -> None:
+    with pytest.raises(RuntimeError, match="GUNICORN_GRACEFUL_TIMEOUT must be an integer"):
+        _load_config(GUNICORN_GRACEFUL_TIMEOUT="slow")

@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from flask import Blueprint, abort, g, jsonify, request
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import CatalogoItem, MunicipioTicket, PymePedido, PymeTicket, TenantProfile, TenantTicket, TicketComentario, User
 from services.analytics import get_summary
@@ -374,6 +375,7 @@ def update_bot_settings():
 
 
 @admin_ai_bp.get("/ai/provider-status")
+@cutover_writer_view
 def ai_provider_status():
     require_access(
         "*",
@@ -479,6 +481,7 @@ def ticket_ai_summary(ticket_id: int):
 
 
 @admin_ai_bp.route("/tickets/<int:ticket_id>/ai-enrichment", methods=["GET", "POST"])
+@cutover_writer_view
 def ticket_ai_enrichment(ticket_id: int):
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):

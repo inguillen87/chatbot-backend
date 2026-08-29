@@ -14,6 +14,7 @@ services:
     preDeployCommand: "python -m scripts.run_predeploy_migrations"
     startCommand: "gunicorn --config gunicorn.conf.py --bind 0.0.0.0:$PORT app:app"
     plan: starter
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -26,6 +27,18 @@ services:
       # Shared maintenance-window fence. It is inert by default and is
       # propagated to every background writer below from this web service.
       - key: CUTOVER_WRITER_FENCE_ENABLED
+        value: "false"
+      # These secrets must be loaded manually on the existing Render service.
+      # Standby mode stays false until the final writer freeze is certified.
+      - key: DATABASE_URL
+        sync: false
+      - key: MIGRATIONS_DATABASE_URL
+        sync: false
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        value: "false"
+      # Keep false until the R2 put/get/delete probe and remaining /data users
+      # are certified. The flag is intentionally explicit, never implicit.
+      - key: VERCEL_DURABLE_UPLOADS_REQUIRE_R2
         value: "false"
       - key: BACKEND_URL
         value: https://api.chatboc.ar
@@ -398,7 +411,7 @@ services:
     buildCommand: "./build.sh"
     startCommand: "python -m services.whatsapp_inbound_worker --standby-when-legacy"
     plan: starter
-    maxShutdownDelaySeconds: 60
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -415,6 +428,16 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
+      - key: VERCEL_DURABLE_UPLOADS_REQUIRE_R2
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: VERCEL_DURABLE_UPLOADS_REQUIRE_R2
       - key: WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED
         value: "true"
       - key: DATABASE_URL
@@ -704,6 +727,11 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -748,7 +776,7 @@ services:
     buildCommand: "./build.sh"
     startCommand: "python -m services.domain_effect_worker"
     plan: starter
-    maxShutdownDelaySeconds: 60
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -765,6 +793,11 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -887,7 +920,7 @@ services:
     buildCommand: "./build.sh"
     startCommand: "python -m services.survey_response_effect_worker"
     plan: starter
-    maxShutdownDelaySeconds: 180
+    maxShutdownDelaySeconds: 300
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.0
@@ -904,6 +937,11 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -972,6 +1010,11 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web
@@ -1006,6 +1049,11 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CHATBOC_RENDER_STANDBY_MODE
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CHATBOC_RENDER_STANDBY_MODE
       - key: DATABASE_URL
         fromService:
           type: web

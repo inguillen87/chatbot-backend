@@ -191,6 +191,7 @@ def manage_settings(current_user):
 @integracion_widget_bp.route(
     "/widget-settings", methods=["GET", "OPTIONS"], strict_slashes=False
 )
+@cutover_writer_view
 @cross_origin(origins=_WIDGET_CORS_ORIGINS, supports_credentials=True)
 def public_widget_settings():
     if request.method == "OPTIONS":

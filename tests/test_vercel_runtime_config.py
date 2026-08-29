@@ -35,6 +35,56 @@ def test_vercel_runtime_accepts_external_database() -> None:
     ) == uri
 
 
+def test_render_legacy_mode_preserves_existing_sqlite_fallback() -> None:
+    assert resolve_database_uri(
+        environ={
+            "RENDER": "true",
+            "CHATBOC_RENDER_STANDBY_MODE": "false",
+        }
+    ) == "sqlite:////data/database.db?check_same_thread=False"
+
+
+@pytest.mark.parametrize("flag_value", ["true", "typo", ""])
+def test_render_standby_mode_fails_closed_without_neon_database(flag_value: str) -> None:
+    with pytest.raises(RuntimeError, match="Neon es obligatoria"):
+        resolve_database_uri(
+            environ={
+                "RENDER": "true",
+                "CHATBOC_RENDER_STANDBY_MODE": flag_value,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "sqlite:////data/database.db",
+        "postgresql://user:password@example.invalid/chatboc",
+    ],
+)
+def test_render_standby_mode_rejects_non_neon_database(uri: str) -> None:
+    with pytest.raises(RuntimeError, match="PostgreSQL en Neon"):
+        resolve_database_uri(
+            environ={
+                "RENDER": "true",
+                "CHATBOC_RENDER_STANDBY_MODE": "true",
+                "DATABASE_URL": uri,
+            }
+        )
+
+
+def test_render_standby_mode_accepts_neon_runtime_database() -> None:
+    uri = "postgresql://user:password@ep-example-pooler.us-east-2.aws.neon.tech/chatboc?sslmode=require"
+
+    assert resolve_database_uri(
+        environ={
+            "RENDER": "true",
+            "CHATBOC_RENDER_STANDBY_MODE": "true",
+            "DATABASE_URL": uri,
+        }
+    ) == uri
+
+
 def test_database_pool_is_bounded_and_configurable() -> None:
     options = build_database_engine_options(
         "postgresql://user:password@example.invalid:5432/chatboc",

@@ -28,6 +28,11 @@ def test_render_blueprint_keeps_whatsapp_durable_cutover_fail_closed():
     web_env = _env_map(web)
 
     assert web["preDeployCommand"] == "python -m scripts.run_predeploy_migrations"
+    assert web["maxShutdownDelaySeconds"] == 300
+    assert web_env["DATABASE_URL"]["sync"] is False
+    assert web_env["MIGRATIONS_DATABASE_URL"]["sync"] is False
+    assert web_env["CHATBOC_RENDER_STANDBY_MODE"]["value"] == "false"
+    assert web_env["VERCEL_DURABLE_UPLOADS_REQUIRE_R2"]["value"] == "false"
     assert web_env["WHATSAPP_INBOUND_DURABILITY_MODE"]["value"] == "legacy"
     assert web_env["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"]["value"] == ""
     assert (
@@ -45,7 +50,7 @@ def test_render_blueprint_keeps_whatsapp_durable_cutover_fail_closed():
     assert worker["startCommand"] == (
         "python -m services.whatsapp_inbound_worker --standby-when-legacy"
     )
-    assert worker["maxShutdownDelaySeconds"] == 60
+    assert worker["maxShutdownDelaySeconds"] == 300
     assert worker_env["CHATBOC_PROCESS_ROLE"]["value"] == "whatsapp-durable-worker"
     assert worker_env["WHATSAPP_DURABLE_WORKER_STANDBY_ENABLED"]["value"] == "true"
     for key in (
@@ -56,6 +61,8 @@ def test_render_blueprint_keeps_whatsapp_durable_cutover_fail_closed():
         "CHANNEL_SESSION_IDENTITY_MODE",
         "CHANNEL_SESSION_IDENTITY_HMAC_SECRET_V1",
         "CHANNEL_SESSION_IDENTITY_VERSION_V1",
+        "CHATBOC_RENDER_STANDBY_MODE",
+        "VERCEL_DURABLE_UPLOADS_REQUIRE_R2",
     ):
         _assert_web_reference(worker_env[key], key)
     assert worker_env["WHATSAPP_INBOUND_DURABILITY_MODE"]["value"] == "legacy"
@@ -106,3 +113,29 @@ def test_render_blueprint_keeps_whatsapp_durable_cutover_fail_closed():
         "WHATSAPP_INBOUND_PAYLOAD_SCRUB_BATCH_SIZE",
     ):
         _assert_web_reference(retention_env[key], key)
+
+
+def test_render_blueprint_propagates_standby_and_allows_orderly_worker_shutdown():
+    blueprint = yaml.safe_load((ROOT / "render.yaml").read_text(encoding="utf-8"))
+    services = {service["name"]: service for service in blueprint["services"]}
+
+    for service_name in (
+        "chatboc-whatsapp-durable",
+        "chatboc-whatsapp-payload-retention",
+        "chatboc-domain-effects",
+        "chatboc-survey-effects",
+        "chatboc-survey-retention",
+        "weekly-analytics-report",
+    ):
+        service_env = _env_map(services[service_name])
+        _assert_web_reference(
+            service_env["CHATBOC_RENDER_STANDBY_MODE"],
+            "CHATBOC_RENDER_STANDBY_MODE",
+        )
+
+    for service_name in (
+        "chatboc-whatsapp-durable",
+        "chatboc-domain-effects",
+        "chatboc-survey-effects",
+    ):
+        assert services[service_name]["maxShutdownDelaySeconds"] == 300

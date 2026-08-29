@@ -920,6 +920,7 @@ def upload_to_gcs(
     kind: str = "attachments",
     *,
     max_file_size: int = MAX_FILE_SIZE,
+    require_r2: bool | None = None,
 ) -> dict | None:
     """Upload a file to the configured storage backend.
 
@@ -932,6 +933,8 @@ def upload_to_gcs(
     Args:
         file_storage: The ``FileStorage`` object from Flask request.
         kind: The subfolder or type of upload (e.g. 'catalogos', 'logos', 'attachments')
+        require_r2: When true, force fail-closed R2 persistence in addition to
+            the rollout flag. Passing false never weakens an enabled flag.
 
     Returns:
         A dictionary containing the file's metadata (unique name, URL, size, etc.) or
@@ -947,7 +950,7 @@ def upload_to_gcs(
         file_storage,
         max_bytes=max_file_size,
     )
-    require_r2 = _vercel_durable_uploads_require_r2()
+    require_r2 = _vercel_durable_uploads_require_r2() or bool(require_r2)
 
     # 1. R2 Upload Strategy
     try:

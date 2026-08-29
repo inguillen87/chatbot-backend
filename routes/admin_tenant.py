@@ -3225,6 +3225,7 @@ def tenant_surveys_overview(current_user, slug):
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/tickets/unread-summary', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def tenant_unread_ticket_summary(current_user, slug):
@@ -3318,6 +3319,7 @@ def tenant_employees_workload(current_user, slug):
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/dashboard-bundle', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 @require_tenant
@@ -3758,6 +3760,7 @@ def sync_integration(current_user, slug, integration_type):
     return jsonify({"error": "Integration not supported"}), 400
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/integrations/<string:integration_type>/preview', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def preview_integration_sync(current_user, slug, integration_type):

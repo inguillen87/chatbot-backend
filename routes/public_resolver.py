@@ -7,6 +7,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote_plus, urlparse
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
+from cutover_writer_fence import cutover_writer_view
 from sqlalchemy import desc
 
 from models import AnalyticsEventV2, ChatSessionContext, Conversacion, TenantProfile, TenantTicket, User, WidgetSettings, Rubro, db
@@ -2598,6 +2599,7 @@ def landing_experience():
 @public_resolver_bp.route(
     "/widget-config", methods=["GET", "OPTIONS"], provide_automatic_options=False
 )
+@cutover_writer_view
 @cross_origin(origins="*", automatic_options=False)
 def widget_config():
     """Expose a SaaS-style embed configuration for builder/preview UIs.

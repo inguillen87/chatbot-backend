@@ -5,6 +5,8 @@ from flask import Flask
 from config import Config
 from cutover_writer_fence import cutover_writer_view, is_cutover_writer_view
 from middleware.cutover_writer_fence import register_cutover_writer_fence
+from models import User
+from services import tenant_resolver
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -80,12 +82,18 @@ def test_marked_get_and_head_are_fenced_before_handler_but_read_only_get_remains
 def test_all_known_mutating_get_endpoints_are_explicitly_marked(client):
     expected = {
         "admin_tenant_bp.admin_tenant_catalog",
+        "admin_tenant_bp.preview_integration_sync",
+        "admin_tenant_bp.tenant_dashboard_bundle",
+        "admin_tenant_bp.tenant_unread_ticket_summary",
+        "admin_ai_bp.ticket_ai_enrichment",
+        "admin_ai_bp.ai_provider_status",
         "analytics.analytics_identity_coverage",
         "auth.verify_email",
         "carrito_bp.carrito_pwa_public",
         "carrito_bp.carrito_root",
         "carrito_bp.resumen",
         "catalogo.listar_catalogo",
+        "categorias.obtener_categorias",
         "conversations_bp.get_conversation_timeline",
         "conversations_bp.get_link_request_status",
         "education.get_education_operations_heatmap",
@@ -95,12 +103,28 @@ def test_all_known_mutating_get_endpoints_are_explicitly_marked(client):
         "education.list_school_cases",
         "encuestas_analytics_admin_bp.export_pdf_view",
         "encuestas_analytics_admin_bp.export_view",
+        "encuestas_analytics_admin_bp.brief",
+        "encuestas_analytics_admin_bp.dashboard",
+        "encuestas_analytics_admin_bp.dashboard_tablero",
         "encuestas_analytics_bp.export_pdf_view",
         "encuestas_analytics_bp.export_view",
+        "encuestas_analytics_bp.brief",
+        "encuestas_analytics_bp.dashboard",
+        "encuestas_analytics_bp.dashboard_tablero",
         "encuestas_analytics_legacy_bp.export_pdf_view",
         "encuestas_analytics_legacy_bp.export_view",
+        "encuestas_analytics_legacy_bp.brief",
+        "encuestas_analytics_legacy_bp.dashboard",
+        "encuestas_analytics_legacy_bp.dashboard_tablero",
         "encuestas_analytics_municipal_bp.export_pdf_view",
         "encuestas_analytics_municipal_bp.export_view",
+        "encuestas_analytics_municipal_bp.brief",
+        "encuestas_analytics_municipal_bp.dashboard",
+        "encuestas_analytics_municipal_bp.dashboard_tablero",
+        "integracion_widget_settings.public_widget_settings",
+        "kits_bp.listar",
+        "municipal_legacy.municipal_categorias",
+        "municipal_legacy.municipal_tickets_categorias",
         "municipio_api.obtener_widget_config",
         "legacy_public_api_v2.legacy_productos_publicos",
         "market.public_cart_summary",
@@ -111,11 +135,25 @@ def test_all_known_mutating_get_endpoints_are_explicitly_marked(client):
         "notifications.notification_alerts",
         "notifications.notification_metrics",
         "productos.obtener_productos",
+        "public_resolver_bp.widget_config",
         "public_tenant_bp.download_catalog",
         "public_tenant_bp.get_catalog",
         "pwa_public.public_cart_summary",
         "pwa_public.public_catalog",
+        "puntos_bp.historial",
+        "puntos_bp.movimientos",
+        "puntos_bp.saldo",
+        "puntos_public_bp.historial_public",
+        "puntos_public_bp.movimientos_public",
+        "puntos_public_bp.saldo_public",
+        "rewards_rules_bp.get_rules",
+        "super_admin.list_tenants",
+        "v2_saas.production_smoke_v2",
+        "v2_saas.whatsapp_provider_status_v2",
+        "v2_surveys.survey_analytics_v2",
         "v2_saas.whatsapp_tech_provider_sender_status_v2",
+        "v2_analytics.operations_executive_summary_v2",
+        "v2_tickets.ticket_ai_enrichment_v2",
         "v2_tickets.list_tickets_v2",
         "whatsapp_rules_bp.get_rules",
         "widget_public_config.obtener_config_publica",
@@ -150,11 +188,59 @@ def test_compatibility_aliases_cannot_bypass_mutating_get_fence(client):
             "/public/tenants/junin/catalog",
             "/junin/productos",
             "/junin/carrito",
+            "/api/v2/tickets/1/ai-enrichment?tenant_slug=junin",
+            "/api/v2/analytics/operations/executive-summary?tenant_slug=junin",
+            "/admin/ai/provider-status?smoke=1&live=1",
+            "/categorias",
+            "/municipal/categorias",
+            "/municipal/tickets/categorias",
+            "/api/admin/tenants",
+            "/api/admin/tenants/junin/tickets/unread-summary",
+            "/api/admin/tenants/junin/dashboard-bundle",
+            "/api/admin/tenants/junin/integrations/mercadolibre/preview",
+            "/api/v2/integrations/whatsapp/status",
+            "/api/public/widget-config?tenant_slug=junin",
+            "/integracion/widget-settings?tenant_slug=junin",
+            "/admin/tickets/1/ai-enrichment",
+            "/api/v2/surveys/1/analytics?tenant_slug=junin",
+            "/api/v2/production-smoke",
+            "/api/encuestas/1/analytics/brief",
+            "/api/encuestas/1/analytics/dashboard",
+            "/api/encuestas/1/analytics/tablero",
+            "/api/pwa/kits",
+            "/api/puntos/saldo",
+            "/puntos/historial",
+            "/api/puntos/movimientos",
+            "/api/rewards/rules",
         )
         for path in paths:
             response = client.get(path)
             assert response.status_code == 503, path
             assert response.get_json()["reason_code"] == "cutover_writer_fence_enabled"
+    finally:
+        client.application.config["CUTOVER_WRITER_FENCE_ENABLED"] = previous
+
+
+def test_tenant_resolver_never_materializes_anonymous_user_while_fenced(client):
+    anon_id = "cutover-fence-anon-user"
+    previous = _set_fence(client, True)
+    try:
+        with client.application.test_request_context("/"):
+            assert User.query.filter_by(anon_id=anon_id).first() is None
+            resolved = tenant_resolver._build_anon_user(anon_id)
+            assert resolved.id is None
+            assert User.query.filter_by(anon_id=anon_id).first() is None
+    finally:
+        client.application.config["CUTOVER_WRITER_FENCE_ENABLED"] = previous
+
+
+def test_tenant_resolver_never_lazy_creates_demo_tenant_while_fenced(client):
+    previous = _set_fence(client, True)
+    try:
+        with client.application.test_request_context("/"):
+            assert tenant_resolver._get_or_create_demo_tenant(
+                "cutover-demo-that-does-not-exist"
+            ) is None
     finally:
         client.application.config["CUTOVER_WRITER_FENCE_ENABLED"] = previous
 

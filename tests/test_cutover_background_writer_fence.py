@@ -92,6 +92,92 @@ def test_render_predeploy_runs_upgrade_only_when_fence_is_explicitly_false(monke
     assert calls == [(command, {"check": False})]
 
 
+def test_render_predeploy_standby_requires_direct_migrations_url(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setenv("CUTOVER_WRITER_FENCE_ENABLED", "false")
+
+    result = run_predeploy_migrations.main(
+        run_command=lambda *args, **kwargs: calls.append((args, kwargs)),
+        environ={"CHATBOC_RENDER_STANDBY_MODE": "true"},
+    )
+
+    assert result == 2
+    assert calls == []
+    assert json.loads(capsys.readouterr().out)["reason"] == (
+        "migrations_database_url_missing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("url", "reason"),
+    [
+        ("sqlite:////data/database.db", "database_backend_not_postgresql"),
+        (
+            "postgresql://user:secret@example.invalid/chatboc?sslmode=require",
+            "database_provider_not_neon",
+        ),
+        (
+            "postgresql://user:secret@ep-example-pooler.us-east-2.aws.neon.tech/chatboc?sslmode=require",
+            "database_connection_not_direct",
+        ),
+        (
+            "postgresql://user:secret@ep-example.us-east-2.aws.neon.tech/chatboc",
+            "database_tls_not_required",
+        ),
+    ],
+)
+def test_render_predeploy_standby_rejects_unsafe_database_url_without_leaking_it(
+    monkeypatch,
+    capsys,
+    url,
+    reason,
+):
+    monkeypatch.setenv("CUTOVER_WRITER_FENCE_ENABLED", "false")
+
+    result = run_predeploy_migrations.main(
+        environ={
+            "CHATBOC_RENDER_STANDBY_MODE": "true",
+            "MIGRATIONS_DATABASE_URL": url,
+        }
+    )
+
+    assert result == 2
+    output = capsys.readouterr().out
+    assert json.loads(output)["reason"] == reason
+    assert "secret" not in output
+
+
+def test_render_predeploy_standby_uses_apply_migrations_for_direct_neon(
+    monkeypatch,
+    capsys,
+):
+    class Completed:
+        returncode = 0
+
+    calls = []
+    url = (
+        "postgresql://user:secret@ep-example.us-east-2.aws.neon.tech/"
+        "chatboc?sslmode=require"
+    )
+    monkeypatch.setenv("CUTOVER_WRITER_FENCE_ENABLED", "false")
+
+    result = run_predeploy_migrations.main(
+        run_command=lambda command, **kwargs: (
+            calls.append((command, kwargs)) or Completed()
+        ),
+        environ={
+            "CHATBOC_RENDER_STANDBY_MODE": "true",
+            "MIGRATIONS_DATABASE_URL": url,
+        },
+    )
+
+    assert result == 0
+    assert calls == [
+        ([sys.executable, "-m", "scripts.apply_migrations"], {"check": False})
+    ]
+    assert "secret" not in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     ("path", "service_module"),
     [

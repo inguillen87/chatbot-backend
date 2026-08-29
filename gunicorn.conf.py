@@ -28,6 +28,14 @@ def _parse_integer_env(name: str, default: int) -> int:
 
 
 timeout = _parse_integer_env("GUNICORN_TIMEOUT", 300)
+graceful_timeout = _parse_integer_env(
+    "GUNICORN_GRACEFUL_TIMEOUT",
+    min(timeout, 285),
+)
+if graceful_timeout <= 0:
+    raise RuntimeError("GUNICORN_GRACEFUL_TIMEOUT must be greater than zero")
+if graceful_timeout > timeout:
+    raise RuntimeError("GUNICORN_GRACEFUL_TIMEOUT must not exceed GUNICORN_TIMEOUT")
 worker_class = "gthread"
 configured_workers = _parse_integer_env("GUNICORN_WORKERS", 1)
 if configured_workers != 1:

@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 from urllib.parse import urlparse
 from flask import current_app, g, request
 from sqlalchemy import func, or_
+from cutover_writer_fence import cutover_writer_fence_enabled
 from database import db
 from models import TenantProfile, User, Rubro, WidgetSettings
 from services.demo_registry import load_demo_rubros
@@ -12,6 +13,15 @@ from services.demo_registry import load_demo_rubros
 logger = logging.getLogger(__name__)
 
 RESERVED_TENANT_SLUGS = {"iframe", "embed", "widget"}
+
+
+def _tenant_resolution_mutations_fenced() -> bool:
+    """Return whether request-time tenant bootstrap writes must be suppressed."""
+
+    try:
+        return cutover_writer_fence_enabled(current_app.config)
+    except RuntimeError:
+        return cutover_writer_fence_enabled()
 
 def _alias_map() -> dict[str, str]:
     """Return alias -> slug mapping including config defaults."""
@@ -307,6 +317,8 @@ def _tenant_by_widget_token(token: Optional[str]) -> Optional[TenantProfile]:
 
 
 def _should_register_widget_token(tenant: Optional[TenantProfile], token: Optional[str], preferred_slug: Optional[str]) -> bool:
+    if _tenant_resolution_mutations_fenced():
+        return False
     if not tenant or not token:
         return False
     try:
@@ -337,6 +349,8 @@ def _should_register_widget_token(tenant: Optional[TenantProfile], token: Option
     return True
 
 def _prune_widget_token_from_other_tenants(token: str, keep_slug: str | None) -> None:
+    if _tenant_resolution_mutations_fenced():
+        return
     if not token:
         return
     query = TenantProfile.query.filter(
@@ -358,6 +372,8 @@ def _prune_widget_token_from_other_tenants(token: str, keep_slug: str | None) ->
     db.session.commit()
 
 def _register_widget_token(tenant: Optional[TenantProfile], token: Optional[str]) -> None:
+    if _tenant_resolution_mutations_fenced():
+        return
     if not tenant or not token:
         return
     cfg = tenant.configuracion or {}
@@ -408,6 +424,15 @@ def _build_anon_user(anon_id: str) -> User:
     existing = User.query.filter_by(anon_id=anon_id).first()
     if existing:
         return existing
+    if _tenant_resolution_mutations_fenced():
+        # Read-only requests may still resolve existing tenant data during the
+        # freeze, but cannot materialize a visitor row in either database.
+        return User(
+            name="Visitante",
+            email=placeholder_email,
+            password_hash="",
+            anon_id=anon_id,
+        )
     user = User(
         name="Visitante",
         email=placeholder_email,
@@ -434,6 +459,8 @@ def _get_or_create_demo_tenant(slug: str) -> Optional[TenantProfile]:
     tenant = _tenant_by_slug(slug_norm)
     if tenant:
         return tenant
+    if _tenant_resolution_mutations_fenced():
+        return None
 
     # Never recreate an inactive tenant under the same public slug. Inactive is
     # an intentional control-plane state, not an invitation to resurrect a
@@ -680,6 +707,9 @@ def resolve_tenant_only(
     allow_context_fallback: bool = True,
     register_widget_token: bool = True,
 ) -> TenantProfile:
+    if _tenant_resolution_mutations_fenced():
+        allow_lazy_demo_creation = False
+        register_widget_token = False
     preferred_slug = apply_tenant_alias(tenant_slug)
     tenant = _tenant_by_slug(preferred_slug)
     resolution_source = "slug" if tenant else None
