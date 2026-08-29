@@ -863,3 +863,45 @@ to `dpl_7fpVPU68wypDo4qWoEx83u6BvPqb`. Deployment-ID inspection and a
 cache-busted health request proved the alias again serves the exact source
 fingerprint above. The first HTTP-only restore check was attempted too soon and
 observed stale alias content; no Chatboc or provider endpoint was involved.
+
+## Exact fenced backend and restored-database correction - 2026-08-29
+
+The first deployment of revision `8f4d80e65f5ca6f268e4e26214d3c47ba5019b59`
+proved the request and background fences but failed deep readiness with
+`required_schema_missing`. A read-only Neon inspection showed that the Vercel
+runtime had inherited the primary `main/neondb`, whose migration head does not
+contain `municipio_chat_idempotency_receipt`; the independently restored
+`render_rehearsal_20260829` database on branch
+`br-floral-unit-acgqawl6` does contain the required schema. No migration was
+applied to Neon main and no Render database or service was changed.
+
+Production-scoped Vercel runtime and migration URLs were then rebound through
+Neon CLI to the pooled and direct endpoints of that exact restored database.
+The local writer fence stayed enabled and shared writer authority stayed
+disabled. A separate operational defect was also fixed: the authenticated
+runtime attestor is an explicitly marked read-only POST and can now emit
+evidence during a writer-fenced window; contradictory read-only/writer markers
+fail closed. The focal evidence/fence suite passed 83 tests.
+
+Revision `21e77ca02be9ab0f0875b65622b898b16885f087` was pushed and deployed
+with `--skip-domain` as `dpl_HWoecwQtVvuxNwr3x5nddSatF4zj` at
+`chatboc-backend-ompj6a90y-marcelos-projects-c26aa499.vercel.app`.
+
+| Check | Result |
+| --- | --- |
+| Revision | `/api/version` returns exact `21e77ca02be9ab0f0875b65622b898b16885f087` |
+| Deep readiness | `/health/ready=200`; database and Redis both `ok` |
+| Request fence | municipal chat POST returns no-store retryable `503` |
+| Background fence | all four cron paths return no-store `503`, zero execution |
+| Runtime attestor boundary | unauthenticated POST reaches the read-only handler and returns no-store `401`, not the writer-fence `503` |
+| Vercel scheduler | definitions are present in the deployment but `vercel crons list` still reports all four `not deployed`; ownership has not moved |
+| Preview backend | `api-preview.chatboc.ar` remains on fenced revision `84021daf003291aa479e9f72d4f836c2bfe16e04` |
+| Public Production | `api.chatboc.ar` remains Render/Gunicorn revision `8ced9216ff134951a0e3cb050c473e364c28be5c` |
+
+This closes the current candidate's schema/readiness regression and proves the
+read-only attestation boundary. It does not provide the fresh paired provider
+envelopes because the destination still lacks the required independent HMAC,
+bearer and tenant-scoped credential configuration. It also does not deploy or
+activate scheduler ownership, fence Render, certify a final frozen export,
+move a webhook/domain, perform a real provider canary or authorize Render
+retirement.
