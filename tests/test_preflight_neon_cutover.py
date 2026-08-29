@@ -95,11 +95,13 @@ def test_current_documented_revision_produces_the_complete_upgrade_plan():
 
     assert state == {
         "current_revisions": ["20260820_survey_content_jurisdiction_v1"],
-        "expected_heads": ["20260825_chat_idempotency_v1"],
+        "expected_heads": ["20260829_global_writer_authority_v1"],
         "pending_revisions": [
             "20260825_demo_survey_participation_v1",
             "20260825_legacy_municipio_ticket_scope_repair_v1",
             "20260825_chat_idempotency_v1",
+            "20260829_inbound_fifo_v2",
+            "20260829_global_writer_authority_v1",
         ],
         "at_head": False,
     }
@@ -108,7 +110,7 @@ def test_current_documented_revision_produces_the_complete_upgrade_plan():
 def test_current_head_has_no_pending_revisions():
     script = _load_migration_directory(ROOT)
 
-    state = _migration_state(script, ["20260825_chat_idempotency_v1"])
+    state = _migration_state(script, ["20260829_global_writer_authority_v1"])
 
     assert state["at_head"] is True
     assert state["pending_revisions"] == []

@@ -25,6 +25,9 @@ from services.domain_effect_gate import (
     resolve_domain_effect_outbox_canaries,
     resolve_domain_effect_outbox_policy,
 )
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 from services.domain_effect_outbox import (
     compose_domain_effect_registries,
     dispatch_domain_effects,
@@ -109,6 +112,24 @@ def dispatch_domain_effect_batch(
         }
     if not has_app_context():
         raise DomainEffectOutboxConfigurationError("domain_effect_app_context_required")
+    authority_report = background_global_writer_authority_report(
+        "domain_effect_worker",
+        current_app.config,
+    )
+    if authority_report is not None:
+        return {
+            **authority_report,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "unknown": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "recovered_unknown": 0,
+            "recovered_retry_wait": 0,
+            "recovered_dead": 0,
+            "tenants": [],
+        }
     canaries = resolve_domain_effect_outbox_canaries(current_app.config)
     if not canaries:
         if tenant_id is not None:
@@ -277,6 +298,12 @@ def run_domain_effect_worker(
             shutdown.wait()
         return report
     with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "domain_effect_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {**authority_report, **totals}
         resolve_domain_effect_outbox_canaries(current_app.config)
         _configured_batch_size()
         _configured_lease_seconds()
@@ -292,6 +319,12 @@ def run_domain_effect_worker(
             raise DomainEffectOutboxConfigurationError("domain_effect_worker_poll_invalid")
 
         while not shutdown.is_set():
+            authority_report = background_global_writer_authority_report(
+                "domain_effect_worker",
+                current_app.config,
+            )
+            if authority_report is not None:
+                return {**authority_report, **totals}
             totals["cycles"] += 1
             try:
                 dispatch_kwargs: dict[str, Any] = {}

@@ -20,6 +20,9 @@ from urllib.parse import urlsplit
 from sqlalchemy import func, or_, select, text
 
 from cutover_writer_fence import cutover_writer_fence_enabled
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 from database import db
 from models import AnalyticsEvent, TenantProfile
 from services.analytics_service import (
@@ -422,6 +425,15 @@ def run_weekly_analytics_batch(
         return _empty_report(status="fenced", batch_limit=0)
 
     with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "weekly_analytics_report",
+            app.config,
+        )
+        if authority_report is not None:
+            return {
+                **_empty_report(status="fenced", batch_limit=0),
+                "reason_code": authority_report["reason_code"],
+            }
         try:
             batch_limit = _bounded_integer(
                 max_tenants
@@ -650,6 +662,29 @@ def run_weekly_analytics_drain(
             "contract_version": WEEKLY_ANALYTICS_DRAIN_CONTRACT_VERSION,
             "ok": False,
             "status": "fenced",
+            "batch_budget": 0,
+            "batches_run": 0,
+            "selected": 0,
+            "provider_attempts": 0,
+            "reports_generated": 0,
+            "contended": 0,
+            "failed_before_provider": 0,
+            "provider_uncertain": 0,
+            "reservation_failures": 0,
+            "unresolved_reservations": 0,
+            "has_more": False,
+        }
+    with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "weekly_analytics_report",
+            app.config,
+        )
+    if authority_report is not None:
+        return {
+            "contract_version": WEEKLY_ANALYTICS_DRAIN_CONTRACT_VERSION,
+            "ok": False,
+            "status": "fenced",
+            "reason_code": authority_report["reason_code"],
             "batch_budget": 0,
             "batches_run": 0,
             "selected": 0,

@@ -31,7 +31,12 @@ def test_render_blueprint_keeps_whatsapp_durable_cutover_fail_closed():
     assert web["maxShutdownDelaySeconds"] == 300
     assert web_env["DATABASE_URL"]["sync"] is False
     assert web_env["MIGRATIONS_DATABASE_URL"]["sync"] is False
+    assert web_env["EXPECTED_NEON_PROJECT_ID"]["sync"] is False
+    assert web_env["EXPECTED_NEON_BRANCH_ID"]["sync"] is False
     assert web_env["CHATBOC_RENDER_STANDBY_MODE"]["value"] == "false"
+    assert web_env["CHATBOC_RENDER_STANDBY_SCHEMA_ACTION"]["value"] == (
+        "verify-only"
+    )
     assert web_env["VERCEL_DURABLE_UPLOADS_REQUIRE_R2"]["value"] == "false"
     assert web_env["WHATSAPP_INBOUND_DURABILITY_MODE"]["value"] == "legacy"
     assert web_env["WHATSAPP_INBOUND_QUEUE_TENANT_IDS"]["value"] == ""

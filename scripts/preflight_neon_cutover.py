@@ -31,6 +31,7 @@ ENVIRONMENT_VARIABLE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 NEON_PROJECT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
 NEON_BRANCH_ID_PATTERN = re.compile(r"^br-[a-z0-9-]{3,63}$")
 REQUIRED_HEAD_TABLES = (
+    "cutover_global_writer_authority",
     "demo_survey_participation",
     "municipio_chat_idempotency_receipt",
 )
@@ -41,6 +42,13 @@ EXPECTED_DEMO_INDEXES = {
 }
 EXPECTED_CHAT_INDEXES = {
     "ix_municipio_chat_idempotency_tenant_created",
+}
+EXPECTED_GLOBAL_WRITER_AUTHORITY_CONSTRAINTS = {
+    "ck_cutover_global_writer_authority_epoch",
+    "ck_cutover_global_writer_authority_owner",
+    "ck_cutover_global_writer_authority_safe_state",
+    "ck_cutover_global_writer_authority_singleton",
+    "pk_cutover_global_writer_authority",
 }
 LEGACY_REPAIR_TICKET_IDS = (322, 344, 347)
 
@@ -240,6 +248,50 @@ def _critical_schema_state(
         else set()
     )
 
+    global_writer_authority_valid = False
+    if "cutover_global_writer_authority" in counts:
+        rows = list(
+            connection.execute(
+                text(
+                    """
+                    SELECT authority_key, owner_runtime, epoch,
+                           render_fenced, vercel_fenced
+                    FROM cutover_global_writer_authority
+                    ORDER BY authority_key
+                    """
+                )
+            ).mappings()
+        )
+        constraints = _constraint_names(
+            connection,
+            "cutover_global_writer_authority",
+        )
+        if len(rows) == 1:
+            row = dict(rows[0])
+            owner = row.get("owner_runtime")
+            epoch = row.get("epoch")
+            render_fenced = row.get("render_fenced")
+            vercel_fenced = row.get("vercel_fenced")
+            ownership_safe = (
+                owner is None
+                and render_fenced is True
+                and vercel_fenced is True
+            ) or (owner == "render" and vercel_fenced is True) or (
+                owner == "vercel" and render_fenced is True
+            )
+            global_writer_authority_valid = bool(
+                row.get("authority_key") == "primary"
+                and isinstance(epoch, int)
+                and not isinstance(epoch, bool)
+                and epoch >= 0
+                and isinstance(render_fenced, bool)
+                and isinstance(vercel_fenced, bool)
+                and ownership_safe
+                and EXPECTED_GLOBAL_WRITER_AUTHORITY_CONSTRAINTS.issubset(
+                    constraints
+                )
+            )
+
     repair = {
         "status": "schema_unavailable",
         "rows_present": None,
@@ -278,6 +330,7 @@ def _critical_schema_state(
         "demo_immutability_trigger_present": trigger_present,
         "demo_indexes_present": EXPECTED_DEMO_INDEXES.issubset(demo_indexes),
         "chat_idempotency_indexes_present": EXPECTED_CHAT_INDEXES.issubset(chat_indexes),
+        "global_writer_authority_valid": global_writer_authority_valid,
         "legacy_ticket_scope_repair_valid": repair["status"] in {"not_applicable", "repaired"},
     }
     return {
@@ -285,6 +338,22 @@ def _critical_schema_state(
         "ready": all(checks.values()),
         "tables": tables,
         "legacy_ticket_scope_repair": repair,
+    }
+
+
+def _constraint_names(connection: Connection, table_name: str) -> set[str]:
+    return {
+        str(value)
+        for value in connection.execute(
+            text(
+                """
+                SELECT constraint_name
+                FROM information_schema.table_constraints
+                WHERE table_schema = 'public' AND table_name = :table_name
+                """
+            ),
+            {"table_name": table_name},
+        ).scalars()
     }
 
 

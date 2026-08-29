@@ -254,8 +254,22 @@ def register_commands(app):
         try:
             from services.survey_response_effects import (
                 dispatch_survey_response_effects,
+                survey_response_effect_dispatch_guard_report,
                 summarize_survey_response_effects,
             )
+
+            authority_report = survey_response_effect_dispatch_guard_report(
+                current_app.config
+            )
+            if authority_report is not None:
+                _echo_survey_effect_json(
+                    {
+                        **authority_report,
+                        "batches": 0,
+                        "totals": _empty_survey_effect_totals(),
+                    }
+                )
+                return
 
             if tenant_id is not None and not _survey_effect_tenant_exists(tenant_id):
                 payload.update(

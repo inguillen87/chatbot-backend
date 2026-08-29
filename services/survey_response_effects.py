@@ -23,9 +23,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from flask import current_app, has_app_context
 from sqlalchemy import and_, case, func, or_, update
 from sqlalchemy.exc import IntegrityError
 
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
 from database import db
 from models import (
     EncEncuesta,
@@ -35,6 +40,9 @@ from models import (
     User,
 )
 from services.survey_response_provenance import SURVEY_RESPONSE_ORIGIN_REAL
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 from services.outbox_execution_budget import outbox_persistence_operation
 
 
@@ -81,6 +89,29 @@ class _PermanentEffectError(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def survey_response_effect_dispatch_guard_report(
+    config: Optional[Mapping[str, Any]] = None,
+) -> Optional[dict[str, Any]]:
+    """Fail closed at the common manual/CLI/worker mutation boundary.
+
+    Callers may preflight this guard to avoid even read-only application
+    queries when another runtime owns writes.  The dispatcher also invokes it
+    itself so a direct/manual call cannot bypass the shared authority gate.
+    """
+
+    resolved_config = config
+    if resolved_config is None and has_app_context():
+        resolved_config = current_app.config
+    if cutover_writer_fence_enabled(resolved_config):
+        return background_writer_fence_report(
+            "survey_response_effect_dispatch"
+        )
+    return background_global_writer_authority_report(
+        "survey_response_effect_dispatch",
+        resolved_config,
+    )
 
 
 def _utc_now() -> datetime:
@@ -847,6 +878,19 @@ def dispatch_survey_response_effects(
     This is a worker boundary and therefore commits its own claim and terminal
     transitions.  Do not invoke it from inside an uncommitted response write.
     """
+
+    guard_report = survey_response_effect_dispatch_guard_report()
+    if guard_report is not None:
+        return {
+            **guard_report,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+        }
 
     operation_now = _coerce_utc(now)
     bounded_limit = _bounded_limit(limit)

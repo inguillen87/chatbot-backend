@@ -41,6 +41,9 @@ from cutover_writer_fence import (
 from extensions import db
 from models import ProviderSender, TenantProfile, WhatsAppOutboundAttempt
 from services.llm_provider_network_policy import require_provider_network
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 from services.outbox_execution_budget import (
     outbox_persistence_budget,
     outbox_twilio_http_client,
@@ -646,6 +649,18 @@ def process_whatsapp_inbound_stream(
             "completed": 0,
             "results": [],
         }
+    if has_app_context():
+        authority_report = background_global_writer_authority_report(
+            "whatsapp_inbound_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {
+                **authority_report,
+                "processed": 0,
+                "completed": 0,
+                "results": [],
+            }
 
     tenant_ids = _worker_tenant_ids(tenant_id)
     if stream_key is not None and tenant_id is None:
@@ -908,6 +923,18 @@ def dispatch_whatsapp_outbound_attempts(
             "accepted": 0,
             "results": [],
         }
+    if has_app_context():
+        authority_report = background_global_writer_authority_report(
+            "whatsapp_outbound_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {
+                **authority_report,
+                "processed": 0,
+                "accepted": 0,
+                "results": [],
+            }
     results: list[dict[str, Any]] = []
     for _ in range(max(1, min(int(limit or 1), 100))):
         if deadline_monotonic is not None and clock() >= deadline_monotonic:
@@ -1011,6 +1038,15 @@ def run_whatsapp_inbound_payload_scrub(*, limit: Optional[int] = None) -> dict[s
             **_blocked_payload_scrub_report("fenced"),
             "executed": False,
             "reason_code": "cutover_writer_fence_enabled",
+        }
+    authority_report = background_global_writer_authority_report(
+        "whatsapp_payload_retention",
+        current_app.config,
+    )
+    if authority_report is not None:
+        return {
+            **_blocked_payload_scrub_report("fenced"),
+            **authority_report,
         }
 
     scrub_enabled = current_app.config.get(
@@ -1144,6 +1180,12 @@ def run_whatsapp_durable_worker(
             shutdown.wait()
         return report
     with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "whatsapp_durable_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {**authority_report, "mode": "fenced", **totals}
         mode = str(
             current_app.config.get("WHATSAPP_INBOUND_DURABILITY_MODE", "legacy")
             or "legacy"
@@ -1187,6 +1229,12 @@ def run_whatsapp_durable_worker(
         )
 
         while not shutdown.is_set():
+            authority_report = background_global_writer_authority_report(
+                "whatsapp_durable_worker",
+                current_app.config,
+            )
+            if authority_report is not None:
+                return {**authority_report, "mode": "fenced", **totals}
             totals["cycles"] += 1
             try:
                 inbound_kwargs: dict[str, Any] = {}
@@ -1404,6 +1452,26 @@ def main() -> int:
         return 0
     if args.scrub_expired_payloads:
         with app.app_context():
+            authority_report = background_global_writer_authority_report(
+                "whatsapp_payload_retention",
+                current_app.config,
+            )
+            if authority_report is not None:
+                print(
+                    json.dumps(
+                        {
+                            **authority_report,
+                            "tenant_count": 0,
+                            "selected": 0,
+                            "scrubbed": 0,
+                            "completed_scrubbed": 0,
+                            "dead_scrubbed": 0,
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
+                return 0
             print(
                 json.dumps(
                     run_whatsapp_inbound_payload_scrub(),

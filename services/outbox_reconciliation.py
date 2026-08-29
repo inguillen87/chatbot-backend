@@ -22,6 +22,9 @@ from typing import Any
 from sqlalchemy import text
 
 from cutover_writer_fence import cutover_writer_fence_enabled
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 from models import db
 from services.domain_effect_worker import run_domain_effect_worker
 from services.outbox_execution_budget import (
@@ -635,6 +638,28 @@ def run_outbox_reconciliation(
             has_more=False,
             components={},
             reason_code="cutover_writer_fence_enabled",
+        )
+        return payload
+    with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "outbox_reconciliation",
+            app.config,
+        )
+    if authority_report is not None:
+        payload = _base_payload(
+            limits=None,
+            status="fenced",
+            ok=False,
+            elapsed_ms=0,
+        )
+        payload.update(
+            component_count=0,
+            failed_component_count=0,
+            attention_component_count=0,
+            cycles_run=0,
+            has_more=False,
+            components={},
+            reason_code=authority_report["reason_code"],
         )
         return payload
     try:

@@ -104,7 +104,7 @@ def test_target_rejects_a_valid_neon_url_with_the_wrong_host_fingerprint():
     assert DIRECT_HOST not in str(captured.value)
 
 
-def test_local_graph_is_exactly_the_three_reviewed_revisions():
+def test_local_graph_is_exactly_the_four_reviewed_revisions():
     plan = cutover._load_exact_migration_plan(ROOT)
 
     assert list(plan.source_fingerprints_sha256) == list(cutover.MIGRATION_STEPS)
@@ -113,7 +113,7 @@ def test_local_graph_is_exactly_the_three_reviewed_revisions():
     )
     assert all(len(value) == 64 for value in plan.source_fingerprints_sha256.values())
     assert len(plan.graph_fingerprint_sha256) == 64
-    assert plan.script.get_heads() == [cutover.INBOUND_FIFO_REVISION]
+    assert plan.script.get_heads() == [cutover.GLOBAL_WRITER_AUTHORITY_REVISION]
 
 
 def test_inbound_fifo_postcheck_requires_the_exact_ordered_plain_index(monkeypatch):
@@ -149,6 +149,95 @@ def test_inbound_fifo_postcheck_requires_the_exact_ordered_plain_index(monkeypat
     with pytest.raises(cutover.CutoverMigrationFailure) as captured:
         cutover._assert_after_inbound_fifo(object())
     assert captured.value.reason_code == "database_inbound_fifo_index_postcheck_failed"
+
+
+def test_global_writer_authority_postcheck_requires_fenced_singleton(monkeypatch):
+    prior = {"inbound_fifo_index": {"is_valid": True}}
+    monkeypatch.setattr(
+        cutover,
+        "_assert_after_inbound_fifo",
+        lambda _connection: prior,
+    )
+    monkeypatch.setattr(cutover, "_table_exists", lambda *_args: True)
+    monkeypatch.setattr(
+        cutover,
+        "_column_names",
+        lambda *_args: cutover.EXPECTED_GLOBAL_WRITER_AUTHORITY_COLUMNS,
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_constraint_names",
+        lambda *_args: cutover.EXPECTED_GLOBAL_WRITER_AUTHORITY_CONSTRAINTS,
+    )
+
+    class MappingRows:
+        def mappings(self):
+            return [
+                {
+                    "authority_key": "primary",
+                    "owner_runtime": None,
+                    "epoch": 0,
+                    "render_fenced": True,
+                    "vercel_fenced": True,
+                }
+            ]
+
+    class Connection:
+        def execute(self, *_args, **_kwargs):
+            return MappingRows()
+
+    state = cutover._assert_after_global_writer_authority(Connection())
+    assert state["global_writer_authority_contract"] == {
+        "table_present": True,
+        "expected_columns_present": True,
+        "expected_constraints_present": True,
+        "singleton_state_valid": True,
+        "singleton_bootstrap_fenced": True,
+        "required_state_valid": True,
+    }
+
+    class UnsafeConnection:
+        def execute(self, *_args, **_kwargs):
+            result = MappingRows()
+            result.mappings = lambda: [
+                {
+                    "authority_key": "primary",
+                    "owner_runtime": "render",
+                    "epoch": 0,
+                    "render_fenced": False,
+                    "vercel_fenced": True,
+                }
+            ]
+            return result
+
+    with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+        cutover._assert_after_global_writer_authority(UnsafeConnection())
+    assert (
+        captured.value.reason_code
+        == "database_global_writer_authority_contract_postcheck_failed"
+    )
+
+    class UsedStateConnection:
+        def execute(self, *_args, **_kwargs):
+            result = MappingRows()
+            result.mappings = lambda: [
+                {
+                    "authority_key": "primary",
+                    "owner_runtime": "render",
+                    "epoch": 23,
+                    "render_fenced": False,
+                    "vercel_fenced": True,
+                }
+            ]
+            return result
+
+    used_contract = cutover._global_writer_authority_contract(
+        UsedStateConnection(),
+        require_bootstrap=False,
+    )
+    assert used_contract["singleton_state_valid"] is True
+    assert used_contract["singleton_bootstrap_fenced"] is False
+    assert used_contract["required_state_valid"] is True
 
 
 def test_apply_requires_three_distinct_approved_evidence_ids():
@@ -349,8 +438,13 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
     monkeypatch.setattr(cutover, "_require_revision", require_revision)
     monkeypatch.setattr(
         cutover,
-        "_assert_baseline_schema",
-        lambda _connection: {"baseline": True},
+        "_require_allowlisted_cutover_revision",
+        lambda _connection: current["revision"],
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_assert_contract_for_revision",
+        lambda _connection, revision: {"revision": revision},
     )
     monkeypatch.setattr(
         cutover,
@@ -367,6 +461,11 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
         "_assert_after_inbound_fifo",
         lambda _connection: {"inbound_fifo": True},
     )
+    monkeypatch.setattr(
+        cutover,
+        "_assert_after_global_writer_authority",
+        lambda _connection: {"global_writer_authority": True},
+    )
     monkeypatch.setattr(cutover, "_apply_exact_revision", apply_exact)
     migration_plan = cutover._load_exact_migration_plan(ROOT)
 
@@ -380,12 +479,88 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
 
     assert calls == list(cutover.MIGRATION_STEPS)
     assert state["revision_before"] == cutover.INITIAL_REVISION
-    assert state["revision_after"] == cutover.INBOUND_FIFO_REVISION
+    assert state["revision_after"] == cutover.GLOBAL_WRITER_AUTHORITY_REVISION
     assert state["advisory_lock_acquired"] is True
     assert [step["revision"] for step in state["steps"]] == list(
         cutover.MIGRATION_STEPS
     )
     assert connection.driver_statements[0].endswith("READ WRITE")
+
+
+def test_incremental_apply_from_fifo_runs_only_exact_authority_child(monkeypatch):
+    current = {"revision": cutover.INBOUND_FIFO_REVISION}
+    calls = []
+
+    class ScalarResult:
+        def scalar_one(self):
+            return True
+
+    class Connection:
+        def exec_driver_sql(self, _statement):
+            return None
+
+        def execute(self, statement, _parameters=None):
+            assert "pg_try_advisory_xact_lock" in str(statement)
+            return ScalarResult()
+
+    monkeypatch.setattr(
+        cutover,
+        "_assert_database_identity",
+        lambda *_args, **_kwargs: {"writable_primary": True},
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_require_allowlisted_cutover_revision",
+        lambda _connection: current["revision"],
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_assert_contract_for_revision",
+        lambda _connection, revision: {"revision": revision, "valid": True},
+    )
+
+    def apply_exact(
+        _connection,
+        *,
+        plan,
+        expected_current_revision,
+        target_revision,
+    ):
+        assert plan is migration_plan
+        assert expected_current_revision == cutover.INBOUND_FIFO_REVISION
+        assert target_revision == cutover.GLOBAL_WRITER_AUTHORITY_REVISION
+        calls.append(target_revision)
+        current["revision"] = target_revision
+
+    monkeypatch.setattr(cutover, "_apply_exact_revision", apply_exact)
+    monkeypatch.setattr(
+        cutover,
+        "_require_revision",
+        lambda _connection, expected: (
+            expected
+            if current["revision"] == expected
+            else pytest.fail("unexpected revision")
+        ),
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_postcheck_for_applied_revision",
+        lambda _connection, revision: {"revision": revision, "valid": True},
+    )
+    migration_plan = cutover._load_exact_migration_plan(ROOT)
+
+    state = cutover._execute_cutover_transaction(
+        Connection(),
+        apply=True,
+        plan=migration_plan,
+        expected_project_fingerprint_sha256=PROJECT_FINGERPRINT,
+        expected_branch_fingerprint_sha256=BRANCH_FINGERPRINT,
+    )
+
+    assert calls == [cutover.GLOBAL_WRITER_AUTHORITY_REVISION]
+    assert state["revision_before"] == cutover.INBOUND_FIFO_REVISION
+    assert state["revision_after"] == cutover.GLOBAL_WRITER_AUTHORITY_REVISION
+    assert [item["revision"] for item in state["steps"]] == calls
 
 
 def test_exact_revision_runner_rejects_symbolic_or_unreviewed_targets():
@@ -425,13 +600,13 @@ def test_default_dry_run_never_locks_or_invokes_an_upgrade(monkeypatch):
     )
     monkeypatch.setattr(
         cutover,
-        "_require_revision",
-        lambda _connection, expected: expected,
+        "_require_allowlisted_cutover_revision",
+        lambda _connection: cutover.INITIAL_REVISION,
     )
     monkeypatch.setattr(
         cutover,
-        "_assert_baseline_schema",
-        lambda _connection: {"baseline": True},
+        "_assert_contract_for_revision",
+        lambda _connection, revision: {"revision": revision},
     )
     monkeypatch.setattr(
         cutover,

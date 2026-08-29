@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 import threading
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from flask import Flask
@@ -98,7 +99,10 @@ def test_render_predeploy_standby_requires_direct_migrations_url(monkeypatch, ca
 
     result = run_predeploy_migrations.main(
         run_command=lambda *args, **kwargs: calls.append((args, kwargs)),
-        environ={"CHATBOC_RENDER_STANDBY_MODE": "true"},
+        environ={
+            "CHATBOC_RENDER_STANDBY_MODE": "true",
+            "CHATBOC_RENDER_STANDBY_SCHEMA_ACTION": "verify-only",
+        },
     )
 
     assert result == 2
@@ -106,6 +110,69 @@ def test_render_predeploy_standby_requires_direct_migrations_url(monkeypatch, ca
     assert json.loads(capsys.readouterr().out)["reason"] == (
         "migrations_database_url_missing"
     )
+
+
+@pytest.mark.parametrize(
+    ("action", "reason"),
+    [
+        (None, "render_standby_schema_action_missing"),
+        ("upgrade", "render_standby_schema_action_not_verify_only"),
+        ("verify-and-upgrade", "render_standby_schema_action_not_verify_only"),
+    ],
+)
+def test_render_predeploy_standby_fails_closed_unless_action_is_verify_only(
+    capsys,
+    action,
+    reason,
+):
+    environ = {"CHATBOC_RENDER_STANDBY_MODE": "true"}
+    if action is not None:
+        environ["CHATBOC_RENDER_STANDBY_SCHEMA_ACTION"] = action
+
+    result = run_predeploy_migrations.main(
+        environ=environ,
+        verify_standby=lambda **kwargs: pytest.fail(
+            "invalid standby action must not reach the database"
+        ),
+    )
+
+    assert result == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    ("missing_name", "reason"),
+    [
+        ("EXPECTED_NEON_PROJECT_ID", "expected_neon_project_id_missing"),
+        ("EXPECTED_NEON_BRANCH_ID", "expected_neon_branch_id_missing"),
+    ],
+)
+def test_render_predeploy_standby_requires_pinned_neon_identity(
+    capsys,
+    missing_name,
+    reason,
+):
+    environ = {
+        "CHATBOC_RENDER_STANDBY_MODE": "true",
+        "CHATBOC_RENDER_STANDBY_SCHEMA_ACTION": "verify-only",
+        "MIGRATIONS_DATABASE_URL": (
+            "postgresql://user:secret@ep-example.us-east-2.aws.neon.tech/"
+            "chatboc?sslmode=require"
+        ),
+        "EXPECTED_NEON_PROJECT_ID": "synthetic-neon-project",
+        "EXPECTED_NEON_BRANCH_ID": "br-synthetic-standby",
+    }
+    del environ[missing_name]
+
+    result = run_predeploy_migrations.main(
+        environ=environ,
+        verify_standby=lambda **kwargs: pytest.fail(
+            "verification must not run without pinned identity"
+        ),
+    )
+
+    assert result == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == reason
 
 
 @pytest.mark.parametrize(
@@ -137,7 +204,10 @@ def test_render_predeploy_standby_rejects_unsafe_database_url_without_leaking_it
     result = run_predeploy_migrations.main(
         environ={
             "CHATBOC_RENDER_STANDBY_MODE": "true",
+            "CHATBOC_RENDER_STANDBY_SCHEMA_ACTION": "verify-only",
             "MIGRATIONS_DATABASE_URL": url,
+            "EXPECTED_NEON_PROJECT_ID": "synthetic-neon-project",
+            "EXPECTED_NEON_BRANCH_ID": "br-synthetic-standby",
         }
     )
 
@@ -147,35 +217,251 @@ def test_render_predeploy_standby_rejects_unsafe_database_url_without_leaking_it
     assert "secret" not in output
 
 
-def test_render_predeploy_standby_uses_apply_migrations_for_direct_neon(
+def test_render_predeploy_standby_verifies_without_running_migrations_even_if_fenced(
     monkeypatch,
     capsys,
 ):
-    class Completed:
-        returncode = 0
-
-    calls = []
+    command_calls = []
+    verify_calls = []
     url = (
         "postgresql://user:secret@ep-example.us-east-2.aws.neon.tech/"
         "chatboc?sslmode=require"
     )
-    monkeypatch.setenv("CUTOVER_WRITER_FENCE_ENABLED", "false")
+
+    def verify(**kwargs):
+        verify_calls.append(kwargs)
+        return {
+            "contract": run_predeploy_migrations.STANDBY_VERIFY_CONTRACT,
+            "status": "verified",
+            "schema_action": "verify-only",
+            "ready": True,
+            "writes_attempted": False,
+            "writer_ownership_acquired": False,
+            "migration": {
+                "current_revision": "20260829_global_writer_authority_v1",
+                "expected_revision": "20260829_global_writer_authority_v1",
+                "at_exact_target": True,
+            },
+            "schema": {"ready": True},
+        }
 
     result = run_predeploy_migrations.main(
-        run_command=lambda command, **kwargs: (
-            calls.append((command, kwargs)) or Completed()
-        ),
+        run_command=lambda *args, **kwargs: command_calls.append((args, kwargs)),
         environ={
+            "CUTOVER_WRITER_FENCE_ENABLED": "true",
             "CHATBOC_RENDER_STANDBY_MODE": "true",
+            "CHATBOC_RENDER_STANDBY_SCHEMA_ACTION": "verify-only",
             "MIGRATIONS_DATABASE_URL": url,
+            "EXPECTED_NEON_PROJECT_ID": "synthetic-neon-project",
+            "EXPECTED_NEON_BRANCH_ID": "br-synthetic-standby",
         },
+        verify_standby=verify,
     )
 
     assert result == 0
-    assert calls == [
-        ([sys.executable, "-m", "scripts.apply_migrations"], {"check": False})
+    assert command_calls == []
+    assert verify_calls == [
+        {
+            "database_url": url,
+            "expected_project_id": "synthetic-neon-project",
+            "expected_branch_id": "br-synthetic-standby",
+        }
     ]
-    assert "secret" not in capsys.readouterr().out
+    output = capsys.readouterr().out
+    report = json.loads(output)
+    assert report["schema_action"] == "verify-only"
+    assert report["writes_attempted"] is False
+    assert report["writer_ownership_acquired"] is False
+    assert "secret" not in output
+
+
+def test_render_predeploy_standby_redacts_unexpected_verification_failure(capsys):
+    result = run_predeploy_migrations.main(
+        environ={
+            "CHATBOC_RENDER_STANDBY_MODE": "true",
+            "CHATBOC_RENDER_STANDBY_SCHEMA_ACTION": "verify-only",
+            "MIGRATIONS_DATABASE_URL": (
+                "postgresql://user:secret@ep-example.us-east-2.aws.neon.tech/"
+                "chatboc?sslmode=require"
+            ),
+            "EXPECTED_NEON_PROJECT_ID": "synthetic-neon-project",
+            "EXPECTED_NEON_BRANCH_ID": "br-synthetic-standby",
+        },
+        verify_standby=lambda **kwargs: (_ for _ in ()).throw(
+            RuntimeError("secret provider details")
+        ),
+    )
+
+    assert result == 2
+    output = capsys.readouterr().out
+    assert json.loads(output)["reason"] == "standby_schema_verification_failed"
+    assert "secret provider details" not in output
+
+
+def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
+    monkeypatch,
+):
+    from scripts import apply_neon_cutover_migrations as cutover_migrations
+
+    class FakeTransaction:
+        def __init__(self):
+            self.rollback_calls = 0
+
+        def rollback(self):
+            self.rollback_calls += 1
+
+    class FakeResult:
+        def __init__(self, *, scalar=None, mapping=None):
+            self.scalar = scalar
+            self.mapping = mapping
+
+        def scalar_one(self):
+            return self.scalar
+
+        def mappings(self):
+            return self
+
+        def one(self):
+            return self.mapping
+
+    class FakeConnection:
+        def __init__(self):
+            self.transaction = FakeTransaction()
+            self.statements = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def begin(self):
+            return self.transaction
+
+        def execute(self, statement):
+            sql = " ".join(str(statement).split())
+            self.statements.append(sql)
+            if sql == "SHOW transaction_read_only":
+                return FakeResult(scalar="on")
+            if "current_setting('neon.project_id'" in sql:
+                return FakeResult(
+                    mapping={
+                        "project_id": "synthetic-neon-project",
+                        "branch_id": "br-synthetic-standby",
+                    }
+                )
+            return FakeResult()
+
+    class FakeEngine:
+        def __init__(self, connection):
+            self.connection = connection
+            self.dispose_calls = 0
+
+        def connect(self):
+            return self.connection
+
+        def dispose(self):
+            self.dispose_calls += 1
+
+    connection = FakeConnection()
+    engine = FakeEngine(connection)
+    helper_calls = []
+    expected_fifo = {
+        "columns": cutover_migrations.EXPECTED_INBOUND_FIFO_COLUMNS,
+        "is_unique": False,
+        "is_valid": True,
+        "is_ready": True,
+        "is_unfiltered": True,
+        "has_plain_columns": True,
+        "has_no_included_columns": True,
+    }
+
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda *args, **kwargs: engine)
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_load_exact_migration_plan",
+        lambda root: SimpleNamespace(graph_fingerprint_sha256="a" * 64),
+    )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_require_revision",
+        lambda current, target: (
+            helper_calls.append(("revision", current, target)) or target
+        ),
+    )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_require_base_tables",
+        lambda current: helper_calls.append(("base", current)),
+    )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_demo_contract",
+        lambda current: {
+            "table_present": True,
+            "expected_indexes_present": True,
+            "immutability_trigger_present": True,
+        },
+    )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_idempotency_contract",
+        lambda current: {
+            "table_present": True,
+            "expected_columns_present": True,
+            "expected_indexes_present": True,
+            "expected_constraints_present": True,
+            # Mutable rows are intentionally not a standby schema condition.
+            "rows": 9876,
+        },
+    )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_index_contract",
+        lambda current, **kwargs: expected_fifo,
+    )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_global_writer_authority_contract",
+        lambda current, **kwargs: {
+            "table_present": True,
+            "expected_columns_present": True,
+            "expected_constraints_present": True,
+            "singleton_state_valid": True,
+            # Standby verification deliberately accepts a used epoch.
+            "singleton_bootstrap_fenced": False,
+            "required_state_valid": True,
+        },
+    )
+
+    report = run_predeploy_migrations._verify_render_standby(
+        database_url=(
+            "postgresql://user:secret@ep-example.us-east-2.aws.neon.tech/"
+            "chatboc?sslmode=require"
+        ),
+        expected_project_id="synthetic-neon-project",
+        expected_branch_id="br-synthetic-standby",
+    )
+
+    assert report["status"] == "verified"
+    assert report["schema_action"] == "verify-only"
+    assert report["migration"]["at_exact_target"] is True
+    assert report["writes_attempted"] is False
+    assert report["writer_ownership_acquired"] is False
+    assert connection.statements[0] == "SET TRANSACTION READ ONLY"
+    assert connection.transaction.rollback_calls == 1
+    assert engine.dispose_calls == 1
+    assert helper_calls[0] == (
+        "revision",
+        connection,
+        cutover_migrations.GLOBAL_WRITER_AUTHORITY_REVISION,
+    )
+    assert all(
+        not statement.upper().startswith(
+            ("INSERT ", "UPDATE ", "DELETE ", "ALTER ", "CREATE ", "DROP ")
+        )
+        for statement in connection.statements
+    )
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,7 @@ from cutover_writer_fence import (
     background_writer_fence_report,
     cutover_writer_fence_enabled,
 )
+from global_writer_authority import global_writer_authority_enabled
 from database import db
 from models import (
     AnalyticsEventV2,
@@ -30,11 +31,31 @@ from models import (
     SurveyResponseEffect,
     SurveyResponseReceipt,
 )
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 
 
 PRIVACY_MODE_SOURCE_ANONYMOUS = "source_anonymous"
 RETENTION_PURGE_CONTRACT_VERSION = "surveys.privacy_retention_purge.v1"
 _TERMINAL_EFFECT_STATUSES = frozenset({"succeeded", "skipped", "dead"})
+
+
+def _global_authority_report() -> dict[str, Any] | None:
+    if not has_app_context():
+        if global_writer_authority_enabled():
+            return {
+                "contract_version": "cutover.global_writer_authority.v1",
+                "component": "survey_privacy_retention",
+                "executed": False,
+                "reason_code": "global_writer_authority_context_unavailable",
+                "status": "fenced",
+            }
+        return None
+    return background_global_writer_authority_report(
+        "survey_privacy_retention",
+        current_app.config,
+    )
 
 
 def _utc(value: Optional[datetime]) -> datetime:
@@ -121,6 +142,16 @@ def purge_expired_source_anonymous_responses(
         return {
             "contract_version": RETENTION_PURGE_CONTRACT_VERSION,
             "status": "fenced",
+            "dry_run": bool(dry_run),
+            "eligible": 0,
+            "deleted": 0,
+            "tenant_count": 0,
+            "cutoff_at": operation_now.isoformat(),
+        }
+    authority_report = _global_authority_report()
+    if authority_report is not None:
+        return {
+            **authority_report,
             "dry_run": bool(dry_run),
             "eligible": 0,
             "deleted": 0,
@@ -233,6 +264,17 @@ def run_retention_purge_batches(
         return {
             "contract_version": RETENTION_PURGE_CONTRACT_VERSION,
             "status": "fenced",
+            "dry_run": bool(dry_run),
+            "batches": 0,
+            "eligible": 0,
+            "deleted": 0,
+            "cutoff_at": operation_now.isoformat(),
+            "exhausted_batch_budget": False,
+        }
+    authority_report = _global_authority_report()
+    if authority_report is not None:
+        return {
+            **authority_report,
             "dry_run": bool(dry_run),
             "batches": 0,
             "eligible": 0,

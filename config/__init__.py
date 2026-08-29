@@ -8,6 +8,11 @@ from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 
 from cutover_writer_fence import cutover_writer_fence_enabled
+from global_writer_authority import (
+    configured_writer_authority_database_url,
+    configured_writer_runtime,
+    global_writer_authority_enabled,
+)
 from utils.runtime_environment import (
     is_production_runtime,
     is_render_runtime,
@@ -805,6 +810,16 @@ class Config:
     # disabled until an operator deliberately freezes source writes for a
     # database cutover; direct SQL/migration writers remain operator-owned.
     CUTOVER_WRITER_FENCE_ENABLED = cutover_writer_fence_enabled()
+    # Optional database-backed ownership gate shared by Render and Vercel.
+    # It is intentionally off unless explicitly enabled. Once enabled, an
+    # absent/invalid runtime identity or authority row blocks every writer.
+    CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED = global_writer_authority_enabled()
+    CUTOVER_RUNTIME_IDENTITY = configured_writer_runtime()
+    # This must be the same explicit PostgreSQL control DSN on Render and
+    # Vercel. It never falls back to the runtime's application DATABASE_URL.
+    CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL = (
+        configured_writer_authority_database_url()
+    )
     # Historical marketplace OAuth/webhook routes trusted request-supplied
     # tenant selectors.  Keep their migration marker false by default on every
     # runtime (including Vercel and Render).  The routes remain fail-closed even

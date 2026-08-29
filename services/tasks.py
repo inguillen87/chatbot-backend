@@ -10,6 +10,10 @@ from cutover_writer_fence import (
     background_writer_fence_report,
     cutover_writer_fence_enabled,
 )
+from global_writer_authority import global_writer_authority_enabled
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +24,17 @@ def _task_writer_fence_enabled() -> bool:
     try:
         from flask import current_app
 
-        return cutover_writer_fence_enabled(current_app.config)
+        if cutover_writer_fence_enabled(current_app.config):
+            return True
+        return (
+            background_global_writer_authority_report(
+                "celery_task",
+                current_app.config,
+            )
+            is not None
+        )
     except RuntimeError:
-        return cutover_writer_fence_enabled()
+        return cutover_writer_fence_enabled() or global_writer_authority_enabled()
 
 
 def _fenced_task_report(component: str, **zero_counters):

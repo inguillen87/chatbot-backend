@@ -34,6 +34,9 @@ from services.survey_response_effects import (
     dispatch_survey_response_effects,
     list_due_survey_response_effect_tenant_ids,
 )
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -223,6 +226,24 @@ def dispatch_survey_response_effect_batch(
         raise SurveyResponseEffectWorkerConfigurationError(
             "survey_response_effect_worker_app_context_required"
         )
+    authority_report = background_global_writer_authority_report(
+        "survey_response_effect_worker",
+        current_app.config,
+    )
+    if authority_report is not None:
+        return {
+            **authority_report,
+            "limit": 0,
+            "lease_seconds": 0,
+            "claimed": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "fenced": 0,
+            "tenants": [],
+        }
 
     configured_limit = _configured_batch_size() if limit is None else int(limit)
     bounded_limit = max(1, min(configured_limit, 500))
@@ -355,6 +376,12 @@ def run_survey_response_effect_worker(
             shutdown.wait()
         return report
     with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "survey_response_effect_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {**authority_report, **totals}
         # Validate every bound at startup. The first health query also fails
         # loudly if the migration/table is missing.
         assert_survey_response_effect_worker_schema_current(
@@ -367,6 +394,12 @@ def run_survey_response_effect_worker(
         summarize_survey_response_effect_worker()
 
         while not shutdown.is_set():
+            authority_report = background_global_writer_authority_report(
+                "survey_response_effect_worker",
+                current_app.config,
+            )
+            if authority_report is not None:
+                return {**authority_report, **totals}
             totals["cycles"] += 1
             try:
                 dispatch_kwargs: dict[str, Any] = {}

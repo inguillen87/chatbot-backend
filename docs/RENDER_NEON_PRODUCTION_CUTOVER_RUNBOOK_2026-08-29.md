@@ -15,7 +15,7 @@ maintenance window. No step authorizes deleting Render or its database.
 | Source of truth | Render PostgreSQL 18, not `/data/database.db` |
 | Source schema / inventory | `20260820_survey_content_jurisdiction_v1`; 170 public tables; 52,863 aggregate rows |
 | Neon main | `20260825_demo_survey_participation_v1`; 171 public tables; 52,751 aggregate rows |
-| Fenced Vercel candidate | `dpl_GAqPTuiFEapWUqti3NRTU6VkzaVH`, revision `d3067af02a3bc157c7adba4d7652599c097516ed`, no public/custom alias; Vercel technical alias only |
+| Fenced Vercel candidate | `dpl_6GiWK8ehTBRe3K6hPEoVdJuKPMdQ`, revision `eba5599ffc9b58a8f986a2733aa2d9063abf9233`, no public/custom alias; Vercel technical alias only |
 | Junin WhatsApp sender | official sender ending `3718` |
 | Wrong default found in Render | sandbox sender ending `8886`, offline |
 | Junin ownership model | official legacy mapping present; production `provider_sender` absent |
@@ -81,6 +81,16 @@ application repository.
 - [x] Approve and rehearse the new inbound FIFO revision
       `20260829_inbound_fifo_v2`, which preserves provider receipt order when
       buffered messages are inserted after newer messages.
+- [x] Rehearse the exact incremental authority revision
+      `20260829_global_writer_authority_v1` from the already-certified FIFO
+      revision. The resulting singleton has no owner, epoch `0`, and both
+      runtimes fenced; it cannot authorize writes by itself.
+- [x] Re-run the read-only Neon preflight and Render standby verify-only gate
+      at the exact authority revision. Both verified project/branch identity,
+      FIFO, idempotency and authority constraints without acquiring ownership.
+- [ ] Create a post-authority backup. The Neon project currently has all ten
+      branch slots occupied; the existing `postmigration` branch is the
+      pre-authority rollback point until capacity becomes available.
 - [ ] Repeat preflight, parity, migration, rollback and application canaries on
       the isolated branch.
 
@@ -140,13 +150,15 @@ Exit evidence: signed parity artifact tied to the fence and final export IDs.
 - [ ] From the Render source revision, target only
       `20260825_demo_survey_participation_v1`; never run an open-ended
       `upgrade head`.
-- [ ] Run the dedicated cutover migration command in dry-run mode for the three
-      remaining revisions.
-- [ ] Apply the three remaining approved revisions under an advisory lock with
+- [ ] Run the dedicated cutover migration command in dry-run mode for the four
+      remaining revisions: repair, chat idempotency, inbound FIFO and global
+      writer authority.
+- [ ] Apply the four remaining approved revisions under an advisory lock with
       bounded statement/lock timeouts.
 - [ ] Verify the single Alembic revision after each step, the three Junin
       ticket repairs, the chat-idempotency table/index and inbound FIFO index
-      `(tenant_id, stream_key, received_at, id)`.
+      `(tenant_id, stream_key, received_at, id)`, plus the fenced singleton
+      authority state.
 - [ ] Run the full read-only Neon preflight and take a post-migration backup.
 
 Exit evidence: exact-migration JSON plus post-migration backup branch ID.
@@ -170,8 +182,18 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
 - [ ] Keep WhatsApp inbound in synchronous legacy mode for the initial cut
       unless the durable queue, secrets and tenant allowlist have passed their
       own staging gate.
+- [x] Fail closed in the independent cutover ingress when the runtime database
+      is SQLite, pooled PostgreSQL or lacks TLS, and verify the exact FIFO
+      schema/index contract before an ACK-capable process can start.
+- [ ] Provision the independent durable ingress database, load its separated
+      encryption/HMAC secrets, run the signed remote persistence/replay drill
+      and prove the queue is empty before and after the controlled webhook
+      switch.
 - [x] Keep every Vercel writer cron disabled on the no-alias candidate until
       ownership is transferred.
+- [x] Revalidate the approved hardened revision on fenced Vercel: exact source
+      SHA, Neon/Redis readiness, Junin public read, unsafe HTTP fence and all
+      four internal cron fences passed. `api.chatboc.ar` remained on Render.
 - [x] Verify Junin admin login, ticket list, operational inbox, workflow
       metadata, synthetic ticket creation, self-assignment, status transition
       and internal conversation on the disposable Neon rehearsal target.
@@ -181,8 +203,16 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
 - [ ] Register exactly the four approved Vercel cron definitions against the
       approved deployment while fence is active and all three enable flags are
       false. A build containing `vercel.json` is not evidence that the project
-      scheduler owns those jobs.
+      scheduler owns those jobs. The 2026-08-29 CLI audit still reports all
+      four definitions as `not deployed`; do not transfer job ownership yet.
 - [ ] Verify Twilio signatures and callbacks read-only before any live send.
+
+Current sender evidence is a deliberate blocker: the read-only audit against
+the restored Neon rehearsal database stopped at `tenant_profile_sender_mismatch`,
+and the dry-run reconciler stopped at `provider_connection_exactly_one_required`.
+No provider identifier was invented, no row was changed and no message was
+sent. Production cannot proceed until a fresh provider read snapshot proves
+the exact Junin connection, sender, webhook and callback ownership.
 
 Exit evidence: redacted variable-name inventory, authenticated application
 canary report and provider configuration report.
@@ -193,6 +223,16 @@ canary report and provider configuration report.
       environments remain fenced.
 - [ ] Confirm DNS/TLS, `/health`, `/health/ready`, version and CORS.
 - [ ] Transfer cron/outbox ownership, with no overlap.
+- [ ] Bootstrap the shared PostgreSQL writer authority to the current Render
+      owner while both global runtime flags are fenced. Both Render and Vercel
+      must use the same explicit control DSN; the gate never falls back to
+      either runtime's application database.
+- [x] Apply the shared authority gate to HTTP, cron, Celery, permanent workers,
+      replay and manual survey-effect CLI/dispatcher entry points before any
+      application query, claim or effect.
+- [ ] Fence and attest Render, transfer ownership by CAS/epoch while both are
+      globally fenced, then activate Vercel. A failed/missing control read must
+      leave both HTTP and background writers fail-closed.
 - [ ] Remove the writer fence only on Vercel and prove Render remains fenced.
 - [ ] Run one controlled Junin WhatsApp canary: inbound text, location, audio,
       image and one form/vote interaction; then one reply from the ticket.
@@ -215,8 +255,11 @@ Render uses Neon**. Do not resume writes against the old Render PostgreSQL.
 - [ ] Configure Render standby with the certified Neon target,
       `CHATBOC_RENDER_STANDBY_MODE=true`, the hardened predeploy command and
       writer fence still enabled.
-- [ ] Require verify-only schema validation in Render standby; the rollback
-      path must never execute an open-ended `upgrade head`.
+- [x] Implement and prove verify-only schema validation against the isolated
+      Neon rehearsal target. It pins project/branch and exact revision, opens
+      `READ ONLY`, verifies structural contracts and always rolls back; it
+      never executes an open-ended `upgrade head`. Live Render standby binding
+      remains part of the unchecked configuration step above.
 - [ ] Require `VERCEL_DURABLE_UPLOADS_REQUIRE_R2=true` on both computes.
 - [ ] Pass `scripts/rehearse_compute_rollback.py --validate-only` with the
       approved redacted manifest before the remote drill.

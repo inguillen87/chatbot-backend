@@ -14,6 +14,8 @@ from cutover_writer_fence import (
     cutover_writer_fence_enabled,
     is_cutover_writer_view,
 )
+from global_writer_authority import GLOBAL_WRITER_AUTHORITY_CONTRACT
+from services.global_writer_authority import evaluate_global_writer_authority
 
 
 _READ_METHODS = frozenset({"GET", "HEAD"})
@@ -27,21 +29,33 @@ def register_cutover_writer_fence(app: Flask) -> None:
         method = request.method.upper()
         if method == "OPTIONS":
             return None
-        if not cutover_writer_fence_enabled(current_app.config):
-            return None
+        is_writer = True
         if method in _READ_METHODS:
             view = current_app.view_functions.get(request.endpoint or "")
             if not is_cutover_writer_view(view):
-                return None
+                is_writer = False
+        if not is_writer:
+            return None
 
-        response = jsonify(
-            {
+        if cutover_writer_fence_enabled(current_app.config):
+            payload = {
                 "contract_version": "cutover.writer_fence.v1",
                 "status": "maintenance",
                 "reason_code": "cutover_writer_fence_enabled",
                 "retryable": True,
             }
-        )
+        else:
+            decision = evaluate_global_writer_authority(current_app.config)
+            if decision.allowed:
+                return None
+            payload = {
+                "contract_version": GLOBAL_WRITER_AUTHORITY_CONTRACT,
+                "status": "maintenance",
+                "reason_code": decision.reason_code,
+                "retryable": True,
+            }
+
+        response = jsonify(payload)
         response.status_code = 503
         response.headers["Cache-Control"] = "no-store"
         response.headers["Retry-After"] = "60"

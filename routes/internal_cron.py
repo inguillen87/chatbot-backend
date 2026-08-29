@@ -10,6 +10,9 @@ from cutover_writer_fence import (
     background_writer_fence_report,
     cutover_writer_fence_enabled,
 )
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 
 
 internal_cron_bp = Blueprint(
@@ -60,12 +63,16 @@ def _json_no_store(payload: dict, status_code: int):
 def _enforce_cutover_writer_fence():
     """Fence mutating GET crons before auth, service imports or I/O."""
 
-    if not cutover_writer_fence_enabled(current_app.config):
-        return None
-    response = _json_no_store(
-        background_writer_fence_report("internal_cron"),
-        503,
-    )
+    if cutover_writer_fence_enabled(current_app.config):
+        report = background_writer_fence_report("internal_cron")
+    else:
+        report = background_global_writer_authority_report(
+            "internal_cron",
+            current_app.config,
+        )
+        if report is None:
+            return None
+    response = _json_no_store(report, 503)
     response.headers["Retry-After"] = "60"
     return response
 

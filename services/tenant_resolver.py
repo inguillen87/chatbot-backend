@@ -6,9 +6,13 @@ from urllib.parse import urlparse
 from flask import current_app, g, request
 from sqlalchemy import func, or_
 from cutover_writer_fence import cutover_writer_fence_enabled
+from global_writer_authority import global_writer_authority_enabled
 from database import db
 from models import TenantProfile, User, Rubro, WidgetSettings
 from services.demo_registry import load_demo_rubros
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +23,17 @@ def _tenant_resolution_mutations_fenced() -> bool:
     """Return whether request-time tenant bootstrap writes must be suppressed."""
 
     try:
-        return cutover_writer_fence_enabled(current_app.config)
+        if cutover_writer_fence_enabled(current_app.config):
+            return True
+        return (
+            background_global_writer_authority_report(
+                "tenant_resolution",
+                current_app.config,
+            )
+            is not None
+        )
     except RuntimeError:
-        return cutover_writer_fence_enabled()
+        return cutover_writer_fence_enabled() or global_writer_authority_enabled()
 
 def _alias_map() -> dict[str, str]:
     """Return alias -> slug mapping including config defaults."""

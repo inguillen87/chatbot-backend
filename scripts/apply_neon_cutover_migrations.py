@@ -46,7 +46,13 @@ INITIAL_REVISION = "20260825_demo_survey_participation_v1"
 REPAIR_REVISION = "20260825_legacy_municipio_ticket_scope_repair_v1"
 IDEMPOTENCY_REVISION = "20260825_chat_idempotency_v1"
 INBOUND_FIFO_REVISION = "20260829_inbound_fifo_v2"
-MIGRATION_STEPS = (REPAIR_REVISION, IDEMPOTENCY_REVISION, INBOUND_FIFO_REVISION)
+GLOBAL_WRITER_AUTHORITY_REVISION = "20260829_global_writer_authority_v1"
+MIGRATION_STEPS = (
+    REPAIR_REVISION,
+    IDEMPOTENCY_REVISION,
+    INBOUND_FIFO_REVISION,
+    GLOBAL_WRITER_AUTHORITY_REVISION,
+)
 EXPECTED_MIGRATION_SOURCE_SHA256 = {
     REPAIR_REVISION: "956193d0258e4937b662d4b83d6d7f308ee4ea5f426eab41d5418b2bd0d11a7a",
     IDEMPOTENCY_REVISION: (
@@ -54,6 +60,9 @@ EXPECTED_MIGRATION_SOURCE_SHA256 = {
     ),
     INBOUND_FIFO_REVISION: (
         "628863bf0bade2b7a61ec49d03ad0ebd175c92073fdceca6afcc60f26020d087"
+    ),
+    GLOBAL_WRITER_AUTHORITY_REVISION: (
+        "e5e1801f1d26cc7e596c8dd33418df2122cce4cd52cfb6e83ef2aabc4369950f"
     ),
 }
 
@@ -107,6 +116,21 @@ EXPECTED_INBOUND_FIFO_COLUMNS = (
     "received_at",
     "id",
 )
+EXPECTED_GLOBAL_WRITER_AUTHORITY_COLUMNS = {
+    "authority_key",
+    "owner_runtime",
+    "epoch",
+    "render_fenced",
+    "vercel_fenced",
+    "updated_at",
+}
+EXPECTED_GLOBAL_WRITER_AUTHORITY_CONSTRAINTS = {
+    "ck_cutover_global_writer_authority_epoch",
+    "ck_cutover_global_writer_authority_owner",
+    "ck_cutover_global_writer_authority_safe_state",
+    "ck_cutover_global_writer_authority_singleton",
+    "pk_cutover_global_writer_authority",
+}
 
 
 class CutoverMigrationFailure(RuntimeError):
@@ -258,6 +282,9 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         repair = script.get_revision(REPAIR_REVISION)
         idempotency = script.get_revision(IDEMPOTENCY_REVISION)
         inbound_fifo = script.get_revision(INBOUND_FIFO_REVISION)
+        global_writer_authority = script.get_revision(
+            GLOBAL_WRITER_AUTHORITY_REVISION
+        )
     except Exception as exc:
         raise CutoverMigrationFailure("local_migration_graph_unreadable") from exc
 
@@ -266,9 +293,10 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         or repair is None
         or idempotency is None
         or inbound_fifo is None
+        or global_writer_authority is None
     ):
         raise CutoverMigrationFailure("local_cutover_revision_missing")
-    if script.get_heads() != [INBOUND_FIFO_REVISION]:
+    if script.get_heads() != [GLOBAL_WRITER_AUTHORITY_REVISION]:
         raise CutoverMigrationFailure("local_migration_heads_not_exact")
     if repair.down_revision != INITIAL_REVISION:
         raise CutoverMigrationFailure("local_repair_down_revision_mismatch")
@@ -276,20 +304,31 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         raise CutoverMigrationFailure("local_idempotency_down_revision_mismatch")
     if inbound_fifo.down_revision != IDEMPOTENCY_REVISION:
         raise CutoverMigrationFailure("local_inbound_fifo_down_revision_mismatch")
+    if global_writer_authority.down_revision != INBOUND_FIFO_REVISION:
+        raise CutoverMigrationFailure(
+            "local_global_writer_authority_down_revision_mismatch"
+        )
     if set(initial.nextrev) != {REPAIR_REVISION}:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_initial")
     if set(repair.nextrev) != {IDEMPOTENCY_REVISION}:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_repair")
     if set(idempotency.nextrev) != {INBOUND_FIFO_REVISION}:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_idempotency")
-    if set(inbound_fifo.nextrev):
+    if set(inbound_fifo.nextrev) != {GLOBAL_WRITER_AUTHORITY_REVISION}:
+        raise CutoverMigrationFailure("local_cutover_graph_branches_at_inbound_fifo")
+    if set(global_writer_authority.nextrev):
         raise CutoverMigrationFailure("local_cutover_graph_continues_after_target")
 
     try:
         path = [
             revision.revision
             for revision in reversed(
-                list(script.iterate_revisions(INBOUND_FIFO_REVISION, INITIAL_REVISION))
+                list(
+                    script.iterate_revisions(
+                        GLOBAL_WRITER_AUTHORITY_REVISION,
+                        INITIAL_REVISION,
+                    )
+                )
             )
         ]
     except Exception as exc:
@@ -299,7 +338,12 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
 
     source_fingerprints: dict[str, str] = {}
     graph_document: list[dict[str, str]] = []
-    for revision in (repair, idempotency, inbound_fifo):
+    for revision in (
+        repair,
+        idempotency,
+        inbound_fifo,
+        global_writer_authority,
+    ):
         upgrade = getattr(revision.module, "upgrade", None)
         if not callable(upgrade):
             raise CutoverMigrationFailure("local_cutover_upgrade_missing")
@@ -726,6 +770,173 @@ def _assert_after_inbound_fifo(connection: Connection) -> dict[str, Any]:
     }
 
 
+def _global_writer_authority_contract(
+    connection: Connection,
+    *,
+    require_bootstrap: bool,
+) -> dict[str, Any]:
+    table_name = "cutover_global_writer_authority"
+    if not _table_exists(connection, table_name):
+        return {
+            "table_present": False,
+            "expected_columns_present": False,
+            "expected_constraints_present": False,
+            "singleton_state_valid": False,
+            "singleton_bootstrap_fenced": False,
+            "required_state_valid": False,
+        }
+    columns = _column_names(connection, table_name)
+    constraints = _constraint_names(connection, table_name)
+    rows = list(
+        connection.execute(
+            text(
+                """
+                SELECT authority_key, owner_runtime, epoch,
+                       render_fenced, vercel_fenced
+                FROM public.cutover_global_writer_authority
+                ORDER BY authority_key
+                """
+            )
+        ).mappings()
+    )
+    singleton_state_valid = False
+    singleton_bootstrap_fenced = False
+    if len(rows) == 1:
+        row = dict(rows[0])
+        owner = row.get("owner_runtime")
+        epoch = row.get("epoch")
+        render_fenced = row.get("render_fenced")
+        vercel_fenced = row.get("vercel_fenced")
+        epoch_valid = isinstance(epoch, int) and not isinstance(epoch, bool) and epoch >= 0
+        booleans_valid = isinstance(render_fenced, bool) and isinstance(
+            vercel_fenced, bool
+        )
+        ownership_safe = (
+            owner is None
+            and render_fenced is True
+            and vercel_fenced is True
+        ) or (
+            owner == "render" and vercel_fenced is True
+        ) or (
+            owner == "vercel" and render_fenced is True
+        )
+        singleton_state_valid = bool(
+            row.get("authority_key") == "primary"
+            and epoch_valid
+            and booleans_valid
+            and ownership_safe
+        )
+        singleton_bootstrap_fenced = bool(
+            singleton_state_valid
+            and owner is None
+            and epoch == 0
+            and render_fenced is True
+            and vercel_fenced is True
+        )
+    return {
+        "table_present": True,
+        "expected_columns_present": EXPECTED_GLOBAL_WRITER_AUTHORITY_COLUMNS.issubset(
+            columns
+        ),
+        "expected_constraints_present": EXPECTED_GLOBAL_WRITER_AUTHORITY_CONSTRAINTS.issubset(
+            constraints
+        ),
+        "singleton_state_valid": singleton_state_valid,
+        "singleton_bootstrap_fenced": singleton_bootstrap_fenced,
+        "required_state_valid": (
+            singleton_bootstrap_fenced
+            if require_bootstrap
+            else singleton_state_valid
+        ),
+    }
+
+
+def _assert_after_global_writer_authority(connection: Connection) -> dict[str, Any]:
+    prior_contracts = _assert_after_inbound_fifo(connection)
+    contract = _global_writer_authority_contract(
+        connection,
+        require_bootstrap=True,
+    )
+    required = (
+        "table_present",
+        "expected_columns_present",
+        "expected_constraints_present",
+        "singleton_state_valid",
+        "required_state_valid",
+    )
+    if not all(contract[key] for key in required):
+        raise CutoverMigrationFailure(
+            "database_global_writer_authority_contract_postcheck_failed"
+        )
+    return {
+        **prior_contracts,
+        "global_writer_authority_contract": contract,
+    }
+
+
+def _assert_current_global_writer_authority(connection: Connection) -> dict[str, Any]:
+    prior_contracts = _assert_after_inbound_fifo(connection)
+    contract = _global_writer_authority_contract(
+        connection,
+        require_bootstrap=False,
+    )
+    required = (
+        "table_present",
+        "expected_columns_present",
+        "expected_constraints_present",
+        "singleton_state_valid",
+        "required_state_valid",
+    )
+    if not all(contract[key] for key in required):
+        raise CutoverMigrationFailure(
+            "database_global_writer_authority_contract_invalid"
+        )
+    return {
+        **prior_contracts,
+        "global_writer_authority_contract": contract,
+    }
+
+
+def _require_allowlisted_cutover_revision(connection: Connection) -> str:
+    revision = _single_alembic_revision(connection)
+    if revision not in {INITIAL_REVISION, *MIGRATION_STEPS}:
+        raise CutoverMigrationFailure("database_migration_revision_unexpected")
+    return revision
+
+
+def _assert_contract_for_revision(
+    connection: Connection,
+    revision: str,
+) -> dict[str, Any]:
+    validators = {
+        INITIAL_REVISION: _assert_baseline_schema,
+        REPAIR_REVISION: _assert_after_repair,
+        IDEMPOTENCY_REVISION: _assert_after_idempotency,
+        INBOUND_FIFO_REVISION: _assert_after_inbound_fifo,
+        GLOBAL_WRITER_AUTHORITY_REVISION: _assert_current_global_writer_authority,
+    }
+    validator = validators.get(revision)
+    if validator is None:
+        raise CutoverMigrationFailure("database_migration_revision_unexpected")
+    return validator(connection)
+
+
+def _postcheck_for_applied_revision(
+    connection: Connection,
+    revision: str,
+) -> dict[str, Any]:
+    validators = {
+        REPAIR_REVISION: _assert_after_repair,
+        IDEMPOTENCY_REVISION: _assert_after_idempotency,
+        INBOUND_FIFO_REVISION: _assert_after_inbound_fifo,
+        GLOBAL_WRITER_AUTHORITY_REVISION: _assert_after_global_writer_authority,
+    }
+    validator = validators.get(revision)
+    if validator is None:
+        raise CutoverMigrationFailure("migration_target_not_allowlisted")
+    return validator(connection)
+
+
 def _apply_exact_revision(
     connection: Connection,
     *,
@@ -786,8 +997,8 @@ def _execute_cutover_transaction(
     if apply:
         _acquire_advisory_lock(connection)
 
-    revision_before = _require_revision(connection, INITIAL_REVISION)
-    baseline = _assert_baseline_schema(connection)
+    revision_before = _require_allowlisted_cutover_revision(connection)
+    baseline = _assert_contract_for_revision(connection, revision_before)
     if not apply:
         return {
             "identity": identity,
@@ -799,47 +1010,26 @@ def _execute_cutover_transaction(
         }
 
     steps: list[dict[str, Any]] = []
-    _apply_exact_revision(
-        connection,
-        plan=plan,
-        expected_current_revision=INITIAL_REVISION,
-        target_revision=REPAIR_REVISION,
-    )
-    _require_revision(connection, REPAIR_REVISION)
-    steps.append(
-        {
-            "revision": REPAIR_REVISION,
-            "postcheck": _assert_after_repair(connection),
-        }
-    )
-
-    _apply_exact_revision(
-        connection,
-        plan=plan,
-        expected_current_revision=REPAIR_REVISION,
-        target_revision=IDEMPOTENCY_REVISION,
-    )
-    revision_after = _require_revision(connection, IDEMPOTENCY_REVISION)
-    steps.append(
-        {
-            "revision": IDEMPOTENCY_REVISION,
-            "postcheck": _assert_after_idempotency(connection),
-        }
-    )
-
-    _apply_exact_revision(
-        connection,
-        plan=plan,
-        expected_current_revision=IDEMPOTENCY_REVISION,
-        target_revision=INBOUND_FIFO_REVISION,
-    )
-    revision_after = _require_revision(connection, INBOUND_FIFO_REVISION)
-    steps.append(
-        {
-            "revision": INBOUND_FIFO_REVISION,
-            "postcheck": _assert_after_inbound_fifo(connection),
-        }
-    )
+    chain = (INITIAL_REVISION, *MIGRATION_STEPS)
+    current_index = chain.index(revision_before)
+    revision_after = revision_before
+    for target_revision in chain[current_index + 1 :]:
+        _apply_exact_revision(
+            connection,
+            plan=plan,
+            expected_current_revision=revision_after,
+            target_revision=target_revision,
+        )
+        revision_after = _require_revision(connection, target_revision)
+        steps.append(
+            {
+                "revision": target_revision,
+                "postcheck": _postcheck_for_applied_revision(
+                    connection,
+                    target_revision,
+                ),
+            }
+        )
     return {
         "identity": identity,
         "advisory_lock_acquired": True,
@@ -926,8 +1116,9 @@ def run_cutover(
         },
         "plan": {
             "initial_revision": INITIAL_REVISION,
+            "accepted_start_revisions": [INITIAL_REVISION, *MIGRATION_STEPS],
             "revisions": list(MIGRATION_STEPS),
-            "final_revision": INBOUND_FIFO_REVISION,
+            "final_revision": GLOBAL_WRITER_AUTHORITY_REVISION,
             "graph_fingerprint_sha256": plan.graph_fingerprint_sha256,
             "migration_source_fingerprints_sha256": dict(
                 plan.source_fingerprints_sha256

@@ -549,6 +549,45 @@ authenticated CRM operations, R2 writes, the official WhatsApp sender, live
 Twilio callbacks, cron ownership, a rollback drill or the 24-hour soak. Those
 gates remain mandatory before any domain or webhook moves.
 
+### Latest fenced revision revalidation
+
+The subsequently hardened source revision
+`eba5599ffc9b58a8f986a2733aa2d9063abf9233` was deployed as
+`dpl_6GiWK8ehTBRe3K6hPEoVdJuKPMdQ` at the isolated technical URL
+`chatboc-backend-33996czy5-marcelos-projects-c26aa499.vercel.app`. It remained
+fenced and received no public/custom domain or provider traffic.
+
+| Check | Result |
+| --- | --- |
+| Deployment state | `READY`; source telemetry matches exact `eba5599...` SHA |
+| Runtime health | `/health=200`; database health `200`; readiness reports database and Redis `ok` |
+| Junin read surface | public tenant profile returns `200`, tenant `junin` |
+| Unsafe HTTP | `503`, `Cache-Control: no-store`, `Retry-After: 60` |
+| Four internal cron routes | all return fenced no-store `503`; none executed |
+| Public production | `api.chatboc.ar` still returns Render revision `8ced9216...` |
+| Vercel scheduler registry | all four local definitions report `not deployed`; ownership remains pending |
+
+This revalidation proves the latest code and restored Neon runtime can remain
+available read-only while writes/jobs are fenced. It deliberately does not
+claim scheduler ownership, live provider delivery, rollback readiness or a
+Production cutover.
+
+### Render standby verify-only rehearsal
+
+The hardened Render predeploy entrypoint was exercised against the isolated
+Neon rehearsal branch while the writer fence remained active. It required the
+explicit `verify-only` action, a direct Neon connection and pinned project and
+branch identities. The first database statement was `SET TRANSACTION READ
+ONLY`; the verifier then confirmed Neon identity, exact revision
+`20260829_inbound_fifo_v2`, the local migration graph and the demo,
+idempotency and inbound FIFO structural contracts. It always rolled back and
+reported zero write attempts and zero ownership acquisition.
+
+This proves the rollback compute can validate the already-migrated database
+without running Alembic. It does not prove the live Render service has been
+rebound to Neon or that a remote rollback has been executed; both remain
+maintenance-window gates.
+
 ## Isolated write canary and ownership audit - 2026-08-29
 
 A second Production-target deployment, `dpl_HNHRkZJCTF94Me7XxPhvqXMKXXG3`,
@@ -609,3 +648,73 @@ was deleted to make room. The existing pre-FIFO postmigration branch remains
 the rollback reference for this isolated rehearsal, while final cutover still
 requires explicit backup capacity and a new post-migration branch before
 traffic can move.
+
+## Shared writer authority and inbound continuity - 2026-08-29
+
+The cutover gate now uses a PostgreSQL control connection that is explicit and
+common to Render and Vercel. It never falls back to either runtime's
+application `DATABASE_URL`; this is required because the source Render
+PostgreSQL and destination Neon databases are different before the cut. Once
+enabled, an absent/invalid control DSN, runtime identity, singleton row or
+database response fails closed for unsafe HTTP, internal crons, Celery and
+permanent workers. Ownership transitions use a singleton, CAS epoch and a
+database constraint that prevents both runtimes from being active writers.
+The control query has bounded connect, pool, statement, lock and idle
+timeouts.
+
+The exact incremental migrator dry-ran successfully from the already-applied
+`20260829_inbound_fifo_v2` revision, then applied only
+`20260829_global_writer_authority_v1` under its advisory lock. The migration
+source SHA-256 was
+`e5e1801f1d26cc7e596c8dd33418df2122cce4cd52cfb6e83ef2aabc4369950f`.
+Postcheck and a separate read-only status command proved one singleton with
+owner `NULL`, epoch `0`, `render_fenced=true` and `vercel_fenced=true`; no
+runtime owns writes yet. A fresh preflight returned the exact new head, 173
+public tables, 52,876 aggregate rows, all critical schema checks true and a
+read-only transaction. Aggregate count is destination inventory evidence,
+not renewed Production content parity.
+
+Render standby verify-only was repeated against that exact authority revision.
+It pinned the same Neon project/branch, verified the demo, idempotency, FIFO
+and authority contracts in a read-only transaction, rolled back, and reported
+no writes or ownership acquisition. The project still has ten branches, so a
+post-authority backup could not be created without deleting an existing
+branch. The existing `br-purple-mode-acfyj7js` branch remains the pre-authority
+rollback point; capacity for a new final backup is still a NO-GO gate.
+
+An independent inbound buffer was implemented for the maintenance interval.
+It accepts only correctly signed Twilio forms for the pinned Junin recipient,
+persists before ACK into a separate required database, encrypts the complete
+payload with AES-256-GCM, applies a separate envelope HMAC, deduplicates by
+`MessageSid`, preserves original `received_at`, and replays FIFO through the
+existing durable intake. Replay requires the same stream-secret fingerprint
+and an allowed global writer decision before it can take a lease.
+
+The final adversarial corrections close three deployment blockers. An
+environment-driven ingress runtime now rejects SQLite, pooled PostgreSQL and
+PostgreSQL without TLS before it can construct an ACK-capable application;
+SQLite remains available only through an explicitly injected test factory.
+Startup verifies the complete known table contract, including columns, types,
+nullability, primary key, checks, index order/uniqueness/partial predicate and
+the absence of unexpected foreign keys. Removing the partial unique stream
+lease index now makes both migration verification and startup fail closed. The
+survey-effect CLI and common dispatcher also evaluate the local fence and
+shared writer authority before any application query, claim or effect, so a
+manual/direct invocation cannot bypass cutover ownership.
+
+The buffer is not deployed: it still needs a separate Neon project/database,
+secret loading, retention/metrics, a remote signed-webhook drill and a
+controlled webhook switch. The final disjoint recertification groups passed
+496 focused tests: 87 buffer/inbound, 112 authority/survey effects, 151 exact
+migration/preflight/cron/sender/rollback, and 146 worker/service integration
+tests. Python compilation and `git diff --check` also passed. The Vercel cron
+registry was queried again and still reports all four definitions as `not
+deployed`; their enable flags remain off and scheduler ownership has not moved.
+
+Finally, the Junin sender audit ran read-only against the restored Neon
+database with the required official ending `3718`. It failed closed at
+`tenant_profile_sender_mismatch`; the existing dry-run reconciler then stopped
+at `provider_connection_exactly_one_required`. No row or provider resource was
+changed and no message was sent. A fresh provider read snapshot and an exact
+production connection/sender binding are mandatory before reconciliation or
+any live canary.

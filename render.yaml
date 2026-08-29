@@ -34,8 +34,16 @@ services:
         sync: false
       - key: MIGRATIONS_DATABASE_URL
         sync: false
+      # Required only when standby mode is enabled. The pre-deploy hook checks
+      # both identifiers inside a read-only transaction before Render starts.
+      - key: EXPECTED_NEON_PROJECT_ID
+        sync: false
+      - key: EXPECTED_NEON_BRANCH_ID
+        sync: false
       - key: CHATBOC_RENDER_STANDBY_MODE
         value: "false"
+      - key: CHATBOC_RENDER_STANDBY_SCHEMA_ACTION
+        value: "verify-only"
       # Keep false until the R2 put/get/delete probe and remaining /data users
       # are certified. The flag is intentionally explicit, never implicit.
       - key: VERCEL_DURABLE_UPLOADS_REQUIRE_R2
