@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import hashlib
+from pathlib import Path
+import threading
+import time
 from typing import Any, Optional
 
 from flask import Flask, Response, jsonify, request
 from sqlalchemy import Engine, select
 from sqlalchemy.exc import SQLAlchemyError
-from twilio.request_validator import RequestValidator
 
 from .core import (
     CutoverIngressConflict,
@@ -16,9 +19,21 @@ from .core import (
     CutoverIngressSettings,
     CutoverIngressStore,
 )
+from .twilio_signature import TwilioInboundSignatureValidator
 
 
 ACK_BODY = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><Response></Response>"
+
+
+def _runtime_source_sha256() -> str:
+    digest = hashlib.sha256()
+    package_root = Path(__file__).resolve().parent
+    for path in sorted(package_root.glob("*.py"), key=lambda item: item.name):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _response(body: str, status: int, *, content_type: str = "text/plain") -> Response:
@@ -40,7 +55,10 @@ def create_cutover_ingress_app(
     resolved = settings or CutoverIngressSettings.from_environ()
     resolved_engine = engine or resolved.build_engine()
     store = CutoverIngressStore(resolved_engine, resolved)
-    validator = RequestValidator(resolved.twilio_auth_token)
+    validator = TwilioInboundSignatureValidator(resolved.twilio_auth_token)
+    source_sha256 = _runtime_source_sha256()
+    health_lock = threading.Lock()
+    health_state: dict[str, Any] = {"checked_at": 0.0, "reachable": False}
 
     app = Flask("chatboc-cutover-ingress")
     app.config.update(
@@ -61,17 +79,29 @@ def create_cutover_ingress_app(
 
     @app.get("/health")
     def health() -> Response:
-        try:
-            with resolved_engine.connect() as connection:
-                connection.execute(select(1)).scalar_one()
-        except SQLAlchemyError:
+        now = time.monotonic()
+        if now - float(health_state["checked_at"]) >= 5.0:
+            with health_lock:
+                now = time.monotonic()
+                if now - float(health_state["checked_at"]) >= 5.0:
+                    try:
+                        with resolved_engine.connect() as connection:
+                            connection.execute(select(1)).scalar_one()
+                    except SQLAlchemyError:
+                        health_state.update(checked_at=now, reachable=False)
+                    else:
+                        health_state.update(checked_at=now, reachable=True)
+        if health_state["reachable"] is not True:
             return _response("unavailable", 503)
         return jsonify(
             {
                 "contract_version": "chatboc.cutover_ingress.health.v1",
                 "database": "reachable",
+                "database_check_ttl_seconds": 5,
                 "mode": "buffer_only",
                 "providers_enabled": False,
+                "source_sha256": source_sha256,
+                "status": "buffer_ready",
             }
         )
 
@@ -80,6 +110,7 @@ def create_cutover_ingress_app(
         signature = str(request.headers.get("X-Twilio-Signature") or "").strip()
         if not signature:
             return _response("forbidden", 403)
+
         try:
             valid_signature = validator.validate(
                 resolved.public_webhook_url,

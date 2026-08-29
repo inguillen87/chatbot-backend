@@ -691,7 +691,7 @@ existing durable intake. Replay requires the same stream-secret fingerprint
 and an allowed global writer decision before it can take a lease.
 
 The final adversarial corrections close three deployment blockers. An
-environment-driven ingress runtime now rejects SQLite, pooled PostgreSQL and
+environment-driven ingress runtime now rejects SQLite, direct PostgreSQL and
 PostgreSQL without TLS before it can construct an ACK-capable application;
 SQLite remains available only through an explicitly injected test factory.
 Startup verifies the complete known table contract, including columns, types,
@@ -718,3 +718,113 @@ at `provider_connection_exactly_one_required`. No row or provider resource was
 changed and no message was sent. A fresh provider read snapshot and an exact
 production connection/sender binding are mandatory before reconciliation or
 any live canary.
+
+## Post-review fenced candidate and provider read - 2026-08-29
+
+The reviewed revision `e8373ae1056aa5d5293aa40b9481bcc347d51347` was
+published and deployed as `dpl_CK7KpRAWqDFhR5vkRnV8mc3fw11H` with
+`--skip-domain`. It targets only the isolated rehearsal database, has the local
+writer fence enabled, leaves shared authority disabled, and explicitly keeps
+all Vercel cron, WhatsApp notification, inbound wakeup, durable-worker,
+Twilio provisioning and provider-live flags disabled.
+
+| Check | Result |
+| --- | --- |
+| Deployment | `READY`; exact backend revision returned by `/api/version` |
+| Runtime | `/health=200`; database health `200`; Neon and Redis readiness `ok` |
+| Junin read | public tenant profile `200`, slug `junin`, `Municipalidad de Junin` |
+| Unsafe HTTP | `POST /api/tickets` returned no-store retryable `503` from the writer fence |
+| Internal schedules | all four routes returned no-store `503`, `cutover_writer_fence_enabled` |
+| Aliases | only the Vercel technical project alias; no public/custom alias |
+| Scheduler registry | four definitions still report `not deployed`; ownership did not move |
+| Public Production | `api.chatboc.ar` still returned Render revision `8ced9216...` with Render headers |
+
+A fresh Twilio CLI provider read, using the already configured active account,
+listed four Messaging Services and exactly one WhatsApp Channel Sender ending
+`3718`. That sender belongs to one Messaging Service; both its inbound request
+and status callback use host `api.chatboc.ar`, and no fallback URL is
+configured. Only redacted identifier suffixes and URL-host/path hashes were
+emitted. This read performed no provider mutation and sent no message. It
+proves the official provider resource exists, but the restored Neon database
+still lacks the exact tenant-owned production connection/sender binding, so
+the sender gate remains NO-GO until a reviewed, idempotent reconciliation is
+applied and the full audit certifies exact account, SID, URL and tenant
+ownership.
+
+A second independent GET used Twilio's WhatsApp Senders v2 resource, which
+exposes registration status rather than merely Messaging-Service association.
+It returned four account senders: the official ending `3718` is `ONLINE`, the
+sandbox ending `8886` is `OFFLINE`, one unrelated sender is `ONLINE`, and one
+other sender is `OFFLINE`. Exactly one v2 sender ends `3718`; its inbound and
+status callbacks resolve to `api.chatboc.ar` at `/webhook/whatsapp` and
+`/twilio/whatsapp/status`, with no fallback URL. This remains read-only provider
+evidence: it does not yet prove that the destination Vercel credential belongs
+to the same account, and it did not send a message.
+
+## Isolated provider-binding dry-run and ingress package - 2026-08-29
+
+A new fail-closed provider-connection reconciler was exercised in its default
+read-only mode against `render_rehearsal_20260829` on branch
+`br-floral-unit-acgqawl6`. It found exactly one active Junin tenant (`id=22`),
+one unique owner, no scoped Twilio/WhatsApp/production connection and no
+cross-tenant account conflict. The proposed action is one create, with zero
+deletes, zero provider calls and zero messages. Its plan digest is
+`44e357613dd48e66840644d9c088a2b48b7c85a391980727d01a0199cf50e543`.
+The account and database are represented only by hashes and identifier suffixes
+in the command output. No row was changed. Apply remains blocked pending an
+independent review of the provider-read evidence and readiness status.
+
+That independent review rejected this first plan as P1: it would have promoted
+the new connection to `online` using operator-supplied evidence labels that
+were not cryptographically bound to the tenant, provider snapshot, callback,
+credential reference or deployment revision. The digest above is therefore
+invalidated and MUST NOT be approved or applied. The replacement workflow must
+first persist a non-ready connection and only promote it from a fresh canonical
+provider snapshot whose digest is part of the approved plan. The isolated
+database remains unchanged.
+
+The cutover ingress also gained a dedicated Vercel container package inside
+`cutover_ingress/`. Its deny-first build context copies only the six ingress
+modules, uses a non-root user, registers no cron or backend rewrite, exposes no
+LLM or outbound-provider client, requires the Neon pooled endpoint at runtime
+and delegates reusable connection management to Neon while SQLAlchemy uses
+`NullPool`. Migrations require the direct sibling URL for the exact same branch
+and database. Its health contract
+continues to declare `mode=buffer_only` and `providers_enabled=false`.
+Ingress/package tests cover official Twilio signature handling for the default
+HTTPS port, Unicode, reserved and empty form values. Duplicate form keys are an
+intentional fail-closed exception and return `422` before persistence. The
+suite also covers persistence-before-ACK, schema contract, WSGI isolation,
+minimal dependencies and pooled-runtime/direct-migration separation. A remote
+container build and signed webhook smoke were still required at that checkpoint;
+the following section records their isolated completion.
+
+## Isolated ingress deployment and encrypted canary - 2026-08-29
+
+The dedicated database `cutover_ingress_rehearsal_20260829` was initialized
+through its direct Neon endpoint and then independently verified through the
+pooled runtime endpoint. Verification checked the exact schema and executed a
+valid INSERT followed by rollback through the runtime role; no probe row
+remained. Canonical `postgresql://` Neon URLs are normalized to the bundled
+`postgresql+psycopg` driver, while host, effective port and exact database name
+must match between the pooled and direct sibling URLs. Target-changing
+connection options are rejected.
+
+The package was linked from `cutover_ingress/` to the dedicated Vercel project
+`chatboc-cutover-ingress`. Production deployment
+`dpl_G3oYffPGtPD1uesdsdX3rYbTShpT` has only the two Vercel technical aliases;
+it has no Chatboc custom domain and received no provider traffic. The build log
+certifies the container path, explicit ingress module allowlist, non-root user,
+Gunicorn `$PORT` binding and absence of the Twilio SDK/outbound REST client.
+The image contains a minimal inbound-only signature verifier whose parity is
+tested against the official SDK.
+
+Runtime configuration used a random synthetic Twilio account/token that cannot
+address the real account. `/health` returned `database=reachable`,
+`mode=buffer_only` and `providers_enabled=false`. A signed remote canary then
+proved `403` for an invalid signature, `200` for creation, `200` for the exact
+duplicate and `409` for the same SID with changed content. Neon contained one
+encrypted row, no plaintext body, and the cleanup deleted exactly that row.
+The canary made no Twilio call and attempted no replay into Chatboc. The real
+Twilio webhook, `api.chatboc.ar`, Render writers and public DNS remain
+unchanged.

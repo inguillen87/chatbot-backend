@@ -1,0 +1,25 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+# This image is a buffer-only boundary.  Its build context deliberately has no
+# Chatboc application, workers, AI stack, provider sender, or migration CLI.
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt \
+    && groupadd --system ingress \
+    && useradd --system --gid ingress --home /nonexistent --no-create-home ingress
+
+RUN mkdir -p /app/cutover_ingress
+COPY __init__.py app.py core.py migration.py schema.py twilio_signature.py wsgi.py /app/cutover_ingress/
+RUN python -m compileall -q /app/cutover_ingress \
+    && chown -R ingress:ingress /app
+
+USER ingress
+EXPOSE 8080
+
+CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --worker-class gthread --threads 4 --timeout 30 --graceful-timeout 25 --access-logfile - --error-logfile - cutover_ingress.wsgi:app"]

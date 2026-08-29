@@ -34,6 +34,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import Engine, and_, create_engine, exists, or_, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.pool import NullPool
 
 from .migration import assert_cutover_ingress_schema
 from .schema import buffered_whatsapp_ingress
@@ -115,15 +116,52 @@ def _decode_b64_secret(value: Any, *, code: str, exact: int | None = None) -> by
     return decoded
 
 
-def _database_identity(value: str) -> tuple[str, str, str]:
-    url = make_url(value)
+_UNSAFE_DATABASE_TARGET_QUERY_KEYS = {
+    "database",
+    "dbname",
+    "host",
+    "hostaddr",
+    "options",
+    "port",
+    "search_path",
+    "service",
+    "target_session_attrs",
+}
+
+
+def _strict_database_url(value: str):
+    try:
+        url = make_url(value)
+    except Exception as exc:
+        raise CutoverIngressConfigurationError(
+            "cutover_ingress_database_url_invalid"
+        ) from exc
+    query_keys = {str(key).lower() for key in url.query}
+    if query_keys & _UNSAFE_DATABASE_TARGET_QUERY_KEYS:
+        raise CutoverIngressConfigurationError(
+            "cutover_ingress_database_target_options_forbidden"
+        )
+    return url
+
+
+def _database_identity(value: str) -> tuple[str, str, int, str]:
+    url = _strict_database_url(value)
     backend = url.get_backend_name().lower()
     if backend == "sqlite":
-        return backend, "", os.path.abspath(str(url.database or ""))
+        return backend, "", 0, os.path.abspath(str(url.database or ""))
     host = str(url.host or "").lower()
     # Neon uses sibling pooled/unpooled hostnames for the same branch.
     host = re.sub(r"-pooler(?=\.)", "", host)
-    return backend, host, str(url.database or "").lower()
+    return backend, host, int(url.port or 5432), str(url.database or "")
+
+
+def _normalize_database_driver(value: str) -> str:
+    """Pin PostgreSQL URLs to the only driver shipped by the ingress image."""
+
+    url = _strict_database_url(value)
+    if url.get_backend_name().lower() == "postgresql" and url.drivername != "postgresql+psycopg":
+        url = url.set(drivername="postgresql+psycopg")
+    return url.render_as_string(hide_password=False)
 
 
 def _require_separate_database(ingress_url: str, primary_url: str | None) -> None:
@@ -143,22 +181,16 @@ def _require_separate_database(ingress_url: str, primary_url: str | None) -> Non
 
 
 def _require_runtime_postgresql_database(ingress_url: str) -> None:
-    """Reject local/pooled databases for the public ingress runtime.
+    """Require a durable TLS PostgreSQL database for the public runtime.
 
     SQLite remains useful for explicitly injected unit-test factories, but an
     environment-driven WSGI process must never be able to acknowledge a
-    provider webhook into an ephemeral filesystem.  The ingress also needs a
-    direct PostgreSQL connection because its FIFO lease invariant is enforced
-    by a partial unique index and durable transactions, not by a pooler's
-    transaction multiplexing.
+    provider webhook into an ephemeral filesystem.  A Neon pooled endpoint is
+    valid for ordinary transactions and partial unique indexes and prevents
+    Fluid Compute instances from multiplying direct backend connections.
     """
 
-    try:
-        url = make_url(ingress_url)
-    except Exception as exc:
-        raise CutoverIngressConfigurationError(
-            "cutover_ingress_database_url_invalid"
-        ) from exc
+    url = _strict_database_url(ingress_url)
     if url.get_backend_name().lower() != "postgresql":
         raise CutoverIngressConfigurationError(
             "cutover_ingress_runtime_database_must_be_postgresql"
@@ -168,9 +200,9 @@ def _require_runtime_postgresql_database(ingress_url: str) -> None:
         raise CutoverIngressConfigurationError(
             "cutover_ingress_database_url_invalid"
         )
-    if re.search(r"(?:^|[-.])pooler(?=\.|$)", host):
+    if not re.search(r"(?:^|[-.])pooler(?=\.|$)", host):
         raise CutoverIngressConfigurationError(
-            "cutover_ingress_database_must_be_direct"
+            "cutover_ingress_runtime_database_must_be_pooled"
         )
     sslmode = str(url.query.get("sslmode") or "").strip().lower()
     if sslmode not in {"require", "verify-ca", "verify-full"}:
@@ -197,16 +229,18 @@ class CutoverIngressSettings:
 
     def __post_init__(self) -> None:
         database_url = str(self.database_url or "").strip()
-        try:
-            make_url(database_url)
-        except Exception as exc:
-            raise CutoverIngressConfigurationError(
-                "cutover_ingress_database_url_invalid"
-            ) from exc
+        _strict_database_url(database_url)
         parts = urlsplit(str(self.public_webhook_url or "").strip())
         if (
             parts.scheme != "https"
             or not parts.netloc
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+            or parts.port is not None
+            or parts.hostname != parts.hostname.lower()
+            or parts.netloc != parts.hostname
+            or ":" in parts.hostname
             or parts.query
             or parts.fragment
             or not parts.path
@@ -273,7 +307,11 @@ class CutoverIngressSettings:
             raise CutoverIngressConfigurationError(
                 "cutover_ingress_lease_seconds_invalid"
             )
-        object.__setattr__(self, "database_url", database_url)
+        object.__setattr__(
+            self,
+            "database_url",
+            _normalize_database_driver(database_url),
+        )
         object.__setattr__(self, "public_webhook_url", parts.geturl())
         object.__setattr__(self, "expected_to", self.expected_to.lower())
         object.__setattr__(self, "encryption_keys", MappingProxyType(keys))
@@ -382,11 +420,16 @@ class CutoverIngressSettings:
         )
 
     def build_engine(self) -> Engine:
-        options: dict[str, Any] = {"future": True, "pool_pre_ping": True}
+        options: dict[str, Any] = {"future": True}
         if self.database_url.startswith("sqlite"):
-            options["connect_args"] = {"check_same_thread": False, "timeout": 5}
+            options.update(
+                pool_pre_ping=True,
+                connect_args={"check_same_thread": False, "timeout": 5},
+            )
         else:
-            options["pool_recycle"] = 300
+            # Neon/PgBouncer owns the reusable pool. NullPool avoids stacking a
+            # persistent SQLAlchemy pool in every autoscaled Vercel instance.
+            options.update(pool_pre_ping=False, poolclass=NullPool)
         return create_engine(self.database_url, **options)
 
     @property

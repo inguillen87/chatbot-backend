@@ -15,10 +15,10 @@ maintenance window. No step authorizes deleting Render or its database.
 | Source of truth | Render PostgreSQL 18, not `/data/database.db` |
 | Source schema / inventory | `20260820_survey_content_jurisdiction_v1`; 170 public tables; 52,863 aggregate rows |
 | Neon main | `20260825_demo_survey_participation_v1`; 171 public tables; 52,751 aggregate rows |
-| Fenced Vercel candidate | `dpl_6GiWK8ehTBRe3K6hPEoVdJuKPMdQ`, revision `eba5599ffc9b58a8f986a2733aa2d9063abf9233`, no public/custom alias; Vercel technical alias only |
+| Fenced Vercel candidate | `dpl_CK7KpRAWqDFhR5vkRnV8mc3fw11H`, revision `e8373ae1056aa5d5293aa40b9481bcc347d51347`, no public/custom alias; Vercel technical alias only |
 | Junin WhatsApp sender | official sender ending `3718` |
 | Wrong default found in Render | sandbox sender ending `8886`, offline |
-| Junin ownership model | official legacy mapping present; production `provider_sender` absent |
+| Junin ownership model | official legacy mapping present; restored database lacks the exact production `provider_connection`/`provider_sender` binding |
 | Secondary Junin mapping | active legacy mapping ending `5678`; classification pending |
 | Background processing | no active Render workers or cron services were found |
 | Public traffic | unchanged; Render is still the only public writer |
@@ -183,12 +183,24 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
       unless the durable queue, secrets and tenant allowlist have passed their
       own staging gate.
 - [x] Fail closed in the independent cutover ingress when the runtime database
-      is SQLite, pooled PostgreSQL or lacks TLS, and verify the exact FIFO
+      is SQLite, direct PostgreSQL or lacks TLS, and verify the exact FIFO
       schema/index contract before an ACK-capable process can start.
 - [ ] Provision the independent durable ingress database, load its separated
       encryption/HMAC secrets, run the signed remote persistence/replay drill
       and prove the queue is empty before and after the controlled webhook
       switch.
+- [x] Provision the isolated ingress database and verify exact schema plus a
+      rolled-back DML probe through the pooled runtime DSN.
+- [x] Deploy the dedicated Vercel ingress with synthetic provider credentials;
+      prove health, signed persistence, exact duplicate, conflicting replay,
+      invalid signature, encrypted storage and exact cleanup without provider
+      or Chatboc replay effects.
+- [x] Package the ingress as an isolated non-root Vercel container with a
+      deny-first build context, Neon pooled runtime plus direct-only migrations,
+      SQLAlchemy `NullPool`, no crons, no LLM and
+      no outbound-provider client. Local contract tests and the remote container
+      build passed; real replay and controlled webhook switching remain in the
+      unchecked item above.
 - [x] Keep every Vercel writer cron disabled on the no-alias candidate until
       ownership is transferred.
 - [x] Revalidate the approved hardened revision on fenced Vercel: exact source

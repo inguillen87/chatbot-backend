@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from sqlalchemy import create_engine, func, select, update
 from twilio.request_validator import RequestValidator
+from werkzeug.datastructures import MultiDict
 
 from cutover_ingress.app import create_cutover_ingress_app
 from cutover_ingress.core import (
@@ -30,6 +31,7 @@ from cutover_ingress.migration import (
     migrate_cutover_ingress,
 )
 from cutover_ingress.schema import buffered_whatsapp_ingress, schema_revision
+from cutover_ingress.twilio_signature import TwilioInboundSignatureValidator
 
 
 BASE_TIME = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
@@ -37,13 +39,13 @@ AUTH_TOKEN = "auth-token-for-isolated-buffer-tests"
 ACCOUNT_SID = "AC" + "a" * 32
 EXPECTED_TO = "whatsapp:+17432643718"
 PUBLIC_URL = "https://ingress.example.test/webhook/whatsapp"
-DIRECT_INGRESS_URL = (
-    "postgresql+psycopg://ingress:secret@ep-ingress.example.test/"
+POOLED_INGRESS_URL = (
+    "postgresql+psycopg://ingress:secret@ep-ingress-pooler.example.test/"
     "cutover_ingress?sslmode=require"
 )
 
 
-def _runtime_environment(database_url: str = DIRECT_INGRESS_URL) -> dict[str, str]:
+def _runtime_environment(database_url: str = POOLED_INGRESS_URL) -> dict[str, str]:
     return {
         "CUTOVER_INGRESS_DATABASE_URL": database_url,
         "CUTOVER_INGRESS_PUBLIC_WEBHOOK_URL": PUBLIC_URL,
@@ -140,7 +142,7 @@ def _signed_headers(payload: dict[str, str]) -> dict[str, str]:
 
 
 def test_environment_requires_a_distinct_database(tmp_path):
-    database_url = DIRECT_INGRESS_URL
+    database_url = POOLED_INGRESS_URL
     env = _runtime_environment(database_url)
     env["DATABASE_URL"] = database_url
     with pytest.raises(
@@ -155,7 +157,7 @@ def test_environment_accepts_rotation_keyring_and_separate_database(tmp_path):
         "postgresql+psycopg://app:secret@ep-primary.example.test/"
         "chatboc?sslmode=require"
     )
-    ingress_url = DIRECT_INGRESS_URL
+    ingress_url = POOLED_INGRESS_URL
     env = _runtime_environment(ingress_url)
     env.update(
         DATABASE_URL=primary,
@@ -168,6 +170,13 @@ def test_environment_accepts_rotation_keyring_and_separate_database(tmp_path):
     assert settings.database_url == ingress_url
     assert settings.active_encryption_key_id == "new"
     assert settings.encryption_keys["old"] == b"o" * 32
+
+
+def test_environment_normalizes_standard_neon_url_to_bundled_psycopg_driver():
+    raw_url = POOLED_INGRESS_URL.replace("postgresql+psycopg://", "postgresql://")
+    settings = CutoverIngressSettings.from_environ(_runtime_environment(raw_url))
+
+    assert settings.database_url.startswith("postgresql+psycopg://")
 
 
 def test_environment_rejects_stale_redacted_stream_secret_fingerprint(tmp_path):
@@ -188,22 +197,47 @@ def test_environment_rejects_stale_redacted_stream_secret_fingerprint(tmp_path):
             "cutover_ingress_runtime_database_must_be_postgresql",
         ),
         (
-            "postgresql+psycopg://ingress:secret@ep-ingress-pooler.example.test/"
+            "postgresql+psycopg://ingress:secret@ep-ingress.example.test/"
             "cutover_ingress?sslmode=require",
-            "cutover_ingress_database_must_be_direct",
+            "cutover_ingress_runtime_database_must_be_pooled",
         ),
         (
-            "postgresql+psycopg://ingress:secret@ep-ingress.example.test/"
+            "postgresql+psycopg://ingress:secret@ep-ingress-pooler.example.test/"
             "cutover_ingress",
             "cutover_ingress_database_tls_required",
         ),
     ],
 )
-def test_environment_runtime_rejects_ephemeral_pooled_or_non_tls_database(
+def test_environment_runtime_rejects_ephemeral_direct_or_non_tls_database(
     database_url,
     error_code,
 ):
     with pytest.raises(CutoverIngressConfigurationError, match=error_code):
+        CutoverIngressSettings.from_environ(_runtime_environment(database_url))
+
+
+@pytest.mark.parametrize(
+    "target_override",
+    [
+        "host=attacker.example",
+        "hostaddr=203.0.113.10",
+        "port=5433",
+        "dbname=other",
+        "database=other",
+        "service=other",
+        "options=-csearch_path%3Dother",
+        "search_path=other",
+        "target_session_attrs=read-write",
+    ],
+)
+def test_environment_rejects_query_parameters_that_can_override_database_target(
+    target_override,
+):
+    database_url = POOLED_INGRESS_URL + "&" + target_override
+    with pytest.raises(
+        CutoverIngressConfigurationError,
+        match="cutover_ingress_database_target_options_forbidden",
+    ):
         CutoverIngressSettings.from_environ(_runtime_environment(database_url))
 
 
@@ -276,6 +310,106 @@ def test_webhook_rejects_unsigned_or_invalid_signature_before_persistence(ingres
         )
     with engine.connect() as connection:
         assert connection.scalar(select(func.count()).select_from(buffered_whatsapp_ingress)) == 0
+
+
+def test_webhook_matches_twilio_default_https_port_fallback(ingress):
+    _, _, app, store = ingress
+    payload = _payload("80")
+    signature = RequestValidator(AUTH_TOKEN).compute_signature(
+        "https://ingress.example.test:443/webhook/whatsapp",
+        payload,
+    )
+    with app.test_client() as client:
+        response = client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers={"X-Twilio-Signature": signature},
+        )
+    assert response.status_code == 200
+    assert store.get_record(payload["MessageSid"]) is not None
+
+
+def test_local_signature_validator_matches_official_mixed_case_port_fallback():
+    payload = _payload("83")
+    configured_url = "https://Ingress.Example.test:443/webhook/whatsapp"
+    signed_url = "https://Ingress.Example.test/webhook/whatsapp"
+    signature = RequestValidator(AUTH_TOKEN).compute_signature(signed_url, payload)
+
+    assert RequestValidator(AUTH_TOKEN).validate(
+        configured_url,
+        payload,
+        signature,
+    )
+    assert TwilioInboundSignatureValidator(AUTH_TOKEN).validate(
+        configured_url,
+        payload,
+        signature,
+    )
+
+
+@pytest.mark.parametrize(
+    "public_url",
+    [
+        "https://Ingress.Example.test/webhook/whatsapp",
+        "https://ingress.example.test:443/webhook/whatsapp",
+        "https://user@ingress.example.test/webhook/whatsapp",
+        "https://[2001:db8::1]/webhook/whatsapp",
+    ],
+)
+def test_settings_rejects_noncanonical_public_webhook_url(public_url, tmp_path):
+    settings = _settings(f"sqlite:///{(tmp_path / 'canonical.sqlite3').as_posix()}")
+    with pytest.raises(
+        CutoverIngressConfigurationError,
+        match="cutover_ingress_public_webhook_url_invalid",
+    ):
+        replace(settings, public_webhook_url=public_url)
+
+
+def test_webhook_matches_twilio_form_encoding_for_unicode_reserved_and_empty_values(
+    ingress,
+):
+    _, _, app, store = ingress
+    payload = _payload(
+        "81",
+        body="Árbol caído & semáforo + ubicación=/Centro? referencia #1",
+    )
+    payload.update(
+        {
+            "ProfileName": "Vecina de Junín",
+            "WaId": "+5492615550101",
+            "ReferralBody": "",
+        }
+    )
+    with app.test_client() as client:
+        response = client.post(
+            "/webhook/whatsapp",
+            data=payload,
+            headers=_signed_headers(payload),
+            content_type="application/x-www-form-urlencoded",
+        )
+    assert response.status_code == 200
+    assert store.get_record(payload["MessageSid"]) is not None
+
+
+def test_webhook_rejects_signed_duplicate_form_keys_as_documented_fail_closed_exception(
+    ingress,
+):
+    _, engine, app, _ = ingress
+    payload = _payload("82")
+    form = MultiDict(payload.items())
+    form.add("Body", "segundo valor ambiguo")
+    signature = RequestValidator(AUTH_TOKEN).compute_signature(PUBLIC_URL, form)
+    with app.test_client() as client:
+        response = client.post(
+            "/webhook/whatsapp",
+            data=form,
+            headers={"X-Twilio-Signature": signature},
+        )
+    assert response.status_code == 422
+    with engine.connect() as connection:
+        assert connection.scalar(
+            select(func.count()).select_from(buffered_whatsapp_ingress)
+        ) == 0
 
 
 def test_webhook_persists_encrypted_before_ack_and_exact_duplicate_is_idempotent(ingress):
