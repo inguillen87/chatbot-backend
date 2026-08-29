@@ -195,6 +195,9 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
       prove health, signed persistence, exact duplicate, conflicting replay,
       invalid signature, encrypted storage and exact cleanup without provider
       or Chatboc replay effects.
+- [x] Bind the isolated deployment to an exact committed source fingerprint and
+      drill rollback/restore of only its technical Vercel alias by deployment
+      ID. No provider or Chatboc domain participates in this drill.
 - [x] Package the ingress as an isolated non-root Vercel container with a
       deny-first build context, Neon pooled runtime plus direct-only migrations,
       SQLAlchemy `NullPool`, no crons, no LLM and
@@ -218,6 +221,14 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
       scheduler owns those jobs. The 2026-08-29 CLI audit still reports all
       four definitions as `not deployed`; do not transfer job ownership yet.
 - [ ] Verify Twilio signatures and callbacks read-only before any live send.
+
+The GET-only Twilio snapshot collector, exact Vercel runtime credential
+attestor and fail-closed promotion verifier are implemented and reviewed. The
+isolated Junin connection is intentionally
+`pending_provider_verification`. Do not mark this gate complete until both
+fresh signed envelopes are captured from the same approved deployment/window,
+the PostgreSQL concurrency check passes and the promotion dry-run digest is
+explicitly approved. Tooling availability is not provider evidence.
 
 Current sender evidence is a deliberate blocker: the read-only audit against
 the restored Neon rehearsal database stopped at `tenant_profile_sender_mismatch`,

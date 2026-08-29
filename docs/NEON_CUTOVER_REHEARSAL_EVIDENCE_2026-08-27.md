@@ -783,6 +783,24 @@ first persist a non-ready connection and only promote it from a fresh canonical
 provider snapshot whose digest is part of the approved plan. The isolated
 database remains unchanged.
 
+The replacement reconciler was subsequently reviewed and exercised only on
+the isolated rehearsal database. Its approved dry-run digest was
+`73813fb273f96e5b3e856075a16187f56310cfca696ebe6eb47baee25bb6fdd7`.
+The exact apply created one Junin connection in
+`pending_provider_verification`; a post-apply dry-run returned `noop`. It did
+not set the connection online, call Twilio, send a message, change a callback
+or touch Production. This supersedes the earlier statement that the isolated
+database had no row change; the invalidated plan above remains invalid.
+
+The provider gate now also has reviewed evidence producers: an allowlisted
+GET-only Twilio collector and a bearer-protected destination-runtime attestor.
+They cryptographically bind the official sender snapshot and the exact Vercel
+project, deployment, revision, TLS PostgreSQL identity, nonce, cutover window
+and tenant-scoped credential without emitting raw secrets. Their integrated
+focal suite passed 71 tests. This is code readiness only: neither producer has
+yet emitted the fresh paired envelopes for a final deployment, and no online
+promotion is authorized.
+
 The cutover ingress also gained a dedicated Vercel container package inside
 `cutover_ingress/`. Its deny-first build context copies only the six ingress
 modules, uses a non-root user, registers no cron or backend rewrite, exposes no
@@ -828,3 +846,20 @@ encrypted row, no plaintext body, and the cleanup deleted exactly that row.
 The canary made no Twilio call and attempted no replay into Chatboc. The real
 Twilio webhook, `api.chatboc.ar`, Render writers and public DNS remain
 unchanged.
+
+The final reviewed ingress source was then committed as
+`6884985709f1b5f2977f0e9022f62c0b4ab72785`, pushed to the rehearsal branch and
+redeployed as `dpl_7fpVPU68wypDo4qWoEx83u6BvPqb`. `/health` exposes the
+runtime-computed source fingerprint
+`fc806576686a21614c704c32da26332e04517d74bfbe073d0b69c5c4abb5e71f`, returned
+`status=buffer_ready`, and caches the database probe for at most five seconds
+to prevent health polling from multiplying pooled connections. The complete
+signed/encrypted canary passed again against this exact image and cleaned its
+single row.
+
+An isolated alias rollback drill moved only
+`chatboc-cutover-ingress.vercel.app` to the preceding deployment and then back
+to `dpl_7fpVPU68wypDo4qWoEx83u6BvPqb`. Deployment-ID inspection and a
+cache-busted health request proved the alias again serves the exact source
+fingerprint above. The first HTTP-only restore check was attempted too soon and
+observed stale alias content; no Chatboc or provider endpoint was involved.
