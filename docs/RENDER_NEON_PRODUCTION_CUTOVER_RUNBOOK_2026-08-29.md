@@ -15,7 +15,7 @@ maintenance window. No step authorizes deleting Render or its database.
 | Source of truth | Render PostgreSQL 18, not `/data/database.db` |
 | Source schema / inventory | `20260820_survey_content_jurisdiction_v1`; 170 public tables; 52,863 aggregate rows |
 | Neon main | `20260825_demo_survey_participation_v1`; 171 public tables; 52,751 aggregate rows |
-| Fenced Vercel candidate | `dpl_HfbQSLvJ2GMjh7tofAf5EMPonj7d`, revision `8c70a47768e5945da93e4d33bfc788d2dacdb47a` |
+| Fenced Vercel candidate | `dpl_GAqPTuiFEapWUqti3NRTU6VkzaVH`, revision `d3067af02a3bc157c7adba4d7652599c097516ed`, no aliases |
 | Junin WhatsApp sender | official sender ending `3718` |
 | Wrong default found in Render | sandbox sender ending `8886`, offline |
 | Junin ownership model | official legacy mapping present; production `provider_sender` absent |
@@ -149,8 +149,9 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
 
 ## Gate 5 - Vercel runtime, jobs and providers
 
-- [ ] Point the fenced Vercel candidate to the certified direct Neon runtime
-      target and preserve a separate direct migration target.
+- [x] Point the fenced no-alias Vercel candidate to the restored Neon rehearsal
+      runtime target and preserve a separate direct migration target. The
+      rehearsal runtime uses the pooler; Alembic verification remains direct.
 - [ ] Configure R2. Prove put/get/delete with a non-personal canary on a
       separate no-alias deployment whose writes target only a disposable Neon
       database and whose crons/provider effects are disabled; a global writer
@@ -164,7 +165,8 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
 - [ ] Keep WhatsApp inbound in synchronous legacy mode for the initial cut
       unless the durable queue, secrets and tenant allowlist have passed their
       own staging gate.
-- [ ] Keep every Vercel writer cron disabled until ownership is transferred.
+- [x] Keep every Vercel writer cron disabled on the no-alias candidate until
+      ownership is transferred.
 - [ ] Verify login, tenant isolation, tickets, assignment, expanded
       conversation, text reply, image/R2, location, form, survey, vote,
       analytics and heatmap against the certified database.

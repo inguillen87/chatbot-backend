@@ -517,3 +517,33 @@ now excluded from both the Vercel upload bundle and Docker build context. A
 post-change `vercel deploy --dry --json` inventory returned zero matching
 runtime-media paths; governed demo fixtures and configuration under the other
 `data` subdirectories remain available to the application.
+
+## Fenced Vercel candidate over the restored database - 2026-08-29
+
+Commit `d3067af02a3bc157c7adba4d7652599c097516ed` was pushed and deployed as a
+Production-target candidate with `--skip-domain`. It has no aliases and does
+not receive public traffic:
+
+| Check | Result |
+| --- | --- |
+| Deployment | `dpl_GAqPTuiFEapWUqti3NRTU6VkzaVH` |
+| URL | `chatboc-backend-aeut7oqti-marcelos-projects-c26aa499.vercel.app` |
+| Revision telemetry | `/api/version` returns the exact `d3067af02...` revision |
+| Runtime target | pooled connection to isolated `render_rehearsal_20260829`; migrations remain direct |
+| Database schema | `20260825_chat_idempotency_v1`; 172 public tables |
+| Health | `/health=ok`; `/api/health/=db connected`; `/health/ready=ready` with database and Redis `ok` |
+| Junin read surface | public tenant profile returns `junin` / `Municipalidad de Junin` |
+| Write protection | unsafe POST returns no-store `503`, retryable, `Retry-After: 60` |
+| Background protection | outbox cron route returns no-store `503`, `cutover_writer_fence_enabled` |
+| Domain state | no aliases; `api.chatboc.ar` remains on Render revision `8ced9216...` |
+
+The first no-alias build was rejected as release evidence because its public
+version endpoint inherited a stale manual version variable. It never received
+an alias. The replacement sets the deployment-scoped immutable revision and
+binds runtime evidence to the pushed source SHA.
+
+This candidate proves container startup, the restored Neon schema, public
+Junin reads, readiness and both request/background fences. It does not certify
+authenticated CRM operations, R2 writes, the official WhatsApp sender, live
+Twilio callbacks, cron ownership, a rollback drill or the 24-hour soak. Those
+gates remain mandatory before any domain or webhook moves.
