@@ -1,6 +1,6 @@
 # Chatboc Render to Vercel/Neon gate status
 
-Observed: 2026-08-29, approximately 14:40 ART.
+Observed: 2026-08-29, approximately 18:10 ART.
 
 Decision: **NO-GO for the production cutover and NO-GO for retiring Render.**
 
@@ -14,7 +14,7 @@ and does not replace the signed evidence required by the production runbook.
 | Public source | `api.chatboc.ar` still resolves to Render. Live backend revision is `8ced9216ff134951a0e3cb050c473e364c28be5c`; `/health` is HTTP 200. |
 | Fenced Vercel backend | Deployment `dpl_C2qNUv9rZqHxn6Rc3YuDgbyqDyYi` serves backend `df2702f25bcab24223c7e095a5cc4cfa5c101de2`; readiness passed and unsafe HTTP writes return the writer-fence contract. |
 | Vercel cron registry | Four approved cron definitions are registered on the fenced candidate. All three execution enable flags remain false and all four runtime probes return the background-writer fence contract. |
-| Frontend Preview | Deployment `dpl_J1pPcn5hwCPpEm3m1s9LobXMTBb5`, revision `24dd991d0397170a19602bc6f4705178b3f8e1db`, is `READY` at `chatboc-r2-preview.vercel.app`; the compiled QA routes target `api-preview.chatboc.ar`, not the public Render API. |
+| Frontend Preview | Deployment `dpl_2S7B9no7wniJjW6Vn8genrYzCVCs`, revision `8061bd3fcf5381fff79427e5e710c2a658f856c5`, is `READY` at `chatboc-r2-preview.vercel.app`; the compiled QA routes target `api-preview.chatboc.ar`, not the public Render API. The build contains eight Preview rewrites, zero public Render rewrites and the exact revision in its served HTML. |
 | Neon rehearsal identity | Project `nameless-rain-94060889`, branch `br-floral-unit-acgqawl6`, database `render_rehearsal_20260829`, migration head `20260829_global_writer_authority_v1`. Schema preflight passes. |
 | Ingress retry evidence | Revision `42e693d49434734969517b934f8274ce1d3044c3` records the optional Twilio retry token only as a versioned, domain-separated HMAC after signature validation. The raw header is never persisted or returned; the full focal module passes 49/49 tests. This is code/rehearsal evidence, not a real Junin replay certificate. |
 | Rollback contract | Offline manifest validator v2 exists and is test-covered. It validates evidence shape only; a real window-bound manifest is still required. |
@@ -46,6 +46,22 @@ comparison found:
 The final target must therefore be a new empty Neon database restored from an
 export produced after the Render fence. The rehearsal database must not be
 relabelled or reused as an exact-parity production database.
+
+### Vercel production runtime prerequisites
+
+The current Production and Preview environment declarations now contain
+`TENANT_CLAIM_RECEIPT_SECRET_V1` and `RATELIMIT_STORAGE_URI` as sensitive
+variables. A dedicated random HMAC secret was created independently per
+environment, and each rate-limit URI was derived from that environment's
+existing shared `REDIS_URL` without printing any value. A new fenced deployment
+and guarded predeploy must still prove that the runtime receives valid values;
+environment-name presence alone is not certification and does not modify an
+already-built deployment.
+
+The durable WhatsApp queue also remains uncertified because
+`WHATSAPP_INBOUND_HASH_SECRET` is absent. The initial cutover must therefore
+stay on the synchronous legacy ingress unless the independent durable-queue
+gate is completed separately.
 
 ### Junin WhatsApp/Twilio
 
