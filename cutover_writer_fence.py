@@ -18,6 +18,7 @@ BACKGROUND_FENCE_CONTRACT_VERSION = "cutover.background_writer_fence.v1"
 _TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "f", "no", "n", "off"})
 _CUTOVER_WRITER_VIEW_ATTRIBUTE = "__cutover_writer_view__"
+_CUTOVER_READ_ONLY_VIEW_ATTRIBUTE = "__cutover_read_only_view__"
 _ViewCallable = TypeVar("_ViewCallable", bound=Callable[..., Any])
 
 
@@ -66,6 +67,23 @@ def is_cutover_writer_view(view: Any) -> bool:
     return bool(getattr(view, _CUTOVER_WRITER_VIEW_ATTRIBUTE, False))
 
 
+def cutover_read_only_view(view: _ViewCallable) -> _ViewCallable:
+    """Mark an unsafe-method view whose handler is proven read-only.
+
+    This exception is explicit and narrow. Unmarked POST/PUT/PATCH/DELETE
+    views remain fenced before authentication or request processing.
+    """
+
+    setattr(view, _CUTOVER_READ_ONLY_VIEW_ATTRIBUTE, True)
+    return view
+
+
+def is_cutover_read_only_view(view: Any) -> bool:
+    """Return whether an unsafe-method view is explicitly read-only."""
+
+    return bool(getattr(view, _CUTOVER_READ_ONLY_VIEW_ATTRIBUTE, False))
+
+
 def background_writer_fence_report(component: str) -> dict[str, Any]:
     """Build a payload-free, stable report for a fenced background writer."""
 
@@ -96,7 +114,9 @@ __all__ = [
     "CUTOVER_WRITER_FENCE_FLAG",
     "background_writer_fence_report",
     "cutover_writer_fence_enabled",
+    "cutover_read_only_view",
     "cutover_writer_view",
+    "is_cutover_read_only_view",
     "is_cutover_writer_view",
     "log_background_writer_fence",
 ]

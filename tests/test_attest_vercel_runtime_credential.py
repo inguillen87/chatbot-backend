@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pytest
 from flask import Flask
 
+from middleware.cutover_writer_fence import register_cutover_writer_fence
 from routes.internal_cutover import internal_cutover_bp
 from scripts import attest_vercel_runtime_credential as attestor
 from services.provider_cutover_evidence import CutoverEvidenceError, database_identity
@@ -153,6 +154,29 @@ def test_runtime_attestation_endpoint_reuses_constant_time_bearer_pattern(monkey
     assert BEARER not in rendered
 
 
+def test_runtime_attestation_remains_available_behind_writer_fence(monkeypatch):
+    for key, value in _environment().items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("CUTOVER_RUNTIME_ATTESTATION_BEARER_SECRET", BEARER)
+
+    app = Flask(__name__)
+    app.config["CUTOVER_WRITER_FENCE_ENABLED"] = True
+    register_cutover_writer_fence(app)
+    app.register_blueprint(internal_cutover_bp)
+    response = app.test_client().post(
+        "/api/internal/cutover/runtime-credential-attestation",
+        headers={"Authorization": f"Bearer {BEARER}"},
+        json=_challenge(),
+    )
+
+    assert response.status_code == 200, response.get_json()
+    assert response.headers["Cache-Control"] == "no-store"
+    payload = response.get_json()["document"]
+    assert payload["read_only"] is True
+    assert payload["mutations_performed"] is False
+    assert payload["provider_calls_performed"] is False
+
+
 def test_endpoint_blocks_bearer_reuse_as_signing_secret(monkeypatch):
     for key, value in _environment(
         CUTOVER_RUNTIME_ATTESTATION_HMAC_SECRET=BEARER
@@ -170,4 +194,3 @@ def test_endpoint_blocks_bearer_reuse_as_signing_secret(monkeypatch):
     assert response.get_json()["reason_code"] == (
         "runtime_attestation_bearer_secret_must_be_independent"
     )
-

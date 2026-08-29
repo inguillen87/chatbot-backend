@@ -3,7 +3,11 @@ from pathlib import Path
 from flask import Flask
 
 from config import Config
-from cutover_writer_fence import cutover_writer_view, is_cutover_writer_view
+from cutover_writer_fence import (
+    cutover_read_only_view,
+    cutover_writer_view,
+    is_cutover_writer_view,
+)
 from middleware.cutover_writer_fence import register_cutover_writer_fence
 from models import User
 from services import tenant_resolver
@@ -77,6 +81,49 @@ def test_marked_get_and_head_are_fenced_before_handler_but_read_only_get_remains
     assert test_client.get("/mutating-read").status_code == 503
     assert test_client.head("/mutating-read").status_code == 503
     assert calls == {"read": 1, "write": 0}
+
+
+def test_explicit_read_only_post_remains_available_while_other_posts_are_fenced():
+    app = Flask(__name__)
+    app.config["CUTOVER_WRITER_FENCE_ENABLED"] = True
+    calls = {"read_only_post": 0, "writer_post": 0}
+    register_cutover_writer_fence(app)
+
+    @app.post("/read-only-evidence")
+    @cutover_read_only_view
+    def read_only_evidence():
+        calls["read_only_post"] += 1
+        return {"read_only": True}
+
+    @app.post("/writer")
+    def writer():
+        calls["writer_post"] += 1
+        raise AssertionError("unmarked POST must never execute")
+
+    test_client = app.test_client()
+    assert test_client.post("/read-only-evidence", json={}).status_code == 200
+    assert test_client.post("/writer", json={}).status_code == 503
+    assert calls == {"read_only_post": 1, "writer_post": 0}
+
+
+def test_contradictory_read_only_and_writer_markers_fail_closed():
+    app = Flask(__name__)
+    app.config["CUTOVER_WRITER_FENCE_ENABLED"] = True
+    calls = {"dual_marked": 0}
+    register_cutover_writer_fence(app)
+
+    @app.post("/contradictory-evidence")
+    @cutover_read_only_view
+    @cutover_writer_view
+    def contradictory_evidence():
+        calls["dual_marked"] += 1
+        raise AssertionError("a dual-marked view must remain fenced")
+
+    response = app.test_client().post("/contradictory-evidence", json={})
+
+    assert response.status_code == 503
+    assert response.get_json()["reason_code"] == "cutover_writer_fence_enabled"
+    assert calls == {"dual_marked": 0}
 
 
 def test_all_known_mutating_get_endpoints_are_explicitly_marked(client):

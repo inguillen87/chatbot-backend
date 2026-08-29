@@ -62,6 +62,10 @@ The endpoint performs no Twilio or database request. It returns a signed
 document containing account/scope metadata and the opaque credential binding,
 never the provider credential. A local process, Preview deployment, different
 Production deployment, different revision, or different database fails closed.
+The handler is the only unsafe-method route explicitly marked as cutover
+read-only, so it remains available while the application writer fence is
+active. Unmarked mutations stay fenced before their handlers, and a
+contradictory read-only/writer marker fails closed.
 
 ## Promotion verifier
 
@@ -74,4 +78,3 @@ plan digest and the existing PostgreSQL transaction/advisory-lock gates.
 
 This implementation alone is not authorization to deploy, call the collector,
 promote the connection, switch provider callbacks, or stop Render.
-

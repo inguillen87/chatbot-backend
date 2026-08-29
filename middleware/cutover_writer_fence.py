@@ -12,6 +12,7 @@ from flask import Flask, current_app, jsonify, request
 
 from cutover_writer_fence import (
     cutover_writer_fence_enabled,
+    is_cutover_read_only_view,
     is_cutover_writer_view,
 )
 from global_writer_authority import GLOBAL_WRITER_AUTHORITY_CONTRACT
@@ -29,9 +30,14 @@ def register_cutover_writer_fence(app: Flask) -> None:
         method = request.method.upper()
         if method == "OPTIONS":
             return None
+        view = current_app.view_functions.get(request.endpoint or "")
+        # A contradictory dual marker must fail closed.  This prevents a
+        # future refactor from accidentally exempting a handler that is also
+        # known to mutate or poll a provider.
+        if is_cutover_read_only_view(view) and not is_cutover_writer_view(view):
+            return None
         is_writer = True
         if method in _READ_METHODS:
-            view = current_app.view_functions.get(request.endpoint or "")
             if not is_cutover_writer_view(view):
                 is_writer = False
         if not is_writer:

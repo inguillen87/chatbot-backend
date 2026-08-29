@@ -7,6 +7,7 @@ import os
 
 from flask import Blueprint, jsonify, request
 
+from cutover_writer_fence import cutover_read_only_view
 from scripts.attest_vercel_runtime_credential import (
     build_runtime_attestation_envelope,
 )
@@ -46,6 +47,7 @@ def _authorized() -> tuple[bool, str | None]:
 
 
 @internal_cutover_bp.post("/runtime-credential-attestation")
+@cutover_read_only_view
 def runtime_credential_attestation():
     authorized, bearer_secret = _authorized()
     if not authorized or bearer_secret is None:
@@ -119,4 +121,3 @@ def runtime_credential_attestation():
 
 
 __all__ = ["internal_cutover_bp"]
-
