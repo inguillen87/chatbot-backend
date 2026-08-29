@@ -120,6 +120,14 @@ def test_all_known_mutating_get_endpoints_are_explicitly_marked(client):
         "whatsapp_rules_bp.get_rules",
         "widget_public_config.obtener_config_publica",
         "widget_settings.manage_settings",
+        "api_aliases.analytics_identity_coverage_alias",
+        "api_aliases.carrito_alias_root",
+        "api_aliases.carrito_alias_with_slug",
+        "api_aliases.productos_alias",
+        "api_aliases.productos_alias_with_slug",
+        "public_aliases.root_carrito_alias_with_slug",
+        "public_aliases.root_productos_alias_with_slug",
+        "public_aliases.root_public_tenant_catalog",
     }
 
     missing = expected.difference(client.application.view_functions)
@@ -128,6 +136,27 @@ def test_all_known_mutating_get_endpoints_are_explicitly_marked(client):
         is_cutover_writer_view(client.application.view_functions[endpoint])
         for endpoint in expected
     )
+
+
+def test_compatibility_aliases_cannot_bypass_mutating_get_fence(client):
+    previous = _set_fence(client, True)
+    try:
+        paths = (
+            "/api/analytics/identity/coverage",
+            "/api/productos?tenant_slug=junin",
+            "/api/junin/productos",
+            "/api/carrito?tenant_slug=junin",
+            "/api/junin/carrito",
+            "/public/tenants/junin/catalog",
+            "/junin/productos",
+            "/junin/carrito",
+        )
+        for path in paths:
+            response = client.get(path)
+            assert response.status_code == 503, path
+            assert response.get_json()["reason_code"] == "cutover_writer_fence_enabled"
+    finally:
+        client.application.config["CUTOVER_WRITER_FENCE_ENABLED"] = previous
 
 
 def test_disabled_cutover_writer_fence_does_not_replace_normal_routing(client):
