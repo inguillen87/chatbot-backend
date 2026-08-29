@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -21,6 +22,17 @@ from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Connection, URL, make_url
+
+try:
+    from scripts.release_checkout_identity import (
+        CheckoutIdentityFailure,
+        checkout_identity,
+    )
+except ModuleNotFoundError:  # Direct ``python scripts/...`` compatibility.
+    from release_checkout_identity import (  # type: ignore[no-redef]
+        CheckoutIdentityFailure,
+        checkout_identity,
+    )
 
 
 CONTRACT_VERSION = "chatboc.neon_cutover_preflight.v1"
@@ -380,6 +392,19 @@ def _wal_position(connection: Connection) -> dict[str, Any]:
     }
 
 
+def _database_name_fingerprint(connection: Connection) -> str:
+    """Return only a SHA-256 identity for the current logical database."""
+
+    database_name = str(
+        connection.execute(text("SELECT current_database()"))
+        .scalar_one()
+        or ""
+    )
+    if not database_name:
+        raise PreflightFailure("database_name_missing")
+    return hashlib.sha256(database_name.encode("utf-8")).hexdigest()
+
+
 def _database_state(
     connection: Connection,
     *,
@@ -412,6 +437,11 @@ def _database_state(
     if actual_branch_id != expected_branch_id:
         raise PreflightFailure("database_neon_branch_mismatch")
 
+    # Bind redacted release evidence to the logical database as well as the
+    # Neon project/branch/host.  A branch may contain multiple databases; a
+    # host-only fingerprint cannot detect an accidental DSN path change.
+    database_name_fingerprint_sha256 = _database_name_fingerprint(connection)
+
     table_names = _public_table_names(connection)
     if "alembic_version" not in table_names:
         raise PreflightFailure("database_migration_table_missing")
@@ -433,6 +463,7 @@ def _database_state(
             "project_id": actual_project_id,
             "branch_id": actual_branch_id,
         },
+        "database_name_fingerprint_sha256": database_name_fingerprint_sha256,
         "server_version_num": server_version_num,
         **wal,
         "current_revisions": revisions,
@@ -452,6 +483,10 @@ def run_preflight(
     expected_project_id: str,
     expected_branch_id: str,
 ) -> tuple[dict[str, Any], int]:
+    try:
+        source = checkout_identity(project_root)
+    except CheckoutIdentityFailure as exc:
+        raise PreflightFailure(exc.reason_code) from exc
     parsed = _validate_neon_direct_url(database_url)
     expected_project_id = _validate_neon_identity_value(
         expected_project_id,
@@ -495,6 +530,7 @@ def run_preflight(
     host = str(parsed.host or "").lower().rstrip(".")
     payload = {
         "contract_version": CONTRACT_VERSION,
+        "captured_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "status": status,
         "ready": status == "ready",
         "target": {
@@ -505,6 +541,7 @@ def run_preflight(
         },
         "migration": migration,
         "database": database,
+        "source": source,
     }
     return payload, exit_code
 

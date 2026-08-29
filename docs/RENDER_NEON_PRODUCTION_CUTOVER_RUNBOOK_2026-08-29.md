@@ -48,6 +48,17 @@ would lose or preserve the wrong data.
 
 - [ ] Approve one immutable backend revision and one immutable frontend
       revision.
+- [ ] Use the guarded Production wrapper documented in
+      `docs/VERCEL_PRODUCTION_PREDEPLOY_GUARD.md` from the exact clean backend
+      revision. Archive its redacted `ready` JSON; any blank Production value,
+      DSN alias mismatch, uncertified Neon identity or unsafe writer flag stops
+      the wrapper before `vercel deploy --prod`. This is a release-process
+      control, not a platform lock: a raw Vercel CLI command can bypass it and
+      is therefore not an approved release path.
+- [ ] Confirm that the archived Neon preflight names the same Git revision,
+      records a clean worktree and matches the guarded checkout's deterministic
+      `migrations/versions` Git-tree SHA-256. Evidence without these fields is
+      stale and must be regenerated read-only.
 - [ ] Record the maintenance start, maximum read-only interval, rollback
       deadline, operator and decision owner.
 - [ ] Record the Render service ID, Render PostgreSQL ID, Vercel deployment ID,

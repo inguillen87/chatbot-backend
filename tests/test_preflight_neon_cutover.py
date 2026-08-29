@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import pytest
 
 from scripts.preflight_neon_cutover import (
     PreflightFailure,
+    _database_name_fingerprint,
     _failure_payload,
     _load_migration_directory,
     _migration_state,
@@ -207,6 +209,41 @@ def test_wal_position_fails_closed_when_replica_has_not_replayed_wal():
         _wal_position(FakeConnection())
 
     assert captured.value.reason_code == "database_wal_lsn_missing"
+
+
+def test_database_identity_evidence_hashes_logical_name_without_exposing_it():
+    database_name = "production_database_private_name"
+
+    class FakeResult:
+        def scalar_one(self):
+            return database_name
+
+    class FakeConnection:
+        def execute(self, statement):
+            assert "current_database()" in str(statement)
+            return FakeResult()
+
+    fingerprint = _database_name_fingerprint(FakeConnection())
+
+    assert fingerprint == hashlib.sha256(
+        database_name.encode("utf-8")
+    ).hexdigest()
+    assert database_name not in fingerprint
+
+
+def test_database_identity_evidence_fails_closed_without_logical_name():
+    class FakeResult:
+        def scalar_one(self):
+            return None
+
+    class FakeConnection:
+        def execute(self, _statement):
+            return FakeResult()
+
+    with pytest.raises(PreflightFailure) as captured:
+        _database_name_fingerprint(FakeConnection())
+
+    assert captured.value.reason_code == "database_name_missing"
 
 
 def test_run_preflight_selects_psycopg_v3_explicitly(monkeypatch):
