@@ -124,9 +124,11 @@ key/key ID when an independently repeated run must reproduce fingerprints.
   Neon has no additional rows or newer product tables. Use exact mode and the
   strict final-cutover policy for the production cutover decision.
 - The current policy excludes `alembic_version`, delegates migration-head
-  validation to `preflight_neon_cutover.py`, treats
-  `municipio_ticket.estado` as destination-authoritative, and permits the
-  retired `archivo_url` only when all legacy values are null.
+  validation to `preflight_neon_cutover.py`, does not define any
+  destination-authoritative columns or destination-only table allowlist, and
+  permits the retired source-only `archivo_url` only when all source values are
+  null. Any future exception requires an explicit policy version and reviewed
+  rationale before certification.
 - No mutable `user` columns are silently ignored. If final evidence finds
   expected post-migration changes, data ownership must be decided and the
   policy reviewed/versioned before certification.
