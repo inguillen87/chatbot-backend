@@ -124,3 +124,44 @@ must remain active until all of the following are complete:
 
 Neither a successful rehearsal nor a `Ready` deployment is sufficient evidence
 to retire Render.
+
+## Revalidation - 2026-08-29
+
+The primary Neon branch was rechecked through the authorized Neon CLI using a
+direct, TLS-required connection and the repository preflight. The operation was
+read-only and returned the expected `migration_required` NO-GO contract:
+
+| Check | Result |
+| --- | --- |
+| Project / branch | `nameless-rain-94060889` / `br-dark-silence-acmnikpq` |
+| Public tables / exact rows | 171 / 52,751 |
+| Inventory fingerprint | `56cb88b08b89aeb7b71c66ad0b404d537fdc0f84caf65f7a71abb24516ce3f21` |
+| Current / expected migration | `20260825_demo_survey_participation_v1` / `20260825_chat_idempotency_v1` |
+| Pending revisions | 2 |
+| Legacy Junin repair | 0 of 3 scoped |
+| Chat idempotency table | absent |
+| WAL | `0/4DAB7D0` from the primary |
+| Content parity | not certified |
+
+Preview was also refreshed without changing Production:
+
+- backend deployment `dpl_4fJR3NapEiakx5nkukdDwARgV8K7`, exposed only at
+  `api-preview.chatboc.ar`;
+- frontend deployment `dpl_2ZZsk82X4WpmEFmH3jiFsJtSQDGi`, exposed only at
+  `chatboc-r2-preview.vercel.app`;
+- backend health returned `200`, database connected; runtime readiness returned
+  `ready=true` for PostgreSQL and Redis;
+- the frontend build compiled eight audited Preview rewrites, zero Production
+  backend references, same-origin browser API traffic and the direct Preview
+  Socket.IO origin;
+- an earlier ordinary Preview build was rejected by the routing guard because
+  the canonical configuration targets `api.chatboc.ar`. It was not promoted;
+  the successful deployment used the generated safe Preview configuration;
+- `CUTOVER_WRITER_FENCE_ENABLED` and
+  `VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED` exist in the Vercel Production scope
+  and remain disabled. No Production deployment was issued.
+
+`api.chatboc.ar` continued returning `200` through Cloudflare with a Render
+`gunicorn` origin after the Preview refresh. No Render service, Production DNS,
+provider webhook or Production database writer was changed. The remaining
+gates above therefore remain mandatory.
