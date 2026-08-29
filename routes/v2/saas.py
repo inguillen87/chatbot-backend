@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
 from html import escape
+import math
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote_plus
@@ -85,7 +86,10 @@ from services.operational_intelligence import build_operational_dashboard, build
 from services.provider_platform import build_whatsapp_provider_status, sync_twilio_provider_records
 from services.plan_access import integration_access_payload, integration_frontend_contract, plan_allows_full_integrations
 from services.tenant_whatsapp_onboarding import refresh_tenant_whatsapp_onboarding
-from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.tenant_ticket_scope import (
+    municipio_ticket_belongs_to_tenant,
+    scoped_municipio_ticket_query,
+)
 from services.twilio_tech_provider import (
     STATE_KEY,
     build_twilio_tech_provider_contract,
@@ -4959,8 +4963,15 @@ def _legacy_claim_updated_at(ticket: MunicipioTicket, comments: list[TicketComen
 def _legacy_claim_timeline(ticket: MunicipioTicket, comments: list[TicketComentario]) -> list[dict[str, Any]]:
     timeline: list[dict[str, Any]] = []
     evidence_index = _legacy_claim_evidence_index(ticket)
+    crm_reply_index = _legacy_claim_crm_reply_action_index(ticket)
     for comment in comments:
         origin = str(comment.origen or ("admin_panel" if comment.es_admin else "public_tracking")).strip().lower()
+        crm_reply_action = crm_reply_index.get(comment.id)
+        action_id = (
+            str(crm_reply_action.get("action") or "").strip().lower()
+            if isinstance(crm_reply_action, Mapping)
+            else ""
+        )
         comment_attachments: list[dict[str, Any]] = []
         if comment.archivo_adjunto is not None:
             comment_attachments.append(
@@ -4973,7 +4984,11 @@ def _legacy_claim_timeline(ticket: MunicipioTicket, comments: list[TicketComenta
         timeline.append(
             {
                 "id": comment.id,
-                "type": "message" if not comment.estado_ticket else "status_change",
+                "type": (
+                    "crm_reply_action"
+                    if action_id in {"share_location", "share_form"}
+                    else ("message" if not comment.estado_ticket else "status_change")
+                ),
                 "origin": origin,
                 "body": comment.comentario or "",
                 "visibility": "internal" if comment.es_admin and origin == "internal" else "public",
@@ -4983,11 +4998,44 @@ def _legacy_claim_timeline(ticket: MunicipioTicket, comments: list[TicketComenta
                     "type": "agent" if comment.es_admin else "citizen",
                     "name": "Equipo" if comment.es_admin else (ticket.nombre_vecino or "Vecino/a"),
                 },
-                "action": comment.estado_ticket,
+                "action": action_id or comment.estado_ticket,
+                "action_payload": (
+                    deepcopy(crm_reply_action.get("payload"))
+                    if isinstance(crm_reply_action, Mapping)
+                    and isinstance(crm_reply_action.get("payload"), Mapping)
+                    else None
+                ),
+                "delivery_mode": (
+                    crm_reply_action.get("delivery_mode")
+                    if isinstance(crm_reply_action, Mapping)
+                    else None
+                ),
+                "external_dispatch": (
+                    bool(crm_reply_action.get("external_dispatch"))
+                    if isinstance(crm_reply_action, Mapping)
+                    else None
+                ),
                 "attachments": comment_attachments,
             }
         )
     return timeline
+
+
+def _legacy_claim_crm_reply_action_index(ticket: MunicipioTicket) -> dict[int, dict[str, Any]]:
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
+    records = extra.get("crm_reply_actions")
+    if not isinstance(records, list):
+        return {}
+    index: dict[int, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        try:
+            comment_id = int(record.get("comment_id"))
+        except (TypeError, ValueError):
+            continue
+        index[comment_id] = dict(record)
+    return index
 
 
 def _legacy_claim_evidence_index(ticket: MunicipioTicket) -> dict[int, dict[str, Any]]:
@@ -5097,14 +5145,220 @@ def _legacy_claim_tracking_links(ticket: MunicipioTicket) -> dict[str, str]:
     }
 
 
-def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any]]:
+def _legacy_claim_public_form_options(tenant: TenantProfile) -> list[dict[str, Any]]:
+    """List only currently public forms owned by the authoritative tenant."""
+
+    if tenant is None or not getattr(tenant, "id", None):
+        return []
+    try:
+        from services.encuestas_service import (
+            list_public_encuestas_for_tenant,
+            serialize_public_encuesta,
+        )
+
+        options: list[dict[str, Any]] = []
+        for encuesta, public_slug in list_public_encuestas_for_tenant(tenant.id, limit=25):
+            public_payload = serialize_public_encuesta(encuesta, public_slug)
+            share_url = str(public_payload.get("share_url") or "").strip()
+            canonical_slug = str(public_payload.get("slug_publico") or public_slug or "").strip()
+            if not canonical_slug or not share_url:
+                continue
+            options.append(
+                {
+                    "id": encuesta.id,
+                    "form_slug": canonical_slug,
+                    "label": str(public_payload.get("titulo") or "Formulario").strip(),
+                    "href": share_url,
+                    "kind": str(public_payload.get("tipo") or "encuesta").strip().lower(),
+                }
+            )
+        return options
+    except Exception as exc:  # Fail closed when the form registry is unavailable.
+        current_app.logger.warning(
+            "CRM reply form registry unavailable tenant=%s error_type=%s",
+            getattr(tenant, "id", None),
+            type(exc).__name__,
+        )
+        return []
+
+
+def _legacy_claim_reply_contract(
+    ticket: MunicipioTicket,
+    tenant: TenantProfile,
+) -> dict[str, Any]:
+    endpoint = "/api/v2/inbox/omnichannel/actions"
+    defaults = {
+        "source_model": "MunicipioTicket",
+        "legacy_id": ticket.id,
+        "ticket_id": ticket.id,
+    }
+    tenant_scoped = municipio_ticket_belongs_to_tenant(ticket, tenant)
+    closed = str(ticket.estado or "").strip().lower() in _CLOSED_TICKET_STATES
+    forms = _legacy_claim_public_form_options(tenant) if tenant_scoped and not closed else []
+    handoff_actions = (
+        _handoff_action_contracts(
+            endpoint=endpoint,
+            handoff=(
+                ticket.datos_extra.get("handoff")
+                if isinstance(ticket.datos_extra, Mapping)
+                and isinstance(ticket.datos_extra.get("handoff"), Mapping)
+                else None
+            ),
+            payload_defaults=defaults,
+        )
+        if tenant_scoped
+        else []
+    )
+    handoff_action = handoff_actions[0] if handoff_actions else None
+    idempotency_contract = {
+        "contract_version": "inbox.reply_idempotency.v1",
+        "preferred_header": "Idempotency-Key",
+        "body_field": "client_message_id",
+        "retry_rule": "reuse_same_value",
+        "request_id_compatibility": True,
+    }
+
+    location_action = {
+        "id": "share_location",
+        "label": "Registrar ubicación en el CRM",
+        "description": "Agrega una ubicación estructurada al historial interno; no la envía por WhatsApp ni por otro proveedor.",
+        "method": "POST",
+        "endpoint": endpoint,
+        "requires": ["location"],
+        "payload_defaults": defaults,
+        "input_schema": {
+            "type": "object",
+            "required": ["location"],
+            "properties": {
+                "location": {
+                    "type": "object",
+                    "title": "Ubicación",
+                    "additionalProperties": False,
+                    "properties": {
+                        "address": {"type": "string", "maxLength": 300},
+                        "label": {"type": "string", "maxLength": 100},
+                        "lat": {"type": "number", "minimum": -90, "maximum": 90},
+                        "lng": {"type": "number", "minimum": -180, "maximum": 180},
+                    },
+                    "anyOf": [
+                        {"required": ["address"]},
+                        {"required": ["lat", "lng"]},
+                    ],
+                },
+            },
+        },
+        "idempotency": deepcopy(idempotency_contract),
+        "delivery_contract_version": "inbox.action_delivery.v2",
+        "delivery_mode": "internal_event",
+        "external_dispatch": False,
+    }
+    form_action = {
+        "id": "share_form",
+        "label": "Preparar formulario en el CRM",
+        "description": "Registra un formulario público del mismo tenant en el historial interno; no lo envía por un canal externo.",
+        "method": "POST",
+        "endpoint": endpoint,
+        "requires": ["form_slug"],
+        "payload_defaults": defaults,
+        "input_schema": {
+            "type": "object",
+            "required": ["form_slug"],
+            "properties": {
+                "form_slug": {
+                    "type": "string",
+                    "title": "Formulario",
+                    "enum": [item["form_slug"] for item in forms],
+                    "x-options-source": "reply_contract.form_selection.options",
+                },
+            },
+        },
+        "idempotency": deepcopy(idempotency_contract),
+        "delivery_contract_version": "inbox.action_delivery.v2",
+        "delivery_mode": "internal_event",
+        "external_dispatch": False,
+    }
+    additional_actions: list[dict[str, Any]] = []
+    if tenant_scoped and not closed:
+        additional_actions.append(location_action)
+        if forms:
+            additional_actions.append(form_action)
+
+    return {
+        "contract_version": "inbox.crm_reply_capabilities.v1",
+        "source_model": "MunicipioTicket",
+        "ticket_id": ticket.id,
+        "endpoint": endpoint,
+        "payload_defaults": defaults,
+        "external_dispatch": False,
+        "external_dispatch_semantics": (
+            "share_location and share_form persist internal CRM evidence only; "
+            "text and attachment delivery require their own runtime receipt"
+        ),
+        "capabilities": {
+            "text": {
+                "available": bool(tenant_scoped and not closed),
+                "action_id": "reply",
+                "method": "POST",
+                "endpoint": endpoint,
+                "delivery_evidence": "action_response.delivery",
+                "reason_code": None if tenant_scoped and not closed else "ticket_closed_or_out_of_scope",
+            },
+            "attachment": {
+                "available": bool(tenant_scoped and not closed),
+                "method": "POST",
+                "endpoint": f"/tickets/municipio/{ticket.id}/responder",
+                "content_type": "multipart/form-data",
+                "delivery_evidence": "endpoint_response",
+                "reason_code": None if tenant_scoped and not closed else "ticket_closed_or_out_of_scope",
+            },
+            "location": {
+                "available": any(item["id"] == "share_location" for item in additional_actions),
+                "action_id": "share_location",
+                "delivery_mode": "internal_event",
+                "external_dispatch": False,
+                "reason_code": None if tenant_scoped and not closed else "ticket_closed_or_out_of_scope",
+            },
+            "form": {
+                "available": any(item["id"] == "share_form" for item in additional_actions),
+                "action_id": "share_form",
+                "delivery_mode": "internal_event",
+                "external_dispatch": False,
+                "reason_code": (
+                    None
+                    if forms and tenant_scoped and not closed
+                    else ("no_active_tenant_form" if tenant_scoped and not closed else "ticket_closed_or_out_of_scope")
+                ),
+            },
+            "human_handoff": {
+                "available": handoff_action is not None,
+                "action_id": handoff_action.get("id") if handoff_action else None,
+                "delivery_mode": "internal_event",
+                "external_dispatch": False,
+                "reason_code": None if handoff_action else "handoff_state_not_actionable",
+            },
+        },
+        "form_selection": {
+            "source": "tenant_public_surveys",
+            "selector_field": "form_slug",
+            "tenant_id": tenant.id if tenant_scoped else None,
+            "options": forms,
+        },
+        "additional_actions": additional_actions,
+    }
+
+
+def _legacy_claim_allowed_actions(
+    ticket: MunicipioTicket,
+    reply_contract: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     base_endpoint = "/api/v2/inbox/omnichannel/actions"
     defaults = {"source_model": "MunicipioTicket", "legacy_id": ticket.id, "ticket_id": ticket.id}
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     tracking_links = _legacy_claim_tracking_links(ticket)
-    actions = [
-        {
+    actions: list[dict[str, Any]] = []
+    if str(ticket.estado or "").lower() not in _CLOSED_TICKET_STATES:
+        actions.append({
             "id": "reply",
             "label": "Responder",
             "method": "POST",
@@ -5119,8 +5373,11 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             },
             "delivery_contract_version": "inbox.action_delivery.v2",
             "payload_defaults": defaults,
-        },
-    ]
+        })
+    if isinstance(reply_contract, Mapping):
+        extra_actions = reply_contract.get("additional_actions")
+        if isinstance(extra_actions, list):
+            actions.extend(deepcopy(item) for item in extra_actions if isinstance(item, Mapping))
     if not ticket.asignado_a_id:
         actions.append(
             {
@@ -5200,7 +5457,12 @@ def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     return steps[:4]
 
 
-def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _legacy_claim_inbox_payload(
+    ticket: MunicipioTicket,
+    live_chat_status: Mapping[str, Any] | None = None,
+    *,
+    tenant: TenantProfile | None = None,
+) -> dict[str, Any]:
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     comments = _legacy_claim_comments(ticket)
@@ -5208,7 +5470,11 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
     latest_comment = comments[-1].comentario if comments else None
     updated_at = _legacy_claim_updated_at(ticket, comments)
     assignee = _legacy_claim_assignee(ticket)
-    actions = _legacy_claim_allowed_actions(ticket)
+    reply_contract = _legacy_claim_reply_contract(ticket, tenant) if tenant is not None else None
+    actions = _legacy_claim_allowed_actions(ticket, reply_contract=reply_contract)
+    public_reply_contract = deepcopy(reply_contract) if reply_contract is not None else None
+    if public_reply_contract is not None:
+        public_reply_contract.pop("additional_actions", None)
     tracking_links = _legacy_claim_tracking_links(ticket)
     channel = str(ticket.canal_ingreso or "whatsapp").strip().lower()
     title = ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket or ticket.id}"
@@ -5276,6 +5542,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
         "presence": {"viewers": [], "locked_by": None},
         "actions": [item["id"] for item in actions],
         "allowed_actions": actions,
+        "reply_contract": public_reply_contract,
         "next_steps": _legacy_claim_next_steps(ticket),
         "source_metadata": {
             "origin": "municipio_ticket",
@@ -5387,7 +5654,11 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if not legacy_ticket or not employee_ticket_category_access_allows(current_user, legacy_ticket):
             return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
-        item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
+        item = _legacy_claim_inbox_payload(
+            legacy_ticket,
+            live_chat_status=live_chat_status,
+            tenant=tenant,
+        )
         return _json_response(
             {
                 "contract_version": "inbox.omnichannel.detail.v1",
@@ -5402,7 +5673,11 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     if not ticket:
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if legacy_ticket and employee_ticket_category_access_allows(current_user, legacy_ticket):
-            item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
+            item = _legacy_claim_inbox_payload(
+                legacy_ticket,
+                live_chat_status=live_chat_status,
+                tenant=tenant,
+            )
             return _json_response(
                 {
                     "contract_version": "inbox.omnichannel.detail.v1",
@@ -5526,6 +5801,237 @@ def _omnichannel_reply_idempotency_identity(
     return f"crm-reply:{digest}", source, None
 
 
+def _legacy_claim_location_action_payload(
+    payload: Mapping[str, Any],
+) -> tuple[dict[str, Any] | None, Any | None]:
+    raw_location = payload.get("location")
+    if not isinstance(raw_location, Mapping):
+        return None, _error_response(
+            "location es obligatorio y debe ser un objeto",
+            400,
+            "location_payload_required",
+            "send_structured_location",
+        )
+
+    address = str(raw_location.get("address") or "").strip()
+    label = str(raw_location.get("label") or "").strip()
+    if len(address) > 300 or len(label) > 100:
+        return None, _error_response(
+            "La dirección o etiqueta supera el límite permitido",
+            400,
+            "location_payload_too_long",
+            "shorten_location_fields",
+        )
+
+    raw_lat = raw_location.get("lat")
+    raw_lng = raw_location.get("lng", raw_location.get("lon"))
+    has_lat = raw_lat is not None and raw_lat != ""
+    has_lng = raw_lng is not None and raw_lng != ""
+    if has_lat != has_lng:
+        return None, _error_response(
+            "lat y lng deben informarse juntos",
+            400,
+            "location_coordinate_pair_required",
+            "send_lat_and_lng",
+        )
+
+    lat: float | None = None
+    lng: float | None = None
+    if has_lat and has_lng:
+        if isinstance(raw_lat, bool) or isinstance(raw_lng, bool):
+            return None, _error_response(
+                "Las coordenadas no son válidas",
+                400,
+                "location_coordinates_invalid",
+                "send_numeric_coordinates",
+            )
+        try:
+            lat = float(raw_lat)
+            lng = float(raw_lng)
+        except (TypeError, ValueError):
+            return None, _error_response(
+                "Las coordenadas no son válidas",
+                400,
+                "location_coordinates_invalid",
+                "send_numeric_coordinates",
+            )
+        if (
+            not math.isfinite(lat)
+            or not math.isfinite(lng)
+            or lat < -90
+            or lat > 90
+            or lng < -180
+            or lng > 180
+        ):
+            return None, _error_response(
+                "Las coordenadas están fuera de rango",
+                400,
+                "location_coordinates_out_of_range",
+                "send_valid_coordinates",
+            )
+
+    if lat is None and not address:
+        return None, _error_response(
+            "La ubicación requiere una dirección o un par de coordenadas",
+            400,
+            "location_reference_required",
+            "send_address_or_coordinates",
+        )
+
+    return {
+        "lat": lat,
+        "lng": lng,
+        "address": address or None,
+        "label": label or None,
+    }, None
+
+
+def _legacy_claim_form_action_payload(
+    payload: Mapping[str, Any],
+    tenant: TenantProfile,
+) -> tuple[dict[str, Any] | None, Any | None]:
+    if any(
+        payload.get(key) is not None and payload.get(key) != ""
+        for key in ("url", "href", "form_url")
+    ):
+        return None, _error_response(
+            "La URL del formulario la determina el backend",
+            400,
+            "form_url_not_accepted",
+            "select_tenant_form_slug",
+        )
+    form_slug = str(payload.get("form_slug") or payload.get("survey_slug") or "").strip().lower()
+    if not form_slug or len(form_slug) > 160 or any(ord(character) < 32 for character in form_slug):
+        return None, _error_response(
+            "form_slug es obligatorio",
+            400,
+            "form_slug_required",
+            "select_tenant_form_slug",
+        )
+
+    options = _legacy_claim_public_form_options(tenant)
+    selected = next(
+        (
+            option
+            for option in options
+            if str(option.get("form_slug") or "").strip().lower() == form_slug
+        ),
+        None,
+    )
+    if selected is None:
+        return None, _error_response(
+            "El formulario no está publicado para este tenant",
+            404,
+            "tenant_form_not_available",
+            "refresh_reply_contract",
+        )
+    return deepcopy(selected), None
+
+
+def _legacy_claim_record_crm_reply_action(
+    *,
+    ticket: MunicipioTicket,
+    tenant: TenantProfile,
+    actor: User,
+    action: str,
+    body: str,
+    action_payload: Mapping[str, Any],
+    request_payload: Mapping[str, Any],
+) -> tuple[TicketComentario | None, bool, str | None, Any | None]:
+    idempotency_key, idempotency_source, idempotency_error = (
+        _omnichannel_reply_idempotency_identity(request_payload, tenant_id=tenant.id)
+    )
+    if idempotency_error is not None:
+        return None, False, idempotency_source, idempotency_error
+
+    from services.ticket_service import (
+        ServicioTickets,
+        TicketIdempotencyConflict,
+        TicketIdempotencyReplayUnavailable,
+        TicketIdempotencyValidationError,
+    )
+
+    existing_receipt = TicketDomainEffectReceipt.query.filter_by(
+        tenant_id=tenant.id,
+        idempotency_key=idempotency_key,
+    ).one_or_none()
+    try:
+        comment = ServicioTickets().crear_comentario(
+            ticket.id,
+            "municipio",
+            {
+                "comentario": body,
+                "user_id": actor.id,
+                "es_admin": True,
+                "origen": "internal",
+                "estado_ticket": None,
+                "emit_notifications": False,
+                "emit_socket": False,
+            },
+            idempotency_key=idempotency_key,
+            idempotency_tenant_id=tenant.id,
+            legacy_effects_owned_by_caller=True,
+        )
+    except TicketIdempotencyConflict:
+        db.session.rollback()
+        return None, False, idempotency_source, _error_response(
+            "La identidad idempotente ya fue usada con otra acción",
+            409,
+            "reply_idempotency_payload_conflict",
+            "reuse_key_only_for_identical_payload",
+        )
+    except TicketIdempotencyValidationError:
+        db.session.rollback()
+        return None, False, idempotency_source, _error_response(
+            "La identidad idempotente o su alcance de tenant no es válido",
+            400,
+            "reply_idempotency_invalid",
+            "send_stable_client_message_id",
+        )
+    except TicketIdempotencyReplayUnavailable:
+        db.session.rollback()
+        return None, False, idempotency_source, _error_response(
+            "La acción idempotente existe pero su evento no está disponible",
+            409,
+            "reply_idempotency_replay_unavailable",
+            "refresh_inbox",
+        )
+    if comment is None:
+        db.session.rollback()
+        return None, False, idempotency_source, _error_response(
+            "No se pudo registrar la acción en el CRM",
+            500,
+            "crm_reply_action_persistence_failed",
+            "retry_with_same_idempotency_key",
+        )
+
+    replayed = existing_receipt is not None
+    extra = deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, Mapping) else {}
+    records = extra.get("crm_reply_actions") if isinstance(extra.get("crm_reply_actions"), list) else []
+    record = {
+        "contract_version": "inbox.crm_reply_action.v1",
+        "comment_id": comment.id,
+        "action": action,
+        "payload": deepcopy(dict(action_payload)),
+        "delivery_mode": "internal_event",
+        "external_dispatch": False,
+        "actor": {"id": actor.id, "name": actor.name},
+        "created_at": comment.fecha.isoformat() if comment.fecha else datetime.now(timezone.utc).isoformat(),
+    }
+    records = [
+        dict(item)
+        for item in records
+        if isinstance(item, Mapping) and item.get("comment_id") != comment.id
+    ]
+    records.append(record)
+    extra["crm_reply_actions"] = records[-100:]
+    ticket.datos_extra = extra
+    flag_modified(ticket, "datos_extra")
+    db.session.add(ticket)
+    db.session.commit()
+    return comment, replayed, idempotency_source, None
+
+
 def _inbox_action_delivery_payload(
     *,
     action: str,
@@ -5544,6 +6050,7 @@ def _inbox_action_delivery_payload(
     normalized_action = str(action or "").strip().lower()
     normalized_channel = str(channel or "crm").strip().lower() or "crm"
     is_reply = normalized_action == "reply"
+    is_internal_reply_action = normalized_action in {"share_location", "share_form"}
     if is_reply and durably_staged:
         mode = "durable_queue"
         resolved_status = status or "durably_staged"
@@ -5576,6 +6083,14 @@ def _inbox_action_delivery_payload(
         reply_status = "saved_to_timeline"
         evidence_stage = "crm_only"
         operator_message = "Guardado en el CRM. No se envio por un canal externo desde esta accion."
+    elif is_internal_reply_action:
+        mode = "internal_event"
+        resolved_status = status or "recorded_in_crm"
+        resolved_reason = reason or "internal_crm_evidence_only"
+        fallback = "http_polling"
+        reply_status = "internal_event_recorded"
+        evidence_stage = "crm_internal_audit"
+        operator_message = "Acción registrada en el historial interno. No se realizó un envío por un canal externo."
     else:
         mode = "internal_event"
         resolved_status = status or "applied"
@@ -5960,7 +6475,18 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
-    if action not in {"claim", "assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen"}:
+    if action not in {
+        "claim",
+        "assign",
+        "reply",
+        "share_location",
+        "share_form",
+        "handoff",
+        "accept_handoff",
+        "resume_ai",
+        "close",
+        "reopen",
+    }:
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
 
     now = datetime.now(timezone.utc)
@@ -5985,6 +6511,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     reply_outbox_effect_count = 0
     reply_replayed = False
     reply_idempotency_source: str | None = None
+    crm_action_payload: dict[str, Any] | None = None
     claim_idempotent = False
 
     if action == "claim":
@@ -6091,6 +6618,63 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     elif action == "resume_ai":
         _apply_handoff_transition(extra, action="resume_ai", actor=current_user, occurred_at=now_iso)
         handoff_event_body = f"Conversación devuelta a IA por {current_user.name}"
+
+    elif action in {"share_location", "share_form"}:
+        if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response(
+                "El reclamo está cerrado. Reabrilo antes de registrar una respuesta.",
+                403,
+                "ticket_closed",
+                "reopen_ticket",
+            )
+        if action == "share_location":
+            crm_action_payload, payload_error = _legacy_claim_location_action_payload(payload)
+            if payload_error is not None:
+                return payload_error
+            location_parts = [
+                value
+                for value in (
+                    crm_action_payload.get("label"),
+                    crm_action_payload.get("address"),
+                )
+                if value
+            ]
+            coordinates = (
+                f"{crm_action_payload['lat']!r}, {crm_action_payload['lng']!r}"
+                if crm_action_payload.get("lat") is not None
+                and crm_action_payload.get("lng") is not None
+                else None
+            )
+            if coordinates:
+                location_parts.append(coordinates)
+            body = (
+                "Ubicación registrada en el CRM: "
+                + " · ".join(location_parts)
+                + ". No fue enviada por un canal externo."
+            )
+        else:
+            crm_action_payload, payload_error = _legacy_claim_form_action_payload(payload, tenant)
+            if payload_error is not None:
+                return payload_error
+            body = (
+                f"Formulario preparado en el CRM: {crm_action_payload['label']} "
+                f"({crm_action_payload['href']}). No fue enviado por un canal externo."
+            )
+
+        recent_comment, reply_replayed, reply_idempotency_source, persistence_error = (
+            _legacy_claim_record_crm_reply_action(
+                ticket=ticket,
+                tenant=tenant,
+                actor=current_user,
+                action=action,
+                body=body,
+                action_payload=crm_action_payload,
+                request_payload=payload,
+            )
+        )
+        if persistence_error is not None:
+            return persistence_error
+        timeline_updated = not reply_replayed
 
     elif action == "reply":
         if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
@@ -6248,13 +6832,13 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         )
         timeline_updated = True
 
-    if action != "reply":
+    if action not in {"reply", "share_location", "share_form"}:
         if not (action == "claim" and claim_idempotent):
             ticket.ultima_actividad = now
             db.session.add(ticket)
         db.session.commit()
 
-    if action not in {"handoff", "accept_handoff", "resume_ai"} and not (
+    if action not in {"handoff", "accept_handoff", "resume_ai", "share_location", "share_form"} and not (
         action == "reply" and (reply_outbox_enabled or reply_replayed)
     ) and not (action == "claim" and claim_idempotent):
         realtime_state_events = _emit_legacy_claim_realtime_state(
@@ -6297,16 +6881,36 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         action=action,
         channel=(
             "crm"
-            if action in {"claim", "handoff", "accept_handoff", "resume_ai"}
+            if action in {"claim", "handoff", "accept_handoff", "resume_ai", "share_location", "share_form"}
             else _ticket_delivery_channel(delivery_results, ticket.canal_ingreso or "whatsapp")
         ),
         timeline_updated=timeline_updated,
         source_model="MunicipioTicket",
-        status=("already_owned" if action == "claim" and claim_idempotent else ("claimed" if action == "claim" else None)),
+        status=(
+            "already_owned"
+            if action == "claim" and claim_idempotent
+            else (
+                "claimed"
+                if action == "claim"
+                else (
+                    "already_recorded"
+                    if action in {"share_location", "share_form"} and reply_replayed
+                    else None
+                )
+            )
+        ),
         reason=(
             "claim_idempotent_same_operator"
             if action == "claim" and claim_idempotent
-            else ("claim_acquired" if action == "claim" else delivery_reason)
+            else (
+                "claim_acquired"
+                if action == "claim"
+                else (
+                    "idempotent_replay_no_duplicate_event"
+                    if action in {"share_location", "share_form"} and reply_replayed
+                    else delivery_reason
+                )
+            )
         ),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
@@ -6327,13 +6931,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         "room": f"ticket_municipio_{ticket.id}",
         "fallback": "http_polling",
     }
-    if action == "reply":
+    if action in {"reply", "share_location", "share_form"}:
         delivery["idempotency"] = {
             "contract_version": "inbox.reply_idempotency.v1",
             "replayed": reply_replayed,
             "source": reply_idempotency_source,
             "raw_value_persisted": False,
         }
+    if action in {"share_location", "share_form"}:
+        delivery["recorded_action"] = deepcopy(crm_action_payload or {})
     if action == "reply" and reply_outbox_enabled:
         delivery["outbox"] = {
             "durably_staged": bool(reply_outbox_effect_count),
@@ -6342,7 +6948,11 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             "direct_dispatch_performed": False,
         }
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    ticket_payload = _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status)
+    ticket_payload = _legacy_claim_inbox_payload(
+        ticket,
+        live_chat_status=live_chat_status,
+        tenant=tenant,
+    )
 
     return _json_response(
         {

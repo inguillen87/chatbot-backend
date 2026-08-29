@@ -5227,6 +5227,345 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(legacy.datos_extra["handoff"]["accepted_by"]["id"], self.employee.id)
         self.assertEqual(legacy.datos_extra["handoff"]["resolution"], "resume_ai")
 
+    def _municipal_crm_reply_fixture(self, *, suffix: str):
+        owner = User(
+            name=f"Owner Municipio {suffix}",
+            email=f"owner-municipio-{suffix}@test.com",
+            rol="admin",
+            tipo_chat="municipio",
+            tenant_slug=f"municipio-{suffix}",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug=f"municipio-{suffix}",
+            nombre=f"Municipio {suffix}",
+            tipo="municipio",
+            municipio_id=owner.id,
+            configuracion={},
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+
+        employee = User(
+            name=f"Agente {suffix}",
+            email=f"agente-{suffix}@test.com",
+            rol="empleado",
+            tenant_slug=tenant.slug,
+            tenant_id=tenant.id,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {
+                    "categorias": ["educacion"],
+                    "zonas": ["centro"],
+                    "permisos": ["tickets_assign"],
+                    "channels": ["whatsapp"],
+                }
+            },
+        )
+        employee.set_password("secret123")
+        db.session.add(employee)
+
+        ticket = MunicipioTicket(
+            tenant_id=tenant.id,
+            municipio_id=owner.id,
+            nro_ticket=f"M-{suffix}",
+            consulta_pin=f"PIN-{suffix}",
+            pregunta="Necesito orientación municipal",
+            asunto="Consulta ciudadana",
+            categoria="educacion",
+            detalles="Caso para la mesa de entrada",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            nombre_vecino="Vecino de prueba",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(ticket)
+        form = EncEncuesta(
+            tenant_id=tenant.id,
+            slug=f"formulario-{suffix}",
+            titulo=f"Formulario municipal {suffix}",
+            tipo="encuesta",
+            estado="publicada",
+        )
+        db.session.add(form)
+        db.session.commit()
+        return owner, tenant, employee, ticket, form
+
+    def test_legacy_claim_publishes_fail_closed_crm_reply_contract(self):
+        owner, tenant, _employee, ticket, form = self._municipal_crm_reply_fixture(
+            suffix="reply-contract"
+        )
+
+        response = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=MunicipioTicket",
+            headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        item = response.get_json()["item"]
+        contract = item["reply_contract"]
+        self.assertEqual(contract["contract_version"], "inbox.crm_reply_capabilities.v1")
+        self.assertFalse(contract["external_dispatch"])
+        self.assertTrue(contract["capabilities"]["text"]["available"])
+        self.assertTrue(contract["capabilities"]["attachment"]["available"])
+        self.assertTrue(contract["capabilities"]["location"]["available"])
+        self.assertTrue(contract["capabilities"]["form"]["available"])
+        self.assertTrue(contract["capabilities"]["human_handoff"]["available"])
+        self.assertEqual(contract["form_selection"]["source"], "tenant_public_surveys")
+        self.assertEqual(contract["form_selection"]["tenant_id"], tenant.id)
+        self.assertEqual(len(contract["form_selection"]["options"]), 1)
+        form_option = contract["form_selection"]["options"][0]
+        self.assertEqual(form_option["id"], form.id)
+        self.assertEqual(form_option["form_slug"], "formulario-reply-contract")
+        self.assertEqual(form_option["label"], "Formulario municipal reply-contract")
+        self.assertTrue(form_option["href"].endswith("/e/formulario-reply-contract"))
+        self.assertEqual(form_option["kind"], "encuesta")
+        allowed = {action["id"]: action for action in item["allowed_actions"]}
+        self.assertIn("share_location", allowed)
+        self.assertIn("share_form", allowed)
+        self.assertEqual(allowed["share_location"]["delivery_mode"], "internal_event")
+        self.assertFalse(allowed["share_location"]["external_dispatch"])
+        self.assertFalse(allowed["share_form"]["external_dispatch"])
+        self.assertIn("no la envía", allowed["share_location"]["description"])
+        self.assertIn("no lo envía", allowed["share_form"]["description"])
+        self.assertEqual(allowed["share_location"]["requires"], ["location"])
+        self.assertEqual(allowed["share_form"]["requires"], ["form_slug"])
+        self.assertEqual(
+            allowed["share_location"]["idempotency"]["preferred_header"],
+            "Idempotency-Key",
+        )
+        self.assertEqual(
+            allowed["share_form"]["idempotency"]["body_field"],
+            "client_message_id",
+        )
+        location_schema = allowed["share_location"]["input_schema"]
+        self.assertEqual(location_schema["required"], ["location"])
+        self.assertEqual(
+            location_schema["properties"]["location"]["anyOf"],
+            [{"required": ["address"]}, {"required": ["lat", "lng"]}],
+        )
+        form_schema = allowed["share_form"]["input_schema"]
+        self.assertEqual(
+            form_schema["properties"]["form_slug"]["enum"],
+            ["formulario-reply-contract"],
+        )
+        self.assertEqual(
+            form_schema["properties"]["form_slug"]["x-options-source"],
+            "reply_contract.form_selection.options",
+        )
+
+        form.estado = "borrador"
+        db.session.commit()
+        without_public_form = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=MunicipioTicket",
+            headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(without_public_form.status_code, 200, without_public_form.get_json())
+        unavailable_item = without_public_form.get_json()["item"]
+        self.assertFalse(unavailable_item["reply_contract"]["capabilities"]["form"]["available"])
+        self.assertEqual(
+            unavailable_item["reply_contract"]["capabilities"]["form"]["reason_code"],
+            "no_active_tenant_form",
+        )
+        self.assertNotIn(
+            "share_form",
+            {action["id"] for action in unavailable_item["allowed_actions"]},
+        )
+
+        ticket.estado = "cerrado"
+        db.session.commit()
+        closed = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=MunicipioTicket",
+            headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        closed_item = closed.get_json()["item"]
+        closed_capabilities = closed_item["reply_contract"]["capabilities"]
+        self.assertFalse(closed_capabilities["text"]["available"])
+        self.assertFalse(closed_capabilities["attachment"]["available"])
+        self.assertFalse(closed_capabilities["location"]["available"])
+        self.assertFalse(closed_capabilities["form"]["available"])
+        closed_actions = {action["id"] for action in closed_item["allowed_actions"]}
+        self.assertNotIn("reply", closed_actions)
+        self.assertNotIn("share_location", closed_actions)
+        self.assertNotIn("share_form", closed_actions)
+
+    def test_legacy_claim_location_action_is_internal_audited_and_idempotent(self):
+        owner, tenant, _employee, ticket, _form = self._municipal_crm_reply_fixture(
+            suffix="location-action"
+        )
+        action_payload = {
+            "source_model": "MunicipioTicket",
+            "legacy_id": ticket.id,
+            "action": "share_location",
+            "location": {
+                "lat": -33.136,
+                "lng": -68.478,
+                "address": "Plaza departamental, Junín",
+                "label": "Frente a la plaza",
+            },
+        }
+        headers = {
+            **self._auth(owner),
+            "X-Tenant-Slug": tenant.slug,
+            "Idempotency-Key": "crm-location-action-0001",
+        }
+
+        missing_location = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "legacy_id": ticket.id,
+                "action": "share_location",
+            },
+            headers={
+                **self._auth(owner),
+                "X-Tenant-Slug": tenant.slug,
+                "Idempotency-Key": "crm-location-missing-0001",
+            },
+        )
+        self.assertEqual(missing_location.status_code, 400, missing_location.get_json())
+        self.assertEqual(missing_location.get_json()["reason_code"], "location_payload_required")
+
+        with patch("routes.v2.saas._dispatch_legacy_claim_reply") as dispatcher, patch(
+            "routes.v2.saas._emit_legacy_claim_realtime_reply"
+        ) as realtime:
+            first = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json=action_payload,
+                headers=headers,
+            )
+            replay = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json=action_payload,
+                headers=headers,
+            )
+            conflict = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    **action_payload,
+                    "location": {**action_payload["location"], "address": "Otra dirección"},
+                },
+                headers=headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["reason_code"], "reply_idempotency_payload_conflict")
+        dispatcher.assert_not_called()
+        realtime.assert_not_called()
+        delivery = first.get_json()["delivery"]
+        self.assertEqual(delivery["mode"], "internal_event")
+        self.assertEqual(delivery["status"], "recorded_in_crm")
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertEqual(delivery["final_delivery"]["status"], "not_dispatched")
+        self.assertFalse(delivery["realtime"]["emitted"])
+        self.assertIn("No se realizó un envío", delivery["operator_message"])
+        self.assertEqual(replay.get_json()["delivery"]["status"], "already_recorded")
+        self.assertTrue(replay.get_json()["delivery"]["idempotency"]["replayed"])
+
+        comments = TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).all()
+        self.assertEqual(len(comments), 1)
+        self.assertEqual(comments[0].origen, "internal")
+        self.assertIsNone(comments[0].estado_ticket)
+        self.assertEqual(
+            DomainEffectOutbox.query.filter_by(
+                tenant_id=tenant.id,
+                aggregate_type="municipio_ticket_comment",
+            ).count(),
+            0,
+        )
+        timeline_event = next(
+            event
+            for event in first.get_json()["ticket"]["timeline"]
+            if event.get("action") == "share_location"
+        )
+        self.assertEqual(timeline_event["type"], "crm_reply_action")
+        self.assertEqual(timeline_event["visibility"], "internal")
+        self.assertEqual(timeline_event["delivery_mode"], "internal_event")
+        self.assertFalse(timeline_event["external_dispatch"])
+        self.assertEqual(timeline_event["action_payload"]["lat"], -33.136)
+
+    def test_legacy_claim_form_action_uses_tenant_registry_and_category_scope(self):
+        owner, tenant, employee, ticket, form = self._municipal_crm_reply_fixture(
+            suffix="form-action"
+        )
+        headers = {
+            **self._auth(owner),
+            "X-Tenant-Slug": tenant.slug,
+            "Idempotency-Key": "crm-form-action-0001",
+        }
+        payload = {
+            "source_model": "MunicipioTicket",
+            "legacy_id": ticket.id,
+            "action": "share_form",
+            "form_slug": form.slug,
+        }
+
+        arbitrary_url = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={**payload, "form_url": "https://attacker.invalid/form"},
+            headers=headers,
+        )
+        self.assertEqual(arbitrary_url.status_code, 400, arbitrary_url.get_json())
+        self.assertEqual(arbitrary_url.get_json()["reason_code"], "form_url_not_accepted")
+
+        valid = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json=payload,
+            headers=headers,
+        )
+        self.assertEqual(valid.status_code, 200, valid.get_json())
+        delivery = valid.get_json()["delivery"]
+        self.assertEqual(delivery["mode"], "internal_event")
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertEqual(delivery["final_delivery"]["status"], "not_dispatched")
+        self.assertIn("No se realizó un envío", delivery["operator_message"])
+        self.assertEqual(delivery["recorded_action"]["form_slug"], form.slug)
+        self.assertTrue(
+            delivery["recorded_action"]["href"].endswith(
+                "/e/formulario-form-action"
+            )
+        )
+
+        foreign_form = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                **payload,
+                "form_slug": "voto-saas",
+                "client_message_id": "foreign-form-action-0002",
+            },
+            headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(foreign_form.status_code, 404, foreign_form.get_json())
+        self.assertEqual(
+            foreign_form.get_json()["reason_code"],
+            "tenant_form_not_available",
+        )
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=ticket.id).count(),
+            1,
+        )
+
+        employee.accesibilidad = {
+            "employee_scope": {
+                "categorias": ["luminarias"],
+                "channels": ["whatsapp"],
+            }
+        }
+        db.session.commit()
+        denied = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={**payload, "client_message_id": "employee-form-action-0002"},
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(denied.status_code, 404, denied.get_json())
+        self.assertEqual(denied.get_json()["reason_code"], "ticket_not_found")
+
 
 if __name__ == "__main__":
     unittest.main()
