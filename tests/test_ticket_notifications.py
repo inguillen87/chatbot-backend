@@ -157,6 +157,78 @@ class TicketNotificationFlowTest(unittest.TestCase):
         self.assertIn("comentario_reciente", kwargs)
         self.assertEqual(kwargs["comentario_reciente"].estado_ticket, "en_proceso")
 
+    def test_invalid_transition_returns_conflict_and_preserves_ticket(self):
+        token = generar_token(
+            self.admin.id,
+            self.admin.rol,
+            self.admin.tipo_chat,
+            self.admin.municipio_id,
+            self.admin.pyme_id,
+        )
+        response = self.client.put(
+            f"/tickets/municipio/{self.ticket.id}/estado",
+            json={"estado": "en_vivo", "expected_estado": "nuevo"},
+            headers={"Authorization": f"Bearer {token}", "X-Request-Id": "invalid-transition-1"},
+        )
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        payload = response.get_json() or {}
+        self.assertEqual(payload.get("contract_version"), "tickets.workflow_transition.v2")
+        self.assertEqual(payload.get("reason_code"), "ticket_transition_not_allowed")
+        self.assertEqual(payload.get("current_state"), "nuevo")
+        self.assertEqual(payload.get("next_states"), ["en_proceso", "resuelto"])
+        self.assertEqual(db.session.get(MunicipioTicket, self.ticket.id).estado, "nuevo")
+
+    def test_closed_ticket_cannot_reopen_and_detail_has_no_next_states(self):
+        token = generar_token(
+            self.admin.id,
+            self.admin.rol,
+            self.admin.tipo_chat,
+            self.admin.municipio_id,
+            self.admin.pyme_id,
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        closed = self.client.put(
+            f"/tickets/municipio/{self.ticket.id}/estado",
+            json={"estado": "resuelto", "expected_estado": "nuevo"},
+            headers=headers,
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        self.assertEqual((closed.get_json() or {}).get("next_states"), [])
+
+        reopened = self.client.put(
+            f"/tickets/municipio/{self.ticket.id}/estado",
+            json={"estado": "en_proceso", "expected_estado": "resuelto"},
+            headers=headers,
+        )
+        self.assertEqual(reopened.status_code, 409, reopened.get_json())
+        self.assertEqual((reopened.get_json() or {}).get("reason_code"), "ticket_transition_not_allowed")
+        self.assertEqual(db.session.get(MunicipioTicket, self.ticket.id).estado, "cerrado")
+
+        detail = self.client.get(f"/tickets/municipio/{self.ticket.id}", headers=headers)
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        self.assertEqual((detail.get_json() or {}).get("estado"), "resuelto")
+        self.assertEqual((detail.get_json() or {}).get("next_states"), [])
+
+    def test_stale_expected_state_returns_refreshable_conflict(self):
+        token = generar_token(
+            self.admin.id,
+            self.admin.rol,
+            self.admin.tipo_chat,
+            self.admin.municipio_id,
+            self.admin.pyme_id,
+        )
+        response = self.client.put(
+            f"/tickets/municipio/{self.ticket.id}/estado",
+            json={"estado": "en_proceso", "expected_estado": "en_vivo"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(response.status_code, 409, response.get_json())
+        payload = response.get_json() or {}
+        self.assertEqual(payload.get("reason_code"), "ticket_state_conflict")
+        self.assertTrue(payload.get("retryable"))
+        self.assertEqual(db.session.get(MunicipioTicket, self.ticket.id).estado, "nuevo")
+
 
 if __name__ == "__main__":
     unittest.main()

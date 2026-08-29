@@ -42,6 +42,7 @@ from models import (
 from routes.v2.saas import (
     _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES,
     _OMNICHANNEL_REPLY_MAX_BODY_BYTES,
+    _inbox_state_action_access,
 )
 from services.meta_flow_json import SURVEY_VOTE_DATA_CONTRACT
 from services.tts_orchestrator import reset_tts_cache_metrics
@@ -2500,6 +2501,193 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(item["source_metadata"]["contact_key"], "whatsapp:+5491111111111")
         self.assertEqual(item["sla"]["priority"], "high")
 
+    def test_tenant_close_and_explicit_reopen_use_fixed_audited_transitions(self):
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.owner),
+        )
+        initial_actions = {
+            item["id"]: item for item in detail.get_json()["ticket"]["allowed_actions"]
+        }
+        self.assertEqual(initial_actions["close"]["target_state"], "cerrado")
+        self.assertNotIn("reopen", initial_actions)
+
+        invalid_target = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "close", "status": "en_vivo"},
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(invalid_target.status_code, 422, invalid_target.get_json())
+        self.assertEqual(
+            invalid_target.get_json()["reason_code"],
+            "ticket_close_target_invalid",
+        )
+        db.session.refresh(self.ticket)
+        self.assertEqual(self.ticket.estado, "nuevo")
+
+        closed = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "close", "expected_status": "nuevo"},
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(closed.status_code, 200, closed.get_json())
+        closed_ticket = closed.get_json()["ticket"]
+        self.assertEqual(closed_ticket["status"], "cerrado")
+        closed_actions = {
+            item["id"]: item for item in closed_ticket["allowed_actions"]
+        }
+        self.assertEqual(closed_actions["reopen"]["target_state"], "en_proceso")
+        self.assertNotIn("close", closed_actions)
+
+        reopened = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "reopen", "expected_status": "cerrado"},
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(reopened.status_code, 200, reopened.get_json())
+        self.assertEqual(reopened.get_json()["ticket"]["status"], "en_proceso")
+        audit_actions = [
+            item.get("action")
+            for item in reopened.get_json()["ticket"]["timeline"]
+            if item.get("action")
+        ]
+        self.assertEqual(audit_actions[-2:], ["close", "reopen"])
+
+        duplicate = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "reopen"},
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+        self.assertEqual(
+            duplicate.get_json()["reason_code"],
+            "ticket_reopen_requires_closed",
+        )
+        db.session.refresh(self.ticket)
+        self.assertEqual(self.ticket.estado, "en_proceso")
+
+    def test_employee_reopen_requires_exact_assignment_and_category_scope(self):
+        self.ticket.estado = "cerrado"
+        self.ticket.datos_extra = {
+            **self.ticket.datos_extra,
+            "assignee_id": None,
+            "assignee_name": None,
+            "assignee_email": None,
+        }
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        action_ids = {
+            item["id"] for item in detail.get_json()["ticket"]["allowed_actions"]
+        }
+        self.assertNotIn("reopen", action_ids)
+
+        unassigned = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "reopen"},
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(unassigned.status_code, 409, unassigned.get_json())
+        self.assertEqual(
+            unassigned.get_json()["reason_code"],
+            "ticket_assignment_required",
+        )
+
+        self.ticket.datos_extra = {
+            **self.ticket.datos_extra,
+            "assignee_id": self.employee.id,
+            "assignee_name": self.employee.name,
+            "assignee_email": self.employee.email,
+        }
+        db.session.commit()
+        assigned = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "reopen"},
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.get_json())
+        self.assertEqual(assigned.get_json()["ticket"]["status"], "en_proceso")
+
+        self.ticket.estado = "cerrado"
+        self.ticket.categoria = "categoria-sin-alcance"
+        db.session.commit()
+        outside_scope = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"action": "reopen"},
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(outside_scope.status_code, 404, outside_scope.get_json())
+        db.session.refresh(self.ticket)
+        self.assertEqual(self.ticket.estado, "cerrado")
+
+    def test_unauthorized_superadmin_cannot_publish_state_actions(self):
+        with patch(
+            "routes.v2.saas.is_authorized_superadmin_user",
+            return_value=False,
+        ):
+            allowed, reason = _inbox_state_action_access(
+                self.ticket,
+                self.super_admin,
+                extra=self.ticket.datos_extra,
+            )
+
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "ticket_transition_role_denied")
+
+    def test_legacy_claim_explicit_reopen_targets_en_proceso(self):
+        owner, tenant, _employee, legacy, _form = self._municipal_crm_reply_fixture(
+            suffix="state-reopen"
+        )
+        legacy.estado = "cerrado"
+        db.session.commit()
+        headers = {**self._auth(owner), "X-Tenant-Slug": tenant.slug}
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{legacy.id}?source_model=MunicipioTicket",
+            headers=headers,
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        actions = {
+            item["id"]: item for item in detail.get_json()["ticket"]["allowed_actions"]
+        }
+        self.assertEqual(actions["reopen"]["target_state"], "en_proceso")
+
+        invalid_target = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "legacy_id": legacy.id,
+                "action": "reopen",
+                "status": "nuevo",
+            },
+            headers=headers,
+        )
+        self.assertEqual(invalid_target.status_code, 422, invalid_target.get_json())
+        self.assertEqual(
+            invalid_target.get_json()["reason_code"],
+            "ticket_reopen_target_invalid",
+        )
+
+        reopened = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "legacy_id": legacy.id,
+                "action": "reopen",
+            },
+            headers=headers,
+        )
+        self.assertEqual(reopened.status_code, 200, reopened.get_json())
+        self.assertEqual(reopened.get_json()["ticket"]["status"], "en_proceso")
+        db.session.refresh(legacy)
+        self.assertEqual(legacy.estado, "en_proceso")
+        audit = TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).one()
+        self.assertEqual(audit.estado_ticket, "en_proceso")
+
     def test_production_smoke_contract_checks_critical_runtime_surfaces(self):
         response = self.client.get(
             "/api/v2/platform/production-smoke",
@@ -2745,7 +2933,9 @@ class V2SaasContractsTest(unittest.TestCase):
         actions = {item["id"]: item for item in detail.get_json()["ticket"]["allowed_actions"]}
         self.assertEqual(actions["claim"]["label"], "Tomar ticket")
         self.assertEqual(actions["claim"]["requires"], [])
-        self.assertIn("assign", actions)
+        self.assertNotIn("assign", actions)
+        self.assertNotIn("reply", actions)
+        self.assertNotIn("handoff", actions)
 
         first = self.client.post(
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
@@ -2767,6 +2957,10 @@ class V2SaasContractsTest(unittest.TestCase):
             "claim",
             {item["id"] for item in first_payload["ticket"]["allowed_actions"]},
         )
+        owned_actions = {
+            item["id"] for item in first_payload["ticket"]["allowed_actions"]
+        }
+        self.assertTrue({"assign", "reply", "handoff"}.issubset(owned_actions))
 
         db.session.expire_all()
         claimed = db.session.get(TenantTicket, ticket.id)
@@ -2829,6 +3023,200 @@ class V2SaasContractsTest(unittest.TestCase):
             if item.get("action") == "claim"
         ]
         self.assertEqual(len(claim_events), 1)
+
+    def test_employee_cannot_operate_tenant_ticket_owned_by_another_operator(self):
+        ticket = self._unassigned_claim_ticket()
+        other_operator = self._claim_employee(
+            name="Operador titular",
+            email="tenant-ticket-owner@test.com",
+        )
+        ticket.datos_extra = {
+            **(ticket.datos_extra or {}),
+            "assignee_id": other_operator.id,
+            "assignee_name": other_operator.name,
+            "assignee_email": other_operator.email,
+        }
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}",
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        action_ids = {
+            item["id"] for item in detail.get_json()["ticket"]["allowed_actions"]
+        }
+        self.assertFalse({"reply", "assign", "handoff", "resume_ai"} & action_ids)
+        self.assertNotIn(
+            "reply",
+            {item["action"] for item in detail.get_json()["ticket"]["next_steps"]},
+        )
+
+        action_payloads = (
+            (
+                "reply",
+                {
+                    "body": "No debe persistirse",
+                    "client_message_id": "employee-owned-tenant-reply-0001",
+                },
+            ),
+            ("assign", {"assignee_id": self.employee.id}),
+            ("handoff", {"channel": "operator"}),
+        )
+        for action, fields in action_payloads:
+            with self.subTest(action=action):
+                response = self.client.post(
+                    f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+                    json={"action": action, **fields},
+                    headers={
+                        **self._auth(self.employee),
+                        "Idempotency-Key": f"employee-owned-tenant-{action}-0001",
+                    },
+                )
+                self.assertEqual(response.status_code, 409, response.get_json())
+                self.assertEqual(
+                    response.get_json()["reason_code"],
+                    "ticket_assignment_required",
+                )
+
+        db.session.expire_all()
+        persisted = db.session.get(TenantTicket, ticket.id)
+        self.assertEqual((persisted.datos_extra or {}).get("assignee_id"), other_operator.id)
+        self.assertFalse((persisted.datos_extra or {}).get("comments"))
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=ticket.id,
+            ).count(),
+            0,
+        )
+
+        admin_reassignment = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={"action": "assign", "assignee_id": self.employee.id},
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(
+            admin_reassignment.status_code,
+            200,
+            admin_reassignment.get_json(),
+        )
+        self.assertEqual(
+            admin_reassignment.get_json()["ticket"]["assignee"]["id"],
+            self.employee.id,
+        )
+        owned_action_ids = {
+            item["id"]
+            for item in admin_reassignment.get_json()["ticket"]["allowed_actions"]
+        }
+        self.assertTrue({"reply", "assign", "handoff"}.issubset(owned_action_ids))
+
+    def test_employee_cannot_operate_legacy_ticket_owned_by_another_operator(self):
+        self._enable_municipal_domain_outbox()
+        other_operator = self._claim_employee(
+            name="Operador municipal titular",
+            email="legacy-ticket-owner@test.com",
+        )
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-OWNED-001",
+            consulta_pin="920001",
+            pregunta="Reclamo ya tomado por otra persona",
+            asunto="Reclamo con titular",
+            categoria="educacion",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            asignado_a_id=other_operator.id,
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{legacy.id}?source_model=MunicipioTicket",
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        ticket_payload = detail.get_json()["ticket"]
+        action_ids = {item["id"] for item in ticket_payload["allowed_actions"]}
+        self.assertFalse(
+            {"reply", "assign", "share_location", "share_form", "handoff", "resume_ai"}
+            & action_ids
+        )
+        self.assertFalse(ticket_payload["reply_contract"]["capabilities"]["text"]["available"])
+        self.assertEqual(
+            ticket_payload["reply_contract"]["capabilities"]["text"]["reason_code"],
+            "ticket_assignment_required",
+        )
+
+        action_payloads = (
+            (
+                "reply",
+                {
+                    "body": "No debe persistirse",
+                    "client_message_id": "employee-owned-legacy-reply-0001",
+                },
+                "ticket_assignment_required",
+            ),
+            ("assign", {"assignee_id": self.employee.id}, "ticket_assignment_required"),
+            ("handoff", {"channel": "operator"}, "ticket_assignment_required"),
+            (
+                "share_location",
+                {"location": {"address": "Dirección de prueba"}},
+                "crm_action_employee_assignment_required",
+            ),
+            (
+                "share_form",
+                {"form_slug": "voto-saas"},
+                "crm_action_employee_assignment_required",
+            ),
+        )
+        for action, fields, expected_reason in action_payloads:
+            with self.subTest(action=action):
+                response = self.client.post(
+                    "/api/v2/inbox/omnichannel/actions",
+                    json={
+                        "source_model": "MunicipioTicket",
+                        "legacy_id": legacy.id,
+                        "action": action,
+                        **fields,
+                    },
+                    headers={
+                        **self._auth(self.employee),
+                        "Idempotency-Key": f"employee-owned-legacy-{action}-0001",
+                    },
+                )
+                self.assertEqual(response.status_code, 409, response.get_json())
+                self.assertEqual(response.get_json()["reason_code"], expected_reason)
+
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
+            0,
+        )
+        db.session.expire_all()
+        persisted = db.session.get(MunicipioTicket, legacy.id)
+        self.assertEqual(persisted.asignado_a_id, other_operator.id)
+        self.assertFalse((persisted.datos_extra or {}).get("crm_reply_actions"))
+
+        admin_reassignment = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "legacy_id": legacy.id,
+                "action": "assign",
+                "assignee_id": self.employee.id,
+            },
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(
+            admin_reassignment.status_code,
+            200,
+            admin_reassignment.get_json(),
+        )
+        self.assertEqual(
+            admin_reassignment.get_json()["ticket"]["assignee"]["id"],
+            self.employee.id,
+        )
 
     def test_omnichannel_claim_fails_closed_for_category_and_tenant(self):
         restricted = self._unassigned_claim_ticket(category="salud")
@@ -5152,6 +5540,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertNotIn("handoff", foreign_ticket.datos_extra)
 
     def test_legacy_claim_handoff_lifecycle_uses_datos_extra_and_internal_comments(self):
+        self._enable_municipal_domain_outbox()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -5326,11 +5715,15 @@ class V2SaasContractsTest(unittest.TestCase):
         allowed = {action["id"]: action for action in item["allowed_actions"]}
         self.assertIn("share_location", allowed)
         self.assertIn("share_form", allowed)
-        self.assertEqual(allowed["share_location"]["delivery_mode"], "internal_event")
+        self.assertEqual(allowed["share_location"]["delivery_mode"], "runtime_preflight")
         self.assertFalse(allowed["share_location"]["external_dispatch"])
         self.assertFalse(allowed["share_form"]["external_dispatch"])
-        self.assertIn("no la envía", allowed["share_location"]["description"])
-        self.assertIn("no lo envía", allowed["share_form"]["description"])
+        self.assertFalse(allowed["share_location"]["direct_external_dispatch"])
+        self.assertTrue(allowed["share_location"]["may_queue_external_delivery"])
+        self.assertTrue(allowed["share_form"]["may_queue_external_delivery"])
+        self.assertTrue(allowed["share_form"]["action_response_delivery_authoritative"])
+        self.assertIn("encola", allowed["share_location"]["description"])
+        self.assertIn("encola", allowed["share_form"]["description"])
         self.assertEqual(allowed["share_location"]["requires"], ["location"])
         self.assertEqual(allowed["share_form"]["requires"], ["form_slug"])
         self.assertEqual(
@@ -5464,7 +5857,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(delivery["external_dispatch"])
         self.assertEqual(delivery["final_delivery"]["status"], "not_dispatched")
         self.assertFalse(delivery["realtime"]["emitted"])
-        self.assertIn("No se realizó un envío", delivery["operator_message"])
+        self.assertIn("no se realizó un envío", delivery["operator_message"].lower())
         self.assertEqual(replay.get_json()["delivery"]["status"], "already_recorded")
         self.assertTrue(replay.get_json()["delivery"]["idempotency"]["replayed"])
 
@@ -5524,7 +5917,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(delivery["mode"], "internal_event")
         self.assertFalse(delivery["external_dispatch"])
         self.assertEqual(delivery["final_delivery"]["status"], "not_dispatched")
-        self.assertIn("No se realizó un envío", delivery["operator_message"])
+        self.assertIn("no se realizó un envío", delivery["operator_message"].lower())
         self.assertEqual(delivery["recorded_action"]["form_slug"], form.slug)
         self.assertTrue(
             delivery["recorded_action"]["href"].endswith(

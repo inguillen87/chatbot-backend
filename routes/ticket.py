@@ -56,7 +56,21 @@ from services.ticket_realtime_state import (
     upsert_ticket_presence,
 )
 from services.conversation_stream import build_unified_conversation_stream
+from services.history_pagination import (
+    HistoryPaginationError,
+    page_payloads,
+    paginate_history_items,
+    parse_history_page_params,
+)
 from services.live_chat_access import attach_ticket_room_access, build_ticket_room
+from services.ticket_state_machine import (
+    TICKET_ALLOWED_STATES,
+    TICKET_ALLOWED_TRANSITIONS,
+    TICKET_FINAL_STATES,
+    build_ticket_workflow_instance,
+    is_ticket_transition_allowed,
+    normalize_ticket_state,
+)
 from services.gcs_service import (
     MAX_FILE_SIZE as TICKET_ATTACHMENT_MAX_BYTES,
     UploadFileTooLargeError,
@@ -124,23 +138,7 @@ TICKET_READ_REQUIRED_CAPABILITIES = [
     "crm_reclamos",
 ]
 
-# Estados válidos para los tickets que pueden ser utilizados por la UI.
-TICKET_ALLOWED_STATES = [
-    "nuevo",
-    "en_proceso",
-    "en_vivo",
-    "esperando_agente_en_vivo",
-    "cerrado",
-]
 TICKET_WORKFLOW_CONTRACT_VERSION = "tickets.workflow.v1"
-
-TICKET_ALLOWED_TRANSITIONS = {
-    "nuevo": ["en_proceso", "cerrado"],
-    "en_proceso": ["en_vivo", "esperando_agente_en_vivo", "cerrado"],
-    "en_vivo": ["en_proceso", "cerrado"],
-    "esperando_agente_en_vivo": ["en_vivo", "en_proceso", "cerrado"],
-    "cerrado": [],
-}
 
 
 def _normalize_ticket_delivery_results(results: Mapping[str, Any] | None) -> dict[str, bool]:
@@ -1090,6 +1088,42 @@ def _is_employee_user(user: Optional[User]) -> bool:
             canonical_role(getattr(user, "rol", None)) == ROLE_EMPLEADO
             or getattr(user, "es_empleado", False)
         )
+    )
+
+
+def _legacy_ticket_state_for_ui(state: str) -> str:
+    return "resuelto" if state == "cerrado" else state
+
+
+def _ticket_transition_access(ticket_obj, current_user: Optional[User]) -> tuple[bool, str | None]:
+    """Return actor-level workflow access without weakening tenant/category RBAC."""
+
+    if current_user is None:
+        return False, "ticket_transition_auth_required"
+
+    role = canonical_role(getattr(current_user, "rol", None))
+    if role == ROLE_SUPERADMIN:
+        if is_authorized_superadmin_user(current_user):
+            return True, None
+        return False, "ticket_transition_role_denied"
+    if role == ROLE_TENANT_ADMIN:
+        return True, None
+    if role != ROLE_EMPLEADO and not getattr(current_user, "es_empleado", False):
+        return False, "ticket_transition_role_denied"
+
+    assigned_user_id = getattr(ticket_obj, "asignado_a_id", None)
+    if assigned_user_id != getattr(current_user, "id", None):
+        return False, "ticket_assignment_required"
+    return True, None
+
+
+def _legacy_ticket_workflow_payload(ticket_obj, current_user: Optional[User]) -> dict[str, Any]:
+    can_operate, blocked_reason = _ticket_transition_access(ticket_obj, current_user)
+    return build_ticket_workflow_instance(
+        getattr(ticket_obj, "estado", None),
+        can_operate=can_operate,
+        blocked_reason=blocked_reason,
+        externalize=_legacy_ticket_state_for_ui,
     )
 
 
@@ -2076,6 +2110,7 @@ def serialize_ticket_to_json(
     ticket,
     ticket_type,
     *,
+    workflow_viewer: Optional[User] = None,
     compact: bool = False,
     comentarios_count_override: int | None = None,
     collaboration_state_override: dict | None = None,
@@ -2189,6 +2224,7 @@ def serialize_ticket_to_json(
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
+    workflow_payload = _legacy_ticket_workflow_payload(ticket, workflow_viewer)
     categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
     categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
     location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
@@ -2264,6 +2300,8 @@ def serialize_ticket_to_json(
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
         "estado": estado_serializado,
+        "next_states": workflow_payload["next_states"],
+        "workflow": workflow_payload,
         "fecha": datetime_to_iso_utc(ticket.fecha),
         "categoria": categoria_normalizada,
         "direccion": location_payload["direccion"],
@@ -2676,6 +2714,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             serialize_ticket_to_json(
                 t,
                 tipo_ticket_str,
+                workflow_viewer=current_user,
                 compact=compact_view,
                 comentarios_count_override=comment_counts.get(t.id, 0) if compact_view else None,
                 collaboration_state_override=collaboration_states.get(t.id) if compact_view else None,
@@ -2991,7 +3030,7 @@ def _ticket_ai_enrichment_payload(ticket) -> dict[str, Any]:
     }
 
 
-def _serialize_ticket_details(ticket, ticket_type):
+def _serialize_ticket_details(ticket, ticket_type, *, workflow_viewer: Optional[User] = None):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
     contact_identity = _ticket_contact_identity(ticket, ticket_type, user_data)
@@ -3119,6 +3158,7 @@ def _serialize_ticket_details(ticket, ticket_type):
         priority_payload=priority_payload,
         collaboration_state=collaboration_state,
     )
+    workflow_payload = _legacy_ticket_workflow_payload(ticket, workflow_viewer)
 
     ticket_data = {
         "id": ticket.id,
@@ -3130,6 +3170,9 @@ def _serialize_ticket_details(ticket, ticket_type):
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria_reclamo": getattr(ticket, 'categoria', ''),
         "estado_ticket": ticket.estado,
+        "estado": _legacy_ticket_state_for_ui(normalize_ticket_state(ticket.estado) or str(ticket.estado or "")),
+        "next_states": workflow_payload["next_states"],
+        "workflow": workflow_payload,
         "fecha_hora_creacion": datetime_to_iso_utc(ticket.fecha),
         "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),
         "detalles_adicionales": user_data["descripcion"], # Datos extraídos del campo 'detalles'
@@ -3315,7 +3358,7 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
             (jsonify({"error": "Ticket no encontrado."}), 404)
         )
 
-    ticket_data = _serialize_ticket_details(ticket, "municipio")
+    ticket_data = _serialize_ticket_details(ticket, "municipio", workflow_viewer=current_user)
     return _ticket_private_no_store_response(
         _ticket_json(ticket_data, request_id=request_id)
     )
@@ -3445,9 +3488,17 @@ def get_ticket_workflow_metadata():
     return _ticket_contract_response(
         {
             "contract_version": TICKET_WORKFLOW_CONTRACT_VERSION,
+            "instance_contract_version": "ticket.workflow.instance.v2",
             "states": list(TICKET_ALLOWED_STATES),
             "transitions": TICKET_ALLOWED_TRANSITIONS,
-            "final_states": ["cerrado"],
+            "final_states": sorted(TICKET_FINAL_STATES),
+            "requires_assignment_for_roles": [ROLE_EMPLEADO],
+            "aliases": {
+                "resuelto": "cerrado",
+                "closed": "cerrado",
+                "in_progress": "en_proceso",
+                "open": "nuevo",
+            },
         },
     )
 
@@ -3560,7 +3611,7 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
             "error": "No se pudo guardar la asignacion del ticket.",
             "detail": str(exc),
         }), 500
-    ticket_json = serialize_ticket_to_json(ticket_obj, tipo)
+    ticket_json = serialize_ticket_to_json(ticket_obj, tipo, workflow_viewer=current_user)
     assignment_payload = {
         **ticket_json,
         "ticket": ticket_json,
@@ -3613,7 +3664,7 @@ def get_ticket_details_pyme(current_user: User, ticket_id: int):
     if not tenant_scope_allows:
         return jsonify({"error": "Ticket no encontrado."}), 404
 
-    ticket_data = _serialize_ticket_details(ticket, "pyme")
+    ticket_data = _serialize_ticket_details(ticket, "pyme", workflow_viewer=current_user)
     return _ticket_json(ticket_data, request_id=request_id)
 
 # ---------- RESPONDER A TICKET (AGENTE) ----------
@@ -4004,27 +4055,101 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
     return jsonify(ticket_data_respuesta), 200
 
 # ---------- CAMBIAR ESTADO DE TICKET ----------
+def _ticket_transition_error_response(
+    *,
+    status_code: int,
+    reason_code: str,
+    message: str,
+    ticket_obj=None,
+    requested_state: Any = None,
+    current_user: Optional[User] = None,
+    request_id: str | None = None,
+):
+    workflow = (
+        _legacy_ticket_workflow_payload(ticket_obj, current_user)
+        if ticket_obj is not None
+        else None
+    )
+    current_state = (
+        _legacy_ticket_state_for_ui(
+            normalize_ticket_state(getattr(ticket_obj, "estado", None))
+            or str(getattr(ticket_obj, "estado", None) or "")
+        )
+        if ticket_obj is not None
+        else None
+    )
+    current_app.logger.warning(
+        "ticket_state_transition_rejected reason=%s status=%s ticket_id=%s actor_id=%s from=%s to=%s request_id=%s",
+        reason_code,
+        status_code,
+        getattr(ticket_obj, "id", None),
+        getattr(current_user, "id", None),
+        current_state,
+        requested_state,
+        request_id,
+    )
+    return _ticket_contract_response(
+        {
+            "contract_version": "tickets.workflow_transition.v2",
+            "ok": False,
+            "status_code": status_code,
+            "reason_code": reason_code,
+            "retryable": reason_code == "ticket_state_conflict",
+            "action_hint": "refresh_ticket" if status_code == 409 else "choose_published_next_state",
+            "message": message,
+            "error": {"code": status_code, "message": message},
+            "current_state": current_state,
+            "requested_state": requested_state,
+            "next_states": (workflow or {}).get("next_states", []),
+            "workflow": workflow,
+        },
+        status_code,
+        request_id,
+    )
+
+
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
 @token_requerido
 @admin_o_empleado_requerido
 def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
+    request_id = _ticket_request_id()
     if tipo not in {"municipio", "pyme"}:
-        return jsonify({"error": "Tipo de ticket no válido."}), 400
-    data = request.get_json()
-    nuevo_estado = data.get("estado")
-    if not nuevo_estado:
-        return jsonify({"error": "Falta el nuevo estado."}), 400
+        return _ticket_transition_error_response(
+            status_code=422,
+            reason_code="ticket_type_invalid",
+            message="Tipo de ticket no válido.",
+            requested_state=None,
+            current_user=current_user,
+            request_id=request_id,
+        )
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return _ticket_transition_error_response(
+            status_code=422,
+            reason_code="ticket_transition_payload_invalid",
+            message="El cuerpo JSON de la transición es obligatorio.",
+            current_user=current_user,
+            request_id=request_id,
+        )
+    requested_raw = data.get("estado")
+    if requested_raw in (None, ""):
+        return _ticket_transition_error_response(
+            status_code=422,
+            reason_code="ticket_target_state_required",
+            message="Falta el nuevo estado.",
+            current_user=current_user,
+            request_id=request_id,
+        )
 
-    # Permitir "resuelto" como alias de "cerrado" para la UI
-    if nuevo_estado == "resuelto":
-        nuevo_estado = "cerrado"
-
-    if nuevo_estado not in TICKET_ALLOWED_STATES:
-        return (
-            jsonify({
-                "error": f"Estado '{nuevo_estado}' no es válido. Permitidos: {', '.join(TICKET_ALLOWED_STATES + ['resuelto'])}",
-            }),
-            400,
+    nuevo_estado = normalize_ticket_state(requested_raw)
+    if nuevo_estado is None:
+        return _ticket_transition_error_response(
+            status_code=422,
+            reason_code="ticket_target_state_invalid",
+            message="El estado solicitado no pertenece al workflow publicado.",
+            requested_state=requested_raw,
+            current_user=current_user,
+            request_id=request_id,
         )
 
     TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
@@ -4040,6 +4165,87 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if error_response:
         return error_response
 
+    actual_estado = normalize_ticket_state(getattr(ticket_obj, "estado", None))
+    if actual_estado is None:
+        return _ticket_transition_error_response(
+            status_code=409,
+            reason_code="ticket_current_state_unsupported",
+            message="El estado actual del ticket no pertenece al workflow vigente.",
+            ticket_obj=ticket_obj,
+            requested_state=requested_raw,
+            current_user=current_user,
+            request_id=request_id,
+        )
+
+    expected_raw = data.get("expected_estado", data.get("expected_state"))
+    if expected_raw not in (None, ""):
+        expected_estado = normalize_ticket_state(expected_raw)
+        if expected_estado is None:
+            return _ticket_transition_error_response(
+                status_code=422,
+                reason_code="ticket_expected_state_invalid",
+                message="El estado esperado no pertenece al workflow publicado.",
+                ticket_obj=ticket_obj,
+                requested_state=requested_raw,
+                current_user=current_user,
+                request_id=request_id,
+            )
+        if expected_estado != actual_estado:
+            return _ticket_transition_error_response(
+                status_code=409,
+                reason_code="ticket_state_conflict",
+                message="El ticket cambió de estado. Actualizá el caso antes de continuar.",
+                ticket_obj=ticket_obj,
+                requested_state=requested_raw,
+                current_user=current_user,
+                request_id=request_id,
+            )
+
+    can_operate, blocked_reason = _ticket_transition_access(ticket_obj, current_user)
+    if not can_operate:
+        return _ticket_transition_error_response(
+            status_code=409,
+            reason_code=blocked_reason or "ticket_transition_forbidden",
+            message="El ticket debe estar asignado al operador antes de cambiar su estado.",
+            ticket_obj=ticket_obj,
+            requested_state=requested_raw,
+            current_user=current_user,
+            request_id=request_id,
+        )
+
+    if actual_estado == nuevo_estado:
+        ticket_data = serialize_ticket_to_json(
+            ticket_obj,
+            tipo,
+            workflow_viewer=current_user,
+        )
+        return _ticket_contract_response(
+            {
+                **ticket_data,
+                "contract_version": "tickets.workflow_transition.v2",
+                "ok": True,
+                "transition": {
+                    "from": _legacy_ticket_state_for_ui(actual_estado),
+                    "to": _legacy_ticket_state_for_ui(nuevo_estado),
+                    "applied": False,
+                    "idempotent": True,
+                },
+            },
+            200,
+            request_id,
+        )
+
+    if not is_ticket_transition_allowed(actual_estado, nuevo_estado):
+        return _ticket_transition_error_response(
+            status_code=409,
+            reason_code="ticket_transition_not_allowed",
+            message="La transición solicitada no está permitida desde el estado actual.",
+            ticket_obj=ticket_obj,
+            requested_state=_legacy_ticket_state_for_ui(nuevo_estado),
+            current_user=current_user,
+            request_id=request_id,
+        )
+
     log_ticket_debug(
         "cambiar_estado",
         ticket_id,
@@ -4047,6 +4253,7 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         ticket_obj,
     )
 
+    previous_estado = actual_estado
     ticket_obj.estado = nuevo_estado
     if hasattr(ticket_obj, "estado_cliente"):
         ticket_obj.estado_cliente = nuevo_estado
@@ -4121,7 +4328,21 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         "latitud": getattr(ticket_obj, 'latitud', None),
         "longitud": getattr(ticket_obj, 'longitud', None)
     }
-    return jsonify(ticket_data)
+    workflow_payload = _legacy_ticket_workflow_payload(ticket_obj, current_user)
+    ticket_data.update({
+        "contract_version": "tickets.workflow_transition.v2",
+        "ok": True,
+        "estado": _legacy_ticket_state_for_ui(nuevo_estado),
+        "next_states": workflow_payload["next_states"],
+        "workflow": workflow_payload,
+        "transition": {
+            "from": _legacy_ticket_state_for_ui(previous_estado),
+            "to": _legacy_ticket_state_for_ui(nuevo_estado),
+            "applied": True,
+            "idempotent": False,
+        },
+    })
+    return _ticket_contract_response(ticket_data, 200, request_id)
 
 # ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
 @ticket_bp.route('/tickets/chat/<int:ticket_id>/mensajes', methods=['GET'])
@@ -4335,35 +4556,78 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
         if error_response:
             return error_response
 
+    try:
+        history_limit, history_cursor = parse_history_page_params(request.args)
+    except HistoryPaginationError as exc:
+        return _ticket_json(
+            {
+                "contract_version": "shared.error.v1",
+                "status_code": 400,
+                "reason_code": "invalid_history_pagination",
+                "retryable": False,
+                "action_hint": "use_valid_history_cursor",
+                "error": {"code": 400, "message": str(exc)},
+                "message": str(exc),
+            },
+            status_code=400,
+            request_id=request_id,
+        )
+
     degraded_reasons: list[str] = []
     try:
-        try:
-            timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
-        except Exception as exc:
-            current_app.logger.warning(
-                "Ticket timeline degraded for %s ticket %s request_id=%s: %s",
-                tipo,
-                ticket_id,
-                request_id,
-                exc,
-                exc_info=True,
-            )
-            timeline = []
-            degraded_reasons.append("ticket_timeline_unavailable")
+        if isinstance(ticket_obj, MunicipioTicket):
+            try:
+                timeline, historial_chat = (
+                    servicio_tickets.obtener_historial_timeline_paginado_municipio(
+                        ticket_obj,
+                        limit=history_limit,
+                        cursor=history_cursor,
+                    )
+                )
+            except Exception as exc:
+                current_app.logger.warning(
+                    "Municipal ticket history degraded for ticket %s request_id=%s: %s",
+                    ticket_id,
+                    request_id,
+                    exc,
+                    exc_info=True,
+                )
+                timeline = []
+                historial_chat = []
+                degraded_reasons.extend(
+                    [
+                        "ticket_timeline_unavailable",
+                        "ticket_chat_history_unavailable",
+                    ]
+                )
+        else:
+            try:
+                timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
+            except Exception as exc:
+                current_app.logger.warning(
+                    "Ticket timeline degraded for %s ticket %s request_id=%s: %s",
+                    tipo,
+                    ticket_id,
+                    request_id,
+                    exc,
+                    exc_info=True,
+                )
+                timeline = []
+                degraded_reasons.append("ticket_timeline_unavailable")
 
-        try:
-            historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
-        except Exception as exc:
-            current_app.logger.warning(
-                "Ticket chat history degraded for %s ticket %s request_id=%s: %s",
-                tipo,
-                ticket_id,
-                request_id,
-                exc,
-                exc_info=True,
-            )
-            historial_chat = []
-            degraded_reasons.append("ticket_chat_history_unavailable")
+            try:
+                historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
+            except Exception as exc:
+                current_app.logger.warning(
+                    "Ticket chat history degraded for %s ticket %s request_id=%s: %s",
+                    tipo,
+                    ticket_id,
+                    request_id,
+                    exc,
+                    exc_info=True,
+                )
+                historial_chat = []
+                degraded_reasons.append("ticket_chat_history_unavailable")
 
         realtime_state = _safe_ticket_realtime_summary(tipo, ticket_id, request_id=request_id)
         if realtime_state.get("meta", {}).get("degraded"):
@@ -4387,6 +4651,13 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             unified_conversation_stream = []
             degraded_reasons.append("ticket_unified_stream_unavailable")
 
+        unified_conversation_stream, pagination = paginate_history_items(
+            unified_conversation_stream,
+            limit=history_limit,
+            cursor=history_cursor,
+        )
+        timeline, historial_chat = page_payloads(unified_conversation_stream)
+
         payload = {
             "estado_chat": ticket_obj.estado,
             "timeline": timeline,
@@ -4394,6 +4665,9 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             "unified_conversation_stream": unified_conversation_stream,
             "realtime_state": realtime_state,
             "meta": _ticket_degraded_meta(degraded_reasons),
+            "pagination": pagination,
+            "has_more": pagination["has_more"],
+            "next_cursor": pagination["next_cursor"],
         }
 
         contact_key = _request_contact_key()

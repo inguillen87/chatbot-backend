@@ -384,7 +384,8 @@ class TicketStateSyncTest(unittest.TestCase):
             data=json.dumps({'estado': 'invalido'}),
             content_type='application/json'
         )
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.status_code, 422)
+        self.assertEqual(json.loads(res.data).get('reason_code'), 'ticket_target_state_invalid')
 
 if __name__ == '__main__':
     unittest.main()

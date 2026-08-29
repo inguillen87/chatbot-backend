@@ -61,6 +61,7 @@ _MAX_CALLBACK_URL_LENGTH = 2048
 _MAX_CONTENT_VARIABLES = 100
 _MAX_CONTENT_VARIABLE_LENGTH = 1000
 _MAX_CONTENT_VARIABLES_JSON_LENGTH = 32768
+_MAX_PERSISTENT_ACTION_LABEL_LENGTH = 320
 
 
 class TenantTwilioScopeError(RuntimeError):
@@ -406,6 +407,56 @@ def _serialized_content_variables(
     return serialized, None
 
 
+def _validated_persistent_actions(
+    values: Sequence[Any],
+) -> tuple[tuple[str, ...] | None, str | None]:
+    """Accept only one bounded WhatsApp geo action.
+
+    Twilio's ``PersistentAction`` parameter is transport-shaped and therefore
+    must never be copied from an API payload.  This adapter accepts the value
+    only from trusted backend services and still parses it again before the
+    provider boundary.  Supporting other action families requires a separate
+    explicit contract instead of widening this parser.
+    """
+
+    normalized = tuple(_clean(value) for value in values or ())
+    if not normalized:
+        return (), None
+    if len(normalized) != 1:
+        return None, "whatsapp_persistent_action_count_invalid"
+
+    action = normalized[0]
+    if not action.startswith("geo:") or "|" not in action:
+        return None, "whatsapp_persistent_action_invalid"
+    coordinates, label = action[4:].split("|", 1)
+    if coordinates.count(",") != 1:
+        return None, "whatsapp_persistent_action_invalid"
+    raw_lat, raw_lng = coordinates.split(",", 1)
+    try:
+        latitude = float(raw_lat)
+        longitude = float(raw_lng)
+    except (TypeError, ValueError, OverflowError):
+        return None, "whatsapp_persistent_action_invalid"
+    if (
+        not math.isfinite(latitude)
+        or not math.isfinite(longitude)
+        or latitude < -90
+        or latitude > 90
+        or longitude < -180
+        or longitude > 180
+        or not label
+        or label != label.strip()
+        or len(label) > _MAX_PERSISTENT_ACTION_LABEL_LENGTH
+        or any(ord(character) < 32 or ord(character) == 127 for character in label)
+    ):
+        return None, "whatsapp_persistent_action_invalid"
+
+    # Canonicalize numeric rendering so the immutable provider call cannot
+    # carry alternate spellings such as exponents or signed zero.
+    canonical = f"geo:{latitude:.7f},{longitude:.7f}|{label}"
+    return (canonical,), None
+
+
 def _tenant_template_content_sid(
     *,
     tenant_id: int,
@@ -555,6 +606,7 @@ def prepare_bound_tenant_twilio_message(
     media_urls: Sequence[str] = (),
     template_registry_id: int | None = None,
     content_variables: Mapping[str, Any] | None = None,
+    persistent_actions: Sequence[str] = (),
     notification_attempt_id: str | None = None,
     session=None,
 ) -> TenantTwilioMessagePreflight:
@@ -632,6 +684,16 @@ def prepare_bound_tenant_twilio_message(
             reason_code="whatsapp_media_count_invalid"
         )
 
+    normalized_persistent_actions, persistent_action_error = (
+        _validated_persistent_actions(tuple(persistent_actions or ()))
+    )
+    if persistent_action_error:
+        return TenantTwilioMessagePreflight(reason_code=persistent_action_error)
+    if channel != "whatsapp" and normalized_persistent_actions:
+        return TenantTwilioMessagePreflight(
+            reason_code="sms_persistent_action_not_supported"
+        )
+
     normalized_body = _clean(body)
     content_sid: str | None = None
     serialized_variables: str | None = None
@@ -640,7 +702,7 @@ def prepare_bound_tenant_twilio_message(
             return TenantTwilioMessagePreflight(
                 reason_code="sms_template_not_supported"
             )
-        if normalized_body or normalized_media:
+        if normalized_body or normalized_media or normalized_persistent_actions:
             return TenantTwilioMessagePreflight(
                 reason_code="whatsapp_template_payload_conflict"
             )
@@ -661,7 +723,7 @@ def prepare_bound_tenant_twilio_message(
             return TenantTwilioMessagePreflight(
                 reason_code="whatsapp_template_registry_required"
             )
-        if not normalized_body:
+        if not normalized_body and not normalized_persistent_actions:
             return TenantTwilioMessagePreflight(
                 reason_code=f"{channel}_message_empty"
             )
@@ -687,7 +749,7 @@ def prepare_bound_tenant_twilio_message(
         params["content_sid"] = content_sid
         if serialized_variables:
             params["content_variables"] = serialized_variables
-    else:
+    elif normalized_body:
         params["body"] = normalized_body
     if messaging_service_sid:
         if not _MESSAGE_SERVICE_RE.fullmatch(messaging_service_sid):
@@ -708,6 +770,8 @@ def prepare_bound_tenant_twilio_message(
 
     if normalized_media:
         params["media_url"] = list(normalized_media)
+    if normalized_persistent_actions:
+        params["persistent_action"] = list(normalized_persistent_actions)
     callback, callback_error = _status_callback_for_message(
         tenant_id=int(tenant_id),
         channel=channel,

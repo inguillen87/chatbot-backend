@@ -50,6 +50,7 @@ from services.tenant_twilio_messaging import (
     prepare_bound_tenant_twilio_message,
     send_prepared_tenant_twilio_message,
 )
+from services.ticket_crm_action_delivery import register_crm_action_handlers
 from utils.validators import validate_email_address
 
 
@@ -1197,6 +1198,10 @@ TICKET_DOMAIN_EFFECT_REGISTRY.register(
     _prepare_tenant_reply_realtime,
     payload_validator=_validate_tenant_reply_effect_payload,
 )
+
+# CRM location/form actions share this registry so the existing worker remains
+# the single provider-I/O authority.
+register_crm_action_handlers(TICKET_DOMAIN_EFFECT_REGISTRY)
 
 
 def stage_ticket_created_effects(

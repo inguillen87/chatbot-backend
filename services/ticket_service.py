@@ -7,7 +7,7 @@ import os
 import random
 import re
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, Any, Literal, Union, Iterable, Optional
 
@@ -31,7 +31,7 @@ from services.employee_ticket_access import (
     ticket_assignee_is_compatible,
 )
 from utils.time_utils import datetime_to_iso_utc, get_local_now
-from sqlalchemy import func, or_
+from sqlalchemy import String, and_, cast, func, literal, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
@@ -53,6 +53,69 @@ _CLOSED_STATES = {"cerrado"}
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,191}$")
 _WHATSAPP_TURN_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,80}$")
 _EFFECT_SUFFIX_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+
+
+def _legacy_history_cursor_boundary(
+    cursor: str | None,
+) -> tuple[datetime, str] | None:
+    """Decode the already-validated legacy history cursor for SQL keysets.
+
+    ``routes.ticket`` validates the public cursor before calling the service.
+    Keeping the same decoder here is important: the SQL boundary and the final
+    in-memory merge must use exactly the same timestamp/id contract.
+    """
+
+    if not cursor:
+        return None
+    from services.history_pagination import _decode_cursor
+
+    timestamp, item_id = _decode_cursor(cursor)
+    normalized_timestamp = str(timestamp or "").strip()
+    if normalized_timestamp.endswith("Z"):
+        normalized_timestamp = f"{normalized_timestamp[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized_timestamp)
+    except ValueError:
+        # The legacy cursor contract historically accepted opaque timestamp
+        # strings. Let the final paginator preserve that behaviour while the
+        # SQL reader remains bounded to its newest source rows.
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    return parsed, item_id
+
+
+def _legacy_history_item_id_expression(
+    prefix: str,
+    id_column,
+    suffix: str = "",
+):
+    return literal(prefix) + cast(id_column, String) + literal(suffix)
+
+
+def _apply_legacy_history_boundary(
+    query,
+    *,
+    timestamp_column,
+    item_id_expression,
+    boundary: tuple[datetime, str] | None,
+    timestamp_offset: timedelta = timedelta(0),
+):
+    if boundary is None:
+        return query
+    boundary_timestamp, boundary_item_id = boundary
+    source_timestamp_boundary = boundary_timestamp - timestamp_offset
+    return query.filter(
+        or_(
+            timestamp_column < source_timestamp_boundary,
+            and_(
+                timestamp_column == source_timestamp_boundary,
+                item_id_expression < boundary_item_id,
+            ),
+        )
+    )
 
 
 class TicketIdempotencyError(RuntimeError):
@@ -1116,6 +1179,7 @@ class ServicioTickets:
         idempotency_key: Optional[str] = None,
         idempotency_tenant_id: Optional[int] = None,
         legacy_effects_owned_by_caller: bool = False,
+        commit_transaction: bool = True,
     ) -> Union[TicketComentario, None]:
         """Persist one comment and stage canary effects in the same transaction.
 
@@ -1123,6 +1187,12 @@ class ServicioTickets:
         direct-send fallback. It never suppresses durable outbox staging, so a
         caller can preserve an existing legacy dispatcher without duplicating
         effects for canary tenants.
+
+        ``commit_transaction=False`` leaves the comment, its idempotency
+        receipt and any staged effects in the caller-owned transaction.  It is
+        intended for composite CRM actions that must persist their audit and
+        delivery evidence atomically.  No post-commit wakeup, direct provider
+        fallback or socket emission runs in that mode.
         """
         if tipo_ticket not in {"municipio", "pyme"}:
             raise ValueError(f"Tipo de ticket inválido: '{tipo_ticket}'.")
@@ -1259,6 +1329,13 @@ class ServicioTickets:
                     getattr(ticket, "tenant_id", None),
                 )
                 raise
+            if not commit_transaction:
+                # Surface uniqueness/idempotency failures before returning the
+                # aggregate to a caller that will add more rows and commit the
+                # complete CRM action atomically.
+                db.session.flush()
+                return nuevo_comentario
+
             db.session.commit()
             should_notify = bool(
                 comentario_data.get("emit_notifications", True)
@@ -1899,151 +1976,141 @@ class ServicioTickets:
             )
             return []
 
-    def obtener_historial_chat(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
-        """Devuelve el historial completo de conversación para un ticket.
-
-        Combina el historial previo almacenado en ``Conversacion`` (pregunta/
-        respuesta del bot) con los comentarios posteriores guardados en
-        ``TicketComentario``. Cada entrada se normaliza con metadatos de autor
-        para que el frontend pueda distinguir entre mensajes del municipio y
-        del vecino.
-        """
+    @staticmethod
+    def _conversation_history_payloads(
+        ticket: Union[MunicipioTicket, PymeTicket],
+        conversation_entries: Iterable[tuple[Conversacion, str]],
+    ) -> list[dict]:
+        nombre_vecino = (
+            getattr(ticket, "nombre_vecino", None)
+            or getattr(ticket, "nombre_cliente", None)
+            or "Vecino/a"
+        )
+        vecino_identity = build_identity_subject(
+            display_name=nombre_vecino,
+            anon_id=getattr(ticket, "anon_id", None),
+            source_context="ticket_chat_history",
+        )
+        chatbot_identity = build_identity_subject(
+            display_name="Chatbot",
+            source_context="ticket_chatbot_message",
+        )
         mensajes: list[dict] = []
-
-        # --- Conversaciones previas al ticket (chatbot) ---
-        if getattr(ticket, "anon_id", None):
-            try:
-                conversaciones = (
-                    Conversacion.query.filter_by(session_id=ticket.anon_id)
-                    .order_by(Conversacion.timestamp.asc())
-                    .all()
+        for conv, entry_type in conversation_entries:
+            if entry_type == "question" and conv.pregunta:
+                mensajes.append(
+                    {
+                        "id": f"conversation:{conv.id}:question",
+                        "texto": conv.pregunta,
+                        "fecha": datetime_to_iso_utc(conv.timestamp),
+                        "autor": "vecino",
+                        "autor_nombre": nombre_vecino,
+                        "actor_identity": vecino_identity,
+                        "es_admin": False,
+                    }
                 )
-            except Exception:
-                conversaciones = []
-
-            nombre_vecino = (
-                getattr(ticket, "nombre_vecino", None)
-                or getattr(ticket, "nombre_cliente", None)
-                or "Vecino/a"
-            )
-            vecino_identity = build_identity_subject(
-                display_name=nombre_vecino,
-                anon_id=getattr(ticket, "anon_id", None),
-                source_context="ticket_chat_history",
-            )
-            chatbot_identity = build_identity_subject(
-                display_name="Chatbot",
-                source_context="ticket_chatbot_message",
-            )
-
-            for conv in conversaciones:
-                if conv.pregunta:
-                    mensajes.append(
-                        {
-                            "texto": conv.pregunta,
-                            "fecha": datetime_to_iso_utc(conv.timestamp),
-                            "autor": "vecino",
-                            "autor_nombre": nombre_vecino,
-                            "actor_identity": vecino_identity,
-                            "es_admin": False,
-                        }
-                    )
-                if conv.respuesta:
-                    # Añadir un pequeño delta para conservar el orden pregunta-respuesta
-                    respuesta_fecha = datetime_to_iso_utc(
-                        conv.timestamp + timedelta(milliseconds=1)
-                    )
-                    mensajes.append(
-                        {
-                            "texto": conv.respuesta,
-                            "fecha": respuesta_fecha,
-                            "autor": "municipio",
-                            "autor_nombre": "Chatbot",
-                            "actor_identity": chatbot_identity,
-                            "es_admin": True,
-                        }
-                    )
-
-        # --- Comentarios del ticket (posteriores) ---
-        try:
-            comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
-        except Exception:
-            comentarios = []
-
-        for c in comentarios:
-            data = c.to_dict()
-            data["texto"] = data.pop("comentario")
-            data["fecha"] = datetime_to_iso_utc(c.fecha)
-            mensajes.append(data)
-
-        # Orden cronológico por fecha
-        mensajes.sort(key=lambda x: x["fecha"])
+            elif entry_type == "response" and conv.respuesta:
+                mensajes.append(
+                    {
+                        "id": f"conversation:{conv.id}:response",
+                        "texto": conv.respuesta,
+                        "fecha": datetime_to_iso_utc(
+                            conv.timestamp + timedelta(milliseconds=1)
+                        ),
+                        "autor": "municipio",
+                        "autor_nombre": "Chatbot",
+                        "actor_identity": chatbot_identity,
+                        "es_admin": True,
+                    }
+                )
         return mensajes
 
-    def obtener_timeline_ticket(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
-        """Construye la línea de tiempo de un ticket con comentarios y cambios de estado."""
-        try:
-            comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
-        except Exception:
-            comentarios = []
+    @staticmethod
+    def _comment_history_payloads(
+        comentarios: Iterable[TicketComentario],
+    ) -> list[dict]:
+        mensajes: list[dict] = []
+        for comment in comentarios:
+            data = comment.to_dict()
+            data["texto"] = data.pop("comentario")
+            data["fecha"] = datetime_to_iso_utc(comment.fecha)
+            mensajes.append(data)
+        return mensajes
 
+    @staticmethod
+    def _timeline_from_comment_rows(
+        ticket: Union[MunicipioTicket, PymeTicket],
+        comentarios: Iterable[TicketComentario],
+        *,
+        stable_ids: bool = False,
+    ) -> list[dict]:
         def _estado_publico(estado: str) -> str:
-            """Normaliza estados internos para mostrarlos al público."""
             return "resuelto" if estado == "cerrado" else estado
 
         timeline = [
             {
+                **(
+                    {"id": f"ticket-created:{ticket.id}"}
+                    if stable_ids
+                    else {}
+                ),
                 "tipo": "ticket_creado",
                 "estado": "nuevo",
                 "fecha": datetime_to_iso_utc(ticket.fecha),
             }
         ]
-
-        for c in comentarios:
-            if c.estado_ticket:
+        for comment in comentarios:
+            if comment.estado_ticket:
                 timeline.append(
                     {
-                        "tipo": "estado",
-                        "estado": _estado_publico(c.estado_ticket),
-                        "fecha": datetime_to_iso_utc(c.fecha),
-                    }
-                )
-            else:
-                autor_tipo = "municipio" if c.es_admin else "vecino"
-                if c.es_admin:
-                    nombre_autor = "Municipio"
-                    actor_user = None
-                    if c.user_id:
-                        usuario = db.session.get(User, c.user_id)
-                        if usuario and usuario.name:
-                            nombre_autor = usuario.name
-                        actor_user = usuario
-                else:
-                    actor_user = db.session.get(User, c.user_id) if c.user_id else None
-                    nombre_autor = None
-                    if c.municipio_ticket and getattr(c.municipio_ticket, "nombre_vecino", None):
-                        nombre_autor = c.municipio_ticket.nombre_vecino
-                    elif c.pyme_ticket and getattr(c.pyme_ticket, "nombre_cliente", None):
-                        nombre_autor = c.pyme_ticket.nombre_cliente
-                    if not nombre_autor:
-                        nombre_autor = "Vecino/a"
-                timeline.append(
-                    {
-                        "tipo": "comentario",
-                        "texto": c.comentario,
-                        "fecha": datetime_to_iso_utc(c.fecha),
-                        "es_admin": c.es_admin,
-                        "user_id": c.user_id,
-                        "autor": autor_tipo,
-                        "autor_nombre": nombre_autor,
-                        "actor_identity": build_identity_subject(
-                            user=actor_user,
-                            display_name=nombre_autor,
-                            anon_id=c.anon_id,
-                            source_context="ticket_timeline",
+                        **(
+                            {"id": f"ticket-state:{comment.id}"}
+                            if stable_ids
+                            else {}
                         ),
+                        "tipo": "estado",
+                        "estado": _estado_publico(comment.estado_ticket),
+                        "fecha": datetime_to_iso_utc(comment.fecha),
                     }
                 )
+                continue
+
+            autor_tipo = "municipio" if comment.es_admin else "vecino"
+            if comment.es_admin:
+                nombre_autor = "Municipio"
+                actor_user = None
+                if comment.user_id:
+                    usuario = db.session.get(User, comment.user_id)
+                    if usuario and usuario.name:
+                        nombre_autor = usuario.name
+                    actor_user = usuario
+            else:
+                actor_user = db.session.get(User, comment.user_id) if comment.user_id else None
+                nombre_autor = None
+                if comment.municipio_ticket and getattr(comment.municipio_ticket, "nombre_vecino", None):
+                    nombre_autor = comment.municipio_ticket.nombre_vecino
+                elif comment.pyme_ticket and getattr(comment.pyme_ticket, "nombre_cliente", None):
+                    nombre_autor = comment.pyme_ticket.nombre_cliente
+                if not nombre_autor:
+                    nombre_autor = "Vecino/a"
+            timeline.append(
+                {
+                    **({"id": comment.id} if stable_ids else {}),
+                    "tipo": "comentario",
+                    "texto": comment.comentario,
+                    "fecha": datetime_to_iso_utc(comment.fecha),
+                    "es_admin": comment.es_admin,
+                    "user_id": comment.user_id,
+                    "autor": autor_tipo,
+                    "autor_nombre": nombre_autor,
+                    "actor_identity": build_identity_subject(
+                        user=actor_user,
+                        display_name=nombre_autor,
+                        anon_id=comment.anon_id,
+                        source_context="ticket_timeline",
+                    ),
+                }
+            )
 
         estado_actual = _estado_publico(getattr(ticket, "estado", None))
         if estado_actual:
@@ -2052,19 +2119,164 @@ class ServicioTickets:
                 evento.get("tipo") == "estado" and evento.get("estado") == estado_actual
                 for evento in timeline
             )
-            if not estado_ya_registrado and not (tiene_eventos_de_estado and estado_actual in {"nuevo", "abierto", "open"}):
+            if not estado_ya_registrado and not (
+                tiene_eventos_de_estado
+                and estado_actual in {"nuevo", "abierto", "open"}
+            ):
                 fecha_estado = getattr(ticket, "ultima_actividad", None) or ticket.fecha
                 timeline.append(
                     {
+                        **(
+                            {"id": f"ticket-current-state:{ticket.id}:{estado_actual}"}
+                            if stable_ids
+                            else {}
+                        ),
                         "tipo": "estado",
                         "estado": estado_actual,
                         "fecha": datetime_to_iso_utc(fecha_estado),
                     }
                 )
-
         timeline.sort(key=lambda evento: evento.get("fecha") or "")
-
         return timeline
+
+    def obtener_historial_chat(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+        """Devuelve el historial completo para superficies legacy no paginadas."""
+
+        conversation_entries: list[tuple[Conversacion, str]] = []
+        if getattr(ticket, "anon_id", None):
+            try:
+                conversaciones = (
+                    Conversacion.query.filter_by(session_id=ticket.anon_id)
+                    .order_by(Conversacion.timestamp.asc(), Conversacion.id.asc())
+                    .all()
+                )
+            except Exception:
+                conversaciones = []
+            for conversation in conversaciones:
+                conversation_entries.extend(
+                    ((conversation, "question"), (conversation, "response"))
+                )
+        try:
+            comentarios = ticket.comentarios.order_by(
+                TicketComentario.fecha.asc(),
+                TicketComentario.id.asc(),
+            ).all()
+        except Exception:
+            comentarios = []
+        mensajes = [
+            *self._conversation_history_payloads(ticket, conversation_entries),
+            *self._comment_history_payloads(comentarios),
+        ]
+        mensajes.sort(key=lambda item: (item.get("fecha") or "", str(item.get("id") or "")))
+        return mensajes
+
+    def obtener_timeline_ticket(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+        """Construye la línea de tiempo completa para consumidores no paginados."""
+
+        try:
+            comentarios = ticket.comentarios.order_by(
+                TicketComentario.fecha.asc(),
+                TicketComentario.id.asc(),
+            ).all()
+        except Exception:
+            comentarios = []
+        return self._timeline_from_comment_rows(ticket, comentarios)
+
+    def obtener_historial_timeline_paginado_municipio(
+        self,
+        ticket: MunicipioTicket,
+        *,
+        limit: int,
+        cursor: str | None,
+    ) -> tuple[list[dict], list[dict]]:
+        """Read bounded legacy history sources before the final merge.
+
+        Each logical SQL source applies the same descending keyset and loads at
+        most ``limit + 1`` rows. Ticket comments are queried exactly once and
+        projected into both legacy fields, eliminating the previous duplicate
+        full-history query.
+        """
+
+        if not isinstance(ticket, MunicipioTicket):
+            raise TypeError("legacy municipal history requires MunicipioTicket")
+        from services.history_pagination import MAX_HISTORY_PAGE_LIMIT
+
+        normalized_limit = int(limit)
+        if normalized_limit < 1 or normalized_limit > MAX_HISTORY_PAGE_LIMIT:
+            raise ValueError(
+                f"limit must be between 1 and {MAX_HISTORY_PAGE_LIMIT}"
+            )
+        source_limit = normalized_limit + 1
+        boundary = _legacy_history_cursor_boundary(cursor)
+
+        comment_item_id = _legacy_history_item_id_expression(
+            "chat_history:",
+            TicketComentario.id,
+        )
+        comment_query = TicketComentario.query.filter(
+            TicketComentario.municipio_ticket_id == ticket.id
+        )
+        comment_query = _apply_legacy_history_boundary(
+            comment_query,
+            timestamp_column=TicketComentario.fecha,
+            item_id_expression=comment_item_id,
+            boundary=boundary,
+        )
+        comentarios = (
+            comment_query.order_by(
+                TicketComentario.fecha.desc(),
+                comment_item_id.desc(),
+            )
+            .limit(source_limit)
+            .all()
+        )
+
+        conversation_entries: list[tuple[Conversacion, str]] = []
+        if getattr(ticket, "anon_id", None):
+            for entry_type, suffix, timestamp_offset in (
+                ("question", ":question", timedelta(0)),
+                ("response", ":response", timedelta(milliseconds=1)),
+            ):
+                conversation_item_id = _legacy_history_item_id_expression(
+                    "chat_history:conversation:",
+                    Conversacion.id,
+                    suffix,
+                )
+                conversation_query = Conversacion.query.filter(
+                    Conversacion.session_id == ticket.anon_id
+                )
+                conversation_query = _apply_legacy_history_boundary(
+                    conversation_query,
+                    timestamp_column=Conversacion.timestamp,
+                    item_id_expression=conversation_item_id,
+                    boundary=boundary,
+                    timestamp_offset=timestamp_offset,
+                )
+                rows = (
+                    conversation_query.order_by(
+                        Conversacion.timestamp.desc(),
+                        conversation_item_id.desc(),
+                    )
+                    .limit(source_limit)
+                    .all()
+                )
+                conversation_entries.extend((row, entry_type) for row in rows)
+
+        # The single comment rowset feeds both projections. The final unified
+        # merger remains authoritative for comment dedupe and visibility.
+        historial_chat = [
+            *self._conversation_history_payloads(ticket, conversation_entries),
+            *self._comment_history_payloads(comentarios),
+        ]
+        historial_chat.sort(
+            key=lambda item: (item.get("fecha") or "", str(item.get("id") or ""))
+        )
+        timeline = self._timeline_from_comment_rows(
+            ticket,
+            comentarios,
+            stable_ids=True,
+        )
+        return timeline, historial_chat
 
     def obtener_estado_progreso(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
         """Genera una lista ordenada con los estados principales del ticket."""

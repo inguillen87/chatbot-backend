@@ -87,6 +87,52 @@ class V2TicketsApiTest(unittest.TestCase):
         self.assertEqual(payload.get("tenant_id"), self.tenant_1.id)
         self.assertEqual(payload.get("category"), "general")
 
+    def test_create_ticket_cannot_skip_the_initial_workflow_state(self):
+        cases = [
+            (self.end_user, "cerrado"),
+            (self.admin, "en_vivo"),
+            (self.employee, "en_proceso"),
+        ]
+        for index, (actor, status) in enumerate(cases, start=1):
+            with self.subTest(role=actor.rol, status=status):
+                response = self.client.post(
+                    "/api/v2/tickets",
+                    json={
+                        "title": f"Salto inicial {index}",
+                        "description": "Debe comenzar como nuevo",
+                        "category": "general",
+                        "status": status,
+                    },
+                    headers={
+                        **self._auth_header(actor),
+                        "X-Tenant-Slug": "tenant-1",
+                    },
+                )
+
+                self.assertEqual(response.status_code, 422, response.get_json())
+                payload = response.get_json() or {}
+                self.assertEqual(payload.get("reason_code"), "ticket_initial_state_not_allowed")
+                self.assertEqual(payload.get("action_hint"), "create_ticket_as_new")
+
+        malformed = self.client.post(
+            "/api/v2/tickets",
+            json={
+                "title": "Estado vacío",
+                "description": "No debe interpretarse como omisión",
+                "status": "",
+            },
+            headers={
+                **self._auth_header(self.end_user),
+                "X-Tenant-Slug": "tenant-1",
+            },
+        )
+        self.assertEqual(malformed.status_code, 422, malformed.get_json())
+        self.assertEqual(
+            malformed.get_json()["reason_code"],
+            "ticket_initial_state_invalid",
+        )
+        self.assertEqual(TenantTicket.query.filter_by(tenant_id=self.tenant_1.id).count(), 0)
+
     def test_create_ticket_without_tenant_fails(self):
         headers = self._auth_header(self.employee)
         resp = self.client.post(
@@ -155,7 +201,11 @@ class V2TicketsApiTest(unittest.TestCase):
 
     def test_patch_status_generates_event(self):
         headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
-        created = self.client.post("/api/v2/tickets", json={"title": "S", "description": "S"}, headers=headers).get_json()
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "S", "description": "S", "assignee_id": self.employee.id},
+            headers=headers,
+        ).get_json()
         ticket_id = created["id"]
 
         patch = self.client.patch(f"/api/v2/tickets/{ticket_id}", json={"status": "in_progress"}, headers=headers)
@@ -165,6 +215,52 @@ class V2TicketsApiTest(unittest.TestCase):
         events = (events_resp.get_json() or {}).get("items") or []
         types = [e.get("event_type") for e in events]
         self.assertIn("ticket.status_changed", types)
+
+    def test_patch_status_rejects_impossible_transition_with_workflow_contract(self):
+        headers = {**self._auth_header(self.admin), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "Salto", "description": "No debe saltar estados"},
+            headers=headers,
+        ).get_json()
+        ticket_id = created["id"]
+
+        rejected = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"status": "en_vivo", "expected_status": "nuevo"},
+            headers=headers,
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.get_json())
+        payload = rejected.get_json() or {}
+        self.assertEqual(payload.get("contract_version"), "tickets.workflow_transition.v2")
+        self.assertEqual(payload.get("reason_code"), "ticket_transition_not_allowed")
+        self.assertEqual(payload.get("current_state"), "nuevo")
+        self.assertEqual(payload.get("next_states"), ["en_proceso", "cerrado"])
+        self.assertEqual(db.session.get(TenantTicket, ticket_id).estado, "nuevo")
+
+    def test_employee_needs_assignment_and_receives_no_impossible_next_states(self):
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        created = self.client.post(
+            "/api/v2/tickets",
+            json={"title": "Sin asignar", "description": "Debe tomarse primero"},
+            headers=headers,
+        ).get_json()
+        ticket_id = created["id"]
+
+        detail = self.client.get(f"/api/v2/tickets/{ticket_id}", headers=headers)
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        detail_ticket = (detail.get_json() or {}).get("ticket") or {}
+        self.assertEqual(detail_ticket.get("next_states"), [])
+        self.assertEqual((detail_ticket.get("workflow") or {}).get("blocked_reason"), "ticket_assignment_required")
+
+        rejected = self.client.patch(
+            f"/api/v2/tickets/{ticket_id}",
+            json={"status": "en_proceso", "expected_status": "nuevo"},
+            headers=headers,
+        )
+        self.assertEqual(rejected.status_code, 409, rejected.get_json())
+        self.assertEqual((rejected.get_json() or {}).get("reason_code"), "ticket_assignment_required")
+        self.assertEqual(db.session.get(TenantTicket, ticket_id).estado, "nuevo")
 
     def test_detail_endpoint_returns_tenant_ticket_contract(self):
         self.employee.ticket_categorias = "general"
@@ -343,6 +439,92 @@ class V2TicketsApiTest(unittest.TestCase):
         attachment_events = [item for item in timeline_items if item.get("event_type") == "ticket.attachment_received"]
         self.assertTrue(attachment_events)
         self.assertEqual(attachment_events[0]["attachmentInfo"]["url"], attachment["url"])
+
+    def test_timeline_cursor_pages_more_than_sixty_messages_without_duplicates(self):
+        self.employee.ticket_categorias = "general"
+        db.session.commit()
+        headers = {**self._auth_header(self.employee), "X-Tenant-Slug": "tenant-1"}
+        base_time = datetime.now(timezone.utc) + timedelta(minutes=1)
+        comments = [
+            {
+                "id": index,
+                "body": f"Mensaje histórico {index:02d}",
+                "visibility": "public",
+                "author_user_id": self.end_user.id if index % 2 else self.employee.id,
+                "created_at": (base_time + timedelta(seconds=index)).isoformat(),
+            }
+            for index in range(1, 66)
+        ]
+        ticket = TenantTicket(
+            tenant_id=self.tenant_1.id,
+            user_id=self.end_user.id,
+            categoria="general",
+            descripcion="Historial enterprise",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"title": "Historial enterprise", "comments": comments},
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        first = self.client.get(
+            f"/api/v2/tickets/{ticket.id}/timeline",
+            query_string={"limit": 25},
+            headers=headers,
+        )
+        self.assertEqual(first.status_code, 200, first.get_json())
+        first_payload = first.get_json() or {}
+        first_items = first_payload.get("unified_conversation_stream") or []
+        self.assertEqual(len(first_items), 25)
+        self.assertTrue(first_payload.get("has_more"))
+        self.assertTrue(first_payload.get("next_cursor"))
+        self.assertEqual((first_payload.get("pagination") or {}).get("returned_count"), 25)
+
+        second = self.client.get(
+            f"/api/v2/tickets/{ticket.id}/timeline",
+            query_string={"limit": 25, "cursor": first_payload["next_cursor"]},
+            headers=headers,
+        )
+        self.assertEqual(second.status_code, 200, second.get_json())
+        second_payload = second.get_json() or {}
+        second_items = second_payload.get("unified_conversation_stream") or []
+        self.assertEqual(len(second_items), 25)
+        first_ids = {item["id"] for item in first_items}
+        second_ids = {item["id"] for item in second_items}
+        self.assertFalse(first_ids & second_ids)
+        self.assertLess(second_items[-1]["timestamp"], first_items[0]["timestamp"])
+        self.assertEqual(len(first_payload.get("historial_chat") or []), 25)
+        self.assertEqual(len(second_payload.get("historial_chat") or []), 25)
+
+        cross_tenant = self.client.get(
+            f"/api/v2/tickets/{ticket.id}/timeline",
+            query_string={"limit": 25, "cursor": first_payload["next_cursor"]},
+            headers={**self._auth_header(self.admin_2), "X-Tenant-Slug": "tenant-2"},
+        )
+        self.assertEqual(cross_tenant.status_code, 404)
+        self.assertEqual((cross_tenant.get_json() or {}).get("reason_code"), "ticket_not_found")
+
+        cross_tenant_invalid_cursor = self.client.get(
+            f"/api/v2/tickets/{ticket.id}/timeline",
+            query_string={"cursor": "cursor-invalido"},
+            headers={**self._auth_header(self.admin_2), "X-Tenant-Slug": "tenant-2"},
+        )
+        self.assertEqual(cross_tenant_invalid_cursor.status_code, 404)
+        self.assertEqual(
+            (cross_tenant_invalid_cursor.get_json() or {}).get("reason_code"),
+            "ticket_not_found",
+        )
+
+        authorized_invalid_cursor = self.client.get(
+            f"/api/v2/tickets/{ticket.id}/timeline",
+            query_string={"cursor": "cursor-invalido"},
+            headers=headers,
+        )
+        self.assertEqual(authorized_invalid_cursor.status_code, 400)
+        self.assertEqual(
+            (authorized_invalid_cursor.get_json() or {}).get("reason_code"),
+            "invalid_history_pagination",
+        )
 
     def test_customer_cannot_patch_or_read_events(self):
         headers = {**self._auth_header(self.end_user), "X-Tenant-Slug": "tenant-1"}

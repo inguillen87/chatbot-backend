@@ -14,8 +14,15 @@ from services.employee_ticket_access import (
     employee_ticket_category_scope,
     employee_ticket_category_values_allow,
 )
+from services.normalized_ticket_history import (
+    DEFAULT_NORMALIZED_TICKET_HISTORY_LIMIT,
+    NormalizedTicketHistoryError,
+    NormalizedTicketHistoryNotFound,
+    read_normalized_ticket_history,
+)
 from services.v2.ticket_event_service import list_ticket_events
 from services.v2.ticket_service import (
+    TicketStateTransitionError,
     add_comment,
     create_ticket,
     list_tickets,
@@ -62,6 +69,35 @@ def _error_response(message: str, status_code: int, reason_code: str = "request_
 
 def _viewer():
     return getattr(g, "viewer", None)
+
+
+def _ticket_state_error_response(exc: TicketStateTransitionError, *, ticket_id: int):
+    current_app.logger.warning(
+        "ticket_state_transition_rejected reason=%s status=%s ticket_id=%s actor_id=%s from=%s to=%s request_id=%s",
+        exc.reason_code,
+        exc.status_code,
+        ticket_id,
+        getattr(_viewer(), "id", None),
+        exc.current_state,
+        exc.requested_state,
+        request.headers.get("X-Request-Id"),
+    )
+    return _json_response(
+        {
+            "contract_version": "tickets.workflow_transition.v2",
+            "ok": False,
+            "status_code": exc.status_code,
+            "reason_code": exc.reason_code,
+            "retryable": exc.reason_code == "ticket_state_conflict",
+            "action_hint": "refresh_ticket" if exc.status_code == 409 else "choose_published_next_state",
+            "message": str(exc),
+            "error": {"code": exc.status_code, "message": str(exc)},
+            "current_state": exc.current_state,
+            "requested_state": exc.requested_state,
+            "next_states": exc.next_states,
+        },
+        exc.status_code,
+    )
 
 
 def _tenant_access_error(tenant):
@@ -289,6 +325,96 @@ def _ticket_v2_timeline(ticket: TenantTicket, tenant: Any, comments: list[dict[s
     return sorted(timeline, key=lambda item: item.get("fecha") or "")
 
 
+def _normalized_history_payload(ticket: TenantTicket, item: dict[str, Any]) -> dict[str, Any]:
+    source = str(item.get("source") or "normalized_history")
+    event_type = str(item.get("event_type") or "conversation.message")
+    created_at = item.get("created_at")
+    body = item.get("body") or ""
+    actor = item.get("actor") if isinstance(item.get("actor"), dict) else {}
+    author_user_id = item.get("sender_user_id") or actor.get("id")
+
+    if source == "audit_event":
+        actor_type = "agent" if author_user_id else "system"
+        tipo = "estado" if event_type == "ticket.status_changed" else "evento"
+    elif source == "conversation_message":
+        sender_type = str(item.get("sender_type") or "").strip().lower()
+        actor_type = "citizen" if sender_type in {"user", "citizen", "customer"} else "agent"
+        tipo = "archivo" if item.get("attachmentInfo") or item.get("attachments") else "comentario"
+    elif source == "ticket_attachment":
+        actor_type = "citizen"
+        tipo = "archivo"
+    else:
+        actor_type = (
+            "citizen"
+            if author_user_id and str(author_user_id) == str(ticket.user_id or "")
+            else "agent" if author_user_id or source == "reply_event" else "citizen"
+        )
+        tipo = "archivo" if item.get("attachmentInfo") or item.get("attachments") else "comentario"
+
+    payload: dict[str, Any] = {
+        "id": item.get("id"),
+        "comment_id": item.get("event_id") or item.get("id"),
+        "tipo": tipo,
+        "event_type": event_type,
+        "texto": body,
+        "comentario": body,
+        "body": body,
+        "fecha": created_at,
+        "timestamp": created_at,
+        "visibility": item.get("visibility") or ("internal" if source == "audit_event" else "public"),
+        "author_user_id": author_user_id,
+        "author_type": actor_type,
+        "actor_type": actor_type,
+        "es_admin": actor_type == "agent",
+        "source": source,
+    }
+    if event_type == "ticket.status_changed":
+        payload["estado"] = (item.get("details") or {}).get("to")
+    for key in (
+        "resource_type",
+        "resource_id",
+        "details",
+        "attachmentInfo",
+        "attachments",
+        "direction",
+        "sender_type",
+        "conversation_id",
+        "channel_session_id",
+    ):
+        if item.get(key) is not None:
+            payload[key] = item.get(key)
+    return payload
+
+
+def _normalized_history_unified_item(payload: dict[str, Any]) -> dict[str, Any]:
+    message_like = payload.get("tipo") in {"comentario", "archivo"}
+    return {
+        "id": payload.get("id"),
+        "source": payload.get("source") or "normalized_history",
+        "stream_type": "message" if message_like else payload.get("tipo") or "timeline_event",
+        "timestamp": payload.get("fecha") or payload.get("timestamp"),
+        "actor_type": payload.get("actor_type") or payload.get("author_type") or "system",
+        "preview_text": payload.get("texto") or payload.get("comentario") or payload.get("body"),
+        "status": payload.get("estado"),
+        "comment_id": payload.get("comment_id"),
+        "payload": payload,
+    }
+
+
+def _normalized_realtime_summary(ticket: TenantTicket, timeline: list[dict[str, Any]]) -> dict[str, Any]:
+    summary = _ticket_v2_realtime_summary(ticket, [])
+    message_items = [item for item in timeline if item.get("tipo") in {"comentario", "archivo"}]
+    summary["read_state"]["latest_comment_id"] = (
+        message_items[-1].get("comment_id") if message_items else None
+    )
+    summary["meta"] = {
+        "ticket_type": "tenant",
+        "ticket_id": ticket.id,
+        "source": "tickets.v2.normalized_history",
+    }
+    return summary
+
+
 def _ticket_detail_payload(ticket: TenantTicket, *, viewer: Any = None) -> dict[str, Any]:
     serialized = serialize_ticket(ticket, viewer=viewer)
     base = f"/api/v2/tickets/{ticket.id}"
@@ -486,6 +612,20 @@ def create_ticket_v2():
         db.session.commit()
     except ValueError as exc:
         db.session.rollback()
+        if str(exc) == "ticket_initial_state_invalid":
+            return _error_response(
+                "El estado inicial no pertenece al workflow publicado",
+                422,
+                "ticket_initial_state_invalid",
+                "choose_published_initial_state",
+            )
+        if str(exc) == "ticket_initial_state_not_allowed":
+            return _error_response(
+                "Los tickets se crean en estado nuevo; los demás estados requieren una transición posterior autorizada",
+                422,
+                "ticket_initial_state_not_allowed",
+                "create_ticket_as_new",
+            )
         if str(exc) == "assignee_category_scope_mismatch":
             return _error_response(
                 "El agente no tiene acceso a la categoria del ticket",
@@ -560,6 +700,9 @@ def patch_ticket_v2(ticket_id: int):
     try:
         updated = patch_ticket(tenant=tenant, actor_user=_viewer(), ticket=ticket, payload=payload)
         db.session.commit()
+    except TicketStateTransitionError as exc:
+        db.session.rollback()
+        return _ticket_state_error_response(exc, ticket_id=ticket_id)
     except LookupError as exc:
         db.session.rollback()
         if str(exc) == "assignee_not_found":
@@ -672,27 +815,40 @@ def list_ticket_timeline_v2(ticket_id: int):
     if error:
         return error
 
-    comments = _visible_ticket_comments(ticket)
-    messages = [
-        *_ticket_source_attachment_messages(ticket, comments),
-        *[_message_from_comment(ticket, comment) for comment in comments],
+    history_limit = request.args.get("limit", DEFAULT_NORMALIZED_TICKET_HISTORY_LIMIT)
+    history_cursor = request.args.get("cursor") or None
+    try:
+        history_page = read_normalized_ticket_history(
+            tenant_id=tenant.id,
+            ticket_id=ticket.id,
+            include_internal=_is_operator(),
+            limit=history_limit,
+            cursor=history_cursor,
+        )
+    except NormalizedTicketHistoryNotFound:
+        return _error_response(
+            "ticket no encontrado",
+            404,
+            "ticket_not_found",
+            "refresh_tickets",
+        )
+    except NormalizedTicketHistoryError as exc:
+        return _error_response(
+            str(exc),
+            400,
+            "invalid_history_pagination",
+            "use_valid_history_cursor",
+        )
+
+    pagination = dict(history_page["pagination"])
+    timeline = [
+        _normalized_history_payload(ticket, item)
+        for item in history_page["items"]
     ]
-    timeline = _ticket_v2_timeline(ticket, tenant, comments)
-    realtime_state = _ticket_v2_realtime_summary(ticket, comments)
-    unified = [
-        {
-            "id": item.get("id"),
-            "source": item.get("source") or "tenant_ticket",
-            "stream_type": "message" if item.get("tipo") == "comentario" else item.get("tipo") or "timeline_event",
-            "timestamp": item.get("fecha") or item.get("timestamp"),
-            "actor_type": item.get("actor_type") or item.get("author_type") or "system",
-            "preview_text": item.get("texto") or item.get("comentario") or item.get("body"),
-            "status": item.get("estado"),
-            "comment_id": item.get("comment_id"),
-            "payload": item,
-        }
-        for item in timeline
-    ]
+    messages = [item for item in timeline if item.get("tipo") in {"comentario", "archivo"}]
+    unified = [_normalized_history_unified_item(item) for item in timeline]
+    realtime_state = _normalized_realtime_summary(ticket, timeline)
+    pagination["returned_count"] = len(unified)
 
     return _json_response(
         {
@@ -704,6 +860,10 @@ def list_ticket_timeline_v2(ticket_id: int):
             "historial_chat": messages,
             "unified_conversation_stream": unified,
             "realtime_state": realtime_state,
+            "pagination": pagination,
+            "has_more": pagination["has_more"],
+            "next_cursor": pagination["next_cursor"],
+            "history_sources": history_page["sources"],
         }
     )
 

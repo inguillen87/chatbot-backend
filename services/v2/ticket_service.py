@@ -17,16 +17,19 @@ from services.employee_ticket_access import (
 )
 from services.v2.sla_service import apply_sla_to_ticket, get_policies_for_tenant, is_ticket_overdue
 from services.v2.ticket_event_service import record_ticket_event
+from services.ticket_state_machine import (
+    build_ticket_workflow_instance,
+    is_ticket_transition_allowed,
+    normalize_ticket_state,
+)
+from utils.roles import (
+    ROLE_EMPLEADO,
+    ROLE_SUPERADMIN,
+    ROLE_TENANT_ADMIN,
+    canonical_role,
+    is_authorized_superadmin_user,
+)
 
-_ALLOWED_STATUSES = {
-    "nuevo",
-    "open",
-    "in_progress",
-    "waiting_customer",
-    "resuelto",
-    "cerrado",
-    "closed",
-}
 _ALLOWED_PRIORITIES = {"low", "medium", "high", "urgent"}
 _ALLOWED_CHANNELS = {"web", "widget", "whatsapp", "manual", "chat"}
 
@@ -67,6 +70,50 @@ def _location_from_payload(value: Any) -> dict[str, Any]:
 
 def _role_of(user: User | None) -> str:
     return str(getattr(user, "rol", "usuario") or "usuario").lower()
+
+
+def _ticket_workflow_access(ticket: TenantTicket, viewer: User | None) -> tuple[bool, str | None]:
+    role = canonical_role(getattr(viewer, "rol", None))
+    if role == ROLE_SUPERADMIN:
+        if is_authorized_superadmin_user(viewer):
+            return True, None
+        return False, "ticket_transition_role_denied"
+    if role == ROLE_TENANT_ADMIN:
+        return True, None
+    if role != ROLE_EMPLEADO and not getattr(viewer, "es_empleado", False):
+        return False, "ticket_transition_role_denied"
+    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+    if str(extra.get("assignee_id") or "") != str(getattr(viewer, "id", None) or ""):
+        return False, "ticket_assignment_required"
+    return True, None
+
+
+def _ticket_workflow_payload(ticket: TenantTicket, viewer: User | None) -> dict[str, Any]:
+    can_operate, blocked_reason = _ticket_workflow_access(ticket, viewer)
+    return build_ticket_workflow_instance(
+        ticket.estado,
+        can_operate=can_operate,
+        blocked_reason=blocked_reason,
+    )
+
+
+class TicketStateTransitionError(ValueError):
+    def __init__(
+        self,
+        reason_code: str,
+        message: str,
+        *,
+        status_code: int,
+        current_state: str | None,
+        requested_state: Any,
+        next_states: list[str],
+    ):
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.status_code = status_code
+        self.current_state = current_state
+        self.requested_state = requested_state
+        self.next_states = next_states
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -329,6 +376,7 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
 
     attachments = ticket_attachment_payloads(ticket)
     assisted_fields = _assisted_marketplace_fields(extra, attachments)
+    workflow = _ticket_workflow_payload(ticket, viewer)
 
     payload = {
         "id": ticket.id,
@@ -338,6 +386,8 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
         "type": extra.get("type"),
         "category": ticket.categoria,
         "status": ticket.estado,
+        "next_states": workflow["next_states"],
+        "workflow": workflow,
         "priority": extra.get("priority", "medium"),
         "sla_status": sla_status,
         "sla_state": sla_status,
@@ -379,9 +429,12 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
     if priority not in _ALLOWED_PRIORITIES:
         priority = "medium"
 
-    status = str(payload.get("status") or "nuevo").strip().lower()
-    if status not in _ALLOWED_STATUSES:
-        status = "nuevo"
+    status_raw = payload.get("status") if "status" in payload else "nuevo"
+    status = normalize_ticket_state(status_raw)
+    if status is None:
+        raise ValueError("ticket_initial_state_invalid")
+    if status != "nuevo":
+        raise ValueError("ticket_initial_state_not_allowed")
 
     location = _location_from_payload(payload.get("location")) if "location" in payload else {}
     assignee_id = payload.get("assignee_id")
@@ -515,7 +568,7 @@ def list_tickets(*, tenant, viewer: User | None, filters: dict[str, Any]) -> tup
         status_value = str(ticket.estado or "").lower()
         if status_value in {"cerrado", "closed", "resuelto", "resolved"}:
             summary["closed"] += 1
-        elif status_value in {"in_progress"}:
+        elif normalize_ticket_state(status_value) == "en_proceso":
             summary["in_progress"] += 1
         else:
             summary["open"] += 1
@@ -575,8 +628,69 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
                 raise ValueError("assignee_category_scope_mismatch")
 
     if "status" in payload:
-        new_status = str(payload.get("status") or "").strip().lower()
-        if new_status and new_status in _ALLOWED_STATUSES and new_status != ticket.estado:
+        requested_raw = payload.get("status")
+        new_status = normalize_ticket_state(requested_raw)
+        current_status = normalize_ticket_state(ticket.estado)
+        workflow = _ticket_workflow_payload(ticket, actor_user)
+        if new_status is None:
+            raise TicketStateTransitionError(
+                "ticket_target_state_invalid",
+                "El estado solicitado no pertenece al workflow publicado.",
+                status_code=422,
+                current_state=current_status,
+                requested_state=requested_raw,
+                next_states=workflow["next_states"],
+            )
+        if current_status is None:
+            raise TicketStateTransitionError(
+                "ticket_current_state_unsupported",
+                "El estado actual del ticket no pertenece al workflow vigente.",
+                status_code=409,
+                current_state=str(ticket.estado or ""),
+                requested_state=requested_raw,
+                next_states=[],
+            )
+        expected_raw = payload.get("expected_status", payload.get("expected_state"))
+        if expected_raw not in (None, ""):
+            expected_status = normalize_ticket_state(expected_raw)
+            if expected_status is None:
+                raise TicketStateTransitionError(
+                    "ticket_expected_state_invalid",
+                    "El estado esperado no pertenece al workflow publicado.",
+                    status_code=422,
+                    current_state=current_status,
+                    requested_state=requested_raw,
+                    next_states=workflow["next_states"],
+                )
+            if expected_status != current_status:
+                raise TicketStateTransitionError(
+                    "ticket_state_conflict",
+                    "El ticket cambió de estado. Actualizá el caso antes de continuar.",
+                    status_code=409,
+                    current_state=current_status,
+                    requested_state=requested_raw,
+                    next_states=workflow["next_states"],
+                )
+        can_operate, blocked_reason = _ticket_workflow_access(ticket, actor_user)
+        if not can_operate:
+            raise TicketStateTransitionError(
+                blocked_reason or "ticket_transition_forbidden",
+                "El ticket debe estar asignado al operador antes de cambiar su estado.",
+                status_code=409,
+                current_state=current_status,
+                requested_state=requested_raw,
+                next_states=[],
+            )
+        if current_status != new_status and not is_ticket_transition_allowed(current_status, new_status):
+            raise TicketStateTransitionError(
+                "ticket_transition_not_allowed",
+                "La transición solicitada no está permitida desde el estado actual.",
+                status_code=409,
+                current_state=current_status,
+                requested_state=requested_raw,
+                next_states=workflow["next_states"],
+            )
+        if new_status != current_status:
             previous = ticket.estado
             ticket.estado = new_status
             record_ticket_event(

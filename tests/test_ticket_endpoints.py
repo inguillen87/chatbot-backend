@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta
 from unittest.mock import patch
 from app import create_app, db
 from models import User, MunicipioTicket, Rubro, TicketComentario, ArchivoAdjunto, Conversacion, TenantProfile
@@ -372,6 +373,88 @@ class TicketEndpointsTest(unittest.TestCase):
         self.assertIsNotNone(comment_with_attachment['attachmentInfo'])
         self.assertEqual(comment_with_attachment['attachmentInfo']['name'], "test_image.jpg")
         self.assertEqual(comment_with_attachment['attachmentInfo']['url'], "http://example.com/test.jpg")
+
+    def test_municipio_timeline_cursor_pages_more_than_sixty_messages_and_keeps_tenant_scope(self):
+        login_resp = self.client.post(
+            '/auth/login',
+            json={'email': 'admin@junin.com', 'password': 'adminpass'},
+        )
+        self.assertEqual(login_resp.status_code, 200)
+        headers = {'Authorization': f"Bearer {json.loads(login_resp.data)['token']}"}
+        ticket = MunicipioTicket.query.filter_by(asunto='Bache en la calle').first()
+        base_time = datetime.utcnow() + timedelta(minutes=1)
+        db.session.add_all([
+            TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario=f'Mensaje municipal histórico {index:02d}',
+                es_admin=bool(index % 2),
+                fecha=base_time + timedelta(seconds=index),
+            )
+            for index in range(1, 66)
+        ])
+        db.session.commit()
+
+        first = self.client.get(
+            f'/tickets/municipio/{ticket.id}/timeline',
+            query_string={'limit': 25},
+            headers=headers,
+        )
+        self.assertEqual(first.status_code, 200, first.get_json())
+        first_payload = first.get_json() or {}
+        first_items = first_payload.get('unified_conversation_stream') or []
+        self.assertEqual(len(first_items), 25)
+        self.assertTrue(first_payload.get('has_more'))
+        self.assertTrue(first_payload.get('next_cursor'))
+
+        second = self.client.get(
+            f'/tickets/municipio/{ticket.id}/timeline',
+            query_string={'limit': 25, 'cursor': first_payload['next_cursor']},
+            headers=headers,
+        )
+        self.assertEqual(second.status_code, 200, second.get_json())
+        second_payload = second.get_json() or {}
+        second_items = second_payload.get('unified_conversation_stream') or []
+        self.assertEqual(len(second_items), 25)
+        self.assertFalse(
+            {item['id'] for item in first_items}
+            & {item['id'] for item in second_items}
+        )
+        self.assertLess(second_items[-1]['timestamp'], first_items[0]['timestamp'])
+        self.assertEqual(len(first_payload.get('historial_chat') or []), 25)
+        self.assertEqual(len(second_payload.get('historial_chat') or []), 25)
+
+        other_login = self.client.post(
+            '/auth/login',
+            json={'email': 'admin@otro.com', 'password': 'adminpass'},
+        )
+        self.assertEqual(other_login.status_code, 200)
+        other_headers = {'Authorization': f"Bearer {json.loads(other_login.data)['token']}"}
+        blocked = self.client.get(
+            f'/tickets/municipio/{ticket.id}/timeline',
+            query_string={'limit': 25, 'cursor': first_payload['next_cursor']},
+            headers=other_headers,
+        )
+        self.assertIn(blocked.status_code, {403, 404})
+        self.assertFalse((blocked.get_json() or {}).get('unified_conversation_stream'))
+
+        blocked_invalid_cursor = self.client.get(
+            f'/tickets/municipio/{ticket.id}/timeline',
+            query_string={'cursor': 'cursor-invalido'},
+            headers=other_headers,
+        )
+        self.assertIn(blocked_invalid_cursor.status_code, {403, 404})
+        self.assertFalse((blocked_invalid_cursor.get_json() or {}).get('unified_conversation_stream'))
+
+        authorized_invalid_cursor = self.client.get(
+            f'/tickets/municipio/{ticket.id}/timeline',
+            query_string={'cursor': 'cursor-invalido'},
+            headers=headers,
+        )
+        self.assertEqual(authorized_invalid_cursor.status_code, 400)
+        self.assertEqual(
+            (authorized_invalid_cursor.get_json() or {}).get('reason_code'),
+            'invalid_history_pagination',
+        )
 
     @patch('services.email_service.enviar_email_con_multiples_adjuntos')
     @patch('services.email_service.validar_configuracion_smtp')
