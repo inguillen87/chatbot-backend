@@ -712,7 +712,7 @@ def test_vercel_config_declares_bounded_internal_crons():
         },
         {
             "path": "/api/internal/cron/weekly-analytics-report",
-            "schedule": "0 * * * 0",
+            "schedule": "0 0 * * 0",
         },
     ]
 
