@@ -68,7 +68,7 @@ from config import (
 )
 from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
-from middleware import tenant_middleware
+from middleware import register_cutover_writer_fence, tenant_middleware
 from utils.errors import ApiError
 from utils.contact_identity import (
     request_path_allows_contact_identity_body,
@@ -215,6 +215,10 @@ def create_app(config_class=Config):
     @app.route("/health", methods=["GET", "HEAD"])
     def health():
         return jsonify({"status": "ok"})
+
+    # Opt-in cutover control. Register it before auth, tenant resolution and
+    # route handlers so no HTTP mutation reaches application or provider code.
+    register_cutover_writer_fence(app)
 
     # Error handling unificado JSON
     def _request_id() -> str:

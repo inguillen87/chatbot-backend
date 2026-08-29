@@ -88,6 +88,21 @@ Validation: 24 focused tests passed, including primary/read-replica WAL
 selection, missing-WAL failure, migration graph validation and bounded legacy
 ticket repair.
 
+## HTTP writer fence prepared (not activated)
+
+The application now exposes an explicit, disabled-by-default
+`CUTOVER_WRITER_FENCE_ENABLED` control. When deliberately enabled for the
+maintenance window, every unsafe HTTP method (`POST`, `PUT`, `PATCH`, and
+`DELETE`) returns a no-store `503` contract with `Retry-After`, before auth,
+tenant resolution, uploads, webhook handlers, or route code can mutate state.
+`GET`, `HEAD`, and `OPTIONS` remain available for health/readiness and CORS
+checks.
+
+This only fences HTTP writers. It does **not** prove quiescence on its own:
+Render workers, scheduled jobs, Vercel cron/effect ownership, and any external
+database writer must be stopped or independently fenced before taking the final
+snapshot. The flag has not been enabled on Render or Vercel Production.
+
 ## Remaining cutover gates
 
 The preflight deliberately reports `content_parity_certified=false`. Render

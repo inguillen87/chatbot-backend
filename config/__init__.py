@@ -757,6 +757,13 @@ class Config:
     # Vercel sends this value as ``Authorization: Bearer ...`` to scheduled
     # endpoints. An empty value must never authorize an internal invocation.
     CRON_SECRET = os.getenv("CRON_SECRET", "")
+    # Explicit maintenance-window fence for HTTP writers. It stays disabled on
+    # every runtime until an operator deliberately freezes source writes for a
+    # database cutover. Workers and scheduled jobs are fenced independently.
+    CUTOVER_WRITER_FENCE_ENABLED = _env_flag(
+        False,
+        "CUTOVER_WRITER_FENCE_ENABLED",
+    )
     # Historical marketplace OAuth/webhook routes trusted request-supplied
     # tenant selectors.  Keep their migration marker false by default on every
     # runtime (including Vercel and Render).  The routes remain fail-closed even
