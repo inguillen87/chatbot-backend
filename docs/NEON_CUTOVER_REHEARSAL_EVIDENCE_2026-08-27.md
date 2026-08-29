@@ -134,7 +134,9 @@ Direct SQL sessions, migration/pre-deploy commands, provider-side retries and
 any writer outside these declared services remain operator-owned and must be
 inventoried and attested before taking the final snapshot. Do not deploy or run
 `flask db upgrade` while using the flag as the source-freeze boundary. The flag
-has not been enabled on Render or Vercel Production.
+has not been enabled on Render or on the public backend. It is enabled only on
+the isolated Vercel Production candidate documented below; that candidate has
+not received `api.chatboc.ar` traffic.
 
 ## Remaining cutover gates
 
@@ -203,9 +205,60 @@ Preview was also refreshed without changing Production:
   the successful deployment used the generated safe Preview configuration;
 - `CUTOVER_WRITER_FENCE_ENABLED` and
   `VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED` exist in the Vercel Production scope
-  and remain disabled. No Production deployment was issued.
+  and remained disabled. No Production deployment was issued during that
+  Preview revalidation phase; the later fenced candidate is recorded below.
 
 `api.chatboc.ar` continued returning `200` through Cloudflare with a Render
 `gunicorn` origin after the Preview refresh. No Render service, Production DNS,
 provider webhook or Production database writer was changed. The remaining
 gates above therefore remain mandatory.
+
+## Fenced Vercel candidate - 2026-08-29
+
+An isolated Vercel Production candidate was deployed to validate the final
+application fence without moving the public API hostname or enabling any
+background writer:
+
+| Check | Result |
+| --- | --- |
+| Deployment | `dpl_HfbQSLvJ2GMjh7tofAf5EMPonj7d` |
+| Direct URL | `chatboc-backend-kappyz0d3-marcelos-projects-c26aa499.vercel.app` |
+| Immutable revision | `8c70a47768e5945da93e4d33bfc788d2dacdb47a` |
+| Deployment state | `READY` |
+| `/health` | `200`, `status=ok` |
+| `/health/ready` | `503`, `reason_code=required_schema_missing` |
+| Writer fence | enabled on this candidate only |
+| Vercel writer crons | all four disabled and returning `503` |
+| Public API | unchanged Render origin, revision `8ced9216ff134951a0e3cb050c473e364c28be5c` |
+| Preview API | unchanged Vercel Preview revision `84021daf003291aa479e9f72d4f836c2bfe16e04` |
+
+The HTTP matrix returned the fenced `503` contract for unsafe authentication,
+catalog/cart compatibility aliases, ticket enrichment, executive analytics,
+provider smoke checks, category bootstrap, tenant administration, WhatsApp
+provider status, widget configuration, survey analytics, production-smoke,
+kits, points and reward rules. The four Vercel cron paths independently
+returned `503`. This demonstrates that the candidate cannot become an
+accidental concurrent writer while Neon remains incomplete.
+
+The same revision hardens the declared Render standby path without activating
+it: standby now requires a direct TLS Neon migration URL, refuses SQLite or a
+non-Neon database, skips predeploy migrations whenever the fence is active,
+propagates the standby flag to permanent background services, and gives the web
+and worker processes a graceful shutdown window. Municipal flyer uploads also
+use the shared object-storage path and fail closed in Production when required
+R2 storage is unavailable. The corresponding Render flags remain `false`; no
+Render blueprint or environment value was applied.
+
+The Vercel Production variables and Neon CLI correlate to project
+`nameless-rain-94060889`, branch `br-dark-silence-acmnikpq` (`main`) and endpoint
+`ep-withered-union-acn1hovx`. The read-only preflight still reports exactly two
+pending revisions, no chat-idempotency receipt table and
+`content_parity_certified=false`. Therefore this candidate remains **NO-GO**
+for public traffic, migrations, webhook reassignment or Render retirement.
+
+The next safe boundary is not another public deployment. It is an approved
+maintenance window that fences and restarts every Render writer, drains
+in-flight work, captures the immutable final source snapshot, certifies signed
+content parity and only then applies the two rehearsed Neon migrations. Render
+must remain recoverable through canaries, provider validation, soak and a
+tested rollback.
