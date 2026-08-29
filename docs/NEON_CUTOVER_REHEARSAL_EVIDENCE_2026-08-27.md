@@ -405,4 +405,115 @@ independent writer: there are no destination-extra rows, while recent session,
 conversation, contact, message and analytics records exist only in Render.
 It remains unsafe to switch traffic or run only Alembic. The final window must
 fence Render, capture a managed logical export, restore/reconcile that frozen
-source, rerun this exact audit and only then apply the two migrations.
+source, rerun this exact audit, target the demo revision and only then apply
+the two dedicated cutover migrations.
+
+## Managed export, empty-database restore and full migration rehearsal - 2026-08-29
+
+The provider-managed Render logical export path was then exercised without a
+writer freeze. This was deliberately a rehearsal: Render remained the public
+writer and no production URL, webhook, environment variable or Neon main data
+was changed.
+
+| Check | Result |
+| --- | --- |
+| Render export | completed; PostgreSQL directory-format archive |
+| Archive size / SHA-256 | 2,603,637 bytes / `0c28672fc660552bd1ca8c0c8caa7486e37434cc0fbc2b558de2c07a83131d7e` |
+| Dump producer / restore client | PostgreSQL 18.6 / PostgreSQL 18.6 |
+| Archive safety | 174 archive paths inspected; no absolute or traversal path |
+| Restore target | empty `render_rehearsal_20260829` database on the isolated rehearsal branch |
+| Restore result | success in one `pg_restore --single-transaction`; 170 tables |
+| Restored revision | `20260820_survey_content_jurisdiction_v1` |
+
+The strict auditor then compared live Render to the restored database in two
+repeatable-read, read-only transactions. Because writers were not fenced, the
+auditor correctly refused to issue a production certificate, but exact parity
+itself passed:
+
+| Metric | Result |
+| --- | --- |
+| Aggregate rows | 52,863 on both sides |
+| Source tables audited | 169 (`alembic_version` excluded by policy) |
+| Tables matching | 169 |
+| Common cells checked / mismatched | 518,770 / 0 |
+| Source rows missing / destination rows extra | 0 / 0 |
+| Rehearsal status | `writer_fence_attestation_required` |
+| Evidence SHA-256 | `b81cffe98c0b5b3a2e322105412964c4158459cfba32fe05a583b476c189c7fb` |
+
+This closes the earlier 112-row gap for the tested export/restore path. It does
+not replace the final frozen export: a new source write after the audit would
+invalidate this rehearsal evidence.
+
+The local archive and parity artifact were moved out of the temporary
+directory into an ACL-restricted evidence directory outside the repository,
+protected with Windows CurrentUser DPAPI and round-trip hash verified. The
+temporary plaintext copies were sent to the Windows recycle bin. This protects
+the rehearsal artifact locally; the final cutover still requires an approved
+durable evidence-retention destination and restore check.
+
+The first targeted Alembic attempt also exposed a pre-existing URL handling
+defect: `migrations/env.py` used SQLAlchemy's redacted string representation as
+the live connection URL, replacing a real password with `***`. Authentication
+failed before any migration SQL ran; a post-failure check proved the revision
+and schema were unchanged. The runner now preserves percent-encoded
+credentials for the engine, redacts all credentials and query parameters from
+diagnostics, and is covered by three offline regression tests.
+
+After that correction, the complete path from the actual Render source
+revision passed on the isolated restored database:
+
+1. exact Alembic target `20260825_demo_survey_participation_v1`;
+2. dedicated dry-run for the two cutover revisions;
+3. atomic apply of
+   `20260825_legacy_municipio_ticket_scope_repair_v1` and
+   `20260825_chat_idempotency_v1` under an advisory lock;
+4. read-only postflight at the exact single head.
+
+The postflight reports 172 tables, 52,863 aggregate rows, all three legacy
+tickets scoped to Junin, both new ledger tables present and empty, and no
+pending revisions. `content_parity_certified=false` remains intentional: final
+certification still requires a real Render writer fence tied to the final
+export.
+
+A post-migration Neon backup branch was then created from the exact rehearsal
+LSN: `cutover-rehearsal-20260829-postmigration` /
+`br-purple-mode-acfyj7js`. A direct read-only check on the copied
+`render_rehearsal_20260829` database returned the expected single revision
+`20260825_chat_idempotency_v1` and 172 public tables.
+
+A sender reconciliation dry-run against this restored result failed closed
+with `provider_connection_exactly_one_required`. The only enterprise Twilio
+connection is still a sandbox connection, so no `provider_sender` was created
+or promoted and no provider message was sent. The official Junin sender gate
+therefore remains open.
+
+The local durable-inbound canary now also covers the cutover retry shape: a
+signed inbound receives a no-store `503` while fenced, then the same
+`MessageSid` is retried after the fence with distinct
+`I-Twilio-Idempotency-Token` values. The queue stores one row, enqueues once,
+runs the responder once, creates one governed outbound intent and performs no
+provider call. This is useful regression evidence, but it is sequential and
+mocked; PostgreSQL concurrency and Twilio live retry behavior remain mandatory
+provider canaries.
+
+The R2 smoke gate was also completed at code level. It now accepts only the
+approved non-personal fixture hash, creates a GUID-scoped canary, proves
+PUT/GET, discards only through the same signed intent, verifies database,
+temporary-object and final-object absence, requires a post-delete signed GET
+to return 404, replays delete idempotently and performs fail-closed emergency
+attachment cleanup. This removes the earlier R2/attachment artifact leak; it
+does not claim to undo an explicitly permitted demo-auth mutation on a
+disposable rehearsal database. Production R2 still
+requires a real controlled canary before traffic moves. That write canary
+cannot run behind the global writer fence: it must use an existing scoped
+canary identity on a separate no-alias deployment backed by a disposable Neon
+database with every cron/provider side effect disabled, or run immediately
+after the controlled Vercel un-fence. Demo authentication is fail-closed unless
+the operator explicitly allows its isolated rehearsal mutation.
+
+The Vercel container preflight also found tracked legacy runtime uploads under
+`data/archivos`, `data/archivos_tickets` and `data/catalogos`. Those paths are
+now excluded from both the Vercel upload bundle and Docker build context. A
+post-change `vercel deploy --dry --json` inventory returned zero matching
+runtime-media paths; governed demo fixtures and configuration under the other
+`data` subdirectories remain available to the application.

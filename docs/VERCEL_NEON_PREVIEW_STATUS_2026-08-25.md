@@ -126,11 +126,13 @@ Iniciarlo entre dos y cinco minutos antes de la presentación y mantener esa ter
 
 1. Crear una rama/backup verificable de Neon principal y registrar revisión
    Alembic, conteos, constraints y LSN.
-2. Aplicar exclusivamente las dos revisiones ya ensayadas —reparación acotada de
-   tickets e idempotencia municipal— y verificar revisión final, 172 tablas,
-   3/3 reparaciones y tabla/índice de idempotencia.
-3. Cerrar la paridad de los 3 workers y 4 cron declarados en `vercel.json`; no
-   asumir que un web container reemplaza procesos permanentes.
+2. Desde la revisión real de Render, aplicar la revisión demo exacta y luego
+   las dos revisiones de cutover ya ensayadas —reparación acotada de tickets e
+   idempotencia municipal—; verificar revisión final, 172 tablas, 3/3
+   reparaciones y tabla/índice de idempotencia.
+3. Certificar ownership de los cuatro cron HTTP declarados en `vercel.json` y
+   de los tres ciclos acotados que ejecuta el cron de outbox; no describirlos
+   como workers permanentes ni asumir que un web container los reemplaza.
 4. Confirmar por nombres/targets todas las variables de Production sin imprimir
    secretos y comprobar que no quedan referencias a Render.
 5. Desplegar un SHA exacto del backend con cron desactivado y restaurar/verificar

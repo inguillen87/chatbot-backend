@@ -5,7 +5,7 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import create_engine
-from sqlalchemy.engine import make_url
+from sqlalchemy.engine import URL, make_url
 
 # This is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -51,17 +51,27 @@ def _normalize(url_str: str) -> str:
         qs.setdefault("sslmode", "require")
         url = url.set(query=qs)
 
-    return str(url)
+    # ``str(URL)`` intentionally redacts the password as ``***`` in modern
+    # SQLAlchemy releases.  That representation is safe for diagnostics but
+    # must never be used as the connection URL.  Render explicitly with the
+    # password so SQLAlchemy re-encodes reserved characters for the driver.
+    return url.render_as_string(hide_password=False)
 
 def _mask(u: str) -> str:
-    """Oculta la password solo para logging/diagnóstico."""
+    """Devuelve solo el destino no sensible para logging/diagnóstico."""
     try:
         url = make_url(u)
-        if url.password:
-            return u.replace(url.password, "***")
+        # Do not log userinfo or query parameters: both can carry credentials.
+        return URL.create(
+            drivername=url.drivername,
+            host=url.host,
+            port=url.port,
+            database=url.database,
+        ).render_as_string(hide_password=True)
     except Exception:
-        pass
-    return u
+        # Fail closed: a malformed value can still contain credentials and
+        # must not be echoed back to stdout or logs.
+        return "<invalid database URL>"
 
 def _choose_raw_url() -> str:
     """
@@ -115,7 +125,10 @@ def _choose_raw_url() -> str:
 RAW_URL = _choose_raw_url()
 DB_URL = _normalize(RAW_URL)
 
-config.set_main_option("sqlalchemy.url", DB_URL)
+# Alembic stores this value through ConfigParser, where percent signs are
+# interpolation markers.  Escape them only for the config copy; DB_URL keeps
+# the canonical percent-encoded credentials used by create_engine/context.
+config.set_main_option("sqlalchemy.url", DB_URL.replace("%", "%%"))
 
 print("ALEMBIC_DB_URL:", _mask(DB_URL))
 

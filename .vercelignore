@@ -1,0 +1,12 @@
+# Runtime/user-generated legacy media must never be uploaded to Vercel.
+data/archivos/**
+data/archivos_tickets/**
+data/catalogos/**
+
+# Local-only evidence and runtime state.
+artifacts/**
+instance/**
+logs/**
+temp_uploads/**
+.codex-run-logs/**
+.qa-artifacts/**

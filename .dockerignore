@@ -31,5 +31,10 @@ instance/*
 logs/*
 flask_session/*
 temp_uploads/*
+# Runtime/user-generated legacy media must never be baked into the Vercel
+# container image. Durable objects are restored separately to governed R2.
+data/archivos/*
+data/archivos_tickets/*
+data/catalogos/*
 local_tmp*.db
 *.backup.db

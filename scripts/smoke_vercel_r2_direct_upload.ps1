@@ -1,7 +1,9 @@
 param(
     [string]$Deployment = "chatboc-backend-r2-preview.vercel.app",
     [string]$Origin = "https://chatboc-r2-preview.vercel.app",
-    [string]$FilePath = "tests/test_files/dummy.png"
+    [string]$FilePath = "tests/test_files/dummy.png",
+    [string]$TenantSlug = "junin",
+    [switch]$AllowDemoAuthMutation
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,36 +107,58 @@ if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
 }
 $resolvedFile = (Resolve-Path -LiteralPath $FilePath).Path
 $fileSize = (Get-Item -LiteralPath $resolvedFile).Length
-$sessionId = [guid]::NewGuid().ToString()
-
-$login = Invoke-VercelJson -Path "/api/auth/demo" -Body @{
-    tenant_slug = "junin"
-    sector = "gobierno"
-    tipo_chat = "municipio"
+$fileSha256 = (Get-FileHash -LiteralPath $resolvedFile -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($fileSha256 -ne "0814f352fb86bdaf7e38beefd1272a41090e4e700dcdcbcb41898cdf1f6ee37c") {
+    throw "Smoke input must be the approved non-personal canary fixture."
 }
-$jwt = [string]$login.token
-$tenantSlug = [string]$login.tenant_slug
+$runId = [guid]::NewGuid().ToString("N")
+$canaryPrefix = "r2-smoke-canary-$runId"
+$canaryFilename = "$canaryPrefix.png"
+$sessionId = "r2-smoke-$runId"
+
+$jwt = [string]$env:CHATBOC_SMOKE_BEARER_TOKEN
+$tenantSlug = $TenantSlug.Trim().ToLowerInvariant()
+$demoLoginUsed = $false
+if ([string]::IsNullOrWhiteSpace($jwt)) {
+    if (-not $AllowDemoAuthMutation) {
+        throw "Set CHATBOC_SMOKE_BEARER_TOKEN or explicitly allow demo auth mutation on an isolated disposable database."
+    }
+    $login = Invoke-VercelJson -Path "/api/auth/demo" -Body @{
+        tenant_slug = $tenantSlug
+        sector = "gobierno"
+        tipo_chat = "municipio"
+    }
+    $jwt = [string]$login.token
+    $tenantSlug = [string]$login.tenant_slug
+    $demoLoginUsed = $true
+}
 if ([string]::IsNullOrWhiteSpace($jwt) -or [string]::IsNullOrWhiteSpace($tenantSlug)) {
-    throw "Demo login did not return a scoped session."
+    throw "A scoped smoke identity is required."
 }
 
 $authHeaders = @{
     Authorization = "Bearer $jwt"
     "X-Chat-Session-Id" = $sessionId
     "X-Tenant-Slug" = $tenantSlug
-    "X-Request-Id" = "r2-preview-smoke"
+    "X-Request-Id" = "$canaryPrefix-request"
 }
+$intentToken = $null
+$cleanupConfirmed = $false
+$result = $null
+try {
 $prepared = Invoke-VercelJson -Path "/archivos/upload/chat_attachment" -Headers $authHeaders -Body @{
     operation = "prepare_direct_upload"
-    filename = "r2-preview-smoke.png"
+    filename = $canaryFilename
     mime_type = "image/png"
     size_bytes = $fileSize
 }
+$intentToken = [string]$prepared.intent_token
 if (
     $prepared.ok -ne $true -or
     $prepared.operation -ne "prepare_direct_upload" -or
     $prepared.upload.method -ne "PUT" -or
-    $prepared.constraints.exact_size_required -ne $true
+    $prepared.constraints.exact_size_required -ne $true -or
+    [string]::IsNullOrWhiteSpace($intentToken)
 ) {
     throw "Direct upload preparation failed with code: $($prepared.code)"
 }
@@ -180,18 +204,19 @@ if ($put.status -notin @(200, 201, 204)) {
 
 $completed = Invoke-VercelJson -Path "/archivos/upload/chat_attachment" -Headers $authHeaders -Body @{
     operation = "complete_direct_upload"
-    intent_token = [string]$prepared.intent_token
+    intent_token = $intentToken
 }
 if (
     $completed.ok -ne $true -or
     $completed.operation -ne "complete_direct_upload" -or
-    $completed.attachmentInfo.storage_provider -ne "cloudflare_r2"
+    $completed.attachmentInfo.storage_provider -ne "cloudflare_r2" -or
+    [string]$completed.attachmentInfo.name -ne $canaryFilename
 ) {
     throw "Direct upload completion failed with code: $($completed.code)"
 }
 $replayed = Invoke-VercelJson -Path "/archivos/upload/chat_attachment" -Headers $authHeaders -Body @{
     operation = "complete_direct_upload"
-    intent_token = [string]$prepared.intent_token
+    intent_token = $intentToken
 }
 
 $storageKey = [string]$completed.attachmentInfo.storage_url
@@ -210,6 +235,41 @@ if ($storageKey -and $storageKey -notmatch '^https?://') {
     $privacyBlocked = $privacyProbe.status -in @(401, 403, 404)
 }
 
+$discarded = Invoke-VercelJson -Path "/archivos/upload/chat_attachment" -Headers $authHeaders -Body @{
+    operation = "discard_direct_upload"
+    intent_token = $intentToken
+}
+if (
+    $discarded.ok -ne $true -or
+    $discarded.operation -ne "discard_direct_upload" -or
+    $discarded.idempotent -ne $false -or
+    $discarded.absence_confirmed.database -ne $true -or
+    $discarded.absence_confirmed.temporary_object -ne $true -or
+    $discarded.absence_confirmed.final_object -ne $true
+) {
+    throw "Exact canary cleanup was not confirmed."
+}
+$cleanupConfirmed = $true
+
+$deletedDeliveryProbe = Invoke-HeaderOnlyRequest -Method "GET" -Url $signedDeliveryUrl
+if ($deletedDeliveryProbe.status -ne 404) {
+    throw "Deleted canary remained readable through its signed URL."
+}
+$discardReplay = Invoke-VercelJson -Path "/archivos/upload/chat_attachment" -Headers $authHeaders -Body @{
+    operation = "discard_direct_upload"
+    intent_token = $intentToken
+}
+if (
+    $discardReplay.ok -ne $true -or
+    $discardReplay.operation -ne "discard_direct_upload" -or
+    $discardReplay.idempotent -ne $true -or
+    $discardReplay.absence_confirmed.database -ne $true -or
+    $discardReplay.absence_confirmed.temporary_object -ne $true -or
+    $discardReplay.absence_confirmed.final_object -ne $true
+) {
+    throw "Canary cleanup replay was not idempotent and absent."
+}
+
 $corsOk = @($corsEvidence | Where-Object {
     $_.status -notin @(200, 204) -or
     -not $_.allow_origin_exact -or
@@ -218,9 +278,12 @@ $corsOk = @($corsEvidence | Where-Object {
 $putCorsOriginExact = $put.headers["access-control-allow-origin"] -eq $Origin
 $putExposeEtag = [string]$put.headers["access-control-expose-headers"] -match '(^|,\s*)ETag(\s*,|$)'
 
-[pscustomobject]@{
-    contract_version = "qa.vercel_r2_direct_upload.v1"
+$result = [pscustomobject]@{
+    contract_version = "qa.vercel_r2_direct_upload.v2"
     tenant_slug = $tenantSlug
+    authentication_mode = if ($demoLoginUsed) { "isolated_demo_mutation" } else { "existing_scoped_token" }
+    canary_prefix = $canaryPrefix
+    canary_non_personal = $true
     file_size = $fileSize
     prepare_ok = $prepared.ok -eq $true
     cors_allowed_origins = $corsEvidence
@@ -239,7 +302,13 @@ $putExposeEtag = [string]$put.headers["access-control-expose-headers"] -match '(
     signed_delivery_status = $signedDeliveryStatus
     raw_public_probe_status = $privacyStatus
     raw_public_access_blocked = $privacyBlocked
-} | ConvertTo-Json -Depth 8
+    delete_operation = [string]$discarded.operation
+    delete_absence_confirmed = $cleanupConfirmed
+    deleted_signed_get_status = $deletedDeliveryProbe.status
+    delete_replay_idempotent = $discardReplay.idempotent -eq $true
+    attachment_cleanup_confirmed = $true
+    attachment_cleanup_via_signed_intent = $true
+}
 
 if (
     -not $corsOk -or
@@ -248,7 +317,30 @@ if (
     -not $putExposeEtag -or
     $replayed.idempotent -ne $true -or
     $signedDeliveryStatus -ne 200 -or
-    $privacyBlocked -ne $true
+    $privacyBlocked -ne $true -or
+    -not $cleanupConfirmed -or
+    $deletedDeliveryProbe.status -ne 404 -or
+    $discardReplay.idempotent -ne $true
 ) {
-    exit 2
+    throw "R2 direct upload smoke gate failed."
 }
+} finally {
+    if (-not $cleanupConfirmed -and -not [string]::IsNullOrWhiteSpace($intentToken)) {
+        $emergencyDiscard = Invoke-VercelJson -Path "/archivos/upload/chat_attachment" -Headers $authHeaders -Body @{
+            operation = "discard_direct_upload"
+            intent_token = $intentToken
+        }
+        if (
+            $emergencyDiscard.ok -ne $true -or
+            $emergencyDiscard.operation -ne "discard_direct_upload" -or
+            $emergencyDiscard.absence_confirmed.database -ne $true -or
+            $emergencyDiscard.absence_confirmed.temporary_object -ne $true -or
+            $emergencyDiscard.absence_confirmed.final_object -ne $true
+        ) {
+            throw "R2 smoke failed and exact canary cleanup could not be confirmed."
+        }
+        $cleanupConfirmed = $true
+    }
+}
+
+$result | ConvertTo-Json -Depth 8

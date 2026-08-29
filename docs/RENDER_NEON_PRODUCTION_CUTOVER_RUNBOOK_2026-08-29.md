@@ -16,7 +16,7 @@ maintenance window. No step authorizes deleting Render or its database.
 | Source schema / inventory | `20260820_survey_content_jurisdiction_v1`; 170 public tables; 52,863 aggregate rows |
 | Neon main | `20260825_demo_survey_participation_v1`; 171 public tables; 52,751 aggregate rows |
 | Fenced Vercel candidate | `dpl_HfbQSLvJ2GMjh7tofAf5EMPonj7d`, revision `8c70a47768e5945da93e4d33bfc788d2dacdb47a` |
-| Junin WhatsApp sender | `+1 743 264-3718` |
+| Junin WhatsApp sender | official sender ending `3718` |
 | Wrong default found in Render | sandbox sender ending `8886`, offline |
 | Junin ownership model | official legacy mapping present; production `provider_sender` absent |
 | Secondary Junin mapping | active legacy mapping ending `5678`; classification pending |
@@ -56,22 +56,28 @@ would lose or preserve the wrong data.
 - [ ] Pause unrelated deploys, seeds, admin scripts and direct SQL sessions.
 - [ ] Preserve the existing Twilio webhook and status-callback URLs for
       rollback.
+- [ ] Approve and test an inbound-continuity path that can durably buffer
+      signed WhatsApp webhooks outside the frozen source database. Twilio
+      connection retries alone are not a maintenance-window buffer: callback
+      overrides allow at most five retries and a 15-second total timeout.
 
 Exit evidence: `cutover-window-*.json`, signed or archived outside the
 application repository.
 
 ## Gate 1 - destination rehearsal
 
-- [ ] Create a fresh isolated Neon rehearsal branch and read-only backup.
-- [ ] Import a transactionally consistent Render PostgreSQL logical snapshot
-      into an isolated database or use a reviewed idempotent reconciliation.
-- [ ] Do not overwrite destination-only rows until their ownership is
-      classified.
-- [ ] Run the strict PostgreSQL-to-Neon auditor. The strict policy must compare
+- [x] Create a fresh isolated Neon rehearsal branch, a separate empty database
+      and a verified post-migration backup branch.
+- [x] Import a transactionally consistent Render PostgreSQL logical snapshot
+      into that isolated empty database with PostgreSQL 18.6 tooling.
+- [x] Avoid overwriting destination data: the restore target was empty and the
+      pre-migration strict audit found no missing or extra rows.
+- [x] Run the strict PostgreSQL-to-Neon auditor. The strict policy must compare
       `municipio_ticket.estado`; Render remains authoritative until freeze.
-- [ ] Apply exactly these revisions, in order:
-  1. `20260825_legacy_municipio_ticket_scope_repair_v1`
-  2. `20260825_chat_idempotency_v1`
+- [x] Apply exactly these revisions from the live Render baseline, in order:
+  1. `20260825_demo_survey_participation_v1`
+  2. `20260825_legacy_municipio_ticket_scope_repair_v1`
+  3. `20260825_chat_idempotency_v1`
 - [ ] Repeat preflight, parity, migration, rollback and application canaries on
       the isolated branch.
 
@@ -94,6 +100,9 @@ window.
 - [ ] Confirm no old Render generation remains.
 - [ ] Stop or fence every external writer: Preview, scheduled jobs, manual
       shells, provider polling, seeds and direct SQL.
+- [ ] Divert inbound WhatsApp to the approved durable cutover buffer before
+      the source fence. Do not return `503` for a multi-minute freeze unless a
+      separately tested fallback captures the same signed request.
 - [ ] Drain in-flight requests/provider effects and prove source WAL/counts
       remain stable across the observation interval.
 
@@ -106,8 +115,12 @@ route matrix, timestamps and stable source WAL.
       boundary and retain the PITR reference.
 - [ ] Record export ID, completion time, source schema revision, source WAL and
       artifact checksum without exposing its download URL.
-- [ ] Create a fresh Neon pre-cutover backup.
-- [ ] Restore/reconcile on the already rehearsed path.
+- [ ] Create a fresh Neon final-cutover branch and an explicitly empty target
+      database. Record both IDs before restore; never restore this dump over
+      the existing non-empty Neon main database.
+- [ ] Restore the frozen export into that empty target on the already
+      rehearsed path. A different reconciliation path requires its own
+      row-ownership specification, rehearsal and approval.
 - [ ] Run `scripts/audit_render_neon_parity.py` in PostgreSQL source mode,
       strict comparison mode and with the final strict policy.
 - [ ] Resolve every missing, changed and destination-only row by explicit
@@ -121,8 +134,12 @@ Exit evidence: signed parity artifact tied to the fence and final export IDs.
 - [ ] Use a direct, TLS Neon connection; reject pooler URLs.
 - [ ] Prove project, branch, endpoint and current revision match the approved
       rehearsal.
-- [ ] Run the dedicated cutover migration command in dry-run mode.
-- [ ] Apply exactly the two approved revisions under an advisory lock with
+- [ ] From the Render source revision, target only
+      `20260825_demo_survey_participation_v1`; never run an open-ended
+      `upgrade head`.
+- [ ] Run the dedicated cutover migration command in dry-run mode for the two
+      remaining revisions.
+- [ ] Apply the two remaining approved revisions under an advisory lock with
       bounded statement/lock timeouts.
 - [ ] Verify the single Alembic revision after each step, the three Junin
       ticket repairs and the chat-idempotency table/index.
@@ -134,8 +151,12 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
 
 - [ ] Point the fenced Vercel candidate to the certified direct Neon runtime
       target and preserve a separate direct migration target.
-- [ ] Configure R2 and prove put/get/delete with a non-personal canary object.
-- [ ] Configure the official Junin sender `+17432643718`; do not use the
+- [ ] Configure R2. Prove put/get/delete with a non-personal canary on a
+      separate no-alias deployment whose writes target only a disposable Neon
+      database and whose crons/provider effects are disabled; a global writer
+      fence necessarily blocks this write canary. Use an existing scoped token.
+      Permit demo-auth mutation only on that disposable rehearsal database.
+- [ ] Configure the official Junin sender ending `3718`; do not use the
       sandbox ending `8886`. Keep the other online sender isolated by tenant.
 - [ ] Reconcile exactly one production `provider_sender` for tenant `junin`
       against its existing credentialed connection. Classify the legacy mapping
@@ -163,6 +184,9 @@ canary report and provider configuration report.
       image and one form/vote interaction; then one reply from the ticket.
 - [ ] Prove one persisted inbound row per provider SID, one CRM/ticket effect,
       one outbound attempt and signed callback transitions through delivery.
+- [ ] Drain and replay every cutover-buffer receipt exactly once; match both
+      `MessageSid` and `I-Twilio-Idempotency-Token` evidence and leave the
+      buffer empty.
 - [ ] Confirm queues, `send_uncertain`, dead-letter and failed counters are
       zero before normal operation resumes.
 
@@ -180,8 +204,17 @@ Render uses Neon**. Do not resume writes against the old Render PostgreSQL.
 - [ ] Test the rollback route without enabling two writers.
 - [ ] Observe application errors, latency, database connections, R2 delivery,
       Twilio callbacks, queue age, OOM/restarts and business canaries.
-- [ ] Keep Render PostgreSQL, export, PITR and the old compute recoverable for
-      the agreed soak period.
+- [ ] Complete at least 24 continuous hours of soak spanning one municipal
+      business period. Invoke every scheduled route once in a controlled,
+      authenticated and idempotent validation window as well; the weekly cron
+      cannot be covered by a 24-hour natural soak. During soak: readiness must be
+      100%, application 5xx below 0.5%, no lost/duplicate provider SID, no
+      `send_uncertain`, dead-letter or `63019`, queue age below five minutes,
+      and the critical Junin CRM/WhatsApp canary must pass at the start and end.
+- [ ] Keep Render PostgreSQL, export, PITR and the old compute recoverable
+      throughout the 24-hour soak. Stopping old compute and deleting the old
+      database are separate decisions; database deletion requires a later
+      explicit sign-off after the retained export and Neon backup are tested.
 - [ ] Retire Render only after a rollback drill and explicit final sign-off.
 
 ## Immediate NO-GO conditions
