@@ -64,6 +64,8 @@ FENCED_CANDIDATE_FLAGS = {
     "CUTOVER_WRITER_FENCE_ENABLED": True,
     "VERCEL_OUTBOX_CRON_ENABLED": False,
     "VERCEL_MAINTENANCE_CRONS_ENABLED": False,
+    "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED": False,
+    "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED": False,
     "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED": False,
 }
 
@@ -379,6 +381,7 @@ def audit_predeploy(
     local_migration_fingerprint: str,
     identity_evidence_path: Path,
     approved_evidence_digest: str,
+    reference_time: datetime | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Return a redacted report; no function in this path performs network I/O."""
 
@@ -514,6 +517,7 @@ def audit_predeploy(
                 local_migration_heads=local_migration_heads,
                 expected_source_revision=expected_revision,
                 local_migration_fingerprint=local_migration_fingerprint,
+                now=reference_time,
             )
             identity_evidence_verified = True
         except ValueError as exc:

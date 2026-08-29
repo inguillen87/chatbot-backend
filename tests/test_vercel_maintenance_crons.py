@@ -18,10 +18,14 @@ JOBS = (
     (
         "/api/internal/cron/whatsapp-payload-retention",
         "services.whatsapp_inbound_worker",
+        "whatsapp_enabled",
+        "vercel_whatsapp_payload_retention_cron_disabled",
     ),
     (
         "/api/internal/cron/survey-privacy-retention",
         "services.survey_privacy",
+        "survey_enabled",
+        "vercel_survey_privacy_retention_cron_disabled",
     ),
 )
 
@@ -29,13 +33,17 @@ JOBS = (
 def _app(
     *,
     secret: str = CRON_SECRET,
-    enabled: bool = True,
+    whatsapp_enabled: bool = True,
+    survey_enabled: bool = True,
+    legacy_enabled: bool = False,
     weekly_enabled: bool = False,
 ) -> Flask:
     app = Flask(__name__)
     app.config.update(
         CRON_SECRET=secret,
-        VERCEL_MAINTENANCE_CRONS_ENABLED=enabled,
+        VERCEL_MAINTENANCE_CRONS_ENABLED=legacy_enabled,
+        VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED=whatsapp_enabled,
+        VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED=survey_enabled,
         VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED=weekly_enabled,
     )
     app.register_blueprint(internal_cron_bp)
@@ -58,14 +66,26 @@ def _fake_module(module_name: str, function_name: str, result: dict):
 
 def test_maintenance_cutover_flag_defaults_fail_closed():
     assert Config.VERCEL_MAINTENANCE_CRONS_ENABLED is False
+    assert Config.VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED is False
+    assert Config.VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED is False
     assert Config.VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED is False
     env_example = (REPOSITORY_ROOT / ".env.example").read_text("utf-8").splitlines()
     assert "VERCEL_MAINTENANCE_CRONS_ENABLED=false" in env_example
+    assert "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED=false" in env_example
+    assert "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED=false" in env_example
     assert "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED=false" in env_example
 
 
-@pytest.mark.parametrize(("path", "service_module"), JOBS)
-def test_missing_authorization_rejects_before_service_import(path, service_module):
+@pytest.mark.parametrize(
+    ("path", "service_module", "_enabled_argument", "_reason_code"),
+    JOBS,
+)
+def test_missing_authorization_rejects_before_service_import(
+    path,
+    service_module,
+    _enabled_argument,
+    _reason_code,
+):
     app = _app()
     with patch.dict(sys.modules, {service_module: None}):
         response = app.test_client().get(path)
@@ -78,8 +98,16 @@ def test_missing_authorization_rejects_before_service_import(path, service_modul
     assert response.headers["Cache-Control"] == "no-store"
 
 
-@pytest.mark.parametrize(("path", "service_module"), JOBS)
-def test_wrong_authorization_rejects_before_service_import(path, service_module):
+@pytest.mark.parametrize(
+    ("path", "service_module", "_enabled_argument", "_reason_code"),
+    JOBS,
+)
+def test_wrong_authorization_rejects_before_service_import(
+    path,
+    service_module,
+    _enabled_argument,
+    _reason_code,
+):
     app = _app()
     with patch.dict(sys.modules, {service_module: None}):
         response = app.test_client().get(
@@ -90,12 +118,17 @@ def test_wrong_authorization_rejects_before_service_import(path, service_module)
     assert response.status_code == 401
 
 
-@pytest.mark.parametrize(("path", "service_module"), JOBS)
+@pytest.mark.parametrize(
+    ("path", "service_module", "enabled_argument", "reason_code"),
+    JOBS,
+)
 def test_valid_bearer_remains_inert_before_maintenance_cutover(
     path,
     service_module,
+    enabled_argument,
+    reason_code,
 ):
-    app = _app(enabled=False)
+    app = _app(**{enabled_argument: False})
     with patch.dict(sys.modules, {service_module: None}):
         response = _authorized_get(app, path)
 
@@ -103,10 +136,43 @@ def test_valid_bearer_remains_inert_before_maintenance_cutover(
     assert response.get_json() == {
         "contract_version": "internal.cron.activation.v1",
         "executed": False,
-        "reason_code": "vercel_maintenance_crons_disabled",
+        "reason_code": reason_code,
         "status": "disabled",
     }
     assert response.headers["Cache-Control"] == "no-store"
+
+
+def test_legacy_umbrella_flag_cannot_activate_either_retention_job():
+    app = _app(
+        whatsapp_enabled=False,
+        survey_enabled=False,
+        legacy_enabled=True,
+    )
+
+    with patch.dict(
+        sys.modules,
+        {
+            "services.whatsapp_inbound_worker": None,
+            "services.survey_privacy": None,
+        },
+    ):
+        whatsapp = _authorized_get(
+            app,
+            "/api/internal/cron/whatsapp-payload-retention",
+        )
+        survey = _authorized_get(
+            app,
+            "/api/internal/cron/survey-privacy-retention",
+        )
+
+    assert whatsapp.status_code == 503
+    assert whatsapp.get_json()["reason_code"] == (
+        "vercel_whatsapp_payload_retention_cron_disabled"
+    )
+    assert survey.status_code == 503
+    assert survey.get_json()["reason_code"] == (
+        "vercel_survey_privacy_retention_cron_disabled"
+    )
 
 
 def test_whatsapp_retention_invokes_one_bounded_existing_cycle_and_redacts_report():

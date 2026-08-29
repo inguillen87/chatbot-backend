@@ -39,16 +39,17 @@ FENCED_PROBE_CONTRACT = "cutover.background_writer_fence.v1"
 FLAG_BY_PATH = {
     "/api/internal/cron/outbox-reconciliation": "VERCEL_OUTBOX_CRON_ENABLED",
     "/api/internal/cron/whatsapp-payload-retention": (
-        "VERCEL_MAINTENANCE_CRONS_ENABLED"
+        "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED"
     ),
     "/api/internal/cron/survey-privacy-retention": (
-        "VERCEL_MAINTENANCE_CRONS_ENABLED"
+        "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED"
     ),
     "/api/internal/cron/weekly-analytics-report": (
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED"
     ),
 }
 REQUIRED_FLAGS = tuple(sorted(set(FLAG_BY_PATH.values())))
+LEGACY_MAINTENANCE_FLAG = "VERCEL_MAINTENANCE_CRONS_ENABLED"
 
 
 class CronOwnershipAuditFailure(RuntimeError):
@@ -344,6 +345,25 @@ def audit_cron_ownership(
         flag_states[flag] = _parse_flag(environment[flag])
         if flag_states[flag] is None:
             issues.append(_issue("cron_flag_invalid", flag=flag))
+
+    if LEGACY_MAINTENANCE_FLAG in environment:
+        legacy_maintenance_state = _parse_flag(
+            environment[LEGACY_MAINTENANCE_FLAG]
+        )
+        if legacy_maintenance_state is None:
+            issues.append(
+                _issue(
+                    "legacy_maintenance_cron_flag_invalid",
+                    flag=LEGACY_MAINTENANCE_FLAG,
+                )
+            )
+        elif legacy_maintenance_state is True:
+            issues.append(
+                _issue(
+                    "legacy_maintenance_cron_flag_must_be_disabled",
+                    flag=LEGACY_MAINTENANCE_FLAG,
+                )
+            )
 
     enabled_flags = sorted(
         flag for flag, enabled in flag_states.items() if enabled is True

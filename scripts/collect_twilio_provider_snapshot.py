@@ -97,7 +97,16 @@ def _sender_phone(payload: Mapping[str, Any]) -> str:
 
 
 def _list_payload(payload: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
-    rows = payload.get(key)
+    if key in {"senders", "channel_senders"}:
+        sender_keys = [
+            candidate
+            for candidate in ("senders", "channel_senders")
+            if candidate in payload
+        ]
+        require(len(sender_keys) == 1, "twilio_provider_list_shape_invalid")
+        rows = payload[sender_keys[0]]
+    else:
+        rows = payload.get(key)
     require(isinstance(rows, list), "twilio_provider_list_shape_invalid")
     require(
         all(isinstance(item, Mapping) for item in rows),

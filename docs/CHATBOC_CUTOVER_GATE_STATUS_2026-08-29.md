@@ -1,6 +1,6 @@
 # Chatboc Render to Vercel/Neon gate status
 
-Observed: 2026-08-29, approximately 18:10 ART.
+Observed: 2026-08-29, approximately 19:20 ART.
 
 Decision: **NO-GO for the production cutover and NO-GO for retiring Render.**
 
@@ -13,8 +13,10 @@ and does not replace the signed evidence required by the production runbook.
 | --- | --- |
 | Public source | `api.chatboc.ar` still resolves to Render. Live backend revision is `8ced9216ff134951a0e3cb050c473e364c28be5c`; `/health` is HTTP 200. |
 | Fenced Vercel backend | Deployment `dpl_C2qNUv9rZqHxn6Rc3YuDgbyqDyYi` serves backend `df2702f25bcab24223c7e095a5cc4cfa5c101de2`; readiness passed and unsafe HTTP writes return the writer-fence contract. |
-| Vercel cron registry | Four approved cron definitions are registered on the fenced candidate. All three execution enable flags remain false and all four runtime probes return the background-writer fence contract. |
-| Frontend Preview | Deployment `dpl_2S7B9no7wniJjW6Vn8genrYzCVCs`, revision `8061bd3fcf5381fff79427e5e710c2a658f856c5`, is `READY` at `chatboc-r2-preview.vercel.app`; the compiled QA routes target `api-preview.chatboc.ar`, not the public Render API. The build contains eight Preview rewrites, zero public Render rewrites and the exact revision in its served HTML. |
+| Vercel cron registry | Four approved cron definitions are registered on the fenced candidate and all four runtime probes return the background-writer fence contract. The current branch separates WhatsApp-payload retention from survey-privacy retention; the legacy umbrella flag no longer activates either route. These local controls are test-covered but are not yet evidence for the old deployed candidate. |
+| Frontend Preview | Deployment `dpl_53aiURmcxAbmwWGivX5Vnp2oURLr`, revision `1f2530f09183a7208caefb022ac26574142f8f47`, is `READY` at `chatboc-r2-preview.vercel.app`; the compiled QA routes target `api-preview.chatboc.ar`, not the public Render API. The build contains eight Preview rewrites, zero public Render rewrites and the exact revision in its served HTML. |
+| Enterprise CRM Preview | Authenticated browser QA confirmed 80 Junin CRM people with history loaded from the contact-history endpoint or an explicit empty state, 63 backend cases in the operational queue, the expanded conversation workspace and an enabled text composer backed by the published omnichannel reply contract. No message, assignment or provider mutation was executed during QA. |
+| Territorial intelligence Preview | The operations heatmap v2 renders only two currently published points, reports 22.2% coverage and keeps rankings/comparisons disabled without official boundaries. Demo fallback is disabled; the UI exposes provenance, privacy and incomplete-geocoding evidence instead of manufacturing territorial coverage. |
 | Neon rehearsal identity | Project `nameless-rain-94060889`, branch `br-floral-unit-acgqawl6`, database `render_rehearsal_20260829`, migration head `20260829_global_writer_authority_v1`. Schema preflight passes. |
 | Ingress retry evidence | Revision `42e693d49434734969517b934f8274ce1d3044c3` records the optional Twilio retry token only as a versioned, domain-separated HMAC after signature validation. The raw header is never persisted or returned; the full focal module passes 49/49 tests. This is code/rehearsal evidence, not a real Junin replay certificate. |
 | Rollback contract | Offline manifest validator v2 exists and is test-covered. It validates evidence shape only; a real window-bound manifest is still required. |
@@ -63,14 +65,20 @@ The durable WhatsApp queue also remains uncertified because
 stay on the synchronous legacy ingress unless the independent durable-queue
 gate is completed separately.
 
+The currently deployed fenced backend is also not the current branch revision.
+Production declares the global writer-authority feature flag but still lacks
+the runtime identity and dedicated global-authority database variables required
+to attest ownership. A new candidate is forbidden until the exact checkout is
+clean, those prerequisites are present and the offline predeploy guard passes.
+
 ### Junin WhatsApp/Twilio
 
 Read-only provider inspection confirmed one official Junin sender ending
-`3718`, online, with the expected webhook and status callback. The gate remains
-blocked because:
+`3718`, online, with the expected webhook and status callback, and exactly one
+Messaging Service association. The current branch also accepts Twilio's live
+`senders` response shape while retaining strict rejection of ambiguous or
+missing collections. The gate remains blocked because:
 
-- the sender has zero Messaging Service associations; the contract requires
-  exactly one;
 - the Junin tenant profile has no matching sender binding;
 - the provider connection is not in the ready state;
 - no ready provider-sender record exists;

@@ -162,12 +162,17 @@ class FakeResponse:
 
 
 class FakeSession:
-    def __init__(self):
+    def __init__(self, payload=None):
         self.calls = []
+        self.payload = (
+            payload
+            if payload is not None
+            else {"senders": [], "meta": {"next_page_url": None}}
+        )
 
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
-        return FakeResponse({"senders": [], "meta": {"next_page_url": None}})
+        return FakeResponse(self.payload)
 
 
 def test_network_client_exposes_only_allowlisted_get_without_redirects():
@@ -189,6 +194,56 @@ def test_network_client_exposes_only_allowlisted_get_without_redirects():
     assert kwargs["auth"] == (ACCOUNT, "token-value")
     assert not hasattr(client, "post")
     assert not hasattr(client, "send")
+
+
+@pytest.mark.parametrize("collection_key", ["senders", "channel_senders"])
+def test_network_client_accepts_exactly_one_twilio_sender_collection(collection_key):
+    session = FakeSession(
+        {
+            collection_key: [{"sid": SENDER}],
+            "meta": {"next_page_url": None},
+        }
+    )
+    client = collector.TwilioV2GetOnlyClient(
+        account_sid_value=ACCOUNT,
+        auth_token="token-value",
+        session=session,
+    )
+
+    assert client.list_senders() == [{"sid": SENDER}]
+    assert len(session.calls) == 1
+    assert session.calls[0][0] == collector.SENDERS_URL
+    assert session.calls[0][1]["allow_redirects"] is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "senders": [],
+            "channel_senders": [],
+            "meta": {"next_page_url": None},
+        },
+        {"meta": {"next_page_url": None}},
+    ],
+)
+def test_network_client_rejects_ambiguous_or_missing_sender_collection(payload):
+    session = FakeSession(payload)
+    client = collector.TwilioV2GetOnlyClient(
+        account_sid_value=ACCOUNT,
+        auth_token="token-value",
+        session=session,
+    )
+
+    with pytest.raises(
+        CutoverEvidenceError,
+        match="twilio_provider_list_shape_invalid",
+    ):
+        client.list_senders()
+
+    assert len(session.calls) == 1
+    assert session.calls[0][0] == collector.SENDERS_URL
+    assert session.calls[0][1]["allow_redirects"] is False
 
 
 def test_pagination_must_be_exhaustive_for_exactly_one_claim():

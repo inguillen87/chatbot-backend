@@ -44,8 +44,8 @@ def _outbox_cron_is_enabled() -> bool:
     return current_app.config.get("VERCEL_OUTBOX_CRON_ENABLED") is True
 
 
-def _maintenance_crons_are_enabled() -> bool:
-    return current_app.config.get("VERCEL_MAINTENANCE_CRONS_ENABLED") is True
+def _retention_cron_is_enabled(flag_name: str) -> bool:
+    return current_app.config.get(flag_name) is True
 
 
 def _weekly_analytics_cron_is_enabled() -> bool:
@@ -77,7 +77,7 @@ def _enforce_cutover_writer_fence():
     return response
 
 
-def _maintenance_gate():
+def _retention_gate(*, flag_name: str, disabled_reason_code: str):
     if not _has_valid_cron_authorization():
         return _json_no_store(
             {
@@ -87,12 +87,12 @@ def _maintenance_gate():
             401,
         )
 
-    if not _maintenance_crons_are_enabled():
+    if not _retention_cron_is_enabled(flag_name):
         return _json_no_store(
             {
                 "contract_version": "internal.cron.activation.v1",
                 "executed": False,
-                "reason_code": "vercel_maintenance_crons_disabled",
+                "reason_code": disabled_reason_code,
                 "status": "disabled",
             },
             503,
@@ -332,7 +332,12 @@ def outbox_reconciliation():
 
 @internal_cron_bp.get("/whatsapp-payload-retention")
 def whatsapp_payload_retention():
-    gate_response = _maintenance_gate()
+    gate_response = _retention_gate(
+        flag_name="VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED",
+        disabled_reason_code=(
+            "vercel_whatsapp_payload_retention_cron_disabled"
+        ),
+    )
     if gate_response is not None:
         return gate_response
 
@@ -425,7 +430,10 @@ def whatsapp_payload_retention():
 
 @internal_cron_bp.get("/survey-privacy-retention")
 def survey_privacy_retention():
-    gate_response = _maintenance_gate()
+    gate_response = _retention_gate(
+        flag_name="VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED",
+        disabled_reason_code="vercel_survey_privacy_retention_cron_disabled",
+    )
     if gate_response is not None:
         return gate_response
 

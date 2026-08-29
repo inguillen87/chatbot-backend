@@ -866,12 +866,23 @@ class Config:
         "VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE",
         "25",
     )
-    # Destructive retention jobs need an independent production cutover.  A
-    # scheduled deployment must remain inert until the operator explicitly
-    # transfers ownership of maintenance work away from Render.
+    # Legacy umbrella retained only so stale deployments/config snapshots can
+    # be diagnosed. Runtime routes intentionally ignore it: enabling one
+    # destructive retention job must never activate the other one.
     VERCEL_MAINTENANCE_CRONS_ENABLED = _env_flag(
         False,
         "VERCEL_MAINTENANCE_CRONS_ENABLED",
+    )
+    # Each destructive retention schedule has its own fail-closed ownership
+    # transfer. Both remain inert until their corresponding Render cron is
+    # independently disabled and the Vercel runtime is certified as owner.
+    VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED = _env_flag(
+        False,
+        "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED",
+    )
+    VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED = _env_flag(
+        False,
+        "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED",
     )
     # Paid weekly AI reports are fenced independently from both outbox and
     # destructive maintenance ownership.
@@ -1756,7 +1767,8 @@ def validate_runtime_security(config: Any) -> list[str]:
 
     vercel_cron_flags = (
         "VERCEL_OUTBOX_CRON_ENABLED",
-        "VERCEL_MAINTENANCE_CRONS_ENABLED",
+        "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED",
+        "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED",
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED",
     )
     if any(

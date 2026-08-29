@@ -19,6 +19,7 @@ DIRECT_HOST = "ep-certified.us-east-2.aws.neon.tech"
 POOLED_HOST = "ep-certified-pooler.us-east-2.aws.neon.tech"
 MIGRATION_HEAD = "20260829_global_writer_authority_v1"
 MIGRATION_FINGERPRINT = "f" * 64
+REFERENCE_TIME = datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
 
 
 def _write_project_link(root: Path, *, project_name: str = "chatboc-backend") -> None:
@@ -63,6 +64,8 @@ def _environment() -> dict[str, str]:
         "CUTOVER_WRITER_FENCE_ENABLED": "true",
         "VERCEL_OUTBOX_CRON_ENABLED": "false",
         "VERCEL_MAINTENANCE_CRONS_ENABLED": "false",
+        "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED": "false",
+        "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED": "false",
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED": "false",
     }
 
@@ -144,6 +147,7 @@ def _run(
         root,
         project_id=evidence_project_id,
         branch_id=evidence_branch_id,
+        captured_at=REFERENCE_TIME,
     )
     return guard.audit_predeploy(
         target="production",
@@ -156,6 +160,7 @@ def _run(
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=approved_digest or digest,
+        reference_time=REFERENCE_TIME,
     )
 
 
@@ -211,6 +216,8 @@ def test_blank_critical_environment_value_blocks(name: str, tmp_path: Path) -> N
         ("CUTOVER_WRITER_FENCE_ENABLED", "false"),
         ("VERCEL_OUTBOX_CRON_ENABLED", "true"),
         ("VERCEL_MAINTENANCE_CRONS_ENABLED", "true"),
+        ("VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED", "true"),
+        ("VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED", "true"),
         ("VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED", "true"),
     ],
 )
@@ -256,6 +263,7 @@ def test_identity_evidence_must_match_logical_database(tmp_path: Path) -> None:
     evidence_path, digest = _write_evidence(
         tmp_path,
         database_name="another_database",
+        captured_at=REFERENCE_TIME,
     )
 
     report, exit_code = guard.audit_predeploy(
@@ -269,6 +277,7 @@ def test_identity_evidence_must_match_logical_database(tmp_path: Path) -> None:
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=digest,
+        reference_time=REFERENCE_TIME,
     )
 
     assert exit_code == 2
@@ -286,13 +295,13 @@ def test_identity_evidence_requires_operator_approved_digest(tmp_path: Path) -> 
     ("captured_at", "include_captured_at", "reason"),
     [
         (
-            datetime.now(timezone.utc)
+            REFERENCE_TIME
             - timedelta(seconds=guard.MAX_IDENTITY_EVIDENCE_AGE_SECONDS + 1),
             True,
             "identity_evidence_stale",
         ),
         (
-            datetime.now(timezone.utc)
+            REFERENCE_TIME
             + timedelta(seconds=guard.MAX_IDENTITY_EVIDENCE_FUTURE_SKEW_SECONDS + 1),
             True,
             "identity_evidence_captured_in_future",
@@ -324,6 +333,7 @@ def test_identity_evidence_requires_a_fresh_utc_capture(
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=digest,
+        reference_time=REFERENCE_TIME,
     )
 
     assert exit_code == 2
@@ -337,6 +347,7 @@ def test_old_ready_evidence_cannot_certify_new_checkout_migration_graph(
     evidence_path, digest = _write_evidence(
         tmp_path,
         migration_head="20260829_inbound_fifo_v2",
+        captured_at=REFERENCE_TIME,
     )
 
     report, exit_code = guard.audit_predeploy(
@@ -350,6 +361,7 @@ def test_old_ready_evidence_cannot_certify_new_checkout_migration_graph(
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=digest,
+        reference_time=REFERENCE_TIME,
     )
 
     assert exit_code == 2
@@ -363,6 +375,7 @@ def test_evidence_current_revision_must_equal_checkout_head(tmp_path: Path) -> N
         tmp_path,
         migration_head=MIGRATION_HEAD,
         current_revision="20260829_inbound_fifo_v2",
+        captured_at=REFERENCE_TIME,
     )
 
     report, exit_code = guard.audit_predeploy(
@@ -376,6 +389,7 @@ def test_evidence_current_revision_must_equal_checkout_head(tmp_path: Path) -> N
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=digest,
+        reference_time=REFERENCE_TIME,
     )
 
     assert exit_code == 2
@@ -409,7 +423,11 @@ def test_identity_evidence_is_bound_to_exact_clean_checkout_content(
     reason: str,
 ) -> None:
     _write_project_link(tmp_path)
-    evidence_path, digest = _write_evidence(tmp_path, **evidence_kwargs)
+    evidence_path, digest = _write_evidence(
+        tmp_path,
+        captured_at=REFERENCE_TIME,
+        **evidence_kwargs,
+    )
 
     report, exit_code = guard.audit_predeploy(
         target="production",
@@ -422,6 +440,7 @@ def test_identity_evidence_is_bound_to_exact_clean_checkout_content(
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=digest,
+        reference_time=REFERENCE_TIME,
     )
 
     assert exit_code == 2
@@ -462,7 +481,7 @@ def test_production_redis_requires_tls_and_credential(
 
 def test_wrong_linked_vercel_project_blocks(tmp_path: Path) -> None:
     _write_project_link(tmp_path, project_name="another-project")
-    evidence_path, digest = _write_evidence(tmp_path)
+    evidence_path, digest = _write_evidence(tmp_path, captured_at=REFERENCE_TIME)
 
     report, exit_code = guard.audit_predeploy(
         target="production",
@@ -475,6 +494,7 @@ def test_wrong_linked_vercel_project_blocks(tmp_path: Path) -> None:
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=digest,
+        reference_time=REFERENCE_TIME,
     )
 
     assert exit_code == 2
@@ -488,7 +508,7 @@ def test_dirty_or_different_source_revision_blocks(tmp_path: Path) -> None:
     assert "source_worktree_dirty" in report["reason_codes"]
 
     _write_project_link(tmp_path)
-    evidence_path, digest = _write_evidence(tmp_path)
+    evidence_path, digest = _write_evidence(tmp_path, captured_at=REFERENCE_TIME)
     report, exit_code = guard.audit_predeploy(
         target="production",
         project_root=tmp_path,
@@ -500,6 +520,7 @@ def test_dirty_or_different_source_revision_blocks(tmp_path: Path) -> None:
         local_migration_fingerprint=MIGRATION_FINGERPRINT,
         identity_evidence_path=evidence_path,
         approved_evidence_digest=digest,
+        reference_time=REFERENCE_TIME,
     )
     assert exit_code == 2
     assert "source_revision_mismatch" in report["reason_codes"]

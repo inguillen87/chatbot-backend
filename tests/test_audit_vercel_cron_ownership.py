@@ -46,6 +46,8 @@ def _environment(**overrides):
     values = {
         "VERCEL_OUTBOX_CRON_ENABLED": "false",
         "VERCEL_MAINTENANCE_CRONS_ENABLED": "false",
+        "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED": "false",
+        "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED": "false",
         "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED": "false",
         "CRON_SECRET": {"configured": False, "utf8_bytes": 0},
     }
@@ -162,7 +164,7 @@ def test_enabled_cron_without_strong_secret_is_blocked_without_echo(secret):
 def test_enabled_cron_with_only_presence_metadata_is_not_falsely_certified():
     report = _audit(
         environment=_environment(
-            VERCEL_MAINTENANCE_CRONS_ENABLED=True,
+            VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED=True,
             CRON_SECRET={"configured": True},
         ),
     )
@@ -171,6 +173,46 @@ def test_enabled_cron_with_only_presence_metadata_is_not_falsely_certified():
     assert "enabled_cron_secret_strength_unverified" in _codes(report)
     assert report["secret"]["configured"] is True
     assert report["secret"]["strong"] is None
+
+
+@pytest.mark.parametrize(
+    ("flag", "path"),
+    [
+        (
+            "VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED",
+            "/api/internal/cron/whatsapp-payload-retention",
+        ),
+        (
+            "VERCEL_SURVEY_PRIVACY_RETENTION_CRON_ENABLED",
+            "/api/internal/cron/survey-privacy-retention",
+        ),
+    ],
+)
+def test_each_retention_flag_activates_only_its_own_registered_path(flag, path):
+    report = _audit(
+        environment=_environment(
+            **{
+                flag: True,
+                "CRON_SECRET": {"configured": True, "utf8_bytes": 48},
+            }
+        )
+    )
+
+    assert report["ready"] is True
+    assert report["activation"]["enabled_flags"] == [flag]
+    assert report["activation"]["active_paths"] == [path]
+
+
+def test_legacy_maintenance_umbrella_must_remain_disabled():
+    report = _audit(
+        environment=_environment(VERCEL_MAINTENANCE_CRONS_ENABLED=True)
+    )
+
+    assert report["ready"] is False
+    assert _codes(report) == [
+        "legacy_maintenance_cron_flag_must_be_disabled"
+    ]
+    assert report["activation"]["active_paths"] == []
 
 
 def test_empty_registry_is_a_blocking_no_owner_state():
@@ -273,7 +315,7 @@ def test_enabled_flag_without_registered_definition_is_explicitly_blocked():
 def test_missing_or_invalid_flags_prevent_ownership_certification():
     env = _environment()["env"]
     env.pop("VERCEL_OUTBOX_CRON_ENABLED")
-    env["VERCEL_MAINTENANCE_CRONS_ENABLED"] = "maybe"
+    env["VERCEL_WHATSAPP_PAYLOAD_RETENTION_CRON_ENABLED"] = "maybe"
 
     report = _audit(environment=env)
 
