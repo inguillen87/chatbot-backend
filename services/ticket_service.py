@@ -9,7 +9,7 @@ import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Dict, Any, Literal, Union, Iterable, Optional
+from typing import Dict, Any, Literal, Union, Iterable, Mapping, Optional
 
 from models import (
     ArchivoAdjunto,
@@ -53,6 +53,88 @@ _CLOSED_STATES = {"cerrado"}
 _IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,191}$")
 _WHATSAPP_TURN_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,80}$")
 _EFFECT_SUFFIX_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+_EXPLICIT_TERRITORY_KEYS = ("barrio", "localidad", "distrito")
+
+
+def _clean_explicit_territory_value(value: Any) -> str | None:
+    """Return a stored territorial label without deriving a replacement.
+
+    Heatmap data is operational evidence, so values from addresses, coordinates
+    or categories must never be promoted to territorial labels here.  Accepting
+    only non-empty strings also prevents arbitrary JSON structures from leaking
+    into the public map contract.
+    """
+
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _explicit_ticket_territory(ticket: Any) -> dict[str, str]:
+    """Read only explicit barrio/localidad/distrito metadata from a ticket.
+
+    First-class model fields are authoritative when present.  ``datos_extra``
+    is used only for the same exact keys; aliases and free-form address fields
+    are intentionally ignored so this function cannot infer or invent zones.
+    """
+
+    raw_metadata = getattr(ticket, "datos_extra", None)
+    metadata: Mapping[str, Any] = (
+        raw_metadata if isinstance(raw_metadata, Mapping) else {}
+    )
+    territory: dict[str, str] = {}
+    for key in _EXPLICIT_TERRITORY_KEYS:
+        direct_value = _clean_explicit_territory_value(getattr(ticket, key, None))
+        metadata_value = _clean_explicit_territory_value(metadata.get(key))
+        value = direct_value or metadata_value
+        if value is not None:
+            territory[key] = value
+    return territory
+
+
+def _explicit_ticket_district_sql_predicate(
+    model: Any,
+    distrito: str,
+) -> Any | None:
+    """Build a conservative SQL prefilter for the district contract.
+
+    Municipal tickets may have a first-class ``distrito`` column while older
+    municipal rows and PyME tickets can carry the same exact key in
+    ``datos_extra``. SQL ``trim`` is not equivalent to Python ``str.strip`` for
+    tabs, newlines and every Unicode whitespace character, so the database
+    predicate intentionally accepts a superset. The in-memory check below
+    remains the exact precedence authority and removes false positives. This
+    still narrows the query without risking false negatives or deriving a zone
+    from an address or any other free-form field.
+
+    Test doubles and legacy models without a mapped table return ``None``; the
+    defensive in-memory contract below remains the final authority in that
+    case.
+    """
+
+    table = getattr(model, "__table__", None)
+    columns = getattr(table, "c", None)
+    if columns is None:
+        return None
+
+    candidate_predicates: list[Any] = []
+    direct_column = columns.get("distrito")
+    if direct_column is not None:
+        candidate_predicates.append(
+            direct_column.contains(distrito, autoescape=True)
+        )
+
+    metadata_column = columns.get("datos_extra")
+    if metadata_column is not None:
+        metadata_district = metadata_column["distrito"].as_string()
+        candidate_predicates.append(
+            metadata_district.contains(distrito, autoescape=True)
+        )
+
+    if not candidate_predicates:
+        return None
+    return or_(*candidate_predicates)
 
 
 def _legacy_history_cursor_boundary(
@@ -1795,8 +1877,13 @@ class ServicioTickets:
                 query = scoped_municipio_ticket_query(tenant, query=query)
 
             distrito_filtrado = distrito.strip() if isinstance(distrito, str) else None
-            if distrito_filtrado and hasattr(Model, "distrito"):
-                query = query.filter(Model.distrito == distrito_filtrado)
+            if distrito_filtrado:
+                district_predicate = _explicit_ticket_district_sql_predicate(
+                    Model,
+                    distrito_filtrado,
+                )
+                if district_predicate is not None:
+                    query = query.filter(district_predicate)
 
             estados_filtrar_set: set[str] | None = None
             # Filtrar por estado si se proporciona. Si el estado solicitado es
@@ -1903,9 +1990,16 @@ class ServicioTickets:
                 len(tickets),
             )
 
-            if distrito_filtrado and hasattr(Model, "distrito"):
+            # Preserve the exact same contract as a defensive final check. In
+            # production the mapped-model predicate above has already reduced
+            # the result set in SQL; this also keeps unusual legacy/test models
+            # fail-closed when they cannot expose a queryable JSON column.
+            if distrito_filtrado:
                 tickets = [
-                    t for t in tickets if getattr(t, "distrito", None) == distrito_filtrado
+                    t
+                    for t in tickets
+                    if _explicit_ticket_territory(t).get("distrito")
+                    == distrito_filtrado
                 ]
 
             if estados_filtrar_set:
@@ -1931,7 +2025,14 @@ class ServicioTickets:
             # ]
             # Por ahora, mantendremos la agrupación existente que devuelve 'weight'.
 
-            ubicaciones_agrupadas = {}  # (lat, lng, categoria) -> count
+            # Territory is part of the aggregation identity.  A ticket without
+            # explicit territorial metadata must not inherit the barrio,
+            # localidad or distrito of another ticket merely because their
+            # rounded coordinates and category match.
+            ubicaciones_agrupadas: dict[
+                tuple[float, float, str | None, str | None, str | None, str | None],
+                int,
+            ] = {}
 
             for t in tickets:
                 # Redondear lat/lng a un número de decimales para agrupar puntos cercanos.
@@ -1940,29 +2041,53 @@ class ServicioTickets:
                 # 4 decimales dan una precisión de ~11 metros.
                 # 3 decimales dan una precisión de ~110 metros.
                 # Consideremos 4 decimales para agrupar problemáticas en una misma "zona pequeña".
+                territory = _explicit_ticket_territory(t)
                 lat_lng_key = (
                     round(t.latitud, 4),
                     round(t.longitud, 4),
                     getattr(t, "categoria", None),
+                    territory.get("barrio"),
+                    territory.get("localidad"),
+                    territory.get("distrito"),
                 )
                 if lat_lng_key not in ubicaciones_agrupadas:
                     ubicaciones_agrupadas[lat_lng_key] = 0
                 ubicaciones_agrupadas[lat_lng_key] += 1
 
             resultado_heatmap = []
-            for (lat, lng, cat), weight in ubicaciones_agrupadas.items():
-                resultado_heatmap.append(
-                    {
-                        "location": {"lat": lat, "lng": lng},
-                        "lat": lat,
-                        "lng": lng,
-                        "weight": weight,
-                        "categoria": cat,
-                    }
-                )
+            for (
+                lat,
+                lng,
+                cat,
+                barrio,
+                localidad,
+                distrito_agrupado,
+            ), weight in ubicaciones_agrupadas.items():
+                point = {
+                    "location": {"lat": lat, "lng": lng},
+                    "lat": lat,
+                    "lng": lng,
+                    "weight": weight,
+                    "categoria": cat,
+                }
+                for key, value in (
+                    ("barrio", barrio),
+                    ("localidad", localidad),
+                    ("distrito", distrito_agrupado),
+                ):
+                    if value is not None:
+                        point[key] = value
+                resultado_heatmap.append(point)
             enrich_heatmap_points(
                 resultado_heatmap,
-                property_keys=("categoria", "estado", "barrio", "fuente"),
+                property_keys=(
+                    "categoria",
+                    "estado",
+                    "barrio",
+                    "localidad",
+                    "distrito",
+                    "fuente",
+                ),
             )
             logger.info(
                 "[TICKET_SERVICE_MAPA] puntos_heatmap=%s ejemplo=%s",

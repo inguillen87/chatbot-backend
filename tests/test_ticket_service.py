@@ -411,6 +411,332 @@ class TicketServiceTests(unittest.TestCase):
         )
 
 
+    def test_mapa_preserves_only_explicit_territory_through_aggregation(self):
+        from datetime import datetime, timezone
+
+        class DummyQuery(list):
+            def filter_by(self, **kwargs):
+                return DummyQuery(
+                    [
+                        ticket
+                        for ticket in self
+                        if all(
+                            getattr(ticket, key, None) == value
+                            for key, value in kwargs.items()
+                        )
+                    ]
+                )
+
+            def filter(self, *criterion):
+                return self
+
+            def all(self):
+                return list(self)
+
+        common = {
+            "estado": "nuevo",
+            "latitud": -34.5901,
+            "longitud": -60.9492,
+            "municipio_id": 5,
+            "fecha": datetime.now(timezone.utc),
+            "categoria": "Luminarias",
+            "asunto": None,
+        }
+        tickets = [
+            SimpleNamespace(
+                id=1,
+                distrito="Distrito Norte",
+                datos_extra={
+                    "barrio": "Los Olivos",
+                    "localidad": "Junin",
+                    "distrito": "Distrito desactualizado",
+                },
+                **common,
+            ),
+            SimpleNamespace(
+                id=2,
+                distrito="Distrito Norte",
+                datos_extra={
+                    "barrio": "Los Olivos",
+                    "localidad": "Junin",
+                    "distrito": "Distrito desactualizado",
+                },
+                **common,
+            ),
+            SimpleNamespace(
+                id=3,
+                distrito=None,
+                # Free-form address-like values are not trusted territory.
+                datos_extra={"direccion": "Barrio Inventado, Junin", "zone": "Centro"},
+                **common,
+            ),
+            SimpleNamespace(
+                id=4,
+                distrito="Distrito Ajeno",
+                datos_extra={"barrio": "Otro tenant", "localidad": "Otra ciudad"},
+                **{**common, "municipio_id": 6},
+            ),
+        ]
+
+        class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+            distrito = MagicMock()
+
+        DummyModel.query = DummyQuery(tickets)
+
+        with patch.object(ts, "MunicipioTicket", DummyModel):
+            result = ServicioTickets().obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket="municipio",
+                municipio_id=5,
+            )
+
+        self.assertEqual(len(result), 2)
+        labelled = next(point for point in result if point.get("barrio") == "Los Olivos")
+        unlabelled = next(point for point in result if point.get("barrio") is None)
+        self.assertEqual(labelled["weight"], 2)
+        self.assertEqual(labelled["localidad"], "Junin")
+        self.assertEqual(labelled["distrito"], "Distrito Norte")
+        self.assertEqual(
+            labelled["feature"]["properties"],
+            {
+                "weight": 2.0,
+                "intensity": 1.0,
+                "categoria": "Luminarias",
+                "barrio": "Los Olivos",
+                "localidad": "Junin",
+                "distrito": "Distrito Norte",
+            },
+        )
+        self.assertEqual(unlabelled["weight"], 1)
+        for key in ("barrio", "localidad", "distrito"):
+            self.assertNotIn(key, unlabelled)
+            self.assertNotIn(key, unlabelled["feature"]["properties"])
+        self.assertNotIn("Otro tenant", repr(result))
+        self.assertNotIn("Distrito desactualizado", repr(result))
+
+    def test_mapa_pyme_territory_remains_isolated_by_tenant(self):
+        from datetime import datetime, timezone
+
+        class DummyQuery(list):
+            def filter_by(self, **kwargs):
+                return DummyQuery(
+                    [
+                        ticket
+                        for ticket in self
+                        if all(
+                            getattr(ticket, key, None) == value
+                            for key, value in kwargs.items()
+                        )
+                    ]
+                )
+
+            def filter(self, *criterion):
+                return self
+
+            def all(self):
+                return list(self)
+
+        tickets = [
+            SimpleNamespace(
+                id=1,
+                estado="nuevo",
+                latitud=-34.6001,
+                longitud=-60.9602,
+                tenant_id=5,
+                fecha=datetime.now(timezone.utc),
+                categoria="Soporte",
+                datos_extra={
+                    "barrio": "Centro",
+                    "localidad": "Junin",
+                    "distrito": "Distrito Comercial",
+                },
+            ),
+            SimpleNamespace(
+                id=2,
+                estado="nuevo",
+                latitud=-34.6001,
+                longitud=-60.9602,
+                tenant_id=7,
+                fecha=datetime.now(timezone.utc),
+                categoria="Soporte",
+                datos_extra={
+                    "barrio": "Barrio privado ajeno",
+                    "localidad": "Otra ciudad",
+                    "distrito": "Otro distrito",
+                },
+            ),
+        ]
+
+        class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+
+        DummyModel.query = DummyQuery(tickets)
+
+        with patch.object(ts, "PymeTicket", DummyModel):
+            result = ServicioTickets().obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket="pyme",
+                tenant_id=5,
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["barrio"], "Centro")
+        self.assertEqual(result[0]["localidad"], "Junin")
+        self.assertEqual(result[0]["distrito"], "Distrito Comercial")
+        self.assertNotIn("Barrio privado ajeno", repr(result))
+
+    def test_mapa_district_filter_uses_the_same_explicit_territory_contract(self):
+        from datetime import datetime, timezone
+
+        class DummyQuery(list):
+            def filter_by(self, **kwargs):
+                return DummyQuery(
+                    [
+                        ticket
+                        for ticket in self
+                        if all(
+                            getattr(ticket, key, None) == value
+                            for key, value in kwargs.items()
+                        )
+                    ]
+                )
+
+            def filter(self, *criterion):
+                return self
+
+            def all(self):
+                return list(self)
+
+        tickets = [
+            SimpleNamespace(
+                id=1,
+                estado="nuevo",
+                latitud=-34.6001,
+                longitud=-60.9602,
+                tenant_id=5,
+                fecha=datetime.now(timezone.utc),
+                categoria="Soporte",
+                datos_extra={"distrito": "Norte"},
+            ),
+            SimpleNamespace(
+                id=2,
+                estado="nuevo",
+                latitud=-34.6011,
+                longitud=-60.9612,
+                tenant_id=5,
+                fecha=datetime.now(timezone.utc),
+                categoria="Soporte",
+                datos_extra={"distrito": "Sur"},
+            ),
+        ]
+
+        class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+
+        DummyModel.query = DummyQuery(tickets)
+
+        with patch.object(ts, "PymeTicket", DummyModel):
+            result = ServicioTickets().obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket="pyme",
+                tenant_id=5,
+                distrito="Norte",
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["distrito"], "Norte")
+        self.assertNotIn("Sur", repr(result))
+
+    def test_mapa_district_sql_prefilter_has_no_whitespace_false_negatives(self):
+        from sqlalchemy import Column, Integer, JSON, MetaData, String, Table, create_engine, select
+        from sqlalchemy.dialects import postgresql
+
+        metadata = MetaData()
+        ticket_table = Table(
+            "ticket_map_filter_test",
+            metadata,
+            Column("id", Integer, primary_key=True),
+            Column("distrito", String(100), nullable=True),
+            Column("datos_extra", JSON, nullable=True),
+        )
+
+        class SqlModel:
+            __table__ = ticket_table
+
+        predicate = ts._explicit_ticket_district_sql_predicate(SqlModel, "Norte")
+        self.assertIsNotNone(predicate)
+
+        engine = create_engine("sqlite://")
+        metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(
+                ticket_table.insert(),
+                [
+                    {
+                        "id": 1,
+                        "distrito": "\tNorte\n",
+                        "datos_extra": {"distrito": "Sur"},
+                    },
+                    {
+                        "id": 2,
+                        "distrito": None,
+                        "datos_extra": {"distrito": "\u00a0Norte\u2003"},
+                    },
+                    {
+                        "id": 3,
+                        "distrito": "Sur",
+                        "datos_extra": {"distrito": "Norte"},
+                    },
+                    {
+                        "id": 4,
+                        "distrito": "\r\n\t",
+                        "datos_extra": {"distrito": " Norte\t"},
+                    },
+                    {
+                        "id": 5,
+                        "distrito": None,
+                        "datos_extra": {"direccion": "Distrito Norte"},
+                    },
+                ],
+            )
+            matching_ids = connection.execute(
+                select(ticket_table.c.id)
+                .where(predicate)
+                .order_by(ticket_table.c.id)
+            ).scalars().all()
+
+        # ID 3 is an intentional SQL false positive: direct territory has
+        # precedence over JSON and the exact Python check removes it. A
+        # conservative prefilter must never remove IDs 1, 2 or 4 first.
+        self.assertEqual(matching_ids, [1, 2, 3, 4])
+        exact_rows = [
+            SimpleNamespace(distrito="\tNorte\n", datos_extra={"distrito": "Sur"}),
+            SimpleNamespace(distrito=None, datos_extra={"distrito": "\u00a0Norte\u2003"}),
+            SimpleNamespace(distrito="Sur", datos_extra={"distrito": "Norte"}),
+            SimpleNamespace(distrito="\r\n\t", datos_extra={"distrito": " Norte\t"}),
+        ]
+        exact_ids = [
+            index
+            for index, row in enumerate(exact_rows, start=1)
+            if ts._explicit_ticket_territory(row).get("distrito") == "Norte"
+        ]
+        self.assertEqual(exact_ids, [1, 2, 4])
+        compiled_postgres = str(
+            predicate.compile(
+                dialect=postgresql.dialect(),
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        self.assertIn("datos_extra", compiled_postgres)
+        self.assertIn("like", compiled_postgres.lower())
+
     def test_estado_resuelto_includes_cerrado(self):
         from datetime import datetime
 
