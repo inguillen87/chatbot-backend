@@ -4863,9 +4863,25 @@ def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> li
                 "Los reintentos conservan la misma identidad sin duplicar el envio."
             ),
         },
-        {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
-        {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
     ]
+    if not extra.get("assignee_id"):
+        actions.append(
+            {
+                "id": "claim",
+                "label": "Tomar ticket",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": [],
+                "delivery_mode": "internal_event",
+                "external_dispatch": False,
+            }
+        )
+    actions.extend(
+        [
+            {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
+            {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
+        ]
+    )
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     actions.extend(_handoff_action_contracts(endpoint=base_endpoint, handoff=handoff))
     if status in _CLOSED_TICKET_STATES:
@@ -4878,7 +4894,7 @@ def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> li
 def _next_steps(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
     steps = []
     if not extra.get("assignee_id"):
-        steps.append({"id": "assign_owner", "label": "Asignar responsable", "action": "assign", "priority": "high"})
+        steps.append({"id": "claim_ticket", "label": "Tomar ticket", "action": "claim", "priority": "high"})
     if str(ticket.estado or "").lower() not in _CLOSED_TICKET_STATES:
         steps.append({"id": "reply_customer", "label": "Responder al contacto", "action": "reply", "priority": "medium"})
     if ticket.latitud is None and ticket.longitud is None and not extra.get("address"):
@@ -5100,6 +5116,21 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "delivery_contract_version": "inbox.action_delivery.v2",
             "payload_defaults": defaults,
         },
+    ]
+    if not ticket.asignado_a_id:
+        actions.append(
+            {
+                "id": "claim",
+                "label": "Tomar ticket",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": [],
+                "payload_defaults": defaults,
+                "delivery_mode": "internal_event",
+                "external_dispatch": False,
+            }
+        )
+    actions.append(
         {
             "id": "assign",
             "label": "Asignar",
@@ -5107,8 +5138,8 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "endpoint": base_endpoint,
             "requires": ["assignee_id"],
             "payload_defaults": defaults,
-        },
-    ]
+        }
+    )
     actions.extend(
         _handoff_action_contracts(
             endpoint=base_endpoint,
@@ -5157,7 +5188,7 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
 def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     if not ticket.asignado_a_id:
-        steps.append({"id": "assign_owner", "label": "Asignar responsable municipal", "action": "assign", "priority": "high"})
+        steps.append({"id": "claim_ticket", "label": "Tomar ticket", "action": "claim", "priority": "high"})
     if str(ticket.estado or "").lower() not in _CLOSED_TICKET_STATES:
         steps.append({"id": "reply_citizen", "label": "Responder al vecino", "action": "reply", "priority": "high"})
     if ticket.latitud is None and ticket.longitud is None and not ticket.direccion:
@@ -5901,7 +5932,7 @@ def _emit_legacy_claim_realtime_state(
         if str(previous_status or "") != str(ticket.estado or ""):
             emit_ticket_status_changed(event_payload)
             emitted.append("ticket.status.changed")
-        if action == "assign":
+        if action in {"assign", "claim"}:
             emit_ticket_assignment_changed({**event_payload, "assignment_state": "assigned"})
             emitted.append("ticket.assignment.changed")
     except Exception as exc:  # pragma: no cover - polling remains authoritative
@@ -5925,7 +5956,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
-    if action not in {"assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen"}:
+    if action not in {"claim", "assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen"}:
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
 
     now = datetime.now(timezone.utc)
@@ -5950,8 +5981,44 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     reply_outbox_effect_count = 0
     reply_replayed = False
     reply_idempotency_source: str | None = None
+    claim_idempotent = False
 
-    if action == "assign":
+    if action == "claim":
+        current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
+        if current_assignee_id is not None:
+            if current_assignee_id != current_user.id:
+                return _error_response(
+                    "El ticket ya fue tomado por otro operador",
+                    409,
+                    "already_claimed",
+                    "refresh_inbox",
+                )
+            claim_idempotent = True
+        else:
+            if not ticket_assignee_is_compatible(current_user, ticket):
+                return _error_response(
+                    "El operador no tiene acceso a la categoria del ticket",
+                    404,
+                    "ticket_not_found",
+                    "refresh_inbox",
+                )
+            ticket.asignado_a_id = current_user.id
+            ticket.asignado_en = now
+            if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            db.session.add(
+                TicketComentario(
+                    municipio_ticket_id=ticket.id,
+                    comentario=f"Ticket tomado por {current_user.name}",
+                    user_id=current_user.id,
+                    es_admin=True,
+                    origen="admin_panel",
+                    estado_ticket=ticket.estado,
+                )
+            )
+            timeline_updated = True
+
+    elif action == "assign":
         assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
         if not assignee_id:
             return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
@@ -6178,13 +6245,14 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         timeline_updated = True
 
     if action != "reply":
-        ticket.ultima_actividad = now
-        db.session.add(ticket)
+        if not (action == "claim" and claim_idempotent):
+            ticket.ultima_actividad = now
+            db.session.add(ticket)
         db.session.commit()
 
     if action not in {"handoff", "accept_handoff", "resume_ai"} and not (
         action == "reply" and (reply_outbox_enabled or reply_replayed)
-    ):
+    ) and not (action == "claim" and claim_idempotent):
         realtime_state_events = _emit_legacy_claim_realtime_state(
             ticket,
             action=action,
@@ -6225,12 +6293,17 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         action=action,
         channel=(
             "crm"
-            if action in {"handoff", "accept_handoff", "resume_ai"}
+            if action in {"claim", "handoff", "accept_handoff", "resume_ai"}
             else _ticket_delivery_channel(delivery_results, ticket.canal_ingreso or "whatsapp")
         ),
         timeline_updated=timeline_updated,
         source_model="MunicipioTicket",
-        reason=delivery_reason,
+        status=("already_owned" if action == "claim" and claim_idempotent else ("claimed" if action == "claim" else None)),
+        reason=(
+            "claim_idempotent_same_operator"
+            if action == "claim" and claim_idempotent
+            else ("claim_acquired" if action == "claim" else delivery_reason)
+        ),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
         requested_channels=(
@@ -6310,6 +6383,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
     if action not in {
+        "claim",
         "assign",
         "reply",
         "handoff",
@@ -6341,8 +6415,37 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     reply_idempotency_source: str | None = None
     reply_outbox_effect_count = 0
     realtime_emitted = False
+    claim_idempotent = False
 
-    if action == "assign":
+    if action == "claim":
+        raw_current_assignee_id = extra.get("assignee_id")
+        current_assignee_id = _coerce_inbox_ticket_id(raw_current_assignee_id)
+        if raw_current_assignee_id is not None and raw_current_assignee_id != "":
+            if current_assignee_id != current_user.id:
+                return _error_response(
+                    "El ticket ya fue tomado por otro operador",
+                    409,
+                    "already_claimed",
+                    "refresh_inbox",
+                )
+            claim_idempotent = True
+            event_body = f"Ticket ya estaba tomado por {current_user.name}"
+        else:
+            if not ticket_assignee_is_compatible(current_user, ticket):
+                return _error_response(
+                    "El operador no tiene acceso a la categoria del ticket",
+                    404,
+                    "ticket_not_found",
+                    "refresh_inbox",
+                )
+            extra["assignee_id"] = current_user.id
+            extra["assignee_name"] = current_user.name
+            extra["assignee_email"] = current_user.email
+            if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            event_body = f"Ticket tomado por {current_user.name}"
+
+    elif action == "assign":
         assignee_id = payload.get("assignee_id") or payload.get("user_id")
         try:
             assignee_id = int(assignee_id)
@@ -6517,15 +6620,16 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         extra["priority"] = priority
         event_body = f"Prioridad actualizada: {priority}"
 
-    if action != "reply":
+    if action != "reply" and not (action == "claim" and claim_idempotent):
         _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
         timeline_updated = True
 
     if action != "reply":
-        ticket.datos_extra = extra
-        flag_modified(ticket, "datos_extra")
-        ticket.updated_at = now
-        db.session.add(ticket)
+        if not (action == "claim" and claim_idempotent):
+            ticket.datos_extra = extra
+            flag_modified(ticket, "datos_extra")
+            ticket.updated_at = now
+            db.session.add(ticket)
         db.session.commit()
 
     delivery_results: dict[str, bool] | None = None
@@ -6570,14 +6674,19 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 if requested_channels
                 else (
                     "crm"
-                    if action in {"handoff", "accept_handoff", "resume_ai"}
+                    if action in {"claim", "handoff", "accept_handoff", "resume_ai"}
                     else _ticket_channel(ticket)
                 )
             ),
         ),
         timeline_updated=timeline_updated,
         source_model="TenantTicket",
-        reason=delivery_reason,
+        status=("already_owned" if action == "claim" and claim_idempotent else ("claimed" if action == "claim" else None)),
+        reason=(
+            "claim_idempotent_same_operator"
+            if action == "claim" and claim_idempotent
+            else ("claim_acquired" if action == "claim" else delivery_reason)
+        ),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
         requested_channels=requested_channels,

@@ -337,6 +337,46 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": self.tenant.slug}
 
+    def _claim_employee(self, *, name: str, email: str, categories=None) -> User:
+        employee = User(
+            name=name,
+            email=email,
+            rol="empleado",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {
+                    "categorias": list(categories or ["educacion"]),
+                    "zonas": ["centro"],
+                    "permisos": ["tickets_assign"],
+                    "channels": ["whatsapp"],
+                }
+            },
+        )
+        employee.set_password("secret123")
+        db.session.add(employee)
+        db.session.flush()
+        return employee
+
+    def _unassigned_claim_ticket(self, *, category: str = "educacion") -> TenantTicket:
+        ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria=category,
+            descripcion=f"Caso sin asignar de {category}",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={
+                "title": f"Caso sin asignar de {category}",
+                "channel": "whatsapp",
+                "contact": {"name": "Familia de prueba", "phone": "+5491111111199"},
+            },
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        return ticket
+
     def _enable_municipal_domain_outbox(self):
         self.tenant.tipo = "municipio"
         self.tenant.municipio_id = self.owner.id
@@ -2692,6 +2732,226 @@ class V2SaasContractsTest(unittest.TestCase):
             1,
         )
         emit_realtime.assert_called_once()
+
+    def test_omnichannel_claim_is_atomic_and_idempotent_for_same_operator(self):
+        ticket = self._unassigned_claim_ticket()
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}",
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        actions = {item["id"]: item for item in detail.get_json()["ticket"]["allowed_actions"]}
+        self.assertEqual(actions["claim"]["label"], "Tomar ticket")
+        self.assertEqual(actions["claim"]["requires"], [])
+        self.assertIn("assign", actions)
+
+        first = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={
+                "action": "claim",
+                # Claim is always self-service; an inherited assign payload
+                # must not redirect ownership to another operator.
+                "assignee_id": self.owner.id,
+            },
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(first.status_code, 200, first.get_json())
+        first_payload = first.get_json()
+        self.assertEqual(first_payload["delivery"]["status"], "claimed")
+        self.assertEqual(first_payload["delivery"]["reason"], "claim_acquired")
+        self.assertTrue(first_payload["delivery"]["timeline_updated"])
+        self.assertEqual(first_payload["ticket"]["assignee"]["id"], self.employee.id)
+        self.assertNotIn(
+            "claim",
+            {item["id"] for item in first_payload["ticket"]["allowed_actions"]},
+        )
+
+        db.session.expire_all()
+        claimed = db.session.get(TenantTicket, ticket.id)
+        first_updated_at = claimed.updated_at
+        first_comments = list((claimed.datos_extra or {}).get("comments") or [])
+        self.assertEqual((claimed.datos_extra or {}).get("assignee_id"), self.employee.id)
+        self.assertEqual(claimed.estado, "en_proceso")
+        self.assertEqual(len([item for item in first_comments if item.get("action") == "claim"]), 1)
+
+        replay = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={"action": "claim"},
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        replay_payload = replay.get_json()
+        self.assertEqual(replay_payload["delivery"]["status"], "already_owned")
+        self.assertEqual(
+            replay_payload["delivery"]["reason"],
+            "claim_idempotent_same_operator",
+        )
+        self.assertFalse(replay_payload["delivery"]["timeline_updated"])
+
+        db.session.expire_all()
+        replayed = db.session.get(TenantTicket, ticket.id)
+        self.assertEqual(replayed.updated_at, first_updated_at)
+        self.assertEqual((replayed.datos_extra or {}).get("comments"), first_comments)
+        self.assertEqual((replayed.datos_extra or {}).get("assignee_id"), self.employee.id)
+
+    def test_omnichannel_claim_conflict_keeps_first_operator(self):
+        ticket = self._unassigned_claim_ticket()
+        contender = self._claim_employee(
+            name="Segundo operador",
+            email="segundo-operador@test.com",
+        )
+        db.session.commit()
+
+        first = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={"action": "claim"},
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(first.status_code, 200, first.get_json())
+
+        conflict = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={"action": "claim"},
+            headers=self._auth(contender),
+        )
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["reason_code"], "already_claimed")
+        self.assertEqual(conflict.get_json()["action_hint"], "refresh_inbox")
+
+        db.session.expire_all()
+        persisted = db.session.get(TenantTicket, ticket.id)
+        self.assertEqual((persisted.datos_extra or {}).get("assignee_id"), self.employee.id)
+        claim_events = [
+            item
+            for item in ((persisted.datos_extra or {}).get("comments") or [])
+            if item.get("action") == "claim"
+        ]
+        self.assertEqual(len(claim_events), 1)
+
+    def test_omnichannel_claim_fails_closed_for_category_and_tenant(self):
+        restricted = self._unassigned_claim_ticket(category="salud")
+
+        foreign_owner = User(
+            name="Owner extranjero",
+            email="foreign-claim-owner@test.com",
+            rol="admin",
+            tenant_slug="foreign-claim",
+        )
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-claim",
+            nombre="Foreign claim",
+            tipo="pyme",
+            pyme_id=foreign_owner.id,
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_owner.tenant_id = foreign_tenant.id
+        foreign_ticket = TenantTicket(
+            tenant_id=foreign_tenant.id,
+            user_id=foreign_owner.id,
+            categoria="educacion",
+            descripcion="Caso de otro tenant",
+            estado="nuevo",
+            origen="web",
+            datos_extra={},
+        )
+        db.session.add(foreign_ticket)
+        db.session.commit()
+
+        for ticket in (restricted, foreign_ticket):
+            with self.subTest(ticket_id=ticket.id, tenant_id=ticket.tenant_id):
+                response = self.client.post(
+                    f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+                    json={"action": "claim"},
+                    headers=self._auth(self.employee),
+                )
+                self.assertEqual(response.status_code, 404, response.get_json())
+                self.assertEqual(response.get_json()["reason_code"], "ticket_not_found")
+
+        db.session.expire_all()
+        self.assertIsNone((db.session.get(TenantTicket, restricted.id).datos_extra or {}).get("assignee_id"))
+        self.assertIsNone((db.session.get(TenantTicket, foreign_ticket.id).datos_extra or {}).get("assignee_id"))
+
+    def test_omnichannel_assign_preserves_explicit_manager_reassignment(self):
+        ticket = self._unassigned_claim_ticket()
+        replacement = self._claim_employee(
+            name="Operador de reemplazo",
+            email="replacement-operator@test.com",
+        )
+        db.session.commit()
+
+        claimed = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={"action": "claim"},
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(claimed.status_code, 200, claimed.get_json())
+
+        reassigned = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={"action": "assign", "assignee_id": replacement.id},
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(reassigned.status_code, 200, reassigned.get_json())
+        self.assertEqual(reassigned.get_json()["ticket"]["assignee"]["id"], replacement.id)
+
+        db.session.expire_all()
+        persisted = db.session.get(TenantTicket, ticket.id)
+        self.assertEqual((persisted.datos_extra or {}).get("assignee_id"), replacement.id)
+        self.assertEqual(
+            [item.get("action") for item in ((persisted.datos_extra or {}).get("comments") or [])][-2:],
+            ["claim", "assign"],
+        )
+
+    def test_omnichannel_legacy_claim_is_atomic_and_idempotent(self):
+        self._enable_municipal_domain_outbox()
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-CLAIM-001",
+            consulta_pin="910001",
+            pregunta="Luminaria apagada",
+            asunto="Luminaria apagada",
+            categoria="educacion",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        def claim(user):
+            return self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "source_model": "MunicipioTicket",
+                    "legacy_id": legacy.id,
+                    "action": "claim",
+                },
+                headers=self._auth(user),
+            )
+
+        first = claim(self.employee)
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(first.get_json()["delivery"]["status"], "claimed")
+        self.assertEqual(first.get_json()["ticket"]["assignee"]["id"], self.employee.id)
+        self.assertEqual(TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(), 1)
+
+        replay = claim(self.employee)
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertEqual(replay.get_json()["delivery"]["status"], "already_owned")
+        self.assertFalse(replay.get_json()["delivery"]["timeline_updated"])
+        self.assertEqual(TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(), 1)
+
+        conflict = claim(self.owner)
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["reason_code"], "already_claimed")
+        db.session.expire_all()
+        self.assertEqual(db.session.get(MunicipioTicket, legacy.id).asignado_a_id, self.employee.id)
 
     def test_omnichannel_inbox_action_updates_ticket(self):
         with patch(
