@@ -222,6 +222,49 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
       four definitions as `not deployed`; do not transfer job ownership yet.
 - [ ] Verify Twilio signatures and callbacks read-only before any live send.
 
+### Evidence contract for Vercel cron ownership
+
+`scripts/audit_vercel_cron_ownership.py` is an offline, fail-closed gate. It
+does not query Vercel or invoke a cron route. Version 2 requires four local
+snapshots and binds the runtime probes to the approved deployment ID and exact
+runtime revision:
+
+1. repository `vercel.json`;
+2. the unmodified JSON from `vercel crons list --json` for the linked
+   `chatboc-backend` project;
+3. a redacted environment declaration containing only the three activation
+   flags and `CRON_SECRET` presence/UTF-8 byte count, never its value;
+4. one captured response for each cron path from the exact fenced runtime.
+
+The remote registry must contain exactly four deployed definitions, report
+`enabled: true`, and have no missing, unexpected or changed schedule. Each
+runtime response must be `503`, `Cache-Control: no-store`, `Retry-After: 60`
+and the exact `cutover.background_writer_fence.v1` payload with
+`executed: false`. The probe capture is allowed only after `/api/version` and
+the independent fence evidence identify the approved deployment. Never probe
+these mutating GET routes when the fence state is unknown.
+
+Run the offline audit from a private evidence directory outside the repository:
+
+```powershell
+py -3 scripts/audit_vercel_cron_ownership.py `
+  --vercel-config vercel.json `
+  --registry-json $cutoverEvidenceDir\vercel-crons.json `
+  --env-json $cutoverEvidenceDir\vercel-cron-env-redacted.json `
+  --runtime-probes-json $cutoverEvidenceDir\vercel-cron-fenced-probes.json `
+  --expected-deployment-id $approvedVercelDeploymentId `
+  --expected-runtime-revision $approvedRuntimeRevision `
+  --audit-only
+```
+
+Exit `0` and `ready: true` certify only **registered and fail-closed** Vercel
+ownership. They do not authorize enabling effects, changing DNS, fencing
+Render, transferring the global writer epoch or sending a provider canary.
+Vercel documents that cron jobs are created by a Production deployment, invoke
+the Production deployment URL, and are not retargeted by Instant Rollback.
+Rollback therefore requires an explicit cron disable or a redeploy of the
+approved owner; a domain rollback alone is insufficient.
+
 The GET-only Twilio snapshot collector, exact Vercel runtime credential
 attestor and fail-closed promotion verifier are implemented and reviewed. The
 isolated Junin connection is intentionally

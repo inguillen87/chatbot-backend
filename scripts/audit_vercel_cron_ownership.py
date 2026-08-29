@@ -1,10 +1,11 @@
 """Audit Vercel cron registration and activation without changing Vercel.
 
-The command consumes three local JSON snapshots: the repository ``vercel.json``,
-the project's observed cron registry, and a redacted/declarative environment
-snapshot.  It performs no network calls, imports no application modules and
-never echoes environment values.  This makes it suitable for a cutover gate
-after a read-only Vercel registry query has been captured separately.
+The command consumes four local JSON snapshots: the repository ``vercel.json``,
+the project's observed cron registry, a redacted/declarative environment
+snapshot, and responses captured from the exact fenced runtime.  It performs
+no network calls, imports no application modules and never echoes environment
+values.  This makes it suitable for a cutover gate after read-only registry and
+runtime evidence has been captured separately.
 
 Accepted registry shapes include ``{"definitions": [...]}``,
 ``{"crons": [...]}``, and ``{"crons": {"definitions": [...]}}``.  The
@@ -12,6 +13,13 @@ environment snapshot can be a plain mapping, an ``env`` mapping, or an
 ``envs`` list with ``key``/``value`` entries.  ``CRON_SECRET`` may be supplied
 as a raw value (it is measured but never emitted) or, preferably, as redacted
 metadata such as ``{"configured": true, "utf8_bytes": 48}``.
+
+The runtime snapshot must bind the four captured responses to the approved
+``deployment_id`` and ``runtime_revision``.  Every response must be the stable
+``503`` background-fence contract with ``Cache-Control: no-store`` and
+``Retry-After: 60``.  The operator captures these responses only after the
+writer fence is independently known to be active; this auditor never invokes a
+mutating GET route itself.
 """
 
 from __future__ import annotations
@@ -23,9 +31,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 
-CONTRACT_VERSION = "chatboc.vercel_cron_ownership_audit.v1"
+CONTRACT_VERSION = "chatboc.vercel_cron_ownership_audit.v2"
 MAX_INPUT_BYTES = 256 * 1024
 MINIMUM_CRON_SECRET_UTF8_BYTES = 32
+FENCED_PROBE_CONTRACT = "cutover.background_writer_fence.v1"
 
 FLAG_BY_PATH = {
     "/api/internal/cron/outbox-reconciliation": "VERCEL_OUTBOX_CRON_ENABLED",
@@ -134,6 +143,116 @@ def _environment_mapping(document: Any) -> dict[str, Any]:
     return dict(document)
 
 
+def _scheduler_enabled(document: Any) -> bool | None:
+    if not isinstance(document, Mapping):
+        raise CronOwnershipAuditFailure("registry_not_object")
+    value = document.get("enabled")
+    return value if isinstance(value, bool) else None
+
+
+def _runtime_probe_document(document: Any) -> tuple[str, str, dict[str, Any]]:
+    if not isinstance(document, Mapping):
+        raise CronOwnershipAuditFailure("runtime_probe_not_object")
+    deployment_id = document.get("deployment_id")
+    runtime_revision = document.get("runtime_revision")
+    probes = document.get("probes")
+    if not isinstance(deployment_id, str) or not deployment_id.strip():
+        raise CronOwnershipAuditFailure("runtime_probe_deployment_id_invalid")
+    if not isinstance(runtime_revision, str) or not runtime_revision.strip():
+        raise CronOwnershipAuditFailure("runtime_probe_revision_invalid")
+    if not isinstance(probes, list):
+        raise CronOwnershipAuditFailure("runtime_probes_not_array")
+
+    normalized: dict[str, Any] = {}
+    for raw in probes:
+        if not isinstance(raw, Mapping):
+            raise CronOwnershipAuditFailure("runtime_probe_entry_invalid")
+        path = raw.get("path")
+        if not isinstance(path, str) or not path.startswith("/"):
+            raise CronOwnershipAuditFailure("runtime_probe_path_invalid")
+        if path in normalized:
+            raise CronOwnershipAuditFailure("runtime_probe_duplicate")
+        normalized[path] = raw
+    return deployment_id.strip(), runtime_revision.strip(), normalized
+
+
+def _header_value(headers: Any, name: str) -> str | None:
+    if not isinstance(headers, Mapping):
+        return None
+    expected = name.lower()
+    for key, value in headers.items():
+        if (
+            isinstance(key, str)
+            and key.lower() == expected
+            and isinstance(value, str)
+        ):
+            return value.strip()
+    return None
+
+
+def _runtime_probe_issues(
+    document: Any,
+    *,
+    expected_paths: set[str],
+    expected_deployment_id: str,
+    expected_runtime_revision: str,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    deployment_id, runtime_revision, probes = _runtime_probe_document(document)
+    issues: list[dict[str, str]] = []
+    if deployment_id != expected_deployment_id:
+        issues.append(_issue("runtime_probe_deployment_mismatch"))
+    if runtime_revision != expected_runtime_revision:
+        issues.append(_issue("runtime_probe_revision_mismatch"))
+
+    probe_paths = set(probes)
+    for path in sorted(expected_paths - probe_paths):
+        issues.append(_issue("runtime_probe_missing", path=path))
+    for path in sorted(probe_paths - expected_paths):
+        issues.append(_issue("runtime_probe_unexpected", path=path))
+
+    exact_paths: list[str] = []
+    expected_body = {
+        "contract_version": FENCED_PROBE_CONTRACT,
+        "component": "internal_cron",
+        "executed": False,
+        "reason_code": "cutover_writer_fence_enabled",
+        "status": "fenced",
+    }
+    for path in sorted(expected_paths & probe_paths):
+        probe = probes[path]
+        path_ready = True
+        status_code = probe.get("status_code")
+        if isinstance(status_code, bool) or status_code != 503:
+            issues.append(_issue("runtime_probe_status_mismatch", path=path))
+            path_ready = False
+        cache_control = _header_value(probe.get("headers"), "cache-control")
+        directives = {
+            item.strip().lower()
+            for item in (cache_control or "").split(",")
+            if item.strip()
+        }
+        if "no-store" not in directives:
+            issues.append(_issue("runtime_probe_cache_control_invalid", path=path))
+            path_ready = False
+        if _header_value(probe.get("headers"), "retry-after") != "60":
+            issues.append(_issue("runtime_probe_retry_after_invalid", path=path))
+            path_ready = False
+        if probe.get("body") != expected_body:
+            issues.append(_issue("runtime_probe_body_mismatch", path=path))
+            path_ready = False
+        if path_ready:
+            exact_paths.append(path)
+
+    return issues, {
+        "deployment_match": deployment_id == expected_deployment_id,
+        "runtime_revision_match": runtime_revision == expected_runtime_revision,
+        "expected_count": len(expected_paths),
+        "observed_count": len(probes),
+        "exact_paths": exact_paths,
+        "all_fail_closed": len(exact_paths) == len(expected_paths),
+    }
+
+
 def _parse_flag(value: Any) -> bool | None:
     if isinstance(value, bool):
         return value
@@ -185,16 +304,26 @@ def audit_cron_ownership(
     vercel_config: Any,
     registry_snapshot: Any,
     environment_snapshot: Any,
+    runtime_probe_snapshot: Any,
+    *,
+    expected_deployment_id: str,
+    expected_runtime_revision: str,
 ) -> dict[str, Any]:
     """Return redacted cron ownership evidence from local snapshots only."""
 
     expected = _normalize_definitions(vercel_config, source="vercel_config")
     observed = _normalize_definitions(registry_snapshot, source="registry")
+    scheduler_enabled = _scheduler_enabled(registry_snapshot)
     environment = _environment_mapping(environment_snapshot)
     issues: list[dict[str, str]] = []
 
     expected_paths = set(expected)
     observed_paths = set(observed)
+    required_paths = set(FLAG_BY_PATH)
+    for path in sorted(required_paths - expected_paths):
+        issues.append(_issue("repository_cron_definition_missing", path=path))
+    for path in sorted(expected_paths - required_paths):
+        issues.append(_issue("repository_cron_definition_unexpected", path=path))
     if expected and not observed:
         issues.append(_issue("registry_empty"))
     else:
@@ -254,6 +383,18 @@ def audit_cron_ownership(
                 active_paths.append(path)
 
     registry_exact = expected == observed
+    if scheduler_enabled is None:
+        issues.append(_issue("registry_scheduler_state_unverified"))
+    elif scheduler_enabled is not True:
+        issues.append(_issue("registry_scheduler_disabled"))
+
+    probe_issues, runtime_fail_closed = _runtime_probe_issues(
+        runtime_probe_snapshot,
+        expected_paths=expected_paths,
+        expected_deployment_id=expected_deployment_id,
+        expected_runtime_revision=expected_runtime_revision,
+    )
+    issues.extend(probe_issues)
     if not observed:
         registry_state = "empty"
     elif registry_exact:
@@ -277,6 +418,7 @@ def audit_cron_ownership(
             "expected_count": len(expected),
             "observed_count": len(observed),
             "exact": registry_exact,
+            "scheduler_enabled": scheduler_enabled,
         },
         "activation": {
             "state": activation_state,
@@ -288,6 +430,7 @@ def audit_cron_ownership(
             "strong": secret_strong,
             "minimum_utf8_bytes": MINIMUM_CRON_SECRET_UTF8_BYTES,
         },
+        "runtime_fail_closed": runtime_fail_closed,
         "issues": issues,
         "rollback": {
             "registry_retarget_is_automatic": False,
@@ -327,6 +470,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vercel-config", required=True, type=Path)
     parser.add_argument("--registry-json", required=True, type=Path)
     parser.add_argument("--env-json", required=True, type=Path)
+    parser.add_argument("--runtime-probes-json", required=True, type=Path)
+    parser.add_argument("--expected-deployment-id", required=True)
+    parser.add_argument("--expected-runtime-revision", required=True)
     parser.add_argument(
         "--audit-only",
         action="store_true",
@@ -345,6 +491,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             _load_json(args.vercel_config),
             _load_json(args.registry_json),
             _load_json(args.env_json),
+            _load_json(args.runtime_probes_json),
+            expected_deployment_id=args.expected_deployment_id,
+            expected_runtime_revision=args.expected_runtime_revision,
         )
     except CronOwnershipAuditFailure as exc:
         print(json.dumps(_blocked_payload(exc.reason_code), sort_keys=True))
