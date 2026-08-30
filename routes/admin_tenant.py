@@ -2823,9 +2823,13 @@ def create_employee(current_user):
     if not tenant:
         return jsonify({'error': 'No tenant context'}), 400
 
-    # IDOR Check
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    # Employee identities, roles and capabilities are control-plane state.
+    # Tenant membership alone must never authorize these mutations.
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     data = request.json or {}
     email = str(data.get('email') or '').strip().lower()
@@ -2888,8 +2892,11 @@ def update_employee_admin(current_user, user_id):
     tenant = g.tenant_profile
     if not tenant:
         return jsonify({'error': 'No tenant context'}), 400
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     user = User.query.filter_by(id=user_id, tenant_id=tenant.id, es_empleado=True).first()
     if not user:
@@ -2957,9 +2964,11 @@ def assign_role(current_user, user_id):
     if not tenant:
          return jsonify({'error': 'No tenant context'}), 400
 
-    # IDOR Check
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     data = request.json or {}
     role_name = data.get('role')
@@ -2995,16 +3004,22 @@ def assign_categories(current_user, user_id):
     if not tenant:
          return jsonify({'error': 'No tenant context'}), 400
 
-    # IDOR Check
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     data = request.json or {}
     category_ids = data.get('category_ids', [])
 
-    user = User.query.get(user_id)
+    user = User.query.filter_by(
+        id=user_id,
+        tenant_id=tenant.id,
+        es_empleado=True,
+    ).first()
     if not user:
-        return jsonify({'error': 'User not found'}), 404
+        return jsonify({'error': 'Employee not found'}), 404
 
     valid_cats = CategoriaTicket.query.filter(
         CategoriaTicket.id.in_(category_ids),
@@ -3032,8 +3047,11 @@ def update_employee_scope(current_user, user_id):
     tenant = g.tenant_profile
     if not tenant:
         return jsonify({'error': 'No tenant context'}), 400
-    if not _is_authorized_for_tenant(current_user, tenant):
-        return jsonify({'error': 'Unauthorized'}), 403
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return jsonify({
+            'error': 'Permisos insuficientes',
+            'reason_code': 'employee_administration_forbidden',
+        }), 403
 
     user = User.query.get(user_id)
     if not user or user.tenant_id != tenant.id or not user.es_empleado:

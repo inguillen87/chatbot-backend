@@ -10,9 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from utils.roles import canonical_role
-
-
 SUPERVISED_ASSIGNMENT_ROLES = frozenset({"admin", "super_admin", "supervisor"})
 ASSIGNMENT_CAPABILITY = "tickets.assign"
 _CAPABILITY_ALIASES = {
@@ -80,7 +77,9 @@ def actor_assignment_capabilities(actor: Any) -> frozenset[str]:
 def actor_can_assign_tickets(actor: Any) -> bool:
     if actor is None:
         return False
-    if canonical_role(getattr(actor, "rol", None)) in SUPERVISED_ASSIGNMENT_ROLES:
+    role = str(getattr(actor, "rol", None) or "").strip().lower()
+    role = "_".join(part for part in role.replace("-", " ").replace("_", " ").split() if part)
+    if role in SUPERVISED_ASSIGNMENT_ROLES:
         return True
     return ASSIGNMENT_CAPABILITY in actor_assignment_capabilities(actor)
 
@@ -117,12 +116,15 @@ def assignment_transition(
     payload: Mapping[str, Any],
     current_assignee_id: Any,
     target_assignee_id: Any,
+    enforce_authorization: bool = True,
 ) -> AssignmentTransition:
     """Authorize and CAS one assignment transition.
 
     A replay to the already-current target is idempotent even when the original
     expected value is now stale.  Every different target (including unassign)
-    must compare against the locked current state.
+    must compare against the locked current state. Domain-specific writers may
+    disable this role check only after enforcing their own assignment capability;
+    the compare-and-set requirement remains mandatory.
     """
 
     current = _optional_positive_id(
@@ -135,7 +137,7 @@ def assignment_transition(
     actor_id = _optional_positive_id(getattr(actor, "id", None), field_name="actor_id")
 
     privileged_transition = target != actor_id or current not in {None, actor_id}
-    if privileged_transition and not actor_can_assign_tickets(actor):
+    if enforce_authorization and privileged_transition and not actor_can_assign_tickets(actor):
         raise TicketAssignmentPolicyError(
             403,
             "ticket_assignment_forbidden",

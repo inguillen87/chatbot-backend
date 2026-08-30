@@ -701,6 +701,30 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("queues", payload)
         self.assertIn("recommended_actions", payload)
 
+    def test_auto_assign_rejects_conflicting_ticket_id_aliases(self):
+        ticket = self._unassigned_claim_ticket()
+
+        response = self.client.post(
+            "/api/v2/employee-routing/auto-assign",
+            json={
+                "dry_run": False,
+                "tickets": [
+                    {
+                        "source_model": "TenantTicket",
+                        "id": ticket.id,
+                        "ticket_id": ticket.id + 1,
+                        "expected_assignee_id": None,
+                    }
+                ],
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "ticket_identity_conflict")
+        db.session.expire_all()
+        self.assertIsNone((db.session.get(TenantTicket, ticket.id).datos_extra or {}).get("assignee_id"))
+
     def test_employee_routing_does_not_recommend_or_apply_incompatible_assignee(self):
         restricted = TenantTicket(
             tenant_id=self.tenant.id,
@@ -2842,6 +2866,7 @@ class V2SaasContractsTest(unittest.TestCase):
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
             json={
                 "action": "claim",
+                "source_model": "TenantTicket",
                 # Claim is always self-service; an inherited assign payload
                 # must not redirect ownership to another operator.
                 "assignee_id": self.owner.id,
@@ -2869,7 +2894,7 @@ class V2SaasContractsTest(unittest.TestCase):
 
         replay = self.client.post(
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
-            json={"action": "claim"},
+            json={"action": "claim", "source_model": "TenantTicket"},
             headers=self._auth(self.employee),
         )
         self.assertEqual(replay.status_code, 200, replay.get_json())
@@ -2897,14 +2922,14 @@ class V2SaasContractsTest(unittest.TestCase):
 
         first = self.client.post(
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
-            json={"action": "claim"},
+            json={"action": "claim", "source_model": "TenantTicket"},
             headers=self._auth(self.employee),
         )
         self.assertEqual(first.status_code, 200, first.get_json())
 
         conflict = self.client.post(
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
-            json={"action": "claim"},
+            json={"action": "claim", "source_model": "TenantTicket"},
             headers=self._auth(contender),
         )
         self.assertEqual(conflict.status_code, 409, conflict.get_json())
@@ -2958,7 +2983,7 @@ class V2SaasContractsTest(unittest.TestCase):
             with self.subTest(ticket_id=ticket.id, tenant_id=ticket.tenant_id):
                 response = self.client.post(
                     f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
-                    json={"action": "claim"},
+                    json={"action": "claim", "source_model": "TenantTicket"},
                     headers=self._auth(self.employee),
                 )
                 self.assertEqual(response.status_code, 404, response.get_json())
@@ -2978,7 +3003,7 @@ class V2SaasContractsTest(unittest.TestCase):
 
         claimed = self.client.post(
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
-            json={"action": "claim"},
+            json={"action": "claim", "source_model": "TenantTicket"},
             headers=self._auth(self.employee),
         )
         self.assertEqual(claimed.status_code, 200, claimed.get_json())
@@ -2987,6 +3012,7 @@ class V2SaasContractsTest(unittest.TestCase):
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
             json={
                 "action": "assign",
+                "source_model": "TenantTicket",
                 "assignee_id": replacement.id,
                 "expected_assignee_id": self.employee.id,
             },
@@ -3061,6 +3087,7 @@ class V2SaasContractsTest(unittest.TestCase):
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
             json={
                 "action": "assign",
+                "source_model": "TenantTicket",
                 "assignee_id": replacement.id,
                 "expected_assignee_id": None,
             },
@@ -3068,6 +3095,38 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertEqual(forbidden.status_code, 403, forbidden.get_json())
         self.assertEqual(forbidden.get_json()["reason_code"], "ticket_assignment_forbidden")
+
+        self_grant = self.client.put(
+            f"/api/admin/employees/{restricted.id}/scope",
+            json={
+                "categorias": ["educacion"],
+                "zonas": ["centro"],
+                "permisos": ["tickets.read", "tickets.assign"],
+                "channels": ["whatsapp"],
+            },
+            headers=self._auth(restricted),
+        )
+        self.assertEqual(self_grant.status_code, 403, self_grant.get_json())
+        self.assertEqual(
+            self_grant.get_json()["reason_code"],
+            "employee_administration_forbidden",
+        )
+
+        still_forbidden = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={
+                "action": "assign",
+                "source_model": "TenantTicket",
+                "assignee_id": replacement.id,
+                "expected_assignee_id": None,
+            },
+            headers=self._auth(restricted),
+        )
+        self.assertEqual(still_forbidden.status_code, 403, still_forbidden.get_json())
+        self.assertEqual(
+            still_forbidden.get_json()["reason_code"],
+            "ticket_assignment_forbidden",
+        )
 
         manager_detail = self.client.get(
             f"/api/v2/inbox/omnichannel/{ticket.id}",
@@ -3082,6 +3141,7 @@ class V2SaasContractsTest(unittest.TestCase):
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
             json={
                 "action": "assign",
+                "source_model": "TenantTicket",
                 "assignee_id": replacement.id,
                 "expected_assignee_id": None,
             },
@@ -3146,7 +3206,11 @@ class V2SaasContractsTest(unittest.TestCase):
 
         missing_cas = self.client.post(
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
-            json={"action": "assign", "assignee_id": target.id},
+            json={
+                "action": "assign",
+                "source_model": "TenantTicket",
+                "assignee_id": target.id,
+            },
             headers=self._auth(dispatcher),
         )
         self.assertEqual(missing_cas.status_code, 400, missing_cas.get_json())
@@ -3156,6 +3220,7 @@ class V2SaasContractsTest(unittest.TestCase):
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
             json={
                 "action": "assign",
+                "source_model": "TenantTicket",
                 "assignee_id": target.id,
                 "expected_assignee_id": None,
             },
@@ -3315,6 +3380,48 @@ class V2SaasContractsTest(unittest.TestCase):
         db.session.add_all([tenant_ticket, legacy_ticket])
         db.session.commit()
 
+        missing_source = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={"ticket_id": exact_id, "action": "claim"},
+            headers=self._auth(luminaria_operator),
+        )
+        self.assertEqual(missing_source.status_code, 400, missing_source.get_json())
+        self.assertEqual(missing_source.get_json()["reason_code"], "source_model_required")
+        db.session.expire_all()
+        self.assertIsNone((db.session.get(TenantTicket, exact_id).datos_extra or {}).get("assignee_id"))
+        self.assertIsNone(db.session.get(MunicipioTicket, exact_id).asignado_a_id)
+
+        missing_source_path = self.client.post(
+            f"/api/v2/inbox/omnichannel/{exact_id}/actions",
+            json={"action": "claim"},
+            headers=self._auth(luminaria_operator),
+        )
+        self.assertEqual(
+            missing_source_path.status_code,
+            400,
+            missing_source_path.get_json(),
+        )
+        self.assertEqual(
+            missing_source_path.get_json()["reason_code"],
+            "source_model_required",
+        )
+        db.session.expire_all()
+        self.assertIsNone((db.session.get(TenantTicket, exact_id).datos_extra or {}).get("assignee_id"))
+        self.assertIsNone(db.session.get(MunicipioTicket, exact_id).asignado_a_id)
+
+        conflicting_sources = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "TenantTicket",
+                "legacy_model": "MunicipioTicket",
+                "ticket_id": exact_id,
+                "action": "claim",
+            },
+            headers=self._auth(luminaria_operator),
+        )
+        self.assertEqual(conflicting_sources.status_code, 409, conflicting_sources.get_json())
+        self.assertEqual(conflicting_sources.get_json()["reason_code"], "ticket_identity_conflict")
+
         unsupported_source = self.client.post(
             "/api/v2/inbox/omnichannel/actions",
             json={
@@ -3373,6 +3480,31 @@ class V2SaasContractsTest(unittest.TestCase):
             luminaria_operator.id,
         )
         self.assertIsNone(db.session.get(MunicipioTicket, exact_id).asignado_a_id)
+
+    def test_assignment_rejects_conflicting_assignee_aliases_without_mutation(self):
+        ticket = self._unassigned_claim_ticket()
+        target = self._claim_employee(
+            name="Destino exacto",
+            email="assignment-alias-target@test.com",
+        )
+
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={
+                "source_model": "TenantTicket",
+                "ticket_id": ticket.id,
+                "action": "assign",
+                "assignee_id": target.id,
+                "user_id": self.employee.id,
+                "expected_assignee_id": None,
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "assignee_identity_conflict")
+        db.session.expire_all()
+        self.assertIsNone((db.session.get(TenantTicket, ticket.id).datos_extra or {}).get("assignee_id"))
 
     def test_routing_uses_authoritative_category_id_when_legacy_label_is_general(self):
         self._enable_municipal_domain_outbox()

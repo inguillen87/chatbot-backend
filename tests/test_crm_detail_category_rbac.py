@@ -101,6 +101,8 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
         self.ctx.pop()
 
     def _user(self, name, email, role, tenant_slug, **kwargs):
+        if role == "empleado":
+            kwargs.setdefault("es_empleado", True)
         user = User(
             name=name,
             email=email,
@@ -437,14 +439,19 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
             (
                 "patch",
                 f"/api/v2/tickets/{self.allowed_tenant.id}",
-                {"assignee_id": incompatible.id},
-                self._auth(),
+                {"assignee_id": incompatible.id, "expected_assignee_id": None},
+                self._auth(self.admin),
             ),
             (
                 "post",
                 f"/api/v2/inbox/omnichannel/{self.allowed_tenant.id}/actions",
-                {"action": "assign", "assignee_id": incompatible.id},
-                self._auth(),
+                {
+                    "action": "assign",
+                    "source_model": "TenantTicket",
+                    "assignee_id": incompatible.id,
+                    "expected_assignee_id": None,
+                },
+                self._auth(self.admin),
             ),
             (
                 "post",
@@ -453,8 +460,9 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
                     "action": "assign",
                     "source_model": "MunicipioTicket",
                     "assignee_id": incompatible.id,
+                    "expected_assignee_id": self.employee.id,
                 },
-                self._auth(),
+                self._auth(self.admin),
             ),
             (
                 "post",
@@ -491,8 +499,8 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
     def test_assignment_accepts_agent_with_matching_category_scope(self):
         response = self.client.patch(
             f"/api/v2/tickets/{self.allowed_tenant.id}",
-            json={"assignee_id": self.employee.id},
-            headers=self._auth(),
+            json={"assignee_id": self.employee.id, "expected_assignee_id": None},
+            headers=self._auth(self.admin),
         )
         self.assertEqual(response.status_code, 200, response.get_json())
         db.session.expire_all()
@@ -520,8 +528,9 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
                 "description": "No debe crearse",
                 "category": "tenant-allowed",
                 "assignee_id": incompatible.id,
+                "expected_assignee_id": None,
             },
-            headers=self._auth(),
+            headers=self._auth(self.admin),
         )
         self.assertEqual(create_response.status_code, 409, create_response.get_json())
         self.assertEqual(create_response.get_json().get("reason_code"), "assignee_category_scope_mismatch")
@@ -537,7 +546,7 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
         recategorize_response = self.client.patch(
             f"/api/v2/tickets/{self.allowed_tenant.id}",
             json={"category": "new-allowed"},
-            headers=self._auth(),
+            headers=self._auth(self.admin),
         )
         self.assertEqual(recategorize_response.status_code, 409, recategorize_response.get_json())
         self.assertEqual(

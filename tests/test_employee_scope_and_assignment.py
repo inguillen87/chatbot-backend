@@ -1,7 +1,7 @@
 import jwt
 
 from app import db
-from models import TenantProfile, User
+from models import CategoriaTicket, TenantProfile, User
 from services.employee_routing import filter_employee_category_labels
 
 
@@ -55,6 +55,126 @@ def test_employee_scope_update_and_suggest_assignee(client, app):
     payload = suggest.get_json()
     assert payload["ok"] is True
     assert payload["suggestions"][0]["employee_id"] == emp.id
+
+
+def test_employee_cannot_grant_assignment_capability_or_mutate_employee_admin(client, app):
+    owner = User(email="owner-scope-security@test.com", name="Owner", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-scope", nombre="Tenant Scope", tipo="pyme", pyme_id=owner.id)
+    db.session.add(tenant)
+    db.session.commit()
+
+    actor = User(
+        email="actor-scope-security@test.com",
+        name="Actor",
+        rol="empleado",
+        es_empleado=True,
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        tipo_chat="pyme",
+    )
+    actor.set_password("pass")
+    target = User(
+        email="target-scope-security@test.com",
+        name="Target",
+        rol="empleado",
+        es_empleado=True,
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        tipo_chat="pyme",
+        accesibilidad={"employee_scope": {"categorias": ["luminaria"], "permisos": ["tickets.read"]}},
+    )
+    target.set_password("pass")
+    db.session.add_all([actor, target])
+    db.session.commit()
+
+    attempts = (
+        (
+            "put",
+            f"/api/admin/employees/{target.id}/scope",
+            {"categorias": ["luminaria"], "permisos": ["tickets.assign"]},
+        ),
+        (
+            "put",
+            f"/api/admin/employees/{target.id}",
+            {"scope": {"categorias": ["luminaria"], "permisos": ["tickets.assign"]}},
+        ),
+        (
+            "post",
+            f"/api/admin/employees/{target.id}/roles",
+            {"role": "admin"},
+        ),
+    )
+    for method, endpoint, payload in attempts:
+        response = getattr(client, method)(endpoint, json=payload, headers=_headers(app, actor))
+        assert response.status_code == 403
+        assert response.get_json()["reason_code"] == "employee_administration_forbidden"
+
+    refreshed = db.session.get(User, target.id)
+    scope = (refreshed.accesibilidad or {}).get("employee_scope") or {}
+    assert scope.get("permisos") == ["tickets.read"]
+    assert refreshed.rol == "empleado"
+
+
+def test_employee_categories_reject_cross_tenant_target_without_mutation(client, app):
+    owner = User(email="owner-category-idor@test.com", name="Owner A", rol="admin", tipo_chat="pyme")
+    owner.set_password("pass")
+    foreign_owner = User(
+        email="foreign-owner-category-idor@test.com",
+        name="Owner B",
+        rol="admin",
+        tipo_chat="pyme",
+    )
+    foreign_owner.set_password("pass")
+    db.session.add_all([owner, foreign_owner])
+    db.session.commit()
+
+    tenant = TenantProfile(slug="tenant-scope", nombre="Tenant A", tipo="pyme", pyme_id=owner.id)
+    foreign_tenant = TenantProfile(
+        slug="tenant-foreign",
+        nombre="Tenant B",
+        tipo="pyme",
+        pyme_id=foreign_owner.id,
+    )
+    db.session.add_all([tenant, foreign_tenant])
+    db.session.commit()
+
+    attacker_category = CategoriaTicket(nombre="attacker-category", tenant_id=tenant.id)
+    foreign_category = CategoriaTicket(nombre="foreign-category", tenant_id=foreign_tenant.id)
+    foreign_employee = User(
+        email="foreign-employee-category-idor@test.com",
+        name="Foreign employee",
+        rol="empleado",
+        es_empleado=True,
+        tenant_id=foreign_tenant.id,
+        tenant_slug=foreign_tenant.slug,
+        tipo_chat="pyme",
+        accesibilidad={
+            "employee_scope": {
+                "categorias": ["foreign-category"],
+                "permisos": ["tickets.read"],
+            }
+        },
+    )
+    foreign_employee.set_password("pass")
+    foreign_employee.categorias_ticket = [foreign_category]
+    db.session.add_all([attacker_category, foreign_category, foreign_employee])
+    db.session.commit()
+
+    response = client.post(
+        f"/api/admin/employees/{foreign_employee.id}/categories",
+        json={"category_ids": [attacker_category.id]},
+        headers=_headers(app, owner),
+    )
+    assert response.status_code == 404
+
+    refreshed = db.session.get(User, foreign_employee.id)
+    assert [category.id for category in refreshed.categorias_ticket] == [foreign_category.id]
+    scope = (refreshed.accesibilidad or {}).get("employee_scope") or {}
+    assert scope.get("categorias") == ["foreign-category"]
 
 
 def test_employee_creation_returns_scope_and_coverage(client, app):

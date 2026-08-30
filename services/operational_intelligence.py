@@ -4538,7 +4538,13 @@ def _build_next_best_actions(
                 reason_code="tickets_unassigned",
                 endpoint="/api/v2/inbox/omnichannel/actions",
                 method="POST",
-                payload_template={"action": "assign", "ticket_id": "{ticket_id}", "assignee_id": "{employee_id}"},
+                payload_template={
+                    "action": "assign",
+                    "source_model": "{source_model}",
+                    "ticket_id": "{ticket_id}",
+                    "assignee_id": "{employee_id}",
+                    "expected_assignee_id": "{expected_assignee_id}",
+                },
                 ui_hint="open_assignment_drawer",
                 href=_crm_tickets_href(focus="open_assignment_drawer", sla="risk"),
             )

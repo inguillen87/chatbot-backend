@@ -1972,16 +1972,35 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
         wanted: set[tuple[str, int]] = set()
         wanted_order: list[tuple[str, int]] = []
         for item in explicit_tickets:
-            source = str(item.get("source_model") or "").strip()
-            raw_id = item.get("id") or item.get("ticket_id")
-            if source not in {"TenantTicket", "MunicipioTicket", "PymeTicket"} or not str(raw_id or "").isdigit():
+            if not isinstance(item, Mapping):
                 return _error_response(
                     "Cada ticket debe declarar una identidad source_model + ticket_id valida",
                     400,
                     "ticket_identity_invalid",
                     "send_exact_ticket_identity",
                 )
-            identity = (source, int(raw_id))
+            source = str(item.get("source_model") or "").strip()
+            raw_ids = [item.get(key) for key in ("id", "ticket_id") if item.get(key) not in (None, "")]
+            parsed_ids = [int(value) for value in raw_ids if str(value).isdigit() and int(value) > 0]
+            if (
+                source not in {"TenantTicket", "MunicipioTicket", "PymeTicket"}
+                or len(parsed_ids) != len(raw_ids)
+                or not parsed_ids
+            ):
+                return _error_response(
+                    "Cada ticket debe declarar una identidad source_model + ticket_id valida",
+                    400,
+                    "ticket_identity_invalid",
+                    "send_exact_ticket_identity",
+                )
+            if len(set(parsed_ids)) > 1:
+                return _error_response(
+                    "id y ticket_id deben identificar el mismo caso",
+                    409,
+                    "ticket_identity_conflict",
+                    "refresh_ticket_identity",
+                )
+            identity = (source, parsed_ids[0])
             if identity in wanted:
                 return _error_response(
                     "La identidad del ticket esta repetida",
@@ -5071,6 +5090,10 @@ def _allowed_inbox_actions(
                 "method": "POST",
                 "endpoint": base_endpoint,
                 "requires": [],
+                "payload_defaults": {
+                    "source_model": "TenantTicket",
+                    "ticket_id": ticket.id,
+                },
                 "delivery_mode": "internal_event",
                 "external_dispatch": False,
             }
@@ -5666,6 +5689,39 @@ def _coerce_inbox_ticket_id(raw_value: Any) -> int | None:
         return None
 
 
+def _resolve_aliased_inbox_id(
+    payload: Mapping[str, Any],
+    *,
+    keys: tuple[str, ...],
+    required_message: str,
+    required_reason: str,
+    conflict_message: str,
+    conflict_reason: str,
+):
+    """Resolve one numeric identifier without silently preferring an alias.
+
+    Assignment clients have historically sent more than one field name.  If
+    two aliases disagree, selecting the first one can mutate the wrong record
+    or operator, so writes fail closed instead.
+    """
+
+    parsed_values: list[int] = []
+    for key in keys:
+        raw_value = payload.get(key)
+        if raw_value in (None, ""):
+            continue
+        parsed_value = _coerce_inbox_ticket_id(raw_value)
+        if parsed_value is None or parsed_value <= 0:
+            return None, _error_response(required_message, 400, required_reason, f"send_{keys[0]}")
+        parsed_values.append(parsed_value)
+
+    if len(set(parsed_values)) > 1:
+        return None, _error_response(conflict_message, 409, conflict_reason, "refresh_assignment_identity")
+    if not parsed_values:
+        return None, _error_response(required_message, 400, required_reason, f"send_{keys[0]}")
+    return parsed_values[0], None
+
+
 def _omnichannel_reply_idempotency_identity(
     payload: Mapping[str, Any],
     *,
@@ -6236,9 +6292,16 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             timeline_updated = True
 
     elif action == "assign":
-        assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
-        if not assignee_id:
-            return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+        assignee_id, assignee_error = _resolve_aliased_inbox_id(
+            payload,
+            keys=("assignee_id", "user_id"),
+            required_message="assignee_id es obligatorio",
+            required_reason="assignee_required",
+            conflict_message="assignee_id y user_id deben identificar el mismo empleado",
+            conflict_reason="assignee_identity_conflict",
+        )
+        if assignee_error is not None:
+            return assignee_error
         assignment_target_id = assignee_id
         try:
             transition = assignment_transition(
@@ -6642,29 +6705,51 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
 @require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     payload = _omnichannel_action_json_payload()
+    requested_action = str(payload.get("action") or payload.get("type") or "").strip().lower()
 
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
 
-    raw_source_model = payload.get("source_model") or payload.get("legacy_model")
+    raw_source_models = [
+        payload.get(key)
+        for key in ("source_model", "legacy_model")
+        if payload.get(key) not in (None, "")
+    ]
+    if requested_action in {"claim", "assign"} and not raw_source_models:
+        return _error_response(
+            "source_model es obligatorio para tomar o asignar un caso",
+            400,
+            "source_model_required",
+            "send_exact_ticket_identity",
+        )
     legacy_identity_prefix = any(
         isinstance(payload.get(key), str) and payload.get(key).startswith("municipio:")
         for key in ("legacy_id", "ticket_id", "id")
     )
     default_source_model = "MunicipioTicket" if legacy_identity_prefix else "TenantTicket"
-    normalized_source_model = str(raw_source_model or default_source_model).strip().lower()
-    if normalized_source_model in {"tenantticket", "tenant_ticket", "tenant"}:
-        source_model = "TenantTicket"
-    elif normalized_source_model in {"municipioticket", "municipio_ticket", "municipio"}:
-        source_model = "MunicipioTicket"
-    else:
+    normalized_sources: list[str] = []
+    for raw_source_model in raw_source_models or [default_source_model]:
+        normalized_source_model = str(raw_source_model).strip().lower()
+        if normalized_source_model in {"tenantticket", "tenant_ticket", "tenant"}:
+            normalized_sources.append("TenantTicket")
+        elif normalized_source_model in {"municipioticket", "municipio_ticket", "municipio"}:
+            normalized_sources.append("MunicipioTicket")
+        else:
+            return _error_response(
+                "source_model no es compatible con este inbox",
+                400,
+                "unsupported_inbox_source_model",
+                "send_tenantticket_or_municipioticket",
+            )
+    if len(set(normalized_sources)) > 1:
         return _error_response(
-            "source_model no es compatible con este inbox",
-            400,
-            "unsupported_inbox_source_model",
-            "send_tenantticket_or_municipioticket",
+            "source_model y legacy_model deben identificar el mismo origen",
+            409,
+            "ticket_identity_conflict",
+            "refresh_ticket_identity",
         )
+    source_model = normalized_sources[0]
 
     body_ids: list[int] = []
     for key in ("legacy_id", "ticket_id", "id"):
@@ -6698,7 +6783,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
-    action = str(payload.get("action") or payload.get("type") or "").strip().lower()
+    action = requested_action
     if action not in {
         "claim",
         "assign",
@@ -6766,11 +6851,16 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             event_body = f"Ticket tomado por {current_user.name}"
 
     elif action == "assign":
-        assignee_id = payload.get("assignee_id") or payload.get("user_id")
-        try:
-            assignee_id = int(assignee_id)
-        except (TypeError, ValueError):
-            return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+        assignee_id, assignee_error = _resolve_aliased_inbox_id(
+            payload,
+            keys=("assignee_id", "user_id"),
+            required_message="assignee_id es obligatorio",
+            required_reason="assignee_required",
+            conflict_message="assignee_id y user_id deben identificar el mismo empleado",
+            conflict_reason="assignee_identity_conflict",
+        )
+        if assignee_error is not None:
+            return assignee_error
         assignment_target_id = assignee_id
         try:
             transition = assignment_transition(

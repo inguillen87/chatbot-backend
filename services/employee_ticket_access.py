@@ -145,15 +145,13 @@ def ticket_assignee_is_operational(assignee: Any) -> bool:
     """Return whether ``assignee`` is an actual ticket-working identity.
 
     Tenant membership or an administrative role alone does not make a person
-    an operational destination.  ``es_empleado`` is the authoritative marker;
-    the canonical employee role remains the explicit legacy equivalent.
+    an operational destination. ``es_empleado`` is the authoritative marker;
+    a textual role must never make an identity assignable by itself.
     """
 
     if assignee is None:
         return False
-    return bool(getattr(assignee, "es_empleado", False)) or canonical_role(
-        getattr(assignee, "rol", None)
-    ) == ROLE_EMPLEADO
+    return bool(getattr(assignee, "es_empleado", False))
 
 
 def ticket_assignee_category_values_are_compatible(

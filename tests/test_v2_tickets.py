@@ -39,6 +39,7 @@ class V2TicketsApiTest(unittest.TestCase):
         db.session.add(self.admin)
 
         self.employee = self._create_user("empleado@t1.test", "empleado", tenant_slug="tenant-1", tenant_id=self.tenant_1.id)
+        self.employee.es_empleado = True
         self.employee.ticket_categorias = "general"
         self.end_user = self._create_user("usuario@t1.test", "usuario", tenant_slug="tenant-1", tenant_id=self.tenant_1.id)
 
