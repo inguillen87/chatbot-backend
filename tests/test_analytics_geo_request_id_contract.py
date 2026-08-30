@@ -121,6 +121,31 @@ class AnalyticsGeoRequestIdContractTestCase(unittest.TestCase):
         self.assertIn("numérico", body["error"]["message"])
         self.assertTrue(body.get("request_id"))
 
+    def test_geo_points_rejects_viewer_before_loading_exact_points(self):
+        viewer = SimpleNamespace(role="visor")
+        with patch("routes.analytics.parse_filters", return_value=self.filters), patch(
+            "routes.analytics.require_access", return_value=viewer
+        ), patch(
+            "routes.analytics.get_geo_points",
+            return_value={
+                "points": [{"lat": -34.60011, "lng": -68.30011}],
+                "render_contract": {"state": "ok"},
+            },
+        ) as get_points:
+            response = self.client.get(
+                "/analytics/geo/points?tenant_id=10",
+                headers={"X-Request-Id": "req-viewer-points"},
+            )
+
+        self.assertEqual(response.status_code, 403)
+        body = response.get_json()
+        self.assertEqual(body["reason_code"], "geo_exact_points_privileged_only")
+        self.assertEqual(body["replacement_endpoint"], "/api/v2/analytics/operations/heatmap")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(response.headers.get("X-Request-Id"), "req-viewer-points")
+        self.assertNotIn("points", body)
+        get_points.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

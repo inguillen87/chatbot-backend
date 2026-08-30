@@ -39,6 +39,10 @@ from services.employee_ticket_access import (
     employee_ticket_category_access_allows,
     employee_ticket_category_scope,
 )
+from services.operational_heatmap_access import (
+    build_employee_legacy_heatmap_points,
+    is_employee_heatmap_viewer,
+)
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     municipio_ticket_belongs_to_tenant,
@@ -5220,6 +5224,13 @@ def mapa_de_tickets(current_user: User, tipo: str):
         datos[:3] if datos else [],
     )
 
+    employee_privacy = None
+    if is_employee_heatmap_viewer(current_user):
+        datos, employee_privacy = build_employee_legacy_heatmap_points(
+            datos,
+            current_user,
+        )
+
     # Convert the aggregated points to a GeoJSON FeatureCollection for MapLibre
     features = [
         {
@@ -5240,7 +5251,10 @@ def mapa_de_tickets(current_user: User, tipo: str):
         if punto.get("location")
     ]
 
-    return jsonify({"type": "FeatureCollection", "features": features})
+    payload = {"type": "FeatureCollection", "features": features}
+    if employee_privacy is not None:
+        payload["privacy"] = employee_privacy
+    return jsonify(payload)
 
 # ---------- ENVIAR HISTORIAL POR CORREO ----------
 def _format_datetime_safe(value) -> str:

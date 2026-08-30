@@ -12,6 +12,10 @@ from utils.heatmap import aggregate_heatmap_points, build_feature_collection, en
 from utils.map_config import get_map_config
 from utils.tenant import get_current_tenant, get_current_tenant_profile, get_current_tenant_slug
 from services.tenant_resolver import TenantResolutionError, resolve_tenant_only
+from services.operational_heatmap_access import (
+    build_employee_legacy_heatmap_points,
+    is_employee_heatmap_viewer,
+)
 from utils.roles import is_authorized_superadmin_user
 
 
@@ -599,6 +603,46 @@ def _augment_heatmap_payload(payload: dict[str, object], *, key: str = "heatmap"
             }
 
 
+def _prepare_legacy_heatmap_payload(
+    payload: dict[str, object],
+    points: list[dict[str, object]] | None,
+    viewer,
+    *,
+    key: str = "heatmap",
+) -> list[dict[str, object]]:
+    """Apply viewer privacy before deriving any legacy heatmap representation."""
+
+    prepared_points = points or []
+    employee_privacy: dict[str, object] | None = None
+    if is_employee_heatmap_viewer(viewer):
+        prepared_points, employee_privacy = build_employee_legacy_heatmap_points(
+            prepared_points,
+            viewer,
+        )
+
+    payload[key] = prepared_points
+    if employee_privacy is not None:
+        payload["privacy"] = employee_privacy
+
+    if prepared_points:
+        _augment_heatmap_payload(payload, key=key)
+    else:
+        _mark_empty_heatmap_payload(payload, key=key)
+
+    if employee_privacy is not None:
+        render_contract = payload.setdefault("render_contract", {})
+        if isinstance(render_contract, dict):
+            render_contract["privacy_mode"] = "employee_aggregated"
+            render_contract["k_min"] = employee_privacy.get("k_min")
+            render_contract["coordinate_precision_decimals"] = employee_privacy.get(
+                "coordinate_precision_decimals"
+            )
+            if not prepared_points:
+                render_contract["empty_reason"] = employee_privacy.get("empty_reason")
+
+    return prepared_points
+
+
 def _parse_date_param(value: str | None, *, name: str, is_end: bool = False) -> datetime | None:
     """Parses date parameters supporting YYYY-MM-DD and ISO 8601 (with Z)."""
 
@@ -856,10 +900,7 @@ def estadisticas_dashboard(current_user):
         ),
     }
 
-    if heatmap:
-        _augment_heatmap_payload(payload)
-    else:
-        _mark_empty_heatmap_payload(payload)
+    heatmap = _prepare_legacy_heatmap_payload(payload, heatmap, current_user)
 
     if tipo == "municipio":
         if stats_filters:
@@ -991,11 +1032,7 @@ def mapa_calor_datos(current_user):
         return jsonify({"error": "server_error", "detail": "Error interno"}), 500
 
     payload: dict[str, object] = {"heatmap": puntos}
-
-    if puntos:
-        _augment_heatmap_payload(payload)
-    else:
-        _mark_empty_heatmap_payload(payload)
+    puntos = _prepare_legacy_heatmap_payload(payload, puntos, current_user)
 
     if tipo_ticket == "municipio":
         if stats_filters:
@@ -1117,10 +1154,7 @@ def estadisticas_tickets(current_user):
 
     respuesta: dict[str, object] = {"heatmap": heatmap}
 
-    if heatmap:
-        _augment_heatmap_payload(respuesta)
-    else:
-        _mark_empty_heatmap_payload(respuesta)
+    heatmap = _prepare_legacy_heatmap_payload(respuesta, heatmap, current_user)
 
     if tipo == "municipio":
         if stats_filters:

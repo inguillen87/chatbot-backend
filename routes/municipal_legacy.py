@@ -26,6 +26,10 @@ from services.encuestas_service import list_public_encuestas_for_tenant, seriali
 from config import ALLOWED_ORIGINS as DEFAULT_ALLOWED_ORIGINS
 from services.municipal_stats import build_stats_for_municipio, StatsFilters
 from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.operational_heatmap_access import (
+    build_employee_legacy_heatmap_points,
+    is_employee_heatmap_viewer,
+)
 from services.gcs_service import upload_to_gcs
 from services.tenant_ticket_scope import (
     municipio_ticket_scope_filter,
@@ -1252,6 +1256,11 @@ def municipal_tickets_map_data(current_user):
         municipio_id=municipio_id_del_admin,
         estado=estado,
     )
+    if is_employee_heatmap_viewer(current_user):
+        tickets_con_ubicacion, _privacy = build_employee_legacy_heatmap_points(
+            tickets_con_ubicacion,
+            current_user,
+        )
     return jsonify(tickets_con_ubicacion)
 
 

@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 import importlib
+import json
 import os
 import sys
 from types import SimpleNamespace, ModuleType
@@ -209,6 +210,192 @@ class EstadisticasHeatmapRouteTest(unittest.TestCase):
             estado=None,
             satisfactorio=None,
         )
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_employee_heatmap_is_category_scoped_rounded_and_k_safe(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.60011, "lng": -68.30011},
+                "weight": 2,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.60024, "lng": -68.30024},
+                "weight": 3,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.61011, "lng": -68.31011},
+                "weight": 1,
+                "categoria": "Luminarias",
+            },
+            {
+                "location": {"lat": -34.62011, "lng": -68.32011},
+                "weight": 20,
+                "categoria": "Baches",
+            },
+        ]
+        employee = SimpleNamespace(
+            id=41,
+            rol="empleado",
+            es_empleado=True,
+            ticket_categorias="Luminarias",
+            categorias_ticket=[],
+            accesibilidad={},
+            tenant_id=None,
+            empresa_id=None,
+            municipio_id=None,
+            tipo_chat=None,
+        )
+
+        import routes.estadisticas as estats
+        with self.app.test_request_context('/estadisticas/mapa_calor/datos?tipo_ticket=municipio'):
+            response = estats.mapa_calor_datos(current_user=employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        self.assertEqual((payload.get("privacy") or {}).get("k_min"), 5)
+        self.assertEqual(
+            (payload.get("privacy") or {}).get("coordinate_precision_decimals"),
+            3,
+        )
+        self.assertEqual(len(payload.get("heatmap") or []), 1)
+        point = payload["heatmap"][0]
+        self.assertEqual(point["location"], {"lat": -34.6, "lng": -68.3})
+        self.assertEqual(point["weight"], 5.0)
+        self.assertEqual(point["categoria"], "Luminarias")
+        self.assertNotEqual(point["lat"], -34.60011)
+        self.assertNotEqual(point["lng"], -68.30011)
+        self.assertEqual(
+            (payload.get("privacy") or {}).get("suppressed", {}).get("records"),
+            1,
+        )
+        self.assertEqual(
+            (payload.get("render_contract") or {}).get("privacy_mode"),
+            "employee_aggregated",
+        )
+        serialized = json.dumps(payload).lower()
+        self.assertNotIn("baches", serialized)
+        self.assertNotIn("-34.61011", serialized)
+        self.assertNotIn("-68.31011", serialized)
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_admin_heatmap_preserves_exact_singleton_behavior(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.60011, "lng": -68.30011},
+                "weight": 1,
+                "categoria": "Luminarias",
+            }
+        ]
+        admin = SimpleNamespace(
+            id=40,
+            rol="admin",
+            es_empleado=False,
+            tenant_id=None,
+            empresa_id=None,
+            municipio_id=None,
+            tipo_chat=None,
+        )
+
+        import routes.estadisticas as estats
+        with self.app.test_request_context('/estadisticas/mapa_calor/datos?tipo_ticket=municipio'):
+            response = estats.mapa_calor_datos(current_user=admin)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertNotIn("privacy", payload)
+        self.assertEqual(payload["heatmap"][0]["lat"], -34.60011)
+        self.assertEqual(payload["heatmap"][0]["lng"], -68.30011)
+        self.assertEqual(payload["heatmap"][0]["weight"], 1.0)
+
+    @patch('routes.estadisticas._resolve_tenant_profile_or_error')
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_employee_heatmap_rejects_foreign_tenant_before_query(
+        self,
+        mock_servicio,
+        mock_resolve_tenant,
+    ):
+        mock_resolve_tenant.return_value = SimpleNamespace(
+            id=202,
+            municipio_id=302,
+            pyme_id=None,
+        )
+        employee = SimpleNamespace(
+            id=42,
+            rol="empleado",
+            es_empleado=True,
+            tenant_id=201,
+            empresa_id=None,
+            municipio_id=301,
+            pyme_id=None,
+            tipo_chat="municipio",
+        )
+
+        import routes.estadisticas as estats
+        with self.app.test_request_context(
+            '/estadisticas/mapa_calor/datos?tipo_ticket=municipio&tenant_slug=foreign'
+        ):
+            response, status = estats.mapa_calor_datos(current_user=employee)
+
+        self.assertEqual(status, 403)
+        self.assertEqual(response.get_json().get("error"), "tenant_forbidden")
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.assert_not_called()
+
+    @patch('routes.estadisticas.build_stats_for_municipio', return_value={"resumen": {}})
+    @patch('routes.estadisticas.servicio_tickets')
+    def test_employee_empty_category_scope_fails_closed(
+        self,
+        mock_servicio,
+        _mock_stats,
+    ):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                "location": {"lat": -34.612345, "lng": -68.312345},
+                "weight": 99,
+                "categoria": "Luminarias",
+            }
+        ]
+        employee = SimpleNamespace(
+            id=43,
+            rol="empleado",
+            es_empleado=True,
+            ticket_categorias="",
+            categorias_ticket=[],
+            accesibilidad={"employee_scope": {"categorias": []}},
+            tenant_id=None,
+            empresa_id=None,
+            municipio_id=None,
+            tipo_chat=None,
+        )
+
+        import routes.estadisticas as estats
+        with self.app.test_request_context('/estadisticas/mapa_calor/datos?tipo_ticket=municipio'):
+            response = estats.mapa_calor_datos(current_user=employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get("heatmap"), [])
+        self.assertEqual(
+            (payload.get("privacy") or {}).get("category_scope"),
+            "empty_fail_closed",
+        )
+        self.assertEqual(
+            (payload.get("render_contract") or {}).get("empty_reason"),
+            "employee_category_scope_empty",
+        )
+        self.assertNotIn("-34.612345", json.dumps(payload))
 
 
 if __name__ == '__main__':

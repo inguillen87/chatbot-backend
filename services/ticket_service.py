@@ -1855,6 +1855,7 @@ class ServicioTickets:
             # Por ahora, mantendremos la agrupación existente que devuelve 'weight'.
 
             ubicaciones_agrupadas = {}  # (lat, lng, categoria) -> count
+            categoria_ids_por_ubicacion: dict[tuple, set[int]] = {}
 
             for t in tickets:
                 # Redondear lat/lng a un número de decimales para agrupar puntos cercanos.
@@ -1871,18 +1872,25 @@ class ServicioTickets:
                 if lat_lng_key not in ubicaciones_agrupadas:
                     ubicaciones_agrupadas[lat_lng_key] = 0
                 ubicaciones_agrupadas[lat_lng_key] += 1
+                category_id = getattr(t, "categoria_id", None)
+                if isinstance(category_id, int) and category_id > 0:
+                    categoria_ids_por_ubicacion.setdefault(lat_lng_key, set()).add(
+                        category_id
+                    )
 
             resultado_heatmap = []
             for (lat, lng, cat), weight in ubicaciones_agrupadas.items():
-                resultado_heatmap.append(
-                    {
-                        "location": {"lat": lat, "lng": lng},
-                        "lat": lat,
-                        "lng": lng,
-                        "weight": weight,
-                        "categoria": cat,
-                    }
-                )
+                point = {
+                    "location": {"lat": lat, "lng": lng},
+                    "lat": lat,
+                    "lng": lng,
+                    "weight": weight,
+                    "categoria": cat,
+                }
+                category_ids = categoria_ids_por_ubicacion.get((lat, lng, cat), set())
+                if len(category_ids) == 1:
+                    point["categoria_id"] = next(iter(category_ids))
+                resultado_heatmap.append(point)
             enrich_heatmap_points(
                 resultado_heatmap,
                 property_keys=("categoria", "estado", "barrio", "fuente"),

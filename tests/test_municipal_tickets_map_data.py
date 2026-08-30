@@ -68,6 +68,54 @@ class MunicipalTicketsMapDataRouteTest(unittest.TestCase):
             tipo_ticket='municipio', actor=user, municipio_id=1, estado='cerrado'
         )
 
+    @patch('services.ticket_service.servicio_tickets')
+    def test_employee_response_is_category_scoped_and_k_anonymous(self, mock_servicio):
+        mock_servicio.obtener_tickets_con_ubicacion_para_mapa.return_value = [
+            {
+                'location': {'lat': -34.60011, 'lng': -68.30011},
+                'weight': 4,
+                'categoria': 'Luminarias',
+            },
+            {
+                'location': {'lat': -34.60024, 'lng': -68.30024},
+                'weight': 1,
+                'categoria': 'Luminarias',
+            },
+            {
+                'location': {'lat': -34.61011, 'lng': -68.31011},
+                'weight': 1,
+                'categoria': 'Luminarias',
+            },
+            {
+                'location': {'lat': -34.62011, 'lng': -68.32011},
+                'weight': 20,
+                'categoria': 'Baches',
+            },
+        ]
+        employee = SimpleNamespace(
+            id=41,
+            municipio_id=1,
+            rol='empleado',
+            es_empleado=True,
+            ticket_categorias='Luminarias',
+            categorias_ticket=[],
+            accesibilidad={},
+        )
+
+        with self.app.test_request_context('/municipal/tickets/map_data'):
+            response = self.muni.municipal_tickets_map_data(employee)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]['location'], {'lat': -34.6, 'lng': -68.3})
+        self.assertEqual(payload[0]['weight'], 5.0)
+        self.assertEqual(payload[0]['privacy_mode'], 'employee_aggregated')
+        serialized = str(payload).lower()
+        self.assertNotIn('baches', serialized)
+        self.assertNotIn('-34.60011', serialized)
+        self.assertNotIn('-34.61011', serialized)
+
 
 if __name__ == '__main__':
     unittest.main()

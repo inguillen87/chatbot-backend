@@ -879,3 +879,7 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
         self.assertIn("nombre-que-no-coincide", serialized)
         self.assertNotIn("restricted", serialized)
         self.assertNotIn("-35.7002", serialized)
+        self.assertEqual(
+            heatmap[0].get("categoria_id"),
+            self.allowed_municipio.categoria_id,
+        )
