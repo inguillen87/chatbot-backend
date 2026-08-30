@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 import jwt
 import pytest
@@ -228,12 +229,71 @@ def test_tenant_auto_assign_and_surveys_overview(client, app):
 
     assign_resp = client.post(
         f"/api/admin/tenants/{tenant.slug}/tickets/municipio/{ticket.id}/auto-assign",
+        json={"expected_assignee_id": None},
         headers=_headers(app, owner),
     )
     assert assign_resp.status_code == 200
     assign_payload = assign_resp.get_json()
     assert assign_payload["assigned"] is True
     assert assign_payload["employee"]["id"] == emp.id
+
+    timeline_count = len((json.loads(ticket.detalles or "{}") or {}).get("lead_timeline") or [])
+    replay_resp = client.post(
+        f"/api/admin/tenants/{tenant.slug}/tickets/municipio/{ticket.id}/auto-assign",
+        json={"expected_assignee_id": None},
+        headers=_headers(app, owner),
+    )
+    assert replay_resp.status_code == 200
+    assert replay_resp.get_json()["assignment"]["replayed"] is True
+    db.session.refresh(ticket)
+    assert len((json.loads(ticket.detalles or "{}") or {}).get("lead_timeline") or []) == timeline_count
+
+    manager = User(
+        email="manager-auto@test.com",
+        name="Manager Auto",
+        rol="manager",
+        es_empleado=True,
+        tenant_id=tenant.id,
+        accesibilidad={"employee_scope": {"categorias": ["luminaria"], "permisos": ["tickets.read"]}},
+    )
+    manager.set_password("pass")
+    replacement = User(
+        email="emp-auto-replacement@test.com",
+        name="Emp Auto Replacement",
+        rol="empleado",
+        es_empleado=True,
+        tenant_id=tenant.id,
+        accesibilidad={"employee_scope": {"categorias": ["luminaria"], "zonas": ["centro"]}},
+    )
+    replacement.set_password("pass")
+    db.session.add_all([manager, replacement])
+    db.session.commit()
+
+    forbidden = client.post(
+        f"/api/admin/tenants/{tenant.slug}/tickets/municipio/{ticket.id}/auto-assign",
+        json={"expected_assignee_id": emp.id},
+        headers=_headers(app, manager),
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.get_json()["reason_code"] == "ticket_assignment_forbidden"
+
+    emp.accesibilidad = {
+        "employee_scope": {
+            "categorias": ["otra_categoria"],
+            "zonas": ["centro"],
+            "permisos": ["tickets_update"],
+        }
+    }
+    db.session.commit()
+    stale = client.post(
+        f"/api/admin/tenants/{tenant.slug}/tickets/municipio/{ticket.id}/auto-assign",
+        json={"expected_assignee_id": None},
+        headers=_headers(app, owner),
+    )
+    assert stale.status_code == 409
+    assert stale.get_json()["reason_code"] == "assignment_state_conflict"
+    db.session.refresh(ticket)
+    assert ticket.asignado_a_id == emp.id
 
     overview_resp = client.get(f"/api/admin/tenants/{tenant.slug}/encuestas/overview", headers=_headers(app, owner))
     assert overview_resp.status_code == 200

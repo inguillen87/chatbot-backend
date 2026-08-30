@@ -15,6 +15,7 @@ from config import Config
 from models import (
     AnalyticsEventV2,
     CatalogoItem,
+    CategoriaTicket,
     DomainEffectOutbox,
     EncEncuesta,
     EncRespuesta,
@@ -531,7 +532,12 @@ class V2SaasContractsTest(unittest.TestCase):
 
         assign_response = self.client.post(
             f"/api/v2/tenants/{tenant.slug}/employee-routing/auto-assign",
-            json={"dry_run": False, "tickets": [{"source_model": "MunicipioTicket", "id": ticket.id}]},
+            json={
+                "dry_run": False,
+                "tickets": [
+                    {"source_model": "MunicipioTicket", "id": ticket.id, "expected_assignee_id": None}
+                ],
+            },
             headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug, "X-Request-Id": "assign-legacy-muni-1"},
         )
 
@@ -588,7 +594,9 @@ class V2SaasContractsTest(unittest.TestCase):
             "/api/v2/employee-routing/auto-assign",
             json={
                 "dry_run": False,
-                "tickets": [{"source_model": "TenantTicket", "id": unassigned.id}],
+                "tickets": [
+                    {"source_model": "TenantTicket", "id": unassigned.id, "expected_assignee_id": None}
+                ],
             },
             headers={**self._auth(self.owner), "X-Request-Id": "routing-assign-1"},
         )
@@ -600,6 +608,87 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(assign_payload["applied_count"], 1)
         refreshed = db.session.get(TenantTicket, unassigned.id)
         self.assertEqual(refreshed.datos_extra["assignee_id"], self.employee.id)
+
+        replay_response = self.client.post(
+            "/api/v2/employee-routing/auto-assign",
+            json={
+                "dry_run": False,
+                "tickets": [
+                    {
+                        "source_model": "TenantTicket",
+                        "id": unassigned.id,
+                        "expected_assignee_id": None,
+                    }
+                ],
+            },
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(replay_response.status_code, 200, replay_response.get_json())
+        self.assertEqual(replay_response.get_json()["applied_count"], 0)
+        self.assertTrue(replay_response.get_json()["items"][0]["assignment"]["replayed"])
+
+        manager = User(
+            name="Manager sin dispatch",
+            email="manager-autoassign@test.com",
+            rol="manager",
+            tenant_id=self.tenant.id,
+            tenant_slug=self.tenant.slug,
+            es_empleado=True,
+            accesibilidad={"employee_scope": {"categorias": ["educacion"], "permisos": ["tickets.read"]}},
+        )
+        manager.set_password("secret123")
+        replacement = self._claim_employee(
+            name="Reemplazo autoassign",
+            email="replacement-autoassign@test.com",
+            categories=["educacion"],
+        )
+        db.session.add(manager)
+        db.session.commit()
+        forbidden = self.client.post(
+            "/api/v2/employee-routing/auto-assign",
+            json={
+                "dry_run": False,
+                "tickets": [
+                    {
+                        "source_model": "TenantTicket",
+                        "id": unassigned.id,
+                        "expected_assignee_id": self.employee.id,
+                    }
+                ],
+            },
+            headers=self._auth(manager),
+        )
+        self.assertEqual(forbidden.status_code, 403, forbidden.get_json())
+        self.assertEqual(forbidden.get_json()["reason_code"], "ticket_assignment_forbidden")
+
+        employee_accessibility = dict(self.employee.accesibilidad or {})
+        employee_scope = dict(employee_accessibility.get("employee_scope") or {})
+        employee_scope["categorias"] = ["otra_categoria"]
+        employee_accessibility["employee_scope"] = employee_scope
+        self.employee.accesibilidad = employee_accessibility
+        self.employee.ticket_categorias = "otra_categoria"
+        db.session.commit()
+        stale_conflict = self.client.post(
+            "/api/v2/employee-routing/auto-assign",
+            json={
+                "dry_run": False,
+                "tickets": [
+                    {
+                        "source_model": "TenantTicket",
+                        "id": unassigned.id,
+                        "expected_assignee_id": None,
+                    }
+                ],
+            },
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(stale_conflict.status_code, 409, stale_conflict.get_json())
+        self.assertEqual(stale_conflict.get_json()["reason_code"], "assignment_state_conflict")
+        db.session.expire_all()
+        self.assertEqual(
+            (db.session.get(TenantTicket, unassigned.id).datos_extra or {}).get("assignee_id"),
+            self.employee.id,
+        )
 
     def test_tenant_health_contract(self):
         response = self.client.get("/api/v2/tenant-health", headers=self._auth(self.owner))
@@ -659,7 +748,9 @@ class V2SaasContractsTest(unittest.TestCase):
                 "/api/v2/employee-routing/auto-assign",
                 json={
                     "dry_run": False,
-                    "tickets": [{"source_model": "TenantTicket", "id": restricted.id}],
+                    "tickets": [
+                        {"source_model": "TenantTicket", "id": restricted.id, "expected_assignee_id": None}
+                    ],
                 },
                 headers=self._auth(self.owner),
             )
@@ -2894,11 +2985,17 @@ class V2SaasContractsTest(unittest.TestCase):
 
         reassigned = self.client.post(
             f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
-            json={"action": "assign", "assignee_id": replacement.id},
+            json={
+                "action": "assign",
+                "assignee_id": replacement.id,
+                "expected_assignee_id": self.employee.id,
+            },
             headers=self._auth(self.owner),
         )
         self.assertEqual(reassigned.status_code, 200, reassigned.get_json())
         self.assertEqual(reassigned.get_json()["ticket"]["assignee"]["id"], replacement.id)
+        self.assertEqual(reassigned.get_json()["delivery"]["status"], "assigned")
+        self.assertEqual(reassigned.get_json()["delivery"]["reason"], "assignment_applied")
 
         db.session.expire_all()
         persisted = db.session.get(TenantTicket, ticket.id)
@@ -2907,6 +3004,428 @@ class V2SaasContractsTest(unittest.TestCase):
             [item.get("action") for item in ((persisted.datos_extra or {}).get("comments") or [])][-2:],
             ["claim", "assign"],
         )
+
+    def test_omnichannel_assignment_is_hidden_and_forbidden_without_supervision(self):
+        ticket = self._unassigned_claim_ticket()
+        restricted = User(
+            name="Operador sin supervision",
+            email="operator-no-assign@test.com",
+            rol="empleado",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {
+                    "categorias": ["educacion"],
+                    "zonas": ["centro"],
+                    "permisos": ["tickets.read"],
+                    "channels": ["whatsapp"],
+                }
+            },
+        )
+        restricted.set_password("secret123")
+        replacement = self._claim_employee(
+            name="Destino supervisado",
+            email="supervised-target@test.com",
+        )
+        manager = User(
+            name="Manager sin capacidad",
+            email="manager-no-assign@test.com",
+            rol="manager",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {
+                    "categorias": ["educacion"],
+                    "zonas": ["centro"],
+                    "permisos": ["tickets.read"],
+                    "channels": ["whatsapp"],
+                }
+            },
+        )
+        manager.set_password("secret123")
+        db.session.add_all([restricted, manager])
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}",
+            headers=self._auth(restricted),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        actions = {item["id"] for item in detail.get_json()["ticket"]["allowed_actions"]}
+        self.assertIn("claim", actions)
+        self.assertNotIn("assign", actions)
+
+        forbidden = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={
+                "action": "assign",
+                "assignee_id": replacement.id,
+                "expected_assignee_id": None,
+            },
+            headers=self._auth(restricted),
+        )
+        self.assertEqual(forbidden.status_code, 403, forbidden.get_json())
+        self.assertEqual(forbidden.get_json()["reason_code"], "ticket_assignment_forbidden")
+
+        manager_detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}",
+            headers=self._auth(manager),
+        )
+        self.assertEqual(manager_detail.status_code, 200, manager_detail.get_json())
+        self.assertNotIn(
+            "assign",
+            {item["id"] for item in manager_detail.get_json()["ticket"]["allowed_actions"]},
+        )
+        manager_forbidden = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={
+                "action": "assign",
+                "assignee_id": replacement.id,
+                "expected_assignee_id": None,
+            },
+            headers=self._auth(manager),
+        )
+        self.assertEqual(manager_forbidden.status_code, 403, manager_forbidden.get_json())
+        self.assertEqual(manager_forbidden.get_json()["reason_code"], "ticket_assignment_forbidden")
+        db.session.expire_all()
+        self.assertIsNone((db.session.get(TenantTicket, ticket.id).datos_extra or {}).get("assignee_id"))
+
+    def test_explicit_dotted_assignment_capability_exposes_action_and_requires_cas(self):
+        ticket = self._unassigned_claim_ticket()
+        legacy_alias_detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}",
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(legacy_alias_detail.status_code, 200, legacy_alias_detail.get_json())
+        self.assertIn(
+            "assign",
+            {
+                item["id"]
+                for item in legacy_alias_detail.get_json()["ticket"]["allowed_actions"]
+            },
+        )
+        dispatcher = User(
+            name="Despachante autorizado",
+            email="dispatcher-capability@test.com",
+            rol="empleado",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+            es_empleado=True,
+            accesibilidad={
+                "capabilities": ["tickets.assign"],
+                "employee_scope": {
+                    "categorias": ["educacion"],
+                    "zonas": ["centro"],
+                    "permisos": ["tickets.read"],
+                    "channels": ["whatsapp"],
+                }
+            },
+        )
+        dispatcher.set_password("secret123")
+        target = self._claim_employee(
+            name="Destino de capacidad",
+            email="capability-target@test.com",
+        )
+        db.session.add(dispatcher)
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{ticket.id}",
+            headers=self._auth(dispatcher),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        assign_action = next(
+            item
+            for item in detail.get_json()["ticket"]["allowed_actions"]
+            if item["id"] == "assign"
+        )
+        self.assertIn("expected_assignee_id", assign_action["requires"])
+        self.assertEqual(assign_action["authorization"]["capability"], "tickets.assign")
+
+        missing_cas = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={"action": "assign", "assignee_id": target.id},
+            headers=self._auth(dispatcher),
+        )
+        self.assertEqual(missing_cas.status_code, 400, missing_cas.get_json())
+        self.assertEqual(missing_cas.get_json()["reason_code"], "expected_assignee_id_required")
+
+        assigned = self.client.post(
+            f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+            json={
+                "action": "assign",
+                "assignee_id": target.id,
+                "expected_assignee_id": None,
+            },
+            headers=self._auth(dispatcher),
+        )
+        self.assertEqual(assigned.status_code, 200, assigned.get_json())
+        self.assertEqual(assigned.get_json()["delivery"]["status"], "assigned")
+        self.assertEqual(assigned.get_json()["ticket"]["assignee"]["id"], target.id)
+
+    def test_supervisor_assignment_cas_replay_and_conflict_for_both_ticket_models(self):
+        self._enable_municipal_domain_outbox()
+        supervisor = User(
+            name="Supervisora de mesa",
+            email="supervisor-cas@test.com",
+            rol="supervisor",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {
+                    "categorias": ["educacion"],
+                    "zonas": ["centro"],
+                    "permisos": ["tickets.read"],
+                    "channels": ["whatsapp"],
+                }
+            },
+        )
+        supervisor.set_password("secret123")
+        target = self._claim_employee(name="Operador destino CAS", email="cas-target@test.com")
+        tenant_ticket = self._unassigned_claim_ticket()
+        legacy_ticket = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-CAS-001",
+            consulta_pin="910101",
+            pregunta="Caso municipal para asignar",
+            asunto="Caso municipal para asignar",
+            categoria="educacion",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+        )
+        db.session.add_all([supervisor, legacy_ticket])
+        db.session.commit()
+
+        cases = (
+            (
+                "TenantTicket",
+                tenant_ticket.id,
+                f"/api/v2/inbox/omnichannel/{tenant_ticket.id}/actions",
+                {"source_model": "TenantTicket", "ticket_id": tenant_ticket.id},
+            ),
+            (
+                "MunicipioTicket",
+                legacy_ticket.id,
+                "/api/v2/inbox/omnichannel/actions",
+                {"source_model": "MunicipioTicket", "ticket_id": legacy_ticket.id},
+            ),
+        )
+        for source_model, ticket_id, endpoint, identity in cases:
+            with self.subTest(source_model=source_model):
+                non_operational = self.client.post(
+                    endpoint,
+                    json={
+                        **identity,
+                        "action": "assign",
+                        "assignee_id": self.owner.id,
+                        "expected_assignee_id": None,
+                    },
+                    headers=self._auth(supervisor),
+                )
+                self.assertEqual(non_operational.status_code, 404, non_operational.get_json())
+                self.assertEqual(non_operational.get_json()["reason_code"], "assignee_not_found")
+
+                first = self.client.post(
+                    endpoint,
+                    json={
+                        **identity,
+                        "action": "assign",
+                        "assignee_id": target.id,
+                        "expected_assignee_id": None,
+                    },
+                    headers=self._auth(supervisor),
+                )
+                self.assertEqual(first.status_code, 200, first.get_json())
+                self.assertEqual(first.get_json()["delivery"]["status"], "assigned")
+                self.assertEqual(first.get_json()["delivery"]["assignment"]["source_model"], source_model)
+
+                replay = self.client.post(
+                    endpoint,
+                    json={
+                        **identity,
+                        "action": "assign",
+                        "assignee_id": target.id,
+                        # Original CAS value is intentionally stale: the same
+                        # target is an idempotent retry, not a new transition.
+                        "expected_assignee_id": None,
+                    },
+                    headers=self._auth(supervisor),
+                )
+                self.assertEqual(replay.status_code, 200, replay.get_json())
+                self.assertEqual(replay.get_json()["delivery"]["status"], "already_assigned")
+                self.assertTrue(replay.get_json()["delivery"]["assignment"]["replayed"])
+
+                conflict = self.client.post(
+                    endpoint,
+                    json={
+                        **identity,
+                        "action": "assign",
+                        "assignee_id": supervisor.id,
+                        "expected_assignee_id": None,
+                    },
+                    headers=self._auth(supervisor),
+                )
+                self.assertEqual(conflict.status_code, 409, conflict.get_json())
+                self.assertEqual(conflict.get_json()["reason_code"], "assignment_state_conflict")
+
+        db.session.expire_all()
+        self.assertEqual(
+            (db.session.get(TenantTicket, tenant_ticket.id).datos_extra or {}).get("assignee_id"),
+            target.id,
+        )
+        self.assertEqual(db.session.get(MunicipioTicket, legacy_ticket.id).asignado_a_id, target.id)
+        self.assertEqual(TicketComentario.query.filter_by(municipio_ticket_id=legacy_ticket.id).count(), 1)
+
+    def test_routing_and_assignment_preserve_exact_source_identity_and_category_alias(self):
+        # Numeric IDs can overlap across the two ticket tables.  The routing
+        # contract must keep source_model + id together and must not let the
+        # legacy "General" record replace the TenantTicket luminaria category.
+        exact_id = 777
+        tenant_ticket = TenantTicket(
+            id=exact_id,
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="Luminaria",
+            descripcion="Luz apagada",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"channel": "whatsapp"},
+        )
+        legacy_ticket = MunicipioTicket(
+            id=exact_id,
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-IDENTITY-777",
+            consulta_pin="910777",
+            pregunta="Registro legacy general",
+            asunto="Registro legacy general",
+            categoria="General",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+        )
+        luminaria_operator = self._claim_employee(
+            name="Cuadrilla luminarias",
+            email="luminarias-routing@test.com",
+            categories=["luminarias"],
+        )
+        db.session.add_all([tenant_ticket, legacy_ticket])
+        db.session.commit()
+
+        unsupported_source = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "PymeTicket",
+                "ticket_id": exact_id,
+                "action": "claim",
+            },
+            headers=self._auth(luminaria_operator),
+        )
+        self.assertEqual(unsupported_source.status_code, 400, unsupported_source.get_json())
+        self.assertEqual(
+            unsupported_source.get_json()["reason_code"],
+            "unsupported_inbox_source_model",
+        )
+
+        mismatched_identity = self.client.post(
+            f"/api/v2/inbox/omnichannel/{exact_id}/actions",
+            json={
+                "source_model": "TenantTicket",
+                "ticket_id": exact_id + 1,
+                "action": "claim",
+            },
+            headers=self._auth(luminaria_operator),
+        )
+        self.assertEqual(mismatched_identity.status_code, 409, mismatched_identity.get_json())
+        self.assertEqual(mismatched_identity.get_json()["reason_code"], "ticket_identity_conflict")
+
+        routing = self.client.get(
+            "/api/v2/employee-routing",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(routing.status_code, 200, routing.get_json())
+        recommendation = next(
+            item
+            for item in routing.get_json()["recommendations"]
+            if item["ticket"]["source_model"] == "TenantTicket"
+            and item["ticket"]["id"] == exact_id
+        )
+        self.assertEqual(recommendation["ticket"]["category"], "luminaria")
+        self.assertEqual(recommendation["ticket"]["authoritative_category"], "luminarias")
+        self.assertIn(luminaria_operator.id, recommendation["candidate_ids"])
+        self.assertIn(
+            luminaria_operator.id,
+            [item["employee"]["id"] for item in recommendation["eligible_assignees"]],
+        )
+
+        claimed = self.client.post(
+            f"/api/v2/inbox/omnichannel/{exact_id}/actions",
+            json={"source_model": "TenantTicket", "ticket_id": exact_id, "action": "claim"},
+            headers=self._auth(luminaria_operator),
+        )
+        self.assertEqual(claimed.status_code, 200, claimed.get_json())
+        db.session.expire_all()
+        self.assertEqual(
+            (db.session.get(TenantTicket, exact_id).datos_extra or {}).get("assignee_id"),
+            luminaria_operator.id,
+        )
+        self.assertIsNone(db.session.get(MunicipioTicket, exact_id).asignado_a_id)
+
+    def test_routing_uses_authoritative_category_id_when_legacy_label_is_general(self):
+        self._enable_municipal_domain_outbox()
+        category = CategoriaTicket(
+            tenant_id=self.tenant.id,
+            nombre="luminarias",
+            tipo="ticket",
+        )
+        db.session.add(category)
+        db.session.flush()
+        operator = self._claim_employee(
+            name="Operador por categoria persistida",
+            email="category-id-routing@test.com",
+            categories=["otra_categoria"],
+        )
+        operator.categorias_ticket.append(category)
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-CATEGORY-ID-001",
+            consulta_pin="910991",
+            pregunta="Caso clasificado por referencia",
+            asunto="Luminaria",
+            categoria="General",
+            categoria_id=category.id,
+            estado="nuevo",
+            distrito="centro",
+            canal_ingreso="whatsapp",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/employee-routing",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        recommendation = next(
+            item
+            for item in response.get_json()["recommendations"]
+            if item["ticket"]["source_model"] == "MunicipioTicket"
+            and item["ticket"]["id"] == legacy.id
+        )
+        self.assertEqual(recommendation["ticket"]["category"], "general")
+        self.assertEqual(recommendation["ticket"]["authoritative_category"], "luminarias")
+        self.assertEqual(recommendation["ticket"]["category_id"], category.id)
+        self.assertIn(operator.id, recommendation["candidate_ids"])
+        candidate = next(
+            item
+            for item in recommendation["eligible_assignees"]
+            if item["employee"]["id"] == operator.id
+        )
+        self.assertIn("category_id_match", candidate["reasons"])
 
     def test_omnichannel_legacy_claim_is_atomic_and_idempotent(self):
         self._enable_municipal_domain_outbox()

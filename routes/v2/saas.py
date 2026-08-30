@@ -44,15 +44,22 @@ from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     employee_ticket_category_access_allows,
     ticket_assignee_is_compatible,
+    ticket_assignee_is_operational,
 )
 from services.employee_routing import (
     build_employee_routing_payload,
     employee_ref,
+    eligible_employees_for_ticket,
     find_ticket_for_assignment,
     normalize_scope_list,
     tenant_open_ticket_snapshots,
     tenant_operational_dimensions,
     workload_by_employee,
+)
+from services.ticket_assignment_policy import (
+    TicketAssignmentPolicyError,
+    actor_can_assign_tickets,
+    assignment_transition,
 )
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.channel_activation import build_channel_activation_payload
@@ -1932,7 +1939,7 @@ def _apply_employee_assignment(ticket: Any, assignee: User, actor: User) -> dict
 @v2_saas_bp.route("/employee-routing/auto-assign", methods=["POST"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/employee-routing/auto-assign", methods=["POST"])
 @token_requerido
-@require_role("admin", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
@@ -1940,24 +1947,114 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
 
     payload = request.get_json(silent=True) or {}
     dry_run = payload.get("dry_run", True) is not False
+    if not dry_run and not actor_can_assign_tickets(current_user):
+        return _assignment_policy_error(
+            TicketAssignmentPolicyError(
+                403,
+                "ticket_assignment_forbidden",
+                "La asignacion a otro operador requiere supervision o la capacidad tickets.assign",
+                "request_supervisor_assignment",
+            )
+        )
     limit = max(1, min(int(payload.get("limit", 25) or 25), 100))
     routing = build_employee_routing_payload(tenant)
     recommendations = routing.get("recommendations") or []
     explicit_tickets = payload.get("tickets") if isinstance(payload.get("tickets"), list) else []
+    expected_by_identity: dict[tuple[str, int], Any] = {}
+    if not dry_run and not explicit_tickets:
+        return _error_response(
+            "tickets con source_model, ticket_id y expected_assignee_id son obligatorios para aplicar autoasignacion",
+            400,
+            "assignment_cas_batch_identity_required",
+            "send_explicit_ticket_cas_items",
+        )
     if explicit_tickets:
-        wanted = {
-            (str(item.get("source_model") or ""), int(item.get("id") or item.get("ticket_id") or 0))
-            for item in explicit_tickets
-            if str(item.get("source_model") or "") and str(item.get("id") or item.get("ticket_id") or "").isdigit()
-        }
-        recommendations = [
-            item
-            for item in recommendations
-            if (
+        wanted: set[tuple[str, int]] = set()
+        wanted_order: list[tuple[str, int]] = []
+        for item in explicit_tickets:
+            source = str(item.get("source_model") or "").strip()
+            raw_id = item.get("id") or item.get("ticket_id")
+            if source not in {"TenantTicket", "MunicipioTicket", "PymeTicket"} or not str(raw_id or "").isdigit():
+                return _error_response(
+                    "Cada ticket debe declarar una identidad source_model + ticket_id valida",
+                    400,
+                    "ticket_identity_invalid",
+                    "send_exact_ticket_identity",
+                )
+            identity = (source, int(raw_id))
+            if identity in wanted:
+                return _error_response(
+                    "La identidad del ticket esta repetida",
+                    409,
+                    "ticket_identity_conflict",
+                    "deduplicate_ticket_identity",
+                )
+            wanted.add(identity)
+            wanted_order.append(identity)
+            if not dry_run:
+                if "expected_assignee_id" not in item:
+                    return _error_response(
+                        "expected_assignee_id es obligatorio por ticket",
+                        400,
+                        "expected_assignee_id_required",
+                        "send_expected_assignee_id_per_ticket",
+                    )
+                expected_by_identity[identity] = item.get("expected_assignee_id")
+        recommendations_by_identity = {
+            (
                 str((item.get("ticket") or {}).get("source_model") or ""),
                 int((item.get("ticket") or {}).get("id") or 0),
-            )
-            in wanted
+            ): item
+            for item in recommendations
+        }
+
+        # ``recommendations`` normally contains only unassigned cases.  An
+        # explicit CAS retry must still resolve an already-assigned case so a
+        # same-target replay is observable and a different stale transition
+        # reaches the locked compare-and-set boundary.
+        if not dry_run:
+            snapshots_by_identity = {
+                (str(item.get("source_model") or ""), int(item.get("id") or 0)): item
+                for item in ((routing.get("queues") or {}).get("open") or [])
+            }
+            employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+            workloads = workload_by_employee(tenant)
+            for identity in wanted_order:
+                if identity in recommendations_by_identity:
+                    continue
+                snapshot = snapshots_by_identity.get(identity)
+                if snapshot is None:
+                    db.session.rollback()
+                    return _error_response(
+                        "Ticket no encontrado para esta identidad exacta",
+                        404,
+                        "ticket_not_found",
+                        "refresh_ticket_identity",
+                    )
+                eligible = eligible_employees_for_ticket(snapshot, employees, workloads)
+                current_assignee_id = snapshot.get("assignee_id")
+                best = next(
+                    (
+                        item
+                        for item in eligible
+                        if str(item["employee"].get("id") or "")
+                        == str(current_assignee_id or "")
+                    ),
+                    eligible[0] if eligible else None,
+                )
+                recommendations_by_identity[identity] = {
+                    "ticket": snapshot,
+                    "suggested_assignee": best["employee"] if best else None,
+                    "score": best["score"] if best else 0,
+                    "reasons": best["reasons"] if best else ["no_employee_available"],
+                    "candidate_ids": [item["employee"]["id"] for item in eligible],
+                    "eligible_assignees": eligible,
+                }
+
+        recommendations = [
+            recommendations_by_identity[identity]
+            for identity in wanted_order
+            if identity in recommendations_by_identity
         ]
 
     results = []
@@ -1972,16 +2069,61 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
         assignment_reason = None
         if assignee_id and ticket_id and not dry_run:
             assignee = User.query.filter_by(id=int(assignee_id), tenant_id=tenant.id, es_empleado=True).first()
-            ticket = find_ticket_for_assignment(tenant, source_model, int(ticket_id))
+            ticket = find_ticket_for_assignment(
+                tenant,
+                source_model,
+                int(ticket_id),
+                for_update=True,
+            )
             if assignee and ticket and ticket_assignee_is_compatible(assignee, ticket):
-                assignment = _apply_employee_assignment(ticket, assignee, current_user)
-                applied = True
+                current_assignee_id = (
+                    (_ticket_extra(ticket) or {}).get("assignee_id")
+                    if isinstance(ticket, TenantTicket)
+                    else getattr(ticket, "asignado_a_id", None)
+                )
+                identity = (source_model, int(ticket_id))
+                try:
+                    transition = assignment_transition(
+                        actor=current_user,
+                        payload={"expected_assignee_id": expected_by_identity.get(identity)},
+                        current_assignee_id=current_assignee_id,
+                        target_assignee_id=assignee.id,
+                    )
+                except TicketAssignmentPolicyError as exc:
+                    db.session.rollback()
+                    return _assignment_policy_error(exc)
+                if transition.replayed:
+                    assignment = {
+                        "assignee_id": assignee.id,
+                        "assignee_name": assignee.name,
+                        "assigned_at": None,
+                        "replayed": True,
+                    }
+                    assignment_reason = "assignment_idempotent_same_target"
+                else:
+                    assignment = {
+                        **_apply_employee_assignment(ticket, assignee, current_user),
+                        "replayed": False,
+                    }
+                    applied = True
             elif assignee and ticket:
                 assignment_reason = "assignee_category_scope_mismatch"
             elif not assignee:
-                assignment_reason = "assignee_not_found"
+                db.session.rollback()
+                return _error_response(
+                    "Empleado no encontrado para este tenant",
+                    404,
+                    "assignee_not_found",
+                    "refresh_employee_routing",
+                )
             else:
-                assignment_reason = "ticket_not_found"
+                db.session.rollback()
+                return _error_response(
+                    "Ticket no encontrado para esta identidad exacta",
+                    404,
+                    "ticket_not_found",
+                    "refresh_ticket_identity",
+                )
         elif not assignee_id:
             assignment_reason = "no_compatible_assignee"
         results.append(
@@ -4255,7 +4397,11 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
         freshness = (admin_payload.get("operations") or {}).get("freshness") or {}
         first_ticket = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).first()
         live_chat_status = _tenant_inbox_live_chat_status(tenant)
-        inbox_item = _inbox_ticket_payload(first_ticket, live_chat_status=live_chat_status) if first_ticket else None
+        inbox_item = (
+            _inbox_ticket_payload(first_ticket, live_chat_status=live_chat_status, actor=current_user)
+            if first_ticket
+            else None
+        )
         checks.extend(
             [
                 _smoke_check(
@@ -4528,7 +4674,7 @@ def operational_queue_v2(current_user):
 
 @v2_saas_bp.route("/inbox/omnichannel", methods=["GET"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def omnichannel_inbox_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -4553,8 +4699,14 @@ def omnichannel_inbox_v2(current_user):
     )
     legacy_claims = legacy_claim_query.order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all()
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    items = [_inbox_ticket_payload(ticket, live_chat_status=live_chat_status) for ticket in tenant_tickets]
-    items.extend(_legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status) for ticket in legacy_claims)
+    items = [
+        _inbox_ticket_payload(ticket, live_chat_status=live_chat_status, actor=current_user)
+        for ticket in tenant_tickets
+    ]
+    items.extend(
+        _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status, actor=current_user)
+        for ticket in legacy_claims
+    )
     items.sort(key=_inbox_sort_key, reverse=True)
     items = items[:limit]
 
@@ -4841,7 +4993,50 @@ def _apply_handoff_transition(
     return handoff
 
 
-def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _assignment_action_contract(
+    *,
+    endpoint: str,
+    payload_defaults: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    action = {
+        "id": "assign",
+        "label": "Asignar",
+        "method": "POST",
+        "endpoint": endpoint,
+        "requires": ["assignee_id", "expected_assignee_id"],
+        "authorization": {
+            "mode": "supervised_or_capability",
+            "roles": ["supervisor", "admin", "super_admin"],
+            "capability": "tickets.assign",
+        },
+        "concurrency": {
+            "contract_version": "inbox.assignment_cas.v1",
+            "expected_field": "expected_assignee_id",
+            "unassigned_value": None,
+            "same_target_replay": "idempotent",
+            "stale_state": "assignment_state_conflict",
+        },
+    }
+    if payload_defaults:
+        action["payload_defaults"] = dict(payload_defaults)
+    return action
+
+
+def _assignment_policy_error(error: TicketAssignmentPolicyError):
+    return _error_response(
+        error.message,
+        error.status_code,
+        error.reason_code,
+        error.action_hint,
+    )
+
+
+def _allowed_inbox_actions(
+    ticket: TenantTicket,
+    extra: Mapping[str, Any],
+    *,
+    actor: User | None = None,
+) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
     base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
     actions = [
@@ -4880,11 +5075,15 @@ def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> li
                 "external_dispatch": False,
             }
         )
-    actions.extend(
-        [
-            {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
-            {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
-        ]
+    if actor_can_assign_tickets(actor):
+        actions.append(
+            _assignment_action_contract(
+                endpoint=base_endpoint,
+                payload_defaults={"source_model": "TenantTicket", "ticket_id": ticket.id},
+            )
+        )
+    actions.append(
+        {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]}
     )
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     actions.extend(_handoff_action_contracts(endpoint=base_endpoint, handoff=handoff))
@@ -5097,7 +5296,11 @@ def _legacy_claim_tracking_links(ticket: MunicipioTicket) -> dict[str, str]:
     }
 
 
-def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any]]:
+def _legacy_claim_allowed_actions(
+    ticket: MunicipioTicket,
+    *,
+    actor: User | None = None,
+) -> list[dict[str, Any]]:
     base_endpoint = "/api/v2/inbox/omnichannel/actions"
     defaults = {"source_model": "MunicipioTicket", "legacy_id": ticket.id, "ticket_id": ticket.id}
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
@@ -5134,16 +5337,13 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
                 "external_dispatch": False,
             }
         )
-    actions.append(
-        {
-            "id": "assign",
-            "label": "Asignar",
-            "method": "POST",
-            "endpoint": base_endpoint,
-            "requires": ["assignee_id"],
-            "payload_defaults": defaults,
-        }
-    )
+    if actor_can_assign_tickets(actor):
+        actions.append(
+            _assignment_action_contract(
+                endpoint=base_endpoint,
+                payload_defaults=defaults,
+            )
+        )
     actions.extend(
         _handoff_action_contracts(
             endpoint=base_endpoint,
@@ -5200,7 +5400,12 @@ def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     return steps[:4]
 
 
-def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _legacy_claim_inbox_payload(
+    ticket: MunicipioTicket,
+    live_chat_status: Mapping[str, Any] | None = None,
+    *,
+    actor: User | None = None,
+) -> dict[str, Any]:
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     comments = _legacy_claim_comments(ticket)
@@ -5208,7 +5413,7 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
     latest_comment = comments[-1].comentario if comments else None
     updated_at = _legacy_claim_updated_at(ticket, comments)
     assignee = _legacy_claim_assignee(ticket)
-    actions = _legacy_claim_allowed_actions(ticket)
+    actions = _legacy_claim_allowed_actions(ticket, actor=actor)
     tracking_links = _legacy_claim_tracking_links(ticket)
     channel = str(ticket.canal_ingreso or "whatsapp").strip().lower()
     title = ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket or ticket.id}"
@@ -5307,7 +5512,12 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
     }
 
 
-def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _inbox_ticket_payload(
+    ticket: TenantTicket,
+    live_chat_status: Mapping[str, Any] | None = None,
+    *,
+    actor: User | None = None,
+) -> dict[str, Any]:
     extra = _ticket_extra(ticket)
     timeline = _timeline_items(extra)
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), dict) else None
@@ -5358,8 +5568,8 @@ def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, A
         "sla": _ticket_sla_payload(ticket, extra),
         "timeline": timeline,
         "presence": extra.get("presence") if isinstance(extra.get("presence"), dict) else {"viewers": [], "locked_by": None},
-        "actions": [item["id"] for item in _allowed_inbox_actions(ticket, extra)],
-        "allowed_actions": _allowed_inbox_actions(ticket, extra),
+        "actions": [item["id"] for item in _allowed_inbox_actions(ticket, extra, actor=actor)],
+        "allowed_actions": _allowed_inbox_actions(ticket, extra, actor=actor),
         "next_steps": _next_steps(ticket, extra),
         "source_metadata": _source_metadata(ticket, extra),
         "handoff": handoff,
@@ -5376,7 +5586,7 @@ def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, A
 
 @v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>", methods=["GET"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -5387,7 +5597,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if not legacy_ticket or not employee_ticket_category_access_allows(current_user, legacy_ticket):
             return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
-        item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
+        item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status, actor=current_user)
         return _json_response(
             {
                 "contract_version": "inbox.omnichannel.detail.v1",
@@ -5402,7 +5612,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     if not ticket:
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if legacy_ticket and employee_ticket_category_access_allows(current_user, legacy_ticket):
-            item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
+            item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status, actor=current_user)
             return _json_response(
                 {
                     "contract_version": "inbox.omnichannel.detail.v1",
@@ -5415,7 +5625,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
     if not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
-    item = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
+    item = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status, actor=current_user)
     return _json_response(
         {
             "contract_version": "inbox.omnichannel.detail.v1",
@@ -5986,6 +6196,9 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     reply_replayed = False
     reply_idempotency_source: str | None = None
     claim_idempotent = False
+    assignment_idempotent = False
+    assignment_expected_id: int | None = None
+    assignment_target_id: int | None = None
 
     if action == "claim":
         current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
@@ -6026,6 +6239,17 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
         if not assignee_id:
             return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+        assignment_target_id = assignee_id
+        try:
+            transition = assignment_transition(
+                actor=current_user,
+                payload=payload,
+                current_assignee_id=ticket.asignado_a_id,
+                target_assignee_id=assignee_id,
+            )
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_policy_error(exc)
+        assignment_expected_id = transition.expected_assignee_id
         owner_ids = [
             owner_id
             for owner_id in (getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None))
@@ -6034,7 +6258,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         assignee_query = User.query.filter(User.id == assignee_id)
         assignee_query = assignee_query.filter(or_(User.tenant_id == tenant.id, User.id.in_(owner_ids)))
         assignee = assignee_query.first()
-        if not assignee:
+        if not ticket_assignee_is_operational(assignee):
             return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
         if not ticket_assignee_is_compatible(assignee, ticket):
             return _error_response(
@@ -6043,21 +6267,24 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 "assignee_category_scope_mismatch",
                 "choose_compatible_assignee",
             )
-        ticket.asignado_a_id = assignee.id
-        ticket.asignado_en = now
-        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
-            ticket.estado = "en_proceso"
-        db.session.add(
-            TicketComentario(
-                municipio_ticket_id=ticket.id,
-                comentario=f"Asignado a {assignee.name}",
-                user_id=current_user.id,
-                es_admin=True,
-                origen="admin_panel",
-                estado_ticket=ticket.estado,
+        if transition.replayed:
+            assignment_idempotent = True
+        else:
+            ticket.asignado_a_id = assignee.id
+            ticket.asignado_en = now
+            if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            db.session.add(
+                TicketComentario(
+                    municipio_ticket_id=ticket.id,
+                    comentario=f"Asignado a {assignee.name}",
+                    user_id=current_user.id,
+                    es_admin=True,
+                    origen="admin_panel",
+                    estado_ticket=ticket.estado,
+                )
             )
-        )
-        timeline_updated = True
+            timeline_updated = True
 
     elif action == "handoff":
         channel = _normalize_handoff_channel(payload.get("channel") or payload.get("target_channel"))
@@ -6081,6 +6308,21 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         handoff_event_body = f"Handoff solicitado al equipo ({channel})"
 
     elif action == "accept_handoff":
+        current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
+        if current_assignee_id not in (None, current_user.id):
+            return _error_response(
+                "El ticket ya fue tomado por otro operador",
+                409,
+                "already_claimed",
+                "refresh_inbox",
+            )
+        if current_assignee_id is None and not ticket_assignee_is_compatible(current_user, ticket):
+            return _error_response(
+                "El operador no tiene acceso a la categoria del ticket",
+                404,
+                "ticket_not_found",
+                "refresh_inbox",
+            )
         _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
         ticket.asignado_a_id = current_user.id
         ticket.asignado_en = now
@@ -6249,14 +6491,19 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         timeline_updated = True
 
     if action != "reply":
-        if not (action == "claim" and claim_idempotent):
+        if not (
+            (action == "claim" and claim_idempotent)
+            or (action == "assign" and assignment_idempotent)
+        ):
             ticket.ultima_actividad = now
             db.session.add(ticket)
         db.session.commit()
 
     if action not in {"handoff", "accept_handoff", "resume_ai"} and not (
         action == "reply" and (reply_outbox_enabled or reply_replayed)
-    ) and not (action == "claim" and claim_idempotent):
+    ) and not (action == "claim" and claim_idempotent) and not (
+        action == "assign" and assignment_idempotent
+    ):
         realtime_state_events = _emit_legacy_claim_realtime_state(
             ticket,
             action=action,
@@ -6302,11 +6549,31 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         ),
         timeline_updated=timeline_updated,
         source_model="MunicipioTicket",
-        status=("already_owned" if action == "claim" and claim_idempotent else ("claimed" if action == "claim" else None)),
+        status=(
+            "already_owned"
+            if action == "claim" and claim_idempotent
+            else (
+                "claimed"
+                if action == "claim"
+                else (
+                    "already_assigned"
+                    if action == "assign" and assignment_idempotent
+                    else ("assigned" if action == "assign" else None)
+                )
+            )
+        ),
         reason=(
             "claim_idempotent_same_operator"
             if action == "claim" and claim_idempotent
-            else ("claim_acquired" if action == "claim" else delivery_reason)
+            else (
+                "claim_acquired"
+                if action == "claim"
+                else (
+                    "assignment_idempotent_same_target"
+                    if action == "assign" and assignment_idempotent
+                    else ("assignment_applied" if action == "assign" else delivery_reason)
+                )
+            )
         ),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
@@ -6318,8 +6585,20 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         durably_staged=(
             action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
         ),
-        idempotent_replay=action == "reply" and reply_replayed,
+        idempotent_replay=(
+            (action == "reply" and reply_replayed)
+            or (action == "assign" and assignment_idempotent)
+        ),
     )
+    if action == "assign":
+        delivery["assignment"] = {
+            "contract_version": "inbox.assignment_cas.v1",
+            "source_model": "MunicipioTicket",
+            "ticket_id": ticket.id,
+            "expected_assignee_id": assignment_expected_id,
+            "assignee_id": assignment_target_id,
+            "replayed": assignment_idempotent,
+        }
     delivery["realtime"] = {
         "emitted": bool(realtime_emitted or realtime_state_events),
         "event": "new_chat_message" if realtime_emitted else (realtime_state_events[0] if realtime_state_events else None),
@@ -6342,7 +6621,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             "direct_dispatch_performed": False,
         }
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    ticket_payload = _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status)
+    ticket_payload = _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status, actor=current_user)
 
     return _json_response(
         {
@@ -6360,7 +6639,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
 @v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>/actions", methods=["POST"])
 @v2_saas_bp.route("/inbox/omnichannel/actions", methods=["POST"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     payload = _omnichannel_action_json_payload()
 
@@ -6368,13 +6647,47 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     if error:
         return error
 
-    source_model = payload.get("source_model") or payload.get("legacy_model")
-    raw_ticket_id = ticket_id or payload.get("legacy_id") or payload.get("ticket_id") or payload.get("id")
+    raw_source_model = payload.get("source_model") or payload.get("legacy_model")
+    legacy_identity_prefix = any(
+        isinstance(payload.get(key), str) and payload.get(key).startswith("municipio:")
+        for key in ("legacy_id", "ticket_id", "id")
+    )
+    default_source_model = "MunicipioTicket" if legacy_identity_prefix else "TenantTicket"
+    normalized_source_model = str(raw_source_model or default_source_model).strip().lower()
+    if normalized_source_model in {"tenantticket", "tenant_ticket", "tenant"}:
+        source_model = "TenantTicket"
+    elif normalized_source_model in {"municipioticket", "municipio_ticket", "municipio"}:
+        source_model = "MunicipioTicket"
+    else:
+        return _error_response(
+            "source_model no es compatible con este inbox",
+            400,
+            "unsupported_inbox_source_model",
+            "send_tenantticket_or_municipioticket",
+        )
+
+    body_ids: list[int] = []
+    for key in ("legacy_id", "ticket_id", "id"):
+        if payload.get(key) in (None, ""):
+            continue
+        parsed_id = _coerce_inbox_ticket_id(payload.get(key))
+        if parsed_id is None:
+            return _error_response("ticket_id no es valido", 400, "ticket_id_invalid", "send_ticket_id")
+        body_ids.append(parsed_id)
+    if len(set(body_ids)) > 1 or (ticket_id is not None and body_ids and any(item != ticket_id for item in body_ids)):
+        return _error_response(
+            "source_model y ticket_id deben identificar el mismo caso",
+            409,
+            "ticket_identity_conflict",
+            "refresh_ticket_identity",
+        )
+
+    raw_ticket_id = ticket_id if ticket_id is not None else (body_ids[0] if body_ids else None)
     resolved_ticket_id = _coerce_inbox_ticket_id(raw_ticket_id)
     if resolved_ticket_id is None:
         return _error_response("ticket_id es obligatorio", 400, "ticket_id_required", "send_ticket_id")
 
-    if _is_legacy_claim_source(source_model) or (isinstance(raw_ticket_id, str) and raw_ticket_id.startswith("municipio:")):
+    if source_model == "MunicipioTicket":
         return _omnichannel_legacy_claim_action_v2(current_user, tenant, resolved_ticket_id, payload)
 
     ticket = (
@@ -6420,6 +6733,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     reply_outbox_effect_count = 0
     realtime_emitted = False
     claim_idempotent = False
+    assignment_idempotent = False
+    assignment_expected_id: int | None = None
+    assignment_target_id: int | None = None
 
     if action == "claim":
         raw_current_assignee_id = extra.get("assignee_id")
@@ -6455,8 +6771,19 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             assignee_id = int(assignee_id)
         except (TypeError, ValueError):
             return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+        assignment_target_id = assignee_id
+        try:
+            transition = assignment_transition(
+                actor=current_user,
+                payload=payload,
+                current_assignee_id=extra.get("assignee_id"),
+                target_assignee_id=assignee_id,
+            )
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_policy_error(exc)
+        assignment_expected_id = transition.expected_assignee_id
         assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
-        if not assignee:
+        if not ticket_assignee_is_operational(assignee):
             return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
         if not ticket_assignee_is_compatible(assignee, ticket):
             return _error_response(
@@ -6465,12 +6792,16 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 "assignee_category_scope_mismatch",
                 "choose_compatible_assignee",
             )
-        extra["assignee_id"] = assignee.id
-        extra["assignee_name"] = assignee.name
-        extra["assignee_email"] = assignee.email
-        if ticket.estado in {"nuevo", "open"}:
-            ticket.estado = "en_proceso"
-        event_body = f"Asignado a {assignee.name}"
+        if transition.replayed:
+            assignment_idempotent = True
+            event_body = f"El ticket ya estaba asignado a {assignee.name}"
+        else:
+            extra["assignee_id"] = assignee.id
+            extra["assignee_name"] = assignee.name
+            extra["assignee_email"] = assignee.email
+            if ticket.estado in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            event_body = f"Asignado a {assignee.name}"
 
     elif action == "handoff":
         channel = _normalize_handoff_channel(payload.get("channel") or payload.get("target_channel"))
@@ -6494,6 +6825,21 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         event_body = f"Handoff solicitado al equipo ({channel})"
 
     elif action == "accept_handoff":
+        current_assignee_id = _coerce_inbox_ticket_id(extra.get("assignee_id"))
+        if current_assignee_id not in (None, current_user.id):
+            return _error_response(
+                "El ticket ya fue tomado por otro operador",
+                409,
+                "already_claimed",
+                "refresh_inbox",
+            )
+        if current_assignee_id is None and not ticket_assignee_is_compatible(current_user, ticket):
+            return _error_response(
+                "El operador no tiene acceso a la categoria del ticket",
+                404,
+                "ticket_not_found",
+                "refresh_inbox",
+            )
         _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
         extra["assignee_id"] = current_user.id
         extra["assignee_name"] = current_user.name
@@ -6624,12 +6970,18 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         extra["priority"] = priority
         event_body = f"Prioridad actualizada: {priority}"
 
-    if action != "reply" and not (action == "claim" and claim_idempotent):
+    if action != "reply" and not (
+        (action == "claim" and claim_idempotent)
+        or (action == "assign" and assignment_idempotent)
+    ):
         _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
         timeline_updated = True
 
     if action != "reply":
-        if not (action == "claim" and claim_idempotent):
+        if not (
+            (action == "claim" and claim_idempotent)
+            or (action == "assign" and assignment_idempotent)
+        ):
             ticket.datos_extra = extra
             flag_modified(ticket, "datos_extra")
             ticket.updated_at = now
@@ -6685,11 +7037,31 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         ),
         timeline_updated=timeline_updated,
         source_model="TenantTicket",
-        status=("already_owned" if action == "claim" and claim_idempotent else ("claimed" if action == "claim" else None)),
+        status=(
+            "already_owned"
+            if action == "claim" and claim_idempotent
+            else (
+                "claimed"
+                if action == "claim"
+                else (
+                    "already_assigned"
+                    if action == "assign" and assignment_idempotent
+                    else ("assigned" if action == "assign" else None)
+                )
+            )
+        ),
         reason=(
             "claim_idempotent_same_operator"
             if action == "claim" and claim_idempotent
-            else ("claim_acquired" if action == "claim" else delivery_reason)
+            else (
+                "claim_acquired"
+                if action == "claim"
+                else (
+                    "assignment_idempotent_same_target"
+                    if action == "assign" and assignment_idempotent
+                    else ("assignment_applied" if action == "assign" else delivery_reason)
+                )
+            )
         ),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
@@ -6698,8 +7070,20 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         durably_staged=(
             action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
         ),
-        idempotent_replay=action == "reply" and reply_replayed,
+        idempotent_replay=(
+            (action == "reply" and reply_replayed)
+            or (action == "assign" and assignment_idempotent)
+        ),
     )
+    if action == "assign":
+        delivery["assignment"] = {
+            "contract_version": "inbox.assignment_cas.v1",
+            "source_model": "TenantTicket",
+            "ticket_id": ticket.id,
+            "expected_assignee_id": assignment_expected_id,
+            "assignee_id": assignment_target_id,
+            "replayed": assignment_idempotent,
+        }
     if action == "reply":
         delivery["idempotency"] = {
             "contract_version": "inbox.reply_idempotency.v1",
@@ -6744,7 +7128,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                     exc,
                 )
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    ticket_payload = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
+    ticket_payload = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status, actor=current_user)
 
     return _json_response(
         {

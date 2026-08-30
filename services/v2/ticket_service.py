@@ -14,6 +14,7 @@ from services.attachment_delivery import serialize_attachment_for_delivery
 from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     ticket_assignee_category_values_are_compatible,
+    ticket_assignee_is_operational,
 )
 from services.v2.sla_service import apply_sla_to_ticket, get_policies_for_tenant, is_ticket_overdue
 from services.v2.ticket_event_service import record_ticket_event
@@ -391,9 +392,7 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
         except (TypeError, ValueError) as exc:
             raise ValueError("assignee_id invalido") from exc
         assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
-        assignee_role = str(getattr(assignee, "rol", "") or "").lower() if assignee else ""
-        is_assignable = bool(getattr(assignee, "es_empleado", False)) or assignee_role in {"empleado", "employee", "admin", "tenant_admin"}
-        if not assignee or not is_assignable:
+        if not ticket_assignee_is_operational(assignee):
             raise ValueError("assignee_not_found")
         if not ticket_assignee_category_values_are_compatible(
             assignee,
@@ -555,18 +554,7 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
                 id=final_assignee_id,
                 tenant_id=tenant.id,
             ).first()
-            assignee_role = (
-                str(getattr(validated_assignee, "rol", "") or "").lower()
-                if validated_assignee
-                else ""
-            )
-            is_assignable = bool(getattr(validated_assignee, "es_empleado", False)) or assignee_role in {
-                "empleado",
-                "employee",
-                "admin",
-                "tenant_admin",
-            }
-            if not validated_assignee or not is_assignable:
+            if not ticket_assignee_is_operational(validated_assignee):
                 raise LookupError("assignee_not_found")
             if not ticket_assignee_category_values_are_compatible(
                 validated_assignee,

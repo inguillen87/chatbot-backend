@@ -51,7 +51,15 @@ from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
     build_survey_response_provenance,
 )
-from services.employee_ticket_access import apply_employee_ticket_category_scope
+from services.employee_ticket_access import (
+    apply_employee_ticket_category_scope,
+    ticket_assignee_is_compatible,
+)
+from services.ticket_assignment_policy import (
+    TicketAssignmentPolicyError,
+    actor_can_assign_tickets,
+    assignment_transition,
+)
 from services.operational_heatmap_access import (
     EMPLOYEE_HEATMAP_K_MIN,
     EMPLOYEE_HEATMAP_COORDINATE_PRECISION,
@@ -3092,9 +3100,31 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         return jsonify({'error': 'Tenant not found'}), 404
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({'error': 'Unauthorized'}), 403
+    if not actor_can_assign_tickets(current_user):
+        return jsonify({
+            'contract_version': 'shared.error.v1',
+            'status_code': 403,
+            'reason_code': 'ticket_assignment_forbidden',
+            'message': 'La asignacion a otro operador requiere supervision o la capacidad tickets.assign',
+            'action_hint': 'request_supervisor_assignment',
+        }), 403
 
-    ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
-    if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
+    if ticket_type == 'municipio':
+        ticket = (
+            scoped_municipio_ticket_query(tenant)
+            .filter(MunicipioTicket.id == ticket_id)
+            .with_for_update()
+            .first()
+        )
+    elif ticket_type == 'pyme':
+        ticket = (
+            PymeTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id)
+            .with_for_update()
+            .first()
+        )
+    else:
+        ticket = None
+    if not ticket:
         return jsonify({'error': 'Ticket no encontrado'}), 404
 
     categoria = str(getattr(ticket, 'categoria', None) or '').strip().lower()
@@ -3103,6 +3133,7 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
     best = None
     best_score = -1
+    current_best = None
     payload = request.get_json(silent=True) or {}
     required_permission = str(payload.get('required_permission') or '').strip().lower()
 
@@ -3110,39 +3141,69 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         scope = _employee_scope(emp)
         if required_permission and not _scope_has_permission(scope, required_permission):
             continue
+        if not ticket_assignee_is_compatible(emp, ticket):
+            continue
         base_score = _scope_match_score(categoria=categoria, zona=zona, scope=scope)
+        # A persisted CategoriaTicket relation is authoritative even when the
+        # legacy display label is the generic ``General`` value.
+        if base_score <= 0 and getattr(ticket, 'categoria_id', None):
+            base_score = 80
         workload = _employee_open_workload(tenant.id, emp.id)
         score = max(base_score - min(workload * 5, 30), 0)
+        if str(emp.id) == str(getattr(ticket, 'asignado_a_id', None) or ''):
+            current_best = (emp, scope, workload, score)
         if score > best_score:
             best_score = score
             best = (emp, scope, workload)
+
+    if current_best is not None:
+        current_emp, current_scope, current_workload, current_score = current_best
+        best = (current_emp, current_scope, current_workload)
+        best_score = current_score
 
     if not best or best_score <= 0:
         return jsonify({'ok': False, 'assigned': False, 'reason': 'no_match'}), 200
 
     emp, scope, workload = best
-    if hasattr(ticket, 'asignado_a_id'):
+    try:
+        transition = assignment_transition(
+            actor=current_user,
+            payload=payload,
+            current_assignee_id=getattr(ticket, 'asignado_a_id', None),
+            target_assignee_id=emp.id,
+        )
+    except TicketAssignmentPolicyError as exc:
+        return jsonify({
+            'contract_version': 'shared.error.v1',
+            'status_code': exc.status_code,
+            'reason_code': exc.reason_code,
+            'message': exc.message,
+            'action_hint': exc.action_hint,
+        }), exc.status_code
+
+    if not transition.replayed and hasattr(ticket, 'asignado_a_id'):
         ticket.asignado_a_id = emp.id
         ticket.asignado_en = datetime.now(timezone.utc)
 
     details = _ticket_details(ticket)
     timeline = details.get('lead_timeline') if isinstance(details.get('lead_timeline'), list) else []
-    timeline.append({
-        'at': datetime.now(timezone.utc).isoformat(),
-        'by_user_id': current_user.id,
-        'event': 'auto_assign_employee_scope',
-        'employee_id': emp.id,
-        'employee_name': emp.name,
-        'score': best_score,
-        'workload_open_tickets': workload,
-        'categoria': categoria or None,
-        'zona': zona or None,
-    })
-    details['lead_timeline'] = timeline[-100:]
-    _save_ticket_details(ticket, details)
-    if hasattr(ticket, 'ultima_actividad'):
-        ticket.ultima_actividad = datetime.now(timezone.utc)
-    db.session.commit()
+    if not transition.replayed:
+        timeline.append({
+            'at': datetime.now(timezone.utc).isoformat(),
+            'by_user_id': current_user.id,
+            'event': 'auto_assign_employee_scope',
+            'employee_id': emp.id,
+            'employee_name': emp.name,
+            'score': best_score,
+            'workload_open_tickets': workload,
+            'categoria': categoria or None,
+            'zona': zona or None,
+        })
+        details['lead_timeline'] = timeline[-100:]
+        _save_ticket_details(ticket, details)
+        if hasattr(ticket, 'ultima_actividad'):
+            ticket.ultima_actividad = datetime.now(timezone.utc)
+        db.session.commit()
 
     return jsonify({
         'ok': True,
@@ -3153,6 +3214,12 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         'score': best_score,
         'workload_open_tickets': workload,
         'scope': scope,
+        'assignment': {
+            'contract_version': 'inbox.assignment_cas.v1',
+            'expected_assignee_id': transition.expected_assignee_id,
+            'assignee_id': emp.id,
+            'replayed': transition.replayed,
+        },
     })
 
 
