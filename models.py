@@ -5316,4 +5316,5 @@ from models_whatsapp_workflows import (
 from models_territorial_geocoding import (
     TerritorialGeocodingAttempt,
     TerritorialGeocodingJob,
+    TerritorialGeocodingReview,
 )

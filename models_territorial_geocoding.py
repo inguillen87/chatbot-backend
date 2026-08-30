@@ -161,4 +161,94 @@ class TerritorialGeocodingAttempt(db.Model):
     )
 
 
-__all__ = ["TerritorialGeocodingAttempt", "TerritorialGeocodingJob"]
+class TerritorialGeocodingReview(db.Model):
+    """Immutable human decision over one geocoding proposal.
+
+    A review never stores the source address and never applies coordinates.  It
+    binds the operator decision to the proposal digest that was visible at the
+    time, so a later provider attempt makes the older decision observably stale
+    instead of silently reusing it for different coordinates.
+    """
+
+    __tablename__ = "territorial_geocoding_review"
+
+    CONTRACT_VERSION = "operations.territorial_geocoding_admin.v1"
+    VALID_DECISIONS = frozenset({"approved", "rejected"})
+
+    id = db.Column(
+        db.String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    job_id = db.Column(
+        db.String(36),
+        db.ForeignKey("territorial_geocoding_job.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    reviewer_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    contract_version = db.Column(
+        db.String(64), nullable=False, default=CONTRACT_VERSION
+    )
+    decision = db.Column(db.String(16), nullable=False)
+    reason_code = db.Column(db.String(96), nullable=False)
+    reviewed_job_status = db.Column(db.String(20), nullable=False)
+    proposal_digest = db.Column(db.String(64), nullable=False)
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_digest = db.Column(db.String(64), nullable=False)
+    coordinate_write_performed = db.Column(
+        db.Boolean, nullable=False, default=False, server_default="false"
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False, server_default=db.func.now()
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "job_id",
+            "idempotency_key_hash",
+            name="uq_territorial_geocoding_review_idempotency",
+        ),
+        db.CheckConstraint(
+            "decision IN ('approved', 'rejected')",
+            name="ck_territorial_geocoding_review_decision",
+        ),
+        db.CheckConstraint(
+            "reviewed_job_status IN ('pending', 'needs_review', 'failed')",
+            name="ck_territorial_geocoding_review_job_status",
+        ),
+        db.CheckConstraint(
+            "length(proposal_digest) = 64 AND "
+            "length(idempotency_key_hash) = 64 AND "
+            "length(request_digest) = 64",
+            name="ck_territorial_geocoding_review_digests",
+        ),
+        db.CheckConstraint(
+            "coordinate_write_performed IS FALSE",
+            name="ck_territorial_geocoding_review_no_coordinate_write",
+        ),
+        db.Index(
+            "ix_territorial_geocoding_review_tenant_job_created",
+            "tenant_id",
+            "job_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+
+__all__ = [
+    "TerritorialGeocodingAttempt",
+    "TerritorialGeocodingJob",
+    "TerritorialGeocodingReview",
+]

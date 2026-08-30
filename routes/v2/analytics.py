@@ -11,7 +11,7 @@ from flask import Blueprint, Response, current_app, has_request_context, jsonify
 
 import config.feature_flags as feature_flags
 from cutover_writer_fence import cutover_writer_view
-from models import TenantTicket
+from models import TenantTicket, db
 from routes import analytics_routes as legacy_analytics
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
 from services.analytics_service import analytics_service
@@ -31,6 +31,13 @@ from services.plan_access import (
     integration_access_payload,
     integration_feature_payload,
     integration_plan_required_payload,
+)
+from services.territorial_geocoding_admin import (
+    TerritorialGeocodingAdminError,
+    geocoding_job_attempts,
+    geocoding_job_detail,
+    list_geocoding_queue,
+    review_geocoding_job,
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
@@ -625,6 +632,148 @@ def operations_heatmap_v2(current_user):
     if (payload.get("privacy") or {}).get("mode") == "employee_aggregated":
         return _json_response(payload)
     return _json_response(_with_access(payload, tenant))
+
+
+def _geocoding_admin_error_response(exc: TerritorialGeocodingAdminError):
+    response = _error_response(
+        exc.message,
+        exc.status_code,
+        exc.reason_code,
+        exc.action_hint,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _geocoding_admin_response(payload: dict[str, Any], status: int = 200):
+    response = _json_response(payload, status)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@v2_analytics_bp.route("/operations/geocoding-queue", methods=["GET"])
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_queue_v2(current_user):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+
+    try:
+        payload = list_geocoding_queue(
+            db.session,
+            tenant_id=tenant.id,
+            page=request.args.get("page") or 1,
+            per_page=request.args.get("per_page") or request.args.get("limit") or 25,
+            status=request.args.get("status"),
+            review_state=request.args.get("review_state"),
+            source_model=request.args.get("source_model"),
+            reason_code=request.args.get("reason_code"),
+            ticket_id=request.args.get("ticket_id"),
+            category=request.args.get("category") or request.args.get("categoria"),
+            zone=request.args.get("zone") or request.args.get("zona"),
+            quality_state=request.args.get("quality_state"),
+        )
+    except TerritorialGeocodingAdminError as exc:
+        return _geocoding_admin_error_response(exc)
+    return _geocoding_admin_response(payload)
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/<string:job_id>", methods=["GET"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_job_detail_v2(current_user, job_id: str):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+
+    try:
+        payload = geocoding_job_detail(
+            db.session,
+            tenant_id=tenant.id,
+            job_id=job_id,
+        )
+    except TerritorialGeocodingAdminError as exc:
+        return _geocoding_admin_error_response(exc)
+    return _geocoding_admin_response(payload)
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/<string:job_id>/attempts", methods=["GET"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_job_attempts_v2(current_user, job_id: str):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+
+    try:
+        payload = geocoding_job_attempts(
+            db.session,
+            tenant_id=tenant.id,
+            job_id=job_id,
+        )
+    except TerritorialGeocodingAdminError as exc:
+        return _geocoding_admin_error_response(exc)
+    return _geocoding_admin_response(payload)
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/<string:job_id>/review", methods=["POST"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_job_review_v2(current_user, job_id: str):
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+
+    try:
+        payload = review_geocoding_job(
+            db.session,
+            tenant_id=tenant.id,
+            job_id=job_id,
+            reviewer_user_id=current_user.id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            payload=request.get_json(silent=True),
+        )
+        db.session.commit()
+    except TerritorialGeocodingAdminError as exc:
+        db.session.rollback()
+        return _geocoding_admin_error_response(exc)
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Territorial geocoding review failed tenant_id=%s job_id=%s",
+            tenant.id,
+            job_id,
+        )
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_review_persistence_failed",
+                status_code=500,
+                action_hint="retry_with_same_idempotency_key",
+                message="No se pudo registrar la revisión territorial.",
+            )
+        )
+
+    status = 200 if payload.get("idempotent_replay") else 201
+    return _geocoding_admin_response(payload, status)
 
 
 @v2_analytics_bp.route("/operations/action-center", methods=["GET"])
