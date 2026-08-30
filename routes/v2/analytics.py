@@ -40,7 +40,10 @@ from services.territorial_geocoding_admin import (
     list_geocoding_queue,
     review_geocoding_job,
 )
-from services.territorial_geocoding_sync import sync_territorial_geocoding_queue
+from services.territorial_geocoding_sync import (
+    preview_territorial_geocoding_queue,
+    sync_territorial_geocoding_queue,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -678,6 +681,45 @@ def operations_geocoding_queue_v2(current_user):
             category=request.args.get("category") or request.args.get("categoria"),
             zone=request.args.get("zone") or request.args.get("zona"),
             quality_state=request.args.get("quality_state"),
+        )
+    except TerritorialGeocodingAdminError as exc:
+        return _geocoding_admin_error_response(exc)
+    return _geocoding_admin_response(payload)
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/preview", methods=["GET"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_queue_preview_v2(current_user):
+    """Preview current pending candidates without provider calls or writes."""
+
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+
+    try:
+        discovery = discover_operational_geocoding_queue_candidates(
+            tenant,
+            datetime(1970, 1, 1),
+            datetime.now(timezone.utc),
+            viewer=current_user,
+        )
+        payload = preview_territorial_geocoding_queue(
+            tenant_id=tenant.id,
+            candidates=discovery.get("candidates") or [],
+            discovered=discovery.get("discovered") or 0,
+            hidden=discovery.get("hidden") or 0,
+            page=request.args.get("page") or 1,
+            per_page=request.args.get("per_page") or request.args.get("limit") or 25,
+            source_model=request.args.get("source_model"),
+            ticket_id=request.args.get("ticket_id"),
+            category=request.args.get("category") or request.args.get("categoria"),
+            zone=request.args.get("zone") or request.args.get("zona"),
         )
     except TerritorialGeocodingAdminError as exc:
         return _geocoding_admin_error_response(exc)

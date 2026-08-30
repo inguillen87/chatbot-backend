@@ -19,7 +19,9 @@ from services.territorial_evidence import normalize_address_key
 
 
 CONTRACT_VERSION = "operations.territorial_geocoding_sync.v1"
+PREVIEW_CONTRACT_VERSION = "operations.territorial_geocoding_preview.v1"
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
+_SAFE_IDENTITY_FILTER_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 
 
 def _digest(value: Any) -> str:
@@ -72,6 +74,226 @@ def _safe_candidate_identity(
         "candidate_fingerprint": candidate.fingerprint,
         "category": category,
         "zone": zone,
+    }
+
+
+def _preview_filter(
+    value: Any,
+    *,
+    maximum: int,
+    identity_only: bool = False,
+) -> str | None:
+    normalized = " ".join(str(value or "").split()).strip()
+    if not normalized:
+        return None
+    if len(normalized) > maximum or (
+        identity_only and not _SAFE_IDENTITY_FILTER_RE.fullmatch(normalized)
+    ):
+        raise TerritorialGeocodingAdminError(
+            "geocoding_preview_filter_invalid",
+            action_hint="use_supported_filter",
+            message="El filtro de la vista previa territorial no es valido.",
+        )
+    return normalized
+
+
+def _preview_item(candidate: TerritorialGeocodingCandidate) -> dict[str, Any]:
+    identity = _safe_candidate_identity(candidate)
+    source_model = identity.get("record_source")
+    source_id = identity.get("record_id")
+    source_ref = {
+        "model": source_model,
+        "id": source_id,
+        "tenant_scoped": True,
+    }
+    return {
+        "id": f"{source_model}:{source_id}",
+        "ticket_id": source_id,
+        "source_model": source_model,
+        "category": identity.get("category"),
+        "zone": identity.get("zone"),
+        "state": "awaiting_materialization",
+        "reason_code": "persisted_address_without_coordinates",
+        "provenance": {
+            "source": source_ref,
+            "address_evidence": "persisted_on_source",
+            "coordinate_evidence": "missing_on_source",
+            "provider_evidence": "not_requested",
+        },
+        "actions": {
+            "inspect_source": {
+                "enabled": True,
+                "mutates_state": False,
+                "ui_hint": "open_source_ticket_read_only",
+                "source_ref": source_ref,
+            },
+            "provider_lookup": {
+                "enabled": False,
+                "mutates_state": False,
+                "reason_code": "preview_is_provider_free",
+            },
+            "review": {
+                "enabled": False,
+                "mutates_state": False,
+                "reason_code": "materialized_proposal_required",
+            },
+            "coordinate_write": {
+                "enabled": False,
+                "mutates_state": False,
+                "reason_code": "preview_is_read_only",
+            },
+        },
+    }
+
+
+def preview_territorial_geocoding_queue(
+    *,
+    tenant_id: int,
+    candidates: Iterable[TerritorialGeocodingCandidate],
+    discovered: int,
+    hidden: int = 0,
+    page: Any = 1,
+    per_page: Any = 25,
+    source_model: Any = None,
+    ticket_id: Any = None,
+    category: Any = None,
+    zone: Any = None,
+) -> dict[str, Any]:
+    """Serialize live queue candidates without persistence or provider calls."""
+
+    try:
+        normalized_tenant_id = int(tenant_id)
+        normalized_page = max(1, int(page))
+        normalized_per_page = max(1, min(int(per_page), 100))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TerritorialGeocodingAdminError(
+            "geocoding_preview_pagination_invalid",
+            action_hint="use_supported_pagination",
+        ) from exc
+    if normalized_tenant_id <= 0:
+        raise TerritorialGeocodingAdminError(
+            "geocoding_preview_tenant_invalid",
+            status_code=403,
+            action_hint="check_tenant_slug",
+        )
+
+    normalized_source = _preview_filter(
+        source_model, maximum=32, identity_only=True
+    )
+    normalized_ticket = _preview_filter(
+        ticket_id, maximum=64, identity_only=True
+    )
+    normalized_category = _preview_filter(category, maximum=96)
+    normalized_zone = _preview_filter(zone, maximum=120)
+
+    materialized = list(candidates)
+    if any(int(candidate.tenant_id) != normalized_tenant_id for candidate in materialized):
+        raise TerritorialGeocodingAdminError(
+            "candidate_tenant_mismatch",
+            status_code=403,
+            action_hint="rebuild_tenant_candidate_set",
+        )
+    unique_candidates = {
+        candidate.fingerprint: candidate for candidate in materialized
+    }
+    items = [
+        _preview_item(candidate)
+        for candidate in sorted(
+            unique_candidates.values(),
+            key=lambda item: (item.record_source, item.record_id, item.fingerprint),
+        )
+    ]
+    if normalized_source:
+        expected = normalized_source.casefold()
+        items = [
+            item
+            for item in items
+            if str(item.get("source_model") or "").casefold() == expected
+        ]
+    if normalized_ticket:
+        expected = normalized_ticket.casefold()
+        items = [
+            item
+            for item in items
+            if str(item.get("ticket_id") or "").casefold() == expected
+        ]
+    if normalized_category:
+        expected = normalized_category.casefold()
+        items = [
+            item
+            for item in items
+            if str(item.get("category") or "").casefold() == expected
+        ]
+    if normalized_zone:
+        expected = normalized_zone.casefold()
+        items = [
+            item
+            for item in items
+            if str(item.get("zone") or "").casefold() == expected
+        ]
+
+    def counts(field: str) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for item in items:
+            label = str(item.get(field) or "unclassified")
+            result[label] = result.get(label, 0) + 1
+        return dict(sorted(result.items()))
+
+    total = len(items)
+    start = (normalized_page - 1) * normalized_per_page
+    page_items = items[start : start + normalized_per_page]
+    duplicate_hidden = max(0, len(materialized) - len(unique_candidates))
+
+    return {
+        "contract_version": PREVIEW_CONTRACT_VERSION,
+        "tenant_id": normalized_tenant_id,
+        "summary": {
+            "discovered": max(0, int(discovered)),
+            "unique": len(unique_candidates),
+            "matching": total,
+            "hidden": max(0, int(hidden)) + duplicate_hidden,
+            "by_source_model": counts("source_model"),
+            "by_category": counts("category"),
+            "by_zone": counts("zone"),
+        },
+        "filters": {
+            "source_model": normalized_source,
+            "ticket_id": normalized_ticket,
+            "category": normalized_category,
+            "zone": normalized_zone,
+        },
+        "population": {
+            "source_family": "tickets",
+            "period": "all_available",
+            "eligibility": "persisted_address_without_coordinates",
+            "filters_apply_to_unique_candidates": True,
+        },
+        "pagination": {
+            "page": normalized_page,
+            "per_page": normalized_per_page,
+            "total": total,
+            "has_next": start + normalized_per_page < total,
+        },
+        "items": page_items,
+        "execution": {
+            "read_only": True,
+            "database_write_performed": False,
+            "provider_call_performed": False,
+            "coordinate_write_performed": False,
+        },
+        "privacy": {
+            "raw_address_exposed": False,
+            "address_digest_exposed": False,
+            "candidate_fingerprint_exposed": False,
+            "exact_coordinates_exposed": False,
+            "tenant_scoped": True,
+        },
+        "frontend_contract": {
+            "render_as": "territorial_geocoding_preview_queue",
+            "selection_key": "selected_preview_candidate",
+            "empty_state": "no_pending_geocoding_candidates_for_filters",
+            "read_only": True,
+        },
     }
 
 
@@ -335,4 +557,9 @@ def sync_territorial_geocoding_queue(
     return payload
 
 
-__all__ = ["CONTRACT_VERSION", "sync_territorial_geocoding_queue"]
+__all__ = [
+    "CONTRACT_VERSION",
+    "PREVIEW_CONTRACT_VERSION",
+    "preview_territorial_geocoding_queue",
+    "sync_territorial_geocoding_queue",
+]

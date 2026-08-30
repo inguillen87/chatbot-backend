@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import os
+from unittest.mock import patch
 
 import jwt
 
@@ -213,6 +214,129 @@ def test_sync_materializes_same_heatmap_candidate_without_address_or_coordinates
         assert address not in json.dumps(payload, ensure_ascii=False)
         assert "Domicilio Secreto" not in json.dumps(job.result_json, ensure_ascii=False)
         assert ticket.latitud is None and ticket.longitud is None
+    finally:
+        _teardown(context)
+
+
+def test_preview_exposes_current_redacted_candidates_without_provider_or_writes():
+    app, context, admin, _second, _employee, tenant, _other, ticket, address = _setup()
+    try:
+        client = app.test_client()
+        with patch("services.location_service.geocode_address") as geocode:
+            response = client.get(
+                "/api/v2/analytics/operations/geocoding-queue/preview",
+                headers=_auth(app, admin, tenant.slug),
+            )
+
+        assert response.status_code == 200
+        assert response.headers["Cache-Control"] == "no-store"
+        payload = response.get_json()
+        assert payload["contract_version"] == "operations.territorial_geocoding_preview.v1"
+        assert payload["summary"] == {
+            "discovered": 1,
+            "unique": 1,
+            "matching": 1,
+            "hidden": 0,
+            "by_source_model": {"tenant_ticket": 1},
+            "by_category": {"luminarias": 1},
+            "by_zone": {"centro": 1},
+        }
+        assert payload["execution"] == {
+            "read_only": True,
+            "database_write_performed": False,
+            "provider_call_performed": False,
+            "coordinate_write_performed": False,
+        }
+        assert payload["population"] == {
+            "source_family": "tickets",
+            "period": "all_available",
+            "eligibility": "persisted_address_without_coordinates",
+            "filters_apply_to_unique_candidates": True,
+        }
+        assert payload["privacy"] == {
+            "raw_address_exposed": False,
+            "address_digest_exposed": False,
+            "candidate_fingerprint_exposed": False,
+            "exact_coordinates_exposed": False,
+            "tenant_scoped": True,
+        }
+        item = payload["items"][0]
+        assert item["ticket_id"] == str(ticket.id)
+        assert item["source_model"] == "tenant_ticket"
+        assert item["category"] == "luminarias"
+        assert item["zone"] == "centro"
+        assert item["state"] == "awaiting_materialization"
+        assert item["provenance"]["address_evidence"] == "persisted_on_source"
+        assert item["provenance"]["coordinate_evidence"] == "missing_on_source"
+        assert item["actions"]["inspect_source"]["mutates_state"] is False
+        assert item["actions"]["provider_lookup"]["enabled"] is False
+        assert item["actions"]["review"]["enabled"] is False
+        assert item["actions"]["coordinate_write"]["enabled"] is False
+        serialized = json.dumps(payload, ensure_ascii=False)
+        assert address not in serialized
+        assert "address_digest" not in serialized.replace("address_digest_exposed", "")
+        assert "candidate_fingerprint" not in serialized.replace(
+            "candidate_fingerprint_exposed", ""
+        )
+        assert geocode.call_count == 0
+        assert TerritorialGeocodingJob.query.count() == 0
+        assert TerritorialGeocodingAttempt.query.count() == 0
+        assert TerritorialGeocodingSyncReceipt.query.count() == 0
+        assert ticket.latitud is None and ticket.longitud is None
+    finally:
+        _teardown(context)
+
+
+def test_preview_filters_exact_population_and_rejects_unsafe_or_unauthorized_access():
+    app, context, admin, _second, employee, tenant, other, ticket, _address = _setup()
+    try:
+        client = app.test_client()
+        filtered = client.get(
+            "/api/v2/analytics/operations/geocoding-queue/preview"
+            "?source_model=tenant_ticket&category=LUMINARIAS&zone=Centro"
+            f"&ticket_id={ticket.id}&page=1&per_page=1",
+            headers=_auth(app, admin, tenant.slug),
+        )
+        assert filtered.status_code == 200
+        payload = filtered.get_json()
+        assert payload["summary"]["matching"] == 1
+        assert payload["pagination"] == {
+            "page": 1,
+            "per_page": 1,
+            "total": 1,
+            "has_next": False,
+        }
+
+        no_match = client.get(
+            "/api/v2/analytics/operations/geocoding-queue/preview?category=bacheo",
+            headers=_auth(app, admin, tenant.slug),
+        )
+        assert no_match.status_code == 200
+        assert no_match.get_json()["summary"]["matching"] == 0
+        assert no_match.get_json()["items"] == []
+
+        unsafe = client.get(
+            "/api/v2/analytics/operations/geocoding-queue/preview"
+            "?source_model=tenant ticket",
+            headers=_auth(app, admin, tenant.slug),
+        )
+        assert unsafe.status_code == 400
+        assert unsafe.get_json()["reason_code"] == "geocoding_preview_filter_invalid"
+
+        employee_denied = client.get(
+            "/api/v2/analytics/operations/geocoding-queue/preview",
+            headers=_auth(app, employee, tenant.slug),
+        )
+        assert employee_denied.status_code == 403
+
+        cross_tenant = client.get(
+            "/api/v2/analytics/operations/geocoding-queue/preview",
+            headers=_auth(app, admin, other.slug),
+        )
+        assert cross_tenant.status_code == 403
+        assert TerritorialGeocodingJob.query.count() == 0
+        assert TerritorialGeocodingAttempt.query.count() == 0
+        assert TerritorialGeocodingSyncReceipt.query.count() == 0
     finally:
         _teardown(context)
 
