@@ -247,8 +247,64 @@ class TerritorialGeocodingReview(db.Model):
     )
 
 
+class TerritorialGeocodingSyncReceipt(db.Model, TimestampMixin):
+    """Idempotency receipt for explicit queue materialization.
+
+    Only hashes and the already-redacted aggregate response are persisted.
+    Source addresses and candidate coordinates never cross this boundary.
+    """
+
+    __tablename__ = "territorial_geocoding_sync_receipt"
+
+    CONTRACT_VERSION = "operations.territorial_geocoding_sync.v1"
+
+    id = db.Column(
+        db.String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    actor_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    contract_version = db.Column(
+        db.String(64), nullable=False, default=CONTRACT_VERSION
+    )
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_digest = db.Column(db.String(64), nullable=False)
+    completed = db.Column(
+        db.Boolean, nullable=False, default=False, server_default="false"
+    )
+    response_json = db.Column(JSONType, nullable=False, default=dict)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key_hash",
+            name="uq_territorial_geocoding_sync_idempotency",
+        ),
+        db.CheckConstraint(
+            "length(idempotency_key_hash) = 64 AND length(request_digest) = 64",
+            name="ck_territorial_geocoding_sync_digests",
+        ),
+        db.Index(
+            "ix_territorial_geocoding_sync_tenant_created",
+            "tenant_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+
 __all__ = [
     "TerritorialGeocodingAttempt",
     "TerritorialGeocodingJob",
     "TerritorialGeocodingReview",
+    "TerritorialGeocodingSyncReceipt",
 ]

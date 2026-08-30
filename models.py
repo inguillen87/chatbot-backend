@@ -5317,4 +5317,5 @@ from models_territorial_geocoding import (
     TerritorialGeocodingAttempt,
     TerritorialGeocodingJob,
     TerritorialGeocodingReview,
+    TerritorialGeocodingSyncReceipt,
 )

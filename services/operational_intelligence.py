@@ -53,7 +53,10 @@ from services.territorial_evidence import (
     normalize_address_key,
     resolve_tenant_jurisdiction,
 )
-from services.territorial_geocoding import build_territorial_geocoding_candidate
+from services.territorial_geocoding import (
+    build_territorial_geocoding_candidate,
+    discover_territorial_geocoding_candidates,
+)
 
 
 _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
@@ -3525,6 +3528,90 @@ def _ai_items_from_heatmap(
     return items
 
 
+def _operational_heatmap_ticket_population(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    viewer: Any = None,
+    ticket_records: list[dict[str, Any]] | None = None,
+    segment_filters: dict[str, Any] | None = None,
+) -> tuple[bool, dict[str, Any], list[dict[str, Any]]]:
+    """Return the exact ticket population used by the operational heatmap.
+
+    Queue materialization calls this boundary instead of maintaining a second
+    query or a looser interpretation of territorial filters.
+    """
+
+    filters = segment_filters or {}
+    employee_view = is_employee_heatmap_viewer(viewer)
+    records = (
+        ticket_records
+        if ticket_records is not None
+        else _collect_ticket_records(tenant, start_date, end_date, viewer=viewer)
+    )
+    records = filter_ticket_records_for_heatmap(records, viewer)
+    jurisdiction = resolve_tenant_jurisdiction(tenant)
+    records = [
+        {
+            **record,
+            "coordinate_jurisdiction_status": coordinate_jurisdiction_status(
+                record.get("lat"),
+                record.get("lng"),
+                jurisdiction,
+            ),
+        }
+        for record in records
+    ]
+    filtered = [
+        record
+        for record in records
+        if _point_matches_filters(_record_to_filter_probe(record), filters)
+    ]
+    return employee_view, jurisdiction, filtered
+
+
+def discover_operational_geocoding_queue_candidates(
+    tenant: TenantProfile,
+    start_date: datetime,
+    end_date: datetime,
+    *,
+    viewer: Any = None,
+    ticket_records: list[dict[str, Any]] | None = None,
+    segment_filters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Discover durable queue identities without returning source addresses."""
+
+    employee_view = is_employee_heatmap_viewer(viewer)
+    if employee_view and employee_heatmap_scope_empty(viewer):
+        return {"candidates": [], "discovered": 0, "hidden": 0}
+
+    _employee_view, jurisdiction, records = _operational_heatmap_ticket_population(
+        tenant,
+        start_date,
+        end_date,
+        viewer=viewer,
+        ticket_records=ticket_records,
+        segment_filters=segment_filters,
+    )
+    source_candidates = [
+        record
+        for record in records
+        if not _record_has_coordinates(record) and bool(record.get("address"))
+    ]
+    candidates = discover_territorial_geocoding_candidates(
+        source_candidates,
+        tenant_id=int(tenant.id),
+        tenant_slug=str(getattr(tenant, "slug", "") or ""),
+        jurisdiction=jurisdiction,
+    )
+    return {
+        "candidates": candidates,
+        "discovered": len(source_candidates),
+        "hidden": max(0, len(source_candidates) - len(candidates)),
+    }
+
+
 def build_operational_heatmap(
     tenant: TenantProfile,
     start_date: datetime,
@@ -3555,32 +3642,16 @@ def build_operational_heatmap(
             bbox=bbox,
         )
 
-    records = (
-        ticket_records
-        if ticket_records is not None
-        else _collect_ticket_records(tenant, start_date, end_date, viewer=viewer)
+    employee_view, jurisdiction, filtered_ticket_records = (
+        _operational_heatmap_ticket_population(
+            tenant,
+            start_date,
+            end_date,
+            viewer=viewer,
+            ticket_records=ticket_records,
+            segment_filters=filters,
+        )
     )
-    records = filter_ticket_records_for_heatmap(records, viewer)
-    jurisdiction = resolve_tenant_jurisdiction(tenant)
-    records = [
-        {
-            **record,
-            "coordinate_jurisdiction_status": coordinate_jurisdiction_status(
-                record.get("lat"),
-                record.get("lng"),
-                jurisdiction,
-            ),
-        }
-        for record in records
-    ]
-    # All ticket-derived outputs must describe the same filtered population.
-    # In particular, never mix a category/address-filtered map with coverage or
-    # geocoding totals calculated from the tenant-wide ticket collection.
-    filtered_ticket_records = [
-        record
-        for record in records
-        if _point_matches_filters(_record_to_filter_probe(record), filters)
-    ]
     if employee_view:
         # Employee geography is ticket-only. Survey responses, analytics
         # events, and commerce locations have no employee category boundary

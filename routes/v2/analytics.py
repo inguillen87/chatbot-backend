@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from time import monotonic
 from typing import Any
@@ -25,6 +25,7 @@ from services.operational_intelligence import (
     build_operational_dashboard,
     build_operational_freshness,
     build_operational_heatmap,
+    discover_operational_geocoding_queue_candidates,
 )
 from services.operational_heatmap_access import heatmap_viewer_cache_signature
 from services.plan_access import (
@@ -39,6 +40,7 @@ from services.territorial_geocoding_admin import (
     list_geocoding_queue,
     review_geocoding_job,
 )
+from services.territorial_geocoding_sync import sync_territorial_geocoding_queue
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -680,6 +682,81 @@ def operations_geocoding_queue_v2(current_user):
     except TerritorialGeocodingAdminError as exc:
         return _geocoding_admin_error_response(exc)
     return _geocoding_admin_response(payload)
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/sync", methods=["GET", "POST"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_queue_sync_v2(current_user):
+    """Explicitly materialize redacted pending jobs; never geocode or write."""
+
+    if request.method != "POST":
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "sync_requires_post",
+                status_code=405,
+                action_hint="send_explicit_post",
+                message="La cola sólo se materializa mediante POST explícito.",
+            )
+        )
+
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+
+    body = request.get_json(silent=True)
+    if body not in (None, {}):
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "unsupported_sync_payload",
+                status_code=400,
+                action_hint="send_empty_json_body",
+                message="La sincronización usa el conjunto territorial actual y no acepta filtros en el cuerpo.",
+            )
+        )
+
+    try:
+        discovery = discover_operational_geocoding_queue_candidates(
+            tenant,
+            datetime(1970, 1, 1),
+            datetime.now(timezone.utc),
+            viewer=current_user,
+        )
+        payload = sync_territorial_geocoding_queue(
+            db.session,
+            tenant_id=tenant.id,
+            actor_user_id=current_user.id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            candidates=discovery.get("candidates") or [],
+            discovered=discovery.get("discovered") or 0,
+            hidden=discovery.get("hidden") or 0,
+        )
+        db.session.commit()
+    except TerritorialGeocodingAdminError as exc:
+        db.session.rollback()
+        return _geocoding_admin_error_response(exc)
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Territorial geocoding queue sync failed tenant_id=%s",
+            tenant.id,
+        )
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_sync_persistence_failed",
+                status_code=500,
+                action_hint="retry_with_same_idempotency_key",
+                message="No se pudo materializar la cola territorial.",
+            )
+        )
+
+    status = 200 if payload.get("idempotent_replay") else 201
+    return _geocoding_admin_response(payload, status)
 
 
 @v2_analytics_bp.route(
