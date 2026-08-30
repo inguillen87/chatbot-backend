@@ -53,6 +53,7 @@ from services.territorial_evidence import (
     normalize_address_key,
     resolve_tenant_jurisdiction,
 )
+from services.territorial_geocoding import build_territorial_geocoding_candidate
 
 
 _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
@@ -3591,12 +3592,33 @@ def build_operational_heatmap(
     jurisdiction_exclusions: Counter = Counter()
     if employee_view:
         include_ai = False
-    geocoding_candidates = [
-        _geocoding_candidate(record)
-        for record in filtered_ticket_records
-        if not _record_has_coordinates(record)
-        and record.get("address")
-    ]
+    geocoding_candidates = []
+    for record in filtered_ticket_records:
+        if _record_has_coordinates(record) or not record.get("address"):
+            continue
+        candidate_payload = _geocoding_candidate(record)
+        durable_candidate = build_territorial_geocoding_candidate(
+            record,
+            tenant_id=int(tenant.id),
+            tenant_slug=str(getattr(tenant, "slug", "") or ""),
+            jurisdiction=jurisdiction,
+        )
+        if durable_candidate is not None:
+            candidate_payload["queue_identity"] = durable_candidate.audit_identity()
+            candidate_payload["processing_contract"] = {
+                "contract_version": "operations.territorial_geocoding.v1",
+                "default_mode": "dry_run",
+                "provider_execution_enabled": False,
+                "writes_enabled": False,
+                "states": ["pending", "needs_review", "applied", "failed"],
+                "requires": [
+                    "tenant_jurisdiction",
+                    "provider_opt_in",
+                    "writer_authority",
+                    "idempotency_key",
+                ],
+            }
+        geocoding_candidates.append(candidate_payload)
     reported_location_review_candidates = [
         _reported_location_review_candidate(record)
         for record in filtered_ticket_records
@@ -4200,6 +4222,13 @@ def build_operational_heatmap(
             "candidate_count": len(geocoding_candidates),
             "candidates": geocoding_candidates[:50],
             "guidance": geocoding_guidance,
+            "execution": {
+                "service_contract": "operations.territorial_geocoding.v1",
+                "default_mode": "dry_run",
+                "provider_execution_enabled": False,
+                "writes_enabled": False,
+                "audit_storage": "territorial_geocoding_job+attempt",
+            },
             "recommended_action": {
                 "action_id": "geocode_ticket_addresses",
                 "label": "Geocodificar direcciones pendientes",

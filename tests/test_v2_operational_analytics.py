@@ -2033,6 +2033,19 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         candidate = ((payload.get("geocoding") or {}).get("candidates") or [])[0]
         self.assertEqual(candidate.get("address"), "Av. San Martin 123, Junin")
         self.assertEqual(candidate.get("reason_code"), "address_without_coordinates")
+        queue_identity = candidate.get("queue_identity") or {}
+        self.assertEqual(queue_identity.get("contract_version"), "operations.territorial_geocoding.v1")
+        self.assertEqual(queue_identity.get("tenant_id"), self.tenant.id)
+        self.assertEqual(queue_identity.get("record_source"), "tenant_ticket")
+        self.assertNotIn("address", queue_identity)
+        self.assertEqual(len(queue_identity.get("address_digest") or ""), 64)
+        processing = candidate.get("processing_contract") or {}
+        self.assertEqual(processing.get("default_mode"), "dry_run")
+        self.assertFalse(processing.get("provider_execution_enabled"))
+        self.assertFalse(processing.get("writes_enabled"))
+        execution = (payload.get("geocoding") or {}).get("execution") or {}
+        self.assertEqual(execution.get("service_contract"), "operations.territorial_geocoding.v1")
+        self.assertEqual(execution.get("audit_storage"), "territorial_geocoding_job+attempt")
         facets = payload.get("territorial_facets") or {}
         self.assertEqual((facets.get("summary") or {}).get("pending_geocode_records"), 1)
         self.assertEqual((facets.get("categories") or [])[0].get("key"), "limpieza")

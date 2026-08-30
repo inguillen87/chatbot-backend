@@ -5313,3 +5313,7 @@ from models_whatsapp_workflows import (
     WhatsAppWorkflowReview,
     WhatsAppWorkflowVersion,
 )
+from models_territorial_geocoding import (
+    TerritorialGeocodingAttempt,
+    TerritorialGeocodingJob,
+)
