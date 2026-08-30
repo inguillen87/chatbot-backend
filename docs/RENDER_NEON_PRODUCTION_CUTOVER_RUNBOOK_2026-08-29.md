@@ -88,6 +88,12 @@ application repository.
 - [x] Re-run the read-only Neon preflight and Render standby verify-only gate
       at the exact authority revision. Both verified project/branch identity,
       FIFO, idempotency and authority constraints without acquiring ownership.
+- [ ] Rehearse the exact territorial chain after the authority revision, in
+      order: `20260830_territorial_geocoding_v1`,
+      `20260830_geo_review_v1`, `20260830_geo_sync_v1`. The dedicated runner
+      pins each source fingerprint and verifies the queue, attempt, immutable
+      review and idempotent sync-receipt schema after every step; this code
+      review does not count as a database rehearsal.
 - [ ] Create a post-authority backup. The Neon project currently has all ten
       branch slots occupied; the existing `postmigration` branch is the
       pre-authority rollback point until capacity becomes available.
@@ -150,15 +156,21 @@ Exit evidence: signed parity artifact tied to the fence and final export IDs.
 - [ ] From the Render source revision, target only
       `20260825_demo_survey_participation_v1`; never run an open-ended
       `upgrade head`.
-- [ ] Run the dedicated cutover migration command in dry-run mode for the four
-      remaining revisions: repair, chat idempotency, inbound FIFO and global
-      writer authority.
-- [ ] Apply the four remaining approved revisions under an advisory lock with
-      bounded statement/lock timeouts.
+- [ ] Run the dedicated cutover migration command in dry-run mode for the seven
+      remaining revisions: repair, chat idempotency, inbound FIFO, global
+      writer authority, territorial geocoding queue, immutable territorial
+      review and idempotent territorial sync receipt.
+- [ ] Apply the seven remaining approved revisions under an advisory lock with
+      bounded statement/lock timeouts. Every revision and normalized migration
+      source fingerprint must match the checked-in allowlist; symbolic
+      `head`/`heads` targets remain forbidden.
 - [ ] Verify the single Alembic revision after each step, the three Junin
       ticket repairs, the chat-idempotency table/index and inbound FIFO index
       `(tenant_id, stream_key, received_at, id)`, plus the fenced singleton
-      authority state.
+      authority state. Then verify exact territorial table columns, tenant and
+      actor foreign keys, required constraints and ordered plain indexes for
+      jobs, attempts, reviews and sync receipts; a future table appearing
+      before its Alembic revision is a hard failure.
 - [ ] Run the full read-only Neon preflight and take a post-migration backup.
 
 Exit evidence: exact-migration JSON plus post-migration backup branch ID.

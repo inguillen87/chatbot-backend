@@ -104,7 +104,7 @@ def test_target_rejects_a_valid_neon_url_with_the_wrong_host_fingerprint():
     assert DIRECT_HOST not in str(captured.value)
 
 
-def test_local_graph_is_exactly_the_four_reviewed_revisions():
+def test_local_graph_is_exactly_the_seven_reviewed_revisions():
     plan = cutover._load_exact_migration_plan(ROOT)
 
     assert list(plan.source_fingerprints_sha256) == list(cutover.MIGRATION_STEPS)
@@ -113,7 +113,103 @@ def test_local_graph_is_exactly_the_four_reviewed_revisions():
     )
     assert all(len(value) == 64 for value in plan.source_fingerprints_sha256.values())
     assert len(plan.graph_fingerprint_sha256) == 64
-    assert plan.script.get_heads() == [cutover.GLOBAL_WRITER_AUTHORITY_REVISION]
+    assert plan.script.get_heads() == [cutover.TERRITORIAL_GEOCODING_SYNC_REVISION]
+
+
+def test_territorial_schema_contract_requires_exact_columns_keys_and_indexes(
+    monkeypatch,
+):
+    monkeypatch.setattr(cutover, "_table_exists", lambda *_args: True)
+    monkeypatch.setattr(
+        cutover,
+        "_column_names",
+        lambda _connection, table_name: cutover.EXPECTED_TERRITORIAL_SCHEMA[
+            table_name
+        ]["columns"],
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_constraint_names",
+        lambda _connection, table_name: cutover.EXPECTED_TERRITORIAL_SCHEMA[
+            table_name
+        ]["constraints"],
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_foreign_key_contract",
+        lambda _connection, table_name: cutover.EXPECTED_TERRITORIAL_SCHEMA[
+            table_name
+        ]["foreign_keys"],
+    )
+
+    def exact_index(_connection, *, table_name, index_name):
+        columns, unique = cutover.EXPECTED_TERRITORIAL_SCHEMA[table_name]["indexes"][
+            index_name
+        ]
+        return {
+            "columns": columns,
+            "is_unique": unique,
+            "is_valid": True,
+            "is_ready": True,
+            "is_unfiltered": True,
+            "has_plain_columns": True,
+            "has_no_included_columns": True,
+        }
+
+    monkeypatch.setattr(cutover, "_index_contract", exact_index)
+
+    for table_name in cutover.EXPECTED_TERRITORIAL_SCHEMA:
+        assert all(cutover._territorial_table_contract(object(), table_name).values())
+
+    def wrong_order(_connection, *, table_name, index_name):
+        result = exact_index(
+            _connection,
+            table_name=table_name,
+            index_name=index_name,
+        )
+        if index_name == "ix_territorial_geocoding_job_tenant_status_created":
+            result["columns"] = ("tenant_id", "created_at", "status", "id")
+        return result
+
+    monkeypatch.setattr(cutover, "_index_contract", wrong_order)
+    contract = cutover._territorial_table_contract(
+        object(),
+        "territorial_geocoding_job",
+    )
+    assert contract["exact_indexes_valid"] is False
+
+
+def test_territorial_schema_postcheck_rejects_out_of_order_future_table(monkeypatch):
+    valid_contract = {
+        "table_present": True,
+        "exact_columns_present": True,
+        "expected_constraints_present": True,
+        "exact_foreign_keys_present": True,
+        "exact_indexes_valid": True,
+    }
+    monkeypatch.setattr(
+        cutover,
+        "_territorial_table_contract",
+        lambda *_args: valid_contract,
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_table_exists",
+        lambda _connection, table_name: table_name
+        == "territorial_geocoding_sync_receipt",
+    )
+
+    with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+        cutover._territorial_schema_postcheck(
+            object(),
+            required_tables=("territorial_geocoding_job",),
+            absent_tables=("territorial_geocoding_sync_receipt",),
+            reason_code="database_territorial_geocoding_contract_postcheck_failed",
+        )
+    assert (
+        captured.value.reason_code
+        == "database_territorial_geocoding_contract_postcheck_failed"
+    )
 
 
 def test_inbound_fifo_postcheck_requires_the_exact_ordered_plain_index(monkeypatch):
@@ -466,6 +562,21 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
         "_assert_after_global_writer_authority",
         lambda _connection: {"global_writer_authority": True},
     )
+    monkeypatch.setattr(
+        cutover,
+        "_assert_after_territorial_geocoding",
+        lambda _connection: {"territorial_geocoding": True},
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_assert_after_territorial_review",
+        lambda _connection: {"territorial_review": True},
+    )
+    monkeypatch.setattr(
+        cutover,
+        "_assert_after_territorial_sync",
+        lambda _connection: {"territorial_sync": True},
+    )
     monkeypatch.setattr(cutover, "_apply_exact_revision", apply_exact)
     migration_plan = cutover._load_exact_migration_plan(ROOT)
 
@@ -479,7 +590,7 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
 
     assert calls == list(cutover.MIGRATION_STEPS)
     assert state["revision_before"] == cutover.INITIAL_REVISION
-    assert state["revision_after"] == cutover.GLOBAL_WRITER_AUTHORITY_REVISION
+    assert state["revision_after"] == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
     assert state["advisory_lock_acquired"] is True
     assert [step["revision"] for step in state["steps"]] == list(
         cutover.MIGRATION_STEPS
@@ -487,8 +598,8 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
     assert connection.driver_statements[0].endswith("READ WRITE")
 
 
-def test_incremental_apply_from_fifo_runs_only_exact_authority_child(monkeypatch):
-    current = {"revision": cutover.INBOUND_FIFO_REVISION}
+def test_incremental_apply_from_review_runs_only_exact_sync_child(monkeypatch):
+    current = {"revision": cutover.TERRITORIAL_GEOCODING_REVIEW_REVISION}
     calls = []
 
     class ScalarResult:
@@ -527,8 +638,11 @@ def test_incremental_apply_from_fifo_runs_only_exact_authority_child(monkeypatch
         target_revision,
     ):
         assert plan is migration_plan
-        assert expected_current_revision == cutover.INBOUND_FIFO_REVISION
-        assert target_revision == cutover.GLOBAL_WRITER_AUTHORITY_REVISION
+        assert (
+            expected_current_revision
+            == cutover.TERRITORIAL_GEOCODING_REVIEW_REVISION
+        )
+        assert target_revision == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
         calls.append(target_revision)
         current["revision"] = target_revision
 
@@ -557,9 +671,9 @@ def test_incremental_apply_from_fifo_runs_only_exact_authority_child(monkeypatch
         expected_branch_fingerprint_sha256=BRANCH_FINGERPRINT,
     )
 
-    assert calls == [cutover.GLOBAL_WRITER_AUTHORITY_REVISION]
-    assert state["revision_before"] == cutover.INBOUND_FIFO_REVISION
-    assert state["revision_after"] == cutover.GLOBAL_WRITER_AUTHORITY_REVISION
+    assert calls == [cutover.TERRITORIAL_GEOCODING_SYNC_REVISION]
+    assert state["revision_before"] == cutover.TERRITORIAL_GEOCODING_REVIEW_REVISION
+    assert state["revision_after"] == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
     assert [item["revision"] for item in state["steps"]] == calls
 
 

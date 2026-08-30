@@ -47,11 +47,17 @@ REPAIR_REVISION = "20260825_legacy_municipio_ticket_scope_repair_v1"
 IDEMPOTENCY_REVISION = "20260825_chat_idempotency_v1"
 INBOUND_FIFO_REVISION = "20260829_inbound_fifo_v2"
 GLOBAL_WRITER_AUTHORITY_REVISION = "20260829_global_writer_authority_v1"
+TERRITORIAL_GEOCODING_REVISION = "20260830_territorial_geocoding_v1"
+TERRITORIAL_GEOCODING_REVIEW_REVISION = "20260830_geo_review_v1"
+TERRITORIAL_GEOCODING_SYNC_REVISION = "20260830_geo_sync_v1"
 MIGRATION_STEPS = (
     REPAIR_REVISION,
     IDEMPOTENCY_REVISION,
     INBOUND_FIFO_REVISION,
     GLOBAL_WRITER_AUTHORITY_REVISION,
+    TERRITORIAL_GEOCODING_REVISION,
+    TERRITORIAL_GEOCODING_REVIEW_REVISION,
+    TERRITORIAL_GEOCODING_SYNC_REVISION,
 )
 EXPECTED_MIGRATION_SOURCE_SHA256 = {
     REPAIR_REVISION: "956193d0258e4937b662d4b83d6d7f308ee4ea5f426eab41d5418b2bd0d11a7a",
@@ -63,6 +69,15 @@ EXPECTED_MIGRATION_SOURCE_SHA256 = {
     ),
     GLOBAL_WRITER_AUTHORITY_REVISION: (
         "e5e1801f1d26cc7e596c8dd33418df2122cce4cd52cfb6e83ef2aabc4369950f"
+    ),
+    TERRITORIAL_GEOCODING_REVISION: (
+        "06a9cbc03fe602e13a7a51644cb755c4d9d21faab20ecc3ac475a227996fa866"
+    ),
+    TERRITORIAL_GEOCODING_REVIEW_REVISION: (
+        "2eb446115a7c0045a65927862348d48fe6a6f31b83805574e808c7e0f8a499e3"
+    ),
+    TERRITORIAL_GEOCODING_SYNC_REVISION: (
+        "36cf3a43b025986bc2e30d16e7d5f6055c42c5699e53fd5b41087a84c593389c"
     ),
 }
 
@@ -130,6 +145,192 @@ EXPECTED_GLOBAL_WRITER_AUTHORITY_CONSTRAINTS = {
     "ck_cutover_global_writer_authority_safe_state",
     "ck_cutover_global_writer_authority_singleton",
     "pk_cutover_global_writer_authority",
+}
+EXPECTED_TERRITORIAL_SCHEMA = {
+    "territorial_geocoding_job": {
+        "columns": {
+            "id",
+            "tenant_id",
+            "contract_version",
+            "source_model",
+            "source_id",
+            "candidate_fingerprint",
+            "address_digest",
+            "jurisdiction_digest",
+            "status",
+            "reason_code",
+            "provider",
+            "provider_place_id",
+            "proposed_lat",
+            "proposed_lng",
+            "location_type",
+            "partial_match",
+            "validation_json",
+            "result_json",
+            "attempt_count",
+            "last_attempt_at",
+            "applied_at",
+            "created_at",
+            "updated_at",
+        },
+        "constraints": {
+            "ck_territorial_geocoding_job_status",
+            "ck_territorial_geocoding_job_attempt_count",
+            "ck_territorial_geocoding_job_fingerprint",
+            "ck_territorial_geocoding_job_address_digest",
+            "ck_territorial_geocoding_job_jurisdiction_digest",
+            "uq_territorial_geocoding_job_candidate",
+        },
+        "foreign_keys": {
+            ("tenant_id", "tenant_profile", "id", "CASCADE"),
+        },
+        "indexes": {
+            "territorial_geocoding_job_pkey": (("id",), True),
+            "ix_territorial_geocoding_job_tenant_id": (("tenant_id",), False),
+            "ix_territorial_geocoding_job_tenant_status_created": (
+                ("tenant_id", "status", "created_at", "id"),
+                False,
+            ),
+            "uq_territorial_geocoding_job_candidate": (
+                ("tenant_id", "candidate_fingerprint"),
+                True,
+            ),
+        },
+    },
+    "territorial_geocoding_attempt": {
+        "columns": {
+            "id",
+            "job_id",
+            "tenant_id",
+            "attempt_number",
+            "request_digest",
+            "provider",
+            "outcome_status",
+            "reason_code",
+            "external_call_performed",
+            "write_performed",
+            "result_digest",
+            "result_json",
+            "created_at",
+        },
+        "constraints": {
+            "ck_territorial_geocoding_attempt_status",
+            "ck_territorial_geocoding_attempt_number",
+            "ck_territorial_geocoding_attempt_request_digest",
+            "ck_territorial_geocoding_attempt_result_digest",
+            "ck_territorial_geocoding_attempt_write_state",
+            "uq_territorial_geocoding_attempt_request",
+            "uq_territorial_geocoding_attempt_number",
+        },
+        "foreign_keys": {
+            ("job_id", "territorial_geocoding_job", "id", "CASCADE"),
+            ("tenant_id", "tenant_profile", "id", "CASCADE"),
+        },
+        "indexes": {
+            "territorial_geocoding_attempt_pkey": (("id",), True),
+            "ix_territorial_geocoding_attempt_job_id": (("job_id",), False),
+            "ix_territorial_geocoding_attempt_tenant_id": (("tenant_id",), False),
+            "ix_territorial_geocoding_attempt_tenant_created": (
+                ("tenant_id", "created_at", "id"),
+                False,
+            ),
+            "uq_territorial_geocoding_attempt_request": (
+                ("job_id", "request_digest"),
+                True,
+            ),
+            "uq_territorial_geocoding_attempt_number": (
+                ("job_id", "attempt_number"),
+                True,
+            ),
+        },
+    },
+    "territorial_geocoding_review": {
+        "columns": {
+            "id",
+            "job_id",
+            "tenant_id",
+            "reviewer_user_id",
+            "contract_version",
+            "decision",
+            "reason_code",
+            "reviewed_job_status",
+            "proposal_digest",
+            "idempotency_key_hash",
+            "request_digest",
+            "coordinate_write_performed",
+            "created_at",
+        },
+        "constraints": {
+            "ck_territorial_geocoding_review_decision",
+            "ck_territorial_geocoding_review_job_status",
+            "ck_territorial_geocoding_review_digests",
+            "ck_territorial_geocoding_review_no_coordinate_write",
+            "uq_territorial_geocoding_review_idempotency",
+        },
+        "foreign_keys": {
+            ("job_id", "territorial_geocoding_job", "id", "CASCADE"),
+            ("tenant_id", "tenant_profile", "id", "CASCADE"),
+            ("reviewer_user_id", "user", "id", "RESTRICT"),
+        },
+        "indexes": {
+            "territorial_geocoding_review_pkey": (("id",), True),
+            "ix_territorial_geocoding_review_job_id": (("job_id",), False),
+            "ix_territorial_geocoding_review_tenant_id": (("tenant_id",), False),
+            "ix_territorial_geocoding_review_reviewer_user_id": (
+                ("reviewer_user_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_review_tenant_job_created": (
+                ("tenant_id", "job_id", "created_at", "id"),
+                False,
+            ),
+            "uq_territorial_geocoding_review_idempotency": (
+                ("tenant_id", "job_id", "idempotency_key_hash"),
+                True,
+            ),
+        },
+    },
+    "territorial_geocoding_sync_receipt": {
+        "columns": {
+            "id",
+            "tenant_id",
+            "actor_user_id",
+            "contract_version",
+            "idempotency_key_hash",
+            "request_digest",
+            "completed",
+            "response_json",
+            "created_at",
+            "updated_at",
+        },
+        "constraints": {
+            "ck_territorial_geocoding_sync_digests",
+            "uq_territorial_geocoding_sync_idempotency",
+        },
+        "foreign_keys": {
+            ("actor_user_id", "user", "id", "RESTRICT"),
+            ("tenant_id", "tenant_profile", "id", "CASCADE"),
+        },
+        "indexes": {
+            "territorial_geocoding_sync_receipt_pkey": (("id",), True),
+            "ix_territorial_geocoding_sync_receipt_tenant_id": (
+                ("tenant_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_sync_receipt_actor_user_id": (
+                ("actor_user_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_sync_tenant_created": (
+                ("tenant_id", "created_at", "id"),
+                False,
+            ),
+            "uq_territorial_geocoding_sync_idempotency": (
+                ("tenant_id", "idempotency_key_hash"),
+                True,
+            ),
+        },
+    },
 }
 
 
@@ -285,6 +486,11 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         global_writer_authority = script.get_revision(
             GLOBAL_WRITER_AUTHORITY_REVISION
         )
+        territorial_geocoding = script.get_revision(TERRITORIAL_GEOCODING_REVISION)
+        territorial_review = script.get_revision(
+            TERRITORIAL_GEOCODING_REVIEW_REVISION
+        )
+        territorial_sync = script.get_revision(TERRITORIAL_GEOCODING_SYNC_REVISION)
     except Exception as exc:
         raise CutoverMigrationFailure("local_migration_graph_unreadable") from exc
 
@@ -294,9 +500,12 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         or idempotency is None
         or inbound_fifo is None
         or global_writer_authority is None
+        or territorial_geocoding is None
+        or territorial_review is None
+        or territorial_sync is None
     ):
         raise CutoverMigrationFailure("local_cutover_revision_missing")
-    if script.get_heads() != [GLOBAL_WRITER_AUTHORITY_REVISION]:
+    if script.get_heads() != [TERRITORIAL_GEOCODING_SYNC_REVISION]:
         raise CutoverMigrationFailure("local_migration_heads_not_exact")
     if repair.down_revision != INITIAL_REVISION:
         raise CutoverMigrationFailure("local_repair_down_revision_mismatch")
@@ -308,6 +517,14 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         raise CutoverMigrationFailure(
             "local_global_writer_authority_down_revision_mismatch"
         )
+    if territorial_geocoding.down_revision != GLOBAL_WRITER_AUTHORITY_REVISION:
+        raise CutoverMigrationFailure(
+            "local_territorial_geocoding_down_revision_mismatch"
+        )
+    if territorial_review.down_revision != TERRITORIAL_GEOCODING_REVISION:
+        raise CutoverMigrationFailure("local_territorial_review_down_revision_mismatch")
+    if territorial_sync.down_revision != TERRITORIAL_GEOCODING_REVIEW_REVISION:
+        raise CutoverMigrationFailure("local_territorial_sync_down_revision_mismatch")
     if set(initial.nextrev) != {REPAIR_REVISION}:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_initial")
     if set(repair.nextrev) != {IDEMPOTENCY_REVISION}:
@@ -316,7 +533,17 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_idempotency")
     if set(inbound_fifo.nextrev) != {GLOBAL_WRITER_AUTHORITY_REVISION}:
         raise CutoverMigrationFailure("local_cutover_graph_branches_at_inbound_fifo")
-    if set(global_writer_authority.nextrev):
+    if set(global_writer_authority.nextrev) != {TERRITORIAL_GEOCODING_REVISION}:
+        raise CutoverMigrationFailure(
+            "local_cutover_graph_branches_at_global_writer_authority"
+        )
+    if set(territorial_geocoding.nextrev) != {
+        TERRITORIAL_GEOCODING_REVIEW_REVISION
+    }:
+        raise CutoverMigrationFailure("local_cutover_graph_branches_at_territorial")
+    if set(territorial_review.nextrev) != {TERRITORIAL_GEOCODING_SYNC_REVISION}:
+        raise CutoverMigrationFailure("local_cutover_graph_branches_at_review")
+    if set(territorial_sync.nextrev):
         raise CutoverMigrationFailure("local_cutover_graph_continues_after_target")
 
     try:
@@ -325,7 +552,7 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
             for revision in reversed(
                 list(
                     script.iterate_revisions(
-                        GLOBAL_WRITER_AUTHORITY_REVISION,
+                        TERRITORIAL_GEOCODING_SYNC_REVISION,
                         INITIAL_REVISION,
                     )
                 )
@@ -343,6 +570,9 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
         idempotency,
         inbound_fifo,
         global_writer_authority,
+        territorial_geocoding,
+        territorial_review,
+        territorial_sync,
     ):
         upgrade = getattr(revision.module, "upgrade", None)
         if not callable(upgrade):
@@ -643,6 +873,122 @@ def _idempotency_contract(connection: Connection) -> dict[str, Any]:
     }
 
 
+def _foreign_key_contract(
+    connection: Connection,
+    table_name: str,
+) -> set[tuple[str, str, str, str]]:
+    return {
+        (
+            str(row["column_name"]),
+            str(row["referenced_table"]),
+            str(row["referenced_column"]),
+            str(row["delete_rule"]),
+        )
+        for row in connection.execute(
+            text(
+                """
+                SELECT
+                    key_column.column_name,
+                    referenced_column.table_name AS referenced_table,
+                    referenced_column.column_name AS referenced_column,
+                    referential.delete_rule
+                FROM information_schema.table_constraints AS constraint_row
+                JOIN information_schema.key_column_usage AS key_column
+                  ON key_column.constraint_catalog = constraint_row.constraint_catalog
+                 AND key_column.constraint_schema = constraint_row.constraint_schema
+                 AND key_column.constraint_name = constraint_row.constraint_name
+                JOIN information_schema.referential_constraints AS referential
+                  ON referential.constraint_catalog = constraint_row.constraint_catalog
+                 AND referential.constraint_schema = constraint_row.constraint_schema
+                 AND referential.constraint_name = constraint_row.constraint_name
+                JOIN information_schema.constraint_column_usage AS referenced_column
+                  ON referenced_column.constraint_catalog =
+                     referential.unique_constraint_catalog
+                 AND referenced_column.constraint_schema =
+                     referential.unique_constraint_schema
+                 AND referenced_column.constraint_name =
+                     referential.unique_constraint_name
+                WHERE constraint_row.table_schema = 'public'
+                  AND constraint_row.table_name = :table_name
+                  AND constraint_row.constraint_type = 'FOREIGN KEY'
+                """
+            ),
+            {"table_name": table_name},
+        ).mappings()
+    }
+
+
+def _territorial_table_contract(
+    connection: Connection,
+    table_name: str,
+) -> dict[str, Any]:
+    specification = EXPECTED_TERRITORIAL_SCHEMA.get(table_name)
+    if specification is None:
+        raise CutoverMigrationFailure("internal_territorial_table_not_allowlisted")
+    if not _table_exists(connection, table_name):
+        return {
+            "table_present": False,
+            "exact_columns_present": False,
+            "expected_constraints_present": False,
+            "exact_foreign_keys_present": False,
+            "exact_indexes_valid": False,
+        }
+
+    index_contracts = specification["indexes"]
+    exact_indexes_valid = True
+    for index_name, (expected_columns, expected_unique) in index_contracts.items():
+        actual = _index_contract(
+            connection,
+            table_name=table_name,
+            index_name=index_name,
+        )
+        expected = {
+            "columns": expected_columns,
+            "is_unique": expected_unique,
+            "is_valid": True,
+            "is_ready": True,
+            "is_unfiltered": True,
+            "has_plain_columns": True,
+            "has_no_included_columns": True,
+        }
+        if actual != expected:
+            exact_indexes_valid = False
+            break
+
+    return {
+        "table_present": True,
+        "exact_columns_present": (
+            _column_names(connection, table_name) == specification["columns"]
+        ),
+        "expected_constraints_present": specification["constraints"].issubset(
+            _constraint_names(connection, table_name)
+        ),
+        "exact_foreign_keys_present": (
+            _foreign_key_contract(connection, table_name)
+            == specification["foreign_keys"]
+        ),
+        "exact_indexes_valid": exact_indexes_valid,
+    }
+
+
+def _territorial_schema_postcheck(
+    connection: Connection,
+    *,
+    required_tables: Sequence[str],
+    absent_tables: Sequence[str],
+    reason_code: str,
+) -> dict[str, Any]:
+    contracts = {
+        table_name: _territorial_table_contract(connection, table_name)
+        for table_name in required_tables
+    }
+    if not all(all(contract.values()) for contract in contracts.values()):
+        raise CutoverMigrationFailure(reason_code)
+    if any(_table_exists(connection, table_name) for table_name in absent_tables):
+        raise CutoverMigrationFailure(reason_code)
+    return contracts
+
+
 def _single_alembic_revision(connection: Connection) -> str:
     if not _table_exists(connection, "alembic_version"):
         raise CutoverMigrationFailure("database_migration_table_missing")
@@ -897,6 +1243,63 @@ def _assert_current_global_writer_authority(connection: Connection) -> dict[str,
     }
 
 
+def _assert_after_territorial_geocoding(connection: Connection) -> dict[str, Any]:
+    prior_contracts = _assert_current_global_writer_authority(connection)
+    contracts = _territorial_schema_postcheck(
+        connection,
+        required_tables=(
+            "territorial_geocoding_job",
+            "territorial_geocoding_attempt",
+        ),
+        absent_tables=(
+            "territorial_geocoding_review",
+            "territorial_geocoding_sync_receipt",
+        ),
+        reason_code="database_territorial_geocoding_contract_postcheck_failed",
+    )
+    return {
+        **prior_contracts,
+        "territorial_geocoding_contract": contracts,
+    }
+
+
+def _assert_after_territorial_review(connection: Connection) -> dict[str, Any]:
+    prior_contracts = _assert_current_global_writer_authority(connection)
+    contracts = _territorial_schema_postcheck(
+        connection,
+        required_tables=(
+            "territorial_geocoding_job",
+            "territorial_geocoding_attempt",
+            "territorial_geocoding_review",
+        ),
+        absent_tables=("territorial_geocoding_sync_receipt",),
+        reason_code="database_territorial_review_contract_postcheck_failed",
+    )
+    return {
+        **prior_contracts,
+        "territorial_geocoding_contract": contracts,
+    }
+
+
+def _assert_after_territorial_sync(connection: Connection) -> dict[str, Any]:
+    prior_contracts = _assert_current_global_writer_authority(connection)
+    contracts = _territorial_schema_postcheck(
+        connection,
+        required_tables=(
+            "territorial_geocoding_job",
+            "territorial_geocoding_attempt",
+            "territorial_geocoding_review",
+            "territorial_geocoding_sync_receipt",
+        ),
+        absent_tables=(),
+        reason_code="database_territorial_sync_contract_postcheck_failed",
+    )
+    return {
+        **prior_contracts,
+        "territorial_geocoding_contract": contracts,
+    }
+
+
 def _require_allowlisted_cutover_revision(connection: Connection) -> str:
     revision = _single_alembic_revision(connection)
     if revision not in {INITIAL_REVISION, *MIGRATION_STEPS}:
@@ -914,6 +1317,9 @@ def _assert_contract_for_revision(
         IDEMPOTENCY_REVISION: _assert_after_idempotency,
         INBOUND_FIFO_REVISION: _assert_after_inbound_fifo,
         GLOBAL_WRITER_AUTHORITY_REVISION: _assert_current_global_writer_authority,
+        TERRITORIAL_GEOCODING_REVISION: _assert_after_territorial_geocoding,
+        TERRITORIAL_GEOCODING_REVIEW_REVISION: _assert_after_territorial_review,
+        TERRITORIAL_GEOCODING_SYNC_REVISION: _assert_after_territorial_sync,
     }
     validator = validators.get(revision)
     if validator is None:
@@ -930,6 +1336,9 @@ def _postcheck_for_applied_revision(
         IDEMPOTENCY_REVISION: _assert_after_idempotency,
         INBOUND_FIFO_REVISION: _assert_after_inbound_fifo,
         GLOBAL_WRITER_AUTHORITY_REVISION: _assert_after_global_writer_authority,
+        TERRITORIAL_GEOCODING_REVISION: _assert_after_territorial_geocoding,
+        TERRITORIAL_GEOCODING_REVIEW_REVISION: _assert_after_territorial_review,
+        TERRITORIAL_GEOCODING_SYNC_REVISION: _assert_after_territorial_sync,
     }
     validator = validators.get(revision)
     if validator is None:
