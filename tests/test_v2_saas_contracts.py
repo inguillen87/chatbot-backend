@@ -546,6 +546,206 @@ class V2SaasContractsTest(unittest.TestCase):
         refreshed = db.session.get(MunicipioTicket, ticket.id)
         self.assertEqual(refreshed.asignado_a_id, employee.id)
 
+    def test_employee_routing_employee_view_uses_legacy_category_scope_and_hides_other_categories(self):
+        owner = User(
+            name="Owner Junin routing",
+            email="owner-routing-m419@test.com",
+            rol="admin",
+            tipo_chat="municipio",
+            tenant_slug="junin-routing",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="junin-routing",
+            nombre="Municipalidad de Junin",
+            tipo="municipio",
+            municipio_id=owner.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+
+        employee = User(
+            name="Cuadrilla luminarias",
+            email="routing-m419@test.com",
+            rol="empleado",
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            es_empleado=True,
+            ticket_categorias="Luminarias",
+            accesibilidad={"employee_scope": {"permisos": ["tickets.read", "tickets.assign"]}},
+        )
+        employee.set_password("secret123")
+        db.session.add(employee)
+        db.session.flush()
+
+        visible = MunicipioTicket(
+            tenant_id=tenant.id,
+            municipio_id=owner.id,
+            nro_ticket="M-419",
+            pregunta="Luminaria apagada",
+            asunto="Demo reclamo - Alumbrado publico",
+            categoria="luminaria",
+            estado="nuevo",
+            distrito="centro",
+            canal_ingreso="whatsapp",
+        )
+        hidden = MunicipioTicket(
+            tenant_id=tenant.id,
+            municipio_id=owner.id,
+            nro_ticket="M-420",
+            pregunta="Bache en calzada",
+            asunto="Demo reclamo - Bacheo",
+            categoria="bacheo",
+            estado="nuevo",
+            distrito="centro",
+            canal_ingreso="whatsapp",
+            asignado_a_id=employee.id,
+        )
+        db.session.add_all([visible, hidden])
+        db.session.commit()
+
+        response = self.client.get(
+            f"/api/v2/tenants/{tenant.slug}/employee-routing",
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload["contract_version"], "employee.routing.v1")
+        self.assertEqual(payload["routing_policy"]["viewer_scope"], "employee_categories")
+        self.assertEqual([item["id"] for item in payload["employees"]], [employee.id])
+        self.assertEqual(payload["employees"][0]["workload_open"], 1)
+        identities = {
+            (item["source_model"], item["id"])
+            for item in payload["queues"]["open"]
+        }
+        self.assertIn(("MunicipioTicket", visible.id), identities)
+        self.assertNotIn(("MunicipioTicket", hidden.id), identities)
+        recommendation = next(
+            item
+            for item in payload["recommendations"]
+            if item["ticket"]["source_model"] == "MunicipioTicket"
+            and item["ticket"]["id"] == visible.id
+        )
+        self.assertEqual(recommendation["candidate_ids"], [employee.id])
+        self.assertIn("luminarias", payload["employees"][0]["scope"]["categorias"])
+
+        dry_run = self.client.post(
+            f"/api/v2/tenants/{tenant.slug}/employee-routing/auto-assign",
+            json={"dry_run": True},
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(dry_run.status_code, 200, dry_run.get_json())
+        dry_run_payload = dry_run.get_json()
+        dry_run_identities = {
+            (item["ticket"]["source_model"], item["ticket"]["id"])
+            for item in dry_run_payload["items"]
+        }
+        self.assertIn(("MunicipioTicket", visible.id), dry_run_identities)
+        self.assertNotIn(("MunicipioTicket", hidden.id), dry_run_identities)
+
+        forbidden_apply = self.client.post(
+            f"/api/v2/tenants/{tenant.slug}/employee-routing/auto-assign",
+            json={
+                "dry_run": False,
+                "tickets": [
+                    {
+                        "source_model": "MunicipioTicket",
+                        "id": visible.id,
+                        "expected_assignee_id": None,
+                    }
+                ],
+            },
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(forbidden_apply.status_code, 403, forbidden_apply.get_json())
+        self.assertEqual(forbidden_apply.get_json()["reason_code"], "ticket_assignment_forbidden")
+
+        claim = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "ticket_id": visible.id,
+                "action": "claim",
+            },
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(claim.status_code, 200, claim.get_json())
+        db.session.expire_all()
+        self.assertEqual(db.session.get(MunicipioTicket, visible.id).asignado_a_id, employee.id)
+        self.assertEqual(db.session.get(MunicipioTicket, hidden.id).asignado_a_id, employee.id)
+
+        forbidden_claim = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "ticket_id": hidden.id,
+                "action": "claim",
+            },
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+        # Fail closed without revealing that a ticket from another operational
+        # category exists to this employee.
+        self.assertEqual(forbidden_claim.status_code, 404, forbidden_claim.get_json())
+        self.assertEqual(forbidden_claim.get_json().get("reason_code"), "ticket_not_found")
+        db.session.expire_all()
+        self.assertEqual(db.session.get(MunicipioTicket, hidden.id).asignado_a_id, employee.id)
+
+    def test_employee_routing_pyme_rubro_fallback_only_includes_unowned_legacy_tickets(self):
+        self.owner.rubro_id = 7719
+        foreign_owner = User(
+            name="Foreign owner",
+            email="foreign-routing@test.com",
+            rol="admin",
+            tenant_slug="foreign-routing",
+            rubro_id=7719,
+        )
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-routing",
+            nombre="Foreign tenant",
+            tipo="pyme",
+            pyme_id=foreign_owner.id,
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_owner.tenant_id = foreign_tenant.id
+        legacy = PymeTicket(
+            tenant_id=None,
+            rubro_id=7719,
+            pregunta="Legacy same rubro",
+            categoria="educacion",
+            estado="nuevo",
+            nro_ticket=771901,
+        )
+        foreign = PymeTicket(
+            tenant_id=foreign_tenant.id,
+            rubro_id=7719,
+            pregunta="Foreign same rubro",
+            categoria="educacion",
+            estado="nuevo",
+            nro_ticket=771902,
+        )
+        db.session.add_all([legacy, foreign])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/employee-routing",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        identities = {
+            (item["source_model"], item["id"])
+            for item in response.get_json()["queues"]["open"]
+        }
+        self.assertIn(("PymeTicket", legacy.id), identities)
+        self.assertNotIn(("PymeTicket", foreign.id), identities)
+
     def test_employee_routing_contract_scope_update_and_auto_assign(self):
         unassigned = TenantTicket(
             tenant_id=self.tenant.id,

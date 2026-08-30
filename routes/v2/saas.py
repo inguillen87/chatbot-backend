@@ -125,7 +125,7 @@ from services.whatsapp_workflow_versioning import (
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
-from utils.roles import first_specific_tenant_slug, is_authorized_superadmin_user
+from utils.roles import ROLE_EMPLEADO, canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user
 
 v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
@@ -1871,7 +1871,7 @@ def employee_routing_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    return _json_response(build_employee_routing_payload(tenant))
+    return _json_response(build_employee_routing_payload(tenant, viewer=current_user))
 
 
 @v2_saas_bp.route("/employees/<int:employee_id>/routing-scope", methods=["PATCH", "POST"])
@@ -1947,6 +1947,15 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
 
     payload = request.get_json(silent=True) or {}
     dry_run = payload.get("dry_run", True) is not False
+    if not dry_run and canonical_role(getattr(current_user, "rol", None)) == ROLE_EMPLEADO:
+        return _assignment_policy_error(
+            TicketAssignmentPolicyError(
+                403,
+                "ticket_assignment_forbidden",
+                "La autoasignacion aplicada requiere supervision; el empleado solo puede simularla",
+                "request_supervisor_assignment",
+            )
+        )
     if not dry_run and not actor_can_assign_tickets(current_user):
         return _assignment_policy_error(
             TicketAssignmentPolicyError(
@@ -1957,7 +1966,7 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
             )
         )
     limit = max(1, min(int(payload.get("limit", 25) or 25), 100))
-    routing = build_employee_routing_payload(tenant)
+    routing = build_employee_routing_payload(tenant, viewer=current_user)
     recommendations = routing.get("recommendations") or []
     explicit_tickets = payload.get("tickets") if isinstance(payload.get("tickets"), list) else []
     expected_by_identity: dict[tuple[str, int], Any] = {}

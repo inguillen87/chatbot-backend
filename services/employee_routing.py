@@ -3,17 +3,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from models import CatalogoItem, CategoriaTicket, MunicipioTicket, PymeTicket, TenantProfile, TenantTicket, User
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 from services.education_contracts import education_case_taxonomy, is_education_tenant
 from services.employee_ticket_access import (
     employee_ticket_category_scope,
+    employee_ticket_category_values_allow,
     ticket_assignee_category_values_are_compatible,
 )
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.territorial_evidence import canonicalize_territorial_category
+from utils.roles import ROLE_EMPLEADO, canonical_role
 
 
 EMPLOYEE_ROUTING_CONTRACT_VERSION = "employee.routing.v1"
@@ -161,8 +163,15 @@ def employee_scope(emp: User) -> dict[str, list[str]]:
         getattr(category, "nombre", None)
         for category in (getattr(emp, "categorias_ticket", None) or [])
     ]
+    legacy_category_names = normalize_scope_list(
+        getattr(emp, "ticket_categorias", None)
+    )
     categories = normalize_scope_list(
-        [*normalize_scope_list(scope.get("categorias")), *persisted_category_names]
+        [
+            *normalize_scope_list(scope.get("categorias")),
+            *persisted_category_names,
+            *legacy_category_names,
+        ]
     )
     canonical_categories = normalize_scope_list(
         [canonicalize_territorial_category(value)["category"] for value in categories]
@@ -414,7 +423,9 @@ def pyme_ticket_query_for_tenant(tenant: TenantProfile):
     owner = User.query.get(getattr(tenant, "pyme_id", None)) if getattr(tenant, "pyme_id", None) else None
     rubro_id = getattr(owner, "rubro_id", None)
     if rubro_id:
-        conditions.append(PymeTicket.rubro_id == rubro_id)
+        conditions.append(
+            and_(PymeTicket.tenant_id.is_(None), PymeTicket.rubro_id == rubro_id)
+        )
     if not conditions:
         return PymeTicket.query.filter(False)
     return PymeTicket.query.filter(or_(*conditions))
@@ -461,8 +472,12 @@ def tenant_open_ticket_snapshots(tenant: TenantProfile) -> list[dict[str, Any]]:
 
 
 def workload_by_employee(tenant: TenantProfile) -> dict[int, int]:
+    return workload_from_snapshots(tenant_open_ticket_snapshots(tenant))
+
+
+def workload_from_snapshots(snapshots: list[dict[str, Any]]) -> dict[int, int]:
     workload: dict[int, int] = {}
-    for snapshot in tenant_open_ticket_snapshots(tenant):
+    for snapshot in snapshots:
         assignee_id = snapshot.get("assignee_id")
         if assignee_id:
             try:
@@ -545,10 +560,41 @@ def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], work
     return candidates[0] if candidates else None
 
 
-def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
+def build_employee_routing_payload(
+    tenant: TenantProfile,
+    *,
+    viewer: User | None = None,
+) -> dict[str, Any]:
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).order_by(User.id.asc()).all()
-    workloads = workload_by_employee(tenant)
-    tickets = tenant_open_ticket_snapshots(tenant)
+    all_tickets = tenant_open_ticket_snapshots(tenant)
+    tickets = all_tickets
+
+    # A regular employee receives only their own routing identity and tickets
+    # covered by their authoritative category scope.  This keeps the GET
+    # contract aligned with the claim endpoint, which applies the same policy
+    # again under a row lock before mutating anything.  Tenant administrators
+    # retain the complete dispatch matrix.
+    viewer_role = canonical_role(getattr(viewer, "rol", None)) if viewer is not None else None
+    viewer_is_limited_employee = viewer is not None and viewer_role == ROLE_EMPLEADO
+    if viewer_is_limited_employee:
+        viewer_is_operational = bool(
+            getattr(viewer, "es_empleado", False)
+            and getattr(viewer, "tenant_id", None) == tenant.id
+        )
+        employees = [viewer] if viewer_is_operational else []
+        tickets = [
+            ticket
+            for ticket in tickets
+            if viewer_is_operational
+            and employee_ticket_category_values_allow(
+                viewer,
+                category=ticket.get("authoritative_category") or ticket.get("category"),
+                category_id=ticket.get("category_id"),
+            )
+        ]
+    # Workload is tenant-wide even when the viewer may only inspect and receive
+    # recommendations for their authorized category slice.
+    workloads = workload_from_snapshots(all_tickets)
     unassigned = [ticket for ticket in tickets if not ticket.get("assignee_id")]
     supported_dimensions = tenant_operational_dimensions(tenant, tickets)
 
@@ -592,6 +638,7 @@ def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
             "dimensions": ["categorias", "zonas", "channels", "permisos"],
             "assignment_targets": ["TenantTicket", "MunicipioTicket", "PymeTicket"],
             "scoring": ["category_match", "zone_match", "channel_match", "assignment_permission", "workload_penalty"],
+            "viewer_scope": "employee_categories" if viewer_is_limited_employee else "tenant_dispatch",
         },
         "dimensions": {
             "categorias": categories,
