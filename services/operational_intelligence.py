@@ -45,8 +45,10 @@ from services.survey_response_provenance import (
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.territorial_evidence import (
     build_territorial_facets,
+    coordinate_jurisdiction_status,
     explicit_zone,
     extract_location_evidence,
+    resolve_tenant_jurisdiction,
 )
 
 
@@ -2642,11 +2644,25 @@ def _location_provenance_source(record: dict[str, Any], field: str) -> str:
 
 def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[dict[str, Any]]) -> dict[str, Any]:
     ticket_records = [record for record in records if record.get("source") in {"tenant_ticket", "municipio_ticket", "pyme_ticket"}]
-    with_coordinates = [record for record in ticket_records if _record_has_coordinates(record)]
+    with_persisted_coordinates = [record for record in ticket_records if _record_has_coordinates(record)]
+    outside_jurisdiction = [
+        record
+        for record in with_persisted_coordinates
+        if record.get("coordinate_jurisdiction_status") == "outside"
+    ]
+    with_coordinates = [
+        record
+        for record in with_persisted_coordinates
+        if record.get("coordinate_jurisdiction_status") != "outside"
+    ]
     with_address = [record for record in ticket_records if record.get("address")]
     with_zone = [record for record in ticket_records if explicit_zone(record.get("zone"))]
     with_address_and_coordinates = [
-        record for record in ticket_records if record.get("address") and _record_has_coordinates(record)
+        record
+        for record in ticket_records
+        if record.get("address")
+        and _record_has_coordinates(record)
+        and record.get("coordinate_jurisdiction_status") != "outside"
     ]
     missing_location = [
         record
@@ -2667,7 +2683,10 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
     return {
         "contract_version": "operations.location_quality.v1",
         "total_ticket_records": total,
+        "ticket_records_with_persisted_coordinates": len(with_persisted_coordinates),
         "ticket_records_with_coordinates": len(with_coordinates),
+        "ticket_records_with_validated_coordinates": len(with_coordinates),
+        "ticket_records_outside_jurisdiction": len(outside_jurisdiction),
         "ticket_records_with_address": len(with_address),
         "ticket_records_with_address_and_coordinates": len(with_address_and_coordinates),
         "ticket_records_with_explicit_zone": len(with_zone),
@@ -2692,7 +2711,11 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
         "reason_code": (
             "coordinates_available"
             if with_coordinates
-            else ("addresses_need_geocoding" if geocoding_candidates else "no_ticket_locations")
+            else (
+                "coordinates_outside_configured_jurisdiction"
+                if outside_jurisdiction
+                else ("addresses_need_geocoding" if geocoding_candidates else "no_ticket_locations")
+            )
         ),
     }
 
@@ -3464,6 +3487,18 @@ def build_operational_heatmap(
         else _collect_ticket_records(tenant, start_date, end_date, viewer=viewer)
     )
     records = filter_ticket_records_for_heatmap(records, viewer)
+    jurisdiction = resolve_tenant_jurisdiction(tenant)
+    records = [
+        {
+            **record,
+            "coordinate_jurisdiction_status": coordinate_jurisdiction_status(
+                record.get("lat"),
+                record.get("lng"),
+                jurisdiction,
+            ),
+        }
+        for record in records
+    ]
     if employee_view:
         # Employee geography is ticket-only. Survey responses, analytics
         # events, and commerce locations have no employee category boundary
@@ -3472,6 +3507,7 @@ def build_operational_heatmap(
     elif commerce_records is None:
         commerce_records, _ = _collect_commerce_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
+    jurisdiction_exclusions: Counter = Counter()
     if employee_view:
         include_ai = False
     geocoding_candidates = [
@@ -3517,8 +3553,11 @@ def build_operational_heatmap(
             "demographics_source": demographics.get("source") or "missing",
             "actions": _ticket_action_contract(record),
         }
-        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
-            points.append(point)
+        if _point_matches_filters(point, filters):
+            if record.get("coordinate_jurisdiction_status") == "outside":
+                jurisdiction_exclusions["tickets"] += 1
+            elif _point_matches_bbox(point, bbox):
+                points.append(point)
 
     survey_responses = []
     survey_response_provenance = build_survey_response_provenance(
@@ -3601,8 +3640,11 @@ def build_operational_heatmap(
             "age_range": demographics.get("age_range") or "unknown",
             "demographics_source": demographics.get("source") or "missing",
         }
-        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
-            points.append(point)
+        if _point_matches_filters(point, filters):
+            if coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction) == "outside":
+                jurisdiction_exclusions["surveys"] += 1
+            elif _point_matches_bbox(point, bbox):
+                points.append(point)
 
     events = []
     if not employee_view:
@@ -3635,8 +3677,11 @@ def build_operational_heatmap(
             "age_range": demographics.get("age_range") or "unknown",
             "demographics_source": demographics.get("source") or "missing",
         }
-        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
-            points.append(point)
+        if _point_matches_filters(point, filters):
+            if coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction) == "outside":
+                jurisdiction_exclusions["analytics_events"] += 1
+            elif _point_matches_bbox(point, bbox):
+                points.append(point)
 
     for order in commerce_records:
         location = _as_dict(order.get("location"))
@@ -3681,8 +3726,11 @@ def build_operational_heatmap(
                 }
             ],
         }
-        if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
-            points.append(point)
+        if _point_matches_filters(point, filters):
+            if coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction) == "outside":
+                jurisdiction_exclusions["commerce"] += 1
+            elif _point_matches_bbox(point, bbox):
+                points.append(point)
 
     points = points[:max_points]
     cells: dict[str, dict[str, Any]] = {}
@@ -3822,6 +3870,20 @@ def build_operational_heatmap(
     points_with_gender = len([point for point in points if point.get("gender") not in (None, "unknown")])
     points_with_age = len([point for point in points if point.get("age_range") not in (None, "unknown")])
     location_quality = _location_quality(records, geocoding_candidates)
+    jurisdiction_review_candidates = [
+        {
+            **_geocoding_candidate(record),
+            "reason_code": "coordinates_outside_configured_jurisdiction",
+        }
+        for record in territorial_records
+        if record.get("coordinate_jurisdiction_status") == "outside"
+    ]
+    jurisdiction = {
+        **jurisdiction,
+        "excluded_coordinate_records": int(sum(jurisdiction_exclusions.values())),
+        "excluded_by_source": _counter(jurisdiction_exclusions),
+        "review_candidate_count": len(jurisdiction_review_candidates),
+    }
     quality = _heatmap_quality_contract(
         points=points,
         records=records,
@@ -3859,6 +3921,7 @@ def build_operational_heatmap(
         "filtered": bool(normalized_filters),
         "pending_geocode": len(geocoding_candidates),
         "coordinate_coverage_pct": location_quality.get("coordinate_coverage_pct"),
+        "outside_jurisdiction": location_quality.get("ticket_records_outside_jurisdiction"),
         "coverage_rate": quality.get("coverage_rate"),
         "coverage_percent": quality.get("coverage_percent"),
         "quality_state": quality.get("state"),
@@ -4021,6 +4084,19 @@ def build_operational_heatmap(
             "unknown_age_points": len(points) - points_with_age,
         },
         "location_quality": location_quality,
+        "jurisdiction": jurisdiction,
+        "jurisdiction_review": {
+            "contract_version": "operations.heatmap.jurisdiction_review.v1",
+            "status": "pending" if jurisdiction_review_candidates else "empty",
+            "reason_code": (
+                "coordinates_outside_configured_jurisdiction"
+                if jurisdiction_review_candidates
+                else "no_outside_coordinates"
+            ),
+            "candidate_count": len(jurisdiction_review_candidates),
+            "candidates": jurisdiction_review_candidates[:50],
+            "writes_performed": False,
+        },
         "geocoding": {
             "contract_version": "operations.heatmap.geocoding_queue.v1",
             "status": "pending" if geocoding_candidates else "empty",
@@ -4072,6 +4148,7 @@ def build_operational_heatmap(
 
     payload["territorial_facets"] = territorial_facets
     payload["render_contract"]["premium_metadata"].append("territorial_facets")
+    payload["render_contract"]["premium_metadata"].append("jurisdiction")
     payload["privacy"] = privileged_heatmap_privacy()
     return payload
 

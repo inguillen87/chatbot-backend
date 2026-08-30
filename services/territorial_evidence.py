@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+import json
 import math
+import os
 import re
 import unicodedata
 from typing import Any, Iterable
@@ -15,6 +17,8 @@ _UNKNOWN_ZONE_VALUES = {
     "", "desconocido", "missing", "no informado", "sin barrio",
     "sin distrito", "sin zona", "sin_zona", "unknown",
 }
+
+_REPOSITORY_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
 def _normalized_key(value: Any) -> str:
@@ -51,6 +55,120 @@ def _valid_coordinates(lat: Any, lng: Any) -> tuple[float, float] | None:
     if not (-90 <= parsed_lat <= 90 and -180 <= parsed_lng <= 180):
         return None
     return parsed_lat, parsed_lng
+
+
+def _jurisdiction_bounds(value: Any) -> dict[str, float] | None:
+    """Normalize the configured ``[west, south, east, north]`` envelope."""
+
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    west, south, east, north = (_finite_float(item) for item in value)
+    if None in {west, south, east, north}:
+        return None
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        return None
+    return {
+        "west": float(west),
+        "south": float(south),
+        "east": float(east),
+        "north": float(north),
+    }
+
+
+def _safe_config_segment(value: Any) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized or not re.fullmatch(r"[a-z0-9_-]+", normalized):
+        return None
+    return normalized
+
+
+def _load_json_object(path: str) -> dict[str, Any] | None:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
+    """Resolve an exact tenant envelope without using a shared fallback.
+
+    A missing tenant-specific file deliberately leaves enforcement disabled. This
+    prevents the bundled Junin configuration from being applied to an unrelated
+    government or company merely because it lacks its own configuration.
+    """
+
+    slug = _safe_config_segment(getattr(tenant, "slug", None))
+    municipio_id = _safe_config_segment(getattr(tenant, "municipio_id", None))
+    data_roots: list[tuple[str, str]] = []
+    configured_data_root = str(os.environ.get("DATA_DIR") or "").strip()
+    if configured_data_root:
+        data_roots.append((configured_data_root, "persistent_data"))
+    data_roots.append((os.path.join(_REPOSITORY_ROOT, "data"), "bundled_data"))
+
+    relative_candidates: list[str] = []
+    if slug:
+        relative_candidates.extend(
+            [
+                os.path.join("tenants", slug, "geo.json"),
+                os.path.join("municipios", slug, "geo.json"),
+            ]
+        )
+    if municipio_id:
+        relative_candidates.append(os.path.join("municipios", municipio_id, "geo.json"))
+
+    for root, storage in data_roots:
+        for relative_path in relative_candidates:
+            payload = _load_json_object(os.path.join(root, relative_path))
+            bounds = _jurisdiction_bounds((payload or {}).get("bounds"))
+            if not payload or not bounds:
+                continue
+            return {
+                "contract_version": "operations.tenant_jurisdiction.v1",
+                "state": "configured",
+                "enforced": True,
+                "city": _scalar_text(payload.get("city") or payload.get("ciudad")),
+                "state_name": _scalar_text(payload.get("state") or payload.get("provincia")),
+                "country": _scalar_text(payload.get("country") or payload.get("pais")),
+                "locale": _scalar_text(payload.get("locale")),
+                "region_hint": _scalar_text(payload.get("region_hint")),
+                "bounds": bounds,
+                "source": {
+                    "kind": "tenant_geo_config",
+                    "storage": storage,
+                    "ref": relative_path.replace(os.sep, "/"),
+                },
+                "truth_boundary": "operational_envelope_not_official_boundary",
+            }
+
+    return {
+        "contract_version": "operations.tenant_jurisdiction.v1",
+        "state": "unconfigured",
+        "enforced": False,
+        "bounds": None,
+        "source": None,
+        "truth_boundary": "no_tenant_specific_envelope",
+    }
+
+
+def coordinate_jurisdiction_status(lat: Any, lng: Any, jurisdiction: dict[str, Any] | None) -> str:
+    coordinates = _valid_coordinates(lat, lng)
+    if coordinates is None:
+        return "missing"
+    contract = jurisdiction or {}
+    bounds = contract.get("bounds") if contract.get("enforced") else None
+    if not isinstance(bounds, dict):
+        return "unenforced"
+    parsed_lat, parsed_lng = coordinates
+    try:
+        within = (
+            float(bounds["south"]) <= parsed_lat <= float(bounds["north"])
+            and float(bounds["west"]) <= parsed_lng <= float(bounds["east"])
+        )
+    except (KeyError, TypeError, ValueError):
+        return "unenforced"
+    return "within" if within else "outside"
 
 
 def _walk(
@@ -165,16 +283,21 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         zone = explicit_zone(record.get("zone"))
         address_label = _scalar_text(record.get("address"))
         address_key = _normalized_value(address_label) if address_label else None
-        mapped = _valid_coordinates(record.get("lat"), record.get("lng")) is not None
-        pending = bool(address_label and not mapped)
+        outside_jurisdiction = record.get("coordinate_jurisdiction_status") == "outside"
+        mapped = (
+            _valid_coordinates(record.get("lat"), record.get("lng")) is not None
+            and not outside_jurisdiction
+        )
+        pending = bool(address_label and not mapped and not outside_jurisdiction)
 
         category_item = categories.setdefault(
             category,
-            {"key": category, "count": 0, "mapped": 0, "pending": 0, "addresses": Counter(), "address_labels": {}, "zones": Counter()},
+            {"key": category, "count": 0, "mapped": 0, "pending": 0, "outside": 0, "addresses": Counter(), "address_labels": {}, "zones": Counter()},
         )
         category_item["count"] += 1
         category_item["mapped"] += int(mapped)
         category_item["pending"] += int(pending)
+        category_item["outside"] += int(outside_jurisdiction)
         if address_key and address_label:
             category_item["addresses"][address_key] += 1
             category_item["address_labels"].setdefault(address_key, address_label)
@@ -184,11 +307,12 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         if address_key and address_label:
             item = addresses.setdefault(
                 address_key,
-                {"key": address_key, "label": address_label, "count": 0, "mapped": 0, "pending": 0, "categories": Counter(), "zones": Counter()},
+                {"key": address_key, "label": address_label, "count": 0, "mapped": 0, "pending": 0, "outside": 0, "categories": Counter(), "zones": Counter()},
             )
             item["count"] += 1
             item["mapped"] += int(mapped)
             item["pending"] += int(pending)
+            item["outside"] += int(outside_jurisdiction)
             item["categories"][category] += 1
             if zone:
                 item["zones"][zone] += 1
@@ -212,6 +336,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         {
             "key": item["key"], "label": item["key"], "count": item["count"],
             "mapped_count": item["mapped"], "pending_geocode_count": item["pending"],
+            "outside_jurisdiction_count": item["outside"],
             "top_addresses": _counter_items(item["addresses"], item["address_labels"], limit=8),
             "explicit_zones": _counter_items(item["zones"], limit=8),
         }
@@ -221,6 +346,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         {
             "key": item["key"], "label": item["label"], "count": item["count"],
             "mapped_count": item["mapped"], "pending_geocode_count": item["pending"],
+            "outside_jurisdiction_count": item["outside"],
             "categories": _counter_items(item["categories"], limit=8),
             "explicit_zones": _counter_items(item["zones"], limit=8),
         }
@@ -236,7 +362,14 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
     for items in (category_items, address_items, zone_items):
         items.sort(key=lambda item: (item["count"], item["key"]), reverse=True)
 
-    mapped_count = sum(1 for record in records if _valid_coordinates(record.get("lat"), record.get("lng")))
+    mapped_count = sum(
+        1 for record in records
+        if _valid_coordinates(record.get("lat"), record.get("lng"))
+        and record.get("coordinate_jurisdiction_status") != "outside"
+    )
+    outside_count = sum(
+        1 for record in records if record.get("coordinate_jurisdiction_status") == "outside"
+    )
     address_count = sum(1 for record in records if _scalar_text(record.get("address")))
     zone_count = sum(1 for record in records if explicit_zone(record.get("zone")))
     pending_count = sum(
@@ -252,6 +385,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         "summary": {
             "ticket_records": len(records), "mapped_records": mapped_count,
             "records_with_address": address_count, "records_with_explicit_zone": zone_count,
+            "records_outside_jurisdiction": outside_count,
             "pending_geocode_records": pending_count,
             "records_without_location": len(records) - located_count,
         },
@@ -268,6 +402,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         "truth_boundary": {
             "zones": "explicit_persisted_fields_only",
             "address_only_records": "faceted_and_queued_but_not_plotted_without_coordinates",
+            "outside_jurisdiction": "faceted_but_excluded_from_map_pending_review",
         },
         "privacy": {"mode": "privileged_exact", "employee_response": "omitted_by_allowlist"},
     }

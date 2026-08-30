@@ -83,8 +83,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             descripcion="Bache con foto enviado por WhatsApp",
             estado="nuevo",
             origen="whatsapp",
-            latitud=-34.6037,
-            longitud=-58.3816,
+            latitud=-33.0837,
+            longitud=-68.4716,
             datos_extra={
                 "title": "Bache en centro",
                 "priority": "high",
@@ -108,8 +108,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 estado="nuevo",
                 canal_ingreso="whatsapp",
                 distrito="Centro",
-                latitud=-34.6034,
-                longitud=-58.3812,
+                latitud=-33.0834,
+                longitud=-68.4712,
                 detalles='{"genero": "no_binario", "edad": 45}',
                 fecha=now,
             )
@@ -124,8 +124,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 estado="cerrado",
                 canal_ingreso="web",
                 distrito="La Colonia",
-                latitud=-34.61,
-                longitud=-58.39,
+                latitud=-33.09,
+                longitud=-68.48,
                 detalles='{"genero": "femenino", "edad": 39}',
                 fecha=now - timedelta(days=800),
             )
@@ -148,8 +148,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 encuesta_id=encuesta.id,
                 tenant_id=self.tenant.id,
                 huella_unica="resp-1",
-                lat=-34.604,
-                lng=-58.382,
+                lat=-33.084,
+                lng=-68.472,
                 canal="widget",
                 barrio="Centro",
                 genero="masculino",
@@ -166,8 +166,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 event_name="message_in",
                 session_id="session-ops",
                 metadata_payload={"categoria": "consulta", "gender": "femenino", "age": 22},
-                lat=-34.6038,
-                lng=-58.3817,
+                lat=-33.0838,
+                lng=-68.4717,
                 ts=now,
             )
         )
@@ -624,8 +624,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             nombre_cliente="Cliente privado legacy",
             email_cliente="legacy-private@example.com",
             direccion="Direccion legacy secreta 123",
-            latitud=-34.605,
-            longitud=-58.383,
+            latitud=-33.085,
+            longitud=-68.473,
         )
         canonical = Order(
             tenant_id=self.tenant.id,
@@ -637,7 +637,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             total=2500,
             delivery_address={
                 "address": "Direccion canonical secreta 456",
-                "coordinates": {"lat": -34.606, "lng": -58.384},
+                "coordinates": {"lat": -33.086, "lng": -68.474},
             },
         )
         mirror = MarketOrder(
@@ -944,6 +944,91 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((facets.get("provenance") or {}).get("external_geocoding_calls"), 0)
         self.assertFalse((facets.get("provenance") or {}).get("writes_performed"))
 
+    def test_operations_heatmap_excludes_coordinates_outside_configured_tenant_jurisdiction(self):
+        inside = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Reclamo dentro del municipio",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-33.0812,
+            longitud=-68.4691,
+            datos_extra={"address": "San Martin 120, Junin, Mendoza"},
+        )
+        outside = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Coordenada de otra ciudad homonima",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-34.5889,
+            longitud=-60.9462,
+            datos_extra={"address": "Junin, Buenos Aires"},
+        )
+        db.session.add_all([inside, outside])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=jurisdiction_probe&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
+        self.assertEqual(len(payload.get("points") or []), 1)
+        self.assertEqual((payload.get("points") or [])[0].get("id"), f"tenant_ticket:{inside.id}")
+        self.assertTrue(all(-68.6 <= point.get("lng") <= -68.3 for point in payload.get("points") or []))
+
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertTrue(jurisdiction.get("enforced"))
+        self.assertEqual(jurisdiction.get("city"), "Junín")
+        self.assertEqual(jurisdiction.get("state_name"), "Mendoza")
+        self.assertEqual((jurisdiction.get("source") or {}).get("ref"), "municipios/junin/geo.json")
+        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 1)
+        self.assertEqual(jurisdiction.get("review_candidate_count"), 1)
+
+        quality = payload.get("location_quality") or {}
+        self.assertEqual(quality.get("ticket_records_outside_jurisdiction"), 1)
+        self.assertGreaterEqual(quality.get("ticket_records_with_persisted_coordinates") or 0, 2)
+        review = payload.get("jurisdiction_review") or {}
+        self.assertEqual(review.get("candidate_count"), 1)
+        self.assertEqual((review.get("candidates") or [])[0].get("record_id"), outside.id)
+        self.assertEqual(
+            (review.get("candidates") or [])[0].get("reason_code"),
+            "coordinates_outside_configured_jurisdiction",
+        )
+
+        facets = payload.get("territorial_facets") or {}
+        category = next(
+            item for item in facets.get("categories") or []
+            if item.get("key") == "jurisdiction_probe"
+        )
+        self.assertEqual(category.get("count"), 2)
+        self.assertEqual(category.get("mapped_count"), 1)
+        self.assertEqual(category.get("outside_jurisdiction_count"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 1)
+
+    def test_tenant_jurisdiction_never_uses_junin_config_for_an_unconfigured_tenant(self):
+        from services.territorial_evidence import resolve_tenant_jurisdiction
+
+        foreign = TenantProfile(
+            slug="foreign-unconfigured-jurisdiction",
+            nombre="Tenant sin jurisdiccion",
+            tipo="pyme",
+            pyme_id=self.admin.id,
+            plan="full",
+        )
+
+        contract = resolve_tenant_jurisdiction(foreign)
+
+        self.assertFalse(contract.get("enforced"))
+        self.assertEqual(contract.get("state"), "unconfigured")
+        self.assertIsNone(contract.get("bounds"))
+        self.assertEqual(contract.get("truth_boundary"), "no_tenant_specific_envelope")
+
     def test_nested_location_without_scalar_address_is_not_stringified(self):
         from services.operational_intelligence import _tenant_ticket_record
 
@@ -1088,13 +1173,13 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("60_plus", age_ranges)
 
     def test_operations_heatmap_employee_is_category_scoped_and_k_aggregated(self):
-        allowed_lat = -34.612345
-        allowed_lng = -58.398765
+        allowed_lat = -33.112345
+        allowed_lng = -68.498765
         restricted_centroids = {
-            (-34.622, -58.412),
-            (-34.632, -58.422),
-            (-34.642, -58.432),
-            (-34.652, -58.442),
+            (-33.122, -68.512),
+            (-33.132, -68.522),
+            (-33.142, -68.532),
+            (-33.152, -68.542),
         }
 
         for index in range(5):
@@ -1122,8 +1207,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     descripcion=f"tenant restricted secret {index}",
                     estado="nuevo",
                     origen="web",
-                    latitud=-34.622345,
-                    longitud=-58.411765,
+                    latitud=-33.122345,
+                    longitud=-68.511765,
                     datos_extra={"address": f"Tenant restringido {index}"},
                 )
             )
@@ -1136,8 +1221,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     categoria="secreto_municipio",
                     estado="nuevo",
                     direccion=f"Municipio restringido {index}",
-                    latitud=-34.632345,
-                    longitud=-58.421765,
+                    latitud=-33.132345,
+                    longitud=-68.521765,
                     fecha=datetime.now(timezone.utc),
                 )
             )
@@ -1150,8 +1235,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     estado="nuevo",
                     nro_ticket=910000 + index,
                     direccion=f"Pyme restringido {index}",
-                    latitud=-34.642345,
-                    longitud=-58.431765,
+                    latitud=-33.142345,
+                    longitud=-68.531765,
                     fecha=datetime.now(timezone.utc),
                 )
             )
@@ -1162,8 +1247,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                     channel="web",
                     event_name=f"non_ticket_restricted_{index}",
                     metadata_payload={"categoria": "fuente_sin_scope"},
-                    lat=-34.652345,
-                    lng=-58.441765,
+                    lat=-33.152345,
+                    lng=-68.541765,
                     ts=datetime.now(timezone.utc),
                 )
             )
@@ -1208,7 +1293,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         cells = payload.get("cells") or []
         self.assertEqual(len(cells), 1)
         cell = cells[0]
-        self.assertEqual((cell.get("lat"), cell.get("lng")), (-34.612, -58.399))
+        self.assertEqual((cell.get("lat"), cell.get("lng")), (-33.112, -68.499))
         self.assertEqual(cell.get("count"), 5)
         self.assertGreaterEqual(cell.get("count"), privacy.get("k_min"))
         self.assertNotIn((cell.get("lat"), cell.get("lng")), restricted_centroids)
@@ -1217,7 +1302,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
 
         features = (((payload.get("geo_layers") or {}).get("cells") or {}).get("features") or [])
         self.assertEqual(len(features), 1)
-        self.assertEqual((features[0].get("geometry") or {}).get("coordinates"), [-58.399, -34.612])
+        self.assertEqual((features[0].get("geometry") or {}).get("coordinates"), [-68.499, -33.112])
         self.assertEqual((features[0].get("properties") or {}).get("count"), 5)
         self.assertNotIn("id", features[0].get("properties") or {})
 
@@ -1245,8 +1330,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         db.session.add(category)
         db.session.flush()
         self.employee.categorias_ticket.append(category)
-        allowed_lat = -34.712345
-        allowed_lng = -58.498765
+        allowed_lat = -33.132345
+        allowed_lng = -68.518765
         for index in range(5):
             db.session.add(
                 MunicipioTicket(
@@ -1275,7 +1360,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         cell = next(
             item
             for item in payload.get("cells") or []
-            if (item.get("lat"), item.get("lng")) == (-34.712, -58.499)
+            if (item.get("lat"), item.get("lng")) == (-33.132, -68.519)
         )
         self.assertEqual(cell.get("count"), 5)
 
@@ -1363,7 +1448,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
 
         bbox_response = self.client.get(
-            "/api/v2/analytics/operations/heatmap?include_ai=0&bbox=-58.38165,-34.60375,-58.38155,-34.60365",
+            "/api/v2/analytics/operations/heatmap?include_ai=0&bbox=-68.47165,-33.08375,-68.47155,-33.08365",
             headers=self._auth(),
         )
         self.assertEqual(bbox_response.status_code, 200)
