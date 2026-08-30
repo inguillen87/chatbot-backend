@@ -1704,6 +1704,54 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
         self.assertEqual(cell.get("count"), 5)
 
+    def test_operations_heatmap_employee_scope_survives_exact_category_alias(self):
+        alias_employee = User(
+            name="Operador Alumbrado",
+            email="operador-alumbrado@test.com",
+            password_hash="hash",
+            rol="empleado",
+            tenant_id=self.tenant.id,
+            tenant_slug=self.tenant.slug,
+            es_empleado=True,
+            accesibilidad={
+                "employee_scope": {"categorias": ["alumbrado publico"]}
+            },
+        )
+        db.session.add(alias_employee)
+        allowed_lat = -33.102345
+        allowed_lng = -68.488765
+        for index in range(5):
+            db.session.add(
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="Alumbrado Publico",
+                    descripcion=f"Alumbrado permitido {index}",
+                    estado="nuevo",
+                    origen="whatsapp",
+                    latitud=allowed_lat,
+                    longitud=allowed_lng,
+                )
+            )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=luminarias",
+            headers=self._auth_for(alias_employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        cell = next(
+            item
+            for item in payload.get("cells") or []
+            if (item.get("lat"), item.get("lng")) == (-33.102, -68.489)
+        )
+        self.assertEqual(cell.get("count"), 5)
+        self.assertNotIn("raw_category", json.dumps(payload))
+        self.assertNotIn("Alumbrado Publico", json.dumps(payload))
+
     def test_operations_heatmap_employee_empty_scope_fails_closed_before_aggregation(self):
         empty_scope_employee = User(
             name="Operador sin categorias",

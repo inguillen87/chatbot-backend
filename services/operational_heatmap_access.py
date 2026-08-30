@@ -40,7 +40,12 @@ def filter_ticket_records_for_heatmap(records: list[dict[str, Any]], viewer: Any
         for record in records
         if employee_ticket_category_values_allow(
             viewer,
-            category=record.get("category"),
+            # Category authorization is defined by persisted ticket values.
+            # Territorial analytics may expose an exact canonical alias for
+            # grouping (for example ``alumbrado publico`` -> ``luminarias``),
+            # but that presentation transform must not invalidate the
+            # employee's persisted category scope at this second boundary.
+            category=record.get("raw_category") or record.get("category"),
             category_id=record.get("category_id"),
         )
     ]
