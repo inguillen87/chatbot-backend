@@ -1527,7 +1527,7 @@ def run_cutover(
             "initial_revision": INITIAL_REVISION,
             "accepted_start_revisions": [INITIAL_REVISION, *MIGRATION_STEPS],
             "revisions": list(MIGRATION_STEPS),
-            "final_revision": GLOBAL_WRITER_AUTHORITY_REVISION,
+            "final_revision": TERRITORIAL_GEOCODING_SYNC_REVISION,
             "graph_fingerprint_sha256": plan.graph_fingerprint_sha256,
             "migration_source_fingerprints_sha256": dict(
                 plan.source_fingerprints_sha256

@@ -238,8 +238,8 @@ def test_render_predeploy_standby_verifies_without_running_migrations_even_if_fe
             "writes_attempted": False,
             "writer_ownership_acquired": False,
             "migration": {
-                "current_revision": "20260829_global_writer_authority_v1",
-                "expected_revision": "20260829_global_writer_authority_v1",
+                "current_revision": "20260830_geo_sync_v1",
+                "expected_revision": "20260830_geo_sync_v1",
                 "at_exact_target": True,
             },
             "schema": {"ready": True},
@@ -375,6 +375,21 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
         "has_plain_columns": True,
         "has_no_included_columns": True,
     }
+    expected_territorial = {
+        table_name: {
+            "table_present": True,
+            "exact_columns_present": True,
+            "expected_constraints_present": True,
+            "exact_foreign_keys_present": True,
+            "exact_indexes_valid": True,
+        }
+        for table_name in (
+            "territorial_geocoding_job",
+            "territorial_geocoding_attempt",
+            "territorial_geocoding_review",
+            "territorial_geocoding_sync_receipt",
+        )
+    }
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *args, **kwargs: engine)
     monkeypatch.setattr(
@@ -433,6 +448,14 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
             "required_state_valid": True,
         },
     )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_territorial_schema_postcheck",
+        lambda current, **kwargs: (
+            helper_calls.append(("territorial", current, kwargs))
+            or expected_territorial
+        ),
+    )
 
     report = run_predeploy_migrations._verify_render_standby(
         database_url=(
@@ -446,6 +469,14 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
     assert report["status"] == "verified"
     assert report["schema_action"] == "verify-only"
     assert report["migration"]["at_exact_target"] is True
+    assert (
+        report["migration"]["expected_revision"]
+        == cutover_migrations.TERRITORIAL_GEOCODING_SYNC_REVISION
+    )
+    assert (
+        report["schema"]["contracts"]["territorial_geocoding"]
+        == expected_territorial
+    )
     assert report["writes_attempted"] is False
     assert report["writer_ownership_acquired"] is False
     assert connection.statements[0] == "SET TRANSACTION READ ONLY"
@@ -454,8 +485,22 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
     assert helper_calls[0] == (
         "revision",
         connection,
-        cutover_migrations.GLOBAL_WRITER_AUTHORITY_REVISION,
+        cutover_migrations.TERRITORIAL_GEOCODING_SYNC_REVISION,
     )
+    assert (
+        "territorial",
+        connection,
+        {
+            "required_tables": (
+                "territorial_geocoding_job",
+                "territorial_geocoding_attempt",
+                "territorial_geocoding_review",
+                "territorial_geocoding_sync_receipt",
+            ),
+            "absent_tables": (),
+            "reason_code": "database_territorial_sync_contract_invalid",
+        },
+    ) in helper_calls
     assert all(
         not statement.upper().startswith(
             ("INSERT ", "UPDATE ", "DELETE ", "ALTER ", "CREATE ", "DROP ")

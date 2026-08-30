@@ -742,6 +742,57 @@ def test_default_dry_run_never_locks_or_invokes_an_upgrade(monkeypatch):
     assert connection.driver_statements[0].endswith("READ ONLY")
 
 
+def test_run_cutover_reports_territorial_sync_as_final_revision(monkeypatch):
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def begin(self):
+            return self
+
+    class FakeEngine:
+        def __init__(self):
+            self.disposed = False
+
+        def connect(self):
+            return FakeConnection()
+
+        def dispose(self):
+            self.disposed = True
+
+    engine = FakeEngine()
+    monkeypatch.setattr(cutover, "create_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(
+        cutover,
+        "_execute_cutover_transaction",
+        lambda *_args, **_kwargs: {
+            "identity": {
+                "project_fingerprint_sha256": PROJECT_FINGERPRINT,
+                "branch_fingerprint_sha256": BRANCH_FINGERPRINT,
+                "writable_primary": True,
+            }
+        },
+    )
+
+    report = cutover.run_cutover(
+        database_url=DIRECT_NEON_URL,
+        project_root=ROOT,
+        apply=False,
+        expected_host_fingerprint_sha256=HOST_FINGERPRINT,
+        expected_project_fingerprint_sha256=PROJECT_FINGERPRINT,
+        expected_branch_fingerprint_sha256=BRANCH_FINGERPRINT,
+    )
+
+    assert (
+        report["plan"]["final_revision"]
+        == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
+    )
+    assert engine.disposed is True
+
+
 def test_failure_inside_apply_escapes_the_transaction_for_rollback(monkeypatch):
     transaction_state = {"rolled_back": False, "committed": False}
 

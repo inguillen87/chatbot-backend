@@ -85,7 +85,7 @@ def _verify_render_standby(
     from scripts.apply_neon_cutover_migrations import (
         EXPECTED_INBOUND_FIFO_COLUMNS,
         EXPECTED_INBOUND_FIFO_INDEX,
-        GLOBAL_WRITER_AUTHORITY_REVISION,
+        TERRITORIAL_GEOCODING_SYNC_REVISION,
         CutoverMigrationFailure,
         _demo_contract,
         _global_writer_authority_contract,
@@ -94,6 +94,7 @@ def _verify_render_standby(
         _load_exact_migration_plan,
         _require_base_tables,
         _require_revision,
+        _territorial_schema_postcheck,
     )
     from scripts.preflight_neon_cutover import (
         PreflightFailure,
@@ -156,7 +157,7 @@ def _verify_render_standby(
 
                 revision = _require_revision(
                     connection,
-                    GLOBAL_WRITER_AUTHORITY_REVISION,
+                    TERRITORIAL_GEOCODING_SYNC_REVISION,
                 )
                 _require_base_tables(connection)
                 demo = _demo_contract(connection)
@@ -169,6 +170,17 @@ def _verify_render_standby(
                 global_writer_authority = _global_writer_authority_contract(
                     connection,
                     require_bootstrap=False,
+                )
+                territorial_geocoding = _territorial_schema_postcheck(
+                    connection,
+                    required_tables=(
+                        "territorial_geocoding_job",
+                        "territorial_geocoding_attempt",
+                        "territorial_geocoding_review",
+                        "territorial_geocoding_sync_receipt",
+                    ),
+                    absent_tables=(),
+                    reason_code="database_territorial_sync_contract_invalid",
                 )
                 # This is deliberately structural. Live standby verification
                 # must not assume mutable business rows or an empty receipt
@@ -228,6 +240,7 @@ def _verify_render_standby(
                     },
                     "inbound_fifo_index": fifo,
                     "global_writer_authority": global_writer_authority,
+                    "territorial_geocoding": territorial_geocoding,
                 }
             finally:
                 # Roll back even though PostgreSQL enforced read-only.  A
@@ -255,8 +268,8 @@ def _verify_render_standby(
         },
         "migration": {
             "current_revision": revision,
-            "expected_revision": GLOBAL_WRITER_AUTHORITY_REVISION,
-            "at_exact_target": revision == GLOBAL_WRITER_AUTHORITY_REVISION,
+            "expected_revision": TERRITORIAL_GEOCODING_SYNC_REVISION,
+            "at_exact_target": revision == TERRITORIAL_GEOCODING_SYNC_REVISION,
             "local_graph_fingerprint_sha256": plan.graph_fingerprint_sha256,
         },
         "schema": {

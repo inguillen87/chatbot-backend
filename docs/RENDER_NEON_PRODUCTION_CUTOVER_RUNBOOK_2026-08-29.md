@@ -94,6 +94,11 @@ application repository.
       pins each source fingerprint and verifies the queue, attempt, immutable
       review and idempotent sync-receipt schema after every step; this code
       review does not count as a database rehearsal.
+- [ ] Repeat the Render standby `verify-only` rehearsal at the exact
+      `20260830_geo_sync_v1` revision. It must prove the four territorial table
+      contracts in the same read-only transaction, roll back, and report no
+      writes or writer-ownership acquisition. The earlier authority-revision
+      rehearsal does not certify this newer application head.
 - [ ] Create a post-authority backup. The Neon project currently has all ten
       branch slots occupied; the existing `postmigration` branch is the
       pre-authority rollback point until capacity becomes available.
@@ -334,9 +339,12 @@ Render uses Neon**. Do not resume writes against the old Render PostgreSQL.
       `CHATBOC_RENDER_STANDBY_MODE=true`, the hardened predeploy command and
       writer fence still enabled.
 - [x] Implement and prove verify-only schema validation against the isolated
-      Neon rehearsal target. It pins project/branch and exact revision, opens
-      `READ ONLY`, verifies structural contracts and always rolls back; it
-      never executes an open-ended `upgrade head`. Live Render standby binding
+      Neon rehearsal target at `20260829_global_writer_authority_v1`. It pins
+      project/branch and exact revision, opens `READ ONLY`, verifies structural
+      contracts and always rolls back; it never executes an open-ended
+      `upgrade head`.
+- [ ] Repeat that proof at `20260830_geo_sync_v1`, including the job, attempt,
+      immutable-review and sync-receipt contracts. Live Render standby binding
       remains part of the unchecked configuration step above.
 - [ ] Require `VERCEL_DURABLE_UPLOADS_REQUIRE_R2=true` on both computes.
 - [ ] Pass `scripts/rehearse_compute_rollback.py --validate-only` with the
