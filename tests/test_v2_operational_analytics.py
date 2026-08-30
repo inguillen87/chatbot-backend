@@ -888,6 +888,82 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         geo_layers = (response.get_json().get("geo_layers") or {})
         self.assertNotIn("boundaries", geo_layers)
 
+    def test_operations_heatmap_extracts_nested_ticket_location_with_provenance_and_facets(self):
+        ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="luminarias_metadata",
+            descripcion="Luminaria informada con ubicacion estructurada",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=None,
+            longitud=None,
+            datos_extra={
+                "location": {
+                    "latitude": -33.081234,
+                    "longitude": -68.469123,
+                    "address": "San Martin 120, Ciudad de Junin",
+                    "barrio": "Centro",
+                }
+            },
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=luminarias_metadata&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "privileged_exact")
+        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
+        point = (payload.get("points") or [])[0]
+        self.assertEqual(point.get("category"), "luminarias_metadata")
+        self.assertEqual(point.get("lat"), -33.081234)
+        self.assertEqual(point.get("lng"), -68.469123)
+        self.assertEqual(point.get("address"), "San Martin 120, Ciudad de Junin")
+        self.assertEqual(point.get("zone"), "centro")
+        provenance = point.get("location_provenance") or {}
+        self.assertEqual((provenance.get("coordinate") or {}).get("source"), "ticket_metadata")
+        self.assertEqual((provenance.get("address") or {}).get("source"), "ticket_metadata")
+        self.assertEqual((provenance.get("zone") or {}).get("source"), "ticket_metadata")
+        self.assertEqual(provenance.get("external_geocoding_calls"), 0)
+        self.assertFalse(provenance.get("writes_performed"))
+
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual(facets.get("contract_version"), "operations.heatmap.territorial_facets.v1")
+        self.assertEqual((facets.get("summary") or {}).get("ticket_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("mapped_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("records_with_address"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("records_with_explicit_zone"), 1)
+        self.assertEqual((facets.get("categories") or [])[0].get("key"), "luminarias_metadata")
+        self.assertEqual((facets.get("addresses") or [])[0].get("label"), "San Martin 120, Ciudad de Junin")
+        self.assertEqual((facets.get("explicit_zones") or [])[0].get("key"), "centro")
+        self.assertEqual((facets.get("provenance") or {}).get("external_geocoding_calls"), 0)
+        self.assertFalse((facets.get("provenance") or {}).get("writes_performed"))
+
+    def test_nested_location_without_scalar_address_is_not_stringified(self):
+        from services.operational_intelligence import _tenant_ticket_record
+
+        record = _tenant_ticket_record(
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                descripcion="GPS sin direccion textual",
+                categoria="baches",
+                datos_extra={"location": {"latitude": -33.08, "longitude": -68.47}},
+            )
+        )
+
+        self.assertIsNone(record.get("address"))
+        self.assertEqual(record.get("lat"), -33.08)
+        self.assertEqual(record.get("lng"), -68.47)
+        self.assertEqual(
+            ((record.get("location_provenance") or {}).get("coordinate") or {}).get("source"),
+            "ticket_metadata",
+        )
+
     def test_operations_heatmap_returns_points_cells_and_layers(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())
 
@@ -1113,6 +1189,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertNotIn("points", payload)
         self.assertNotIn("category_layers", payload)
         self.assertNotIn("geocoding", payload)
+        self.assertNotIn("territorial_facets", payload)
         self.assertNotIn("actions", json.dumps(payload))
 
         def assert_no_sensitive_keys(value):
@@ -1483,6 +1560,12 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         candidate = ((payload.get("geocoding") or {}).get("candidates") or [])[0]
         self.assertEqual(candidate.get("address"), "Av. San Martin 123, Junin")
         self.assertEqual(candidate.get("reason_code"), "address_without_coordinates")
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("pending_geocode_records"), 1)
+        self.assertEqual((facets.get("categories") or [])[0].get("key"), "limpieza")
+        self.assertEqual((facets.get("addresses") or [])[0].get("label"), "Av. San Martin 123, Junin")
+        self.assertEqual(facets.get("explicit_zones"), [])
+        self.assertEqual((facets.get("truth_boundary") or {}).get("zones"), "explicit_persisted_fields_only")
         candidate_actions = {item.get("id"): item for item in candidate.get("actions") or []}
         self.assertEqual(candidate_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
         self.assertEqual(candidate_actions.get("open_record", {}).get("frontend_path"), candidate_actions.get("open_record", {}).get("href"))

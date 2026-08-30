@@ -43,6 +43,11 @@ from services.survey_response_provenance import (
     build_survey_response_provenance,
 )
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.territorial_evidence import (
+    build_territorial_facets,
+    explicit_zone,
+    extract_location_evidence,
+)
 
 
 _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
@@ -326,18 +331,11 @@ def _record_has_coordinates(record: dict[str, Any]) -> bool:
 
 
 def _record_address_from_metadata(metadata: dict[str, Any]) -> str | None:
-    return _clean_text(
-        _first_value(
-            metadata,
-            "direccion",
-            "address",
-            "ubicacion",
-            "location",
-            "formatted_address",
-            "domicilio",
-            "calle",
-        )
-    )
+    # Fail closed for nested payloads.  The previous implementation converted
+    # ``{"location": {...}}`` into a Python dict string and published that as
+    # an address.  The evidence extractor accepts only scalar addresses and
+    # traverses structured location objects explicitly.
+    return extract_location_evidence(("ticket_metadata", metadata)).get("address")
 
 
 def _record_zone_from_metadata(metadata: dict[str, Any]) -> str | None:
@@ -348,7 +346,29 @@ def _record_zone_from_metadata(metadata: dict[str, Any]) -> str | None:
     a misleading segment or an apparent official boundary in the heatmap.
     """
 
-    return _clean_text(_first_value(metadata, "zone", "zona", "barrio", "distrito"))
+    return extract_location_evidence(("ticket_metadata", metadata)).get("zone")
+
+
+def _ticket_location_evidence(
+    *,
+    lat: Any,
+    lng: Any,
+    address: Any = None,
+    zone: Any = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return extract_location_evidence(
+        (
+            "ticket_columns",
+            {
+                "latitud": lat,
+                "longitud": lng,
+                "direccion": address,
+                "zona": zone,
+            },
+        ),
+        ("ticket_metadata", metadata or {}),
+    )
 
 
 def _normalize_gender(value: Any) -> str:
@@ -770,11 +790,15 @@ def _sla_observation(
 
 def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     extra = _as_dict(ticket.datos_extra)
+    location = _ticket_location_evidence(
+        lat=ticket.latitud,
+        lng=ticket.longitud,
+        metadata=extra,
+    )
     status = _norm(ticket.estado, "nuevo")
     sla = _sla_observation(status=status, metadata=extra, as_of=as_of)
     priority = _norm(extra.get("priority") or extra.get("prioridad"), "normal")
     channel = _norm(extra.get("channel") or extra.get("canal") or ticket.origen, "web")
-    address = _record_address_from_metadata(extra)
     return {
         "source": "tenant_ticket",
         "id": ticket.id,
@@ -785,10 +809,11 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
         "category": _norm(ticket.categoria, "sin_categoria"),
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": extra.get("assignee_id"),
-        "zone": _norm(_record_zone_from_metadata(extra), "sin_zona"),
-        "address": address,
-        "lat": ticket.latitud,
-        "lng": ticket.longitud,
+        "zone": _norm(location.get("zone"), "sin_zona"),
+        "address": location.get("address"),
+        "lat": location.get("lat"),
+        "lng": location.get("lng"),
+        "location_provenance": location.get("provenance"),
         "demographics": _demographics_from_metadata(extra),
         "created_at": getattr(ticket, "created_at", None),
         "updated_at": getattr(ticket, "updated_at", None),
@@ -802,8 +827,15 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
     status = _norm(ticket.estado, "nuevo")
     channel = _norm(getattr(ticket, "canal_ingreso", None), "web")
     details = _json_object(getattr(ticket, "detalles", None))
-    address = _clean_text(getattr(ticket, "direccion", None)) or _record_address_from_metadata(details)
-    metadata = {**details, **_as_dict(getattr(ticket, "datos_extra", None))}
+    extra = _as_dict(getattr(ticket, "datos_extra", None))
+    metadata = {**details, **extra}
+    location = _ticket_location_evidence(
+        lat=ticket.latitud,
+        lng=ticket.longitud,
+        address=getattr(ticket, "direccion", None),
+        zone=getattr(ticket, "distrito", None),
+        metadata=metadata,
+    )
     sla = _sla_observation(status=status, metadata=metadata, as_of=as_of)
     return {
         "source": "municipio_ticket",
@@ -815,11 +847,12 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         "category": _norm(ticket.categoria, "sin_categoria"),
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
-        "zone": _norm(ticket.distrito or _record_zone_from_metadata(metadata), "sin_zona"),
-        "address": address,
-        "lat": ticket.latitud,
-        "lng": ticket.longitud,
-        "demographics": _demographics_from_metadata(details),
+        "zone": _norm(location.get("zone"), "sin_zona"),
+        "address": location.get("address"),
+        "lat": location.get("lat"),
+        "lng": location.get("lng"),
+        "location_provenance": location.get("provenance"),
+        "demographics": _demographics_from_metadata(metadata),
         "created_at": ticket.fecha,
         "updated_at": ticket.ultima_actividad or ticket.fecha,
         "sla": sla,
@@ -830,11 +863,16 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
 
 def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     status = _norm(ticket.estado, "nuevo")
-    address = _clean_text(getattr(ticket, "direccion", None))
-    metadata = _as_dict(getattr(ticket, "datos_extra", None))
+    extra = _as_dict(getattr(ticket, "datos_extra", None))
+    location = _ticket_location_evidence(
+        lat=getattr(ticket, "latitud", None),
+        lng=getattr(ticket, "longitud", None),
+        address=getattr(ticket, "direccion", None),
+        metadata=extra,
+    )
     sla = _sla_observation(
         status=status,
-        metadata=metadata,
+        metadata=extra,
         as_of=as_of,
     )
     return {
@@ -847,10 +885,11 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
         "category": _norm(ticket.categoria, "sin_categoria"),
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
-        "zone": _norm(_record_zone_from_metadata(metadata), "sin_zona"),
-        "address": address,
-        "lat": getattr(ticket, "latitud", None),
-        "lng": getattr(ticket, "longitud", None),
+        "zone": _norm(location.get("zone"), "sin_zona"),
+        "address": location.get("address"),
+        "lat": location.get("lat"),
+        "lng": location.get("lng"),
+        "location_provenance": location.get("provenance"),
         "demographics": {"gender": "unknown", "age": None, "age_range": "unknown", "source": "missing"},
         "created_at": ticket.fecha,
         "updated_at": ticket.fecha,
@@ -2591,14 +2630,24 @@ def _geocoding_candidate(record: dict[str, Any]) -> dict[str, Any]:
         "sla_state": record.get("sla_state") or "normal",
         "overdue": bool(record.get("overdue")),
         "assignee_id": record.get("assignee_id"),
+        "location_provenance": record.get("location_provenance"),
         "actions": _ticket_action_contract(record),
     }
+
+
+def _location_provenance_source(record: dict[str, Any], field: str) -> str:
+    field_evidence = _as_dict(_as_dict(record.get("location_provenance")).get(field))
+    return _norm(field_evidence.get("source"), "missing")
 
 
 def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[dict[str, Any]]) -> dict[str, Any]:
     ticket_records = [record for record in records if record.get("source") in {"tenant_ticket", "municipio_ticket", "pyme_ticket"}]
     with_coordinates = [record for record in ticket_records if _record_has_coordinates(record)]
     with_address = [record for record in ticket_records if record.get("address")]
+    with_zone = [record for record in ticket_records if explicit_zone(record.get("zone"))]
+    with_address_and_coordinates = [
+        record for record in ticket_records if record.get("address") and _record_has_coordinates(record)
+    ]
     missing_location = [
         record
         for record in ticket_records
@@ -2606,14 +2655,39 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
     ]
     total = len(ticket_records)
     coverage_pct = round((len(with_coordinates) / total) * 100, 2) if total else 0.0
+    coordinate_sources = Counter(
+        _location_provenance_source(record, "coordinate") for record in with_coordinates
+    )
+    address_sources = Counter(
+        _location_provenance_source(record, "address") for record in with_address
+    )
+    zone_sources = Counter(
+        _location_provenance_source(record, "zone") for record in with_zone
+    )
     return {
         "contract_version": "operations.location_quality.v1",
         "total_ticket_records": total,
         "ticket_records_with_coordinates": len(with_coordinates),
         "ticket_records_with_address": len(with_address),
+        "ticket_records_with_address_and_coordinates": len(with_address_and_coordinates),
+        "ticket_records_with_explicit_zone": len(with_zone),
         "ticket_records_pending_geocode": len(geocoding_candidates),
         "ticket_records_without_location": len(missing_location),
+        "ticket_records_recovered_from_metadata": len(
+            [
+                record
+                for record in with_coordinates
+                if _location_provenance_source(record, "coordinate") == "ticket_metadata"
+            ]
+        ),
         "coordinate_coverage_pct": coverage_pct,
+        "provenance": {
+            "coordinate_sources": _counter(coordinate_sources),
+            "address_sources": _counter(address_sources),
+            "zone_sources": _counter(zone_sources),
+            "external_geocoding_calls": 0,
+            "writes_performed": False,
+        },
         "status": "ready" if with_coordinates else ("pending_geocode" if geocoding_candidates else "empty"),
         "reason_code": (
             "coordinates_available"
@@ -3407,6 +3481,13 @@ def build_operational_heatmap(
         and record.get("address")
         and _point_matches_filters(_record_to_filter_probe(record), filters)
     ]
+    territorial_records = [
+        record
+        for record in records
+        if _point_matches_filters(_record_to_filter_probe(record), filters)
+        and (not bbox or (_record_has_coordinates(record) and _point_matches_bbox(record, bbox)))
+    ]
+    territorial_facets = build_territorial_facets(territorial_records) if not employee_view else None
 
     for record in records:
         if record.get("lat") is None or record.get("lng") is None:
@@ -3428,6 +3509,7 @@ def build_operational_heatmap(
             "assignee_id": record.get("assignee_id"),
             "zone": record.get("zone"),
             "address": record.get("address"),
+            "location_provenance": record.get("location_provenance"),
             "label": record["title"],
             "timestamp": _iso(record.get("created_at")),
             "gender": demographics.get("gender") or "unknown",
@@ -3705,7 +3787,12 @@ def build_operational_heatmap(
     channel_counter = Counter(point.get("channel") or "unknown" for point in points)
     source_counter = Counter(point.get("source") or "unknown" for point in points)
     status_counter = Counter(point.get("status") or "unknown" for point in points)
-    zone_counter = Counter(point.get("zone") or "unknown" for point in points)
+    zone_counter = Counter(
+        zone
+        for point in points
+        for zone in [explicit_zone(point.get("zone"))]
+        if zone
+    )
     sla_counter = Counter(point.get("sla_state") or "normal" for point in points)
 
     category_layers = []
@@ -3983,6 +4070,8 @@ def build_operational_heatmap(
             bbox=bbox,
         )
 
+    payload["territorial_facets"] = territorial_facets
+    payload["render_contract"]["premium_metadata"].append("territorial_facets")
     payload["privacy"] = privileged_heatmap_privacy()
     return payload
 
