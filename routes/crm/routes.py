@@ -29,6 +29,10 @@ from services.crm_output_safety import (
     redact_crm_sensitive_text,
     redact_crm_sensitive_value,
 )
+from services.crm_contact_cases import (
+    CRM_CONTACT_CASES_CONTRACT_VERSION,
+    build_crm_contact_cases,
+)
 from socket_service import emit_crm_contact_update, emit_crm_notification_update
 from utils.roles import canonical_role, is_authorized_superadmin_user
 
@@ -725,6 +729,11 @@ def get_contact_history(current_user, slug, contact_id):
     tenant = g.tenant_profile
     contact = Contact.query.filter_by(id=contact_id, tenant_id=tenant.id).first_or_404()
     snapshot = ContactSnapshot.query.filter_by(contact_id=contact.id).first()
+    contact_cases = build_crm_contact_cases(
+        tenant=tenant,
+        contact=contact,
+        current_user=current_user,
+    )
 
     orders = Order.query.filter_by(tenant_id=tenant.id)\
         .filter(Order.buyer_phone == contact.phone)\
@@ -747,6 +756,11 @@ def get_contact_history(current_user, slug, contact_id):
             "suggested_actions": redact_crm_sensitive_value(snapshot.suggested_actions) if snapshot else []
         },
         "orders": [o.to_dict() for o in orders],
+        "cases_contract_version": CRM_CONTACT_CASES_CONTRACT_VERSION,
+        "cases_total": contact_cases.total,
+        "cases_total_is_exact": contact_cases.total_is_exact,
+        "cases": contact_cases.cases,
+        "cases_truncated": contact_cases.truncated,
         "interactions": [{
             "channel": i.channel,
             "direction": i.direction,
