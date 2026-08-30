@@ -419,6 +419,8 @@ def _heatmap_segment_filters() -> dict[str, list[str]]:
         "source": _csv_values("source", "fuente"),
         "channel": _csv_values("channel", "canal"),
         "zone": _csv_values("zona", "zonas", "zone", "barrio", "barrios", "distrito", "distritos"),
+        "address": _csv_values("direccion", "direcciones", "address", "addresses"),
+        "corridor": _csv_values("corredor", "corredores", "corridor", "corridors"),
         "sla_state": _csv_values("sla", "sla_state", "sla_status"),
         "assignee_id": _csv_values("assignee_id", "assigned_to", "agent", "agente"),
     }

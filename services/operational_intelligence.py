@@ -48,6 +48,8 @@ from services.territorial_evidence import (
     coordinate_jurisdiction_status,
     explicit_zone,
     extract_location_evidence,
+    normalize_address_corridor_key,
+    normalize_address_key,
     resolve_tenant_jurisdiction,
 )
 
@@ -468,7 +470,28 @@ def _normalize_age_range_filter_values(values: Any) -> set[str]:
 
 
 def _normalized_heatmap_filter_values(key: str, values: Any) -> set[str]:
-    return _normalize_age_range_filter_values(values) if key == "age_range" else _normalize_filter_values(values)
+    normalized = _normalize_filter_values(values)
+    if key == "age_range":
+        return _normalize_age_range_filter_values(values)
+    if key == "address":
+        return {item for value in normalized if (item := normalize_address_key(value))}
+    if key == "corridor":
+        return {
+            item
+            for value in normalized
+            if (item := normalize_address_corridor_key(value))
+        }
+    return normalized
+
+
+def _employee_safe_applied_filters(filters: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Do not echo exact address/corridor query values in employee payloads."""
+
+    safe = {key: list(values) for key, values in (filters or {}).items()}
+    for key in ("address", "corridor"):
+        if safe.get(key):
+            safe[key] = ["private_filter_applied"]
+    return safe
 
 
 def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bool:
@@ -482,10 +505,19 @@ def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bo
         "zone": point.get("zone"),
         "sla_state": point.get("sla_state"),
         "assignee_id": point.get("assignee_id"),
+        "address": point.get("address"),
     }
     for key, raw_values in (filters or {}).items():
         allowed = _normalized_heatmap_filter_values(key, raw_values)
         if not allowed:
+            continue
+        if key == "address":
+            if normalize_address_key(filter_map.get("address")) not in allowed:
+                return False
+            continue
+        if key == "corridor":
+            if normalize_address_corridor_key(filter_map.get("address")) not in allowed:
+                return False
             continue
         if key == "source":
             source_allowed = set(allowed)
@@ -546,7 +578,11 @@ def _heatmap_source_quality(
     commerce_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     source_counts = Counter(point.get("source") or "unknown" for point in points)
-    ticket_records = [record for record in records if record.get("source") in {"tenant_ticket", "municipio_ticket"}]
+    ticket_records = [
+        record
+        for record in records
+        if record.get("source") in {"tenant_ticket", "municipio_ticket", "pyme_ticket"}
+    ]
     ticket_points = source_counts.get("ticket", 0)
     ticket_total = len(ticket_records)
     commerce_total = len(commerce_records or [])
@@ -2498,6 +2534,7 @@ def _record_to_filter_probe(record: dict[str, Any]) -> dict[str, Any]:
         "assignee_id": str(record.get("assignee_id")) if record.get("assignee_id") is not None else None,
         "gender": demographics.get("gender") or "unknown",
         "age_range": demographics.get("age_range") or "unknown",
+        "address": record.get("address"),
     }
 
 
@@ -3477,7 +3514,7 @@ def build_operational_heatmap(
             start_date,
             end_date,
             scope_empty=True,
-            applied_filters=normalized_filters,
+            applied_filters=_employee_safe_applied_filters(normalized_filters),
             bbox=bbox,
         )
 
@@ -3499,6 +3536,14 @@ def build_operational_heatmap(
         }
         for record in records
     ]
+    # All ticket-derived outputs must describe the same filtered population.
+    # In particular, never mix a category/address-filtered map with coverage or
+    # geocoding totals calculated from the tenant-wide ticket collection.
+    filtered_ticket_records = [
+        record
+        for record in records
+        if _point_matches_filters(_record_to_filter_probe(record), filters)
+    ]
     if employee_view:
         # Employee geography is ticket-only. Survey responses, analytics
         # events, and commerce locations have no employee category boundary
@@ -3512,20 +3557,17 @@ def build_operational_heatmap(
         include_ai = False
     geocoding_candidates = [
         _geocoding_candidate(record)
-        for record in records
+        for record in filtered_ticket_records
         if not _record_has_coordinates(record)
         and record.get("address")
-        and _point_matches_filters(_record_to_filter_probe(record), filters)
     ]
-    territorial_records = [
-        record
-        for record in records
-        if _point_matches_filters(_record_to_filter_probe(record), filters)
-        and (not bbox or (_record_has_coordinates(record) and _point_matches_bbox(record, bbox)))
-    ]
-    territorial_facets = build_territorial_facets(territorial_records) if not employee_view else None
+    territorial_facets = (
+        build_territorial_facets(filtered_ticket_records)
+        if not employee_view
+        else None
+    )
 
-    for record in records:
+    for record in filtered_ticket_records:
         if record.get("lat") is None or record.get("lng") is None:
             continue
         demographics = _as_dict(record.get("demographics"))
@@ -3553,11 +3595,10 @@ def build_operational_heatmap(
             "demographics_source": demographics.get("source") or "missing",
             "actions": _ticket_action_contract(record),
         }
-        if _point_matches_filters(point, filters):
-            if record.get("coordinate_jurisdiction_status") == "outside":
-                jurisdiction_exclusions["tickets"] += 1
-            elif _point_matches_bbox(point, bbox):
-                points.append(point)
+        if record.get("coordinate_jurisdiction_status") == "outside":
+            jurisdiction_exclusions["tickets"] += 1
+        elif _point_matches_bbox(point, bbox):
+            points.append(point)
 
     survey_responses = []
     survey_response_provenance = build_survey_response_provenance(
@@ -3869,13 +3910,13 @@ def build_operational_heatmap(
     }
     points_with_gender = len([point for point in points if point.get("gender") not in (None, "unknown")])
     points_with_age = len([point for point in points if point.get("age_range") not in (None, "unknown")])
-    location_quality = _location_quality(records, geocoding_candidates)
+    location_quality = _location_quality(filtered_ticket_records, geocoding_candidates)
     jurisdiction_review_candidates = [
         {
             **_geocoding_candidate(record),
             "reason_code": "coordinates_outside_configured_jurisdiction",
         }
-        for record in territorial_records
+        for record in filtered_ticket_records
         if record.get("coordinate_jurisdiction_status") == "outside"
     ]
     jurisdiction = {
@@ -3886,7 +3927,7 @@ def build_operational_heatmap(
     }
     quality = _heatmap_quality_contract(
         points=points,
-        records=records,
+        records=filtered_ticket_records,
         geocoding_candidates=geocoding_candidates,
         location_quality=location_quality,
         max_points=max_points,
@@ -3894,7 +3935,7 @@ def build_operational_heatmap(
     realtime = _heatmap_realtime_contract(points)
     if include_ai:
         ai_insights = build_collection_ai_insights(
-            _ai_items_from_heatmap(records, points, geocoding_candidates, filters),
+            _ai_items_from_heatmap(filtered_ticket_records, points, geocoding_candidates, filters),
             domain="operations",
         )
     else:
@@ -3963,7 +4004,7 @@ def build_operational_heatmap(
     ai_status = _heatmap_ai_status_contract(ai_insights, ai_layers)
     source_quality = _heatmap_source_quality(
         points=points,
-        records=records,
+        records=filtered_ticket_records,
         geocoding_candidates=geocoding_candidates,
         commerce_records=commerce_records,
     )
@@ -3990,7 +4031,19 @@ def build_operational_heatmap(
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events", "commerce_activity", "ai_risk", "whatsapp_activity"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
-            "segment_filters": ["categoria", "estado", "genero", "rango_edad", "source", "channel", "zona", "sla_state", "assignee_id"],
+            "segment_filters": [
+                "categoria",
+                "estado",
+                "genero",
+                "rango_edad",
+                "source",
+                "channel",
+                "zona",
+                "direccion",
+                "corredor",
+                "sla_state",
+                "assignee_id",
+            ],
             "category_layers": True,
             "demographics_source": "metadata_fields_only",
             "address_geocoding": True,
@@ -4142,7 +4195,9 @@ def build_operational_heatmap(
             start_date,
             end_date,
             exact_payload=payload,
-            applied_filters=payload.get("applied_filters") or {},
+            applied_filters=_employee_safe_applied_filters(
+                payload.get("applied_filters") or {}
+            ),
             bbox=bbox,
         )
 

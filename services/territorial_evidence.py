@@ -31,6 +31,53 @@ def _normalized_value(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def normalize_address_key(value: Any) -> str:
+    """Return a stable, non-geocoded key for an explicitly persisted address.
+
+    The key is deliberately lexical: it does not infer a neighbourhood or call
+    an external provider.  It only collapses presentation differences that
+    would otherwise split the same address into separate facets.
+    """
+
+    text = _scalar_text(value)
+    if not text:
+        return ""
+    decomposed = unicodedata.normalize("NFKD", text)
+    ascii_text = "".join(
+        char for char in decomposed if not unicodedata.combining(char)
+    ).lower()
+    tokens = re.findall(r"[a-z0-9]+", ascii_text)
+    aliases = {
+        "av": "avenida",
+        "avda": "avenida",
+        "avenida": "avenida",
+        "c": "calle",
+        "cl": "calle",
+        "calle": "calle",
+    }
+    normalized: list[str] = []
+    for index, token in enumerate(tokens):
+        # ``Nro. 123`` and ``123`` represent the same civic number.
+        if token in {"n", "no", "nro", "numero"} and index + 1 < len(tokens):
+            if tokens[index + 1].isdigit():
+                continue
+        normalized.append(aliases.get(token, token))
+    return " ".join(normalized)
+
+
+def normalize_address_corridor_key(value: Any) -> str:
+    """Normalize the street/corridor portion without retaining house numbers."""
+
+    text = _scalar_text(value)
+    if not text:
+        return ""
+    street_part = re.split(r"[,;]", text, maxsplit=1)[0]
+    normalized = normalize_address_key(street_part)
+    return " ".join(
+        token for token in normalized.split() if not any(char.isdigit() for char in token)
+    )
+
+
 def _scalar_text(value: Any) -> str | None:
     if not isinstance(value, (str, int, float)) or isinstance(value, bool):
         return None
@@ -282,7 +329,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         category = _normalized_value(record.get("category")) or "sin_categoria"
         zone = explicit_zone(record.get("zone"))
         address_label = _scalar_text(record.get("address"))
-        address_key = _normalized_value(address_label) if address_label else None
+        address_key = normalize_address_key(address_label) if address_label else None
         outside_jurisdiction = record.get("coordinate_jurisdiction_status") == "outside"
         mapped = (
             _valid_coordinates(record.get("lat"), record.get("lng")) is not None

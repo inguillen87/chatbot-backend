@@ -31,6 +31,10 @@ from models import (
     TicketRealtimeState,
     User,
 )
+from services.territorial_evidence import (
+    normalize_address_corridor_key,
+    normalize_address_key,
+)
 
 
 class V2OperationalAnalyticsTestConfig(Config):
@@ -887,6 +891,240 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         geo_layers = (response.get_json().get("geo_layers") or {})
         self.assertNotIn("boundaries", geo_layers)
+
+    def test_operations_heatmap_uses_one_filtered_ticket_population_for_all_territorial_outputs(self):
+        now = datetime.now(timezone.utc)
+        matching = [
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Punto territorial valido",
+                estado="nuevo",
+                origen="whatsapp",
+                latitud=-33.081,
+                longitud=-68.469,
+                datos_extra={"zone": "Norte", "address": "Av. San Martín 100, Junín"},
+                created_at=now,
+            ),
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Direccion pendiente",
+                estado="nuevo",
+                origen="whatsapp",
+                datos_extra={"zone": "Norte", "address": "Avenida San Martin 200, Junin"},
+                created_at=now,
+            ),
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Coordenada fuera de jurisdiccion",
+                estado="nuevo",
+                origen="whatsapp",
+                latitud=-34.5889,
+                longitud=-60.9462,
+                datos_extra={"zone": "Norte", "address": "Av San Martin 300, Junin"},
+                created_at=now,
+            ),
+        ]
+        distractors = [
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="contrato_territorial",
+                descripcion="Otro corredor",
+                estado="nuevo",
+                origen="web",
+                latitud=-33.082,
+                longitud=-68.47,
+                datos_extra={"zone": "Norte", "address": "Calle Mitre 10, Junin"},
+                created_at=now,
+            ),
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="otra_categoria_territorial",
+                descripcion="Mismo corredor pero otra categoria",
+                estado="nuevo",
+                origen="web",
+                latitud=-33.083,
+                longitud=-68.471,
+                datos_extra={"zone": "Norte", "address": "Avenida San Martin 400, Junin"},
+                created_at=now,
+            ),
+        ]
+        db.session.add_all([*matching, *distractors])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=tickets&categoria=contrato_territorial"
+            "&zona=norte&corredor=Av.%20San%20Mart%C3%ADn",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        quality = payload.get("location_quality") or {}
+        self.assertEqual(quality.get("total_ticket_records"), 3)
+        self.assertEqual(quality.get("ticket_records_with_coordinates"), 1)
+        self.assertEqual(quality.get("ticket_records_pending_geocode"), 1)
+        self.assertEqual(quality.get("ticket_records_outside_jurisdiction"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("pending_geocode"), 1)
+        self.assertEqual((payload.get("summary") or {}).get("outside_jurisdiction"), 1)
+        self.assertEqual((payload.get("geocoding") or {}).get("candidate_count"), 1)
+        self.assertEqual((payload.get("jurisdiction_review") or {}).get("candidate_count"), 1)
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("ticket_records"), 3)
+        self.assertEqual((facets.get("summary") or {}).get("mapped_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("pending_geocode_records"), 1)
+        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 1)
+
+    def test_address_facets_and_filters_normalize_equivalent_spellings(self):
+        self.assertEqual(
+            normalize_address_key("Av. San Martín Nro. 123, Junín"),
+            normalize_address_key("Avenida San Martin 123 Junin"),
+        )
+        self.assertEqual(
+            normalize_address_key("C. Mitre 80"),
+            normalize_address_key("Calle Mitre 80"),
+        )
+        self.assertEqual(
+            normalize_address_corridor_key("Av. San Martín 123, Junín"),
+            normalize_address_corridor_key("Avenida San Martin 999; Junin"),
+        )
+        now = datetime.now(timezone.utc)
+        db.session.add_all(
+            [
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="direccion_equivalente",
+                    descripcion="Formato abreviado",
+                    estado="nuevo",
+                    origen="web",
+                    datos_extra={"address": "Av. San Martín Nro. 123, Junín"},
+                    created_at=now,
+                ),
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="direccion_equivalente",
+                    descripcion="Formato expandido",
+                    estado="nuevo",
+                    origen="web",
+                    datos_extra={"address": "Avenida San Martin 123 Junin"},
+                    created_at=now,
+                ),
+            ]
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            query_string={
+                "include_ai": "0",
+                "source": "tickets",
+                "categoria": "direccion_equivalente",
+                "direccion": "Avenida San Martin 123 Junin",
+            },
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("location_quality") or {}).get("total_ticket_records"), 2)
+        self.assertEqual((payload.get("geocoding") or {}).get("candidate_count"), 2)
+        addresses = (payload.get("territorial_facets") or {}).get("addresses") or []
+        self.assertEqual(len(addresses), 1)
+        self.assertEqual(addresses[0].get("count"), 2)
+        self.assertEqual(addresses[0].get("key"), "avenida san martin 123 junin")
+        self.assertEqual(
+            (payload.get("applied_filters") or {}).get("address"),
+            ["avenida san martin 123 junin"],
+        )
+        supported_filters = set(
+            (payload.get("render_contract") or {}).get("segment_filters") or []
+        )
+        self.assertIn("direccion", supported_filters)
+        self.assertIn("corredor", supported_filters)
+
+    def test_employee_corridor_filter_stays_k_safe_and_does_not_echo_address(self):
+        now = datetime.now(timezone.utc)
+        for index in range(5):
+            db.session.add(
+                TenantTicket(
+                    tenant_id=self.tenant.id,
+                    user_id=self.admin.id,
+                    categoria="reclamos",
+                    descripcion=f"Reclamo corredor privado {index}",
+                    estado="nuevo",
+                    origen="whatsapp",
+                    latitud=-33.11,
+                    longitud=-68.49,
+                    datos_extra={
+                        "zone": "centro",
+                        "address": f"Av. Libertad {100 + index}, Junin",
+                    },
+                    created_at=now,
+                )
+            )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap",
+            query_string={"include_ai": "0", "corredor": "Avenida Libertad"},
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        self.assertEqual((payload.get("summary") or {}).get("aggregated_observations"), 5)
+        self.assertEqual(
+            (payload.get("applied_filters") or {}).get("corridor"),
+            ["private_filter_applied"],
+        )
+        serialized = json.dumps(payload, ensure_ascii=False).lower()
+        self.assertNotIn("libertad", serialized)
+        self.assertNotIn('"address"', serialized)
+        self.assertNotIn("territorial_facets", payload)
+        self.assertNotIn("geocoding", payload)
+
+    def test_heatmap_ticket_source_denominator_includes_pyme_ticket(self):
+        db.session.add(
+            PymeTicket(
+                tenant_id=self.tenant.id,
+                pregunta="Incidencia empresarial geolocalizada",
+                asunto="Incidencia pyme",
+                categoria="denominador_pyme",
+                estado="nuevo",
+                nro_ticket=991001,
+                direccion="Calle Mitre 500, Junin",
+                latitud=-33.08,
+                longitud=-68.47,
+                fecha=datetime.now(timezone.utc),
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=tickets&categoria=denominador_pyme",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        ticket_source = ((payload.get("source_quality") or {}).get("sources") or {}).get("ticket") or {}
+        self.assertEqual((payload.get("location_quality") or {}).get("total_ticket_records"), 1)
+        self.assertEqual(ticket_source.get("records"), 1)
+        self.assertEqual(ticket_source.get("points"), 1)
+        self.assertEqual(ticket_source.get("coordinate_coverage_pct"), 100.0)
 
     def test_operations_heatmap_extracts_nested_ticket_location_with_provenance_and_facets(self):
         ticket = TenantTicket(
