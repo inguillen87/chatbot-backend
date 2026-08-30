@@ -1482,13 +1482,23 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertTrue(ticket_point.get("overdue"))
         self.assertEqual(ticket_point.get("zone"), "centro")
         self.assertEqual(ticket_point.get("assignee_id"), self.employee.id)
+        self.assertEqual(ticket_point.get("source_model"), "TenantTicket")
+        self.assertEqual(ticket_point.get("ticket_id"), self.ticket.id)
         ticket_actions = {item.get("id"): item for item in ticket_point.get("actions") or []}
         self.assertEqual(ticket_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
         self.assertEqual(ticket_actions.get("open_record", {}).get("frontend_path"), ticket_actions.get("open_record", {}).get("href"))
-        self.assertIn("/perfil?tab=tickets", ticket_actions.get("open_record", {}).get("href") or "")
-        self.assertIn(f"ticket_id={self.ticket.id}", ticket_actions.get("open_record", {}).get("href") or "")
+        self.assertIn(
+            f"/perfil?tab=tickets&source_model=TenantTicket&ticket_id={self.ticket.id}",
+            ticket_actions.get("open_record", {}).get("href") or "",
+        )
+        self.assertEqual(ticket_actions.get("open_record", {}).get("source_model"), "TenantTicket")
+        self.assertEqual(ticket_actions.get("open_record", {}).get("ticket_id"), self.ticket.id)
         self.assertEqual(ticket_actions.get("update_location", {}).get("method"), "PATCH")
         self.assertEqual(ticket_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{self.ticket.id}")
+        self.assertIn(
+            f"/perfil?tab=tickets&source_model=TenantTicket&ticket_id={self.ticket.id}",
+            ticket_actions.get("update_location", {}).get("href") or "",
+        )
         self.assertIn("focus=open_geocoding_queue", ticket_actions.get("update_location", {}).get("href") or "")
 
         categories = {item.get("key") for item in (payload.get("segments") or {}).get("category") or []}
@@ -1511,6 +1521,48 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("25_34", age_ranges)
         self.assertIn("45_59", age_ranges)
         self.assertIn("60_plus", age_ranges)
+
+    def test_ticket_map_actions_preserve_opaque_identity_and_fail_closed(self):
+        from urllib.parse import parse_qs, urlsplit
+
+        from services.operational_intelligence import _ticket_action_contract
+
+        opaque_ticket_id = "0007:A/B?#"
+        record = {
+            "source": "tenant_ticket",
+            "source_model": "TenantTicket",
+            "id": opaque_ticket_id,
+            "category": "luminarias",
+            "channel": "whatsapp",
+            "status": "nuevo",
+        }
+
+        actions = {item.get("id"): item for item in _ticket_action_contract(record)}
+        open_action = actions.get("open_record") or {}
+        parsed_href = urlsplit(open_action.get("href") or "")
+        parsed_query = parse_qs(parsed_href.query, keep_blank_values=True)
+
+        self.assertEqual(parsed_href.path, "/perfil")
+        self.assertEqual(parsed_query.get("tab"), ["tickets"])
+        self.assertEqual(parsed_query.get("source_model"), ["TenantTicket"])
+        self.assertEqual(parsed_query.get("ticket_id"), [opaque_ticket_id])
+        self.assertEqual(open_action.get("ticket_id"), opaque_ticket_id)
+        self.assertEqual(open_action.get("source_model"), "TenantTicket")
+        self.assertEqual(open_action.get("endpoint"), "/api/v2/tickets/0007%3AA%2FB%3F%23")
+
+        invalid_records = [
+            {**record, "source_model": None},
+            {**record, "source_model": "MunicipioTicket"},
+            {**record, "id": None},
+            {**record, "id": ""},
+            {**record, "id": " 0007 "},
+            {**record, "id": True},
+            {**record, "id": 7.0},
+            {key: value for key, value in record.items() if key != "source"},
+        ]
+        for invalid_record in invalid_records:
+            with self.subTest(invalid_record=invalid_record):
+                self.assertEqual(_ticket_action_contract(invalid_record), [])
 
     def test_operations_heatmap_employee_is_category_scoped_and_k_aggregated(self):
         allowed_lat = -33.112345
@@ -2052,10 +2104,15 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((facets.get("addresses") or [])[0].get("label"), "Av. San Martin 123, Junin")
         self.assertEqual(facets.get("explicit_zones"), [])
         self.assertEqual((facets.get("truth_boundary") or {}).get("zones"), "explicit_persisted_fields_only")
+        self.assertEqual(candidate.get("source_model"), "TenantTicket")
+        self.assertEqual(candidate.get("ticket_id"), candidate.get("record_id"))
         candidate_actions = {item.get("id"): item for item in candidate.get("actions") or []}
         self.assertEqual(candidate_actions.get("open_record", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
         self.assertEqual(candidate_actions.get("open_record", {}).get("frontend_path"), candidate_actions.get("open_record", {}).get("href"))
-        self.assertIn("/perfil?tab=tickets", candidate_actions.get("open_record", {}).get("href") or "")
+        self.assertIn(
+            f"/perfil?tab=tickets&source_model=TenantTicket&ticket_id={candidate.get('record_id')}",
+            candidate_actions.get("open_record", {}).get("href") or "",
+        )
         self.assertEqual(candidate_actions.get("update_location", {}).get("method"), "PATCH")
         self.assertEqual(candidate_actions.get("update_location", {}).get("endpoint"), f"/api/v2/tickets/{candidate.get('record_id')}")
         self.assertIn("focus=open_geocoding_queue", candidate_actions.get("update_location", {}).get("href") or "")

@@ -87,6 +87,11 @@ _COMMERCE_REQUEST_KINDS = {
 }
 
 _EMPLOYEE_SCOPE_UNAVAILABLE_REASON = "employee_category_boundary_unavailable"
+_TICKET_SOURCE_MODEL_BY_RECORD_SOURCE = {
+    "tenant_ticket": "TenantTicket",
+    "municipio_ticket": "MunicipioTicket",
+    "pyme_ticket": "PymeTicket",
+}
 
 
 def _operations_scope_contract(*, employee_view: bool) -> dict[str, Any]:
@@ -850,6 +855,7 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
     category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "tenant_ticket",
+        "source_model": "TenantTicket",
         "id": ticket.id,
         "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
         "status": status,
@@ -892,6 +898,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
     category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "municipio_ticket",
+        "source_model": "MunicipioTicket",
         "id": ticket.id,
         "title": ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket}",
         "status": status,
@@ -934,6 +941,7 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
     category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "pyme_ticket",
+        "source_model": "PymeTicket",
         "id": ticket.id,
         "title": ticket.asunto or ticket.categoria or f"Ticket {ticket.nro_ticket}",
         "status": status,
@@ -1169,11 +1177,7 @@ def _build_queue_truth(
 ) -> dict[str, Any]:
     """Separate point-in-time queue truth from tickets created in a period."""
 
-    source_model_names = {
-        "tenant_ticket": "TenantTicket",
-        "municipio_ticket": "MunicipioTicket",
-        "pyme_ticket": "PymeTicket",
-    }
+    source_model_names = _TICKET_SOURCE_MODEL_BY_RECORD_SOURCE
     source_counts = Counter(record.get("source") for record in queue_records)
     period_source_counts = Counter(record.get("source") for record in period_records)
 
@@ -2563,6 +2567,7 @@ def _record_to_filter_probe(record: dict[str, Any]) -> dict[str, Any]:
 def _crm_tickets_href(
     *,
     focus: str | None = None,
+    source_model: Any | None = None,
     ticket_id: Any | None = None,
     category: Any | None = None,
     channel: Any | None = None,
@@ -2572,10 +2577,12 @@ def _crm_tickets_href(
     assignee: Any | None = None,
 ) -> str:
     params: list[tuple[str, Any]] = [("tab", "tickets")]
-    if focus:
-        params.append(("focus", focus))
+    if source_model is not None:
+        params.append(("source_model", source_model))
     if ticket_id is not None:
         params.append(("ticket_id", ticket_id))
+    if focus:
+        params.append(("focus", focus))
     if category:
         params.append(("categoria", category))
     if channel:
@@ -2591,30 +2598,66 @@ def _crm_tickets_href(
     return "/perfil?" + "&".join(f"{key}={quote(str(value), safe='')}" for key, value in params)
 
 
-def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
-    record_source = str(record.get("source") or "")
+def _opaque_ticket_id(value: Any) -> str | None:
+    """Return a lossless ticket identifier suitable for URL serialization.
+
+    Ticket identity is an opaque pair.  In particular, string identifiers must
+    never be parsed as integers because doing so would discard leading zeroes
+    and could open a different record.  Booleans and non-integral numeric
+    values are rejected rather than coerced into a plausible identifier.
+    """
+
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        if not value or value != value.strip():
+            return None
+        return value
+    if isinstance(value, int):
+        return str(value)
+    return None
+
+
+def _ticket_action_identity(record: dict[str, Any]) -> tuple[str, str, Any, str] | None:
+    record_source = record.get("source")
+    if not isinstance(record_source, str):
+        return None
+    expected_source_model = _TICKET_SOURCE_MODEL_BY_RECORD_SOURCE.get(record_source)
+    source_model = record.get("source_model")
+    if not expected_source_model or source_model != expected_source_model:
+        return None
     record_id = record.get("id")
-    if record_id is None:
+    opaque_ticket_id = _opaque_ticket_id(record_id)
+    if opaque_ticket_id is None:
+        return None
+    return record_source, source_model, record_id, opaque_ticket_id
+
+
+def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
+    identity = _ticket_action_identity(record)
+    if identity is None:
         return []
+    record_source, source_model, record_id, opaque_ticket_id = identity
+    encoded_ticket_id = quote(opaque_ticket_id, safe="")
 
     source_config = {
         "tenant_ticket": {
-            "open_endpoint": f"/api/v2/tickets/{record_id}",
-            "location_endpoint": f"/api/v2/tickets/{record_id}",
+            "open_endpoint": f"/api/v2/tickets/{encoded_ticket_id}",
+            "location_endpoint": f"/api/v2/tickets/{encoded_ticket_id}",
             "location_method": "PATCH",
             "location_body_template": {"location": {"lat": "number", "lng": "number", "address": "string"}},
             "requires": ["location.lat", "location.lng"],
         },
         "municipio_ticket": {
-            "open_endpoint": f"/tickets/municipio/{record_id}",
-            "location_endpoint": f"/tickets/municipio/{record_id}/ubicacion",
+            "open_endpoint": f"/tickets/municipio/{encoded_ticket_id}",
+            "location_endpoint": f"/tickets/municipio/{encoded_ticket_id}/ubicacion",
             "location_method": "PUT",
             "location_body_template": {"latitud": "number", "longitud": "number", "direccion": "string"},
             "requires": ["latitud", "longitud"],
         },
         "pyme_ticket": {
-            "open_endpoint": f"/tickets/pyme/{record_id}",
-            "location_endpoint": f"/tickets/pyme/{record_id}/ubicacion",
+            "open_endpoint": f"/tickets/pyme/{encoded_ticket_id}",
+            "location_endpoint": f"/tickets/pyme/{encoded_ticket_id}/ubicacion",
             "location_method": "PUT",
             "location_body_template": {"latitud": "number", "longitud": "number", "direccion": "string"},
             "requires": ["latitud", "longitud"],
@@ -2625,15 +2668,17 @@ def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
         return []
 
     open_href = _crm_tickets_href(
+        source_model=source_model,
+        ticket_id=opaque_ticket_id,
         focus="open_ticket_detail",
-        ticket_id=record_id,
         category=record.get("category"),
         channel=record.get("channel"),
         status=record.get("status"),
     )
     geocoding_href = _crm_tickets_href(
+        source_model=source_model,
+        ticket_id=opaque_ticket_id,
         focus="open_geocoding_queue",
-        ticket_id=record_id,
         category=record.get("category"),
         channel=record.get("channel"),
         status=record.get("status"),
@@ -2653,6 +2698,8 @@ def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
             "writes_enabled": False,
             "record_source": record_source,
             "record_id": record_id,
+            "source_model": source_model,
+            "ticket_id": record_id,
         },
         {
             "id": "update_location",
@@ -2666,6 +2713,8 @@ def _ticket_action_contract(record: dict[str, Any]) -> list[dict[str, Any]]:
             "writes_enabled": True,
             "record_source": record_source,
             "record_id": record_id,
+            "source_model": source_model,
+            "ticket_id": record_id,
             "requires": source_config["requires"],
             "body_template": source_config["location_body_template"],
         },
@@ -2678,6 +2727,8 @@ def _geocoding_candidate(record: dict[str, Any]) -> dict[str, Any]:
         "id": f"{record.get('source')}:{record.get('id')}",
         "record_source": record.get("source"),
         "record_id": record.get("id"),
+        "source_model": record.get("source_model"),
+        "ticket_id": record.get("id"),
         "category": record.get("category"),
         "raw_category": record.get("raw_category"),
         "category_provenance": record.get("category_provenance"),
@@ -2703,6 +2754,8 @@ def _reported_location_review_candidate(record: dict[str, Any]) -> dict[str, Any
         "id": f"{record.get('source')}:{record.get('id')}",
         "record_source": record.get("source"),
         "record_id": record.get("id"),
+        "source_model": record.get("source_model"),
+        "ticket_id": record.get("id"),
         "category": record.get("category"),
         "raw_category": record.get("raw_category"),
         "category_provenance": record.get("category_provenance"),
@@ -3324,6 +3377,8 @@ def _heatmap_geocoding_guidance(
         "field_contract": {
             "record_id": "string",
             "record_source": "tenant_ticket|municipio_ticket|pyme_ticket",
+            "ticket_id": "opaque string or integer serialized losslessly",
+            "source_model": "TenantTicket|MunicipioTicket|PymeTicket",
             "address": "string",
             "actions": "array<open_record|update_location>",
             "location_endpoint": "use candidate.actions[id=update_location].endpoint",
@@ -3709,6 +3764,8 @@ def build_operational_heatmap(
             "layer": "tickets",
             "source": "ticket",
             "record_source": record["source"],
+            "source_model": record["source_model"],
+            "ticket_id": record["id"],
             "id": f"{record['source']}:{record['id']}",
             "lat": float(record["lat"]),
             "lng": float(record["lng"]),
