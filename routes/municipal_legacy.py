@@ -1278,10 +1278,37 @@ def municipal_tickets_locations(current_user):
     if municipio_id_del_admin is None:
         return jsonify({"error": "Usuario no asociado a un municipio"}), 400
 
-    locations = servicio_tickets.obtener_locations_de_tickets(
-        municipio_id=municipio_id_del_admin,
-        actor=current_user,
-    )
+    if is_employee_heatmap_viewer(current_user):
+        # This historical endpoint used to return one exact coordinate per
+        # ticket.  Reuse the same category-scoped, k-anonymous projection as
+        # every other employee heatmap route before reducing it to the legacy
+        # list shape.  Administrators keep the exact backwards-compatible
+        # contract below.
+        source_points = servicio_tickets.obtener_tickets_con_ubicacion_para_mapa(
+            tipo_ticket="municipio",
+            actor=current_user,
+            municipio_id=municipio_id_del_admin,
+        )
+        safe_points, _privacy = build_employee_legacy_heatmap_points(
+            source_points,
+            current_user,
+        )
+        locations = [
+            {
+                "lat": point["lat"],
+                "lng": point["lng"],
+                "weight": point["weight"],
+                "count": point["count"],
+                "privacy_mode": point["privacy_mode"],
+                "k_min": point["k_min"],
+            }
+            for point in safe_points
+        ]
+    else:
+        locations = servicio_tickets.obtener_locations_de_tickets(
+            municipio_id=municipio_id_del_admin,
+            actor=current_user,
+        )
     return jsonify(locations)
 
 
