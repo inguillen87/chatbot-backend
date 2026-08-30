@@ -45,6 +45,7 @@ from services.survey_response_provenance import (
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.territorial_evidence import (
     build_territorial_facets,
+    canonicalize_territorial_category,
     coordinate_jurisdiction_status,
     explicit_zone,
     extract_location_evidence,
@@ -471,6 +472,11 @@ def _normalize_age_range_filter_values(values: Any) -> set[str]:
 
 def _normalized_heatmap_filter_values(key: str, values: Any) -> set[str]:
     normalized = _normalize_filter_values(values)
+    if key == "category":
+        return {
+            canonicalize_territorial_category(value)["category"]
+            for value in normalized
+        }
     if key == "age_range":
         return _normalize_age_range_filter_values(values)
     if key == "address":
@@ -837,6 +843,7 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
     sla = _sla_observation(status=status, metadata=extra, as_of=as_of)
     priority = _norm(extra.get("priority") or extra.get("prioridad"), "normal")
     channel = _norm(extra.get("channel") or extra.get("canal") or ticket.origen, "web")
+    category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "tenant_ticket",
         "id": ticket.id,
@@ -844,11 +851,14 @@ def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None
         "status": status,
         "priority": priority,
         "channel": channel,
-        "category": _norm(ticket.categoria, "sin_categoria"),
+        "category": category["category"],
+        "raw_category": category["raw_category"],
+        "category_provenance": category["provenance"],
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": extra.get("assignee_id"),
         "zone": _norm(location.get("zone"), "sin_zona"),
         "address": location.get("address"),
+        "reported_location_text": location.get("reported_location_text"),
         "lat": location.get("lat"),
         "lng": location.get("lng"),
         "location_provenance": location.get("provenance"),
@@ -875,6 +885,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         metadata=metadata,
     )
     sla = _sla_observation(status=status, metadata=metadata, as_of=as_of)
+    category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "municipio_ticket",
         "id": ticket.id,
@@ -882,11 +893,14 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         "status": status,
         "priority": "normal",
         "channel": channel,
-        "category": _norm(ticket.categoria, "sin_categoria"),
+        "category": category["category"],
+        "raw_category": category["raw_category"],
+        "category_provenance": category["provenance"],
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
         "zone": _norm(location.get("zone"), "sin_zona"),
         "address": location.get("address"),
+        "reported_location_text": location.get("reported_location_text"),
         "lat": location.get("lat"),
         "lng": location.get("lng"),
         "location_provenance": location.get("provenance"),
@@ -913,6 +927,7 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
         metadata=extra,
         as_of=as_of,
     )
+    category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "pyme_ticket",
         "id": ticket.id,
@@ -920,11 +935,14 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
         "status": status,
         "priority": "normal",
         "channel": "web",
-        "category": _norm(ticket.categoria, "sin_categoria"),
+        "category": category["category"],
+        "raw_category": category["raw_category"],
+        "category_provenance": category["provenance"],
         "category_id": getattr(ticket, "categoria_id", None),
         "assignee_id": getattr(ticket, "asignado_a_id", None),
         "zone": _norm(location.get("zone"), "sin_zona"),
         "address": location.get("address"),
+        "reported_location_text": location.get("reported_location_text"),
         "lat": location.get("lat"),
         "lng": location.get("lng"),
         "location_provenance": location.get("provenance"),
@@ -2657,6 +2675,8 @@ def _geocoding_candidate(record: dict[str, Any]) -> dict[str, Any]:
         "record_source": record.get("source"),
         "record_id": record.get("id"),
         "category": record.get("category"),
+        "raw_category": record.get("raw_category"),
+        "category_provenance": record.get("category_provenance"),
         "channel": record.get("channel"),
         "status": record.get("status"),
         "zone": record.get("zone"),
@@ -2671,6 +2691,22 @@ def _geocoding_candidate(record: dict[str, Any]) -> dict[str, Any]:
         "assignee_id": record.get("assignee_id"),
         "location_provenance": record.get("location_provenance"),
         "actions": _ticket_action_contract(record),
+    }
+
+
+def _reported_location_review_candidate(record: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": f"{record.get('source')}:{record.get('id')}",
+        "record_source": record.get("source"),
+        "record_id": record.get("id"),
+        "category": record.get("category"),
+        "raw_category": record.get("raw_category"),
+        "category_provenance": record.get("category_provenance"),
+        "reported_location_text": record.get("reported_location_text"),
+        "reason_code": "reported_location_text_requires_review",
+        "location_provenance": record.get("location_provenance"),
+        "automatic_geocoding": False,
+        "writes_performed": False,
     }
 
 
@@ -3561,6 +3597,11 @@ def build_operational_heatmap(
         if not _record_has_coordinates(record)
         and record.get("address")
     ]
+    reported_location_review_candidates = [
+        _reported_location_review_candidate(record)
+        for record in filtered_ticket_records
+        if record.get("reported_location_text")
+    ]
     territorial_facets = (
         build_territorial_facets(filtered_ticket_records)
         if not employee_view
@@ -3580,6 +3621,8 @@ def build_operational_heatmap(
             "lng": float(record["lng"]),
             "weight": _priority_weight(record["priority"], record["status"]),
             "category": record["category"],
+            "raw_category": record.get("raw_category"),
+            "category_provenance": record.get("category_provenance"),
             "channel": record["channel"],
             "status": record["status"],
             "sla_state": record.get("sla_state") or "normal",
@@ -4202,7 +4245,21 @@ def build_operational_heatmap(
         )
 
     payload["territorial_facets"] = territorial_facets
+    payload["location_review"] = {
+        "contract_version": "operations.heatmap.location_review.v1",
+        "status": "pending" if reported_location_review_candidates else "empty",
+        "reason_code": (
+            "reported_location_text_requires_review"
+            if reported_location_review_candidates
+            else "no_reported_location_text_pending_review"
+        ),
+        "candidate_count": len(reported_location_review_candidates),
+        "candidates": reported_location_review_candidates[:50],
+        "automatic_geocoding": False,
+        "writes_performed": False,
+    }
     payload["render_contract"]["premium_metadata"].append("territorial_facets")
+    payload["render_contract"]["premium_metadata"].append("location_review")
     payload["render_contract"]["premium_metadata"].append("jurisdiction")
     payload["privacy"] = privileged_heatmap_privacy()
     return payload

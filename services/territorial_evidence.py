@@ -11,8 +11,16 @@ from typing import Any, Iterable
 
 _LATITUDE_KEYS = {"lat", "latitude", "latitud"}
 _LONGITUDE_KEYS = {"lng", "lon", "long", "longitude", "longitud"}
-_ADDRESS_KEYS = {"address", "calle", "direccion", "domicilio", "formattedaddress", "ubicacion"}
+_ADDRESS_KEYS = {"address", "calle", "direccion", "domicilio", "formattedaddress"}
+_REPORTED_LOCATION_KEYS = {"ubicacion"}
 _ZONE_KEYS = {"barrio", "district", "distrito", "zone", "zona"}
+_EXACT_CATEGORY_ALIASES = {
+    "alumbrado": "luminarias",
+    "alumbrado publico": "luminarias",
+    "alumbrado público": "luminarias",
+    "luminaria": "luminarias",
+    "luminarias": "luminarias",
+}
 _UNKNOWN_ZONE_VALUES = {
     "", "desconocido", "missing", "no informado", "sin barrio",
     "sin distrito", "sin zona", "sin_zona", "unknown",
@@ -29,6 +37,27 @@ def _normalized_key(value: Any) -> str:
 
 def _normalized_value(value: Any) -> str:
     return str(value or "").strip().lower()
+
+
+def canonicalize_territorial_category(value: Any) -> dict[str, Any]:
+    """Canonicalize a persisted category with exact, auditable aliases only."""
+
+    raw = str(value or "").strip()
+    normalized = _normalized_value(raw) or "sin_categoria"
+    canonical = _EXACT_CATEGORY_ALIASES.get(normalized, normalized)
+    return {
+        "raw_category": raw or None,
+        "category": canonical,
+        "provenance": {
+            "contract_version": "operations.category_provenance.v1",
+            "source": "persisted_ticket_category",
+            "method": "exact_alias" if canonical != normalized else "identity",
+            "normalized_input": normalized,
+            "canonical_category": canonical,
+            "fuzzy_matching": False,
+            "writes_performed": False,
+        },
+    }
 
 
 def normalize_address_key(value: Any) -> str:
@@ -245,7 +274,15 @@ def _entry(data: dict[str, Any], aliases: set[str]) -> tuple[str, Any] | None:
     return None
 
 
-def _provenance(source: str, path: str) -> dict[str, Any]:
+def _provenance(source: str, path: str, *, reported_location: bool = False) -> dict[str, Any]:
+    if reported_location:
+        return {
+            "source": source,
+            "path": path,
+            "quality": "reported_location_text",
+            "confidence": 0.6,
+            "requires_review": True,
+        }
     quality = {
         "ticket_columns": "persisted_ticket_columns",
         "persisted_session_context": "persisted_session_context",
@@ -262,12 +299,19 @@ def _provenance(source: str, path: str) -> dict[str, Any]:
 def extract_location_evidence(*sources: tuple[str, Any]) -> dict[str, Any]:
     """Resolve structured persisted location fields, without geocoding or writes."""
 
-    result: dict[str, Any] = {"lat": None, "lng": None, "address": None, "zone": None}
+    result: dict[str, Any] = {
+        "lat": None,
+        "lng": None,
+        "address": None,
+        "zone": None,
+        "reported_location_text": None,
+    }
     provenance: dict[str, Any] = {
         "contract_version": "operations.location_provenance.v1",
         "coordinate": {"status": "missing"},
         "address": {"status": "missing"},
         "zone": {"status": "missing"},
+        "reported_location_text": {"status": "missing"},
         "external_geocoding_calls": 0,
         "writes_performed": False,
     }
@@ -295,6 +339,16 @@ def extract_location_evidence(*sources: tuple[str, Any]) -> dict[str, Any]:
                 if scalar and found:
                     result[field] = scalar
                     provenance[field] = _provenance(source, f"{path}.{found[0]}")
+            if result["reported_location_text"] is None:
+                found = _entry(node, _REPORTED_LOCATION_KEYS)
+                scalar = _scalar_text(found[1]) if found else None
+                if scalar and found:
+                    result["reported_location_text"] = scalar
+                    provenance["reported_location_text"] = _provenance(
+                        source,
+                        f"{path}.{found[0]}",
+                        reported_location=True,
+                    )
     result["provenance"] = provenance
     return result
 
@@ -339,12 +393,29 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
 
         category_item = categories.setdefault(
             category,
-            {"key": category, "count": 0, "mapped": 0, "pending": 0, "outside": 0, "addresses": Counter(), "address_labels": {}, "zones": Counter()},
+            {
+                "key": category,
+                "count": 0,
+                "mapped": 0,
+                "pending": 0,
+                "outside": 0,
+                "addresses": Counter(),
+                "address_labels": {},
+                "zones": Counter(),
+                "raw_categories": Counter(),
+                "category_methods": Counter(),
+            },
         )
         category_item["count"] += 1
         category_item["mapped"] += int(mapped)
         category_item["pending"] += int(pending)
         category_item["outside"] += int(outside_jurisdiction)
+        raw_category = _scalar_text(record.get("raw_category")) or category
+        category_item["raw_categories"][raw_category] += 1
+        category_method = _normalized_value(
+            (record.get("category_provenance") or {}).get("method")
+        ) or "missing"
+        category_item["category_methods"][category_method] += 1
         if address_key and address_label:
             category_item["addresses"][address_key] += 1
             category_item["address_labels"].setdefault(address_key, address_label)
@@ -384,6 +455,13 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
             "key": item["key"], "label": item["key"], "count": item["count"],
             "mapped_count": item["mapped"], "pending_geocode_count": item["pending"],
             "outside_jurisdiction_count": item["outside"],
+            "raw_categories": _counter_items(item["raw_categories"], limit=12),
+            "category_provenance": {
+                "contract_version": "operations.category_provenance.v1",
+                "methods": _counter_items(item["category_methods"], limit=8),
+                "fuzzy_matching": False,
+                "writes_performed": False,
+            },
             "top_addresses": _counter_items(item["addresses"], item["address_labels"], limit=8),
             "explicit_zones": _counter_items(item["zones"], limit=8),
         }

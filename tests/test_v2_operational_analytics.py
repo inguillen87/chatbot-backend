@@ -1287,6 +1287,108 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             "ticket_metadata",
         )
 
+    def test_territorial_category_uses_exact_lighting_aliases_and_preserves_raw_value(self):
+        from services.operational_intelligence import _tenant_ticket_record
+
+        expected = {
+            "luminaria": "luminarias",
+            "Luminarias": "luminarias",
+            "alumbrado": "luminarias",
+            "Alumbrado Publico": "luminarias",
+            "Alumbrado Público": "luminarias",
+            "alumbrado roto": "alumbrado roto",
+        }
+
+        for raw, canonical in expected.items():
+            with self.subTest(raw=raw):
+                record = _tenant_ticket_record(
+                    TenantTicket(
+                        tenant_id=self.tenant.id,
+                        descripcion="Prueba de taxonomia territorial",
+                        categoria=raw,
+                    )
+                )
+                self.assertEqual(record.get("category"), canonical)
+                self.assertEqual(record.get("raw_category"), raw)
+                provenance = record.get("category_provenance") or {}
+                self.assertFalse(provenance.get("fuzzy_matching"))
+                self.assertFalse(provenance.get("writes_performed"))
+                self.assertEqual(
+                    provenance.get("method"),
+                    "exact_alias" if canonical != raw.strip().lower() else "identity",
+                )
+
+    def test_metadata_ubicacion_requires_review_and_is_not_automatically_geocoded(self):
+        ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="alumbrado publico",
+            descripcion="Referencia vecinal sin direccion validada",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"ubicacion": "al lado de la plaza principal"},
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&categoria=alumbrado%20publico&source=tickets",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("geocoding") or {}).get("candidate_count"), 0)
+        review = payload.get("location_review") or {}
+        self.assertEqual(review.get("candidate_count"), 1)
+        self.assertFalse(review.get("automatic_geocoding"))
+        candidate = (review.get("candidates") or [])[0]
+        self.assertEqual(candidate.get("record_id"), ticket.id)
+        self.assertEqual(candidate.get("category"), "luminarias")
+        self.assertEqual(candidate.get("raw_category"), "alumbrado publico")
+        self.assertEqual(
+            candidate.get("reported_location_text"),
+            "al lado de la plaza principal",
+        )
+        location = candidate.get("location_provenance") or {}
+        reported = location.get("reported_location_text") or {}
+        self.assertTrue(reported.get("requires_review"))
+        self.assertEqual(reported.get("quality"), "reported_location_text")
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("records_with_address"), 0)
+        category = (facets.get("categories") or [])[0]
+        self.assertEqual(category.get("key"), "luminarias")
+        self.assertEqual(
+            (category.get("raw_categories") or [])[0].get("label"),
+            "alumbrado publico",
+        )
+
+    def test_employee_heatmap_omits_exact_reported_location_review_queue(self):
+        db.session.add(
+            TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.admin.id,
+                categoria="Luminarias",
+                descripcion="Referencia privada",
+                estado="nuevo",
+                origen="whatsapp",
+                datos_extra={"ubicacion": "frente a la vivienda azul"},
+            )
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap?include_ai=0&source=tickets",
+            headers=self._auth_for(self.employee, tenant_slug=self.tenant.slug),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual((payload.get("privacy") or {}).get("mode"), "employee_aggregated")
+        self.assertNotIn("location_review", payload)
+        serialized = json.dumps(payload, ensure_ascii=False).lower()
+        self.assertNotIn("vivienda azul", serialized)
+
     def test_operations_heatmap_returns_points_cells_and_layers(self):
         response = self.client.get("/api/v2/analytics/operations/heatmap", headers=self._auth())
 
