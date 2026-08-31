@@ -6444,7 +6444,10 @@ def _record_ticket_reply_delivery(
         "delivery_results": deepcopy(delivery.get("delivery_results") or {}),
         "requested_channels": list(delivery.get("requested_channels") or []),
         "delivery_skipped": deepcopy(delivery.get("delivery_skipped") or {}),
-        "receipt_persisted": bool(delivery.get("receipt_persisted")),
+        # Reaching this durable entry means the receipt is being written in the
+        # same transaction. If the later commit fails the entry is rolled back
+        # and the response reports receipt_persisted=false instead.
+        "receipt_persisted": True,
         "actor_user_id": actor.id,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

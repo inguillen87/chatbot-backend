@@ -2533,10 +2533,14 @@ class V2SaasContractsTest(unittest.TestCase):
         history = legacy.datos_extra.get("reply_delivery_history") or []
         self.assertEqual(len(history), 1)
         self.assertEqual(history[-1]["status"], "dispatch_attempted")
+        self.assertTrue(history[-1]["receipt_persisted"])
         self.assertIsNone(history[-1]["provider_message_id"])
         self.assertEqual(
             legacy.datos_extra["reply_delivery_latest_evidence"]["status"],
             "dispatch_attempted",
+        )
+        self.assertTrue(
+            legacy.datos_extra["reply_delivery_latest_evidence"]["receipt_persisted"]
         )
 
     def test_omnichannel_legacy_claim_reply_survives_dispatcher_failure(self):
@@ -4871,6 +4875,7 @@ class V2SaasContractsTest(unittest.TestCase):
         delivery_history = self.ticket.datos_extra.get("reply_delivery_history") or []
         self.assertEqual(delivery_history[-1]["mode"], "real_message")
         self.assertEqual(delivery_history[-1]["status"], "dispatch_attempted")
+        self.assertTrue(delivery_history[-1]["receipt_persisted"])
         self.assertEqual(
             delivery_history[-1]["final_delivery"]["status"],
             "pending_provider_callback",
@@ -4914,6 +4919,29 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertTrue(delivery["timeline_updated"])
         self.assertFalse(delivery["external_dispatch"])
+        db.session.expire_all()
+        persisted_ticket = TenantTicket.query.filter_by(
+            id=self.ticket.id,
+            tenant_id=self.tenant.id,
+        ).one()
+        persisted_extra = persisted_ticket.datos_extra or {}
+        persisted_timeline = persisted_extra.get("comments") or []
+        self.assertTrue(
+            any(
+                item.get("body") == "Respuesta durable sin recibo auxiliar."
+                for item in persisted_timeline
+                if isinstance(item, dict)
+            )
+        )
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+                body="Respuesta durable sin recibo auxiliar.",
+            ).count(),
+            1,
+        )
+        self.assertFalse(persisted_extra.get("reply_delivery_history"))
 
     def test_omnichannel_close_and_reopen_reject_contradictory_status_without_mutation(self):
         original_status = self.ticket.estado
