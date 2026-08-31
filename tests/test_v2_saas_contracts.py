@@ -48,6 +48,8 @@ from routes.v2.saas import (
     _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES,
     _OMNICHANNEL_REPLY_MAX_BODY_BYTES,
     _inbox_action_delivery_payload,
+    _inbox_artifact_event_map,
+    _inbox_artifact_events,
 )
 from services.meta_flow_json import SURVEY_VOTE_DATA_CONTRACT
 from services.tts_orchestrator import reset_tts_cache_metrics
@@ -2145,6 +2147,7 @@ class V2SaasContractsTest(unittest.TestCase):
         artifacts = [item for item in timeline if item.get("type") == "crm_artifact"]
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(artifacts[0]["artifact"]["kind"], "location")
+        self.assertEqual(artifacts[0]["visibility"], "internal")
 
         conflict = self.client.post(
             endpoint,
@@ -2153,6 +2156,90 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertEqual(conflict.status_code, 409, conflict.get_json())
         self.assertEqual(conflict.get_json()["reason_code"], "artifact_idempotency_payload_conflict")
+
+    def test_artifact_detail_keeps_latest_one_hundred_in_chronological_order(self):
+        base_time = datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc)
+        db.session.add_all(
+            InboxTicketArtifact(
+                tenant_id=self.tenant.id,
+                source_model="TenantTicket",
+                ticket_id=self.ticket.id,
+                action="share_location",
+                payload_json={"kind": "location", "label": f"artifact-{index}"},
+                actor_user_id=self.employee.id,
+                idempotency_key_hash=f"{index:064x}",
+                request_digest="d" * 64,
+                created_at=base_time + timedelta(seconds=index),
+            )
+            for index in range(105)
+        )
+        db.session.commit()
+
+        events = _inbox_artifact_events(
+            tenant_id=self.tenant.id,
+            source_model="TenantTicket",
+            ticket_id=self.ticket.id,
+        )
+
+        self.assertEqual(len(events), 100)
+        self.assertEqual(events[0]["artifact"]["label"], "artifact-5")
+        self.assertEqual(events[-1]["artifact"]["label"], "artifact-104")
+        self.assertTrue(all(event["visibility"] == "internal" for event in events))
+
+    def test_artifact_inbox_map_is_bounded_per_exact_ticket_and_keeps_latest(self):
+        second_ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="educacion",
+            descripcion="Segunda conversacion",
+            estado="nuevo",
+            origen="whatsapp",
+            datos_extra={"channel": "whatsapp"},
+        )
+        db.session.add(second_ticket)
+        db.session.flush()
+        base_time = datetime(2026, 8, 31, 13, 0, tzinfo=timezone.utc)
+        artifacts = []
+        for ticket_offset, ticket in enumerate((self.ticket, second_ticket)):
+            for index in range(25):
+                artifacts.append(
+                    InboxTicketArtifact(
+                        tenant_id=self.tenant.id,
+                        source_model="TenantTicket",
+                        ticket_id=ticket.id,
+                        action="share_location",
+                        payload_json={
+                            "kind": "location",
+                            "label": f"ticket-{ticket_offset}-artifact-{index}",
+                        },
+                        actor_user_id=self.employee.id,
+                        idempotency_key_hash=f"{ticket_offset * 100 + index:064x}",
+                        request_digest="e" * 64,
+                        created_at=base_time + timedelta(seconds=index),
+                    )
+                )
+        db.session.add_all(artifacts)
+        db.session.commit()
+
+        event_map = _inbox_artifact_event_map(
+            tenant_id=self.tenant.id,
+            identities=[
+                ("TenantTicket", self.ticket.id),
+                ("TenantTicket", second_ticket.id),
+            ],
+        )
+
+        for ticket_offset, ticket in enumerate((self.ticket, second_ticket)):
+            events = event_map[("TenantTicket", ticket.id)]
+            self.assertEqual(len(events), 20)
+            self.assertEqual(
+                events[0]["artifact"]["label"],
+                f"ticket-{ticket_offset}-artifact-5",
+            )
+            self.assertEqual(
+                events[-1]["artifact"]["label"],
+                f"ticket-{ticket_offset}-artifact-24",
+            )
 
     def test_artifact_location_requires_header_and_rejects_invalid_wgs84(self):
         endpoint = f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions"

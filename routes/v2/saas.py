@@ -13,7 +13,7 @@ from urllib.parse import quote_plus
 import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -6336,10 +6336,17 @@ def _persist_inbox_artifact(
     return artifact, False, None
 
 
+_INBOX_ARTIFACT_DETAIL_LIMIT = 100
+_INBOX_ARTIFACT_LIST_LIMIT_PER_TICKET = 20
+
+
 def _inbox_artifact_events(*, tenant_id: int, source_model: str, ticket_id: int) -> list[dict[str, Any]]:
     rows = InboxTicketArtifact.query.filter_by(
         tenant_id=tenant_id, source_model=source_model, ticket_id=ticket_id,
-    ).order_by(InboxTicketArtifact.created_at.asc(), InboxTicketArtifact.id.asc()).limit(100).all()
+    ).order_by(
+        InboxTicketArtifact.created_at.desc(), InboxTicketArtifact.id.desc()
+    ).limit(_INBOX_ARTIFACT_DETAIL_LIMIT).all()
+    rows.reverse()
     return [row.to_event_dict() for row in rows]
 
 
@@ -6348,19 +6355,51 @@ def _inbox_artifact_event_map(
 ) -> dict[tuple[str, int], list[dict[str, Any]]]:
     if not identities:
         return {}
-    source_models = {source for source, _ticket_id in identities}
-    ticket_ids = {ticket_id for _source, ticket_id in identities}
-    rows = InboxTicketArtifact.query.filter(
+
+    normalized_identities = list(dict.fromkeys(
+        (str(source_model), int(ticket_id))
+        for source_model, ticket_id in identities
+    ))
+    identity_filter = or_(*(
+        and_(
+            InboxTicketArtifact.source_model == source_model,
+            InboxTicketArtifact.ticket_id == ticket_id,
+        )
+        for source_model, ticket_id in normalized_identities
+    ))
+    artifact_rank = func.row_number().over(
+        partition_by=(
+            InboxTicketArtifact.source_model,
+            InboxTicketArtifact.ticket_id,
+        ),
+        order_by=(
+            InboxTicketArtifact.created_at.desc(),
+            InboxTicketArtifact.id.desc(),
+        ),
+    ).label("artifact_rank")
+    ranked = db.session.query(
+        InboxTicketArtifact.id.label("artifact_id"),
+        artifact_rank,
+    ).filter(
         InboxTicketArtifact.tenant_id == tenant_id,
-        InboxTicketArtifact.source_model.in_(source_models),
-        InboxTicketArtifact.ticket_id.in_(ticket_ids),
-    ).order_by(InboxTicketArtifact.created_at.asc(), InboxTicketArtifact.id.asc()).all()
-    allowed = set(identities)
+        identity_filter,
+    ).subquery()
+    rows = InboxTicketArtifact.query.join(
+        ranked,
+        InboxTicketArtifact.id == ranked.c.artifact_id,
+    ).filter(
+        ranked.c.artifact_rank <= _INBOX_ARTIFACT_LIST_LIMIT_PER_TICKET,
+    ).order_by(
+        InboxTicketArtifact.source_model.asc(),
+        InboxTicketArtifact.ticket_id.asc(),
+        InboxTicketArtifact.created_at.asc(),
+        InboxTicketArtifact.id.asc(),
+    ).all()
+
     result: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for row in rows:
         identity = (row.source_model, row.ticket_id)
-        if identity in allowed:
-            result.setdefault(identity, []).append(row.to_event_dict())
+        result.setdefault(identity, []).append(row.to_event_dict())
     return result
 
 

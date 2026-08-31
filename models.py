@@ -922,7 +922,7 @@ class InboxTicketArtifact(db.Model):
             "type": "crm_artifact",
             "origin": "admin_panel",
             "action": self.action,
-            "visibility": "public",
+            "visibility": "internal",
             "body": "",
             "artifact": dict(self.payload_json or {}),
             "delivery": {
