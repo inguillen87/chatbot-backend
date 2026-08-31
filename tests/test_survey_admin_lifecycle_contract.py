@@ -41,6 +41,14 @@ def _tenant(slug: str) -> tuple[User, TenantProfile]:
     return owner, tenant
 
 
+def _government_tenant(slug: str) -> tuple[User, TenantProfile]:
+    owner, tenant = _tenant(slug)
+    tenant.tipo = "municipio"
+    owner.tipo_chat = "municipio"
+    db.session.commit()
+    return owner, tenant
+
+
 def _headers(owner: User, tenant: TenantProfile) -> dict[str, str]:
     token = generar_token(
         owner.id,
@@ -92,6 +100,40 @@ def _survey(
         db.session.add(EncLink(encuesta_id=survey.id, slug_publico=slug, canal="web"))
     db.session.commit()
     return survey
+
+
+def test_government_draft_lifecycle_requires_evidence_gate(client):
+    owner, tenant = _government_tenant("government-evidence-lifecycle")
+    survey = _survey(
+        tenant,
+        slug="government-evidence-lifecycle",
+        state="borrador",
+    )
+
+    response = client.get(
+        "/api/admin/encuestas",
+        headers=_headers(owner, tenant),
+    )
+
+    assert response.status_code == 200, response.get_json()
+    item = next(
+        row for row in response.get_json()["encuestas"] if row["id"] == survey.id
+    )
+    lifecycle = item["admin_lifecycle"]
+    assert lifecycle["capabilities"]["can_publish"] is False
+    assert lifecycle["government_survey_evidence_gate"] == {
+        "contract_version": "surveys.government_evidence_gate.v1",
+        "required": True,
+        "ready": False,
+        "reason_code": "survey_tenant_jurisdiction_unverified",
+        "next_action": "configure_verified_tenant_jurisdiction",
+    }
+    assert lifecycle["actions"]["publish"]["disabled_reason_code"] == (
+        "survey_tenant_jurisdiction_unverified"
+    )
+    assert lifecycle["actions"]["publish"]["next_action"] == (
+        "configure_verified_tenant_jurisdiction"
+    )
 
 
 def _response(survey: EncEncuesta, key: str) -> None:

@@ -1311,6 +1311,69 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(coordinate_jurisdiction_status(-33.0567, -68.4954, resolved), "outside")
         self.assertEqual(coordinate_jurisdiction_status(-34.9, -60.0, resolved), "outside")
 
+    def test_government_survey_heatmap_keeps_only_contained_real_coordinates(self):
+        survey = EncEncuesta(
+            tenant_id=self.tenant.id,
+            slug="survey-jurisdiction-heatmap",
+            titulo="Consulta territorial",
+            descripcion="Prueba de evidencia territorial",
+            tipo="opinion",
+            estado="publicada",
+        )
+        db.session.add(survey)
+        db.session.flush()
+        inside = EncRespuesta(
+            encuesta_id=survey.id,
+            tenant_id=self.tenant.id,
+            huella_unica="survey-inside-junin",
+            canal="survey_gate_test",
+            response_origin="real",
+            lat=-33.136,
+            lng=-68.49,
+            metadata_payload={"categoria": "alumbrado"},
+            submitted_at=datetime.now(timezone.utc),
+        )
+        outside = EncRespuesta(
+            encuesta_id=survey.id,
+            tenant_id=self.tenant.id,
+            huella_unica="survey-outside-junin",
+            canal="survey_gate_test",
+            response_origin="real",
+            lat=-34.5889,
+            lng=-60.9462,
+            metadata_payload={"categoria": "alumbrado"},
+            submitted_at=datetime.now(timezone.utc),
+        )
+        db.session.add_all([inside, outside])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=survey&channel=survey_gate_test",
+            headers=self._auth(),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        points = payload.get("points") or []
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0].get("id"), f"survey_response:{inside.id}")
+        self.assertEqual(points[0].get("lat"), inside.lat)
+        self.assertEqual(points[0].get("lng"), inside.lng)
+        self.assertEqual(points[0].get("coordinate_jurisdiction_status"), "within")
+        self.assertEqual((payload.get("summary") or {}).get("survey_points"), 1)
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertTrue(jurisdiction.get("containment_verified"))
+        authority = jurisdiction.get("boundary_authority") or {}
+        self.assertEqual(authority.get("kind"), "official")
+        self.assertTrue(authority.get("source_ref"))
+        self.assertTrue(authority.get("snapshot_sha256"))
+        self.assertEqual(jurisdiction.get("excluded_by_source"), [
+            {"key": "surveys", "label": "surveys", "count": 1}
+        ])
+        visible_ids = {point.get("id") for point in points}
+        self.assertNotIn(f"survey_response:{outside.id}", visible_ids)
+
     def test_municipal_heatmap_fails_closed_when_official_boundary_hash_is_invalid(self):
         broken_admin = User(
             name="Boundary admin",
@@ -1352,6 +1415,29 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             longitud=-60.9462,
         )
         db.session.add_all([blocked_ticket, blocked_outside_envelope])
+        broken_survey = EncEncuesta(
+            tenant_id=broken_tenant.id,
+            slug="broken-boundary-survey",
+            titulo="Encuesta sin autoridad territorial válida",
+            descripcion="No debe alimentar el mapa",
+            tipo="opinion",
+            estado="publicada",
+        )
+        db.session.add(broken_survey)
+        db.session.flush()
+        db.session.add(
+            EncRespuesta(
+                encuesta_id=broken_survey.id,
+                tenant_id=broken_tenant.id,
+                huella_unica="broken-boundary-survey-response",
+                canal="web",
+                response_origin="real",
+                lat=-33.136,
+                lng=-68.49,
+                metadata_payload={"categoria": "broken_boundary_probe"},
+                submitted_at=datetime.now(timezone.utc),
+            )
+        )
         db.session.commit()
 
         token = jwt.encode(
@@ -1421,7 +1507,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             with patch.dict(os.environ, {"DATA_DIR": temp_dir}, clear=False):
                 response = self.client.get(
                     "/api/v2/analytics/operations/heatmap"
-                    "?include_ai=0&source=tickets&categoria=broken_boundary_probe",
+                    "?include_ai=0&categoria=broken_boundary_probe",
                     headers={
                         "Authorization": f"Bearer {token}",
                         "X-Tenant-Slug": broken_tenant.slug,
@@ -1443,12 +1529,15 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertFalse(jurisdiction.get("containment_verified"))
         self.assertEqual(jurisdiction.get("containment_method"), "operational_envelope")
         self.assertEqual(jurisdiction.get("map_eligibility_state"), "blocked")
-        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 2)
+        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 3)
         self.assertEqual(jurisdiction.get("excluded_by_source"), [])
-        self.assertEqual(jurisdiction.get("unverified_coordinate_records"), 2)
+        self.assertEqual(jurisdiction.get("unverified_coordinate_records"), 3)
         self.assertEqual(
             jurisdiction.get("unverified_by_source"),
-            [{"key": "tickets", "label": "tickets", "count": 2}],
+            [
+                {"key": "tickets", "label": "tickets", "count": 2},
+                {"key": "surveys", "label": "surveys", "count": 1},
+            ],
         )
         self.assertEqual(jurisdiction.get("review_candidate_count"), 2)
         self.assertEqual((payload.get("summary") or {}).get("points"), 0)

@@ -8884,6 +8884,7 @@ def _build_admin_lifecycle_contract(
     *,
     governed_release: bool,
     jurisdiction_scope: Optional[Mapping[str, Any]] = None,
+    survey_evidence_gate: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Describe the persisted lifecycle without deriving unavailable KPIs."""
 
@@ -8933,11 +8934,33 @@ def _build_admin_lifecycle_contract(
         else None
     )
     jurisdiction_conflict = jurisdiction_status == "conflict"
+    evidence_required = bool(
+        isinstance(survey_evidence_gate, Mapping)
+        and survey_evidence_gate.get("required") is True
+    )
+    evidence_ready = bool(
+        not evidence_required
+        or (
+            isinstance(survey_evidence_gate, Mapping)
+            and survey_evidence_gate.get("ready") is True
+        )
+    )
+    evidence_reason = (
+        str(survey_evidence_gate.get("reason_code") or "").strip() or None
+        if isinstance(survey_evidence_gate, Mapping)
+        else None
+    )
+    evidence_next_action = (
+        str(survey_evidence_gate.get("next_action") or "").strip() or None
+        if isinstance(survey_evidence_gate, Mapping)
+        else None
+    )
     can_publish = (
         persisted_state == "borrador"
         and has_questions
         and not governed_release
         and not jurisdiction_conflict
+        and evidence_ready
     )
     can_close = persisted_state == "publicada" and not governed_release
     can_delete = persisted_state == "borrador" and response_count == 0 and not governed_release
@@ -8948,7 +8971,9 @@ def _build_admin_lifecycle_contract(
 
     publish_reason = None
     close_reason = None
-    if jurisdiction_conflict:
+    if evidence_required and not evidence_ready:
+        publish_reason = evidence_reason or "survey_jurisdiction_guard_blocked"
+    elif jurisdiction_conflict:
         publish_reason = "survey_jurisdiction_binding_conflict"
     elif governed_release:
         publish_reason = "survey_governance_release_required"
@@ -8984,6 +9009,13 @@ def _build_admin_lifecycle_contract(
             "reason_code": jurisdiction_reason,
             "content_review_included": False,
         },
+        "government_survey_evidence_gate": {
+            "contract_version": "surveys.government_evidence_gate.v1",
+            "required": evidence_required,
+            "ready": evidence_ready,
+            "reason_code": evidence_reason,
+            "next_action": evidence_next_action,
+        },
         "participation": {
             "responses": response_count,
             "unique_participants": int(metricas.get("participantes_unicos") or 0),
@@ -9014,6 +9046,11 @@ def _build_admin_lifecycle_contract(
                 "endpoint": f"/api/v2/surveys/{encuesta.id}/publish",
                 "enabled": can_publish,
                 "disabled_reason_code": None if can_publish else publish_reason,
+                "next_action": (
+                    evidence_next_action
+                    if evidence_required and not evidence_ready
+                    else None
+                ),
             },
             "close": {
                 "method": "POST",
@@ -9089,6 +9126,11 @@ def build_admin_list_payload(
         )
         for resolved_tenant_id in tenant_ids
     }
+    from services.survey_jurisdiction import (
+        jurisdiction_contract,
+        tenant_requires_government_survey_evidence,
+    )
+
     for encuesta in encuestas:
         metricas = stats_map.get(encuesta.id or -1, _empty_panel_metrics())
         governance = governance_map.get(
@@ -9137,6 +9179,12 @@ def build_admin_list_payload(
             }
         )
         data["jurisdiction"] = jurisdiction_summary
+        tenant_profile = tenant_profiles_by_id.get(int(encuesta.tenant_id))
+        survey_evidence_gate = None
+        if tenant_requires_government_survey_evidence(tenant_profile):
+            survey_evidence_gate = jurisdiction_contract(encuesta).get(
+                "government_evidence_gate"
+            )
         lifecycle = _build_admin_lifecycle_contract(
             encuesta,
             metricas,
@@ -9145,6 +9193,7 @@ def build_admin_list_payload(
                 and data["governance"].get("release_required") is True
             ),
             jurisdiction_scope=admin_scope,
+            survey_evidence_gate=survey_evidence_gate,
         )
         data["admin_lifecycle"] = lifecycle
         if bool(

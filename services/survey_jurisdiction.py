@@ -25,6 +25,9 @@ from models_survey_jurisdiction import (
 
 
 SURVEY_JURISDICTION_CONTRACT_VERSION = "surveys.jurisdiction_guard.v1"
+GOVERNMENT_SURVEY_EVIDENCE_GATE_CONTRACT_VERSION = (
+    "surveys.government_evidence_gate.v1"
+)
 SURVEY_JURISDICTION_MODES = frozenset(
     {"observe", "enforce_publish", "enforce_visibility"}
 )
@@ -36,6 +39,18 @@ _REVIEW_EVENTS = frozenset({"review_approved", "review_blocked"})
 _OPAQUE_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{2,159}$")
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{7,127}$")
 _SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
+_GOVERNMENT_TENANT_TYPES = frozenset(
+    {
+        "municipio",
+        "municipalidad",
+        "gobierno",
+        "government",
+        "provincia",
+        "province",
+        "ente_publico",
+        "public_sector",
+    }
+)
 
 
 class SurveyJurisdictionError(Exception):
@@ -63,6 +78,7 @@ class SurveyJurisdictionError(Exception):
             "contract_version": SURVEY_JURISDICTION_CONTRACT_VERSION,
             "reason_code": self.reason_code,
             "action_hint": self.action_hint,
+            "next_action": self.action_hint,
             "retryable": False,
             **self.extra,
         }
@@ -89,6 +105,20 @@ def _sha256_text(value: str) -> str:
 def _normalized_ref(value: Any) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def tenant_requires_government_survey_evidence(
+    tenant: TenantProfile | None,
+) -> bool:
+    """Return whether the mandatory government evidence gate applies.
+
+    This classification is server-owned and deliberately independent from the
+    rollout allowlist.  Private/PYME tenants retain their existing rollout
+    behavior.
+    """
+
+    tenant_type = str(getattr(tenant, "tipo", "") or "").strip().lower()
+    return tenant_type in _GOVERNMENT_TENANT_TYPES
 
 
 def _validated_opaque_ref(value: Any, *, field: str) -> str:
@@ -400,15 +430,50 @@ def jurisdiction_contract(encuesta: EncEncuesta) -> dict[str, Any]:
     visibility_enforced, _ = _tenant_is_enforced(
         int(encuesta.tenant_id), visibility=True
     )
+    tenant = db.session.get(TenantProfile, int(encuesta.tenant_id))
+    government_required = tenant_requires_government_survey_evidence(tenant)
+    effective_publish_enforced = bool(government_required or publish_enforced)
+    next_action = {
+        "survey_tenant_not_found": "restore_survey_tenant_binding",
+        "survey_tenant_jurisdiction_unverified": (
+            "configure_verified_tenant_jurisdiction"
+        ),
+        "survey_jurisdiction_unbound": (
+            "bind_verified_tenant_jurisdiction_then_review"
+        ),
+        "survey_jurisdiction_binding_conflict": (
+            "duplicate_and_review_for_verified_jurisdiction"
+        ),
+        "survey_content_origin_invalid": "review_exact_survey_content",
+        "survey_content_receipt_integrity_failed": "contact_support",
+        "survey_content_review_required": "review_exact_survey_content",
+        "survey_content_review_blocked": "resolve_content_review_findings",
+        "survey_content_review_stale": "review_exact_survey_content",
+    }.get(readiness["reason_code"])
     return {
         "contract_version": SURVEY_JURISDICTION_CONTRACT_VERSION,
         "mode": config["mode"],
         "configuration_valid": config_valid,
-        "publish_enforced": publish_enforced,
+        "publish_enforced": effective_publish_enforced,
         "visibility_enforced": visibility_enforced,
         "allowed_to_publish": bool(
-            not publish_enforced or (config_valid and readiness["ready"])
+            (not effective_publish_enforced)
+            or (
+                readiness["ready"]
+                and (government_required or config_valid)
+            )
         ),
+        "next_action": next_action,
+        "government_evidence_gate": {
+            "contract_version": GOVERNMENT_SURVEY_EVIDENCE_GATE_CONTRACT_VERSION,
+            "required": government_required,
+            "ready": bool(readiness["ready"]),
+            "state": (
+                "ready" if readiness["ready"] else readiness["reason_code"]
+            ),
+            "reason_code": readiness["reason_code"],
+            "next_action": next_action,
+        },
         **readiness,
     }
 
@@ -418,9 +483,13 @@ def assert_publication_allowed(encuesta: EncEncuesta) -> dict[str, Any]:
     if contract["allowed_to_publish"]:
         return contract
     reason = contract["reason_code"]
-    if not contract["configuration_valid"]:
+    government_gate = contract.get("government_evidence_gate") or {}
+    if (
+        not contract["configuration_valid"]
+        and government_gate.get("required") is not True
+    ):
         reason = "survey_jurisdiction_gate_configuration_invalid"
-    action_hint = {
+    action_hint = contract.get("next_action") or {
         "survey_jurisdiction_gate_configuration_invalid": (
             "fix_survey_jurisdiction_gate_configuration"
         ),

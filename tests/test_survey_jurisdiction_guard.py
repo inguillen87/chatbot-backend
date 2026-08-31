@@ -48,7 +48,9 @@ def _restore_jurisdiction_gate_config(client):
         config["SURVEY_JURISDICTION_GATE_TENANT_IDS"] = previous_tenant_ids
 
 
-def _user_and_tenant(*, verified: bool) -> tuple[User, TenantProfile]:
+def _user_and_tenant(
+    *, verified: bool, tenant_type: str = "municipio"
+) -> tuple[User, TenantProfile]:
     user = User(
         name="Revisor institucional",
         email=f"review-{int(verified)}-{datetime.now().timestamp()}@test.local",
@@ -61,7 +63,7 @@ def _user_and_tenant(*, verified: bool) -> tuple[User, TenantProfile]:
     tenant = TenantProfile(
         slug=user.tenant_slug,
         nombre="Municipalidad de Junín",
-        tipo="municipio",
+        tipo=tenant_type,
         pyme_id=user.id,
         plan="full",
     )
@@ -155,7 +157,7 @@ def test_observe_preserves_legacy_unverified_publish_and_records_truth(client):
     with client.application.app_context():
         client.application.config["SURVEY_JURISDICTION_GATE_MODE"] = "observe"
         client.application.config["SURVEY_JURISDICTION_GATE_TENANT_IDS"] = ""
-        user, tenant = _user_and_tenant(verified=False)
+        user, tenant = _user_and_tenant(verified=False, tenant_type="pyme")
         survey = create_encuesta(_payload(), user)
 
         contract = jurisdiction_contract(survey)
@@ -172,6 +174,37 @@ def test_observe_preserves_legacy_unverified_publish_and_records_truth(client):
             "created",
             "published",
         ]
+
+
+def test_government_publish_is_mandatory_even_when_rollout_is_observe(client):
+    with client.application.app_context():
+        client.application.config["SURVEY_JURISDICTION_GATE_MODE"] = "observe"
+        client.application.config["SURVEY_JURISDICTION_GATE_TENANT_IDS"] = ""
+        user, _tenant = _user_and_tenant(verified=False)
+        survey = create_encuesta(_payload(), user)
+
+        contract = jurisdiction_contract(survey)
+        assert contract["government_evidence_gate"] == {
+            "contract_version": "surveys.government_evidence_gate.v1",
+            "required": True,
+            "ready": False,
+            "state": "survey_tenant_jurisdiction_unverified",
+            "reason_code": "survey_tenant_jurisdiction_unverified",
+            "next_action": "configure_verified_tenant_jurisdiction",
+        }
+        assert contract["publish_enforced"] is True
+        assert contract["allowed_to_publish"] is False
+
+        with pytest.raises(EncuestaError) as blocked:
+            publicar_encuesta(survey.id, user)
+        assert blocked.value.status_code == 409
+        assert blocked.value.payload["reason_code"] == (
+            "survey_tenant_jurisdiction_unverified"
+        )
+        assert blocked.value.payload["next_action"] == (
+            "configure_verified_tenant_jurisdiction"
+        )
+        assert db.session.get(EncEncuesta, survey.id).estado == "borrador"
 
 
 def test_enforce_publish_requires_verified_binding_and_exact_human_review(client):
@@ -355,13 +388,46 @@ def test_legacy_admin_publish_route_explains_cross_jurisdiction_conflict(
     assert payload["jurisdiction"]["survey_jurisdiction_ref"] == "ar:tf:ushuaia"
     assert payload["jurisdiction"]["allowed_to_publish"] is False
 
+
+def test_v2_government_publish_endpoint_returns_stable_evidence_409(client):
+    with client.application.app_context():
+        user, tenant = _user_and_tenant(verified=False)
+        survey = create_encuesta(_payload("Consulta municipal sin evidencia"), user)
+        survey_id = int(survey.id)
+        token = jwt.encode(
+            {
+                "user_id": user.id,
+                "rol": user.rol,
+                "tenant_slug": tenant.slug,
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+            client.application.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+
+    response = client.post(
+        f"/api/v2/surveys/{survey_id}/publish",
+        query_string={"tenant_slug": tenant.slug, "tenant": tenant.slug},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Tenant-Slug": tenant.slug,
+        },
+    )
+
+    assert response.status_code == 409, response.get_json()
+    payload = response.get_json()
+    assert payload["reason_code"] == "survey_tenant_jurisdiction_unverified"
+    assert payload["next_action"] == "configure_verified_tenant_jurisdiction"
+    assert payload["retryable"] is False
+    assert payload["jurisdiction"]["government_evidence_gate"]["required"] is True
+
     with client.application.app_context():
         assert db.session.get(EncEncuesta, survey_id).estado == "borrador"
 
 
 def test_visibility_rollout_hides_unreviewed_preexisting_public_content(client):
     with client.application.app_context():
-        user, tenant = _user_and_tenant(verified=False)
+        user, tenant = _user_and_tenant(verified=False, tenant_type="pyme")
         client.application.config["SURVEY_JURISDICTION_GATE_MODE"] = "observe"
         survey = create_encuesta(_payload(), user)
         survey, link = publicar_encuesta(survey.id, user)
@@ -502,7 +568,7 @@ def test_governance_publish_uses_the_same_jurisdiction_gate(client):
 
 def test_invalid_enforcement_config_fails_closed_and_admin_reads_do_not_write(client):
     with client.application.app_context():
-        user, tenant = _user_and_tenant(verified=True)
+        user, tenant = _user_and_tenant(verified=True, tenant_type="pyme")
         survey = create_encuesta(_payload(), user)
         receipts_before = SurveyContentReceipt.query.count()
         surveys_before = EncEncuesta.query.count()
