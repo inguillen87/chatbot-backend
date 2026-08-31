@@ -68,7 +68,7 @@ def test_people_directory_masks_by_default_and_requires_existing_permission(clie
     assert denied["pii"]["reason_code"] == "pii_permission_required"
     assert denied["items"][0]["phone"] == "***1234"
 
-    admin.accesibilidad = {"employee_scope": {"permisos": ["crm_contacts_read"]}}
+    admin.accesibilidad = {"employee_scope": {"permisos": ["crm_contacts_pii_read"]}}
     db.session.commit()
     full = client.get("/api/v2/crm/people?pii=full", headers=_headers(app, admin, tenant)).get_json()
     assert full["pii"]["granted"] is True
@@ -97,8 +97,11 @@ def test_people_directory_dedupes_before_stable_keyset_pagination(client, app):
     first = first_response.get_json()
     assert first["page"]["total"] == 3
     assert first["page"]["has_more"] is True
-    assert first["items"][0]["id"] == f"contact:{merged.id}"
     assert first["items"][0]["source"] == "user_contact"
+    assert first["items"][0]["id"].startswith("person_")
+    assert "contact_id" not in first["items"][0]
+    assert "user_id" not in first["items"][0]
+    assert "tags" not in first["items"][0]
 
     second = client.get(
         "/api/v2/crm/people",
@@ -168,3 +171,58 @@ def test_people_directory_is_tenant_safe_and_filters_server_side(client, app):
     own_b = client.get("/api/v2/crm/people?pii=full", headers=_headers(app, admin_b, tenant_b)).get_json()
     assert own_b["page"]["total"] == 1
     assert own_b["items"][0]["phone"] == "***9999"
+
+
+def test_people_directory_excludes_owner_employee_and_conflicting_tenant_user(client, app):
+    admin_a, _, tenant_a, tenant_b = _seed_directory()
+    employee = _user(f"employee-{uuid4().hex[:8]}@test.com", "Empleado Interno", role="empleado")
+    employee.empresa_id = admin_a.id
+    employee.es_empleado = True
+    conflicting = _user(f"conflict-{uuid4().hex[:8]}@test.com", "Usuario Tenant B")
+    conflicting.empresa_id = admin_a.id
+    conflicting.tenant_id = tenant_b.id
+    legacy_client = _user(f"legacy-{uuid4().hex[:8]}@test.com", "Cliente Legacy")
+    legacy_client.empresa_id = admin_a.id
+    db.session.add_all([employee, conflicting, legacy_client])
+    db.session.commit()
+
+    payload = client.get("/api/v2/crm/people?pii=full", headers=_headers(app, admin_a, tenant_a)).get_json()
+    assert payload["page"]["total"] == 1
+    assert payload["items"][0]["name"] == "C*** L***"
+    assert payload["pii"]["granted"] is False
+
+
+def test_people_directory_never_merges_phone_or_email_without_explicit_binding(client, app):
+    admin, _, tenant, _ = _seed_directory()
+    shared_phone = "+5492615666777"
+    user = _user(f"same-{uuid4().hex[:8]}@test.com", "Usuario Sin Binding", phone=shared_phone)
+    user.tenant_id = tenant.id
+    db.session.add(user)
+    _contact(tenant, "Contacto Sin Binding", shared_phone)
+    db.session.commit()
+
+    payload = client.get("/api/v2/crm/people", headers=_headers(app, admin, tenant)).get_json()
+    assert payload["page"]["total"] == 2
+    assert [item["possible_duplicate"] for item in payload["items"]] == [True, True]
+    assert {item["source"] for item in payload["items"]} == {"user", "contact"}
+
+
+def test_people_directory_sensitive_search_requires_pii_permission(client, app):
+    admin, _, tenant, _ = _seed_directory()
+    _contact(tenant, "Nombre Publico", "+5492615888123", email="sensible@example.com")
+    db.session.commit()
+
+    masked_phone = client.get("/api/v2/crm/people?q=888123", headers=_headers(app, admin, tenant)).get_json()
+    masked_email = client.get("/api/v2/crm/people?q=sensible@example.com", headers=_headers(app, admin, tenant)).get_json()
+    assert masked_phone["page"]["total"] == 0
+    assert masked_email["page"]["total"] == 0
+
+    admin.accesibilidad = {"employee_scope": {"permissions": ["crm_contacts_pii_read"]}}
+    db.session.commit()
+    full = client.get(
+        "/api/v2/crm/people", query_string={"q": "888123", "pii": "full"},
+        headers=_headers(app, admin, tenant),
+    ).get_json()
+    assert full["page"]["total"] == 1
+    assert full["pii"]["granted"] is True
+    assert full["items"][0]["phone"] == "+5492615888123"

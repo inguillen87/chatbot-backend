@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from services.contact_intake import is_placeholder_email, normalize_email
 CONTRACT_VERSION = "crm.people.directory.v2"
 CURSOR_VERSION = 1
 CURSOR_SALT = "chatboc.crm.people.directory.v2"
-PII_PERMISSION = "crm_contacts_read"
+PII_PERMISSION = "crm_contacts_pii_read"
 
 
 class PeopleDirectoryError(ValueError):
@@ -126,6 +127,7 @@ class _Person:
     contact: Contact | None
     occurred_at: datetime
     stable_key: str
+    possible_duplicate: bool = False
 
     @property
     def phone(self) -> str:
@@ -187,41 +189,36 @@ def _identity_keys(*, phone: Any, email: Any) -> list[str]:
 def _people_for_tenant(tenant: TenantProfile) -> list[_Person]:
     owner_ids = [value for value in (tenant.pyme_id, tenant.municipio_id) if value]
     tenant_contact_roles = ("usuario", "cliente", "vecino", "customer", "lead")
-    user_filter = and_(
+    tenant_user_filter = and_(
         User.tenant_id == tenant.id,
         User.es_empleado.is_(False),
         User.rol.in_(tenant_contact_roles),
     )
+    user_filter = tenant_user_filter
     if owner_ids:
-        user_filter = or_(user_filter, User.empresa_id.in_(owner_ids))
+        legacy_owner_filter = and_(
+            User.empresa_id.in_(owner_ids),
+            User.tenant_id.is_(None),
+            User.es_empleado.is_(False),
+            User.rol.in_(tenant_contact_roles),
+        )
+        user_filter = or_(tenant_user_filter, legacy_owner_filter)
     users = User.query.filter(user_filter).all()
     contacts = Contact.query.filter_by(tenant_id=tenant.id).all()
 
     contact_by_legacy_id: dict[int, Contact] = {}
-    contact_by_identity: dict[str, Contact] = {}
     for contact in sorted(contacts, key=lambda item: (_aware(item.last_interaction_at or item.created_at), str(item.id)), reverse=True):
         prefs = contact.preferences if isinstance(contact.preferences, Mapping) else {}
         legacy_id = prefs.get("legacy_user_id")
         if isinstance(legacy_id, int):
             contact_by_legacy_id.setdefault(legacy_id, contact)
-        for key in _identity_keys(phone=contact.phone, email=contact.email):
-            contact_by_identity.setdefault(key, contact)
 
     people: list[_Person] = []
     used_contacts: set[str] = set()
-    seen_identity: set[str] = set()
     for user in users:
         contact = contact_by_legacy_id.get(user.id)
-        identity_keys = _identity_keys(phone=user.telefono, email=user.email)
-        if contact is None:
-            contact = next((contact_by_identity[key] for key in identity_keys if key in contact_by_identity), None)
-        combined_keys = set(identity_keys)
         if contact is not None:
-            combined_keys.update(_identity_keys(phone=contact.phone, email=contact.email))
             used_contacts.add(contact.id)
-        if combined_keys and combined_keys.intersection(seen_identity):
-            continue
-        seen_identity.update(combined_keys)
         occurred_at = _aware((contact.last_interaction_at or contact.updated_at or contact.created_at) if contact else user.fecha_creacion)
         stable_key = f"contact:{contact.id}" if contact else f"user:{user.id:020d}"
         people.append(_Person(user=user, contact=contact, occurred_at=occurred_at, stable_key=stable_key))
@@ -229,17 +226,40 @@ def _people_for_tenant(tenant: TenantProfile) -> list[_Person]:
     for contact in sorted(contacts, key=lambda item: (_aware(item.last_interaction_at or item.created_at), str(item.id)), reverse=True):
         if contact.id in used_contacts:
             continue
-        keys = set(_identity_keys(phone=contact.phone, email=contact.email))
-        if keys and keys.intersection(seen_identity):
-            continue
-        seen_identity.update(keys)
         people.append(_Person(
             user=None,
             contact=contact,
             occurred_at=_aware(contact.last_interaction_at or contact.updated_at or contact.created_at),
             stable_key=f"contact:{contact.id}",
         ))
+
+    identity_counts: dict[str, int] = {}
+    for person in people:
+        keys = set(_identity_keys(phone=person.phone, email=person.email))
+        for key in keys:
+            identity_counts[key] = identity_counts.get(key, 0) + 1
+    for person in people:
+        person.possible_duplicate = any(
+            identity_counts.get(key, 0) > 1
+            for key in set(_identity_keys(phone=person.phone, email=person.email))
+        )
     return people
+
+
+def _opaque_person_id(*, tenant_id: int, stable_key: str) -> str:
+    secret = current_app.config.get("CRM_PEOPLE_CURSOR_SECRET") or current_app.secret_key
+    if not secret:
+        raise PeopleDirectoryError(
+            "people_cursor_configuration_unavailable",
+            "La firma del directorio no esta configurada",
+            status_code=503,
+        )
+    digest = hmac.new(
+        str(secret).encode("utf-8"),
+        f"{tenant_id}:{stable_key}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()[:32]
+    return f"person_{digest}"
 
 
 def build_people_directory(
@@ -250,10 +270,15 @@ def build_people_directory(
     filter_digest = _filters_hash(q=q, marketing=marketing, channel=channel, sort=sort)
     position = _decode_cursor(cursor, tenant_id=tenant.id, actor_id=actor.id, filters_hash=filter_digest) if cursor else None
     people = _people_for_tenant(tenant)
+    pii_granted = pii_requested and actor_has_explicit_pii_permission(actor)
     needle = q.casefold()
     filtered = [
         person for person in people
-        if (not needle or needle in " ".join((person.name, person.email, person.phone)).casefold())
+        if (
+            not needle
+            or needle in person.name.casefold()
+            or (pii_granted and needle in " ".join((person.email, person.phone)).casefold())
+        )
         and (marketing == "all" or person.marketing == (marketing == "true"))
         and (channel == "all" or person.channel == channel)
     ]
@@ -266,26 +291,30 @@ def build_people_directory(
     has_more = len(page_people) > limit
     page_people = page_people[:limit]
 
-    pii_granted = pii_requested and actor_has_explicit_pii_permission(actor)
     items = []
     for person in page_people:
         name = person.name if pii_granted else _mask_name(person.name)
         email = person.email if pii_granted else _mask_email(person.email)
         phone = person.phone if pii_granted else _mask_phone(person.phone)
-        items.append({
-            "id": person.stable_key,
-            "user_id": person.user.id if person.user else None,
-            "contact_id": person.contact.id if person.contact else None,
+        item = {
+            "id": person.stable_key if pii_granted else _opaque_person_id(tenant_id=tenant.id, stable_key=person.stable_key),
             "name": name,
             "email": email,
             "phone": phone,
             "channel": person.channel,
             "marketing": person.marketing,
-            "tags": list(person.contact.tags or []) if person.contact and isinstance(person.contact.tags, list) else [],
             "last_seen": _iso(person.occurred_at),
             "source": "user_contact" if person.user and person.contact else ("contact" if person.contact else "user"),
             "pii_masked": not pii_granted,
-        })
+            "possible_duplicate": person.possible_duplicate,
+        }
+        if pii_granted:
+            item.update({
+                "user_id": person.user.id if person.user else None,
+                "contact_id": person.contact.id if person.contact else None,
+                "tags": list(person.contact.tags or []) if person.contact and isinstance(person.contact.tags, list) else [],
+            })
+        items.append(item)
 
     next_cursor = None
     if has_more and page_people:
