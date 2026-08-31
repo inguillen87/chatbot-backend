@@ -1,5 +1,6 @@
 import os
 import json
+import copy
 import unittest
 from datetime import datetime, timedelta, timezone
 from urllib.parse import unquote_plus
@@ -3852,6 +3853,28 @@ class V2SaasContractsTest(unittest.TestCase):
             "pending_provider_callback",
         )
         self.assertTrue(delivery_history[-1]["external_dispatch"])
+
+    def test_omnichannel_close_and_reopen_reject_contradictory_status_without_mutation(self):
+        original_status = self.ticket.estado
+        original_extra = copy.deepcopy(self.ticket.datos_extra)
+
+        for action, contradictory_status in (("close", "nuevo"), ("reopen", "cerrado")):
+            with self.subTest(action=action, status=contradictory_status):
+                response = self.client.post(
+                    f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                    json={"action": action, "status": contradictory_status},
+                    headers=self._auth(self.owner),
+                )
+
+                self.assertEqual(response.status_code, 400, response.get_json())
+                self.assertEqual(
+                    (response.get_json() or {}).get("reason_code"),
+                    "ticket_action_status_conflict",
+                )
+                db.session.expire_all()
+                persisted = db.session.get(TenantTicket, self.ticket.id)
+                self.assertEqual(persisted.estado, original_status)
+                self.assertEqual(persisted.datos_extra, original_extra)
 
     def test_omnichannel_tenant_reply_can_remain_timeline_only(self):
         with patch("utils.whatsapp.enviar_mensaje_whatsapp_con_fallback") as send_whatsapp:

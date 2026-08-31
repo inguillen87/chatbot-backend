@@ -1494,6 +1494,24 @@ class ServicioTickets:
             comments.append(event)
             extra["comments"] = comments[-100:]
             ticket.datos_extra = extra
+            if visibility == "public":
+                from services.v2.sla_service import (
+                    apply_operator_response_sla,
+                    get_policies_for_tenant,
+                    is_sla_operator_role,
+                )
+
+                if is_sla_operator_role(reply_data.get("actor_role")):
+                    tenant_profile = db.session.get(TenantProfile, normalized_tenant_id)
+                    if tenant_profile is None:
+                        raise TicketIdempotencyValidationError(
+                            "TenantTicket SLA response requires an existing tenant."
+                        )
+                    apply_operator_response_sla(
+                        ticket,
+                        get_policies_for_tenant(tenant_profile),
+                        occurred_at=event_created_at,
+                    )
             flag_modified(ticket, "datos_extra")
             if str(ticket.estado or "").strip().lower() in {"nuevo", "open"}:
                 ticket.estado = "en_proceso"

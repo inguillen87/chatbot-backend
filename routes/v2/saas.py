@@ -103,7 +103,14 @@ from services.twilio_tech_provider import (
     register_whatsapp_sender,
     verify_meta_embedded_signup_completion,
 )
-from services.v2.sla_service import is_ticket_overdue
+from services.v2.sla_service import (
+    apply_priority_change_sla,
+    apply_reopen_sla,
+    apply_resolution_sla,
+    evaluate_ticket_sla,
+    get_policies_for_tenant,
+    is_ticket_overdue,
+)
 from services.whatsapp_experience import _template_creation_manifest_payload, build_whatsapp_experience
 from services.whatsapp_workflow_studio import (
     MAX_DRAFT_BYTES,
@@ -139,6 +146,14 @@ _LIVE_CHAT_QUEUE_STATES = {
     "pending_admin_response",
     "offline_waiting_admin_response",
 }
+
+
+def _ticket_transition_status(action: str, raw_status: Any, *, default: str) -> str | None:
+    """Normalize an action status without allowing a contradictory transition."""
+
+    status = default if raw_status is None else (str(raw_status).strip().lower() or default)
+    allowed = _CLOSED_TICKET_STATES if action == "close" else _ACTIVE_TICKET_STATES
+    return status if status in allowed else None
 _INBOX_TEAM_ORIGINS = {"admin_panel", "agent", "team", "operator", "internal", "municipio", "pyme"}
 _HANDOFF_QUEUED_STATES = {
     "pending",
@@ -4891,16 +4906,23 @@ def _ticket_live_chat_queue_signals(
 
 def _ticket_sla_payload(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str, Any]:
     sla = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
-    overdue = is_ticket_overdue(ticket)
-    status = "breached" if overdue else str(extra.get("sla_status") or extra.get("sla_state") or "ok")
+    evaluation = evaluate_ticket_sla(ticket, sla_override=sla)
     return {
-        "status": status,
-        "overdue": overdue,
+        "contract_version": evaluation["contract_version"],
+        "status": evaluation["state"],
+        "state": evaluation["state"],
+        "known": evaluation["known"],
+        "unknown": evaluation["unknown"],
+        "overdue": evaluation["overdue"],
         "priority": extra.get("priority") or "medium",
         "first_response_due_at": sla.get("first_response_due_at"),
         "resolution_due_at": sla.get("resolution_due_at"),
         "next_update_due_at": sla.get("next_update_due_at"),
         "paused": bool(sla.get("paused")),
+        "breached_clocks": evaluation["breached_clocks"],
+        "warning_clocks": evaluation["warning_clocks"],
+        "unknown_clocks": evaluation["unknown_clocks"],
+        "clocks": evaluation["clocks"],
     }
 
 
@@ -5500,15 +5522,9 @@ def _legacy_claim_inbox_payload(
             "fallback_when_no_coordinates": "timeline_only",
         },
         "attachments": _legacy_claim_attachments(ticket),
-        "sla": {
-            "status": "unassigned" if not assignee else "active",
-            "overdue": False,
-            "priority": "medium",
-            "first_response_due_at": None,
-            "resolution_due_at": None,
-            "next_update_due_at": None,
-            "paused": False,
-        },
+        # Legacy claims do not have certified SLA timestamps by default.  Reuse
+        # the fail-closed contract so missing evidence is never painted healthy.
+        "sla": _ticket_sla_payload(ticket, extra),
         "timeline": timeline,
         "presence": {"viewers": [], "locked_by": None},
         "actions": [item["id"] for item in actions],
@@ -6518,7 +6534,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             ).count()
 
     elif action == "close":
-        ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
+        target_status = _ticket_transition_status("close", payload.get("status"), default="cerrado")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion close",
+                400,
+                "ticket_action_status_conflict",
+                "send_closed_status",
+            )
+        ticket.estado = target_status
         body = str(payload.get("body") or "Reclamo cerrado desde la bandeja operativa").strip()
         db.session.add(
             TicketComentario(
@@ -6533,7 +6557,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         timeline_updated = True
 
     elif action == "reopen":
-        ticket.estado = str(payload.get("status") or "en_proceso").strip().lower() or "en_proceso"
+        target_status = _ticket_transition_status("reopen", payload.get("status"), default="en_proceso")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion reopen",
+                400,
+                "ticket_action_status_conflict",
+                "send_active_status",
+            )
+        ticket.estado = target_status
         body = str(payload.get("body") or "Reclamo reabierto desde la bandeja operativa").strip()
         db.session.add(
             TicketComentario(
@@ -7051,21 +7083,42 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             ).count()
 
     elif action == "close":
-        ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
+        target_status = _ticket_transition_status("close", payload.get("status"), default="cerrado")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion close",
+                400,
+                "ticket_action_status_conflict",
+                "send_closed_status",
+            )
+        ticket.estado = target_status
         extra["closed_at"] = now_iso
         extra["closed_by"] = {"id": current_user.id, "name": current_user.name}
         event_body = payload.get("body") or "Ticket cerrado"
 
     elif action == "reopen":
-        ticket.estado = str(payload.get("status") or "nuevo").strip().lower() or "nuevo"
+        target_status = _ticket_transition_status("reopen", payload.get("status"), default="nuevo")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion reopen",
+                400,
+                "ticket_action_status_conflict",
+                "send_active_status",
+            )
+        ticket.estado = target_status
         extra["reopened_at"] = now_iso
         extra["reopened_by"] = {"id": current_user.id, "name": current_user.name}
         event_body = payload.get("body") or "Ticket reabierto"
 
     elif action == "set_priority":
         priority = str(payload.get("priority") or "").strip().lower()
-        if not priority:
-            return _error_response("priority es obligatorio", 400, "priority_required", "send_priority")
+        if priority not in {"low", "medium", "high", "urgent"}:
+            return _error_response(
+                "priority debe ser low, medium, high o urgent",
+                400,
+                "priority_invalid",
+                "send_supported_priority",
+            )
         extra["priority"] = priority
         event_body = f"Prioridad actualizada: {priority}"
 
@@ -7075,6 +7128,18 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     ):
         _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
         timeline_updated = True
+
+    if action in {"close", "reopen", "set_priority"}:
+        ticket.datos_extra = extra
+        if action == "close":
+            apply_resolution_sla(ticket, occurred_at=now)
+        else:
+            policies = get_policies_for_tenant(tenant)
+            if action == "reopen":
+                apply_reopen_sla(ticket, policies, occurred_at=now)
+            else:
+                apply_priority_change_sla(ticket, policies, occurred_at=now)
+        extra = deepcopy(_ticket_extra(ticket))
 
     if action != "reply":
         if not (
