@@ -34,6 +34,10 @@ REQUIRED_HEAD_TABLES = (
     "cutover_global_writer_authority",
     "demo_survey_participation",
     "municipio_chat_idempotency_receipt",
+    "territorial_geocoding_attempt",
+    "territorial_geocoding_job",
+    "territorial_geocoding_review",
+    "territorial_geocoding_sync_receipt",
 )
 EXPECTED_DEMO_TRIGGER = "trg_demo_survey_participation_immutable"
 EXPECTED_DEMO_INDEXES = {
@@ -49,6 +53,155 @@ EXPECTED_GLOBAL_WRITER_AUTHORITY_CONSTRAINTS = {
     "ck_cutover_global_writer_authority_safe_state",
     "ck_cutover_global_writer_authority_singleton",
     "pk_cutover_global_writer_authority",
+}
+TERRITORIAL_SCHEMA_REQUIREMENTS: dict[str, dict[str, Any]] = {
+    "territorial_geocoding_job": {
+        "constraints": {
+            "ck_territorial_geocoding_job_status": "CHECK",
+            "ck_territorial_geocoding_job_attempt_count": "CHECK",
+            "ck_territorial_geocoding_job_fingerprint": "CHECK",
+            "ck_territorial_geocoding_job_address_digest": "CHECK",
+            "ck_territorial_geocoding_job_jurisdiction_digest": "CHECK",
+            "uq_territorial_geocoding_job_candidate": "UNIQUE",
+        },
+        "constraint_columns": {
+            "uq_territorial_geocoding_job_candidate": (
+                "tenant_id",
+                "candidate_fingerprint",
+            ),
+        },
+        "primary_key": ("id",),
+        "indexes": {
+            "ix_territorial_geocoding_job_tenant_id": (
+                ("tenant_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_job_tenant_status_created": (
+                ("tenant_id", "status", "created_at", "id"),
+                False,
+            ),
+        },
+        "foreign_keys": (
+            (("tenant_id",), "public", "tenant_profile", ("id",), "CASCADE"),
+        ),
+    },
+    "territorial_geocoding_attempt": {
+        "constraints": {
+            "ck_territorial_geocoding_attempt_status": "CHECK",
+            "ck_territorial_geocoding_attempt_number": "CHECK",
+            "ck_territorial_geocoding_attempt_request_digest": "CHECK",
+            "ck_territorial_geocoding_attempt_result_digest": "CHECK",
+            "ck_territorial_geocoding_attempt_write_state": "CHECK",
+            "uq_territorial_geocoding_attempt_request": "UNIQUE",
+            "uq_territorial_geocoding_attempt_number": "UNIQUE",
+        },
+        "constraint_columns": {
+            "uq_territorial_geocoding_attempt_request": (
+                "job_id",
+                "request_digest",
+            ),
+            "uq_territorial_geocoding_attempt_number": (
+                "job_id",
+                "attempt_number",
+            ),
+        },
+        "primary_key": ("id",),
+        "indexes": {
+            "ix_territorial_geocoding_attempt_job_id": (("job_id",), False),
+            "ix_territorial_geocoding_attempt_tenant_id": (
+                ("tenant_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_attempt_tenant_created": (
+                ("tenant_id", "created_at", "id"),
+                False,
+            ),
+        },
+        "foreign_keys": (
+            (
+                ("job_id",),
+                "public",
+                "territorial_geocoding_job",
+                ("id",),
+                "CASCADE",
+            ),
+            (("tenant_id",), "public", "tenant_profile", ("id",), "CASCADE"),
+        ),
+    },
+    "territorial_geocoding_review": {
+        "constraints": {
+            "ck_territorial_geocoding_review_decision": "CHECK",
+            "ck_territorial_geocoding_review_job_status": "CHECK",
+            "ck_territorial_geocoding_review_digests": "CHECK",
+            "ck_territorial_geocoding_review_no_coordinate_write": "CHECK",
+            "uq_territorial_geocoding_review_idempotency": "UNIQUE",
+        },
+        "constraint_columns": {
+            "uq_territorial_geocoding_review_idempotency": (
+                "tenant_id",
+                "job_id",
+                "idempotency_key_hash",
+            ),
+        },
+        "primary_key": ("id",),
+        "indexes": {
+            "ix_territorial_geocoding_review_job_id": (("job_id",), False),
+            "ix_territorial_geocoding_review_tenant_id": (
+                ("tenant_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_review_reviewer_user_id": (
+                ("reviewer_user_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_review_tenant_job_created": (
+                ("tenant_id", "job_id", "created_at", "id"),
+                False,
+            ),
+        },
+        "foreign_keys": (
+            (
+                ("job_id",),
+                "public",
+                "territorial_geocoding_job",
+                ("id",),
+                "CASCADE",
+            ),
+            (("tenant_id",), "public", "tenant_profile", ("id",), "CASCADE"),
+            (("reviewer_user_id",), "public", "user", ("id",), "RESTRICT"),
+        ),
+    },
+    "territorial_geocoding_sync_receipt": {
+        "constraints": {
+            "ck_territorial_geocoding_sync_digests": "CHECK",
+            "uq_territorial_geocoding_sync_idempotency": "UNIQUE",
+        },
+        "constraint_columns": {
+            "uq_territorial_geocoding_sync_idempotency": (
+                "tenant_id",
+                "idempotency_key_hash",
+            ),
+        },
+        "primary_key": ("id",),
+        "indexes": {
+            "ix_territorial_geocoding_sync_receipt_tenant_id": (
+                ("tenant_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_sync_receipt_actor_user_id": (
+                ("actor_user_id",),
+                False,
+            ),
+            "ix_territorial_geocoding_sync_tenant_created": (
+                ("tenant_id", "created_at", "id"),
+                False,
+            ),
+        },
+        "foreign_keys": (
+            (("actor_user_id",), "public", "user", ("id",), "RESTRICT"),
+            (("tenant_id",), "public", "tenant_profile", ("id",), "CASCADE"),
+        ),
+    },
 }
 LEGACY_REPAIR_TICKET_IDS = (322, 344, 347)
 
@@ -206,6 +359,267 @@ def _index_names(connection: Connection, table_name: str) -> set[str]:
     }
 
 
+def _constraint_inventory(
+    connection: Connection,
+    table_name: str,
+) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
+    rows = connection.execute(
+        text(
+            """
+            SELECT constraints.constraint_name,
+                   constraints.constraint_type,
+                   columns.column_name,
+                   columns.ordinal_position
+            FROM information_schema.table_constraints constraints
+            LEFT JOIN information_schema.key_column_usage columns
+              ON columns.constraint_catalog = constraints.constraint_catalog
+             AND columns.constraint_schema = constraints.constraint_schema
+             AND columns.constraint_name = constraints.constraint_name
+             AND columns.table_schema = constraints.table_schema
+             AND columns.table_name = constraints.table_name
+            WHERE constraints.table_schema = 'public'
+              AND constraints.table_name = :table_name
+            ORDER BY constraints.constraint_name, columns.ordinal_position
+            """
+        ),
+        {"table_name": table_name},
+    ).mappings()
+    constraint_types: dict[str, str] = {}
+    constraint_columns: dict[str, list[str]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        constraint_name = str(row["constraint_name"])
+        constraint_types[constraint_name] = str(row["constraint_type"]).upper()
+        column_name = row.get("column_name")
+        if column_name is not None:
+            constraint_columns.setdefault(constraint_name, []).append(
+                str(column_name)
+            )
+    return constraint_types, {
+        name: tuple(columns) for name, columns in constraint_columns.items()
+    }
+
+
+def _index_inventory(
+    connection: Connection,
+    table_name: str,
+) -> dict[str, tuple[tuple[str, ...], bool]]:
+    rows = connection.execute(
+        text(
+            """
+            SELECT index_relation.relname AS index_name,
+                   index_metadata.indisunique AS is_unique,
+                   attribute.attname AS column_name,
+                   index_key.ordinality AS ordinal_position
+            FROM pg_catalog.pg_class table_relation
+            JOIN pg_catalog.pg_namespace table_namespace
+              ON table_namespace.oid = table_relation.relnamespace
+            JOIN pg_catalog.pg_index index_metadata
+              ON index_metadata.indrelid = table_relation.oid
+            JOIN pg_catalog.pg_class index_relation
+              ON index_relation.oid = index_metadata.indexrelid
+            CROSS JOIN LATERAL unnest(index_metadata.indkey)
+              WITH ORDINALITY AS index_key(attribute_number, ordinality)
+            JOIN pg_catalog.pg_attribute attribute
+              ON attribute.attrelid = table_relation.oid
+             AND attribute.attnum = index_key.attribute_number
+            WHERE table_namespace.nspname = 'public'
+              AND table_relation.relname = :table_name
+              AND index_key.ordinality <= index_metadata.indnkeyatts
+            ORDER BY index_relation.relname, index_key.ordinality
+            """
+        ),
+        {"table_name": table_name},
+    ).mappings()
+    inventory: dict[str, dict[str, Any]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        index_name = str(row["index_name"])
+        item = inventory.setdefault(
+            index_name,
+            {"columns": [], "is_unique": bool(row["is_unique"])},
+        )
+        item["columns"].append(str(row["column_name"]))
+    return {
+        name: (tuple(item["columns"]), bool(item["is_unique"]))
+        for name, item in inventory.items()
+    }
+
+
+def _foreign_key_inventory(
+    connection: Connection,
+    table_name: str,
+) -> set[tuple[tuple[str, ...], str, str, tuple[str, ...], str]]:
+    rows = connection.execute(
+        text(
+            """
+            SELECT foreign_key.constraint_name,
+                   source_column.column_name AS source_column,
+                   referenced_column.table_schema AS referenced_schema,
+                   referenced_column.table_name AS referenced_table,
+                   referenced_column.column_name AS referenced_column,
+                   referential.delete_rule,
+                   source_column.ordinal_position
+            FROM information_schema.table_constraints foreign_key
+            JOIN information_schema.key_column_usage source_column
+              ON source_column.constraint_catalog = foreign_key.constraint_catalog
+             AND source_column.constraint_schema = foreign_key.constraint_schema
+             AND source_column.constraint_name = foreign_key.constraint_name
+             AND source_column.table_schema = foreign_key.table_schema
+             AND source_column.table_name = foreign_key.table_name
+            JOIN information_schema.referential_constraints referential
+              ON referential.constraint_catalog = foreign_key.constraint_catalog
+             AND referential.constraint_schema = foreign_key.constraint_schema
+             AND referential.constraint_name = foreign_key.constraint_name
+            JOIN information_schema.key_column_usage referenced_column
+              ON referenced_column.constraint_catalog =
+                 referential.unique_constraint_catalog
+             AND referenced_column.constraint_schema =
+                 referential.unique_constraint_schema
+             AND referenced_column.constraint_name =
+                 referential.unique_constraint_name
+             AND referenced_column.ordinal_position =
+                 source_column.position_in_unique_constraint
+            WHERE foreign_key.table_schema = 'public'
+              AND foreign_key.table_name = :table_name
+              AND foreign_key.constraint_type = 'FOREIGN KEY'
+            ORDER BY foreign_key.constraint_name, source_column.ordinal_position
+            """
+        ),
+        {"table_name": table_name},
+    ).mappings()
+    grouped: dict[str, dict[str, Any]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        constraint_name = str(row["constraint_name"])
+        item = grouped.setdefault(
+            constraint_name,
+            {
+                "source_columns": [],
+                "referenced_schema": str(row["referenced_schema"]),
+                "referenced_table": str(row["referenced_table"]),
+                "referenced_columns": [],
+                "delete_rule": str(row["delete_rule"]).upper(),
+            },
+        )
+        item["source_columns"].append(str(row["source_column"]))
+        item["referenced_columns"].append(str(row["referenced_column"]))
+    return {
+        (
+            tuple(item["source_columns"]),
+            item["referenced_schema"],
+            item["referenced_table"],
+            tuple(item["referenced_columns"]),
+            item["delete_rule"],
+        )
+        for item in grouped.values()
+    }
+
+
+def _foreign_key_label(
+    signature: tuple[tuple[str, ...], str, str, tuple[str, ...], str],
+) -> str:
+    source_columns, schema, table, target_columns, delete_rule = signature
+    return (
+        f"{','.join(source_columns)}->{schema}.{table}."
+        f"{','.join(target_columns)}[{delete_rule}]"
+    )
+
+
+def _territorial_schema_state(
+    connection: Connection,
+    counts: Mapping[str, int],
+) -> dict[str, Any]:
+    tables: dict[str, dict[str, Any]] = {}
+    for table_name, raw_requirements in TERRITORIAL_SCHEMA_REQUIREMENTS.items():
+        requirements = dict(raw_requirements)
+        present = table_name in counts
+        constraint_types: dict[str, str] = {}
+        constraint_columns: dict[str, tuple[str, ...]] = {}
+        indexes: dict[str, tuple[tuple[str, ...], bool]] = {}
+        foreign_keys: set[
+            tuple[tuple[str, ...], str, str, tuple[str, ...], str]
+        ] = set()
+        if present:
+            constraint_types, constraint_columns = _constraint_inventory(
+                connection,
+                table_name,
+            )
+            indexes = _index_inventory(connection, table_name)
+            foreign_keys = _foreign_key_inventory(connection, table_name)
+
+        expected_constraints = dict(requirements["constraints"])
+        expected_constraint_columns = dict(requirements["constraint_columns"])
+        missing_constraints = sorted(
+            constraint_name
+            for constraint_name, constraint_type in expected_constraints.items()
+            if constraint_types.get(constraint_name) != constraint_type
+            or (
+                constraint_name in expected_constraint_columns
+                and constraint_columns.get(constraint_name)
+                != expected_constraint_columns[constraint_name]
+            )
+        )
+
+        expected_indexes = dict(requirements["indexes"])
+        missing_indexes = sorted(
+            index_name
+            for index_name, signature in expected_indexes.items()
+            if indexes.get(index_name) != signature
+        )
+
+        expected_primary_key = tuple(requirements["primary_key"])
+        primary_key_valid = any(
+            constraint_types.get(constraint_name) == "PRIMARY KEY"
+            and columns == expected_primary_key
+            for constraint_name, columns in constraint_columns.items()
+        )
+
+        expected_foreign_keys = set(requirements["foreign_keys"])
+        missing_foreign_keys = sorted(
+            _foreign_key_label(signature)
+            for signature in expected_foreign_keys.difference(foreign_keys)
+        )
+        table_ready = bool(
+            present
+            and not missing_constraints
+            and not missing_indexes
+            and primary_key_valid
+            and not missing_foreign_keys
+        )
+        tables[table_name] = {
+            "present": present,
+            "rows": counts.get(table_name),
+            "constraints_valid": not missing_constraints,
+            "indexes_valid": not missing_indexes,
+            "primary_key_valid": primary_key_valid,
+            "foreign_keys_valid": not missing_foreign_keys,
+            "missing_constraints": missing_constraints,
+            "missing_indexes": missing_indexes,
+            "missing_foreign_keys": missing_foreign_keys,
+            "ready": table_ready,
+        }
+
+    checks = {
+        "tables_present": all(item["present"] for item in tables.values()),
+        "constraints_valid": all(
+            item["constraints_valid"] for item in tables.values()
+        ),
+        "indexes_valid": all(item["indexes_valid"] for item in tables.values()),
+        "primary_keys_valid": all(
+            item["primary_key_valid"] for item in tables.values()
+        ),
+        "foreign_keys_valid": all(
+            item["foreign_keys_valid"] for item in tables.values()
+        ),
+    }
+    return {
+        "checks": checks,
+        "ready": all(checks.values()),
+        "tables": tables,
+    }
+
+
 def _critical_schema_state(
     connection: Connection,
     counts: Mapping[str, int],
@@ -217,6 +631,7 @@ def _critical_schema_state(
         }
         for table_name in REQUIRED_HEAD_TABLES
     }
+    territorial_schema = _territorial_schema_state(connection, counts)
 
     trigger_present = False
     demo_indexes: set[str] = set()
@@ -332,11 +747,27 @@ def _critical_schema_state(
         "chat_idempotency_indexes_present": EXPECTED_CHAT_INDEXES.issubset(chat_indexes),
         "global_writer_authority_valid": global_writer_authority_valid,
         "legacy_ticket_scope_repair_valid": repair["status"] in {"not_applicable", "repaired"},
+        "territorial_tables_present": territorial_schema["checks"][
+            "tables_present"
+        ],
+        "territorial_constraints_valid": territorial_schema["checks"][
+            "constraints_valid"
+        ],
+        "territorial_indexes_valid": territorial_schema["checks"][
+            "indexes_valid"
+        ],
+        "territorial_primary_keys_valid": territorial_schema["checks"][
+            "primary_keys_valid"
+        ],
+        "territorial_foreign_keys_valid": territorial_schema["checks"][
+            "foreign_keys_valid"
+        ],
     }
     return {
         "checks": checks,
         "ready": all(checks.values()),
         "tables": tables,
+        "territorial_schema": territorial_schema,
         "legacy_ticket_scope_repair": repair,
     }
 
