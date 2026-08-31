@@ -30,6 +30,7 @@ from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     ticket_assignee_is_compatible,
 )
+from services.ticket_assignment_policy import actor_can_assign_tickets
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -73,6 +74,27 @@ class TicketIdempotencyReplayUnavailable(TicketIdempotencyError):
     """Raised when a receipt exists but its domain object no longer does."""
 
     code = "ticket_idempotency_replay_unavailable"
+
+
+class TicketReplyOwnershipError(RuntimeError):
+    """Raised when the locked ticket owner no longer authorizes a reply."""
+
+    def __init__(self, reason_code: str):
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+def _assert_locked_reply_owner(actor: User | None, assignee_id: Any) -> None:
+    if actor_can_assign_tickets(actor):
+        return
+    try:
+        normalized_assignee_id = int(assignee_id)
+    except (TypeError, ValueError):
+        normalized_assignee_id = None
+    if normalized_assignee_id is None or normalized_assignee_id <= 0:
+        raise TicketReplyOwnershipError("ticket_claim_required")
+    if actor is None or normalized_assignee_id != getattr(actor, "id", None):
+        raise TicketReplyOwnershipError("ticket_assigned_to_other")
 
 
 def build_whatsapp_ticket_effect_key(
@@ -1116,6 +1138,7 @@ class ServicioTickets:
         idempotency_key: Optional[str] = None,
         idempotency_tenant_id: Optional[int] = None,
         legacy_effects_owned_by_caller: bool = False,
+        reply_actor: User | None = None,
     ) -> Union[TicketComentario, None]:
         """Persist one comment and stage canary effects in the same transaction.
 
@@ -1152,9 +1175,20 @@ class ServicioTickets:
                 )
 
         TicketModel = MunicipioTicket if tipo_ticket == "municipio" else PymeTicket
-        ticket = db.session.get(TicketModel, ticket_id)
+        if reply_actor is not None:
+            ticket = (
+                db.session.query(TicketModel)
+                .filter(TicketModel.id == ticket_id)
+                .with_for_update()
+                .populate_existing()
+                .one_or_none()
+            )
+        else:
+            ticket = db.session.get(TicketModel, ticket_id)
         if not ticket:
             return None
+        if reply_actor is not None:
+            _assert_locked_reply_owner(reply_actor, getattr(ticket, "asignado_a_id", None))
         attachment_id = comentario_data.get("archivo_adjunto_id")
         if attachment_id is not None:
             try:
@@ -1390,6 +1424,7 @@ class ServicioTickets:
         *,
         idempotency_key: str,
         idempotency_tenant_id: int,
+        reply_actor: User | None = None,
     ) -> Dict[str, Any]:
         """Persist one TenantTicket operator reply and its durable effects.
 
@@ -1459,6 +1494,24 @@ class ServicioTickets:
                     "visibility": visibility,
                 },
             )
+
+        locked_ticket = (
+            TenantTicket.query.filter_by(
+                id=ticket.id,
+                tenant_id=normalized_tenant_id,
+            )
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if locked_ticket is None:
+            raise TicketIdempotencyReplayUnavailable(
+                "TenantTicket is unavailable while persisting its reply."
+            )
+        ticket = locked_ticket
+        if reply_actor is not None:
+            locked_extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
+            _assert_locked_reply_owner(reply_actor, locked_extra.get("assignee_id"))
 
         event_id = uuid.uuid4().hex
         aggregate_ref = f"{ticket.id}:{event_id}"

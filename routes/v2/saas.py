@@ -5081,6 +5081,79 @@ def _assignment_policy_error(error: TicketAssignmentPolicyError):
     )
 
 
+def _reply_ownership_block(
+    actor: User | None,
+    assignee_id: Any,
+) -> tuple[str, str, str] | None:
+    """Require an operational owner before a public operator reply.
+
+    Supervisors and the existing ``tickets.assign`` capability keep their
+    narrow operational override. Regular employees must first claim an
+    unassigned case and may never reply through another operator's ownership.
+    """
+
+    if actor_can_assign_tickets(actor):
+        return None
+    normalized_assignee_id = _coerce_inbox_ticket_id(assignee_id)
+    if normalized_assignee_id is None:
+        return (
+            "ticket_claim_required",
+            "Toma el ticket antes de responder",
+            "claim_ticket",
+        )
+    if actor is None or normalized_assignee_id != getattr(actor, "id", None):
+        return (
+            "ticket_assigned_to_other",
+            "El ticket esta asignado a otro operador",
+            "refresh_inbox",
+        )
+    return None
+
+
+def _reply_ownership_error(actor: User | None, assignee_id: Any):
+    block = _reply_ownership_block(actor, assignee_id)
+    if block is None:
+        return None
+    reason_code, message, action_hint = block
+    return _error_response(message, 409, reason_code, action_hint)
+
+
+def _reply_action_contract(
+    *,
+    endpoint: str,
+    actor: User | None,
+    assignee_id: Any,
+    payload_defaults: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    action = {
+        "id": "reply",
+        "label": "Responder",
+        "method": "POST",
+        "endpoint": endpoint,
+        "requires": ["body", "client_message_id_or_idempotency_key"],
+        "idempotency": {
+            "contract_version": "inbox.reply_idempotency.v1",
+            "preferred_header": "Idempotency-Key",
+            "body_field": "client_message_id",
+            "retry_rule": "reuse_same_value",
+            "request_id_compatibility": True,
+        },
+        "delivery_contract_version": "inbox.action_delivery.v2",
+    }
+    if payload_defaults:
+        action["payload_defaults"] = dict(payload_defaults)
+    ownership_block = _reply_ownership_block(actor, assignee_id)
+    if ownership_block is not None:
+        reason_code, message, action_hint = ownership_block
+        action.update(
+            disabled=True,
+            disabled_reason=message,
+            reason_code=reason_code,
+            action_hint=action_hint,
+        )
+    return action
+
+
 def _allowed_inbox_actions(
     ticket: TenantTicket,
     extra: Mapping[str, Any],
@@ -5089,30 +5162,21 @@ def _allowed_inbox_actions(
 ) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
     base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
-    actions = [
-        {
-            "id": "reply",
-            "label": "Responder",
-            "method": "POST",
-            "endpoint": base_endpoint,
-            "requires": ["body", "client_message_id_or_idempotency_key"],
-            "idempotency": {
-                "contract_version": "inbox.reply_idempotency.v1",
-                "preferred_header": "Idempotency-Key",
-                "body_field": "client_message_id",
-                "retry_rule": "reuse_same_value",
-                "request_id_compatibility": True,
-            },
-            "delivery_contract_version": "inbox.action_delivery.v2",
-            "delivery_mode": "durable_queue_or_provider_acceptance",
-            "fallback": "http_polling",
-            "external_dispatch": True,
-            "operator_message": (
-                "La respuesta se guarda primero y usa el canal del ticket. "
-                "Los reintentos conservan la misma identidad sin duplicar el envio."
-            ),
-        },
-    ]
+    reply_action = _reply_action_contract(
+        endpoint=base_endpoint,
+        actor=actor,
+        assignee_id=extra.get("assignee_id"),
+    )
+    reply_action.update(
+        delivery_mode="durable_queue_or_provider_acceptance",
+        fallback="http_polling",
+        external_dispatch=True,
+        operator_message=(
+            "La respuesta se guarda primero y usa el canal del ticket. "
+            "Los reintentos conservan la misma identidad sin duplicar el envio."
+        ),
+    )
+    actions = [reply_action]
     if not extra.get("assignee_id"):
         actions.append(
             {
@@ -5361,22 +5425,12 @@ def _legacy_claim_allowed_actions(
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     tracking_links = _legacy_claim_tracking_links(ticket)
     actions = [
-        {
-            "id": "reply",
-            "label": "Responder",
-            "method": "POST",
-            "endpoint": base_endpoint,
-            "requires": ["body", "client_message_id_or_idempotency_key"],
-            "idempotency": {
-                "contract_version": "inbox.reply_idempotency.v1",
-                "preferred_header": "Idempotency-Key",
-                "body_field": "client_message_id",
-                "retry_rule": "reuse_same_value",
-                "request_id_compatibility": True,
-            },
-            "delivery_contract_version": "inbox.action_delivery.v2",
-            "payload_defaults": defaults,
-        },
+        _reply_action_contract(
+            endpoint=base_endpoint,
+            actor=actor,
+            assignee_id=ticket.asignado_a_id,
+            payload_defaults=defaults,
+        )
     ]
     if not ticket.asignado_a_id:
         actions.append(
@@ -6281,6 +6335,11 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     assignment_expected_id: int | None = None
     assignment_target_id: int | None = None
 
+    if action == "reply":
+        ownership_error = _reply_ownership_error(current_user, ticket.asignado_a_id)
+        if ownership_error is not None:
+            return ownership_error
+
     if action == "claim":
         current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
         if current_assignee_id is not None:
@@ -6440,6 +6499,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             TicketIdempotencyConflict,
             TicketIdempotencyReplayUnavailable,
             TicketIdempotencyValidationError,
+            TicketReplyOwnershipError,
         )
 
         outbox_policy = resolve_domain_effect_outbox_policy(
@@ -6491,6 +6551,19 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 idempotency_key=reply_idempotency_key,
                 idempotency_tenant_id=tenant.id,
                 legacy_effects_owned_by_caller=True,
+                reply_actor=current_user,
+            )
+        except TicketReplyOwnershipError as exc:
+            db.session.rollback()
+            return _error_response(
+                "Toma el ticket antes de responder"
+                if exc.reason_code == "ticket_claim_required"
+                else "El ticket esta asignado a otro operador",
+                409,
+                exc.reason_code,
+                "claim_ticket"
+                if exc.reason_code == "ticket_claim_required"
+                else "refresh_inbox",
             )
         except TicketIdempotencyConflict:
             db.session.rollback()
@@ -6863,6 +6936,11 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     assignment_expected_id: int | None = None
     assignment_target_id: int | None = None
 
+    if action == "reply":
+        ownership_error = _reply_ownership_error(current_user, extra.get("assignee_id"))
+        if ownership_error is not None:
+            return ownership_error
+
     if action == "claim":
         raw_current_assignee_id = extra.get("assignee_id")
         current_assignee_id = _coerce_inbox_ticket_id(raw_current_assignee_id)
@@ -7013,6 +7091,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             TicketIdempotencyConflict,
             TicketIdempotencyReplayUnavailable,
             TicketIdempotencyValidationError,
+            TicketReplyOwnershipError,
         )
 
         try:
@@ -7029,6 +7108,19 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 },
                 idempotency_key=reply_idempotency_key,
                 idempotency_tenant_id=tenant.id,
+                reply_actor=current_user,
+            )
+        except TicketReplyOwnershipError as exc:
+            db.session.rollback()
+            return _error_response(
+                "Toma el ticket antes de responder"
+                if exc.reason_code == "ticket_claim_required"
+                else "El ticket esta asignado a otro operador",
+                409,
+                exc.reason_code,
+                "claim_ticket"
+                if exc.reason_code == "ticket_claim_required"
+                else "refresh_inbox",
             )
         except TicketIdempotencyConflict:
             db.session.rollback()

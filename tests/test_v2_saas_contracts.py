@@ -339,7 +339,7 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": self.tenant.slug}
 
-    def _claim_employee(self, *, name: str, email: str, categories=None) -> User:
+    def _claim_employee(self, *, name: str, email: str, categories=None, permissions=None) -> User:
         employee = User(
             name=name,
             email=email,
@@ -351,7 +351,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 "employee_scope": {
                     "categorias": list(categories or ["educacion"]),
                     "zonas": ["centro"],
-                    "permisos": ["tickets_assign"],
+                    "permisos": list(permissions if permissions is not None else ["tickets_assign"]),
                     "channels": ["whatsapp"],
                 }
             },
@@ -3193,6 +3193,256 @@ class V2SaasContractsTest(unittest.TestCase):
         db.session.expire_all()
         self.assertIsNone((db.session.get(TenantTicket, restricted.id).datos_extra or {}).get("assignee_id"))
         self.assertIsNone((db.session.get(TenantTicket, foreign_ticket.id).datos_extra or {}).get("assignee_id"))
+
+    def test_tenant_reply_requires_owner_and_allows_supervisor_override(self):
+        operator = self._claim_employee(
+            name="Operador sin override",
+            email="reply-owner-tenant@test.com",
+            permissions=["tickets.read"],
+        )
+        other = self._claim_employee(
+            name="Otro operador",
+            email="reply-other-tenant@test.com",
+            permissions=["tickets.read"],
+        )
+        supervisor = User(
+            name="Supervisor de mesa",
+            email="reply-supervisor-tenant@test.com",
+            rol="supervisor",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+        )
+        supervisor.set_password("secret123")
+        db.session.add(supervisor)
+
+        unassigned = self._unassigned_claim_ticket()
+        owned = self._unassigned_claim_ticket()
+        owned.datos_extra = {**owned.datos_extra, "assignee_id": operator.id}
+        assigned_to_other = self._unassigned_claim_ticket()
+        assigned_to_other.datos_extra = {
+            **assigned_to_other.datos_extra,
+            "assignee_id": other.id,
+        }
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{unassigned.id}",
+            headers=self._auth(operator),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        reply_action = next(
+            item for item in detail.get_json()["ticket"]["allowed_actions"]
+            if item["id"] == "reply"
+        )
+        self.assertTrue(reply_action["disabled"])
+        self.assertEqual(reply_action["reason_code"], "ticket_claim_required")
+
+        other_detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{assigned_to_other.id}",
+            headers=self._auth(operator),
+        )
+        self.assertEqual(other_detail.status_code, 200, other_detail.get_json())
+        other_reply_action = next(
+            item for item in other_detail.get_json()["ticket"]["allowed_actions"]
+            if item["id"] == "reply"
+        )
+        self.assertTrue(other_reply_action["disabled"])
+        self.assertEqual(other_reply_action["reason_code"], "ticket_assigned_to_other")
+
+        def reply(ticket, actor, identity):
+            return self.client.post(
+                f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "body": f"Respuesta {identity}",
+                    "client_message_id": f"crm-reply:{identity}",
+                },
+                headers=self._auth(actor),
+            )
+
+        blocked_unassigned = reply(unassigned, operator, "tenant-unassigned-0001")
+        self.assertEqual(blocked_unassigned.status_code, 409, blocked_unassigned.get_json())
+        self.assertEqual(blocked_unassigned.get_json()["reason_code"], "ticket_claim_required")
+
+        with patch("utils.whatsapp.enviar_mensaje_whatsapp_con_fallback", return_value=True):
+            self_reply = reply(owned, operator, "tenant-self-0001")
+        self.assertEqual(self_reply.status_code, 200, self_reply.get_json())
+
+        race_ticket = self._unassigned_claim_ticket()
+        race_ticket.datos_extra = {**race_ticket.datos_extra, "assignee_id": operator.id}
+        db.session.commit()
+        from services.ticket_service import ServicioTickets
+
+        original_tenant_reply = ServicioTickets.crear_respuesta_tenant
+
+        def reassign_tenant_before_persist(service, ticket, reply_data, **kwargs):
+            persisted = db.session.get(TenantTicket, ticket.id)
+            persisted.datos_extra = {**(persisted.datos_extra or {}), "assignee_id": other.id}
+            db.session.flush()
+            return original_tenant_reply(service, ticket, reply_data, **kwargs)
+
+        with patch.object(
+            ServicioTickets,
+            "crear_respuesta_tenant",
+            autospec=True,
+            side_effect=reassign_tenant_before_persist,
+        ):
+            raced = reply(race_ticket, operator, "tenant-race-0001")
+        self.assertEqual(raced.status_code, 409, raced.get_json())
+        self.assertEqual(raced.get_json()["reason_code"], "ticket_assigned_to_other")
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(ticket_id=race_ticket.id).count(),
+            0,
+        )
+
+        blocked_other = reply(assigned_to_other, operator, "tenant-other-0001")
+        self.assertEqual(blocked_other.status_code, 409, blocked_other.get_json())
+        self.assertEqual(blocked_other.get_json()["reason_code"], "ticket_assigned_to_other")
+
+        with patch("utils.whatsapp.enviar_mensaje_whatsapp_con_fallback", return_value=True):
+            override = reply(assigned_to_other, supervisor, "tenant-supervisor-0001")
+        self.assertEqual(override.status_code, 200, override.get_json())
+
+    def test_legacy_reply_requires_owner_and_allows_supervisor_override(self):
+        self.tenant.tipo = "municipio"
+        self.tenant.municipio_id = self.owner.id
+        self.tenant.pyme_id = None
+        db.session.add(self.tenant)
+        operator = self._claim_employee(
+            name="Operador municipal sin override",
+            email="reply-owner-legacy@test.com",
+            permissions=["tickets.read"],
+        )
+        other = self._claim_employee(
+            name="Otro operador municipal",
+            email="reply-other-legacy@test.com",
+            permissions=["tickets.read"],
+        )
+        supervisor = User(
+            name="Supervisor municipal",
+            email="reply-supervisor-legacy@test.com",
+            rol="supervisor",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+        )
+        supervisor.set_password("secret123")
+        db.session.add(supervisor)
+
+        def legacy_ticket(number, assignee_id=None):
+            ticket = MunicipioTicket(
+                tenant_id=self.tenant.id,
+                municipio_id=self.owner.id,
+                nro_ticket=number,
+                consulta_pin=number.removeprefix("M-"),
+                pregunta="Consulta educativa",
+                asunto="Educacion",
+                categoria="educacion",
+                detalles="Caso para verificar ownership",
+                estado="nuevo",
+                canal_ingreso="whatsapp",
+                nombre_vecino="Vecino de prueba",
+                telefono_vecino="+5492613168608",
+                asignado_a_id=assignee_id,
+            )
+            db.session.add(ticket)
+            db.session.flush()
+            return ticket
+
+        unassigned = legacy_ticket("M-880001")
+        owned = legacy_ticket("M-880002", operator.id)
+        assigned_to_other = legacy_ticket("M-880003", other.id)
+        db.session.commit()
+
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{unassigned.id}?source_model=MunicipioTicket",
+            headers=self._auth(operator),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        reply_action = next(
+            item for item in detail.get_json()["item"]["allowed_actions"]
+            if item["id"] == "reply"
+        )
+        self.assertTrue(reply_action["disabled"])
+        self.assertEqual(reply_action["reason_code"], "ticket_claim_required")
+
+        other_detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{assigned_to_other.id}?source_model=MunicipioTicket",
+            headers=self._auth(operator),
+        )
+        self.assertEqual(other_detail.status_code, 200, other_detail.get_json())
+        other_reply_action = next(
+            item for item in other_detail.get_json()["item"]["allowed_actions"]
+            if item["id"] == "reply"
+        )
+        self.assertTrue(other_reply_action["disabled"])
+        self.assertEqual(other_reply_action["reason_code"], "ticket_assigned_to_other")
+
+        def reply(ticket, actor, identity):
+            return self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "source_model": "MunicipioTicket",
+                    "legacy_id": ticket.id,
+                    "action": "reply",
+                    "body": f"Respuesta {identity}",
+                    "client_message_id": f"crm-reply:{identity}",
+                },
+                headers=self._auth(actor),
+            )
+
+        blocked_unassigned = reply(unassigned, operator, "legacy-unassigned-0001")
+        self.assertEqual(blocked_unassigned.status_code, 409, blocked_unassigned.get_json())
+        self.assertEqual(blocked_unassigned.get_json()["reason_code"], "ticket_claim_required")
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update",
+            return_value={"email": False, "sms": False, "whatsapp": True},
+        ):
+            self_reply = reply(owned, operator, "legacy-self-0001")
+        self.assertEqual(self_reply.status_code, 200, self_reply.get_json())
+
+        race_ticket = legacy_ticket("M-880004", operator.id)
+        db.session.commit()
+        from services.ticket_service import ServicioTickets
+
+        original_legacy_reply = ServicioTickets.crear_comentario
+
+        def reassign_legacy_before_persist(service, ticket_id, ticket_type, comment_data, **kwargs):
+            persisted = db.session.get(MunicipioTicket, ticket_id)
+            persisted.asignado_a_id = other.id
+            db.session.flush()
+            return original_legacy_reply(
+                service,
+                ticket_id,
+                ticket_type,
+                comment_data,
+                **kwargs,
+            )
+
+        with patch.object(
+            ServicioTickets,
+            "crear_comentario",
+            autospec=True,
+            side_effect=reassign_legacy_before_persist,
+        ):
+            raced = reply(race_ticket, operator, "legacy-race-0001")
+        self.assertEqual(raced.status_code, 409, raced.get_json())
+        self.assertEqual(raced.get_json()["reason_code"], "ticket_assigned_to_other")
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=race_ticket.id).count(),
+            0,
+        )
+
+        blocked_other = reply(assigned_to_other, operator, "legacy-other-0001")
+        self.assertEqual(blocked_other.status_code, 409, blocked_other.get_json())
+        self.assertEqual(blocked_other.get_json()["reason_code"], "ticket_assigned_to_other")
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update",
+            return_value={"email": False, "sms": False, "whatsapp": True},
+        ):
+            override = reply(assigned_to_other, supervisor, "legacy-supervisor-0001")
+        self.assertEqual(override.status_code, 200, override.get_json())
 
     def test_omnichannel_assign_preserves_explicit_manager_reassignment(self):
         ticket = self._unassigned_claim_ticket()
