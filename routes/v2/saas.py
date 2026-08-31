@@ -5241,8 +5241,8 @@ def _reply_delivery_evidence(value: Mapping[str, Any] | None) -> dict[str, Any]:
     external_dispatch = bool(evidence.get("external_dispatch"))
     return {
         "saved_in_crm": bool(evidence),
-        "dispatch_attempted": external_dispatch or status in {"provider_accepted", "external_dispatch_failed", "failed"} or reason in {"external_dispatch_failed", "notification_dispatch_failed"},
-        "provider_accepted": status == "provider_accepted",
+        "dispatch_attempted": external_dispatch or status in {"dispatch_attempted", "provider_accepted", "external_dispatch_failed", "failed"} or reason in {"acceptance_unverified", "external_dispatch_failed", "notification_dispatch_failed"},
+        "provider_accepted": status == "provider_accepted" and bool(evidence.get("provider_message_id")),
         "delivered": final_status == "delivered",
         "failed": status in {"external_dispatch_failed", "failed"} or reason in {"external_dispatch_failed", "notification_dispatch_failed"} or final_status in {"failed", "undelivered"},
         "authoritative_delivery_source": final.get("authoritative_source") or "not_available",
@@ -5766,12 +5766,13 @@ def _legacy_claim_inbox_payload(
     )
 
     delivery_history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
+    latest_delivery = extra.get("reply_delivery_latest_evidence") if isinstance(extra.get("reply_delivery_latest_evidence"), Mapping) else None
     reply_contract = _ticket_reply_contract(
         source_model="MunicipioTicket", ticket_id=ticket.id, channel=channel,
         actor=actor, assignee_id=ticket.asignado_a_id,
         closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
         contact={"phone": ticket.telefono_vecino, "email": ticket.email_vecino},
-        tenant=tenant, latest_delivery=delivery_history[-1] if delivery_history else None,
+        tenant=tenant, latest_delivery=latest_delivery or (delivery_history[-1] if delivery_history else None),
     )
     return {
         "id": f"municipio:{ticket.id}",
@@ -5881,12 +5882,13 @@ def _inbox_ticket_payload(
 
     actions = _allowed_inbox_actions(ticket, extra, actor=actor)
     delivery_history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
+    latest_delivery = extra.get("reply_delivery_latest_evidence") if isinstance(extra.get("reply_delivery_latest_evidence"), Mapping) else None
     reply_contract = _ticket_reply_contract(
         source_model="TenantTicket", ticket_id=ticket.id, channel=_ticket_channel(ticket),
         actor=actor, assignee_id=extra.get("assignee_id"),
         closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
         contact=extra.get("contact") if isinstance(extra.get("contact"), Mapping) else {},
-        tenant=tenant, latest_delivery=delivery_history[-1] if delivery_history else None,
+        tenant=tenant, latest_delivery=latest_delivery or (delivery_history[-1] if delivery_history else None),
     )
     return {
         "id": ticket.id,
@@ -6140,6 +6142,7 @@ def _inbox_action_delivery_payload(
     delivery_skipped: Mapping[str, Any] | None = None,
     durably_staged: bool = False,
     idempotent_replay: bool = False,
+    provider_message_id: str | None = None,
 ) -> dict[str, Any]:
     normalized_action = str(action or "").strip().lower()
     normalized_channel = str(channel or "crm").strip().lower() or "crm"
@@ -6152,7 +6155,7 @@ def _inbox_action_delivery_payload(
         reply_status = "queued_for_delivery"
         evidence_stage = "durably_staged"
         operator_message = "Respuesta guardada y encolada de forma durable. La entrega final queda pendiente del callback del proveedor."
-    elif is_reply and external_dispatch:
+    elif is_reply and external_dispatch and provider_message_id:
         mode = "real_message"
         resolved_status = status or "provider_accepted"
         resolved_reason = reason or "provider_accepted"
@@ -6160,6 +6163,14 @@ def _inbox_action_delivery_payload(
         reply_status = "provider_accepted"
         evidence_stage = "provider_accepted"
         operator_message = "El proveedor acepto el envio y la respuesta quedo registrada en el CRM. La entrega final queda pendiente de callback."
+    elif is_reply and external_dispatch:
+        mode = "real_message"
+        resolved_status = status or "dispatch_attempted"
+        resolved_reason = reason or "acceptance_unverified"
+        fallback = "provider_receipt_pending"
+        reply_status = "dispatch_attempted"
+        evidence_stage = "acceptance_unverified"
+        operator_message = "Se intento el envio y la respuesta quedo registrada en el CRM. El proveedor no devolvio un identificador correlacionable; aceptacion y entrega siguen sin verificar."
     elif is_reply and idempotent_replay:
         mode = "idempotent_replay"
         resolved_status = status or "already_recorded"
@@ -6225,7 +6236,7 @@ def _inbox_action_delivery_payload(
                     or resolved_reason in {"external_dispatch_failed", "notification_dispatch_failed"}
                 )
             ),
-            "provider_accepted": bool(is_reply and external_dispatch),
+            "provider_accepted": bool(is_reply and external_dispatch and provider_message_id),
             "delivered": False,
             "failed": bool(
                 is_reply
@@ -6234,13 +6245,15 @@ def _inbox_action_delivery_payload(
             "delivered_requires": "provider_status_callback",
         },
     }
+    if provider_message_id:
+        payload["provider_message_id"] = provider_message_id
     if delivery_results is not None:
         payload["delivery_results"] = {
             "email": bool(delivery_results.get("email")),
             "sms": bool(delivery_results.get("sms")),
             "whatsapp": bool(delivery_results.get("whatsapp")),
         }
-        payload["delivery_results_semantics"] = "provider_acceptance"
+        payload["delivery_results_semantics"] = "dispatch_attempt_boolean_not_provider_receipt"
     if requested_channels is not None:
         payload["requested_channels"] = list(requested_channels)
     if delivery_skipped:
@@ -6393,38 +6406,51 @@ def _dispatch_tenant_ticket_reply(
     return results, "external_dispatch_contact_or_sender_missing", skipped
 
 
-def _record_tenant_ticket_delivery(
-    ticket: TenantTicket,
+def _record_ticket_reply_delivery(
+    ticket: TenantTicket | MunicipioTicket,
     *,
+    tenant: TenantProfile,
+    source_model: str,
     delivery: Mapping[str, Any],
     actor: User,
-) -> TenantTicket:
-    persisted_ticket = (
-        TenantTicket.query.filter_by(id=ticket.id, tenant_id=ticket.tenant_id)
-        .with_for_update()
-        .populate_existing()
-        .one()
-    )
+) -> TenantTicket | MunicipioTicket:
+    if source_model == "TenantTicket" and isinstance(ticket, TenantTicket):
+        persisted_ticket = (
+            TenantTicket.query.filter_by(id=ticket.id, tenant_id=tenant.id)
+            .with_for_update().populate_existing().one()
+        )
+    elif source_model == "MunicipioTicket" and isinstance(ticket, MunicipioTicket):
+        persisted_ticket = (
+            _legacy_claim_query_for_tenant(tenant)
+            .filter(MunicipioTicket.id == ticket.id)
+            .with_for_update().populate_existing().one()
+        )
+    else:
+        raise ValueError("reply delivery source_model does not match ticket")
     extra = deepcopy(_ticket_extra(persisted_ticket))
     history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
-    history.append(
-        {
-            "contract_version": delivery.get("contract_version"),
-            "mode": delivery.get("mode"),
-            "status": delivery.get("status"),
-            "reason": delivery.get("reason"),
-            "channel": delivery.get("channel"),
-            "evidence_stage": delivery.get("evidence_stage"),
-            "final_delivery": delivery.get("final_delivery") or {},
-            "external_dispatch": bool(delivery.get("external_dispatch")),
-            "delivery_results": delivery.get("delivery_results") or {},
-            "requested_channels": delivery.get("requested_channels") or [],
-            "delivery_skipped": delivery.get("delivery_skipped") or {},
-            "actor_user_id": actor.id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    entry = {
+        "contract_version": delivery.get("contract_version"),
+        "source_model": source_model,
+        "mode": delivery.get("mode"),
+        "status": delivery.get("status"),
+        "reason": delivery.get("reason"),
+        "channel": delivery.get("channel"),
+        "evidence_stage": delivery.get("evidence_stage"),
+        "evidence": deepcopy(delivery.get("evidence") or {}),
+        "final_delivery": deepcopy(delivery.get("final_delivery") or {}),
+        "provider_message_id": delivery.get("provider_message_id"),
+        "external_dispatch": bool(delivery.get("external_dispatch")),
+        "delivery_results": deepcopy(delivery.get("delivery_results") or {}),
+        "requested_channels": list(delivery.get("requested_channels") or []),
+        "delivery_skipped": deepcopy(delivery.get("delivery_skipped") or {}),
+        "receipt_persisted": bool(delivery.get("receipt_persisted")),
+        "actor_user_id": actor.id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    history.append(entry)
     extra["reply_delivery_history"] = history[-100:]
+    extra["reply_delivery_latest_evidence"] = entry
     persisted_ticket.datos_extra = extra
     flag_modified(persisted_ticket, "datos_extra")
     db.session.add(persisted_ticket)
@@ -7001,7 +7027,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             delivery_reason = "idempotent_replay_no_redispatch"
         else:
             delivery_reason = (
-                "provider_accepted"
+                "acceptance_unverified"
                 if external_dispatch
                 else (dispatch_error_reason or "external_dispatch_no_channel_confirmed")
             )
@@ -7085,6 +7111,34 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             "worker_authoritative": bool(reply_outbox_effect_count),
             "direct_dispatch_performed": False,
         }
+    if action == "reply" and reply_replayed:
+        durable_extra = _ticket_extra(ticket)
+        delivery["receipt_persisted"] = bool(
+            durable_extra.get("reply_delivery_latest_evidence")
+            or durable_extra.get("reply_delivery_history")
+        )
+        if not delivery["receipt_persisted"]:
+            delivery["receipt_persistence_reason"] = "original_delivery_receipt_unavailable"
+    if action == "reply" and not reply_replayed:
+        try:
+            delivery["receipt_persisted"] = True
+            ticket = _record_ticket_reply_delivery(
+                ticket,
+                tenant=tenant,
+                source_model="MunicipioTicket",
+                delivery=delivery,
+                actor=current_user,
+            )
+            db.session.commit()
+        except Exception as exc:  # pragma: no cover - reply timeline remains durable
+            db.session.rollback()
+            delivery["receipt_persisted"] = False
+            delivery["receipt_persistence_reason"] = "delivery_receipt_persistence_failed"
+            current_app.logger.exception(
+                "Error recording MunicipioTicket reply delivery audit ticket=%s: %s",
+                ticket.id,
+                exc,
+            )
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
     ticket_payload = _legacy_claim_inbox_payload(ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
 
@@ -7581,7 +7635,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         elif reply_outbox_effect_count:
             delivery_reason = "domain_effects_durably_staged"
         elif external_dispatch:
-            delivery_reason = "provider_accepted"
+            delivery_reason = "acceptance_unverified"
 
     delivery = _inbox_action_delivery_payload(
         action=action,
@@ -7674,16 +7728,29 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 "worker_authoritative": True,
                 "direct_dispatch_performed": False,
             }
+        if reply_replayed:
+            durable_extra = _ticket_extra(ticket)
+            delivery["receipt_persisted"] = bool(
+                durable_extra.get("reply_delivery_latest_evidence")
+                or durable_extra.get("reply_delivery_history")
+            )
+            if not delivery["receipt_persisted"]:
+                delivery["receipt_persistence_reason"] = "original_delivery_receipt_unavailable"
         if not reply_replayed:
             try:
-                ticket = _record_tenant_ticket_delivery(
+                delivery["receipt_persisted"] = True
+                ticket = _record_ticket_reply_delivery(
                     ticket,
+                    tenant=tenant,
+                    source_model="TenantTicket",
                     delivery=delivery,
                     actor=current_user,
                 )
                 db.session.commit()
             except Exception as exc:  # pragma: no cover - reply is already durable in the timeline
                 db.session.rollback()
+                delivery["receipt_persisted"] = False
+                delivery["receipt_persistence_reason"] = "delivery_receipt_persistence_failed"
                 current_app.logger.exception(
                     "Error recording TenantTicket reply delivery audit ticket=%s: %s",
                     ticket.id,

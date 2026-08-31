@@ -44,6 +44,7 @@ from models import (
 from routes.v2.saas import (
     _OMNICHANNEL_ACTION_MAX_REQUEST_BYTES,
     _OMNICHANNEL_REPLY_MAX_BODY_BYTES,
+    _inbox_action_delivery_payload,
 )
 from services.meta_flow_json import SURVEY_VOTE_DATA_CONTRACT
 from services.tts_orchestrator import reset_tts_cache_metrics
@@ -338,6 +339,23 @@ class V2SaasContractsTest(unittest.TestCase):
             algorithm="HS256",
         )
         return {"Authorization": f"Bearer {token}", "X-Tenant-Slug": self.tenant.slug}
+
+    def test_reply_delivery_marks_provider_acceptance_only_with_correlatable_id(self):
+        unverified = _inbox_action_delivery_payload(
+            action="reply", channel="whatsapp", timeline_updated=True,
+            source_model="TenantTicket", external_dispatch=True,
+        )
+        self.assertEqual(unverified["status"], "dispatch_attempted")
+        self.assertFalse(unverified["evidence"]["provider_accepted"])
+
+        accepted = _inbox_action_delivery_payload(
+            action="reply", channel="whatsapp", timeline_updated=True,
+            source_model="TenantTicket", external_dispatch=True,
+            provider_message_id="SM-correlated-123",
+        )
+        self.assertEqual(accepted["status"], "provider_accepted")
+        self.assertTrue(accepted["evidence"]["provider_accepted"])
+        self.assertEqual(accepted["provider_message_id"], "SM-correlated-123")
 
     def _claim_employee(self, *, name: str, email: str, categories=None, permissions=None) -> User:
         employee = User(
@@ -2496,18 +2514,30 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(delivery["legacy_contract_version"], "inbox.action_delivery.v1")
         self.assertEqual(delivery["mode"], "real_message")
         self.assertEqual(delivery["channel"], "whatsapp")
-        self.assertEqual(delivery["status"], "provider_accepted")
-        self.assertEqual(delivery["reason"], "provider_accepted")
-        self.assertEqual(delivery["reply_status"], "provider_accepted")
-        self.assertEqual(delivery["evidence_stage"], "provider_accepted")
-        self.assertEqual(delivery["delivery_results_semantics"], "provider_acceptance")
+        self.assertEqual(delivery["status"], "dispatch_attempted")
+        self.assertEqual(delivery["reason"], "acceptance_unverified")
+        self.assertEqual(delivery["reply_status"], "dispatch_attempted")
+        self.assertEqual(delivery["evidence_stage"], "acceptance_unverified")
+        self.assertEqual(delivery["delivery_results_semantics"], "dispatch_attempt_boolean_not_provider_receipt")
+        self.assertFalse(delivery["evidence"]["provider_accepted"])
+        self.assertNotIn("provider_message_id", delivery)
         self.assertEqual(delivery["final_delivery"]["status"], "pending_provider_callback")
         self.assertEqual(delivery["final_delivery"]["authoritative_source"], "provider_status_callback")
         self.assertNotEqual(delivery["final_delivery"]["status"], "delivered")
         self.assertEqual(delivery["admin_surface"], "tenant_claims_inbox")
         self.assertTrue(delivery["external_dispatch"])
+        self.assertTrue(delivery["receipt_persisted"])
         self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": True})
         self.assertTrue(any("equipo ya fue avisado" in event["body"].lower() for event in payload["ticket"]["timeline"]))
+        db.session.refresh(legacy)
+        history = legacy.datos_extra.get("reply_delivery_history") or []
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[-1]["status"], "dispatch_attempted")
+        self.assertIsNone(history[-1]["provider_message_id"])
+        self.assertEqual(
+            legacy.datos_extra["reply_delivery_latest_evidence"]["status"],
+            "dispatch_attempted",
+        )
 
     def test_omnichannel_legacy_claim_reply_survives_dispatcher_failure(self):
         self._set_tenant_as_municipio()
@@ -2553,6 +2583,42 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(delivery["external_dispatch"])
         self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": False})
         self.assertTrue(any("seguimos el caso" in event["body"].lower() for event in payload["ticket"]["timeline"]))
+
+    def test_omnichannel_legacy_reply_cannot_persist_receipt_across_tenants(self):
+        foreign_owner = User(name="Foreign Owner", email="foreign-receipt@test.com", rol="admin", tipo_chat="municipio")
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-receipt-tenant", nombre="Foreign Receipt", tipo="municipio",
+            municipio_id=foreign_owner.id,
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_owner.tenant_id = foreign_tenant.id
+        foreign_owner.tenant_slug = foreign_tenant.slug
+        foreign_ticket = MunicipioTicket(
+            tenant_id=foreign_tenant.id, municipio_id=foreign_owner.id,
+            nro_ticket="M-FOREIGN-RECEIPT", consulta_pin="881122",
+            pregunta="Dato privado", categoria="luminaria", estado="nuevo",
+            canal_ingreso="whatsapp", telefono_vecino="+5492613000000",
+        )
+        db.session.add(foreign_ticket)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket", "legacy_id": foreign_ticket.id,
+                "action": "reply", "body": "No debe persistirse",
+                "client_message_id": "foreign-receipt-attempt-0001",
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 404, response.get_json())
+        db.session.refresh(foreign_ticket)
+        self.assertFalse((foreign_ticket.datos_extra or {}).get("reply_delivery_history"))
 
     def test_omnichannel_legacy_claim_reply_replays_once_without_second_dispatch(self):
         self._set_tenant_as_municipio()
@@ -2621,7 +2687,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(receipt.idempotency_key.startswith("crm-reply:"))
         self.assertNotIn("crm-client-message-777003", receipt.idempotency_key)
         self.assertEqual(DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(), 0)
-        self.assertEqual(first.get_json()["delivery"]["status"], "provider_accepted")
+        self.assertEqual(first.get_json()["delivery"]["status"], "dispatch_attempted")
         replay_delivery = replay.get_json()["delivery"]
         self.assertEqual(replay_delivery["mode"], "idempotent_replay")
         self.assertEqual(replay_delivery["status"], "already_recorded")
@@ -2629,10 +2695,23 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(replay_delivery["external_dispatch"])
         self.assertFalse(replay_delivery["timeline_updated"])
         self.assertTrue(replay_delivery["idempotency"]["replayed"])
+        self.assertTrue(replay_delivery["receipt_persisted"])
         self.assertEqual(
             replay_delivery["final_delivery"]["status"],
             "preserved_from_original_attempt",
         )
+        db.session.refresh(legacy)
+        history = legacy.datos_extra.get("reply_delivery_history") or []
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["status"], "dispatch_attempted")
+        refreshed = self.client.get(
+            f"/api/v2/inbox/omnichannel/{legacy.id}?source_model=MunicipioTicket",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(refreshed.status_code, 200, refreshed.get_json())
+        latest = refreshed.get_json()["ticket"]["reply_contract"]["delivery_state_machine"]["latest_evidence"]
+        self.assertTrue(latest["dispatch_attempted"])
+        self.assertFalse(latest["provider_accepted"])
 
     def test_omnichannel_legacy_claim_reply_rejects_same_key_with_different_payload(self):
         self._set_tenant_as_municipio()
@@ -4760,20 +4839,21 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["delivery"]["legacy_contract_version"], "inbox.action_delivery.v1")
         self.assertEqual(payload["delivery"]["mode"], "real_message")
         self.assertEqual(payload["delivery"]["delivery_mode"], "real_message")
-        self.assertEqual(payload["delivery"]["status"], "provider_accepted")
-        self.assertEqual(payload["delivery"]["fallback"], "none")
-        self.assertEqual(payload["delivery"]["reply_status"], "provider_accepted")
+        self.assertEqual(payload["delivery"]["status"], "dispatch_attempted")
+        self.assertEqual(payload["delivery"]["fallback"], "provider_receipt_pending")
+        self.assertEqual(payload["delivery"]["reply_status"], "dispatch_attempted")
         self.assertEqual(payload["delivery"]["final_delivery"]["status"], "pending_provider_callback")
         self.assertEqual(payload["delivery"]["admin_surface"], "omnichannel_inbox")
         self.assertTrue(payload["delivery"]["external_dispatch"])
         self.assertTrue(payload["delivery"]["timeline_updated"])
+        self.assertTrue(payload["delivery"]["receipt_persisted"])
         self.assertEqual(
             payload["delivery"]["evidence"],
             {
                 "contract_version": "inbox.reply_delivery_evidence.v1",
                 "saved_in_crm": True,
                 "dispatch_attempted": True,
-                "provider_accepted": True,
+                "provider_accepted": False,
                 "delivered": False,
                 "failed": False,
                 "delivered_requires": "provider_status_callback",
@@ -4784,18 +4864,56 @@ class V2SaasContractsTest(unittest.TestCase):
             payload["delivery"]["delivery_results"],
             {"email": False, "sms": False, "whatsapp": True},
         )
-        self.assertIn("acepto", payload["delivery"]["operator_message"].lower())
+        self.assertIn("sin verificar", payload["delivery"]["operator_message"].lower())
         self.assertTrue(payload["ticket"]["timeline"])
         self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
         db.session.refresh(self.ticket)
         delivery_history = self.ticket.datos_extra.get("reply_delivery_history") or []
         self.assertEqual(delivery_history[-1]["mode"], "real_message")
-        self.assertEqual(delivery_history[-1]["status"], "provider_accepted")
+        self.assertEqual(delivery_history[-1]["status"], "dispatch_attempted")
         self.assertEqual(
             delivery_history[-1]["final_delivery"]["status"],
             "pending_provider_callback",
         )
         self.assertTrue(delivery_history[-1]["external_dispatch"])
+        refreshed = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(refreshed.status_code, 200, refreshed.get_json())
+        latest = refreshed.get_json()["item"]["reply_contract"]["delivery_state_machine"]["latest_evidence"]
+        self.assertTrue(latest["dispatch_attempted"])
+        self.assertFalse(latest["provider_accepted"])
+
+    def test_omnichannel_reply_truthfully_reports_receipt_persistence_failure(self):
+        client_message_id = "crm-reply:receipt-failure-0001"
+        with patch(
+            "routes.v2.saas._record_ticket_reply_delivery",
+            side_effect=RuntimeError("receipt store unavailable"),
+        ), patch(
+            "routes.v2.saas._emit_tenant_ticket_realtime_reply",
+            return_value=True,
+        ):
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply", "source_model": "TenantTicket",
+                    "body": "Respuesta durable sin recibo auxiliar.",
+                    "visibility": "internal", "send_external": False,
+                    "client_message_id": client_message_id,
+                },
+                headers={**self._auth(self.owner), "Idempotency-Key": client_message_id},
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        delivery = response.get_json()["delivery"]
+        self.assertFalse(delivery["receipt_persisted"])
+        self.assertEqual(
+            delivery["receipt_persistence_reason"],
+            "delivery_receipt_persistence_failed",
+        )
+        self.assertTrue(delivery["timeline_updated"])
+        self.assertFalse(delivery["external_dispatch"])
 
     def test_omnichannel_close_and_reopen_reject_contradictory_status_without_mutation(self):
         original_status = self.ticket.estado
