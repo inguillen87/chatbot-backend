@@ -39,6 +39,10 @@ from services.employee_ticket_access import (
     employee_ticket_category_access_allows,
     employee_ticket_category_scope,
 )
+from services.ticket_category_authority import (
+    build_municipio_category_authorities,
+    resolve_municipio_category_authority,
+)
 from services.operational_heatmap_access import (
     build_employee_legacy_heatmap_points,
     is_employee_heatmap_viewer,
@@ -2085,6 +2089,7 @@ def serialize_ticket_to_json(
     collaboration_state_override: dict | None = None,
     contact_profile_user_override: Optional[User] = None,
     allow_profile_lookup: bool = True,
+    category_authority_override: dict[str, Any] | None = None,
 ):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
@@ -2193,8 +2198,16 @@ def serialize_ticket_to_json(
 
     estado_original = getattr(ticket, "estado", None) or "desconocido"
     estado_serializado = "resuelto" if estado_original == "cerrado" else estado_original
-    categoria_ticket = getattr(ticket, "categoria", None) or "Sin categoría"
-    categoria_normalizada = normalize_category(categoria_ticket) or categoria_ticket
+    persisted_categoria = getattr(ticket, "categoria", None)
+    category_authority = None
+    if ticket_type == "municipio":
+        category_authority = category_authority_override or resolve_municipio_category_authority(ticket)
+    categoria_ticket = persisted_categoria or "Sin categoría"
+    categoria_normalizada = (
+        category_authority.get("authoritative_category")
+        if category_authority and category_authority.get("verified")
+        else normalize_category(categoria_ticket) or categoria_ticket
+    )
     location_payload = _ticket_location_payload(ticket, user_data.get("direccion"))
     priority_payload = _ticket_priority_payload(ticket)
     ai_payload = _ticket_ai_enrichment_payload(ticket)
@@ -2270,6 +2283,11 @@ def serialize_ticket_to_json(
         "estado": estado_serializado,
         "fecha": datetime_to_iso_utc(ticket.fecha),
         "categoria": categoria_normalizada,
+        "categoria_id": getattr(ticket, "categoria_id", None),
+        "authoritative_category": (
+            category_authority.get("authoritative_category") if category_authority else None
+        ),
+        "category_authority": category_authority,
         "direccion": location_payload["direccion"],
         "distrito": location_payload["distrito"],
         "latitud": location_payload["latitud"],
@@ -2676,6 +2694,14 @@ def get_tickets_del_usuario_logic(current_user: User):
         collaboration_states = compact_prefetch.get("collaboration_states", {})
         contact_profile_users = compact_prefetch.get("contact_profile_users", {})
 
+        category_authorities = (
+            build_municipio_category_authorities(
+                tickets_for_list_page,
+                tenant_id=getattr(tenant_for_query, "id", None),
+            )
+            if tipo_ticket_str == "municipio"
+            else {}
+        )
         serialized_tickets = [
             serialize_ticket_to_json(
                 t,
@@ -2685,6 +2711,7 @@ def get_tickets_del_usuario_logic(current_user: User):
                 collaboration_state_override=collaboration_states.get(t.id) if compact_view else None,
                 contact_profile_user_override=contact_profile_users.get(t.id) if compact_view else None,
                 allow_profile_lookup=not compact_view,
+                category_authority_override=category_authorities.get(t.id),
             )
             for t in tickets_for_list_page
         ]
@@ -3124,6 +3151,18 @@ def _serialize_ticket_details(ticket, ticket_type):
         collaboration_state=collaboration_state,
     )
 
+    category_authority = (
+        resolve_municipio_category_authority(ticket)
+        if ticket_type == "municipio"
+        else None
+    )
+    persisted_category = getattr(ticket, 'categoria', None)
+    display_category = (
+        category_authority.get("authoritative_category")
+        if category_authority and category_authority.get("verified")
+        else persisted_category
+    )
+
     ticket_data = {
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
@@ -3132,7 +3171,13 @@ def _serialize_ticket_details(ticket, ticket_type):
         "ticket_type": ticket_type,
         "nro_ticket_original": ticket.nro_ticket, # Mantenemos el nro original por si acaso
         "asunto": getattr(ticket, 'asunto', ''),
-        "categoria_reclamo": getattr(ticket, 'categoria', ''),
+        "categoria_reclamo": display_category or '',
+        "categoria": display_category,
+        "categoria_id": getattr(ticket, "categoria_id", None),
+        "authoritative_category": (
+            category_authority.get("authoritative_category") if category_authority else None
+        ),
+        "category_authority": category_authority,
         "estado_ticket": ticket.estado,
         "fecha_hora_creacion": datetime_to_iso_utc(ticket.fecha),
         "descripcion_completa_reclamo": getattr(ticket, 'pregunta', ''),

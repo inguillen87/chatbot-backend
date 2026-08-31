@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from app import create_app, db
 from config import TestConfig
-from models import MunicipioTicket, User
+from models import CategoriaTicket, MunicipioTicket, TenantProfile, User
 from routes.ticket import serialize_ticket_to_json, _serialize_ticket_details
 from utils.time_utils import get_local_now
 
@@ -25,6 +25,80 @@ class TicketOperationalBadgesTest(unittest.TestCase):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
+
+    def _tenant(self, slug: str):
+        owner = User(name=slug, email=f"{slug}@example.com", rol="admin", tipo_chat="municipio")
+        owner.set_password("pass")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(slug=slug, nombre=slug, tipo="municipio", municipio_id=owner.id)
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        return owner, tenant
+
+    def test_compact_payload_prefers_tenant_catalog_category_and_reports_conflict(self):
+        owner, tenant = self._tenant("category-authority")
+        category = CategoriaTicket(nombre="Luminarias", tenant_id=tenant.id)
+        db.session.add(category)
+        db.session.flush()
+        ticket = MunicipioTicket(
+            tenant_id=tenant.id, municipio_id=owner.id, nro_ticket="M-AUTH-1",
+            pregunta="Caso", categoria="General", categoria_id=category.id,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+
+        self.assertEqual(payload["categoria"], "Luminarias")
+        self.assertEqual(payload["categoria_id"], category.id)
+        self.assertEqual(payload["authoritative_category"], "Luminarias")
+        self.assertTrue(payload["category_authority"]["verified"])
+        self.assertTrue(payload["category_authority"]["conflict"])
+        self.assertEqual(payload["category_authority"]["source"], "tenant_category_catalog")
+
+    def test_detail_publishes_canonical_alias_without_inferring_from_subject(self):
+        owner, tenant = self._tenant("category-detail")
+        ticket = MunicipioTicket(
+            tenant_id=tenant.id, municipio_id=owner.id, nro_ticket="M-AUTH-2",
+            pregunta="Caso", asunto="Texto no autoritativo", categoria="alumbrado publico",
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        payload = _serialize_ticket_details(ticket, "municipio")
+
+        self.assertEqual(payload["categoria_reclamo"], "Luminarias")
+        self.assertEqual(payload["categoria"], "Luminarias")
+        self.assertIsNone(payload["categoria_id"])
+        self.assertEqual(payload["authoritative_category"], "Luminarias")
+        self.assertEqual(payload["category_authority"]["source"], "persisted_category_exact_alias")
+
+    def test_missing_or_foreign_category_id_fails_closed_to_persisted_category(self):
+        owner, tenant = self._tenant("category-local")
+        _, foreign_tenant = self._tenant("category-foreign")
+        foreign = CategoriaTicket(nombre="Luminarias", tenant_id=foreign_tenant.id)
+        db.session.add(foreign)
+        db.session.flush()
+        tickets = [
+            MunicipioTicket(
+                tenant_id=tenant.id, municipio_id=owner.id, nro_ticket="M-AUTH-3",
+                pregunta="Caso", asunto="Alumbrado en el titulo", categoria="General",
+            ),
+            MunicipioTicket(
+                tenant_id=tenant.id, municipio_id=owner.id, nro_ticket="M-AUTH-4",
+                pregunta="Caso", categoria="General", categoria_id=foreign.id,
+            ),
+        ]
+        db.session.add_all(tickets)
+        db.session.commit()
+
+        for ticket in tickets:
+            payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+            self.assertEqual(payload["categoria"], "General")
+            self.assertIsNone(payload["authoritative_category"])
+            self.assertFalse(payload["category_authority"]["verified"])
 
     def test_unassigned_ticket_exposes_sla_badges(self):
         ticket = MunicipioTicket(
