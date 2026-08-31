@@ -33,6 +33,10 @@ from services.crm_contact_cases import (
     CRM_CONTACT_CASES_CONTRACT_VERSION,
     build_crm_contact_cases,
 )
+from services.crm_people_directory import (
+    PeopleDirectoryError,
+    build_people_directory,
+)
 from socket_service import emit_crm_contact_update, emit_crm_notification_update
 from utils.roles import canonical_role, is_authorized_superadmin_user
 
@@ -124,6 +128,27 @@ def _crm_access_error(reason_code: str, action_hint: str, status_code: int = 403
             "code": status_code,
             "message": "No tenes permisos para operar este CRM.",
         },
+    })
+    response.headers["X-Request-Id"] = request_id
+    return response, status_code
+
+
+def _crm_people_error(reason_code: str, action_hint: str, status_code: int = 400):
+    request_id = (
+        request.headers.get("X-Request-Id")
+        or request.headers.get("X-Correlation-Id")
+        or getattr(g, "request_id", None)
+        or uuid4().hex
+    )
+    g.request_id = request_id
+    response = jsonify({
+        "contract_version": "shared.error.v1",
+        "status_code": status_code,
+        "reason_code": reason_code,
+        "action_hint": action_hint,
+        "retryable": False,
+        "request_id": request_id,
+        "error": {"code": status_code, "message": "La solicitud del directorio CRM no es valida."},
     })
     response.headers["X-Request-Id"] = request_id
     return response, status_code
@@ -695,6 +720,62 @@ def list_legacy_clients(current_user):
             data.append(_serialize_contact_only(contact, snapshot, extra_counts.get(contact.id, 0)))
 
     return jsonify(data)
+
+
+@crm_bp.route('/api/v2/crm/people', methods=['GET'])
+@token_requerido
+@require_tenant
+@require_crm_tenant_operator
+def list_people_directory_v2(current_user):
+    tenant = g.tenant_profile
+    try:
+        limit = int(request.args.get("limit", 50))
+    except (TypeError, ValueError):
+        return _crm_people_error("people_limit_invalid", "send_limit_between_1_and_100")
+    if limit < 1 or limit > 100:
+        return _crm_people_error("people_limit_invalid", "send_limit_between_1_and_100")
+
+    q = str(request.args.get("q") or "").strip()
+    if len(q) > 120 or "\x00" in q:
+        return _crm_people_error("people_query_invalid", "send_shorter_query")
+
+    marketing_raw = str(request.args.get("marketing") or "all").strip().lower()
+    marketing_aliases = {
+        "all": "all", "": "all", "1": "true", "true": "true", "yes": "true",
+        "0": "false", "false": "false", "no": "false",
+    }
+    marketing = marketing_aliases.get(marketing_raw)
+    if marketing is None:
+        return _crm_people_error("people_marketing_filter_invalid", "send_all_true_or_false")
+
+    channel = str(request.args.get("channel") or "all").strip().lower()
+    channel = "whatsapp" if channel in {"wa", "twilio", "whatsapp_business"} else channel
+    if channel not in {"all", "whatsapp", "email", "web", "widget", "voice", "unknown"}:
+        return _crm_people_error("people_channel_filter_invalid", "send_supported_channel")
+
+    sort = str(request.args.get("sort") or "recent_desc").strip().lower()
+    if sort != "recent_desc":
+        return _crm_people_error("people_sort_invalid", "use_recent_desc")
+
+    cursor = str(request.args.get("cursor") or "").strip() or None
+    if cursor and (len(cursor) > 4096 or "\x00" in cursor):
+        return _crm_people_error("invalid_people_cursor", "restart_people_directory")
+    pii_requested = str(request.args.get("pii") or "masked").strip().lower() in {"full", "raw", "unmasked"}
+
+    try:
+        payload = build_people_directory(
+            tenant=tenant,
+            actor=current_user,
+            limit=limit,
+            cursor=cursor,
+            q=q,
+            marketing=marketing,
+            channel=channel,
+            pii_requested=pii_requested,
+        )
+    except PeopleDirectoryError as exc:
+        return _crm_people_error(exc.reason_code, "restart_people_directory", exc.status_code)
+    return jsonify(payload)
 
 
 @crm_bp.route('/api/admin/tenants/<slug>/contacts', methods=['GET'])
