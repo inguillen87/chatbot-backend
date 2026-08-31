@@ -355,11 +355,25 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
     )
     db.session.commit()
 
-    response = client.get(
-        "/api/app/backoffice/summary",
-        query_string={"tenant_slug": tenant.slug, "window": "7d"},
-        headers=_auth_headers(owner),
-    )
+    operational_queries: list[str] = []
+
+    def capture_operational_query(_conn, _cursor, statement, _parameters, _context, _many):
+        normalized = statement.lower()
+        if "municipio_ticket" in normalized or any(
+            table in normalized
+            for table in ("enc_encuesta", "enc_respuesta", "enc_comentario")
+        ):
+            operational_queries.append(normalized)
+
+    event.listen(db.engine, "before_cursor_execute", capture_operational_query)
+    try:
+        response = client.get(
+            "/api/app/backoffice/summary",
+            query_string={"tenant_slug": tenant.slug, "window": "7d"},
+            headers=_auth_headers(owner),
+        )
+    finally:
+        event.remove(db.engine, "before_cursor_execute", capture_operational_query)
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -384,6 +398,17 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
     assert payload["surveys_overview"]["heatmap_available"] is True
     assert payload["ai_summary_available"] is True
     assert any(item["id"] == "top_pending_category" for item in payload["priorities"])
+    survey_queries = [
+        statement
+        for statement in operational_queries
+        if any(table in statement for table in ("enc_encuesta", "enc_respuesta", "enc_comentario"))
+    ]
+    ticket_queries = [statement for statement in operational_queries if "municipio_ticket" in statement]
+    assert len(survey_queries) == 1
+    assert all(table in survey_queries[0] for table in ("enc_encuesta", "enc_respuesta", "enc_comentario"))
+    # One aggregate powers all counters; a second query obtains the top pending
+    # category. The old implementation performed four counter queries here.
+    assert len(ticket_queries) == 2
 
 
 def test_backoffice_navigation_disables_unavailable_enterprise_modules(client):

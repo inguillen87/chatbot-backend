@@ -14,6 +14,7 @@ from models import AuditEvent, MunicipioTicket, TenantProfile, TenantTicket, Use
 from services.ticket_service import ServicioTickets
 from services.v2.sla_service import (
     SlaPolicyValidationError,
+    apply_operator_response_sla,
     apply_priority_change_sla,
     apply_reopen_sla,
     apply_sla_to_ticket,
@@ -316,6 +317,187 @@ class SlaTruthPureTest(unittest.TestCase):
             self.now + timedelta(minutes=60),
         )
         self.assertEqual(sla["history"][-1]["event"], "priority_changed")
+
+    def test_public_response_archives_on_time_next_update_cycle_before_opening_next(self):
+        prior_due_at = self.now + timedelta(minutes=10)
+        ticket = SimpleNamespace(
+            estado="in_progress",
+            datos_extra={
+                "priority": "urgent",
+                "sla": {"next_update_due_at": prior_due_at.isoformat()},
+            },
+        )
+
+        sla = apply_operator_response_sla(
+            ticket,
+            _DEFAULT_TEST_POLICIES,
+            occurred_at=self.now,
+        )
+
+        self.assertEqual(sla["next_update_cycle"], 2)
+        self.assertEqual(len(sla["next_update_history"]), 1)
+        archived = sla["next_update_history"][0]
+        self.assertEqual(archived["contract_version"], "ticket.sla.next_update_cycle.v1")
+        self.assertEqual(archived["cycle"], 1)
+        self.assertEqual(archived["due_at"], prior_due_at.isoformat())
+        self.assertEqual(archived["satisfied_at"], self.now.isoformat())
+        self.assertEqual(archived["result"], "on_time")
+        self.assertTrue(archived["known"])
+        self.assertIsNone(archived["unknown_reason"])
+        self.assertEqual(archived["completion_delta_seconds"], -600)
+        self.assertEqual(
+            datetime.fromisoformat(sla["next_update_due_at"]),
+            self.now + timedelta(minutes=60),
+        )
+        self.assertEqual(sla["next_update_last_satisfied_at"], self.now.isoformat())
+
+    def test_public_response_archives_late_next_update_cycle(self):
+        prior_due_at = self.now - timedelta(minutes=7)
+        ticket = SimpleNamespace(
+            estado="in_progress",
+            datos_extra={
+                "priority": "urgent",
+                "sla": {
+                    "next_update_cycle": 4,
+                    "next_update_due_at": prior_due_at.isoformat(),
+                },
+            },
+        )
+
+        sla = apply_operator_response_sla(
+            ticket,
+            _DEFAULT_TEST_POLICIES,
+            occurred_at=self.now,
+        )
+
+        archived = sla["next_update_history"][-1]
+        self.assertEqual(archived["cycle"], 4)
+        self.assertEqual(archived["result"], "late")
+        self.assertTrue(archived["known"])
+        self.assertEqual(archived["completion_delta_seconds"], 420)
+        self.assertEqual(sla["next_update_cycle"], 5)
+
+    def test_subsecond_lateness_is_not_truncated_into_an_on_time_result(self):
+        ticket = SimpleNamespace(
+            estado="in_progress",
+            datos_extra={
+                "priority": "urgent",
+                "sla": {
+                    "next_update_due_at": (
+                        self.now - timedelta(milliseconds=500)
+                    ).isoformat(),
+                },
+            },
+        )
+
+        sla = apply_operator_response_sla(
+            ticket,
+            _DEFAULT_TEST_POLICIES,
+            occurred_at=self.now,
+        )
+
+        archived = sla["next_update_history"][-1]
+        self.assertEqual(archived["result"], "late")
+        self.assertEqual(archived["completion_delta_seconds"], 0.5)
+
+    def test_successive_public_responses_close_distinct_cycles_without_rewriting_prior_entry(self):
+        ticket = SimpleNamespace(
+            estado="in_progress",
+            datos_extra={
+                "priority": "urgent",
+                "sla": {
+                    "next_update_due_at": (self.now + timedelta(minutes=5)).isoformat(),
+                },
+            },
+        )
+        first_response_at = self.now
+        second_response_at = self.now + timedelta(minutes=61)
+
+        first_sla = apply_operator_response_sla(
+            ticket,
+            _DEFAULT_TEST_POLICIES,
+            occurred_at=first_response_at,
+        )
+        first_entry = copy.deepcopy(first_sla["next_update_history"][0])
+        second_sla = apply_operator_response_sla(
+            ticket,
+            _DEFAULT_TEST_POLICIES,
+            occurred_at=second_response_at,
+        )
+
+        self.assertEqual(len(second_sla["next_update_history"]), 2)
+        self.assertEqual(second_sla["next_update_history"][0], first_entry)
+        self.assertEqual(second_sla["next_update_history"][0]["cycle"], 1)
+        self.assertEqual(second_sla["next_update_history"][0]["result"], "on_time")
+        self.assertEqual(second_sla["next_update_history"][1]["cycle"], 2)
+        self.assertEqual(second_sla["next_update_history"][1]["result"], "late")
+        self.assertEqual(second_sla["next_update_cycle"], 3)
+
+    def test_public_response_fails_closed_for_missing_or_invalid_prior_deadline(self):
+        for prior_due_at, reason in (
+            (None, "missing_due_at"),
+            ("not-a-timestamp", "invalid_due_at"),
+        ):
+            with self.subTest(prior_due_at=prior_due_at):
+                ticket = SimpleNamespace(
+                    estado="in_progress",
+                    datos_extra={
+                        "priority": "urgent",
+                        "sla": {"next_update_due_at": prior_due_at},
+                    },
+                )
+
+                sla = apply_operator_response_sla(
+                    ticket,
+                    _DEFAULT_TEST_POLICIES,
+                    occurred_at=self.now,
+                )
+
+                archived = sla["next_update_history"][-1]
+                self.assertEqual(archived["result"], "unknown")
+                self.assertFalse(archived["known"])
+                self.assertEqual(archived["unknown_reason"], reason)
+                self.assertIsNone(archived["completion_delta_seconds"])
+                self.assertNotIn(archived["result"], {"on_time", "late"})
+                self.assertEqual(sla["next_update_cycle"], 2)
+
+    def test_next_update_history_is_append_only_bounded_and_resists_malformed_cycle(self):
+        existing_history = [
+            {
+                "contract_version": "ticket.sla.next_update_cycle.v1",
+                "cycle": cycle,
+                "due_at": (self.now - timedelta(minutes=cycle)).isoformat(),
+                "satisfied_at": (self.now - timedelta(minutes=cycle - 1)).isoformat(),
+                "result": "late",
+                "known": True,
+            }
+            for cycle in range(1, 51)
+        ]
+        preserved_tail = copy.deepcopy(existing_history[1:])
+        ticket = SimpleNamespace(
+            estado="in_progress",
+            datos_extra={
+                "priority": "urgent",
+                "sla": {
+                    "next_update_cycle": "malformed",
+                    "next_update_due_at": (self.now + timedelta(minutes=1)).isoformat(),
+                    "next_update_history": existing_history,
+                },
+            },
+        )
+
+        sla = apply_operator_response_sla(
+            ticket,
+            _DEFAULT_TEST_POLICIES,
+            occurred_at=self.now,
+        )
+
+        self.assertEqual(len(sla["next_update_history"]), 50)
+        self.assertEqual(sla["next_update_history"][:-1], preserved_tail)
+        self.assertEqual(sla["next_update_history"][-1]["cycle"], 51)
+        self.assertEqual(sla["next_update_cycle"], 52)
+        self.assertEqual(existing_history[0]["cycle"], 1)
+        self.assertEqual(existing_history[-1]["cycle"], 50)
 
     def test_priority_change_after_breach_is_an_amendment_and_preserves_fulfilled_fact(self):
         first_due = (self.now - timedelta(hours=2)).isoformat()
@@ -765,6 +947,10 @@ class SlaTruthPersistenceTest(unittest.TestCase):
         serialized = serialize_ticket(ticket)
         self.assertEqual(serialized["sla"]["contract_version"], "ticket.sla.v1")
         self.assertEqual(serialized["sla"]["clocks"]["first_response"]["status"], "satisfied")
+        self.assertEqual(
+            serialized["sla"]["next_update_history"][0]["contract_version"],
+            "ticket.sla.next_update_cycle.v1",
+        )
         self.assertEqual(serialized["sla_evaluation"]["contract_version"], "ticket.sla.v1")
 
     def test_internal_comment_does_not_satisfy_public_response_clock(self):
@@ -842,6 +1028,16 @@ class SlaTruthPersistenceTest(unittest.TestCase):
         event_at = datetime.fromisoformat(result["event"]["created_at"])
         next_update = datetime.fromisoformat(sla["next_update_due_at"])
         self.assertAlmostEqual((next_update - event_at).total_seconds(), 3600, delta=1)
+        self.assertEqual(len(sla["next_update_history"]), 1)
+        self.assertAlmostEqual(
+            (
+                datetime.fromisoformat(sla["next_update_history"][0]["satisfied_at"])
+                - event_at
+            ).total_seconds(),
+            0,
+            delta=0.001,
+        )
+        history_before_replay = copy.deepcopy(sla["next_update_history"])
 
         replay = ServicioTickets().crear_respuesta_tenant(
             persisted,
@@ -862,6 +1058,35 @@ class SlaTruthPersistenceTest(unittest.TestCase):
             replay["ticket"].datos_extra["sla"]["next_update_due_at"],
             sla["next_update_due_at"],
         )
+        self.assertEqual(
+            replay["ticket"].datos_extra["sla"]["next_update_history"],
+            history_before_replay,
+        )
+
+    def test_cross_tenant_comment_cannot_append_next_update_history(self):
+        ticket = self._ticket(priority="urgent")
+        other_tenant = TenantProfile(
+            slug="sla-other-tenant",
+            nombre="SLA Other Tenant",
+            tipo="municipio",
+            municipio_id=self.owner.id,
+            configuracion={},
+        )
+        db.session.add(other_tenant)
+        db.session.flush()
+        before = copy.deepcopy(ticket.datos_extra["sla"])
+
+        with self.assertRaisesRegex(LookupError, "ticket_not_found"):
+            add_comment(
+                tenant=other_tenant,
+                actor_user=self.owner,
+                ticket=ticket,
+                body="Intento cross-tenant",
+                visibility="public",
+            )
+
+        self.assertEqual(ticket.datos_extra["sla"], before)
+        self.assertNotIn("next_update_history", ticket.datos_extra["sla"])
 
     def test_durable_public_non_operator_reply_does_not_satisfy_operator_clock(self):
         ticket = self._ticket(priority="urgent")

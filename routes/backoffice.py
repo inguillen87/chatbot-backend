@@ -329,25 +329,32 @@ def _tenant_id_candidates(tenant: TenantProfile) -> list[int]:
 
 def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -> dict[str, Any]:
     tenant_ids = _tenant_id_candidates(tenant)
-    surveys_query = EncEncuesta.query.filter(EncEncuesta.tenant_id.in_(tenant_ids))
-    active_surveys = surveys_query.filter(EncEncuesta.estado == "publicada").count()
-
     responses_query = EncRespuesta.query.filter(EncRespuesta.tenant_id.in_(tenant_ids))
     if since is not None:
         responses_query = responses_query.filter(EncRespuesta.submitted_at >= since)
 
-    comments_pending_review = (
-        EncComentario.query.join(
-            EncEncuesta,
-            EncEncuesta.id == EncComentario.encuesta_id,
+    # Navigation and summary call this overview on every workspace entry. Keep
+    # the contract authoritative while collapsing three database round-trips
+    # into one statement; on serverless Postgres each extra round-trip is
+    # visible latency before the operator can start working.
+    active_surveys = (
+        db.session.query(func.count(EncEncuesta.id))
+        .filter(
+            EncEncuesta.tenant_id.in_(tenant_ids),
+            EncEncuesta.estado == "publicada",
         )
+        .scalar_subquery()
+    )
+    comments_pending_review = (
+        db.session.query(func.count(EncComentario.id))
+        .join(EncEncuesta, EncEncuesta.id == EncComentario.encuesta_id)
         .filter(
             EncEncuesta.tenant_id.in_(tenant_ids),
             or_(EncComentario.estado == "revision", EncComentario.report_count > 0),
         )
-        .count()
+        .scalar_subquery()
     )
-    aggregate = (
+    response_aggregate = (
         responses_query.with_entities(
             func.coalesce(
                 func.sum(
@@ -404,6 +411,18 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
             ).label("geo_count"),
         )
         .order_by(None)
+        .subquery()
+    )
+    aggregate = (
+        db.session.query(
+            active_surveys.label("active_surveys"),
+            comments_pending_review.label("comments_pending_review"),
+            response_aggregate.c.real_count,
+            response_aggregate.c.synthetic_count,
+            response_aggregate.c.unverified_count,
+            response_aggregate.c.geo_count,
+        )
+        .select_from(response_aggregate)
         .one()
     )
     real_count = int(aggregate.real_count or 0)
@@ -411,9 +430,9 @@ def _surveys_overview(tenant: TenantProfile, *, since: datetime | None = None) -
     unverified_count = int(aggregate.unverified_count or 0)
 
     return {
-        "active_surveys": int(active_surveys),
+        "active_surveys": int(aggregate.active_surveys or 0),
         "live_votes": real_count,
-        "comments_pending_review": int(comments_pending_review),
+        "comments_pending_review": int(aggregate.comments_pending_review or 0),
         "heatmap_available": bool(int(aggregate.geo_count or 0)),
         "responses_window_started_at": since.isoformat() if since else None,
         "response_provenance": build_survey_response_provenance(
@@ -455,22 +474,69 @@ def _operations_counts(tenant: TenantProfile, *, since: datetime) -> dict[str, i
     resolved = 0
     total = 0
     geo_points = 0
+
+    def aggregate_query(
+        query,
+        model,
+        *,
+        pending_states: set[str] = _PENDING_STATES,
+        closed_states: set[str] = _CLOSED_STATES,
+    ):
+        return (
+            query.with_entities(
+                func.count(model.id).label("total"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (func.lower(model.estado).in_([state.lower() for state in pending_states]), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("pending"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (func.lower(model.estado).in_([state.lower() for state in closed_states]), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("resolved"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            ((model.latitud.isnot(None)) & (model.longitud.isnot(None)), 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("geo_points"),
+            )
+            .order_by(None)
+            .one()
+        )
+
     if scope == "pyme":
         ticket_query, pedidos_query = _case_queries(tenant, since=since)
-        pending += _count_states(ticket_query, PymeTicket, _PENDING_STATES)
-        resolved += _count_states(ticket_query, PymeTicket, _CLOSED_STATES)
-        total += int(ticket_query.count())
-        geo_points += int(ticket_query.filter(PymeTicket.latitud.isnot(None), PymeTicket.longitud.isnot(None)).count())
-        pending += _count_states(pedidos_query, PymePedido, {"pendiente", "nuevo", "en_progreso"})
-        resolved += _count_states(pedidos_query, PymePedido, {"finalizado", "completado", "entregado", "pagado"})
-        total += int(pedidos_query.count())
-        geo_points += int(pedidos_query.filter(PymePedido.latitud.isnot(None), PymePedido.longitud.isnot(None)).count())
+        ticket_counts = aggregate_query(ticket_query, PymeTicket)
+        pedido_counts = aggregate_query(
+            pedidos_query,
+            PymePedido,
+            pending_states={"pendiente", "nuevo", "en_progreso"},
+            closed_states={"finalizado", "completado", "entregado", "pagado"},
+        )
+        pending += int(ticket_counts.pending or 0) + int(pedido_counts.pending or 0)
+        resolved += int(ticket_counts.resolved or 0) + int(pedido_counts.resolved or 0)
+        total += int(ticket_counts.total or 0) + int(pedido_counts.total or 0)
+        geo_points += int(ticket_counts.geo_points or 0) + int(pedido_counts.geo_points or 0)
     else:
         query = _case_queries(tenant, since=since)[0]
-        pending += _count_states(query, MunicipioTicket, _PENDING_STATES)
-        resolved += _count_states(query, MunicipioTicket, _CLOSED_STATES)
-        total += int(query.count())
-        geo_points += int(query.filter(MunicipioTicket.latitud.isnot(None), MunicipioTicket.longitud.isnot(None)).count())
+        counts = aggregate_query(query, MunicipioTicket)
+        pending += int(counts.pending or 0)
+        resolved += int(counts.resolved or 0)
+        total += int(counts.total or 0)
+        geo_points += int(counts.geo_points or 0)
     return {"pending": pending, "resolved": resolved, "total": total, "geo_points": geo_points}
 
 

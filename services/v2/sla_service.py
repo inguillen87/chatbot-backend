@@ -45,6 +45,7 @@ _SLA_CLOCKS = (
 )
 _SLA_WARNING_WINDOW = timedelta(hours=12)
 _SLA_HISTORY_LIMIT = 50
+_SLA_NEXT_UPDATE_HISTORY_LIMIT = 50
 _SLA_BREACH_RECEIPTS_LIMIT = 100
 _SLA_HISTORY_FIELDS = (
     "first_response_due_at",
@@ -57,6 +58,7 @@ _SLA_HISTORY_FIELDS = (
     "next_update_due_at",
     "next_update_satisfied_at",
     "next_update_last_satisfied_at",
+    "next_update_cycle",
     "last_update_at",
     "paused",
 )
@@ -95,7 +97,10 @@ def _positive_bounded_minutes(value: Any) -> int | None:
     if isinstance(value, int):
         parsed = value
     elif isinstance(value, str) and value.strip().isdigit():
-        parsed = int(value.strip())
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
     else:
         return None
     if not _MIN_POLICY_MINUTES <= parsed <= _MAX_POLICY_MINUTES:
@@ -481,6 +486,103 @@ def _append_sla_history(
     sla["history"] = history[-_SLA_HISTORY_LIMIT:]
 
 
+def _valid_cycle_number(value: Any) -> int | None:
+    """Return a bounded positive cycle number without accepting booleans."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        parsed = int(value.strip())
+    else:
+        return None
+    if not 1 <= parsed <= 2_147_483_647:
+        return None
+    return parsed
+
+
+def _current_next_update_cycle(sla: dict[str, Any]) -> int:
+    """Resolve the active cycle without trusting malformed stored evidence."""
+
+    explicit = _valid_cycle_number(sla.get("next_update_cycle"))
+    if explicit is not None:
+        return explicit
+
+    raw_history = sla.get("next_update_history")
+    if not isinstance(raw_history, list):
+        return 1
+    archived_cycles = [
+        cycle
+        for item in raw_history[-_SLA_NEXT_UPDATE_HISTORY_LIMIT:]
+        if isinstance(item, dict)
+        for cycle in [_valid_cycle_number(item.get("cycle"))]
+        if cycle is not None
+    ]
+    return min(max(archived_cycles, default=0) + 1, 2_147_483_647)
+
+
+def _append_next_update_cycle_history(
+    sla: dict[str, Any],
+    *,
+    satisfied_at: datetime,
+) -> int:
+    """Archive one completed update obligation before opening the next one.
+
+    ``datos_extra.sla`` remains the persistence boundary, so this is backward
+    compatible and needs no schema migration. Existing entries are deep-copied
+    and never edited by the lifecycle helper. Missing or malformed due-date
+    evidence is explicitly ``unknown`` rather than being misreported as an
+    on-time response.
+    """
+
+    raw_due_at = copy.deepcopy(sla.get("next_update_due_at"))
+    due_at = _aware_datetime(raw_due_at)
+    satisfied_iso = satisfied_at.isoformat()
+    cycle = _current_next_update_cycle(sla)
+
+    if raw_due_at in (None, ""):
+        result = "unknown"
+        known = False
+        unknown_reason = "missing_due_at"
+        stored_due_at = None
+        completion_delta_seconds = None
+    elif due_at is None:
+        result = "unknown"
+        known = False
+        unknown_reason = "invalid_due_at"
+        stored_due_at = str(raw_due_at)
+        completion_delta_seconds = None
+    else:
+        completion_delta = (satisfied_at - due_at).total_seconds()
+        completion_delta_seconds = round(completion_delta, 6)
+        result = "late" if completion_delta > 0 else "on_time"
+        known = True
+        unknown_reason = None
+        stored_due_at = due_at.isoformat()
+
+    entry = {
+        "contract_version": "ticket.sla.next_update_cycle.v1",
+        "cycle": cycle,
+        "due_at": stored_due_at,
+        "satisfied_at": satisfied_iso,
+        "result": result,
+        "known": known,
+        "unknown_reason": unknown_reason,
+        "completion_delta_seconds": completion_delta_seconds,
+        "closed_by": "public_operator_response",
+    }
+    raw_history = sla.get("next_update_history")
+    history = (
+        copy.deepcopy(raw_history[-(_SLA_NEXT_UPDATE_HISTORY_LIMIT - 1):])
+        if isinstance(raw_history, list)
+        else []
+    )
+    history.append(entry)
+    sla["next_update_history"] = history[-_SLA_NEXT_UPDATE_HISTORY_LIMIT:]
+    return cycle
+
+
 def apply_priority_change_sla(
     ticket: TenantTicket,
     policies: dict[str, Any],
@@ -579,8 +681,9 @@ def apply_operator_response_sla(
 ) -> dict[str, Any]:
     """Persist SLA facts for one durable public operator response.
 
-    First response is a one-shot fact.  Every later public response satisfies
-    the previous update obligation and starts a new ``next_update`` clock.
+    First response is a one-shot fact. Every public response archives the
+    previous update obligation with its factual result, then starts a new
+    ``next_update`` clock. Legacy current-clock fields remain available.
     """
 
     observed_at = _aware_datetime(occurred_at) or _utc_now()
@@ -588,6 +691,11 @@ def apply_operator_response_sla(
     extra = copy.deepcopy(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
     sla = copy.deepcopy(extra.get("sla")) if isinstance(extra.get("sla"), dict) else {}
     observed_iso = observed_at.isoformat()
+
+    completed_cycle = _append_next_update_cycle_history(
+        sla,
+        satisfied_at=observed_at,
+    )
 
     if not (
         _aware_datetime(sla.get("first_response_satisfied_at"))
@@ -602,6 +710,7 @@ def apply_operator_response_sla(
     sla["next_update_due_at"] = (
         observed_at + timedelta(minutes=policy["next_update_minutes"])
     ).isoformat()
+    sla["next_update_cycle"] = min(completed_cycle + 1, 2_147_483_647)
     sla["paused"] = str(ticket.estado or "").strip().lower() in _PAUSED_STATUSES
 
     extra["sla"] = sla
