@@ -583,6 +583,49 @@ def _jurisdiction_has_verified_containment(jurisdiction: dict[str, Any] | None) 
     )
 
 
+def _attach_point_jurisdiction_evidence(
+    point: dict[str, Any],
+    jurisdiction: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Bind renderable coordinates to the exact boundary snapshot used.
+
+    The point is never moved or recomputed here.  Missing authority remains
+    explicit so a frontend can fail closed instead of inheriting trust from a
+    visually adjacent global panel.
+    """
+
+    contract = jurisdiction or {}
+    authority = _as_dict(contract.get("boundary_authority"))
+    coordinate_status = _norm(
+        point.get("coordinate_jurisdiction_status"), "missing"
+    )
+    verified = bool(
+        _jurisdiction_has_verified_containment(contract)
+        and coordinate_status == "within"
+    )
+    source_ref = authority.get("source_ref") if verified else None
+    snapshot_sha256 = authority.get("snapshot_sha256") if verified else None
+    point.update(
+        {
+            "containment_verified": verified,
+            "source_ref": source_ref,
+            "snapshot_sha256": snapshot_sha256,
+            "jurisdiction_evidence": {
+                "contract_version": "operations.point_jurisdiction_evidence.v1",
+                "containment_verified": verified,
+                "coordinate_jurisdiction_status": coordinate_status,
+                "containment_method": (
+                    contract.get("containment_method") if verified else None
+                ),
+                "authority_kind": authority.get("kind") if verified else None,
+                "source_ref": source_ref,
+                "snapshot_sha256": snapshot_sha256,
+            },
+        }
+    )
+    return point
+
+
 def _jurisdiction_status_allows_map(
     status: str,
     *,
@@ -4144,7 +4187,10 @@ def build_operational_heatmap(
             elif _point_matches_bbox(point, bbox):
                 points.append(point)
 
-    points = points[:max_points]
+    points = [
+        _attach_point_jurisdiction_evidence(point, jurisdiction)
+        for point in points[:max_points]
+    ]
     cells: dict[str, dict[str, Any]] = {}
     recent_cutoff = (_aware_datetime(end_date) or datetime.now(timezone.utc)) - timedelta(hours=24)
     for point in points:

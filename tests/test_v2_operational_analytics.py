@@ -1361,6 +1361,24 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(points[0].get("lat"), inside.lat)
         self.assertEqual(points[0].get("lng"), inside.lng)
         self.assertEqual(points[0].get("coordinate_jurisdiction_status"), "within")
+        self.assertTrue(points[0].get("containment_verified"))
+        self.assertIn("ide.mendoza.gov.ar", points[0].get("source_ref") or "")
+        self.assertEqual(
+            points[0].get("snapshot_sha256"),
+            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
+        )
+        self.assertEqual(
+            points[0].get("jurisdiction_evidence"),
+            {
+                "contract_version": "operations.point_jurisdiction_evidence.v1",
+                "containment_verified": True,
+                "coordinate_jurisdiction_status": "within",
+                "containment_method": "point_in_polygon",
+                "authority_kind": "official",
+                "source_ref": points[0].get("source_ref"),
+                "snapshot_sha256": points[0].get("snapshot_sha256"),
+            },
+        )
         self.assertEqual((payload.get("summary") or {}).get("survey_points"), 1)
         jurisdiction = payload.get("jurisdiction") or {}
         self.assertTrue(jurisdiction.get("containment_verified"))
@@ -1373,6 +1391,16 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         ])
         visible_ids = {point.get("id") for point in points}
         self.assertNotIn(f"survey_response:{outside.id}", visible_ids)
+        geo_feature = (payload.get("geo_layers") or {}).get("points", {}).get(
+            "features", []
+        )[0]
+        self.assertTrue(
+            (geo_feature.get("properties") or {}).get("containment_verified")
+        )
+        self.assertEqual(
+            (geo_feature.get("properties") or {}).get("snapshot_sha256"),
+            points[0].get("snapshot_sha256"),
+        )
 
     def test_municipal_heatmap_fails_closed_when_official_boundary_hash_is_invalid(self):
         broken_admin = User(
