@@ -362,7 +362,12 @@ class CrmDetailCategoryRbacTest(unittest.TestCase):
     def test_omnichannel_actions_do_not_mutate_out_of_scope_sources(self):
         tenant_response = self.client.post(
             f"/api/v2/inbox/omnichannel/{self.restricted_tenant.id}/actions",
-            json={"action": "set_priority", "priority": "high"},
+            json={
+                "action": "set_priority",
+                "source_model": "TenantTicket",
+                "ticket_id": self.restricted_tenant.id,
+                "priority": "high",
+            },
             headers=self._auth(),
         )
         municipio_response = self.client.post(

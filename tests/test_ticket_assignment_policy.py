@@ -60,8 +60,21 @@ def test_dotted_capability_is_the_only_role_independent_assignment_elevation():
     assert transition.target_assignee_id == 20
 
 
+@pytest.mark.parametrize("lossy_value", [2.9, 2.0, True, "2.9", " 2.0 "])
+def test_assignment_cas_rejects_lossy_or_ambiguous_numeric_identities(lossy_value):
+    with pytest.raises(TicketAssignmentPolicyError) as exc_info:
+        assignment_transition(
+            actor=_actor(role="admin", actor_id=10),
+            payload={"expected_assignee_id": lossy_value},
+            current_assignee_id=2,
+            target_assignee_id=20,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.reason_code == "expected_assignee_id_invalid"
+
+
 def test_operational_destination_requires_authoritative_employee_flag():
     assert ticket_assignee_is_operational(_actor(role="empleado", employee=False)) is False
     assert ticket_assignee_is_operational(_actor(role="admin", employee=False)) is False
     assert ticket_assignee_is_operational(_actor(role="usuario", employee=True)) is True
-

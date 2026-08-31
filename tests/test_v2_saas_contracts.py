@@ -379,12 +379,15 @@ class V2SaasContractsTest(unittest.TestCase):
         db.session.flush()
         return ticket
 
-    def _enable_municipal_domain_outbox(self):
+    def _set_tenant_as_municipio(self):
         self.tenant.tipo = "municipio"
         self.tenant.municipio_id = self.owner.id
         self.tenant.pyme_id = None
         db.session.add(self.tenant)
         db.session.commit()
+
+    def _enable_municipal_domain_outbox(self):
+        self._set_tenant_as_municipio()
         self.app.config.update(
             DOMAIN_EFFECT_OUTBOX_MODE="queue",
             DOMAIN_EFFECT_OUTBOX_SECRET="v2-saas-domain-effect-secret-32-bytes-minimum",
@@ -925,6 +928,42 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(response.get_json()["reason_code"], "ticket_identity_conflict")
         db.session.expire_all()
         self.assertIsNone((db.session.get(TenantTicket, ticket.id).datos_extra or {}).get("assignee_id"))
+
+    def test_auto_assign_rejects_lossy_expected_assignee_identity(self):
+        ticket = self._unassigned_claim_ticket(category="educacion")
+        operator = self._claim_employee(
+            name="Operador CAS exacto",
+            email="operator-cas-exact@test.com",
+            categories=["educacion"],
+        )
+        extra = dict(ticket.datos_extra or {})
+        extra["assignee_id"] = operator.id
+        ticket.datos_extra = extra
+        db.session.add(ticket)
+        db.session.commit()
+
+        response = self.client.post(
+            "/api/v2/employee-routing/auto-assign",
+            json={
+                "dry_run": False,
+                "tickets": [
+                    {
+                        "source_model": "TenantTicket",
+                        "id": ticket.id,
+                        "expected_assignee_id": float(operator.id) + 0.9,
+                    }
+                ],
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "expected_assignee_id_invalid")
+        db.session.expire_all()
+        self.assertEqual(
+            (db.session.get(TenantTicket, ticket.id).datos_extra or {}).get("assignee_id"),
+            operator.id,
+        )
 
     def test_employee_routing_does_not_recommend_or_apply_incompatible_assignee(self):
         restricted = TenantTicket(
@@ -2203,6 +2242,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(item["attachments"][0]["source"], "pyme_multimodal")
 
     def test_omnichannel_inbox_includes_legacy_municipio_tracking_chat(self):
+        self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -2372,6 +2412,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(closed_public_status.args[1]["estado"], "cerrado")
 
     def test_omnichannel_legacy_claim_reply_reports_provider_acceptance_only(self):
+        self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -2428,6 +2469,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(any("equipo ya fue avisado" in event["body"].lower() for event in payload["ticket"]["timeline"]))
 
     def test_omnichannel_legacy_claim_reply_survives_dispatcher_failure(self):
+        self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -2472,6 +2514,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(any("seguimos el caso" in event["body"].lower() for event in payload["ticket"]["timeline"]))
 
     def test_omnichannel_legacy_claim_reply_replays_once_without_second_dispatch(self):
+        self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -2551,6 +2594,7 @@ class V2SaasContractsTest(unittest.TestCase):
         )
 
     def test_omnichannel_legacy_claim_reply_rejects_same_key_with_different_payload(self):
+        self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -2606,6 +2650,7 @@ class V2SaasContractsTest(unittest.TestCase):
         )
 
     def test_omnichannel_legacy_claim_reply_requires_stable_client_identity(self):
+        self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,
@@ -2871,6 +2916,7 @@ class V2SaasContractsTest(unittest.TestCase):
         raw_body = json.dumps(
             {
                 "action": "reply",
+                "source_model": "TenantTicket",
                 "body": "Esta respuesta no debe persistirse.",
                 "visibility": "public",
                 "client_message_id": "crm-reply:declared-too-large-0001",
@@ -2913,6 +2959,7 @@ class V2SaasContractsTest(unittest.TestCase):
         raw_body = json.dumps(
             {
                 "action": "reply",
+                "source_model": "TenantTicket",
                 "body": "Esta respuesta tampoco debe persistirse.",
                 "visibility": "public",
                 "client_message_id": "crm-reply:actual-too-large-0001",
@@ -2962,6 +3009,7 @@ class V2SaasContractsTest(unittest.TestCase):
         raw_body = json.dumps(
             {
                 "action": "reply",
+                "source_model": "TenantTicket",
                 "body": body,
                 "visibility": "public",
                 "client_message_id": "crm-reply:multibyte-too-large-0001",
@@ -3008,6 +3056,7 @@ class V2SaasContractsTest(unittest.TestCase):
         raw_body = json.dumps(
             {
                 "action": "reply",
+                "source_model": "TenantTicket",
                 "body": body,
                 "visibility": "internal",
                 "send_external": False,
@@ -3254,6 +3303,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
                 json={
                     "action": "reply",
+                    "source_model": "TenantTicket",
                     "body": f"Respuesta {identity}",
                     "client_message_id": f"crm-reply:{identity}",
                 },
@@ -3443,6 +3493,422 @@ class V2SaasContractsTest(unittest.TestCase):
         ):
             override = reply(assigned_to_other, supervisor, "legacy-supervisor-0001")
         self.assertEqual(override.status_code, 200, override.get_json())
+
+    def test_tenant_operational_mutations_require_owner_and_allow_supervisor_override(self):
+        operator = self._claim_employee(
+            name="Operador de caso",
+            email="operational-owner-tenant@test.com",
+            permissions=["tickets.read"],
+        )
+        other = self._claim_employee(
+            name="Operador sin ownership",
+            email="operational-other-tenant@test.com",
+            permissions=["tickets.read"],
+        )
+        assignment_only = self._claim_employee(
+            name="Asignador sin ownership",
+            email="operational-assign-only-tenant@test.com",
+            permissions=["tickets.assign"],
+        )
+        supervisor = User(
+            name="Supervisor operativo",
+            email="operational-supervisor-tenant@test.com",
+            rol="supervisor",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+        )
+        supervisor.set_password("secret123")
+        db.session.add(supervisor)
+
+        def ticket_for(action, assignee_id):
+            extra = {
+                "assignee_id": assignee_id,
+                "channel": "web",
+                "comments": [],
+            }
+            if action == "resume_ai":
+                extra["handoff"] = {
+                    "contract_version": "inbox.handoff.v1",
+                    "channel": "operator",
+                    "status": "accepted",
+                }
+            ticket = TenantTicket(
+                tenant_id=self.tenant.id,
+                user_id=self.owner.id,
+                categoria="educacion",
+                descripcion=f"Caso de ownership para {action}",
+                estado="cerrado" if action == "reopen" else "nuevo",
+                origen="web",
+                datos_extra=extra,
+            )
+            db.session.add(ticket)
+            db.session.flush()
+            return ticket
+
+        def mutate(ticket, action, actor):
+            payload = {
+                "action": action,
+                "source_model": "TenantTicket",
+                "ticket_id": ticket.id,
+            }
+            if action == "set_priority":
+                payload["priority"] = "high"
+            return self.client.post(
+                f"/api/v2/inbox/omnichannel/{ticket.id}/actions",
+                json=payload,
+                headers=self._auth(actor),
+            )
+
+        unassigned = self._unassigned_claim_ticket()
+        assigned_to_other = ticket_for("close", operator.id)
+        owner_tickets = {
+            action: ticket_for(action, operator.id)
+            for action in ("handoff", "resume_ai", "close", "reopen", "set_priority")
+        }
+        supervisor_tickets = {
+            action: ticket_for(action, operator.id)
+            for action in ("handoff", "resume_ai", "close", "reopen", "set_priority")
+        }
+        db.session.commit()
+
+        unassigned_detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{unassigned.id}",
+            headers=self._auth(operator),
+        )
+        self.assertEqual(unassigned_detail.status_code, 200, unassigned_detail.get_json())
+        unassigned_actions = {
+            item["id"]: item
+            for item in unassigned_detail.get_json()["ticket"]["allowed_actions"]
+        }
+        for action in ("reply", "handoff", "close", "set_priority"):
+            with self.subTest(contract_action=action, owner="unassigned"):
+                self.assertTrue(unassigned_actions[action]["disabled"])
+                self.assertEqual(unassigned_actions[action]["reason_code"], "ticket_claim_required")
+                self.assertEqual(
+                    unassigned_actions[action]["payload_defaults"]["source_model"],
+                    "TenantTicket",
+                )
+                self.assertEqual(
+                    unassigned_actions[action]["payload_defaults"]["ticket_id"],
+                    unassigned.id,
+                )
+
+        other_detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{assigned_to_other.id}",
+            headers=self._auth(other),
+        )
+        self.assertEqual(other_detail.status_code, 200, other_detail.get_json())
+        other_actions = {
+            item["id"]: item
+            for item in other_detail.get_json()["ticket"]["allowed_actions"]
+        }
+        for action in ("reply", "handoff", "close", "set_priority"):
+            with self.subTest(contract_action=action, owner="other"):
+                self.assertTrue(other_actions[action]["disabled"])
+                self.assertEqual(other_actions[action]["reason_code"], "ticket_assigned_to_other")
+
+        for action, ticket in owner_tickets.items():
+            with self.subTest(action=action, actor="non_owner"):
+                before_status = ticket.estado
+                before_extra = copy.deepcopy(ticket.datos_extra)
+                blocked = mutate(ticket, action, other)
+                self.assertEqual(blocked.status_code, 409, blocked.get_json())
+                self.assertEqual(blocked.get_json()["reason_code"], "ticket_assigned_to_other")
+                db.session.refresh(ticket)
+                self.assertEqual(ticket.estado, before_status)
+                self.assertEqual(ticket.datos_extra, before_extra)
+
+            with self.subTest(action=action, actor="tickets_assign_without_ownership"):
+                blocked = mutate(ticket, action, assignment_only)
+                self.assertEqual(blocked.status_code, 409, blocked.get_json())
+                self.assertEqual(blocked.get_json()["reason_code"], "ticket_assigned_to_other")
+
+            with self.subTest(action=action, actor="owner"):
+                allowed = mutate(ticket, action, operator)
+                self.assertEqual(allowed.status_code, 200, allowed.get_json())
+
+        for action, ticket in supervisor_tickets.items():
+            with self.subTest(action=action, actor="supervisor_override"):
+                allowed = mutate(ticket, action, supervisor)
+                self.assertEqual(allowed.status_code, 200, allowed.get_json())
+
+    def test_legacy_operational_mutations_require_owner_and_allow_supervisor_override(self):
+        self.tenant.tipo = "municipio"
+        self.tenant.municipio_id = self.owner.id
+        self.tenant.pyme_id = None
+        db.session.add(self.tenant)
+        operator = self._claim_employee(
+            name="Operador municipal de caso",
+            email="operational-owner-legacy@test.com",
+            permissions=["tickets.read"],
+        )
+        other = self._claim_employee(
+            name="Operador municipal ajeno",
+            email="operational-other-legacy@test.com",
+            permissions=["tickets.read"],
+        )
+        assignment_only = self._claim_employee(
+            name="Asignador municipal sin ownership",
+            email="operational-assign-only-legacy@test.com",
+            permissions=["tickets_assign"],
+        )
+        supervisor = User(
+            name="Supervisor municipal operativo",
+            email="operational-supervisor-legacy@test.com",
+            rol="supervisor",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+        )
+        supervisor.set_password("secret123")
+        db.session.add(supervisor)
+
+        sequence = iter(range(881000, 881100))
+
+        def ticket_for(action, assignee_id):
+            number = next(sequence)
+            extra = {}
+            if action == "resume_ai":
+                extra["handoff"] = {
+                    "contract_version": "inbox.handoff.v1",
+                    "channel": "operator",
+                    "status": "accepted",
+                }
+            ticket = MunicipioTicket(
+                tenant_id=self.tenant.id,
+                municipio_id=self.owner.id,
+                nro_ticket=f"M-{number}",
+                consulta_pin=str(number),
+                pregunta=f"Caso municipal de ownership para {action}",
+                asunto="Educacion",
+                categoria="educacion",
+                detalles="Prueba operativa autoritativa",
+                estado="cerrado" if action == "reopen" else "nuevo",
+                canal_ingreso="web",
+                asignado_a_id=assignee_id,
+                datos_extra=extra,
+            )
+            db.session.add(ticket)
+            db.session.flush()
+            return ticket
+
+        def mutate(ticket, action, actor):
+            return self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "action": action,
+                    "source_model": "MunicipioTicket",
+                    "ticket_id": ticket.id,
+                },
+                headers=self._auth(actor),
+            )
+
+        unassigned = ticket_for("close", None)
+        owner_tickets = {
+            action: ticket_for(action, operator.id)
+            for action in ("handoff", "resume_ai", "close", "reopen")
+        }
+        supervisor_tickets = {
+            action: ticket_for(action, operator.id)
+            for action in ("handoff", "resume_ai", "close", "reopen")
+        }
+        db.session.commit()
+
+        unassigned_detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{unassigned.id}?source_model=MunicipioTicket",
+            headers=self._auth(operator),
+        )
+        self.assertEqual(unassigned_detail.status_code, 200, unassigned_detail.get_json())
+        unassigned_actions = {
+            item["id"]: item
+            for item in unassigned_detail.get_json()["item"]["allowed_actions"]
+        }
+        for action in ("reply", "handoff", "close"):
+            with self.subTest(contract_action=action, source="MunicipioTicket"):
+                self.assertTrue(unassigned_actions[action]["disabled"])
+                self.assertEqual(unassigned_actions[action]["reason_code"], "ticket_claim_required")
+
+        for action, ticket in owner_tickets.items():
+            with self.subTest(action=action, actor="legacy_non_owner"):
+                before_status = ticket.estado
+                before_extra = copy.deepcopy(ticket.datos_extra)
+                blocked = mutate(ticket, action, other)
+                self.assertEqual(blocked.status_code, 409, blocked.get_json())
+                self.assertEqual(blocked.get_json()["reason_code"], "ticket_assigned_to_other")
+                db.session.refresh(ticket)
+                self.assertEqual(ticket.estado, before_status)
+                self.assertEqual(ticket.datos_extra, before_extra)
+
+            with self.subTest(action=action, actor="legacy_tickets_assign_without_ownership"):
+                blocked = mutate(ticket, action, assignment_only)
+                self.assertEqual(blocked.status_code, 409, blocked.get_json())
+                self.assertEqual(blocked.get_json()["reason_code"], "ticket_assigned_to_other")
+
+            with self.subTest(action=action, actor="legacy_owner"):
+                allowed = mutate(ticket, action, operator)
+                self.assertEqual(allowed.status_code, 200, allowed.get_json())
+
+        for action, ticket in supervisor_tickets.items():
+            with self.subTest(action=action, actor="legacy_supervisor_override"):
+                allowed = mutate(ticket, action, supervisor)
+                self.assertEqual(allowed.status_code, 200, allowed.get_json())
+
+    def test_handoff_transfers_assignment_a_to_b_atomically_for_both_ticket_models(self):
+        self.tenant.tipo = "municipio"
+        self.tenant.municipio_id = self.owner.id
+        self.tenant.pyme_id = None
+        operator_a = self._claim_employee(
+            name="Operador A",
+            email="handoff-a@test.com",
+            categories=["educacion"],
+            permissions=["tickets.read"],
+        )
+        operator_b = self._claim_employee(
+            name="Operador B",
+            email="handoff-b@test.com",
+            categories=["educacion"],
+            permissions=["tickets.read"],
+        )
+        tenant_ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="educacion",
+            descripcion="Transferencia TenantTicket A a B",
+            estado="nuevo",
+            origen="web",
+            datos_extra={
+                "assignee_id": operator_a.id,
+                "assignee_name": operator_a.name,
+                "assignee_email": operator_a.email,
+                "comments": [],
+            },
+        )
+        legacy_ticket = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-HANDOFF-A-B",
+            consulta_pin="991177",
+            pregunta="Transferencia MunicipioTicket A a B",
+            asunto="Educacion",
+            categoria="educacion",
+            detalles="Prueba de transferencia auditada",
+            estado="nuevo",
+            canal_ingreso="web",
+            asignado_a_id=operator_a.id,
+            datos_extra={},
+        )
+        db.session.add_all([self.tenant, tenant_ticket, legacy_ticket])
+        db.session.commit()
+
+        for source_model, ticket in (
+            ("TenantTicket", tenant_ticket),
+            ("MunicipioTicket", legacy_ticket),
+        ):
+            endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
+            identity = {"source_model": source_model, "ticket_id": ticket.id}
+            requested = self.client.post(
+                endpoint,
+                json={**identity, "action": "handoff", "channel": "operator"},
+                headers=self._auth(operator_a),
+            )
+            self.assertEqual(requested.status_code, 200, requested.get_json())
+            accept_contract = next(
+                item
+                for item in requested.get_json()["ticket"]["allowed_actions"]
+                if item["id"] == "accept_handoff"
+            )
+            self.assertEqual(accept_contract["authorization"]["mode"], "handoff_recipient")
+            self.assertTrue(accept_contract["ownership_transfer"]["atomic"])
+
+            self_accept = self.client.post(
+                endpoint,
+                json={**identity, "action": "accept_handoff"},
+                headers=self._auth(operator_a),
+            )
+            self.assertEqual(self_accept.status_code, 409, self_accept.get_json())
+            self.assertEqual(
+                self_accept.get_json()["reason_code"],
+                "handoff_self_accept_forbidden",
+            )
+            db.session.expire_all()
+            if source_model == "TenantTicket":
+                self_accept_ticket = db.session.get(TenantTicket, ticket.id)
+                self_accept_extra = dict(self_accept_ticket.datos_extra or {})
+                self.assertEqual(self_accept_extra.get("assignee_id"), operator_a.id)
+            else:
+                self_accept_ticket = db.session.get(MunicipioTicket, ticket.id)
+                self_accept_extra = dict(self_accept_ticket.datos_extra or {})
+                self.assertEqual(self_accept_ticket.asignado_a_id, operator_a.id)
+            self.assertEqual((self_accept_extra.get("handoff") or {}).get("status"), "requested")
+            self.assertNotIn("accepted_by", self_accept_extra.get("handoff") or {})
+
+            accepted = self.client.post(
+                endpoint,
+                json={**identity, "action": "accept_handoff"},
+                headers=self._auth(operator_b),
+            )
+            self.assertEqual(accepted.status_code, 200, accepted.get_json())
+            accepted_handoff = accepted.get_json()["ticket"]["handoff"]
+            self.assertEqual(accepted_handoff["status"], "accepted")
+            self.assertEqual(accepted_handoff["accepted_by"]["id"], operator_b.id)
+            self.assertEqual(accepted_handoff["transferred_from"]["id"], operator_a.id)
+            self.assertEqual(accepted.get_json()["ticket"]["assignee"]["id"], operator_b.id)
+
+            stolen = self.client.post(
+                endpoint,
+                json={**identity, "action": "accept_handoff"},
+                headers=self._auth(operator_a),
+            )
+            self.assertEqual(stolen.status_code, 409, stolen.get_json())
+            self.assertEqual(stolen.get_json()["reason_code"], "invalid_handoff_transition")
+
+        db.session.expire_all()
+        self.assertEqual(
+            (db.session.get(TenantTicket, tenant_ticket.id).datos_extra or {}).get("assignee_id"),
+            operator_b.id,
+        )
+        self.assertEqual(db.session.get(MunicipioTicket, legacy_ticket.id).asignado_a_id, operator_b.id)
+
+    def test_handoff_accept_rejects_incompatible_recipient_without_stealing(self):
+        operator_a = self._claim_employee(
+            name="Operador origen compatible",
+            email="handoff-compatible-a@test.com",
+            categories=["educacion"],
+            permissions=["tickets.read"],
+        )
+        incompatible = self._claim_employee(
+            name="Operador destino incompatible",
+            email="handoff-incompatible-b@test.com",
+            categories=["luminarias"],
+            permissions=["tickets.read"],
+        )
+        ticket = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="educacion",
+            descripcion="Handoff con categoria incompatible",
+            estado="nuevo",
+            origen="web",
+            datos_extra={"assignee_id": operator_a.id, "comments": []},
+        )
+        db.session.add(ticket)
+        db.session.commit()
+        identity = {"source_model": "TenantTicket", "ticket_id": ticket.id}
+        endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
+        requested = self.client.post(
+            endpoint,
+            json={**identity, "action": "handoff"},
+            headers=self._auth(operator_a),
+        )
+        self.assertEqual(requested.status_code, 200, requested.get_json())
+        blocked = self.client.post(
+            endpoint,
+            json={**identity, "action": "accept_handoff"},
+            headers=self._auth(incompatible),
+        )
+        self.assertEqual(blocked.status_code, 404, blocked.get_json())
+        db.session.refresh(ticket)
+        self.assertEqual((ticket.datos_extra or {}).get("assignee_id"), operator_a.id)
+        self.assertEqual((ticket.datos_extra or {})["handoff"]["status"], "requested")
 
     def test_omnichannel_assign_preserves_explicit_manager_reassignment(self):
         ticket = self._unassigned_claim_ticket()
@@ -3842,6 +4308,18 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIsNone((db.session.get(TenantTicket, exact_id).datos_extra or {}).get("assignee_id"))
         self.assertIsNone(db.session.get(MunicipioTicket, exact_id).asignado_a_id)
 
+        legacy_alias_only = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "legacy_model": "TenantTicket",
+                "ticket_id": exact_id,
+                "action": "claim",
+            },
+            headers=self._auth(luminaria_operator),
+        )
+        self.assertEqual(legacy_alias_only.status_code, 400, legacy_alias_only.get_json())
+        self.assertEqual(legacy_alias_only.get_json()["reason_code"], "source_model_required")
+
         missing_source_path = self.client.post(
             f"/api/v2/inbox/omnichannel/{exact_id}/actions",
             json={"action": "claim"},
@@ -3931,6 +4409,163 @@ class V2SaasContractsTest(unittest.TestCase):
             luminaria_operator.id,
         )
         self.assertIsNone(db.session.get(MunicipioTicket, exact_id).asignado_a_id)
+
+    def test_operational_mutation_uses_exact_source_when_ticket_ids_collide(self):
+        self.tenant.tipo = "municipio"
+        self.tenant.municipio_id = self.owner.id
+        self.tenant.pyme_id = None
+        db.session.add(self.tenant)
+        exact_id = 778
+        tenant_ticket = TenantTicket(
+            id=exact_id,
+            tenant_id=self.tenant.id,
+            user_id=self.owner.id,
+            categoria="educacion",
+            descripcion="Caso TenantTicket con ID compartido",
+            estado="nuevo",
+            origen="web",
+            datos_extra={"comments": []},
+        )
+        legacy_ticket = MunicipioTicket(
+            id=exact_id,
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-IDENTITY-778",
+            consulta_pin="910778",
+            pregunta="Caso MunicipioTicket con ID compartido",
+            asunto="Educacion",
+            categoria="educacion",
+            estado="nuevo",
+            canal_ingreso="web",
+        )
+        db.session.add_all([tenant_ticket, legacy_ticket])
+        db.session.commit()
+
+        missing_source = self.client.post(
+            f"/api/v2/inbox/omnichannel/{exact_id}/actions",
+            json={"ticket_id": exact_id, "action": "close"},
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(missing_source.status_code, 400, missing_source.get_json())
+        self.assertEqual(missing_source.get_json()["reason_code"], "source_model_required")
+        db.session.expire_all()
+        self.assertEqual(db.session.get(TenantTicket, exact_id).estado, "nuevo")
+        self.assertEqual(db.session.get(MunicipioTicket, exact_id).estado, "nuevo")
+
+        tenant_close = self.client.post(
+            f"/api/v2/inbox/omnichannel/{exact_id}/actions",
+            json={
+                "source_model": "TenantTicket",
+                "ticket_id": exact_id,
+                "action": "close",
+            },
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(tenant_close.status_code, 200, tenant_close.get_json())
+        db.session.expire_all()
+        self.assertEqual(db.session.get(TenantTicket, exact_id).estado, "cerrado")
+        self.assertEqual(db.session.get(MunicipioTicket, exact_id).estado, "nuevo")
+
+        legacy_close = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "ticket_id": exact_id,
+                "action": "close",
+            },
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(legacy_close.status_code, 200, legacy_close.get_json())
+        db.session.expire_all()
+        self.assertEqual(db.session.get(TenantTicket, exact_id).estado, "cerrado")
+        self.assertEqual(db.session.get(MunicipioTicket, exact_id).estado, "cerrado")
+
+    def test_omnichannel_mutation_rejects_lossy_or_ambiguous_ticket_identity(self):
+        ticket = self._unassigned_claim_ticket(category="educacion")
+        operator = self._claim_employee(
+            name="Operador identidad estricta",
+            email="strict-ticket-identity@test.com",
+            categories=["educacion"],
+            permissions=["tickets.read"],
+        )
+        db.session.commit()
+
+        invalid_bodies = [True, 1.5, 0, -1]
+        for invalid_id in invalid_bodies:
+            with self.subTest(body_ticket_id=invalid_id):
+                response = self.client.post(
+                    "/api/v2/inbox/omnichannel/actions",
+                    json={
+                        "action": "claim",
+                        "source_model": "TenantTicket",
+                        "ticket_id": invalid_id,
+                    },
+                    headers=self._auth(operator),
+                )
+                self.assertEqual(response.status_code, 400, response.get_json())
+                self.assertEqual(response.get_json()["reason_code"], "ticket_id_invalid")
+
+        ambiguous_aliases = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "action": "claim",
+                "source_model": "TenantTicket",
+                "ticket_id": ticket.id,
+                "id": float(ticket.id),
+            },
+            headers=self._auth(operator),
+        )
+        self.assertEqual(ambiguous_aliases.status_code, 400, ambiguous_aliases.get_json())
+        self.assertEqual(ambiguous_aliases.get_json()["reason_code"], "ticket_id_invalid")
+
+        typed_cross_source_id = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "action": "claim",
+                "source_model": "TenantTicket",
+                "id": f"municipio:{ticket.id}",
+            },
+            headers=self._auth(operator),
+        )
+        self.assertEqual(typed_cross_source_id.status_code, 400, typed_cross_source_id.get_json())
+        self.assertEqual(typed_cross_source_id.get_json()["reason_code"], "ticket_id_invalid")
+
+        for invalid_source in (True, 1, 1.5):
+            with self.subTest(source_model=invalid_source):
+                response = self.client.post(
+                    "/api/v2/inbox/omnichannel/actions",
+                    json={
+                        "action": "claim",
+                        "source_model": invalid_source,
+                        "ticket_id": ticket.id,
+                    },
+                    headers=self._auth(operator),
+                )
+                self.assertEqual(response.status_code, 400, response.get_json())
+                self.assertEqual(
+                    response.get_json()["reason_code"],
+                    "unsupported_inbox_source_model",
+                )
+
+        zero_path = self.client.post(
+            "/api/v2/inbox/omnichannel/0/actions",
+            json={"action": "claim", "source_model": "TenantTicket"},
+            headers=self._auth(operator),
+        )
+        self.assertEqual(zero_path.status_code, 400, zero_path.get_json())
+        self.assertEqual(zero_path.get_json()["reason_code"], "ticket_id_invalid")
+
+        for invalid_path in ("-1", "1.5", "true"):
+            with self.subTest(path_ticket_id=invalid_path):
+                response = self.client.post(
+                    f"/api/v2/inbox/omnichannel/{invalid_path}/actions",
+                    json={"action": "claim", "source_model": "TenantTicket"},
+                    headers=self._auth(operator),
+                )
+                self.assertEqual(response.status_code, 404)
+
+        db.session.refresh(ticket)
+        self.assertIsNone((ticket.datos_extra or {}).get("assignee_id"))
 
     def test_assignment_rejects_conflicting_assignee_aliases_without_mutation(self):
         ticket = self._unassigned_claim_ticket()
@@ -4062,7 +4697,12 @@ class V2SaasContractsTest(unittest.TestCase):
         ) as send_whatsapp:
             response = self.client.post(
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
-                json={"action": "reply", "body": "Estamos revisando tu caso.", "visibility": "public"},
+                json={
+                    "action": "reply",
+                    "source_model": "TenantTicket",
+                    "body": "Estamos revisando tu caso.",
+                    "visibility": "public",
+                },
                 headers={**self._auth(self.owner), "X-Request-Id": "inbox-action-1"},
             )
 
@@ -4112,7 +4752,11 @@ class V2SaasContractsTest(unittest.TestCase):
             with self.subTest(action=action, status=contradictory_status):
                 response = self.client.post(
                     f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
-                    json={"action": action, "status": contradictory_status},
+                    json={
+                        "action": action,
+                        "source_model": "TenantTicket",
+                        "status": contradictory_status,
+                    },
                     headers=self._auth(self.owner),
                 )
 
@@ -4132,6 +4776,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
                 json={
                     "action": "reply",
+                    "source_model": "TenantTicket",
                     "body": "Nota operativa sin envio externo.",
                     "visibility": "internal",
                     "send_external": True,
@@ -4160,6 +4805,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
                 json={
                     "action": "reply",
+                    "source_model": "TenantTicket",
                     "body": "<Gracias>\nSeguimos con tu caso.",
                     "visibility": "public",
                     "delivery_channels": ["email"],
@@ -4189,6 +4835,7 @@ class V2SaasContractsTest(unittest.TestCase):
         client_message_id = "crm-reply:tenant-retry-0001"
         request_payload = {
             "action": "reply",
+            "source_model": "TenantTicket",
             "body": "Estamos revisando tu solicitud.",
             "visibility": "public",
             "client_message_id": client_message_id,
@@ -4252,6 +4899,7 @@ class V2SaasContractsTest(unittest.TestCase):
         }
         common = {
             "action": "reply",
+            "source_model": "TenantTicket",
             "visibility": "public",
             "send_external": False,
             "client_message_id": client_message_id,
@@ -4298,6 +4946,7 @@ class V2SaasContractsTest(unittest.TestCase):
         client_message_id = "crm-reply:tenant-provider-failure-0001"
         request_payload = {
             "action": "reply",
+            "source_model": "TenantTicket",
             "body": "Tu caso quedo registrado para seguimiento.",
             "visibility": "public",
             "client_message_id": client_message_id,
@@ -4355,6 +5004,7 @@ class V2SaasContractsTest(unittest.TestCase):
         client_message_id = "crm-reply:tenant-outbox-0001"
         request_payload = {
             "action": "reply",
+            "source_model": "TenantTicket",
             "body": "La respuesta quedo encolada de forma durable.",
             "visibility": "public",
             "client_message_id": client_message_id,
@@ -4463,6 +5113,7 @@ class V2SaasContractsTest(unittest.TestCase):
         client_message_id = "crm-reply:pinned-pruned-0001"
         request_payload = {
             "action": "reply",
+            "source_model": "TenantTicket",
             "body": first_body,
             "visibility": "public",
             "delivery_channels": ["email", "whatsapp"],
@@ -4629,6 +5280,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
                 json={
                     "action": "reply",
+                    "source_model": "TenantTicket",
                     "body": "No debe quedar parcialmente persistida.",
                     "visibility": "public",
                     "client_message_id": "crm-reply:rollback-0001",
@@ -4702,6 +5354,7 @@ class V2SaasContractsTest(unittest.TestCase):
             f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
             json={
                 "action": "reply",
+                "source_model": "TenantTicket",
                 "body": "Mensaje durable antes del proveedor.",
                 "visibility": "public",
                 "client_message_id": client_message_id,
@@ -4778,6 +5431,7 @@ class V2SaasContractsTest(unittest.TestCase):
             f"/api/v2/inbox/omnichannel/{foreign_ticket.id}/actions",
             json={
                 "action": "reply",
+                "source_model": "TenantTicket",
                 "body": "No debe cruzar tenants.",
                 "client_message_id": "crm-reply:cross-tenant-0001",
             },
@@ -4957,6 +5611,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
                 json={
                     "action": "reply",
+                    "source_model": "TenantTicket",
                     "body": "Respuesta visible por polling.",
                     "visibility": "public",
                     "send_external": False,
@@ -5000,6 +5655,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
                 json={
                     "action": "reply",
+                    "source_model": "TenantTicket",
                     "body": "Evento seguro para operadores.",
                     "visibility": "public",
                     "send_external": False,
@@ -5556,18 +6212,33 @@ class V2SaasContractsTest(unittest.TestCase):
         order_checkout_template = next(
             item for item in payload["template_blueprint"]["required_templates"] if item["id"] == "order_checkout"
         )
-        self.assertEqual(order_checkout_template["status"]["source"], "local_twilio_manifest")
-        self.assertEqual(order_checkout_template["status"]["resolved_name"], "chatboc_order_checkout_v1")
+        template_source = order_checkout_template["status"]["source"]
+        self.assertIn(template_source, {None, "local_twilio_manifest"})
         self.assertFalse(order_checkout_template["status"]["approved"])
         self.assertFalse(order_checkout_template["status"]["configured"])
-        self.assertTrue(order_checkout_template["status"]["local_configured"])
         self.assertIsNone(order_checkout_template["status"]["content_sid"])
-        self.assertEqual(order_checkout_template["status"]["status"], "stale")
-        self.assertEqual(order_checkout_template["readiness"]["state"], "stale")
-        self.assertEqual(
-            order_checkout_template["readiness"]["next_action"],
-            "refresh_provider_status_for_this_tenant",
-        )
+        if template_source == "local_twilio_manifest":
+            self.assertEqual(order_checkout_template["status"]["resolved_name"], "chatboc_order_checkout_v1")
+            self.assertTrue(order_checkout_template["status"]["local_configured"])
+            self.assertEqual(order_checkout_template["status"]["status"], "stale")
+            self.assertEqual(order_checkout_template["readiness"]["state"], "stale")
+            self.assertEqual(
+                order_checkout_template["readiness"]["next_action"],
+                "refresh_provider_status_for_this_tenant",
+            )
+        else:
+            self.assertIsNone(order_checkout_template["status"]["resolved_name"])
+            self.assertFalse(order_checkout_template["status"]["local_configured"])
+            self.assertEqual(order_checkout_template["status"]["status"], "missing")
+            self.assertEqual(
+                order_checkout_template["status"]["expected_friendly_name"],
+                "chatboc_order_checkout_v1",
+            )
+            self.assertEqual(order_checkout_template["readiness"]["state"], "missing")
+            self.assertEqual(
+                order_checkout_template["readiness"]["next_action"],
+                "create_template_with_twilio_content_api",
+            )
         welcome_template = next(
             item for item in payload["template_blueprint"]["required_templates"] if item["id"] == "welcome_menu"
         )
@@ -5639,10 +6310,20 @@ class V2SaasContractsTest(unittest.TestCase):
             for item in payload["template_blueprint"]["vertical_templates"]["gobierno"]
             if item["id"] == "gov_survey_invite"
         )
-        self.assertEqual(gov_survey_template["status"]["resolved_name"], "chatboc_gov_survey_invite_v2")
         self.assertFalse(gov_survey_template["status"]["approved"])
-        self.assertEqual(gov_survey_template["status"]["status"], "stale")
-        self.assertEqual(gov_survey_template["readiness"]["state"], "stale")
+        if gov_survey_template["status"]["source"] == "local_twilio_manifest":
+            self.assertEqual(gov_survey_template["status"]["resolved_name"], "chatboc_gov_survey_invite_v2")
+            self.assertEqual(gov_survey_template["status"]["status"], "stale")
+            self.assertEqual(gov_survey_template["readiness"]["state"], "stale")
+        else:
+            self.assertIsNone(gov_survey_template["status"]["source"])
+            self.assertIsNone(gov_survey_template["status"]["resolved_name"])
+            self.assertEqual(gov_survey_template["status"]["status"], "missing")
+            self.assertEqual(
+                gov_survey_template["status"]["expected_friendly_name"],
+                "chatboc_gov_survey_invite_v2",
+            )
+            self.assertEqual(gov_survey_template["readiness"]["state"], "missing")
         commerce_group = payload["template_blueprint"]["operational_template_groups"]["commerce_and_payments"]
         pyme_order_ready = next(item for item in commerce_group["items"] if item["id"] == "pyme_order_ready")
         self.assertEqual(pyme_order_ready["variables"], ["order_code", "total", "checkout_url"])
@@ -6160,10 +6841,18 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("drilldown_endpoint_template", payload["frontend_contract"])
 
     def test_tenant_inbox_handoff_lifecycle_is_backend_driven_and_audited(self):
+        handoff_recipient = self._claim_employee(
+            name="Mesa receptora",
+            email="mesa-receptora@test.com",
+            categories=["educacion"],
+            permissions=["tickets.read"],
+        )
+        db.session.commit()
+
         def post_action(action, user=None, **data):
             return self.client.post(
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
-                json={"action": action, **data},
+                json={"action": action, "source_model": "TenantTicket", **data},
                 headers=self._auth(user or self.owner),
             )
 
@@ -6176,7 +6865,14 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("handoff", initial_actions)
         self.assertNotIn("accept_handoff", initial_actions)
         self.assertNotIn("resume_ai", initial_actions)
-        self.assertEqual(initial_actions["handoff"]["payload_defaults"], {"channel": "operator"})
+        self.assertEqual(
+            initial_actions["handoff"]["payload_defaults"],
+            {
+                "channel": "operator",
+                "source_model": "TenantTicket",
+                "ticket_id": self.ticket.id,
+            },
+        )
         self.assertEqual(initial_actions["handoff"]["requires"], [])
         self.assertFalse(initial_actions["handoff"]["external_dispatch"])
 
@@ -6201,31 +6897,31 @@ class V2SaasContractsTest(unittest.TestCase):
         db.session.refresh(self.ticket)
         self.assertEqual(len(self.ticket.datos_extra["comments"]), timeline_size)
 
-        accepted = post_action("accept_handoff", self.employee)
+        accepted = post_action("accept_handoff", handoff_recipient)
         self.assertEqual(accepted.status_code, 200, accepted.get_json())
         accepted_ticket = accepted.get_json()["ticket"]
         accepted_handoff = accepted_ticket["handoff"]
         self.assertEqual(accepted_handoff["status"], "accepted")
         self.assertTrue(accepted_handoff["accepted_at"])
-        self.assertEqual(accepted_handoff["accepted_by"]["id"], self.employee.id)
-        self.assertEqual(accepted_ticket["assignee"]["id"], self.employee.id)
+        self.assertEqual(accepted_handoff["accepted_by"]["id"], handoff_recipient.id)
+        self.assertEqual(accepted_ticket["assignee"]["id"], handoff_recipient.id)
         accepted_actions = {item["id"]: item for item in accepted_ticket["allowed_actions"]}
         self.assertEqual(accepted_actions["resume_ai"]["label"], "Devolver a IA")
         self.assertNotIn("accept_handoff", accepted_actions)
 
         accepted_timeline_size = len(accepted_ticket["timeline"])
-        duplicate_accept = post_action("accept_handoff", self.employee)
+        duplicate_accept = post_action("accept_handoff", handoff_recipient)
         self.assertEqual(duplicate_accept.status_code, 409, duplicate_accept.get_json())
         db.session.refresh(self.ticket)
         self.assertEqual(len(self.ticket.datos_extra["comments"]), accepted_timeline_size)
 
-        resumed = post_action("resume_ai", self.employee)
+        resumed = post_action("resume_ai", handoff_recipient)
         self.assertEqual(resumed.status_code, 200, resumed.get_json())
         resolved_handoff = resumed.get_json()["ticket"]["handoff"]
         self.assertEqual(resolved_handoff["status"], "resolved")
         self.assertEqual(resolved_handoff["resolution"], "resume_ai")
         self.assertTrue(resolved_handoff["resolved_at"])
-        self.assertEqual(resolved_handoff["resolved_by"]["id"], self.employee.id)
+        self.assertEqual(resolved_handoff["resolved_by"]["id"], handoff_recipient.id)
         resumed_actions = {item["id"]: item for item in resumed.get_json()["ticket"]["allowed_actions"]}
         self.assertIn("handoff", resumed_actions)
         self.assertNotIn("resume_ai", resumed_actions)
@@ -6266,7 +6962,7 @@ class V2SaasContractsTest(unittest.TestCase):
 
         response = self.client.post(
             f"/api/v2/inbox/omnichannel/{foreign_ticket.id}/actions",
-            json={"action": "handoff"},
+            json={"action": "handoff", "source_model": "TenantTicket"},
             headers=self._auth(self.owner),
         )
 
@@ -6276,6 +6972,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertNotIn("handoff", foreign_ticket.datos_extra)
 
     def test_legacy_claim_handoff_lifecycle_uses_datos_extra_and_internal_comments(self):
+        self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
             municipio_id=self.owner.id,

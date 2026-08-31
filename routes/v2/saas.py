@@ -163,6 +163,14 @@ _HANDOFF_QUEUED_STATES = {
 }
 _HANDOFF_TERMINAL_STATES = {"resolved", "cancelled", "canceled", "expired", "rejected"}
 _HANDOFF_SUPPORTED_CHANNELS = {"operator", "live_chat", "phone"}
+_OPERATIONAL_OWNERSHIP_ACTIONS = {
+    "reply",
+    "handoff",
+    "resume_ai",
+    "close",
+    "reopen",
+    "set_priority",
+}
 # Administrative replies can target WhatsApp, email, or web. Keep the JSON
 # envelope bounded while leaving room for routing/idempotency metadata, and
 # align the durable normalized body with the repository's 8 KiB omnichannel
@@ -4950,6 +4958,8 @@ def _handoff_action_contracts(
     endpoint: str,
     handoff: Mapping[str, Any] | None,
     payload_defaults: Mapping[str, Any] | None = None,
+    actor: User | None = None,
+    assignee_id: Any = None,
 ) -> list[dict[str, Any]]:
     state = _handoff_lifecycle_state(handoff)
     defaults = dict(payload_defaults or {})
@@ -4962,7 +4972,7 @@ def _handoff_action_contracts(
     if not spec:  # Unknown persisted states expose no lifecycle mutation.
         return []
     action_id, label, action_defaults = spec
-    return [{
+    action = {
         "id": action_id,
         "label": label,
         "method": "POST",
@@ -4971,7 +4981,20 @@ def _handoff_action_contracts(
         "payload_defaults": action_defaults,
         "delivery_mode": "internal_event",
         "external_dispatch": False,
-    }]
+    }
+    if action_id == "accept_handoff":
+        action["authorization"] = {
+            "mode": "handoff_recipient",
+            "requires_category_scope": True,
+        }
+        action["ownership_transfer"] = {
+            "contract_version": "inbox.handoff_assignment.v1",
+            "allowed_states": ["requested", "queued"],
+            "atomic": True,
+        }
+    if action_id in _OPERATIONAL_OWNERSHIP_ACTIONS:
+        _apply_operational_ownership_contract(action, actor, assignee_id)
+    return [action]
 
 
 def _validate_handoff_transition(action: str, state: str):
@@ -5010,6 +5033,7 @@ def _apply_handoff_transition(
     occurred_at: str,
     channel: str | None = None,
     reason: Any = None,
+    transferred_from: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     handoff = deepcopy(dict(extra.get("handoff") or {}))
     actor_ref = _handoff_actor(actor)
@@ -5029,6 +5053,8 @@ def _apply_handoff_transition(
             accepted_at=occurred_at,
             accepted_by=actor_ref,
         )
+        if transferred_from:
+            handoff["transferred_from"] = dict(transferred_from)
     elif action == "resume_ai":
         handoff.update(
             contract_version="inbox.handoff.v1",
@@ -5081,24 +5107,25 @@ def _assignment_policy_error(error: TicketAssignmentPolicyError):
     )
 
 
-def _reply_ownership_block(
+def _operational_ownership_block(
     actor: User | None,
     assignee_id: Any,
 ) -> tuple[str, str, str] | None:
-    """Require an operational owner before a public operator reply.
+    """Require the ticket owner (or a narrow supervisor override) to mutate it.
 
-    Supervisors and the existing ``tickets.assign`` capability keep their
-    narrow operational override. Regular employees must first claim an
-    unassigned case and may never reply through another operator's ownership.
+    Only supervised roles may override operational ownership.  The
+    ``tickets.assign`` capability authorizes the separate CAS assignment
+    transition; it never authorizes replies or lifecycle mutations.
     """
 
-    if actor_can_assign_tickets(actor):
+    actor_role = canonical_role(getattr(actor, "rol", None)) if actor is not None else None
+    if actor_role in {"supervisor", "admin", "super_admin"}:
         return None
     normalized_assignee_id = _coerce_inbox_ticket_id(assignee_id)
     if normalized_assignee_id is None:
         return (
             "ticket_claim_required",
-            "Toma el ticket antes de responder",
+            "Toma el ticket antes de continuar",
             "claim_ticket",
         )
     if actor is None or normalized_assignee_id != getattr(actor, "id", None):
@@ -5110,12 +5137,58 @@ def _reply_ownership_block(
     return None
 
 
-def _reply_ownership_error(actor: User | None, assignee_id: Any):
-    block = _reply_ownership_block(actor, assignee_id)
+def _validate_handoff_recipient(
+    extra: Mapping[str, Any],
+    *,
+    actor: User,
+    current_assignee_id: Any,
+):
+    """Require a real A-to-B transfer when accepting a handoff.
+
+    A handoff is not an acknowledgement button for its requester.  The current
+    owner and the recorded requester must both be different from the recipient;
+    otherwise the audit trail could say ``accepted`` without transferring
+    ownership at all.
+    """
+
+    actor_id = _coerce_inbox_ticket_id(getattr(actor, "id", None))
+    assignee_id = _coerce_inbox_ticket_id(current_assignee_id)
+    handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else {}
+    requested_by = handoff.get("requested_by") if isinstance(handoff.get("requested_by"), Mapping) else {}
+    requester_id = _coerce_inbox_ticket_id(requested_by.get("id"))
+    if actor_id is not None and actor_id in {assignee_id, requester_id}:
+        return _error_response(
+            "El handoff debe ser aceptado por otro operador compatible",
+            409,
+            "handoff_self_accept_forbidden",
+            "choose_different_handoff_recipient",
+        )
+    return None
+
+
+def _operational_ownership_error(actor: User | None, assignee_id: Any):
+    block = _operational_ownership_block(actor, assignee_id)
     if block is None:
         return None
     reason_code, message, action_hint = block
     return _error_response(message, 409, reason_code, action_hint)
+
+
+def _apply_operational_ownership_contract(
+    action: dict[str, Any],
+    actor: User | None,
+    assignee_id: Any,
+) -> dict[str, Any]:
+    block = _operational_ownership_block(actor, assignee_id)
+    if block is not None:
+        reason_code, message, action_hint = block
+        action.update(
+            disabled=True,
+            disabled_reason=message,
+            reason_code=reason_code,
+            action_hint=action_hint,
+        )
+    return action
 
 
 def _reply_action_contract(
@@ -5142,16 +5215,7 @@ def _reply_action_contract(
     }
     if payload_defaults:
         action["payload_defaults"] = dict(payload_defaults)
-    ownership_block = _reply_ownership_block(actor, assignee_id)
-    if ownership_block is not None:
-        reason_code, message, action_hint = ownership_block
-        action.update(
-            disabled=True,
-            disabled_reason=message,
-            reason_code=reason_code,
-            action_hint=action_hint,
-        )
-    return action
+    return _apply_operational_ownership_contract(action, actor, assignee_id)
 
 
 def _allowed_inbox_actions(
@@ -5162,10 +5226,12 @@ def _allowed_inbox_actions(
 ) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
     base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
+    defaults = {"source_model": "TenantTicket", "ticket_id": ticket.id}
     reply_action = _reply_action_contract(
         endpoint=base_endpoint,
         actor=actor,
         assignee_id=extra.get("assignee_id"),
+        payload_defaults=defaults,
     )
     reply_action.update(
         delivery_mode="durable_queue_or_provider_acceptance",
@@ -5185,10 +5251,7 @@ def _allowed_inbox_actions(
                 "method": "POST",
                 "endpoint": base_endpoint,
                 "requires": [],
-                "payload_defaults": {
-                    "source_model": "TenantTicket",
-                    "ticket_id": ticket.id,
-                },
+                "payload_defaults": defaults,
                 "delivery_mode": "internal_event",
                 "external_dispatch": False,
             }
@@ -5197,18 +5260,64 @@ def _allowed_inbox_actions(
         actions.append(
             _assignment_action_contract(
                 endpoint=base_endpoint,
-                payload_defaults={"source_model": "TenantTicket", "ticket_id": ticket.id},
+                payload_defaults=defaults,
             )
         )
     actions.append(
-        {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]}
+        _apply_operational_ownership_contract(
+            {
+                "id": "set_priority",
+                "label": "Cambiar prioridad",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": ["priority"],
+                "payload_defaults": defaults,
+            },
+            actor,
+            extra.get("assignee_id"),
+        )
     )
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
-    actions.extend(_handoff_action_contracts(endpoint=base_endpoint, handoff=handoff))
+    actions.extend(
+        _handoff_action_contracts(
+            endpoint=base_endpoint,
+            handoff=handoff,
+            payload_defaults=defaults,
+            actor=actor,
+            assignee_id=extra.get("assignee_id"),
+        )
+    )
     if status in _CLOSED_TICKET_STATES:
-        actions.append({"id": "reopen", "label": "Reabrir", "method": "POST", "endpoint": base_endpoint, "requires": []})
+        actions.append(
+            _apply_operational_ownership_contract(
+                {
+                    "id": "reopen",
+                    "label": "Reabrir",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                },
+                actor,
+                extra.get("assignee_id"),
+            )
+        )
     else:
-        actions.append({"id": "close", "label": "Cerrar", "method": "POST", "endpoint": base_endpoint, "requires": [], "destructive": True})
+        actions.append(
+            _apply_operational_ownership_contract(
+                {
+                    "id": "close",
+                    "label": "Cerrar",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                    "destructive": True,
+                },
+                actor,
+                extra.get("assignee_id"),
+            )
+        )
     return actions
 
 
@@ -5457,30 +5566,40 @@ def _legacy_claim_allowed_actions(
             endpoint=base_endpoint,
             handoff=handoff,
             payload_defaults=defaults,
+            actor=actor,
+            assignee_id=ticket.asignado_a_id,
         )
     )
     if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
         actions.append(
-            {
-                "id": "reopen",
-                "label": "Reabrir",
-                "method": "POST",
-                "endpoint": base_endpoint,
-                "requires": [],
-                "payload_defaults": defaults,
-            }
+            _apply_operational_ownership_contract(
+                {
+                    "id": "reopen",
+                    "label": "Reabrir",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                },
+                actor,
+                ticket.asignado_a_id,
+            )
         )
     else:
         actions.append(
-            {
-                "id": "close",
-                "label": "Cerrar",
-                "method": "POST",
-                "endpoint": base_endpoint,
-                "requires": [],
-                "payload_defaults": defaults,
-                "destructive": True,
-            }
+            _apply_operational_ownership_contract(
+                {
+                    "id": "close",
+                    "label": "Cerrar",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                    "destructive": True,
+                },
+                actor,
+                ticket.asignado_a_id,
+            )
         )
     actions.append(
         {
@@ -5760,12 +5879,23 @@ def _is_legacy_claim_source(value: Any) -> bool:
 
 
 def _coerce_inbox_ticket_id(raw_value: Any) -> int | None:
-    if isinstance(raw_value, str) and raw_value.startswith("municipio:"):
-        raw_value = raw_value.split(":", 1)[1]
-    try:
-        return int(raw_value)
-    except (TypeError, ValueError):
+    """Return an exact positive integer identity without lossy coercion."""
+
+    if isinstance(raw_value, bool):
         return None
+    if isinstance(raw_value, int):
+        return raw_value if raw_value > 0 else None
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.strip()
+    # Display IDs such as ``municipio:42`` are deliberately not accepted by
+    # mutation endpoints. The source model is a separate required field; if a
+    # typed display ID were stripped here, ``municipio:42`` paired with
+    # ``TenantTicket`` could mutate a colliding tenant ticket.
+    if not value or not value.isascii() or not value.isdecimal():
+        return None
+    parsed = int(value, 10)
+    return parsed if parsed > 0 else None
 
 
 def _resolve_aliased_inbox_id(
@@ -6335,8 +6465,8 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     assignment_expected_id: int | None = None
     assignment_target_id: int | None = None
 
-    if action == "reply":
-        ownership_error = _reply_ownership_error(current_user, ticket.asignado_a_id)
+    if action in _OPERATIONAL_OWNERSHIP_ACTIONS:
+        ownership_error = _operational_ownership_error(current_user, ticket.asignado_a_id)
         if ownership_error is not None:
             return ownership_error
 
@@ -6456,21 +6586,36 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
 
     elif action == "accept_handoff":
         current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
-        if current_assignee_id not in (None, current_user.id):
-            return _error_response(
-                "El ticket ya fue tomado por otro operador",
-                409,
-                "already_claimed",
-                "refresh_inbox",
-            )
-        if current_assignee_id is None and not ticket_assignee_is_compatible(current_user, ticket):
+        if not ticket_assignee_is_compatible(current_user, ticket):
             return _error_response(
                 "El operador no tiene acceso a la categoria del ticket",
                 404,
                 "ticket_not_found",
                 "refresh_inbox",
             )
-        _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
+        recipient_error = _validate_handoff_recipient(
+            extra,
+            actor=current_user,
+            current_assignee_id=current_assignee_id,
+        )
+        if recipient_error is not None:
+            return recipient_error
+        previous_assignee = getattr(ticket, "asignado_a", None)
+        transferred_from = (
+            {
+                "id": current_assignee_id,
+                "name": getattr(previous_assignee, "name", None),
+            }
+            if current_assignee_id is not None and current_assignee_id != current_user.id
+            else None
+        )
+        _apply_handoff_transition(
+            extra,
+            action="accept_handoff",
+            actor=current_user,
+            occurred_at=now_iso,
+            transferred_from=transferred_from,
+        )
         ticket.asignado_a_id = current_user.id
         ticket.asignado_en = now
         if str(ticket.estado or "").lower() in {"nuevo", "open"}:
@@ -6825,25 +6970,26 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     if error:
         return error
 
-    raw_source_models = [
-        payload.get(key)
-        for key in ("source_model", "legacy_model")
-        if payload.get(key) not in (None, "")
-    ]
-    if requested_action in {"claim", "assign"} and not raw_source_models:
+    raw_source_model = payload.get("source_model")
+    if raw_source_model in (None, ""):
         return _error_response(
-            "source_model es obligatorio para tomar o asignar un caso",
+            "source_model es obligatorio para mutar un caso",
             400,
             "source_model_required",
             "send_exact_ticket_identity",
         )
-    legacy_identity_prefix = any(
-        isinstance(payload.get(key), str) and payload.get(key).startswith("municipio:")
-        for key in ("legacy_id", "ticket_id", "id")
-    )
-    default_source_model = "MunicipioTicket" if legacy_identity_prefix else "TenantTicket"
+    raw_source_models = [raw_source_model]
+    if payload.get("legacy_model") not in (None, ""):
+        raw_source_models.append(payload.get("legacy_model"))
     normalized_sources: list[str] = []
-    for raw_source_model in raw_source_models or [default_source_model]:
+    for raw_source_model in raw_source_models:
+        if not isinstance(raw_source_model, str) or not raw_source_model.strip():
+            return _error_response(
+                "source_model no es compatible con este inbox",
+                400,
+                "unsupported_inbox_source_model",
+                "send_tenantticket_or_municipioticket",
+            )
         normalized_source_model = str(raw_source_model).strip().lower()
         if normalized_source_model in {"tenantticket", "tenant_ticket", "tenant"}:
             normalized_sources.append("TenantTicket")
@@ -6884,6 +7030,8 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     raw_ticket_id = ticket_id if ticket_id is not None else (body_ids[0] if body_ids else None)
     resolved_ticket_id = _coerce_inbox_ticket_id(raw_ticket_id)
     if resolved_ticket_id is None:
+        if raw_ticket_id is not None:
+            return _error_response("ticket_id no es valido", 400, "ticket_id_invalid", "send_ticket_id")
         return _error_response("ticket_id es obligatorio", 400, "ticket_id_required", "send_ticket_id")
 
     if source_model == "MunicipioTicket":
@@ -6936,8 +7084,8 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     assignment_expected_id: int | None = None
     assignment_target_id: int | None = None
 
-    if action == "reply":
-        ownership_error = _reply_ownership_error(current_user, extra.get("assignee_id"))
+    if action in _OPERATIONAL_OWNERSHIP_ACTIONS:
+        ownership_error = _operational_ownership_error(current_user, extra.get("assignee_id"))
         if ownership_error is not None:
             return ownership_error
 
@@ -7035,21 +7183,36 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
 
     elif action == "accept_handoff":
         current_assignee_id = _coerce_inbox_ticket_id(extra.get("assignee_id"))
-        if current_assignee_id not in (None, current_user.id):
-            return _error_response(
-                "El ticket ya fue tomado por otro operador",
-                409,
-                "already_claimed",
-                "refresh_inbox",
-            )
-        if current_assignee_id is None and not ticket_assignee_is_compatible(current_user, ticket):
+        if not ticket_assignee_is_compatible(current_user, ticket):
             return _error_response(
                 "El operador no tiene acceso a la categoria del ticket",
                 404,
                 "ticket_not_found",
                 "refresh_inbox",
             )
-        _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
+        recipient_error = _validate_handoff_recipient(
+            extra,
+            actor=current_user,
+            current_assignee_id=current_assignee_id,
+        )
+        if recipient_error is not None:
+            return recipient_error
+        transferred_from = (
+            {
+                "id": current_assignee_id,
+                "name": extra.get("assignee_name"),
+                "email": extra.get("assignee_email"),
+            }
+            if current_assignee_id is not None and current_assignee_id != current_user.id
+            else None
+        )
+        _apply_handoff_transition(
+            extra,
+            action="accept_handoff",
+            actor=current_user,
+            occurred_at=now_iso,
+            transferred_from=transferred_from,
+        )
         extra["assignee_id"] = current_user.id
         extra["assignee_name"] = current_user.name
         extra["assignee_email"] = current_user.email

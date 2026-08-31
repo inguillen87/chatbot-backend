@@ -93,13 +93,19 @@ def _optional_positive_id(
 ) -> int | None:
     if raw is None or raw == "":
         return None
+    # Assignment identities are security-sensitive compare-and-set values.
+    # Accept only an exact positive integer (or its ASCII decimal spelling):
+    # ``int(2.9) == 2`` would otherwise let a lossy JSON number authorize a
+    # transition against operator 2.
     if isinstance(raw, bool):
         parsed = None
+    elif isinstance(raw, int):
+        parsed = raw
+    elif isinstance(raw, str):
+        value = raw.strip()
+        parsed = int(value, 10) if value and value.isascii() and value.isdecimal() else None
     else:
-        try:
-            parsed = int(raw)
-        except (TypeError, ValueError):
-            parsed = None
+        parsed = None
     if parsed is None or parsed <= 0:
         raise TicketAssignmentPolicyError(
             invalid_status,
