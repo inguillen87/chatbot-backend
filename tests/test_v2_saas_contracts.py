@@ -2050,11 +2050,52 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(item["attachments"])
         self.assertIn("sla", item)
         self.assertIn("allowed_actions", item)
+        reply_contract = item["reply_contract"]
+        self.assertEqual(reply_contract["contract_version"], "inbox.reply_contract.v1")
+        self.assertTrue(reply_contract["supported_message_types"]["text"]["enabled"])
+        self.assertFalse(reply_contract["supported_message_types"]["attachment"]["enabled"])
+        self.assertEqual(
+            reply_contract["supported_message_types"]["attachment"]["reason_code"],
+            "attachment_reply_not_supported",
+        )
+        channels = {entry["id"]: entry for entry in reply_contract["delivery_channels"]}
+        self.assertTrue(channels["crm"]["enabled"])
+        self.assertTrue(channels["whatsapp"]["enabled"])
+        self.assertFalse(channels["email"]["enabled"])
+        self.assertEqual(
+            reply_contract["delivery_state_machine"]["states"],
+            ["saved_in_crm", "dispatch_attempted", "provider_accepted", "delivered", "failed"],
+        )
+        action_index = {entry["id"]: entry for entry in item["allowed_actions"]}
+        self.assertFalse(action_index["attach_file"]["enabled"])
+        self.assertFalse(action_index["share_location"]["enabled"])
+        self.assertFalse(action_index["send_form"]["enabled"])
         self.assertIn("next_steps", item)
         self.assertEqual(item["source_metadata"]["demo_session_id"], "demo-beca-1")
         self.assertTrue(item["map"]["can_render"])
         self.assertEqual(item["frontend_contract"]["render_as"], "inbox_360_drawer")
         self.assertEqual(payload["frontend_contract"]["drawer_contract"], "inbox.omnichannel.detail.v1")
+
+    def test_omnichannel_reply_contract_fails_closed_for_web_channel_and_closed_ticket(self):
+        self.ticket.origen = "web"
+        self.ticket.estado = "cerrado"
+        self.ticket.datos_extra = {**self.ticket.datos_extra, "channel": "web"}
+        db.session.commit()
+
+        response = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        contract = response.get_json()["ticket"]["reply_contract"]
+        self.assertFalse(contract["enabled"])
+        self.assertEqual(contract["reason_code"], "ticket_closed")
+        channels = {entry["id"]: entry for entry in contract["delivery_channels"]}
+        self.assertFalse(channels["whatsapp"]["enabled"])
+        self.assertEqual(channels["whatsapp"]["reason_code"], "ticket_channel_not_whatsapp")
+        self.assertFalse(channels["email"]["enabled"])
+        self.assertEqual(channels["email"]["reason_code"], "ticket_channel_not_email")
 
     def test_omnichannel_inbox_live_chat_contract_reports_online_offline_and_queue(self):
         self.tenant.configuracion = {
@@ -4726,6 +4767,18 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["delivery"]["admin_surface"], "omnichannel_inbox")
         self.assertTrue(payload["delivery"]["external_dispatch"])
         self.assertTrue(payload["delivery"]["timeline_updated"])
+        self.assertEqual(
+            payload["delivery"]["evidence"],
+            {
+                "contract_version": "inbox.reply_delivery_evidence.v1",
+                "saved_in_crm": True,
+                "dispatch_attempted": True,
+                "provider_accepted": True,
+                "delivered": False,
+                "failed": False,
+                "delivered_requires": "provider_status_callback",
+            },
+        )
         self.assertEqual(payload["delivery"]["requested_channels"], ["whatsapp"])
         self.assertEqual(
             payload["delivery"]["delivery_results"],
