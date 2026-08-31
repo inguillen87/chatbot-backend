@@ -4,6 +4,8 @@ import ast
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
+import math
 from html import escape
 from pathlib import Path
 from typing import Any, Mapping
@@ -12,7 +14,7 @@ import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
 from sqlalchemy import func, or_
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -24,7 +26,9 @@ from models import (
     DomainEffectOutbox,
     EncEncuesta,
     EncRespuesta,
+    InboxTicketArtifact,
     MarketOrder,
+    MessageTemplateRegistry,
     MunicipioTicket,
     Notification,
     NotificationTemplate,
@@ -165,6 +169,9 @@ _HANDOFF_TERMINAL_STATES = {"resolved", "cancelled", "canceled", "expired", "rej
 _HANDOFF_SUPPORTED_CHANNELS = {"operator", "live_chat", "phone"}
 _OPERATIONAL_OWNERSHIP_ACTIONS = {
     "reply",
+    "attach_file",
+    "share_location",
+    "send_form",
     "handoff",
     "resume_ai",
     "close",
@@ -4750,12 +4757,25 @@ def omnichannel_inbox_v2(current_user):
     )
     legacy_claims = legacy_claim_query.order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all()
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
+    artifact_map = _inbox_artifact_event_map(
+        tenant_id=tenant.id,
+        identities=(
+            [("TenantTicket", ticket.id) for ticket in tenant_tickets]
+            + [("MunicipioTicket", ticket.id) for ticket in legacy_claims]
+        ),
+    )
     items = [
-        _inbox_ticket_payload(ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
+        _inbox_ticket_payload(
+            ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user,
+            artifact_events=artifact_map.get(("TenantTicket", ticket.id), []),
+        )
         for ticket in tenant_tickets
     ]
     items.extend(
-        _legacy_claim_inbox_payload(ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
+        _legacy_claim_inbox_payload(
+            ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user,
+            artifact_events=artifact_map.get(("MunicipioTicket", ticket.id), []),
+        )
         for ticket in legacy_claims
     )
     items.sort(key=_inbox_sort_key, reverse=True)
@@ -5232,6 +5252,34 @@ def _unsupported_reply_action(*, action_id: str, label: str, reason_code: str) -
     }
 
 
+def _crm_artifact_action(
+    *, action_id: str, label: str, source_model: str, closed: bool = False
+) -> dict[str, Any]:
+    binding_unavailable = action_id == "attach_file" and source_model == "TenantTicket"
+    enabled = not binding_unavailable and not closed
+    return {
+        "id": action_id,
+        "label": label,
+        "method": "POST",
+        "endpoint": "/api/v2/inbox/omnichannel/actions",
+        "enabled": enabled,
+        "disabled": not enabled,
+        "reason_code": (
+            None if enabled else (
+                "tenant_ticket_attachment_binding_unavailable" if binding_unavailable else "ticket_closed"
+            )
+        ),
+        "requires": {
+            "attach_file": ["attachment_id", "Idempotency-Key"],
+            "share_location": ["lat", "lng", "Idempotency-Key"],
+            "send_form": ["form_id", "Idempotency-Key"],
+        }[action_id],
+        "delivery_mode": "crm_only",
+        "external_dispatch": False,
+        "delivery_contract_version": "inbox.action_delivery.v2",
+    }
+
+
 def _reply_delivery_evidence(value: Mapping[str, Any] | None) -> dict[str, Any]:
     evidence = value if isinstance(value, Mapping) else {}
     status = str(evidence.get("status") or "").strip().lower()
@@ -5289,9 +5337,16 @@ def _ticket_reply_contract(
         },
         "supported_message_types": {
             "text": {"enabled": reason_code is None},
-            "attachment": {"enabled": False, "reason_code": "attachment_reply_not_supported"},
-            "location": {"enabled": False, "reason_code": "location_reply_not_supported"},
-            "form": {"enabled": False, "reason_code": "form_reply_not_supported"},
+            "attachment": {
+                "enabled": source_model == "MunicipioTicket" and reason_code is None,
+                "reason_code": (
+                    reason_code if source_model == "MunicipioTicket"
+                    else "tenant_ticket_attachment_binding_unavailable"
+                ),
+                "delivery_mode": "crm_only",
+            },
+            "location": {"enabled": reason_code is None, "reason_code": reason_code, "delivery_mode": "crm_only"},
+            "form": {"enabled": reason_code is None, "reason_code": reason_code, "delivery_mode": "crm_only"},
         },
         "handoff": {"enabled": reason_code is None, "supported_channels": sorted(_HANDOFF_SUPPORTED_CHANNELS)},
         "delivery_channels": [
@@ -5413,9 +5468,9 @@ def _allowed_inbox_actions(
             )
         )
     actions.extend([
-        _unsupported_reply_action(action_id="attach_file", label="Adjuntar archivo", reason_code="attachment_reply_not_supported"),
-        _unsupported_reply_action(action_id="share_location", label="Compartir ubicacion", reason_code="location_reply_not_supported"),
-        _unsupported_reply_action(action_id="send_form", label="Enviar formulario", reason_code="form_reply_not_supported"),
+        _crm_artifact_action(action_id="attach_file", label="Adjuntar archivo", source_model="TenantTicket", closed=status in _CLOSED_TICKET_STATES),
+        _crm_artifact_action(action_id="share_location", label="Compartir ubicacion", source_model="TenantTicket", closed=status in _CLOSED_TICKET_STATES),
+        _crm_artifact_action(action_id="send_form", label="Enviar formulario", source_model="TenantTicket", closed=status in _CLOSED_TICKET_STATES),
     ])
     return actions
 
@@ -5713,9 +5768,9 @@ def _legacy_claim_allowed_actions(
         }
     )
     actions.extend([
-        _unsupported_reply_action(action_id="attach_file", label="Adjuntar archivo", reason_code="attachment_reply_not_supported"),
-        _unsupported_reply_action(action_id="share_location", label="Compartir ubicacion", reason_code="location_reply_not_supported"),
-        _unsupported_reply_action(action_id="send_form", label="Enviar formulario", reason_code="form_reply_not_supported"),
+        _crm_artifact_action(action_id="attach_file", label="Adjuntar archivo", source_model="MunicipioTicket", closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES),
+        _crm_artifact_action(action_id="share_location", label="Compartir ubicacion", source_model="MunicipioTicket", closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES),
+        _crm_artifact_action(action_id="send_form", label="Enviar formulario", source_model="MunicipioTicket", closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES),
     ])
     return actions
 
@@ -5737,11 +5792,14 @@ def _legacy_claim_inbox_payload(
     live_chat_status: Mapping[str, Any] | None = None,
     *,
     actor: User | None = None,
+    artifact_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     comments = _legacy_claim_comments(ticket)
     timeline = _legacy_claim_timeline(ticket, comments)
+    timeline.extend(artifact_events if artifact_events is not None else _inbox_artifact_events(tenant_id=tenant.id, source_model="MunicipioTicket", ticket_id=ticket.id))
+    timeline.sort(key=lambda item: str(item.get("created_at") or ""))
     latest_comment = comments[-1].comentario if comments else None
     updated_at = _legacy_claim_updated_at(ticket, comments)
     assignee = _legacy_claim_assignee(ticket)
@@ -5854,9 +5912,12 @@ def _inbox_ticket_payload(
     live_chat_status: Mapping[str, Any] | None = None,
     *,
     actor: User | None = None,
+    artifact_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     extra = _ticket_extra(ticket)
     timeline = _timeline_items(extra)
+    timeline.extend(artifact_events if artifact_events is not None else _inbox_artifact_events(tenant_id=tenant.id, source_model="TenantTicket", ticket_id=ticket.id))
+    timeline.sort(key=lambda item: str(item.get("created_at") or ""))
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), dict) else None
     queued, pending_count, pending_since = _ticket_live_chat_queue_signals(
         status=ticket.estado,
@@ -6126,6 +6187,230 @@ def _omnichannel_reply_idempotency_identity(
         f"inbox.reply.v1:{int(tenant_id)}:{raw_identity}".encode("utf-8")
     ).hexdigest()
     return f"crm-reply:{digest}", source, None
+
+
+_CRM_ARTIFACT_ACTIONS = {"attach_file", "share_location", "send_form"}
+
+
+def _inbox_artifact_idempotency(
+    payload: Mapping[str, Any], *, tenant_id: int, source_model: str, ticket_id: int, action: str
+) -> tuple[str | None, Any | None]:
+    raw_key = str(request.headers.get("Idempotency-Key") or "").strip()
+    body_key = str(payload.get("idempotency_key") or "").strip()
+    if not raw_key:
+        return None, _error_response(
+            "Idempotency-Key es obligatorio", 400, "artifact_idempotency_key_required", "send_idempotency_key"
+        )
+    if body_key and body_key != raw_key:
+        return None, _error_response(
+            "El Idempotency-Key del header y body debe coincidir", 400,
+            "artifact_idempotency_key_mismatch", "reuse_same_idempotency_key",
+        )
+    if len(raw_key) < 8 or len(raw_key) > 128 or any(ord(char) < 32 for char in raw_key):
+        return None, _error_response(
+            "Idempotency-Key debe tener entre 8 y 128 caracteres validos", 400,
+            "artifact_idempotency_key_invalid", "send_valid_idempotency_key",
+        )
+    digest = hashlib.sha256(
+        f"inbox.artifact.v1:{tenant_id}:{source_model}:{ticket_id}:{raw_key}".encode("utf-8")
+    ).hexdigest()
+    return digest, None
+
+
+def _validated_artifact_payload(
+    *, action: str, payload: Mapping[str, Any], tenant: TenantProfile,
+    source_model: str, ticket_id: int,
+) -> tuple[dict[str, Any] | None, Any | None]:
+    if action == "share_location":
+        try:
+            lat = float(payload.get("lat"))
+            lng = float(payload.get("lng"))
+        except (TypeError, ValueError):
+            return None, _error_response("lat y lng son obligatorios", 400, "artifact_location_invalid", "send_wgs84_coordinates")
+        if not math.isfinite(lat) or not math.isfinite(lng) or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+            return None, _error_response("Las coordenadas WGS84 no son validas", 400, "artifact_location_invalid", "send_wgs84_coordinates")
+        label = str(payload.get("label") or "Ubicacion compartida").strip()[:160]
+        address = str(payload.get("address") or "").strip()[:255] or None
+        return {
+            "contract_version": "inbox.artifact.location.v1", "kind": "location",
+            "lat": lat, "lng": lng, "label": label, "address": address,
+            "claim_location_modified": False,
+        }, None
+
+    if action == "attach_file":
+        attachment_id = _coerce_inbox_ticket_id(payload.get("attachment_id"))
+        if attachment_id is None:
+            return None, _error_response("attachment_id es obligatorio", 400, "artifact_attachment_id_invalid", "send_attachment_id")
+        if source_model != "MunicipioTicket":
+            return None, _error_response(
+                "TenantTicket no tiene una vinculacion tenant-safe para adjuntos", 409,
+                "tenant_ticket_attachment_binding_unavailable", "upload_and_bind_attachment_first",
+            )
+        attachment = ArchivoAdjunto.query.filter_by(id=attachment_id, municipio_ticket_id=ticket_id).one_or_none()
+        if attachment is None:
+            return None, _error_response("Adjunto no encontrado", 404, "artifact_attachment_not_found", "choose_ticket_attachment")
+        serialized = serialize_attachment_for_delivery(attachment)
+        return {
+            "contract_version": "inbox.artifact.attachment.v1", "kind": "attachment",
+            "attachment_id": attachment.id,
+            "name": serialized.get("name"), "mime_type": serialized.get("mimeType"),
+            "size": serialized.get("size"), "server_verified": True,
+        }, None
+
+    form_id = _coerce_inbox_ticket_id(payload.get("form_id") or payload.get("template_registry_id"))
+    if form_id is None:
+        return None, _error_response("form_id es obligatorio", 400, "artifact_form_id_invalid", "send_form_id")
+    form = MessageTemplateRegistry.query.filter_by(id=form_id, tenant_id=tenant.id).one_or_none()
+    if form is None:
+        return None, _error_response("Formulario no encontrado", 404, "artifact_form_not_found", "choose_tenant_form")
+    if str(form.status or "").strip().lower() not in {"approved", "active", "ready", "published"}:
+        return None, _error_response("El formulario no esta aprobado", 409, "artifact_form_not_approved", "choose_approved_form")
+    form_metadata = form.metadata_json if isinstance(form.metadata_json, Mapping) else {}
+    flow_id = str(form_metadata.get("flow_id") or "").strip()
+    if not flow_id or not str(form.external_template_id or "").strip() or not str(form.content_sid or "").strip():
+        return None, _error_response(
+            "El recurso aprobado no es un formulario nativo verificable", 409,
+            "artifact_form_contract_unverified", "choose_verified_flow_form",
+        )
+    return {
+        "contract_version": "inbox.artifact.form.v1", "kind": "form",
+        "form_id": form.id, "name": form.name, "language": form.language,
+        "flow_id": flow_id, "revision": _iso(form.updated_at), "tenant_verified": True,
+    }, None
+
+
+def _persist_inbox_artifact(
+    *, payload: Mapping[str, Any], tenant: TenantProfile, actor: User,
+    source_model: str, ticket_id: int, action: str,
+) -> tuple[InboxTicketArtifact | None, bool, Any | None]:
+    key_hash, error = _inbox_artifact_idempotency(
+        payload, tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id, action=action
+    )
+    if error is not None:
+        return None, False, error
+    artifact_payload, error = _validated_artifact_payload(
+        action=action, payload=payload, tenant=tenant, source_model=source_model, ticket_id=ticket_id
+    )
+    if error is not None:
+        return None, False, error
+    request_digest = hashlib.sha256(
+        json.dumps(artifact_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    existing = InboxTicketArtifact.query.filter_by(
+        tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id,
+        idempotency_key_hash=key_hash,
+    ).one_or_none()
+    if existing is not None:
+        if existing.request_digest != request_digest or existing.action != action:
+            return None, False, _error_response(
+                "El Idempotency-Key ya fue usado con otro artefacto", 409,
+                "artifact_idempotency_payload_conflict", "reuse_key_only_for_identical_payload",
+            )
+        return existing, True, None
+    artifact = InboxTicketArtifact(
+        tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id,
+        action=action, payload_json=artifact_payload, actor_user_id=actor.id,
+        idempotency_key_hash=key_hash, request_digest=request_digest,
+    )
+    db.session.add(artifact)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        existing = InboxTicketArtifact.query.filter_by(
+            tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id,
+            idempotency_key_hash=key_hash,
+        ).one_or_none()
+        if existing is not None and existing.request_digest == request_digest and existing.action == action:
+            return existing, True, None
+        return None, False, _error_response(
+            "Conflicto al registrar el artefacto", 409,
+            "artifact_idempotency_payload_conflict", "reuse_key_only_for_identical_payload",
+        )
+    except SQLAlchemyError:
+        db.session.rollback()
+        return None, False, _error_response(
+            "No se pudo guardar el artefacto en el CRM", 500,
+            "artifact_persistence_failed", "retry_with_same_idempotency_key",
+        )
+    return artifact, False, None
+
+
+def _inbox_artifact_events(*, tenant_id: int, source_model: str, ticket_id: int) -> list[dict[str, Any]]:
+    rows = InboxTicketArtifact.query.filter_by(
+        tenant_id=tenant_id, source_model=source_model, ticket_id=ticket_id,
+    ).order_by(InboxTicketArtifact.created_at.asc(), InboxTicketArtifact.id.asc()).limit(100).all()
+    return [row.to_event_dict() for row in rows]
+
+
+def _inbox_artifact_event_map(
+    *, tenant_id: int, identities: list[tuple[str, int]],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    if not identities:
+        return {}
+    source_models = {source for source, _ticket_id in identities}
+    ticket_ids = {ticket_id for _source, ticket_id in identities}
+    rows = InboxTicketArtifact.query.filter(
+        InboxTicketArtifact.tenant_id == tenant_id,
+        InboxTicketArtifact.source_model.in_(source_models),
+        InboxTicketArtifact.ticket_id.in_(ticket_ids),
+    ).order_by(InboxTicketArtifact.created_at.asc(), InboxTicketArtifact.id.asc()).all()
+    allowed = set(identities)
+    result: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for row in rows:
+        identity = (row.source_model, row.ticket_id)
+        if identity in allowed:
+            result.setdefault(identity, []).append(row.to_event_dict())
+    return result
+
+
+def _crm_artifact_action_response(
+    *, payload: Mapping[str, Any], tenant: TenantProfile, actor: User,
+    source_model: str, ticket: TenantTicket | MunicipioTicket, action: str,
+):
+    artifact, replayed, error = _persist_inbox_artifact(
+        payload=payload, tenant=tenant, actor=actor, source_model=source_model,
+        ticket_id=ticket.id, action=action,
+    )
+    if error is not None:
+        return error
+    if artifact is None:  # defensive: never claim persistence without the row
+        return _error_response(
+            "No se pudo verificar la persistencia del artefacto", 500,
+            "artifact_persistence_unverified", "retry_with_same_idempotency_key",
+        )
+    if source_model == "MunicipioTicket":
+        refreshed = _legacy_claim_for_tenant(tenant, ticket.id)
+        if refreshed is None:
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+        ticket_payload = _legacy_claim_inbox_payload(
+            refreshed, tenant=tenant, live_chat_status=_tenant_inbox_live_chat_status(tenant), actor=actor
+        )
+    else:
+        refreshed = TenantTicket.query.filter_by(id=ticket.id, tenant_id=tenant.id).one_or_none()
+        if refreshed is None:
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+        ticket_payload = _inbox_ticket_payload(
+            refreshed, tenant=tenant, live_chat_status=_tenant_inbox_live_chat_status(tenant), actor=actor
+        )
+    return _json_response({
+        "ok": True,
+        "contract_version": "inbox.omnichannel.action.v1",
+        "tenant": _tenant_ref(tenant),
+        "action": action,
+        "artifact": artifact.to_event_dict(),
+        "delivery": {
+            "contract_version": "inbox.action_delivery.v2",
+            "mode": "crm_only", "status": "already_recorded" if replayed else "saved_to_crm",
+            "reason": "idempotent_replay_no_duplicate" if replayed else "artifact_saved_to_crm",
+            "saved_in_crm": True, "timeline_updated": not replayed,
+            "external_dispatch": False, "dispatch_attempted": False,
+            "provider_accepted": False, "delivered": False, "failed": False,
+            "receipt_persisted": True, "idempotent_replay": replayed,
+            "operator_message": "Guardado en el CRM. No se envio por un canal externo.",
+        },
+        "ticket": ticket_payload,
+    })
 
 
 def _inbox_action_delivery_payload(
@@ -6607,7 +6892,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
-    if action not in {"claim", "assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen"}:
+    if action not in {"claim", "assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen", "attach_file", "share_location", "send_form"}:
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
 
     now = datetime.now(timezone.utc)
@@ -6641,6 +6926,17 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         ownership_error = _operational_ownership_error(current_user, ticket.asignado_a_id)
         if ownership_error is not None:
             return ownership_error
+
+    if action in _CRM_ARTIFACT_ACTIONS:
+        if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response(
+                "El reclamo esta cerrado. Reabrilo antes de agregar recursos.", 403,
+                "ticket_closed", "reopen_ticket",
+            )
+        return _crm_artifact_action_response(
+            payload=payload, tenant=tenant, actor=current_user,
+            source_model="MunicipioTicket", ticket=ticket, action=action,
+        )
 
     if action == "claim":
         current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
@@ -7256,6 +7552,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         "close",
         "reopen",
         "set_priority",
+        "attach_file",
+        "share_location",
+        "send_form",
     }:
         return _error_response("Accion de inbox no soportada", 400, "unsupported_inbox_action", "send_supported_action")
 
@@ -7288,6 +7587,17 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         ownership_error = _operational_ownership_error(current_user, extra.get("assignee_id"))
         if ownership_error is not None:
             return ownership_error
+
+    if action in _CRM_ARTIFACT_ACTIONS:
+        if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response(
+                "El ticket esta cerrado. Reabrilo antes de agregar recursos.", 403,
+                "ticket_closed", "reopen_ticket",
+            )
+        return _crm_artifact_action_response(
+            payload=payload, tenant=tenant, actor=current_user,
+            source_model="TenantTicket", ticket=ticket, action=action,
+        )
 
     if action == "claim":
         raw_current_assignee_id = extra.get("assignee_id")

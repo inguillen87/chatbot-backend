@@ -7,6 +7,7 @@ from urllib.parse import unquote_plus
 from unittest.mock import patch
 
 import jwt
+from sqlalchemy.exc import SQLAlchemyError
 
 os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 os.environ.setdefault("TESTING", "1")
@@ -15,11 +16,13 @@ from app import create_app, db
 from config import Config
 from models import (
     AnalyticsEventV2,
+    ArchivoAdjunto,
     CatalogoItem,
     CategoriaTicket,
     DomainEffectOutbox,
     EncEncuesta,
     EncRespuesta,
+    InboxTicketArtifact,
     MunicipioTicket,
     MunicipioPost,
     Notification,
@@ -2074,7 +2077,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertFalse(reply_contract["supported_message_types"]["attachment"]["enabled"])
         self.assertEqual(
             reply_contract["supported_message_types"]["attachment"]["reason_code"],
-            "attachment_reply_not_supported",
+            "tenant_ticket_attachment_binding_unavailable",
         )
         channels = {entry["id"]: entry for entry in reply_contract["delivery_channels"]}
         self.assertTrue(channels["crm"]["enabled"])
@@ -2086,8 +2089,8 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         action_index = {entry["id"]: entry for entry in item["allowed_actions"]}
         self.assertFalse(action_index["attach_file"]["enabled"])
-        self.assertFalse(action_index["share_location"]["enabled"])
-        self.assertFalse(action_index["send_form"]["enabled"])
+        self.assertTrue(action_index["share_location"]["enabled"])
+        self.assertTrue(action_index["send_form"]["enabled"])
         self.assertIn("next_steps", item)
         self.assertEqual(item["source_metadata"]["demo_session_id"], "demo-beca-1")
         self.assertTrue(item["map"]["can_render"])
@@ -2114,6 +2117,168 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(channels["whatsapp"]["reason_code"], "ticket_channel_not_whatsapp")
         self.assertFalse(channels["email"]["enabled"])
         self.assertEqual(channels["email"]["reason_code"], "ticket_channel_not_email")
+
+    def test_tenant_ticket_location_artifact_is_crm_only_idempotent_and_does_not_move_case(self):
+        original = (self.ticket.latitud, self.ticket.longitud)
+        endpoint = f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions"
+        request_payload = {
+            "source_model": "TenantTicket", "action": "share_location",
+            "lat": -33.0812, "lng": -68.4748, "label": "Plaza departamental",
+        }
+        headers = {**self._auth(self.employee), "Idempotency-Key": "location-artifact-0001"}
+        first = self.client.post(endpoint, json=request_payload, headers=headers)
+        replay = self.client.post(endpoint, json=request_payload, headers=headers)
+
+        self.assertEqual(first.status_code, 200, first.get_json())
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        delivery = first.get_json()["delivery"]
+        self.assertTrue(delivery["saved_in_crm"])
+        self.assertTrue(delivery["receipt_persisted"])
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertFalse(delivery["provider_accepted"])
+        self.assertFalse(delivery["delivered"])
+        self.assertTrue(replay.get_json()["delivery"]["idempotent_replay"])
+        self.assertEqual(InboxTicketArtifact.query.count(), 1)
+        refreshed_ticket = db.session.get(TenantTicket, self.ticket.id)
+        self.assertEqual((refreshed_ticket.latitud, refreshed_ticket.longitud), original)
+        timeline = replay.get_json()["ticket"]["timeline"]
+        artifacts = [item for item in timeline if item.get("type") == "crm_artifact"]
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["artifact"]["kind"], "location")
+
+        conflict = self.client.post(
+            endpoint,
+            json={**request_payload, "lat": -34.0},
+            headers=headers,
+        )
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["reason_code"], "artifact_idempotency_payload_conflict")
+
+    def test_artifact_location_requires_header_and_rejects_invalid_wgs84(self):
+        endpoint = f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions"
+        payload = {"source_model": "TenantTicket", "action": "share_location", "lat": 91, "lng": 20}
+        missing = self.client.post(endpoint, json=payload, headers=self._auth(self.employee))
+        invalid = self.client.post(
+            endpoint, json=payload,
+            headers={**self._auth(self.employee), "Idempotency-Key": "location-artifact-0002"},
+        )
+        self.assertEqual(missing.status_code, 400, missing.get_json())
+        self.assertEqual(missing.get_json()["reason_code"], "artifact_idempotency_key_required")
+        self.assertEqual(invalid.status_code, 400, invalid.get_json())
+        self.assertEqual(invalid.get_json()["reason_code"], "artifact_location_invalid")
+        self.assertEqual(InboxTicketArtifact.query.count(), 0)
+
+    def test_form_artifact_requires_approved_tenant_owned_registry(self):
+        approved = MessageTemplateRegistry(
+            tenant_id=self.tenant.id, provider="twilio", channel="whatsapp",
+            name="verified-service-flow", language="es", status="approved",
+            content_sid="HXverifiedflow", external_template_id="123456789012345",
+            metadata_json={"flow_id": "service_request"},
+        )
+        db.session.add(approved)
+        db.session.commit()
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"source_model": "TenantTicket", "action": "send_form", "form_id": approved.id},
+            headers={**self._auth(self.employee), "Idempotency-Key": "form-artifact-000001"},
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertFalse(response.get_json()["delivery"]["external_dispatch"])
+        self.assertTrue(response.get_json()["artifact"]["artifact"]["tenant_verified"])
+
+        foreign_owner = User(name="Foreign owner", email="foreign-artifacts@test.com", rol="admin")
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="foreign-artifacts", nombre="Foreign", tipo="pyme", pyme_id=foreign_owner.id
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_form = MessageTemplateRegistry(
+            tenant_id=foreign_tenant.id, provider="twilio", channel="whatsapp",
+            name="foreign-flow", language="es", status="approved",
+        )
+        db.session.add(foreign_form)
+        db.session.commit()
+        denied = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"source_model": "TenantTicket", "action": "send_form", "form_id": foreign_form.id},
+            headers={**self._auth(self.employee), "Idempotency-Key": "form-artifact-foreign"},
+        )
+        self.assertEqual(denied.status_code, 404, denied.get_json())
+        self.assertEqual(denied.get_json()["reason_code"], "artifact_form_not_found")
+
+        ordinary_template = MessageTemplateRegistry.query.filter_by(
+            tenant_id=self.tenant.id, name="chatboc_welcome_menu_v2"
+        ).one()
+        not_a_form = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"source_model": "TenantTicket", "action": "send_form", "form_id": ordinary_template.id},
+            headers={**self._auth(self.employee), "Idempotency-Key": "form-artifact-not-flow"},
+        )
+        self.assertEqual(not_a_form.status_code, 409, not_a_form.get_json())
+        self.assertEqual(not_a_form.get_json()["reason_code"], "artifact_form_contract_unverified")
+
+    def test_tenant_ticket_attachment_artifact_fails_closed_without_safe_binding(self):
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={"source_model": "TenantTicket", "action": "attach_file", "attachment_id": 1},
+            headers={**self._auth(self.employee), "Idempotency-Key": "tenant-attachment-blocked"},
+        )
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "tenant_ticket_attachment_binding_unavailable")
+        self.assertEqual(InboxTicketArtifact.query.count(), 0)
+
+    def test_artifact_persistence_failure_never_claims_saved_receipt(self):
+        with patch.object(db.session, "commit", side_effect=SQLAlchemyError("forced persistence failure")):
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={"source_model": "TenantTicket", "action": "share_location", "lat": -33.1, "lng": -68.5},
+                headers={**self._auth(self.employee), "Idempotency-Key": "artifact-persist-failure"},
+            )
+        self.assertEqual(response.status_code, 500, response.get_json())
+        self.assertEqual(response.get_json()["reason_code"], "artifact_persistence_failed")
+        self.assertNotIn("saved_in_crm", response.get_json())
+
+    def test_municipio_attachment_artifact_accepts_only_attachment_bound_to_exact_ticket(self):
+        self._set_tenant_as_municipio()
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id, municipio_id=self.owner.id, nro_ticket="M-ART-1",
+            pregunta="Luminaria", categoria="educacion", estado="en_proceso",
+            asignado_a_id=self.employee.id, canal_ingreso="whatsapp",
+        )
+        other = MunicipioTicket(
+            tenant_id=self.tenant.id, municipio_id=self.owner.id, nro_ticket="M-ART-2",
+            pregunta="Otro", categoria="educacion", estado="nuevo", canal_ingreso="whatsapp",
+        )
+        db.session.add_all([legacy, other])
+        db.session.flush()
+        own_attachment = ArchivoAdjunto(
+            municipio_ticket_id=legacy.id, user_id=self.owner.id,
+            filename="evidencia.jpg", nombre_original="evidencia.jpg",
+            mime="image/jpeg", tamano=120, url="gs://private/evidencia.jpg",
+        )
+        foreign_attachment = ArchivoAdjunto(
+            municipio_ticket_id=other.id, user_id=self.owner.id,
+            filename="otro.jpg", mime="image/jpeg", url="gs://private/otro.jpg",
+        )
+        db.session.add_all([own_attachment, foreign_attachment])
+        db.session.commit()
+        endpoint = "/api/v2/inbox/omnichannel/actions"
+        base = {"source_model": "MunicipioTicket", "ticket_id": legacy.id, "legacy_id": legacy.id, "action": "attach_file"}
+        accepted = self.client.post(
+            endpoint, json={**base, "attachment_id": own_attachment.id},
+            headers={**self._auth(self.employee), "Idempotency-Key": "attachment-artifact-own"},
+        )
+        denied = self.client.post(
+            endpoint, json={**base, "attachment_id": foreign_attachment.id},
+            headers={**self._auth(self.employee), "Idempotency-Key": "attachment-artifact-other"},
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.get_json())
+        self.assertTrue(accepted.get_json()["artifact"]["artifact"]["server_verified"])
+        self.assertEqual(denied.status_code, 404, denied.get_json())
+        self.assertEqual(denied.get_json()["reason_code"], "artifact_attachment_not_found")
 
     def test_omnichannel_inbox_live_chat_contract_reports_online_offline_and_queue(self):
         self.tenant.configuracion = {

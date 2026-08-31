@@ -864,6 +864,78 @@ class TenantTicketReplyEvent(db.Model):
         }
 
 
+class InboxTicketArtifact(db.Model):
+    """Tenant-scoped CRM artifact attached to an exact inbox ticket identity.
+
+    These rows are deliberately not provider messages.  They make an operator's
+    attachment, location or form selection durable and auditable before any
+    future channel-specific delivery adapter is introduced.
+    """
+
+    __tablename__ = "inbox_ticket_artifact"
+
+    CONTRACT_VERSION = "inbox.ticket_artifact.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_model = db.Column(db.String(32), nullable=False)
+    ticket_id = db.Column(db.Integer, nullable=False)
+    action = db.Column(db.String(32), nullable=False)
+    payload_json = db.Column(JSONType, nullable=False)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="RESTRICT"), nullable=False)
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_digest = db.Column(db.String(64), nullable=False)
+    contract_version = db.Column(
+        db.String(48), nullable=False, default=CONTRACT_VERSION, server_default=CONTRACT_VERSION
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id", "source_model", "ticket_id", "idempotency_key_hash",
+            name="uq_inbox_ticket_artifact_idempotency",
+        ),
+        db.CheckConstraint(
+            "source_model IN ('TenantTicket', 'MunicipioTicket')",
+            name="ck_inbox_ticket_artifact_source_model",
+        ),
+        db.CheckConstraint(
+            "action IN ('attach_file', 'share_location', 'send_form')",
+            name="ck_inbox_ticket_artifact_action",
+        ),
+        db.Index(
+            "ix_inbox_ticket_artifact_ticket",
+            "tenant_id", "source_model", "ticket_id", "created_at", "id",
+        ),
+    )
+
+    def to_event_dict(self) -> dict:
+        return {
+            "id": f"artifact-{self.id}",
+            "type": "crm_artifact",
+            "origin": "admin_panel",
+            "action": self.action,
+            "visibility": "public",
+            "body": "",
+            "artifact": dict(self.payload_json or {}),
+            "delivery": {
+                "saved_in_crm": True,
+                "external_dispatch": False,
+                "provider_accepted": False,
+                "delivered": False,
+            },
+            "created_at": datetime_to_iso_utc(self.created_at) if self.created_at else None,
+            "actor": {"id": self.actor_user_id, "type": "agent"},
+        }
+
+
 class WidgetConfig(db.Model):
     __tablename__ = "widget_config"
 
