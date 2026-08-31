@@ -86,6 +86,7 @@ from services.survey_tenant_scope import (
     resolve_survey_storage_tenant_profile,
 )
 from services.survey_access_policy import (
+    SURVEY_CLOSE_CAPABILITY,
     SURVEY_CONTENT_REVIEW_CAPABILITY,
     SURVEY_ELIGIBILITY_MANAGE_CAPABILITY,
     SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
@@ -1929,6 +1930,13 @@ def list_surveys_v2(current_user):
     return jsonify(
         {
             "contract_version": "surveys.list.v2",
+            "tenant": admin_payload["tenant"],
+            "freshness": admin_payload["freshness"],
+            "data_provenance": admin_payload["data_provenance"],
+            "data_quality": admin_payload["data_quality"],
+            "executive_summary": admin_payload["executive_summary"],
+            "summary": admin_payload["resumen"],
+            "resumen": admin_payload["resumen"],
             "items": admin_payload["encuestas"],
             "total": pagination["total_items"],
             "limit": pagination["limit"],
@@ -2634,10 +2642,20 @@ def close_survey_governance_release_v2(
     if not allowed:
         return denied
     missing = missing_survey_capabilities(
-        current_user, SURVEY_GOVERNANCE_MANAGE_CAPABILITY
+        current_user,
+        SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+        SURVEY_CLOSE_CAPABILITY,
     )
     if missing:
-        return _survey_governance_capability_error(missing)
+        return _survey_mutation_capability_error(
+            required=[
+                SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+                SURVEY_CLOSE_CAPABILITY,
+            ],
+            missing=missing,
+            reason_code="survey_close_capability_required",
+            message="No tenes permisos para cerrar releases de gobernanza.",
+        )
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or set(payload) - {"human_review_reference"}:
         return _error_response(
@@ -2958,6 +2976,14 @@ def close_survey_v2(current_user, survey_id: int):
         return denied
     if not _survey_writes_allowed(tenant):
         return _survey_plan_required_response(tenant)
+    missing = missing_survey_capabilities(current_user, SURVEY_CLOSE_CAPABILITY)
+    if missing:
+        return _survey_mutation_capability_error(
+            required=[SURVEY_CLOSE_CAPABILITY],
+            missing=missing,
+            reason_code="survey_close_capability_required",
+            message="No tenes permisos para cerrar encuestas.",
+        )
 
     g.tenant_profile = tenant
     try:

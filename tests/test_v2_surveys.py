@@ -2317,6 +2317,18 @@ class V2SurveysApiTest(unittest.TestCase):
         self.assertEqual(listed.status_code, 200)
         payload = listed.get_json()
         self.assertTrue(payload["access"]["features"]["surveys_votings"]["enabled"])
+        self.assertEqual(payload["tenant"]["id"], self.tenant_1.id)
+        self.assertEqual(payload["freshness"]["source"], "enc_encuesta_and_enc_respuesta")
+        self.assertEqual(payload["data_provenance"]["mode"], "real")
+        self.assertEqual(
+            payload["executive_summary"]["aggregation_scope"]["mode"],
+            "returned_page",
+        )
+        self.assertEqual(
+            payload["data_quality"]["geolocation_coverage"]["reason_code"],
+            "survey_response_denominator_empty",
+        )
+        self.assertEqual(payload["summary"], payload["resumen"])
         items = payload.get("items") or []
         self.assertTrue(items)
         self.assertTrue(all(item.get("tenant_id") == self.tenant_1.id for item in items))

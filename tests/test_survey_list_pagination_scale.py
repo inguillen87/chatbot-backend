@@ -150,6 +150,19 @@ def test_v2_list_has_hard_page_cap_cursor_and_legacy_array_compatibility(client)
     assert len(payload["items"]) == 100
     assert payload["has_more"] is True
     assert payload["next_cursor"]
+    assert payload["executive_summary"]["aggregation_scope"] == {
+        "mode": "returned_page",
+        "returned_items": 100,
+        "query_total_items": 105,
+        "complete_for_query": False,
+    }
+    assert {
+        item["reason_code"]
+        for item in payload["data_quality"]["limitations"]
+    } >= {
+        "survey_eligible_population_not_configured",
+        "survey_admin_aggregate_page_scoped",
+    }
     assert all(item["summary_only"] is True for item in payload["items"])
     assert all("texto" not in question for item in payload["items"] for question in item["preguntas"])
 
