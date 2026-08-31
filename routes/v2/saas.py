@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from urllib.parse import quote_plus
 import uuid
 
-from flask import Blueprint, current_app, g, jsonify, request
+from flask import Blueprint, current_app, g, has_request_context, jsonify, request
 from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
@@ -5252,32 +5252,105 @@ def _unsupported_reply_action(*, action_id: str, label: str, reason_code: str) -
     }
 
 
+def _verified_tenant_form_options(tenant: TenantProfile) -> list[dict[str, Any]]:
+    cache_key = f"tenant:{tenant.id}"
+    request_cache: dict[str, list[dict[str, Any]]] | None = None
+    if has_request_context():
+        request_cache = request.environ.setdefault("chatboc.inbox_form_options", {})
+        cached = request_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    rows = MessageTemplateRegistry.query.filter(
+        MessageTemplateRegistry.tenant_id == tenant.id,
+        func.lower(MessageTemplateRegistry.status).in_(("approved", "active", "ready", "published")),
+    ).order_by(
+        MessageTemplateRegistry.updated_at.desc(),
+        MessageTemplateRegistry.id.desc(),
+    ).limit(50).all()
+    options: list[dict[str, Any]] = []
+    for form in rows:
+        metadata = form.metadata_json if isinstance(form.metadata_json, Mapping) else {}
+        flow_id = str(metadata.get("flow_id") or "").strip()
+        if not flow_id or not str(form.external_template_id or "").strip() or not str(form.content_sid or "").strip():
+            continue
+        options.append(
+            {
+                "id": form.id,
+                "label": form.name,
+                "name": form.name,
+                "language": form.language,
+                "flow_id": flow_id,
+                "revision": _iso(form.updated_at),
+                "tenant_owned": True,
+                "approved": True,
+                "tenant_verified": True,
+                "evidence": {
+                    "tenant_owned": True,
+                    "approved": True,
+                    "flow_contract_verified": True,
+                },
+            }
+        )
+    if request_cache is not None:
+        request_cache[cache_key] = options
+    return options
+
+
 def _crm_artifact_action(
-    *, action_id: str, label: str, source_model: str, closed: bool = False
+    *, action_id: str, label: str, source_model: str, tenant: TenantProfile,
+    actor: User | None, assignee_id: Any, payload_defaults: Mapping[str, Any],
+    endpoint: str, closed: bool = False,
 ) -> dict[str, Any]:
     binding_unavailable = action_id == "attach_file" and source_model == "TenantTicket"
-    enabled = not binding_unavailable and not closed
-    return {
+    form_options = _verified_tenant_form_options(tenant) if action_id == "send_form" else []
+    form_unavailable = action_id == "send_form" and not form_options
+    disabled = binding_unavailable or closed or form_unavailable
+    reason_code = None
+    disabled_reason = None
+    action_hint = None
+    if closed:
+        reason_code = "ticket_closed"
+        disabled_reason = "El ticket debe reabrirse antes de agregar recursos."
+        action_hint = "reopen_ticket"
+    elif binding_unavailable:
+        reason_code = "tenant_ticket_attachment_binding_unavailable"
+        disabled_reason = "Este tipo de ticket todavia no tiene adjuntos vinculados de forma verificable."
+        action_hint = "upload_and_bind_attachment_first"
+    elif form_unavailable:
+        reason_code = "artifact_form_options_unavailable"
+        disabled_reason = "No hay formularios tenant-owned aprobados y verificables para este caso."
+        action_hint = "configure_approved_tenant_flow_form"
+
+    action = {
         "id": action_id,
         "label": label,
         "method": "POST",
-        "endpoint": "/api/v2/inbox/omnichannel/actions",
-        "enabled": enabled,
-        "disabled": not enabled,
-        "reason_code": (
-            None if enabled else (
-                "tenant_ticket_attachment_binding_unavailable" if binding_unavailable else "ticket_closed"
-            )
-        ),
+        "endpoint": endpoint,
+        "enabled": not disabled,
+        "disabled": disabled,
+        "reason_code": reason_code,
+        "disabled_reason": disabled_reason,
+        "action_hint": action_hint,
         "requires": {
             "attach_file": ["attachment_id", "Idempotency-Key"],
             "share_location": ["lat", "lng", "Idempotency-Key"],
             "send_form": ["form_id", "Idempotency-Key"],
         }[action_id],
+        "accepted_fields": {
+            "attach_file": ["attachment_id"],
+            "share_location": ["lat", "lng", "label", "address", "capture_source"],
+            "send_form": ["form_id"],
+        }[action_id],
+        "payload_defaults": dict(payload_defaults),
+        "options": form_options,
         "delivery_mode": "crm_only",
         "external_dispatch": False,
         "delivery_contract_version": "inbox.action_delivery.v2",
     }
+    _apply_operational_ownership_contract(action, actor, assignee_id)
+    action["enabled"] = not bool(action.get("disabled"))
+    return action
 
 
 def _reply_delivery_evidence(value: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -5371,6 +5444,7 @@ def _allowed_inbox_actions(
     ticket: TenantTicket,
     extra: Mapping[str, Any],
     *,
+    tenant: TenantProfile,
     actor: User | None = None,
 ) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
@@ -5468,9 +5542,24 @@ def _allowed_inbox_actions(
             )
         )
     actions.extend([
-        _crm_artifact_action(action_id="attach_file", label="Adjuntar archivo", source_model="TenantTicket", closed=status in _CLOSED_TICKET_STATES),
-        _crm_artifact_action(action_id="share_location", label="Compartir ubicacion", source_model="TenantTicket", closed=status in _CLOSED_TICKET_STATES),
-        _crm_artifact_action(action_id="send_form", label="Enviar formulario", source_model="TenantTicket", closed=status in _CLOSED_TICKET_STATES),
+        _crm_artifact_action(
+            action_id="attach_file", label="Adjuntar archivo", source_model="TenantTicket",
+            tenant=tenant, actor=actor, assignee_id=extra.get("assignee_id"),
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=status in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="share_location", label="Compartir ubicacion", source_model="TenantTicket",
+            tenant=tenant, actor=actor, assignee_id=extra.get("assignee_id"),
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=status in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="send_form", label="Agregar formulario al caso", source_model="TenantTicket",
+            tenant=tenant, actor=actor, assignee_id=extra.get("assignee_id"),
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=status in _CLOSED_TICKET_STATES,
+        ),
     ])
     return actions
 
@@ -5680,6 +5769,7 @@ def _legacy_claim_tracking_links(ticket: MunicipioTicket) -> dict[str, str]:
 def _legacy_claim_allowed_actions(
     ticket: MunicipioTicket,
     *,
+    tenant: TenantProfile,
     actor: User | None = None,
 ) -> list[dict[str, Any]]:
     base_endpoint = "/api/v2/inbox/omnichannel/actions"
@@ -5768,9 +5858,24 @@ def _legacy_claim_allowed_actions(
         }
     )
     actions.extend([
-        _crm_artifact_action(action_id="attach_file", label="Adjuntar archivo", source_model="MunicipioTicket", closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES),
-        _crm_artifact_action(action_id="share_location", label="Compartir ubicacion", source_model="MunicipioTicket", closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES),
-        _crm_artifact_action(action_id="send_form", label="Enviar formulario", source_model="MunicipioTicket", closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES),
+        _crm_artifact_action(
+            action_id="attach_file", label="Adjuntar archivo", source_model="MunicipioTicket",
+            tenant=tenant, actor=actor, assignee_id=ticket.asignado_a_id,
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="share_location", label="Compartir ubicacion", source_model="MunicipioTicket",
+            tenant=tenant, actor=actor, assignee_id=ticket.asignado_a_id,
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="send_form", label="Agregar formulario al caso", source_model="MunicipioTicket",
+            tenant=tenant, actor=actor, assignee_id=ticket.asignado_a_id,
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        ),
     ])
     return actions
 
@@ -5803,7 +5908,7 @@ def _legacy_claim_inbox_payload(
     latest_comment = comments[-1].comentario if comments else None
     updated_at = _legacy_claim_updated_at(ticket, comments)
     assignee = _legacy_claim_assignee(ticket)
-    actions = _legacy_claim_allowed_actions(ticket, actor=actor)
+    actions = _legacy_claim_allowed_actions(ticket, tenant=tenant, actor=actor)
     tracking_links = _legacy_claim_tracking_links(ticket)
     channel = str(ticket.canal_ingreso or "whatsapp").strip().lower()
     title = ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket or ticket.id}"
@@ -5941,7 +6046,7 @@ def _inbox_ticket_payload(
             "email": extra.get("assignee_email"),
         }
 
-    actions = _allowed_inbox_actions(ticket, extra, actor=actor)
+    actions = _allowed_inbox_actions(ticket, extra, tenant=tenant, actor=actor)
     delivery_history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
     latest_delivery = extra.get("reply_delivery_latest_evidence") if isinstance(extra.get("reply_delivery_latest_evidence"), Mapping) else None
     reply_contract = _ticket_reply_contract(
@@ -6229,11 +6334,26 @@ def _validated_artifact_payload(
             return None, _error_response("lat y lng son obligatorios", 400, "artifact_location_invalid", "send_wgs84_coordinates")
         if not math.isfinite(lat) or not math.isfinite(lng) or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
             return None, _error_response("Las coordenadas WGS84 no son validas", 400, "artifact_location_invalid", "send_wgs84_coordinates")
+        capture_source = str(payload.get("capture_source") or "manual").strip().lower()
+        if capture_source not in {"manual", "operator_browser_geolocation"}:
+            return None, _error_response(
+                "capture_source debe identificar una captura manual o el GPS opt-in del operador",
+                400,
+                "artifact_location_capture_source_invalid",
+                "send_supported_capture_source",
+            )
         label = str(payload.get("label") or "Ubicacion compartida").strip()[:160]
         address = str(payload.get("address") or "").strip()[:255] or None
         return {
             "contract_version": "inbox.artifact.location.v1", "kind": "location",
             "lat": lat, "lng": lng, "label": label, "address": address,
+            "capture_source": capture_source,
+            "evidence_scope": (
+                "operator_device_location"
+                if capture_source == "operator_browser_geolocation"
+                else "operator_entered_reference"
+            ),
+            "location_role": "crm_reference",
             "claim_location_modified": False,
         }, None
 

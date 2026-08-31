@@ -2092,7 +2092,17 @@ class V2SaasContractsTest(unittest.TestCase):
         action_index = {entry["id"]: entry for entry in item["allowed_actions"]}
         self.assertFalse(action_index["attach_file"]["enabled"])
         self.assertTrue(action_index["share_location"]["enabled"])
-        self.assertTrue(action_index["send_form"]["enabled"])
+        self.assertFalse(action_index["send_form"]["enabled"])
+        self.assertEqual(
+            action_index["send_form"]["reason_code"],
+            "artifact_form_options_unavailable",
+        )
+        self.assertEqual(action_index["send_form"]["options"], [])
+        for action_id in ("attach_file", "share_location", "send_form"):
+            self.assertEqual(
+                action_index[action_id]["payload_defaults"],
+                {"source_model": "TenantTicket", "ticket_id": self.ticket.id},
+            )
         self.assertIn("next_steps", item)
         self.assertEqual(item["source_metadata"]["demo_session_id"], "demo-beca-1")
         self.assertTrue(item["map"]["can_render"])
@@ -2126,6 +2136,7 @@ class V2SaasContractsTest(unittest.TestCase):
         request_payload = {
             "source_model": "TenantTicket", "action": "share_location",
             "lat": -33.0812, "lng": -68.4748, "label": "Plaza departamental",
+            "capture_source": "operator_browser_geolocation",
         }
         headers = {**self._auth(self.employee), "Idempotency-Key": "location-artifact-0001"}
         first = self.client.post(endpoint, json=request_payload, headers=headers)
@@ -2148,6 +2159,16 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(len(artifacts), 1)
         self.assertEqual(artifacts[0]["artifact"]["kind"], "location")
         self.assertEqual(artifacts[0]["visibility"], "internal")
+        self.assertEqual(
+            artifacts[0]["artifact"]["capture_source"],
+            "operator_browser_geolocation",
+        )
+        self.assertEqual(
+            artifacts[0]["artifact"]["evidence_scope"],
+            "operator_device_location",
+        )
+        self.assertEqual(artifacts[0]["artifact"]["location_role"], "crm_reference")
+        self.assertFalse(artifacts[0]["artifact"]["claim_location_modified"])
 
         conflict = self.client.post(
             endpoint,
@@ -2249,10 +2270,26 @@ class V2SaasContractsTest(unittest.TestCase):
             endpoint, json=payload,
             headers={**self._auth(self.employee), "Idempotency-Key": "location-artifact-0002"},
         )
+        invalid_source = self.client.post(
+            endpoint,
+            json={
+                "source_model": "TenantTicket",
+                "action": "share_location",
+                "lat": -33.1,
+                "lng": -68.5,
+                "capture_source": "citizen_reported_location",
+            },
+            headers={**self._auth(self.employee), "Idempotency-Key": "location-artifact-0003"},
+        )
         self.assertEqual(missing.status_code, 400, missing.get_json())
         self.assertEqual(missing.get_json()["reason_code"], "artifact_idempotency_key_required")
         self.assertEqual(invalid.status_code, 400, invalid.get_json())
         self.assertEqual(invalid.get_json()["reason_code"], "artifact_location_invalid")
+        self.assertEqual(invalid_source.status_code, 400, invalid_source.get_json())
+        self.assertEqual(
+            invalid_source.get_json()["reason_code"],
+            "artifact_location_capture_source_invalid",
+        )
         self.assertEqual(InboxTicketArtifact.query.count(), 0)
 
     def test_form_artifact_requires_approved_tenant_owned_registry(self):
@@ -2264,6 +2301,25 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         db.session.add(approved)
         db.session.commit()
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.employee),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        send_form_action = next(
+            action
+            for action in detail.get_json()["ticket"]["allowed_actions"]
+            if action["id"] == "send_form"
+        )
+        self.assertTrue(send_form_action["enabled"])
+        self.assertEqual(len(send_form_action["options"]), 1)
+        self.assertEqual(send_form_action["options"][0]["id"], approved.id)
+        self.assertTrue(send_form_action["options"][0]["tenant_owned"])
+        self.assertTrue(send_form_action["options"][0]["approved"])
+        self.assertTrue(send_form_action["options"][0]["tenant_verified"])
+        self.assertTrue(
+            send_form_action["options"][0]["evidence"]["flow_contract_verified"]
+        )
         response = self.client.post(
             f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
             json={"source_model": "TenantTicket", "action": "send_form", "form_id": approved.id},
@@ -2366,6 +2422,142 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(accepted.get_json()["artifact"]["artifact"]["server_verified"])
         self.assertEqual(denied.status_code, 404, denied.get_json())
         self.assertEqual(denied.get_json()["reason_code"], "artifact_attachment_not_found")
+
+    def test_artifact_action_contract_matches_operational_ownership_for_both_ticket_models(self):
+        approved_form = MessageTemplateRegistry(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="ownership-service-flow",
+            language="es",
+            status="approved",
+            content_sid="HXownershipflow",
+            external_template_id="987654321012345",
+            metadata_json={"flow_id": "ownership_service_request"},
+        )
+        other = self._claim_employee(
+            name="Operador ajeno a artefactos",
+            email="artifact-other@test.com",
+            permissions=["tickets.read"],
+        )
+        supervisor = User(
+            name="Supervisora de artefactos",
+            email="artifact-supervisor@test.com",
+            rol="supervisor",
+            tenant_slug=self.tenant.slug,
+            tenant_id=self.tenant.id,
+        )
+        supervisor.set_password("secret123")
+        unassigned_tenant = self._unassigned_claim_ticket()
+        db.session.add_all([approved_form, supervisor])
+        db.session.commit()
+
+        def tenant_actions(ticket, actor):
+            response = self.client.get(
+                f"/api/v2/inbox/omnichannel/{ticket.id}",
+                headers=self._auth(actor),
+            )
+            self.assertEqual(response.status_code, 200, response.get_json())
+            return {
+                action["id"]: action
+                for action in response.get_json()["ticket"]["allowed_actions"]
+            }
+
+        unassigned_actions = tenant_actions(unassigned_tenant, other)
+        assigned_other_actions = tenant_actions(self.ticket, other)
+        owner_actions = tenant_actions(self.ticket, self.employee)
+        supervisor_actions = tenant_actions(self.ticket, supervisor)
+        for action_id in ("attach_file", "share_location", "send_form"):
+            with self.subTest(source="TenantTicket", action=action_id, actor="unassigned"):
+                self.assertFalse(unassigned_actions[action_id]["enabled"])
+                self.assertEqual(
+                    unassigned_actions[action_id]["reason_code"],
+                    "ticket_claim_required",
+                )
+            with self.subTest(source="TenantTicket", action=action_id, actor="other"):
+                self.assertFalse(assigned_other_actions[action_id]["enabled"])
+                self.assertEqual(
+                    assigned_other_actions[action_id]["reason_code"],
+                    "ticket_assigned_to_other",
+                )
+            expected_enabled = action_id != "attach_file"
+            with self.subTest(source="TenantTicket", action=action_id, actor="owner"):
+                self.assertEqual(owner_actions[action_id]["enabled"], expected_enabled)
+                self.assertEqual(
+                    owner_actions[action_id]["payload_defaults"],
+                    {"source_model": "TenantTicket", "ticket_id": self.ticket.id},
+                )
+            with self.subTest(source="TenantTicket", action=action_id, actor="supervisor"):
+                self.assertEqual(supervisor_actions[action_id]["enabled"], expected_enabled)
+
+        self._set_tenant_as_municipio()
+        unassigned_legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-ART-OWN-1",
+            consulta_pin="991001",
+            pregunta="Caso municipal sin asignar",
+            asunto="Educacion",
+            categoria="educacion",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+        )
+        assigned_legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-ART-OWN-2",
+            consulta_pin="991002",
+            pregunta="Caso municipal asignado",
+            asunto="Educacion",
+            categoria="educacion",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            asignado_a_id=self.employee.id,
+        )
+        db.session.add_all([unassigned_legacy, assigned_legacy])
+        db.session.commit()
+
+        def legacy_actions(ticket, actor):
+            response = self.client.get(
+                f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=MunicipioTicket",
+                headers=self._auth(actor),
+            )
+            self.assertEqual(response.status_code, 200, response.get_json())
+            return {
+                action["id"]: action
+                for action in response.get_json()["item"]["allowed_actions"]
+            }
+
+        unassigned_legacy_actions = legacy_actions(unassigned_legacy, other)
+        assigned_legacy_other_actions = legacy_actions(assigned_legacy, other)
+        legacy_owner_actions = legacy_actions(assigned_legacy, self.employee)
+        legacy_supervisor_actions = legacy_actions(assigned_legacy, supervisor)
+        expected_defaults = {
+            "source_model": "MunicipioTicket",
+            "legacy_id": assigned_legacy.id,
+            "ticket_id": assigned_legacy.id,
+        }
+        for action_id in ("attach_file", "share_location", "send_form"):
+            with self.subTest(source="MunicipioTicket", action=action_id, actor="unassigned"):
+                self.assertFalse(unassigned_legacy_actions[action_id]["enabled"])
+                self.assertEqual(
+                    unassigned_legacy_actions[action_id]["reason_code"],
+                    "ticket_claim_required",
+                )
+            with self.subTest(source="MunicipioTicket", action=action_id, actor="other"):
+                self.assertFalse(assigned_legacy_other_actions[action_id]["enabled"])
+                self.assertEqual(
+                    assigned_legacy_other_actions[action_id]["reason_code"],
+                    "ticket_assigned_to_other",
+                )
+            with self.subTest(source="MunicipioTicket", action=action_id, actor="owner"):
+                self.assertTrue(legacy_owner_actions[action_id]["enabled"])
+                self.assertEqual(
+                    legacy_owner_actions[action_id]["payload_defaults"],
+                    expected_defaults,
+                )
+            with self.subTest(source="MunicipioTicket", action=action_id, actor="supervisor"):
+                self.assertTrue(legacy_supervisor_actions[action_id]["enabled"])
 
     def test_omnichannel_inbox_live_chat_contract_reports_online_offline_and_queue(self):
         self.tenant.configuracion = {
