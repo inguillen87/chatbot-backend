@@ -235,6 +235,21 @@ def test_enabled_gate_never_falls_back_to_the_runtime_application_database():
             "?sslmode=require&options=-c%20statement_timeout%3D0",
             "global_writer_authority_control_database_url_invalid",
         ),
+        (
+            "postgresql://operator:secret@ep-control-pooler.us-east-2.aws.neon.tech/authority"
+            "?sslmode=require",
+            "global_writer_authority_control_database_must_be_direct",
+        ),
+        (
+            "postgresql://operator:secret@pgbouncer.control.invalid/authority"
+            "?sslmode=require",
+            "global_writer_authority_control_database_must_be_direct",
+        ),
+        (
+            "postgresql://operator:secret@control.invalid/authority"
+            "?sslmode=require&pgbouncer=true",
+            "global_writer_authority_control_database_must_be_direct",
+        ),
     ],
 )
 def test_enabled_gate_rejects_unsafe_control_database_urls(
@@ -542,5 +557,33 @@ def test_cli_never_echoes_database_url_or_exception_message(monkeypatch, capsys)
     payload = json.loads(payload_text)
     assert exit_code == 3
     assert payload["reason_code"] == "global_writer_authority_runtime_failed"
+    assert secret_url not in payload_text
+    assert "do-not-print" not in payload_text
+
+
+def test_cli_rejects_pooler_control_url_before_engine_creation(monkeypatch, capsys):
+    secret_url = (
+        "postgresql://operator:do-not-print@"
+        "ep-control-pooler.us-east-2.aws.neon.tech/control?sslmode=require"
+    )
+
+    def _unexpected_engine(*_args, **_kwargs):
+        raise AssertionError("pooled control DSN must fail before engine creation")
+
+    monkeypatch.setattr(cli, "create_engine", _unexpected_engine)
+    exit_code = cli.main(
+        ["status"],
+        environ={
+            config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL: secret_url,
+        },
+    )
+    payload_text = capsys.readouterr().out
+    payload = json.loads(payload_text)
+
+    assert exit_code == 2
+    assert (
+        payload["reason_code"]
+        == "global_writer_authority_control_database_must_be_direct"
+    )
     assert secret_url not in payload_text
     assert "do-not-print" not in payload_text

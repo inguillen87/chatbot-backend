@@ -329,11 +329,32 @@ access. The Render Blueprint declares `CUTOVER_RUNTIME_IDENTITY=render`, keeps
 Every Render worker and cron inherits those three values from the web service;
 there is no per-process fallback to `DATABASE_URL`.
 
-This manifest contract is preparation, not remote-state evidence. Do not enable
-the flag until the same explicit TLS PostgreSQL control DSN is loaded in both
-approved runtimes, both runtime fences are active, and the singleton/CAS state
-is certified inside the maintenance window. A missing or invalid control DSN
-after opt-in must block all guarded writers.
+This manifest contract is preparation, not remote-state evidence. While
+`CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED=false`, Production may stage
+`CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL` by duplicating one already
+approved **direct/unpooled** Neon DSN. A variable name such as `UNPOOLED` or
+`NON_POOLING` is not evidence by itself: attest the redacted project, branch and
+`current_database()` identity before selecting it. For this cutover the control
+DSN targets the same approved destination Neon application database, where the
+exact migration creates `public.cutover_global_writer_authority`; a separate
+database, schema or branch is outside this runbook and requires its own
+migration/bootstrap/preflight.
+
+The runtime and transition CLI reject recognizable Neon `-pooler`/PgBouncer
+hosts and explicit pool-mode query markers before connecting. Opaque DNS aliases
+can hide a pooler, so the operator must still prove the endpoint is direct. The
+runtime credential needs `CONNECT`, `USAGE` on `public` and `SELECT` on the
+authority table; the transition operator additionally needs `UPDATE`, while DDL
+remains with the migration owner. Reusing an unpooled application-owner DSN is
+transport-compatible but overprivileged and must be recorded as temporary
+security debt if least-privilege credentials are not ready.
+
+Do not enable the flag until that same explicit direct TLS PostgreSQL control
+target is loaded in both approved runtimes, the migration and safe singleton
+state are certified, both runtime fences are active, and the CAS epoch is
+verified inside the maintenance window. A missing, pooled, invalid,
+unprivileged or unbootstrapped control DSN after opt-in must block all guarded
+writers.
 
 - [ ] Move `api.chatboc.ar` to the approved Vercel deployment while both
       environments remain fenced.

@@ -32,6 +32,7 @@ from global_writer_authority import (
     GLOBAL_WRITER_AUTHORITY_DATABASE_URL,
     configured_writer_runtime,
     global_writer_authority_enabled,
+    writer_authority_endpoint_is_recognizably_pooled,
 )
 from services.global_writer_authority import (
     GlobalWriterAuthorityState,
@@ -181,6 +182,10 @@ def _database_url(environ: Mapping[str, str], variable_name: str | None) -> str:
     }.intersection(str(key).lower() for key in url.query)
     if indirect_parameters:
         raise GlobalWriterAuthorityTransitionError("database_url_invalid")
+    if writer_authority_endpoint_is_recognizably_pooled(url.host, url.query):
+        raise GlobalWriterAuthorityTransitionError(
+            "global_writer_authority_control_database_must_be_direct"
+        )
     if str(url.query.get("sslmode") or "").strip().lower() not in {
         "require",
         "verify-ca",

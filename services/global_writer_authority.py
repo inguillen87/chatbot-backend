@@ -24,6 +24,7 @@ from global_writer_authority import (
     configured_writer_authority_database_url,
     configured_writer_runtime,
     global_writer_authority_enabled,
+    writer_authority_endpoint_is_recognizably_pooled,
 )
 
 
@@ -115,6 +116,13 @@ def _control_database_engine(config: Mapping[str, Any] | None) -> Engine:
     if indirect_parameters:
         raise GlobalWriterAuthorityTransitionError(
             "global_writer_authority_control_database_url_invalid"
+        )
+    if writer_authority_endpoint_is_recognizably_pooled(
+        parsed.host,
+        parsed.query,
+    ):
+        raise GlobalWriterAuthorityTransitionError(
+            "global_writer_authority_control_database_must_be_direct"
         )
     if str(parsed.query.get("sslmode") or "").strip().lower() not in {
         "require",

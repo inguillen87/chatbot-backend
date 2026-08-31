@@ -20,6 +20,8 @@ GLOBAL_WRITER_AUTHORITY_DATABASE_URL = (
 )
 GLOBAL_WRITER_AUTHORITY_CONTRACT = "cutover.global_writer_authority.v1"
 SUPPORTED_WRITER_RUNTIMES = frozenset({"render", "vercel"})
+_RECOGNIZABLE_POOLER_HOST_TOKENS = frozenset({"pgbouncer", "pooler"})
+_RECOGNIZABLE_POOLER_QUERY_KEYS = frozenset({"pgbouncer", "pool_mode"})
 
 _TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "f", "no", "n", "off"})
@@ -77,6 +79,35 @@ def configured_writer_authority_database_url(
     return normalized or None
 
 
+def writer_authority_endpoint_is_recognizably_pooled(
+    host: Any,
+    query: Mapping[str, Any] | None = None,
+) -> bool:
+    """Return whether a control DSN visibly targets a pooler.
+
+    The authority connections install session startup options that are not
+    compatible with PgBouncer transaction pooling.  This deliberately errs on
+    the fail-closed side for conventional Neon ``-pooler`` hosts and explicit
+    PgBouncer/pool-mode query markers.  It cannot prove that an opaque DNS alias
+    is direct; the cutover runbook must attest that separately.
+    """
+
+    normalized_host = str(host or "").strip().lower().rstrip(".")
+    host_tokens = {
+        token
+        for token in normalized_host.replace(".", "-").split("-")
+        if token
+    }
+    if host_tokens.intersection(_RECOGNIZABLE_POOLER_HOST_TOKENS):
+        return True
+    normalized_query_keys = {
+        str(key).strip().lower() for key in (query or {})
+    }
+    return bool(
+        normalized_query_keys.intersection(_RECOGNIZABLE_POOLER_QUERY_KEYS)
+    )
+
+
 __all__ = [
     "GLOBAL_WRITER_AUTHORITY_CONTRACT",
     "GLOBAL_WRITER_AUTHORITY_DATABASE_URL",
@@ -86,4 +117,5 @@ __all__ = [
     "configured_writer_runtime",
     "configured_writer_authority_database_url",
     "global_writer_authority_enabled",
+    "writer_authority_endpoint_is_recognizably_pooled",
 ]
