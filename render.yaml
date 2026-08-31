@@ -28,6 +28,16 @@ services:
       # propagated to every background writer below from this web service.
       - key: CUTOVER_WRITER_FENCE_ENABLED
         value: "false"
+      # Persistent cross-runtime authority remains inert until the approved
+      # cutover window. Runtime identity is declarative; the dedicated shared
+      # PostgreSQL control DSN never falls back to DATABASE_URL. If the flag is
+      # enabled before the DSN is loaded, every guarded writer fails closed.
+      - key: CUTOVER_RUNTIME_IDENTITY
+        value: render
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        value: "false"
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        sync: false
       # These secrets must be loaded manually on the existing Render service.
       # Standby mode stays false until the final writer freeze is certified.
       - key: DATABASE_URL
@@ -436,6 +446,21 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
       - key: CHATBOC_RENDER_STANDBY_MODE
         fromService:
           type: web
@@ -735,6 +760,21 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
       - key: CHATBOC_RENDER_STANDBY_MODE
         fromService:
           type: web
@@ -801,6 +841,21 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
       - key: CHATBOC_RENDER_STANDBY_MODE
         fromService:
           type: web
@@ -945,6 +1000,21 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
       - key: CHATBOC_RENDER_STANDBY_MODE
         fromService:
           type: web
@@ -1018,6 +1088,21 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
       - key: CHATBOC_RENDER_STANDBY_MODE
         fromService:
           type: web
@@ -1057,6 +1142,21 @@ services:
           type: web
           name: chatboc-backend
           envVarKey: CUTOVER_WRITER_FENCE_ENABLED
+      - key: CUTOVER_RUNTIME_IDENTITY
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_RUNTIME_IDENTITY
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED
+      - key: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
+        fromService:
+          type: web
+          name: chatboc-backend
+          envVarKey: CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL
       - key: CHATBOC_RENDER_STANDBY_MODE
         fromService:
           type: web

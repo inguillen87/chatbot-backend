@@ -32,6 +32,10 @@ EXPECTED_CRONS = [
 ]
 DEPLOYMENT_ID = "dpl_HWoecwQtVvuxNwr3x5nddSatF4zj"
 RUNTIME_REVISION = "21e77ca02be9ab0f0875b65622b898b16885f087"
+DEPLOYMENT_HOST = (
+    "chatboc-backend-ompj6a90y-marcelos-projects-c26aa499.vercel.app"
+)
+PROJECT_NAME = "chatboc-backend"
 
 
 def _config():
@@ -39,7 +43,21 @@ def _config():
 
 
 def _registry():
-    return {"crons": {"definitions": EXPECTED_CRONS}, "enabled": True}
+    return {
+        "crons": [dict(item, host=DEPLOYMENT_HOST) for item in EXPECTED_CRONS],
+        "undeployed": [],
+        "modified": [],
+        "enabled": True,
+    }
+
+
+def _registry_for(definitions, *, enabled=True, undeployed=None, modified=None):
+    return {
+        "crons": [dict(item, host=DEPLOYMENT_HOST) for item in definitions],
+        "undeployed": [] if undeployed is None else undeployed,
+        "modified": [] if modified is None else modified,
+        "enabled": enabled,
+    }
 
 
 def _environment(**overrides):
@@ -64,6 +82,7 @@ def _runtime_probes(**overrides):
     document = {
         "deployment_id": DEPLOYMENT_ID,
         "runtime_revision": RUNTIME_REVISION,
+        "host": DEPLOYMENT_HOST,
         "probes": [
             {
                 "path": item["path"],
@@ -81,14 +100,53 @@ def _runtime_probes(**overrides):
     return document
 
 
-def _audit(config=None, registry=None, environment=None, probes=None):
+def _deployment(**overrides):
+    document = {
+        "id": DEPLOYMENT_ID,
+        "name": PROJECT_NAME,
+        "url": DEPLOYMENT_HOST,
+        "target": "production",
+        "readyState": "READY",
+        "builds": [
+            {
+                "deploymentId": DEPLOYMENT_ID,
+                "readyState": "READY",
+                "config": {"vercelConfig": {"crons": EXPECTED_CRONS}},
+            }
+        ],
+    }
+    document.update(overrides)
+    return document
+
+
+def _version_probe(**overrides):
+    document = {
+        "host": DEPLOYMENT_HOST,
+        "status_code": 200,
+        "body": {"backend": RUNTIME_REVISION, "frontend": "dev"},
+    }
+    document.update(overrides)
+    return document
+
+
+def _audit(
+    config=None,
+    registry=None,
+    environment=None,
+    probes=None,
+    deployment=None,
+    version_probe=None,
+):
     return audit_cron_ownership(
         _config() if config is None else config,
         _registry() if registry is None else registry,
         _environment() if environment is None else environment,
         _runtime_probes() if probes is None else probes,
+        _deployment() if deployment is None else deployment,
+        _version_probe() if version_probe is None else version_probe,
         expected_deployment_id=DEPLOYMENT_ID,
         expected_runtime_revision=RUNTIME_REVISION,
+        expected_project_name=PROJECT_NAME,
     )
 
 
@@ -108,6 +166,9 @@ def test_exact_registry_with_explicitly_disabled_flags_is_certified_inert():
         "observed_count": 4,
         "exact": True,
         "scheduler_enabled": True,
+        "owner_host_match": True,
+        "undeployed_count": 0,
+        "modified_count": 0,
     }
     assert report["activation"] == {
         "state": "registered_inert",
@@ -116,6 +177,16 @@ def test_exact_registry_with_explicitly_disabled_flags_is_certified_inert():
     }
     assert report["rollback"]["requires_redeploy_or_explicit_disable"] is True
     assert report["safety"]["external_actions_performed"] is False
+    assert report["candidate"]["runtime_revision_match"] is True
+    assert report["candidate"]["artifact_crons_exact"] is True
+    assert report["overlap"] == {
+        "scope": "vercel_cron_registry",
+        "unique_candidate_owner": True,
+        "global_source_destination_certified": False,
+        "global_reason": (
+            "requires_shared_writer_authority_and_source_scheduler_evidence"
+        ),
+    }
 
 
 def test_enabled_registered_cron_requires_and_accepts_strong_redacted_secret():
@@ -174,7 +245,7 @@ def test_enabled_cron_with_only_presence_metadata_is_not_falsely_certified():
 
 
 def test_empty_registry_is_a_blocking_no_owner_state():
-    report = _audit(registry={"definitions": [], "enabled": True})
+    report = _audit(registry=_registry_for([]))
 
     assert report["ready"] is False
     assert report["registry"]["status"] == "empty"
@@ -185,7 +256,7 @@ def test_empty_registry_is_a_blocking_no_owner_state():
 def test_repository_inventory_cannot_shrink_or_expand_the_required_gate():
     missing = _audit(
         config={"crons": EXPECTED_CRONS[:-1]},
-        registry={"crons": {"definitions": EXPECTED_CRONS[:-1]}, "enabled": True},
+        registry=_registry_for(EXPECTED_CRONS[:-1]),
         probes=_runtime_probes(probes=_runtime_probes()["probes"][:-1]),
     )
     unexpected_definition = {
@@ -193,10 +264,9 @@ def test_repository_inventory_cannot_shrink_or_expand_the_required_gate():
         "schedule": "*/15 * * * *",
     }
     expanded_config = {"crons": [*EXPECTED_CRONS, unexpected_definition]}
-    expanded_registry = {
-        "crons": {"definitions": [*EXPECTED_CRONS, unexpected_definition]},
-        "enabled": True,
-    }
+    expanded_registry = _registry_for(
+        [*EXPECTED_CRONS, unexpected_definition]
+    )
     expanded_probes = _runtime_probes()
     expanded_probes["probes"].append(
         {
@@ -225,8 +295,8 @@ def test_repository_inventory_cannot_shrink_or_expand_the_required_gate():
 
 
 def test_divergent_registry_reports_missing_unexpected_and_schedule_mismatch():
-    registry = {
-        "definitions": [
+    registry = _registry_for(
+        [
             {
                 "path": "/api/internal/cron/outbox-reconciliation",
                 "schedule": "*/5 * * * *",
@@ -236,8 +306,7 @@ def test_divergent_registry_reports_missing_unexpected_and_schedule_mismatch():
                 "schedule": "0 1 * * *",
             },
         ]
-    }
-    registry["enabled"] = True
+    )
     report = _audit(registry=registry)
 
     assert report["ready"] is False
@@ -250,14 +319,13 @@ def test_divergent_registry_reports_missing_unexpected_and_schedule_mismatch():
 
 
 def test_enabled_flag_without_registered_definition_is_explicitly_blocked():
-    registry = {
-        "definitions": [
+    registry = _registry_for(
+        [
             item
             for item in EXPECTED_CRONS
             if item["path"] != "/api/internal/cron/weekly-analytics-report"
         ]
-    }
-    registry["enabled"] = True
+    )
     report = _audit(
         registry=registry,
         environment=_environment(
@@ -285,9 +353,12 @@ def test_missing_or_invalid_flags_prevent_ownership_certification():
 @pytest.mark.parametrize(
     ("registry", "reason_code"),
     [
-        ({"crons": EXPECTED_CRONS}, "registry_scheduler_state_unverified"),
         (
-            {"crons": EXPECTED_CRONS, "enabled": False},
+            {**_registry_for(EXPECTED_CRONS), "enabled": None},
+            "registry_scheduler_state_unverified",
+        ),
+        (
+            _registry_for(EXPECTED_CRONS, enabled=False),
             "registry_scheduler_disabled",
         ),
     ],
@@ -316,6 +387,64 @@ def test_runtime_probes_are_bound_to_exact_deployment_and_revision():
     assert report["runtime_fail_closed"]["runtime_revision_match"] is False
 
 
+def test_candidate_deployment_and_served_revision_must_match_exactly():
+    report = _audit(
+        deployment=_deployment(
+            id="dpl_anotherDeployment123456789",
+            target="preview",
+            readyState="BUILDING",
+        ),
+        version_probe=_version_probe(
+            body={"backend": "f" * 40, "frontend": "dev"}
+        ),
+    )
+
+    assert report["ready"] is False
+    assert {
+        "deployment_id_mismatch",
+        "deployment_target_not_production",
+        "deployment_not_ready",
+        "deployment_build_owner_mismatch",
+        "version_probe_revision_mismatch",
+    }.issubset(set(_codes(report)))
+    assert report["candidate"]["runtime_revision_match"] is False
+
+
+def test_cron_registry_owner_host_and_drift_must_be_exact():
+    other_host = "chatboc-backend-old.example-team.vercel.app"
+    registry = _registry_for(
+        EXPECTED_CRONS,
+        undeployed=[EXPECTED_CRONS[0]],
+        modified=[EXPECTED_CRONS[1]],
+    )
+    registry["crons"][0]["host"] = other_host
+
+    report = _audit(registry=registry)
+
+    assert report["ready"] is False
+    assert {
+        "registry_multiple_owner_hosts",
+        "registry_owner_host_mismatch",
+        "registry_has_undeployed_definitions",
+        "registry_has_modified_definitions",
+    }.issubset(set(_codes(report)))
+    assert report["overlap"]["unique_candidate_owner"] is False
+
+
+def test_runtime_and_version_probes_must_target_candidate_host():
+    other_host = "chatboc-backend-old.example-team.vercel.app"
+    report = _audit(
+        probes=_runtime_probes(host=other_host),
+        version_probe=_version_probe(host=other_host),
+    )
+
+    assert report["ready"] is False
+    assert set(_codes(report)) == {
+        "version_probe_host_mismatch",
+        "runtime_probe_host_mismatch",
+    }
+
+
 def test_incomplete_or_non_fenced_runtime_probe_blocks_certification():
     probes = _runtime_probes()["probes"][:-1]
     probes[0] = {
@@ -342,14 +471,14 @@ def test_duplicate_registry_definition_is_rejected_as_invalid_input():
     with pytest.raises(CronOwnershipAuditFailure) as captured:
         audit_cron_ownership(
             _config(),
-            {
-                "definitions": [EXPECTED_CRONS[0], EXPECTED_CRONS[0]],
-                "enabled": True,
-            },
+            _registry_for([EXPECTED_CRONS[0], EXPECTED_CRONS[0]]),
             _environment(),
             _runtime_probes(),
+            _deployment(),
+            _version_probe(),
             expected_deployment_id=DEPLOYMENT_ID,
             expected_runtime_revision=RUNTIME_REVISION,
+            expected_project_name=PROJECT_NAME,
         )
 
     assert captured.value.reason_code == "registry_definition_duplicate"
@@ -364,6 +493,10 @@ def test_cli_requires_explicit_audit_only_and_never_echoes_paths(tmp_path, capsy
     env_path.write_text(json.dumps(_environment()), encoding="utf-8")
     probe_path = tmp_path / "probes.json"
     probe_path.write_text(json.dumps(_runtime_probes()), encoding="utf-8")
+    deployment_path = tmp_path / "deployment.json"
+    deployment_path.write_text(json.dumps(_deployment()), encoding="utf-8")
+    version_path = tmp_path / "version.json"
+    version_path.write_text(json.dumps(_version_probe()), encoding="utf-8")
 
     exit_code = main(
         [
@@ -375,10 +508,16 @@ def test_cli_requires_explicit_audit_only_and_never_echoes_paths(tmp_path, capsy
             str(env_path),
             "--runtime-probes-json",
             str(probe_path),
+            "--deployment-json",
+            str(deployment_path),
+            "--version-probe-json",
+            str(version_path),
             "--expected-deployment-id",
             DEPLOYMENT_ID,
             "--expected-runtime-revision",
             RUNTIME_REVISION,
+            "--expected-project-name",
+            PROJECT_NAME,
         ]
     )
     output = capsys.readouterr().out
@@ -392,12 +531,14 @@ def test_cli_emits_redacted_blocking_report_and_nonzero_exit(tmp_path, capsys):
     paths = []
     for name, document in (
         ("vercel.json", _config()),
-        ("registry.json", {"definitions": [], "enabled": True}),
+        ("registry.json", _registry_for([])),
         (
             "env.json",
             _environment(CRON_SECRET="do-not-print-this-secret"),
         ),
         ("probes.json", _runtime_probes()),
+        ("deployment.json", _deployment()),
+        ("version.json", _version_probe()),
     ):
         path = tmp_path / name
         path.write_text(json.dumps(document), encoding="utf-8")
@@ -413,10 +554,16 @@ def test_cli_emits_redacted_blocking_report_and_nonzero_exit(tmp_path, capsys):
             str(paths[2]),
             "--runtime-probes-json",
             str(paths[3]),
+            "--deployment-json",
+            str(paths[4]),
+            "--version-probe-json",
+            str(paths[5]),
             "--expected-deployment-id",
             DEPLOYMENT_ID,
             "--expected-runtime-revision",
             RUNTIME_REVISION,
+            "--expected-project-name",
+            PROJECT_NAME,
             "--audit-only",
         ]
     )

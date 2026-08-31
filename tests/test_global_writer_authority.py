@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from flask import Flask
+import yaml
 
 import global_writer_authority as config_gate
 import middleware.cutover_writer_fence as http_gate
@@ -11,6 +13,17 @@ import scripts.manage_global_writer_authority as cli
 import services.global_writer_authority as authority
 import routes.internal_cron as internal_cron
 from cutover_writer_fence import cutover_writer_view
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+RENDER_BACKGROUND_WRITERS = (
+    "chatboc-whatsapp-durable",
+    "chatboc-whatsapp-payload-retention",
+    "chatboc-domain-effects",
+    "chatboc-survey-effects",
+    "chatboc-survey-retention",
+    "weekly-analytics-report",
+)
 
 
 class _Result:
@@ -55,6 +68,60 @@ def test_global_authority_is_disabled_by_default_and_malformed_opt_in_fails_clos
         )
         is True
     )
+
+
+def test_example_environment_declares_inert_fail_closed_authority_contract():
+    values = {}
+    for raw_line in (REPOSITORY_ROOT / ".env.example").read_text(
+        encoding="utf-8"
+    ).splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key] = value
+
+    assert values[config_gate.GLOBAL_WRITER_RUNTIME_IDENTITY] == ""
+    assert values[config_gate.GLOBAL_WRITER_AUTHORITY_FLAG] == "false"
+    assert values[config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL] == ""
+    assert config_gate.global_writer_authority_enabled(values) is False
+
+    accidentally_enabled = dict(values)
+    accidentally_enabled[config_gate.GLOBAL_WRITER_AUTHORITY_FLAG] = "true"
+    decision = authority.evaluate_global_writer_authority(accidentally_enabled)
+    assert decision.allowed is False
+    assert decision.reason_code == "global_writer_runtime_identity_invalid"
+
+
+def test_render_declares_inert_authority_and_propagates_one_control_contract():
+    services = {
+        item["name"]: item
+        for item in yaml.safe_load(
+            (REPOSITORY_ROOT / "render.yaml").read_text(encoding="utf-8")
+        )["services"]
+    }
+    web_env = {
+        item["key"]: item for item in services["chatboc-backend"]["envVars"]
+    }
+
+    assert web_env[config_gate.GLOBAL_WRITER_RUNTIME_IDENTITY]["value"] == "render"
+    assert web_env[config_gate.GLOBAL_WRITER_AUTHORITY_FLAG]["value"] == "false"
+    control_dsn = web_env[config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL]
+    assert control_dsn["sync"] is False
+    assert "value" not in control_dsn
+
+    for service_name in RENDER_BACKGROUND_WRITERS:
+        env = {item["key"]: item for item in services[service_name]["envVars"]}
+        for variable_name in (
+            config_gate.GLOBAL_WRITER_RUNTIME_IDENTITY,
+            config_gate.GLOBAL_WRITER_AUTHORITY_FLAG,
+            config_gate.GLOBAL_WRITER_AUTHORITY_DATABASE_URL,
+        ):
+            assert env[variable_name]["fromService"] == {
+                "type": "web",
+                "name": "chatboc-backend",
+                "envVarKey": variable_name,
+            }
 
 
 def test_enabled_authority_requires_declarative_runtime_before_database_access():

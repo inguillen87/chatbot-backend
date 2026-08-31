@@ -242,24 +242,34 @@ Exit evidence: exact-migration JSON plus post-migration backup branch ID.
 ### Evidence contract for Vercel cron ownership
 
 `scripts/audit_vercel_cron_ownership.py` is an offline, fail-closed gate. It
-does not query Vercel or invoke a cron route. Version 2 requires four local
-snapshots and binds the runtime probes to the approved deployment ID and exact
-runtime revision:
+does not query Vercel or invoke a cron route. Version 3 requires six local
+snapshots and binds the registry host, built cron inventory, runtime probes and
+served revision to the approved deployment ID and exact full Git SHA:
 
 1. repository `vercel.json`;
 2. the unmodified JSON from `vercel crons list --json` for the linked
    `chatboc-backend` project;
 3. a redacted environment declaration containing only the three activation
    flags and `CRON_SECRET` presence/UTF-8 byte count, never its value;
-4. one captured response for each cron path from the exact fenced runtime.
+4. one captured response for each cron path from the exact fenced runtime,
+   including the immutable Vercel host at snapshot root;
+5. the unmodified JSON from `vercel inspect <cron-host> --json`;
+6. a redacted `/api/version` capture with only `host`, `status_code` and parsed
+   JSON `body`.
 
 The remote registry must contain exactly four deployed definitions, report
-`enabled: true`, and have no missing, unexpected or changed schedule. Each
-runtime response must be `503`, `Cache-Control: no-store`, `Retry-After: 60`
-and the exact `cutover.background_writer_fence.v1` payload with
-`executed: false`. The probe capture is allowed only after `/api/version` and
-the independent fence evidence identify the approved deployment. Never probe
-these mutating GET routes when the fence state is unknown.
+`enabled: true`, have empty `undeployed` and `modified` lists, and have no
+missing, unexpected or changed schedule. Every definition must name the same
+immutable host returned by `vercel inspect`; mixed or stale hosts block the
+gate. The inspected deployment must match the approved ID/project, be
+`target: production` and `readyState: READY`, and its build artifact must carry
+the exact repository cron inventory. The version capture must return HTTP 200
+and the exact 40-character approved backend SHA from that same host. Each cron
+response must be `503`, `Cache-Control: no-store`, `Retry-After: 60` and the
+exact `cutover.background_writer_fence.v1` payload with `executed: false`. The
+probe capture is allowed only after `/api/version` and the independent fence
+evidence identify the approved deployment. Never probe these mutating GET
+routes when the fence state is unknown.
 
 Run the offline audit from a private evidence directory outside the repository:
 
@@ -269,14 +279,22 @@ py -3 scripts/audit_vercel_cron_ownership.py `
   --registry-json $cutoverEvidenceDir\vercel-crons.json `
   --env-json $cutoverEvidenceDir\vercel-cron-env-redacted.json `
   --runtime-probes-json $cutoverEvidenceDir\vercel-cron-fenced-probes.json `
+  --deployment-json $cutoverEvidenceDir\vercel-deployment-inspect.json `
+  --version-probe-json $cutoverEvidenceDir\vercel-version-redacted.json `
   --expected-deployment-id $approvedVercelDeploymentId `
   --expected-runtime-revision $approvedRuntimeRevision `
+  --expected-project-name chatboc-backend `
   --audit-only
 ```
 
 Exit `0` and `ready: true` certify only **registered and fail-closed** Vercel
 ownership. They do not authorize enabling effects, changing DNS, fencing
 Render, transferring the global writer epoch or sending a provider canary.
+The `overlap.unique_candidate_owner` result certifies only that Vercel has one
+cron owner host with no registry drift; it intentionally leaves
+`global_source_destination_certified: false`. The shared writer-authority and
+source-scheduler evidence must independently prove that Render and Vercel do
+not execute effects at the same time.
 Vercel documents that cron jobs are created by a Production deployment, invoke
 the Production deployment URL, and are not retargeted by Instant Rollback.
 Rollback therefore requires an explicit cron disable or a redeploy of the
@@ -301,6 +319,21 @@ Exit evidence: redacted variable-name inventory, authenticated application
 canary report and provider configuration report.
 
 ## Gate 6 - traffic switch and live canary
+
+The repository now declares the shared authority consistently but leaves it
+inactive. `.env.example` uses a blank runtime identity, `false` authority flag
+and blank control DSN, so an accidental local opt-in fails before database
+access. The Render Blueprint declares `CUTOVER_RUNTIME_IDENTITY=render`, keeps
+`CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED=false`, and declares
+`CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL` as an operator-managed secret.
+Every Render worker and cron inherits those three values from the web service;
+there is no per-process fallback to `DATABASE_URL`.
+
+This manifest contract is preparation, not remote-state evidence. Do not enable
+the flag until the same explicit TLS PostgreSQL control DSN is loaded in both
+approved runtimes, both runtime fences are active, and the singleton/CAS state
+is certified inside the maintenance window. A missing or invalid control DSN
+after opt-in must block all guarded writers.
 
 - [ ] Move `api.chatboc.ar` to the approved Vercel deployment while both
       environments remain fenced.
