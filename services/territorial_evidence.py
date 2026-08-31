@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+import hashlib
 import json
 import math
 import os
@@ -167,6 +168,195 @@ def _load_json_object(path: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _validated_ring(value: Any) -> list[list[float]] | None:
+    if not isinstance(value, list) or len(value) < 4:
+        return None
+    ring: list[list[float]] = []
+    for position in value:
+        if not isinstance(position, (list, tuple)) or len(position) < 2:
+            return None
+        lng, lat = _finite_float(position[0]), _finite_float(position[1])
+        coordinates = _valid_coordinates(lat, lng)
+        if coordinates is None:
+            return None
+        ring.append([float(lng), float(lat)])
+    if ring[0] != ring[-1]:
+        return None
+    return ring
+
+
+def _validated_boundary_geometry(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    geometry_type = value.get("type")
+    coordinates = value.get("coordinates")
+    if geometry_type == "Polygon" and isinstance(coordinates, list):
+        rings = [_validated_ring(ring) for ring in coordinates]
+        if rings and all(ring is not None for ring in rings):
+            return {"type": "Polygon", "coordinates": rings}
+    if geometry_type == "MultiPolygon" and isinstance(coordinates, list):
+        polygons: list[list[list[list[float]]]] = []
+        for polygon in coordinates:
+            if not isinstance(polygon, list):
+                return None
+            rings = [_validated_ring(ring) for ring in polygon]
+            if not rings or any(ring is None for ring in rings):
+                return None
+            polygons.append(rings)
+        if polygons:
+            return {"type": "MultiPolygon", "coordinates": polygons}
+    return None
+
+
+def _boundary_geometry_bounds(geometry: dict[str, Any]) -> dict[str, float] | None:
+    coordinates = geometry.get("coordinates")
+    if not isinstance(coordinates, list):
+        return None
+    positions: list[list[float]] = []
+
+    def collect(value: Any) -> None:
+        if (
+            isinstance(value, list)
+            and len(value) >= 2
+            and isinstance(value[0], (int, float))
+            and isinstance(value[1], (int, float))
+        ):
+            positions.append([float(value[0]), float(value[1])])
+            return
+        if isinstance(value, list):
+            for item in value:
+                collect(item)
+
+    collect(coordinates)
+    if not positions:
+        return None
+    lngs = [position[0] for position in positions]
+    lats = [position[1] for position in positions]
+    return {"west": min(lngs), "south": min(lats), "east": max(lngs), "north": max(lats)}
+
+
+def _point_on_segment(lng: float, lat: float, start: list[float], end: list[float]) -> bool:
+    x1, y1 = start
+    x2, y2 = end
+    cross = (lat - y1) * (x2 - x1) - (lng - x1) * (y2 - y1)
+    if abs(cross) > 1e-10:
+        return False
+    return min(x1, x2) - 1e-10 <= lng <= max(x1, x2) + 1e-10 and min(y1, y2) - 1e-10 <= lat <= max(y1, y2) + 1e-10
+
+
+def _ring_contains_position(ring: list[list[float]], lng: float, lat: float) -> bool:
+    inside = False
+    for index in range(len(ring) - 1):
+        start, end = ring[index], ring[index + 1]
+        if _point_on_segment(lng, lat, start, end):
+            return True
+        x1, y1 = start
+        x2, y2 = end
+        if (y1 > lat) != (y2 > lat):
+            intersection = (x2 - x1) * (lat - y1) / (y2 - y1) + x1
+            if lng < intersection:
+                inside = not inside
+    return inside
+
+
+def _polygon_contains_position(polygon: list[list[list[float]]], lng: float, lat: float) -> bool:
+    if not polygon or not _ring_contains_position(polygon[0], lng, lat):
+        return False
+    return not any(_ring_contains_position(hole, lng, lat) for hole in polygon[1:])
+
+
+def _boundary_contains_position(geometry: dict[str, Any], lng: float, lat: float) -> bool:
+    if geometry.get("type") == "Polygon":
+        return _polygon_contains_position(geometry.get("coordinates") or [], lng, lat)
+    if geometry.get("type") == "MultiPolygon":
+        return any(
+            _polygon_contains_position(polygon, lng, lat)
+            for polygon in geometry.get("coordinates") or []
+        )
+    return False
+
+
+def _load_verified_boundary(config_path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    boundary_config = payload.get("boundary")
+    if not isinstance(boundary_config, dict):
+        return None
+    filename = _scalar_text(boundary_config.get("file"))
+    expected_sha256 = _scalar_text(boundary_config.get("snapshot_sha256"))
+    authority = boundary_config.get("authority")
+    if (
+        not filename
+        or os.path.basename(filename) != filename
+        or not filename.lower().endswith(".geojson")
+        or not expected_sha256
+        or not re.fullmatch(r"[0-9a-fA-F]{64}", expected_sha256)
+        or not isinstance(authority, dict)
+        or _normalized_value(authority.get("kind")) != "official"
+        or not _scalar_text(authority.get("source_url"))
+        or not _scalar_text(authority.get("publisher"))
+    ):
+        return None
+    boundary_path = os.path.join(os.path.dirname(config_path), filename)
+    try:
+        with open(boundary_path, "rb") as handle:
+            raw_boundary = handle.read()
+        if hashlib.sha256(raw_boundary).hexdigest() != expected_sha256.lower():
+            return None
+        collection = json.loads(raw_boundary.decode("utf-8"))
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return None
+    if not isinstance(collection, dict):
+        return None
+    features = collection.get("features")
+    if collection.get("type") != "FeatureCollection" or not isinstance(features, list) or len(features) != 1:
+        return None
+    feature = features[0]
+    if not isinstance(feature, dict):
+        return None
+    properties = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
+    if (
+        _normalized_key(properties.get("departamen")) != _normalized_key(payload.get("city"))
+        or _scalar_text(properties.get("codigo_dep")) != _scalar_text(authority.get("department_code"))
+        or _scalar_text(properties.get("globalid")) != _scalar_text(authority.get("global_id"))
+    ):
+        return None
+    geometry = _validated_boundary_geometry(feature.get("geometry"))
+    bounds = _boundary_geometry_bounds(geometry or {})
+    if geometry is None or bounds is None:
+        return None
+    public_feature = {
+        "type": "Feature",
+        "id": _scalar_text(authority.get("department_code")) or "official-boundary",
+        "properties": {
+            **properties,
+            "name": _scalar_text(properties.get("departamen")) or _scalar_text(payload.get("city")),
+        },
+        "geometry": geometry,
+    }
+    public_authority = {
+        **authority,
+        "source_ref": authority.get("source_url"),
+        "snapshot_sha256": expected_sha256.lower(),
+        "geometry_precision": boundary_config.get("geometry_precision"),
+        "max_allowable_offset_degrees": boundary_config.get("max_allowable_offset_degrees"),
+        "generalization_note": boundary_config.get("generalization_note"),
+    }
+    return {
+        "geometry": geometry,
+        "bounds": bounds,
+        "authority": public_authority,
+        "feature_collection": {
+            "type": "FeatureCollection",
+            "metadata": {
+                "official": True,
+                "synthetic": False,
+                "source": authority.get("publisher"),
+                "provenance": public_authority,
+            },
+            "features": [public_feature],
+        },
+    }
+
+
 def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
     """Resolve an exact tenant envelope without using a shared fallback.
 
@@ -196,10 +386,13 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
 
     for root, storage in data_roots:
         for relative_path in relative_candidates:
-            payload = _load_json_object(os.path.join(root, relative_path))
+            config_path = os.path.join(root, relative_path)
+            payload = _load_json_object(config_path)
             bounds = _jurisdiction_bounds((payload or {}).get("bounds"))
             if not payload or not bounds:
                 continue
+            verified_boundary = _load_verified_boundary(config_path, payload)
+            effective_bounds = (verified_boundary or {}).get("bounds") or bounds
             return {
                 "contract_version": "operations.tenant_jurisdiction.v1",
                 "state": "configured",
@@ -209,13 +402,22 @@ def resolve_tenant_jurisdiction(tenant: Any) -> dict[str, Any]:
                 "country": _scalar_text(payload.get("country") or payload.get("pais")),
                 "locale": _scalar_text(payload.get("locale")),
                 "region_hint": _scalar_text(payload.get("region_hint")),
-                "bounds": bounds,
+                "bounds": effective_bounds,
+                "containment_method": "point_in_polygon" if verified_boundary else "operational_envelope",
+                "containment_verified": bool(verified_boundary),
+                "boundary_authority": (verified_boundary or {}).get("authority"),
+                "boundary_geometry": (verified_boundary or {}).get("geometry"),
+                "boundary_feature_collection": (verified_boundary or {}).get("feature_collection"),
                 "source": {
                     "kind": "tenant_geo_config",
                     "storage": storage,
                     "ref": relative_path.replace(os.sep, "/"),
                 },
-                "truth_boundary": "operational_envelope_not_official_boundary",
+                "truth_boundary": (
+                    "official_department_boundary_generalized"
+                    if verified_boundary
+                    else "operational_envelope_not_official_boundary"
+                ),
             }
 
     return {
@@ -234,9 +436,12 @@ def coordinate_jurisdiction_status(lat: Any, lng: Any, jurisdiction: dict[str, A
         return "missing"
     contract = jurisdiction or {}
     bounds = contract.get("bounds") if contract.get("enforced") else None
+    geometry = contract.get("boundary_geometry") if contract.get("containment_verified") else None
+    parsed_lat, parsed_lng = coordinates
+    if isinstance(geometry, dict):
+        return "within" if _boundary_contains_position(geometry, parsed_lng, parsed_lat) else "outside"
     if not isinstance(bounds, dict):
         return "unenforced"
-    parsed_lat, parsed_lng = coordinates
     try:
         within = (
             float(bounds["south"]) <= parsed_lat <= float(bounds["north"])
@@ -245,6 +450,31 @@ def coordinate_jurisdiction_status(lat: Any, lng: Any, jurisdiction: dict[str, A
     except (KeyError, TypeError, ValueError):
         return "unenforced"
     return "within" if within else "outside"
+
+
+def coordinate_jurisdiction_disposition(
+    status: Any,
+    *,
+    require_verified_jurisdiction: bool = False,
+    jurisdiction_verified: bool = False,
+) -> str:
+    """Classify one valid coordinate into one mutually-exclusive map outcome.
+
+    An operational envelope cannot prove that a point is outside an official
+    government jurisdiction.  When an official boundary is required but not
+    verified, every otherwise valid coordinate is therefore ``unverified`` —
+    never simultaneously ``outside``.  This shared classification keeps map
+    eligibility, quality metrics, facets, and review queues coherent.
+    """
+
+    normalized_status = _normalized_value(status) or "missing"
+    if require_verified_jurisdiction and not jurisdiction_verified:
+        return "unverified"
+    if normalized_status == "outside":
+        return "outside"
+    if require_verified_jurisdiction:
+        return "allowed" if normalized_status == "within" else "unverified"
+    return "allowed" if normalized_status in {"within", "unenforced"} else "unverified"
 
 
 def _walk(
@@ -371,7 +601,12 @@ def _counter_items(
     ]
 
 
-def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
+def build_territorial_facets(
+    records: list[dict[str, Any]],
+    *,
+    require_verified_jurisdiction: bool = False,
+    jurisdiction_verified: bool = False,
+) -> dict[str, Any]:
     """Build privileged category/address/explicit-zone facets from ticket evidence."""
 
     categories: dict[str, dict[str, Any]] = {}
@@ -384,12 +619,21 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         zone = explicit_zone(record.get("zone"))
         address_label = _scalar_text(record.get("address"))
         address_key = normalize_address_key(address_label) if address_label else None
-        outside_jurisdiction = record.get("coordinate_jurisdiction_status") == "outside"
-        mapped = (
-            _valid_coordinates(record.get("lat"), record.get("lng")) is not None
-            and not outside_jurisdiction
+        has_valid_coordinates = _valid_coordinates(record.get("lat"), record.get("lng")) is not None
+        jurisdiction_status = record.get("coordinate_jurisdiction_status")
+        disposition = (
+            coordinate_jurisdiction_disposition(
+                jurisdiction_status,
+                require_verified_jurisdiction=require_verified_jurisdiction,
+                jurisdiction_verified=jurisdiction_verified,
+            )
+            if has_valid_coordinates
+            else "missing"
         )
-        pending = bool(address_label and not mapped and not outside_jurisdiction)
+        outside_jurisdiction = disposition == "outside"
+        unverified_jurisdiction = disposition == "unverified"
+        mapped = bool(has_valid_coordinates and disposition == "allowed")
+        pending = bool(address_label and not has_valid_coordinates)
 
         category_item = categories.setdefault(
             category,
@@ -399,6 +643,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "mapped": 0,
                 "pending": 0,
                 "outside": 0,
+                "unverified": 0,
                 "addresses": Counter(),
                 "address_labels": {},
                 "zones": Counter(),
@@ -410,6 +655,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         category_item["mapped"] += int(mapped)
         category_item["pending"] += int(pending)
         category_item["outside"] += int(outside_jurisdiction)
+        category_item["unverified"] += int(unverified_jurisdiction)
         raw_category = _scalar_text(record.get("raw_category")) or category
         category_item["raw_categories"][raw_category] += 1
         category_method = _normalized_value(
@@ -425,12 +671,13 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         if address_key and address_label:
             item = addresses.setdefault(
                 address_key,
-                {"key": address_key, "label": address_label, "count": 0, "mapped": 0, "pending": 0, "outside": 0, "categories": Counter(), "zones": Counter()},
+                {"key": address_key, "label": address_label, "count": 0, "mapped": 0, "pending": 0, "outside": 0, "unverified": 0, "categories": Counter(), "zones": Counter()},
             )
             item["count"] += 1
             item["mapped"] += int(mapped)
             item["pending"] += int(pending)
             item["outside"] += int(outside_jurisdiction)
+            item["unverified"] += int(unverified_jurisdiction)
             item["categories"][category] += 1
             if zone:
                 item["zones"][zone] += 1
@@ -438,10 +685,19 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
         if zone:
             item = zones.setdefault(
                 zone,
-                {"key": zone, "count": 0, "mapped": 0, "categories": Counter()},
+                {
+                    "key": zone,
+                    "count": 0,
+                    "mapped": 0,
+                    "outside": 0,
+                    "unverified": 0,
+                    "categories": Counter(),
+                },
             )
             item["count"] += 1
             item["mapped"] += int(mapped)
+            item["outside"] += int(outside_jurisdiction)
+            item["unverified"] += int(unverified_jurisdiction)
             item["categories"][category] += 1
 
         provenance = record.get("location_provenance") or {}
@@ -455,6 +711,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
             "key": item["key"], "label": item["key"], "count": item["count"],
             "mapped_count": item["mapped"], "pending_geocode_count": item["pending"],
             "outside_jurisdiction_count": item["outside"],
+            "unverified_jurisdiction_count": item["unverified"],
             "raw_categories": _counter_items(item["raw_categories"], limit=12),
             "category_provenance": {
                 "contract_version": "operations.category_provenance.v1",
@@ -472,6 +729,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
             "key": item["key"], "label": item["label"], "count": item["count"],
             "mapped_count": item["mapped"], "pending_geocode_count": item["pending"],
             "outside_jurisdiction_count": item["outside"],
+            "unverified_jurisdiction_count": item["unverified"],
             "categories": _counter_items(item["categories"], limit=8),
             "explicit_zones": _counter_items(item["zones"], limit=8),
         }
@@ -480,21 +738,28 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
     zone_items = [
         {
             "key": item["key"], "label": item["key"], "count": item["count"],
-            "mapped_count": item["mapped"], "categories": _counter_items(item["categories"], limit=8),
+            "mapped_count": item["mapped"],
+            "outside_jurisdiction_count": item["outside"],
+            "unverified_jurisdiction_count": item["unverified"],
+            "categories": _counter_items(item["categories"], limit=8),
         }
         for item in zones.values()
     ]
     for items in (category_items, address_items, zone_items):
         items.sort(key=lambda item: (item["count"], item["key"]), reverse=True)
 
-    mapped_count = sum(
-        1 for record in records
+    dispositions = [
+        coordinate_jurisdiction_disposition(
+            record.get("coordinate_jurisdiction_status"),
+            require_verified_jurisdiction=require_verified_jurisdiction,
+            jurisdiction_verified=jurisdiction_verified,
+        )
+        for record in records
         if _valid_coordinates(record.get("lat"), record.get("lng"))
-        and record.get("coordinate_jurisdiction_status") != "outside"
-    )
-    outside_count = sum(
-        1 for record in records if record.get("coordinate_jurisdiction_status") == "outside"
-    )
+    ]
+    mapped_count = dispositions.count("allowed")
+    outside_count = dispositions.count("outside")
+    unverified_count = dispositions.count("unverified")
     address_count = sum(1 for record in records if _scalar_text(record.get("address")))
     zone_count = sum(1 for record in records if explicit_zone(record.get("zone")))
     pending_count = sum(
@@ -511,6 +776,7 @@ def build_territorial_facets(records: list[dict[str, Any]]) -> dict[str, Any]:
             "ticket_records": len(records), "mapped_records": mapped_count,
             "records_with_address": address_count, "records_with_explicit_zone": zone_count,
             "records_outside_jurisdiction": outside_count,
+            "records_unverified_jurisdiction": unverified_count,
             "pending_geocode_records": pending_count,
             "records_without_location": len(records) - located_count,
         },

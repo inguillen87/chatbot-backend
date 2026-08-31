@@ -46,6 +46,7 @@ from services.tenant_ticket_scope import scoped_municipio_ticket_query
 from services.territorial_evidence import (
     build_territorial_facets,
     canonicalize_territorial_category,
+    coordinate_jurisdiction_disposition,
     coordinate_jurisdiction_status,
     explicit_zone,
     extract_location_evidence,
@@ -553,6 +554,82 @@ def _point_matches_filters(point: dict[str, Any], filters: dict[str, Any]) -> bo
     return True
 
 
+_GOVERNMENT_TENANT_TYPES = {
+    "municipio",
+    "municipalidad",
+    "gobierno",
+    "government",
+    "provincia",
+    "province",
+    "ente_publico",
+    "public_sector",
+}
+
+
+def _tenant_requires_verified_jurisdiction(tenant: TenantProfile) -> bool:
+    return _norm(getattr(tenant, "tipo", None), "") in _GOVERNMENT_TENANT_TYPES
+
+
+def _jurisdiction_has_verified_containment(jurisdiction: dict[str, Any] | None) -> bool:
+    contract = jurisdiction or {}
+    authority = _as_dict(contract.get("boundary_authority"))
+    return bool(
+        contract.get("enforced") is True
+        and contract.get("containment_verified") is True
+        and _norm(contract.get("containment_method"), "") == "point_in_polygon"
+        and _norm(authority.get("kind"), "") == "official"
+        and authority.get("source_ref")
+        and authority.get("snapshot_sha256")
+    )
+
+
+def _jurisdiction_status_allows_map(
+    status: str,
+    *,
+    require_verified_jurisdiction: bool,
+    jurisdiction_verified: bool,
+) -> bool:
+    return coordinate_jurisdiction_disposition(
+        status,
+        require_verified_jurisdiction=require_verified_jurisdiction,
+        jurisdiction_verified=jurisdiction_verified,
+    ) == "allowed"
+
+
+def _jurisdiction_exclusion_bucket(
+    status: str,
+    *,
+    require_verified_jurisdiction: bool,
+    jurisdiction_verified: bool,
+) -> str | None:
+    disposition = coordinate_jurisdiction_disposition(
+        status,
+        require_verified_jurisdiction=require_verified_jurisdiction,
+        jurisdiction_verified=jurisdiction_verified,
+    )
+    return None if disposition == "allowed" else disposition
+
+
+def _jurisdiction_review_reason_code(
+    status: str,
+    *,
+    require_verified_jurisdiction: bool,
+    jurisdiction_verified: bool,
+) -> str | None:
+    exclusion_bucket = _jurisdiction_exclusion_bucket(
+        status,
+        require_verified_jurisdiction=require_verified_jurisdiction,
+        jurisdiction_verified=jurisdiction_verified,
+    )
+    if exclusion_bucket == "unverified":
+        return "official_jurisdiction_boundary_unavailable"
+    if exclusion_bucket == "outside" and jurisdiction_verified:
+        return "coordinates_outside_verified_jurisdiction"
+    if exclusion_bucket == "outside":
+        return "coordinates_outside_configured_jurisdiction"
+    return None
+
+
 def _point_matches_bbox(point: dict[str, Any], bbox: dict[str, float] | None) -> bool:
     if not bbox:
         return True
@@ -656,6 +733,7 @@ def _heatmap_geo_layers(
     cells: list[dict[str, Any]],
     hotspots: list[dict[str, Any]],
     category_layers: list[dict[str, Any]],
+    boundaries: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     category_feature_collections = {
         str(layer.get("key") or "unknown"): _geojson_feature_collection(
@@ -667,6 +745,7 @@ def _heatmap_geo_layers(
         "contract_version": "operations.heatmap_geo_layers.v1",
         "provider": "geojson",
         "coordinate_order": "lng_lat",
+        **({"boundaries": boundaries} if isinstance(boundaries, dict) else {}),
         "points": _geojson_feature_collection([_geojson_point_feature(point) for point in points]),
         "cells": _geojson_feature_collection([_geojson_point_feature(cell) for cell in cells]),
         "hotspots": _geojson_feature_collection([_geojson_point_feature(hotspot) for hotspot in hotspots]),
@@ -2772,18 +2851,41 @@ def _location_provenance_source(record: dict[str, Any], field: str) -> str:
     return _norm(field_evidence.get("source"), "missing")
 
 
-def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def _location_quality(
+    records: list[dict[str, Any]],
+    geocoding_candidates: list[dict[str, Any]],
+    *,
+    require_verified_jurisdiction: bool = False,
+    jurisdiction_verified: bool = False,
+) -> dict[str, Any]:
     ticket_records = [record for record in records if record.get("source") in {"tenant_ticket", "municipio_ticket", "pyme_ticket"}]
     with_persisted_coordinates = [record for record in ticket_records if _record_has_coordinates(record)]
+    coordinate_dispositions = {
+        id(record): coordinate_jurisdiction_disposition(
+            record.get("coordinate_jurisdiction_status"),
+            require_verified_jurisdiction=require_verified_jurisdiction,
+            jurisdiction_verified=jurisdiction_verified,
+        )
+        for record in with_persisted_coordinates
+    }
     outside_jurisdiction = [
         record
         for record in with_persisted_coordinates
-        if record.get("coordinate_jurisdiction_status") == "outside"
+        if coordinate_dispositions[id(record)] == "outside"
+    ]
+    unverified_jurisdiction = [
+        record
+        for record in with_persisted_coordinates
+        if coordinate_dispositions[id(record)] == "unverified"
     ]
     with_coordinates = [
         record
         for record in with_persisted_coordinates
-        if record.get("coordinate_jurisdiction_status") != "outside"
+        if _jurisdiction_status_allows_map(
+            str(record.get("coordinate_jurisdiction_status") or "missing"),
+            require_verified_jurisdiction=require_verified_jurisdiction,
+            jurisdiction_verified=jurisdiction_verified,
+        )
     ]
     with_address = [record for record in ticket_records if record.get("address")]
     with_zone = [record for record in ticket_records if explicit_zone(record.get("zone"))]
@@ -2792,7 +2894,11 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
         for record in ticket_records
         if record.get("address")
         and _record_has_coordinates(record)
-        and record.get("coordinate_jurisdiction_status") != "outside"
+        and _jurisdiction_status_allows_map(
+            str(record.get("coordinate_jurisdiction_status") or "missing"),
+            require_verified_jurisdiction=require_verified_jurisdiction,
+            jurisdiction_verified=jurisdiction_verified,
+        )
     ]
     missing_location = [
         record
@@ -2817,6 +2923,7 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
         "ticket_records_with_coordinates": len(with_coordinates),
         "ticket_records_with_validated_coordinates": len(with_coordinates),
         "ticket_records_outside_jurisdiction": len(outside_jurisdiction),
+        "ticket_records_unverified_jurisdiction": len(unverified_jurisdiction),
         "ticket_records_with_address": len(with_address),
         "ticket_records_with_address_and_coordinates": len(with_address_and_coordinates),
         "ticket_records_with_explicit_zone": len(with_zone),
@@ -2837,14 +2944,26 @@ def _location_quality(records: list[dict[str, Any]], geocoding_candidates: list[
             "external_geocoding_calls": 0,
             "writes_performed": False,
         },
-        "status": "ready" if with_coordinates else ("pending_geocode" if geocoding_candidates else "empty"),
+        "status": (
+            "ready"
+            if with_coordinates
+            else (
+                "jurisdiction_unverified"
+                if unverified_jurisdiction
+                else ("pending_geocode" if geocoding_candidates else "empty")
+            )
+        ),
         "reason_code": (
             "coordinates_available"
             if with_coordinates
             else (
-                "coordinates_outside_configured_jurisdiction"
-                if outside_jurisdiction
-                else ("addresses_need_geocoding" if geocoding_candidates else "no_ticket_locations")
+                "tenant_jurisdiction_unverified"
+                if unverified_jurisdiction
+                else (
+                    "coordinates_outside_configured_jurisdiction"
+                    if outside_jurisdiction
+                    else ("addresses_need_geocoding" if geocoding_candidates else "no_ticket_locations")
+                )
             )
         ),
     }
@@ -2857,6 +2976,7 @@ def _heatmap_quality_contract(
     geocoding_candidates: list[dict[str, Any]],
     location_quality: dict[str, Any],
     max_points: int,
+    jurisdiction_blocked: bool = False,
 ) -> dict[str, Any]:
     total_ticket_records = int(location_quality.get("total_ticket_records") or 0)
     ticket_records_with_coordinates = int(location_quality.get("ticket_records_with_coordinates") or 0)
@@ -2877,6 +2997,10 @@ def _heatmap_quality_contract(
             state = "ready"
             reason_code = "ready"
             label = "Mapa operativo confiable"
+    elif jurisdiction_blocked:
+        state = "blocked"
+        reason_code = "official_jurisdiction_boundary_unavailable"
+        label = "Alcance territorial oficial no disponible"
     elif pending_geocode:
         state = "pending_geocode"
         reason_code = "addresses_need_geocoding"
@@ -3066,6 +3190,12 @@ def _heatmap_narrative_contract(
         body = (
             f"El mapa consolida {cells} zonas activas con cobertura "
             f"{quality.get('coverage_percent', 0)}% y senales AI en modo {ai_summary.get('risk_level') or 'normal'}."
+        )
+    elif quality.get("reason_code") == "official_jurisdiction_boundary_unavailable":
+        headline = "Alcance territorial pendiente de validación oficial"
+        body = (
+            "Hay coordenadas persistidas, pero no se publican puntos, calor ni focos hasta validar "
+            "su pertenencia mediante el polígono oficial del tenant."
         )
     elif pending_geocode:
         headline = f"{pending_geocode} direcciones listas para geocodificar"
@@ -3707,6 +3837,8 @@ def build_operational_heatmap(
             segment_filters=filters,
         )
     )
+    require_verified_jurisdiction = _tenant_requires_verified_jurisdiction(tenant)
+    jurisdiction_verified = _jurisdiction_has_verified_containment(jurisdiction)
     if employee_view:
         # Employee geography is ticket-only. Survey responses, analytics
         # events, and commerce locations have no employee category boundary
@@ -3716,6 +3848,7 @@ def build_operational_heatmap(
         commerce_records, _ = _collect_commerce_records(tenant, start_date, end_date)
     points: list[dict[str, Any]] = []
     jurisdiction_exclusions: Counter = Counter()
+    jurisdiction_unverified_exclusions: Counter = Counter()
     if employee_view:
         include_ai = False
     geocoding_candidates = []
@@ -3751,13 +3884,29 @@ def build_operational_heatmap(
         if record.get("reported_location_text")
     ]
     territorial_facets = (
-        build_territorial_facets(filtered_ticket_records)
+        build_territorial_facets(
+            filtered_ticket_records,
+            require_verified_jurisdiction=require_verified_jurisdiction,
+            jurisdiction_verified=jurisdiction_verified,
+        )
         if not employee_view
         else None
     )
 
     for record in filtered_ticket_records:
         if record.get("lat") is None or record.get("lng") is None:
+            continue
+        jurisdiction_status = str(record.get("coordinate_jurisdiction_status") or "missing")
+        exclusion_bucket = _jurisdiction_exclusion_bucket(
+            jurisdiction_status,
+            require_verified_jurisdiction=require_verified_jurisdiction,
+            jurisdiction_verified=jurisdiction_verified,
+        )
+        if exclusion_bucket:
+            if exclusion_bucket == "outside":
+                jurisdiction_exclusions["tickets"] += 1
+            else:
+                jurisdiction_unverified_exclusions["tickets"] += 1
             continue
         demographics = _as_dict(record.get("demographics"))
         point = {
@@ -3787,10 +3936,9 @@ def build_operational_heatmap(
             "age_range": demographics.get("age_range") or "unknown",
             "demographics_source": demographics.get("source") or "missing",
             "actions": _ticket_action_contract(record),
+            "coordinate_jurisdiction_status": jurisdiction_status,
         }
-        if record.get("coordinate_jurisdiction_status") == "outside":
-            jurisdiction_exclusions["tickets"] += 1
-        elif _point_matches_bbox(point, bbox):
+        if _point_matches_bbox(point, bbox):
             points.append(point)
 
     survey_responses = []
@@ -3875,8 +4023,18 @@ def build_operational_heatmap(
             "demographics_source": demographics.get("source") or "missing",
         }
         if _point_matches_filters(point, filters):
-            if coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction) == "outside":
-                jurisdiction_exclusions["surveys"] += 1
+            jurisdiction_status = coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction)
+            point["coordinate_jurisdiction_status"] = jurisdiction_status
+            exclusion_bucket = _jurisdiction_exclusion_bucket(
+                jurisdiction_status,
+                require_verified_jurisdiction=require_verified_jurisdiction,
+                jurisdiction_verified=jurisdiction_verified,
+            )
+            if exclusion_bucket:
+                if exclusion_bucket == "outside":
+                    jurisdiction_exclusions["surveys"] += 1
+                else:
+                    jurisdiction_unverified_exclusions["surveys"] += 1
             elif _point_matches_bbox(point, bbox):
                 points.append(point)
 
@@ -3912,8 +4070,18 @@ def build_operational_heatmap(
             "demographics_source": demographics.get("source") or "missing",
         }
         if _point_matches_filters(point, filters):
-            if coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction) == "outside":
-                jurisdiction_exclusions["analytics_events"] += 1
+            jurisdiction_status = coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction)
+            point["coordinate_jurisdiction_status"] = jurisdiction_status
+            exclusion_bucket = _jurisdiction_exclusion_bucket(
+                jurisdiction_status,
+                require_verified_jurisdiction=require_verified_jurisdiction,
+                jurisdiction_verified=jurisdiction_verified,
+            )
+            if exclusion_bucket:
+                if exclusion_bucket == "outside":
+                    jurisdiction_exclusions["analytics_events"] += 1
+                else:
+                    jurisdiction_unverified_exclusions["analytics_events"] += 1
             elif _point_matches_bbox(point, bbox):
                 points.append(point)
 
@@ -3961,8 +4129,18 @@ def build_operational_heatmap(
             ],
         }
         if _point_matches_filters(point, filters):
-            if coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction) == "outside":
-                jurisdiction_exclusions["commerce"] += 1
+            jurisdiction_status = coordinate_jurisdiction_status(point.get("lat"), point.get("lng"), jurisdiction)
+            point["coordinate_jurisdiction_status"] = jurisdiction_status
+            exclusion_bucket = _jurisdiction_exclusion_bucket(
+                jurisdiction_status,
+                require_verified_jurisdiction=require_verified_jurisdiction,
+                jurisdiction_verified=jurisdiction_verified,
+            )
+            if exclusion_bucket:
+                if exclusion_bucket == "outside":
+                    jurisdiction_exclusions["commerce"] += 1
+                else:
+                    jurisdiction_unverified_exclusions["commerce"] += 1
             elif _point_matches_bbox(point, bbox):
                 points.append(point)
 
@@ -4103,19 +4281,64 @@ def build_operational_heatmap(
     }
     points_with_gender = len([point for point in points if point.get("gender") not in (None, "unknown")])
     points_with_age = len([point for point in points if point.get("age_range") not in (None, "unknown")])
-    location_quality = _location_quality(filtered_ticket_records, geocoding_candidates)
-    jurisdiction_review_candidates = [
-        {
-            **_geocoding_candidate(record),
-            "reason_code": "coordinates_outside_configured_jurisdiction",
-        }
-        for record in filtered_ticket_records
-        if record.get("coordinate_jurisdiction_status") == "outside"
-    ]
+    location_quality = _location_quality(
+        filtered_ticket_records,
+        geocoding_candidates,
+        require_verified_jurisdiction=require_verified_jurisdiction,
+        jurisdiction_verified=jurisdiction_verified,
+    )
+    jurisdiction_review_candidates = []
+    for record in filtered_ticket_records:
+        if not _record_has_coordinates(record):
+            continue
+        reason_code = _jurisdiction_review_reason_code(
+            str(record.get("coordinate_jurisdiction_status") or "missing"),
+            require_verified_jurisdiction=require_verified_jurisdiction,
+            jurisdiction_verified=jurisdiction_verified,
+        )
+        if reason_code:
+            jurisdiction_review_candidates.append(
+                {**_geocoding_candidate(record), "reason_code": reason_code}
+            )
+    boundary_unavailable = bool(
+        require_verified_jurisdiction
+        and not jurisdiction_verified
+        and sum(jurisdiction_unverified_exclusions.values()) > 0
+    )
+    verified_boundary_collection = (
+        jurisdiction.get("boundary_feature_collection")
+        if jurisdiction_verified
+        else None
+    )
+    public_jurisdiction = {
+        key: value
+        for key, value in jurisdiction.items()
+        if key not in {"boundary_geometry", "boundary_feature_collection"}
+    }
+    map_eligibility_state = (
+        "verified"
+        if jurisdiction_verified
+        else ("blocked" if require_verified_jurisdiction else "eligible")
+    )
+    map_eligibility_reason_code = (
+        "official_point_in_polygon_verified"
+        if jurisdiction_verified
+        else (
+            "official_jurisdiction_boundary_unavailable"
+            if require_verified_jurisdiction
+            else "verified_jurisdiction_not_required"
+        )
+    )
     jurisdiction = {
-        **jurisdiction,
-        "excluded_coordinate_records": int(sum(jurisdiction_exclusions.values())),
+        **public_jurisdiction,
+        "map_eligibility_state": map_eligibility_state,
+        "map_eligibility_reason_code": map_eligibility_reason_code,
+        "excluded_coordinate_records": int(
+            sum(jurisdiction_exclusions.values()) + sum(jurisdiction_unverified_exclusions.values())
+        ),
         "excluded_by_source": _counter(jurisdiction_exclusions),
+        "unverified_coordinate_records": int(sum(jurisdiction_unverified_exclusions.values())),
+        "unverified_by_source": _counter(jurisdiction_unverified_exclusions),
         "review_candidate_count": len(jurisdiction_review_candidates),
     }
     quality = _heatmap_quality_contract(
@@ -4124,6 +4347,7 @@ def build_operational_heatmap(
         geocoding_candidates=geocoding_candidates,
         location_quality=location_quality,
         max_points=max_points,
+        jurisdiction_blocked=boundary_unavailable,
     )
     realtime = _heatmap_realtime_contract(points)
     if include_ai:
@@ -4206,6 +4430,7 @@ def build_operational_heatmap(
         cells=cell_items,
         hotspots=hotspots,
         category_layers=category_layers,
+        boundaries=verified_boundary_collection,
     )
     map_layers = _heatmap_map_layers(
         geo_layers=geo_layers,
@@ -4220,7 +4445,15 @@ def build_operational_heatmap(
         "render_contract": {
             "state": "ready" if points else "empty",
             "can_render_heatmap": bool(points),
-            "empty_reason": None if points else "no_real_geo_points",
+            "empty_reason": (
+                None
+                if points
+                else (
+                    "official_jurisdiction_boundary_unavailable"
+                    if boundary_unavailable
+                    else "no_real_geo_points"
+                )
+            ),
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events", "commerce_activity", "ai_risk", "whatsapp_activity"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
@@ -4335,9 +4568,13 @@ def build_operational_heatmap(
             "contract_version": "operations.heatmap.jurisdiction_review.v1",
             "status": "pending" if jurisdiction_review_candidates else "empty",
             "reason_code": (
-                "coordinates_outside_configured_jurisdiction"
-                if jurisdiction_review_candidates
-                else "no_outside_coordinates"
+                "official_jurisdiction_boundary_unavailable"
+                if boundary_unavailable
+                else (
+                    "coordinates_outside_configured_jurisdiction"
+                    if jurisdiction_review_candidates
+                    else "no_outside_coordinates"
+                )
             ),
             "candidate_count": len(jurisdiction_review_candidates),
             "candidates": jurisdiction_review_candidates[:50],

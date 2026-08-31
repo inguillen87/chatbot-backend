@@ -1,8 +1,11 @@
 import json
+import hashlib
 import os
+import tempfile
 import unittest
 from contextlib import ExitStack
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import jwt
@@ -32,8 +35,12 @@ from models import (
     User,
 )
 from services.territorial_evidence import (
+    _boundary_contains_position,
+    _validated_boundary_geometry,
+    coordinate_jurisdiction_status,
     normalize_address_corridor_key,
     normalize_address_key,
+    resolve_tenant_jurisdiction,
 )
 
 
@@ -87,8 +94,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             descripcion="Bache con foto enviado por WhatsApp",
             estado="nuevo",
             origen="whatsapp",
-            latitud=-33.0837,
-            longitud=-68.4716,
+            latitud=-33.136,
+            longitud=-68.49,
             datos_extra={
                 "title": "Bache en centro",
                 "priority": "high",
@@ -112,8 +119,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 estado="nuevo",
                 canal_ingreso="whatsapp",
                 distrito="Centro",
-                latitud=-33.0834,
-                longitud=-68.4712,
+                latitud=-33.1364,
+                longitud=-68.4896,
                 detalles='{"genero": "no_binario", "edad": 45}',
                 fecha=now,
             )
@@ -128,8 +135,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 estado="cerrado",
                 canal_ingreso="web",
                 distrito="La Colonia",
-                latitud=-33.09,
-                longitud=-68.48,
+                latitud=-33.145,
+                longitud=-68.50,
                 detalles='{"genero": "femenino", "edad": 39}',
                 fecha=now - timedelta(days=800),
             )
@@ -152,8 +159,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 encuesta_id=encuesta.id,
                 tenant_id=self.tenant.id,
                 huella_unica="resp-1",
-                lat=-33.084,
-                lng=-68.472,
+                lat=-33.137,
+                lng=-68.491,
                 canal="widget",
                 barrio="Centro",
                 genero="masculino",
@@ -170,8 +177,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 event_name="message_in",
                 session_id="session-ops",
                 metadata_payload={"categoria": "consulta", "gender": "femenino", "age": 22},
-                lat=-33.0838,
-                lng=-68.4717,
+                lat=-33.1358,
+                lng=-68.4897,
                 ts=now,
             )
         )
@@ -628,8 +635,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             nombre_cliente="Cliente privado legacy",
             email_cliente="legacy-private@example.com",
             direccion="Direccion legacy secreta 123",
-            latitud=-33.085,
-            longitud=-68.473,
+            latitud=-33.1365,
+            longitud=-68.492,
         )
         canonical = Order(
             tenant_id=self.tenant.id,
@@ -641,7 +648,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             total=2500,
             delivery_address={
                 "address": "Direccion canonical secreta 456",
-                "coordinates": {"lat": -33.086, "lng": -68.474},
+                "coordinates": {"lat": -33.137, "lng": -68.493},
             },
         )
         mirror = MarketOrder(
@@ -882,15 +889,22 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             self.assertTrue(record.get("address"))
             self.assertNotEqual(record.get("zone"), record.get("address").lower())
 
-    def test_operations_heatmap_does_not_publish_unconfigured_official_boundaries(self):
+    def test_operations_heatmap_publishes_only_the_verified_official_boundary(self):
         response = self.client.get(
             "/api/v2/analytics/operations/heatmap?include_ai=0",
             headers=self._auth(),
         )
 
         self.assertEqual(response.status_code, 200)
-        geo_layers = (response.get_json().get("geo_layers") or {})
-        self.assertNotIn("boundaries", geo_layers)
+        geo_layers = response.get_json().get("geo_layers") or {}
+        boundaries = geo_layers.get("boundaries") or {}
+        self.assertTrue((boundaries.get("metadata") or {}).get("official"))
+        self.assertFalse((boundaries.get("metadata") or {}).get("synthetic"))
+        self.assertEqual(len(boundaries.get("features") or []), 1)
+        feature = (boundaries.get("features") or [])[0]
+        self.assertEqual(feature.get("id"), "09")
+        self.assertEqual((feature.get("properties") or {}).get("globalid"), "{FEA13AA1-46F3-4570-BAEE-188FF11AFF94}")
+        self.assertEqual((feature.get("geometry") or {}).get("type"), "Polygon")
 
     def test_operations_heatmap_uses_one_filtered_ticket_population_for_all_territorial_outputs(self):
         now = datetime.now(timezone.utc)
@@ -902,8 +916,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 descripcion="Punto territorial valido",
                 estado="nuevo",
                 origen="whatsapp",
-                latitud=-33.081,
-                longitud=-68.469,
+                latitud=-33.136,
+                longitud=-68.49,
                 datos_extra={"zone": "Norte", "address": "Av. San Martín 100, Junín"},
                 created_at=now,
             ),
@@ -938,8 +952,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 descripcion="Otro corredor",
                 estado="nuevo",
                 origen="web",
-                latitud=-33.082,
-                longitud=-68.47,
+                latitud=-33.137,
+                longitud=-68.491,
                 datos_extra={"zone": "Norte", "address": "Calle Mitre 10, Junin"},
                 created_at=now,
             ),
@@ -950,8 +964,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 descripcion="Mismo corredor pero otra categoria",
                 estado="nuevo",
                 origen="web",
-                latitud=-33.083,
-                longitud=-68.471,
+                latitud=-33.138,
+                longitud=-68.492,
                 datos_extra={"zone": "Norte", "address": "Avenida San Martin 400, Junin"},
                 created_at=now,
             ),
@@ -1105,8 +1119,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
                 estado="nuevo",
                 nro_ticket=991001,
                 direccion="Calle Mitre 500, Junin",
-                latitud=-33.08,
-                longitud=-68.47,
+                latitud=-33.136,
+                longitud=-68.49,
                 fecha=datetime.now(timezone.utc),
             )
         )
@@ -1138,8 +1152,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             longitud=None,
             datos_extra={
                 "location": {
-                    "latitude": -33.081234,
-                    "longitude": -68.469123,
+                    "latitude": -33.136,
+                    "longitude": -68.49,
                     "address": "San Martin 120, Ciudad de Junin",
                     "barrio": "Centro",
                 }
@@ -1159,8 +1173,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
         point = (payload.get("points") or [])[0]
         self.assertEqual(point.get("category"), "luminarias_metadata")
-        self.assertEqual(point.get("lat"), -33.081234)
-        self.assertEqual(point.get("lng"), -68.469123)
+        self.assertEqual(point.get("lat"), -33.136)
+        self.assertEqual(point.get("lng"), -68.49)
         self.assertEqual(point.get("address"), "San Martin 120, Ciudad de Junin")
         self.assertEqual(point.get("zone"), "centro")
         provenance = point.get("location_provenance") or {}
@@ -1190,8 +1204,8 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             descripcion="Reclamo dentro del municipio",
             estado="nuevo",
             origen="whatsapp",
-            latitud=-33.0812,
-            longitud=-68.4691,
+            latitud=-33.136,
+            longitud=-68.49,
             datos_extra={"address": "San Martin 120, Junin, Mendoza"},
         )
         outside = TenantTicket(
@@ -1205,7 +1219,29 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             longitud=-60.9462,
             datos_extra={"address": "Junin, Buenos Aires"},
         )
-        db.session.add_all([inside, outside])
+        san_martin = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Coordenada del vecino San Martin dentro del envelope legado",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-33.0808,
+            longitud=-68.4895,
+            datos_extra={"address": "San Martin, Mendoza"},
+        )
+        palmira = TenantTicket(
+            tenant_id=self.tenant.id,
+            user_id=self.admin.id,
+            categoria="jurisdiction_probe",
+            descripcion="Coordenada de Palmira dentro del envelope legado",
+            estado="nuevo",
+            origen="whatsapp",
+            latitud=-33.0567,
+            longitud=-68.4954,
+            datos_extra={"address": "Palmira, Mendoza"},
+        )
+        db.session.add_all([inside, outside, san_martin, palmira])
         db.session.commit()
 
         response = self.client.get(
@@ -1218,6 +1254,12 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual((payload.get("summary") or {}).get("ticket_points"), 1)
         self.assertEqual(len(payload.get("points") or []), 1)
         self.assertEqual((payload.get("points") or [])[0].get("id"), f"tenant_ticket:{inside.id}")
+        self.assertTrue((payload.get("jurisdiction") or {}).get("containment_verified"))
+        self.assertEqual((payload.get("jurisdiction") or {}).get("containment_method"), "point_in_polygon")
+        self.assertEqual((payload.get("jurisdiction") or {}).get("truth_boundary"), "official_department_boundary_generalized")
+        visible_ids = {point.get("id") for point in payload.get("points") or []}
+        self.assertNotIn(f"tenant_ticket:{san_martin.id}", visible_ids)
+        self.assertNotIn(f"tenant_ticket:{palmira.id}", visible_ids)
         self.assertTrue(all(-68.6 <= point.get("lng") <= -68.3 for point in payload.get("points") or []))
 
         jurisdiction = payload.get("jurisdiction") or {}
@@ -1225,18 +1267,32 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(jurisdiction.get("city"), "Junín")
         self.assertEqual(jurisdiction.get("state_name"), "Mendoza")
         self.assertEqual((jurisdiction.get("source") or {}).get("ref"), "municipios/junin/geo.json")
-        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 1)
-        self.assertEqual(jurisdiction.get("review_candidate_count"), 1)
+        authority = jurisdiction.get("boundary_authority") or {}
+        self.assertEqual(authority.get("kind"), "official")
+        self.assertEqual(authority.get("department_code"), "09")
+        self.assertEqual(authority.get("global_id"), "{FEA13AA1-46F3-4570-BAEE-188FF11AFF94}")
+        self.assertEqual(
+            authority.get("snapshot_sha256"),
+            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
+        )
+        self.assertIn("ide.mendoza.gov.ar", authority.get("source_ref") or "")
+        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 3)
+        self.assertEqual(jurisdiction.get("review_candidate_count"), 3)
 
         quality = payload.get("location_quality") or {}
-        self.assertEqual(quality.get("ticket_records_outside_jurisdiction"), 1)
-        self.assertGreaterEqual(quality.get("ticket_records_with_persisted_coordinates") or 0, 2)
+        self.assertEqual(quality.get("ticket_records_outside_jurisdiction"), 3)
+        self.assertEqual(quality.get("ticket_records_with_persisted_coordinates"), 4)
         review = payload.get("jurisdiction_review") or {}
-        self.assertEqual(review.get("candidate_count"), 1)
-        self.assertEqual((review.get("candidates") or [])[0].get("record_id"), outside.id)
+        self.assertEqual(review.get("candidate_count"), 3)
         self.assertEqual(
-            (review.get("candidates") or [])[0].get("reason_code"),
-            "coordinates_outside_configured_jurisdiction",
+            {candidate.get("record_id") for candidate in review.get("candidates") or []},
+            {outside.id, san_martin.id, palmira.id},
+        )
+        self.assertTrue(
+            all(
+                candidate.get("reason_code") == "coordinates_outside_verified_jurisdiction"
+                for candidate in review.get("candidates") or []
+            )
         )
 
         facets = payload.get("territorial_facets") or {}
@@ -1244,10 +1300,194 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             item for item in facets.get("categories") or []
             if item.get("key") == "jurisdiction_probe"
         )
-        self.assertEqual(category.get("count"), 2)
+        self.assertEqual(category.get("count"), 4)
         self.assertEqual(category.get("mapped_count"), 1)
-        self.assertEqual(category.get("outside_jurisdiction_count"), 1)
-        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 1)
+        self.assertEqual(category.get("outside_jurisdiction_count"), 3)
+        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 3)
+
+        resolved = resolve_tenant_jurisdiction(self.tenant)
+        self.assertEqual(coordinate_jurisdiction_status(-33.136, -68.49, resolved), "within")
+        self.assertEqual(coordinate_jurisdiction_status(-33.0808, -68.4895, resolved), "outside")
+        self.assertEqual(coordinate_jurisdiction_status(-33.0567, -68.4954, resolved), "outside")
+        self.assertEqual(coordinate_jurisdiction_status(-34.9, -60.0, resolved), "outside")
+
+    def test_municipal_heatmap_fails_closed_when_official_boundary_hash_is_invalid(self):
+        broken_admin = User(
+            name="Boundary admin",
+            email="boundary-admin@test.com",
+            rol="admin",
+            tenant_slug="broken-municipio",
+        )
+        broken_admin.set_password("secret123")
+        db.session.add(broken_admin)
+        db.session.flush()
+        broken_tenant = TenantProfile(
+            slug="broken-municipio",
+            nombre="Municipio con limite dañado",
+            tipo="municipio",
+            municipio_id=broken_admin.id,
+            plan="full",
+        )
+        db.session.add(broken_tenant)
+        db.session.flush()
+        broken_admin.tenant_id = broken_tenant.id
+        blocked_ticket = TenantTicket(
+            tenant_id=broken_tenant.id,
+            user_id=broken_admin.id,
+            categoria="broken_boundary_probe",
+            descripcion="Coordenada que el envelope legado aceptaria",
+            estado="nuevo",
+            origen="web",
+            latitud=-33.136,
+            longitud=-68.49,
+        )
+        blocked_outside_envelope = TenantTicket(
+            tenant_id=broken_tenant.id,
+            user_id=broken_admin.id,
+            categoria="broken_boundary_probe",
+            descripcion="Coordenada fuera del envelope que tampoco prueba jurisdiccion oficial",
+            estado="nuevo",
+            origen="web",
+            latitud=-34.5889,
+            longitud=-60.9462,
+        )
+        db.session.add_all([blocked_ticket, blocked_outside_envelope])
+        db.session.commit()
+
+        token = jwt.encode(
+            {
+                "user_id": broken_admin.id,
+                "rol": broken_admin.rol,
+                "tenant_slug": broken_admin.tenant_slug,
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "municipios" / broken_tenant.slug
+            config_dir.mkdir(parents=True)
+            boundary_payload = {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {
+                            "departamen": "BROKEN MUNICIPIO",
+                            "codigo_dep": "XX",
+                            "globalid": "{BROKEN-BOUNDARY-FIXTURE}",
+                        },
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [[
+                                [-68.6, -33.2],
+                                [-68.3, -33.2],
+                                [-68.3, -33.0],
+                                [-68.6, -33.0],
+                                [-68.6, -33.2],
+                            ]],
+                        },
+                    }
+                ],
+            }
+            (config_dir / "boundary.geojson").write_text(
+                json.dumps(boundary_payload),
+                encoding="utf-8",
+            )
+            (config_dir / "geo.json").write_text(
+                json.dumps(
+                    {
+                        "city": "Broken Municipio",
+                        "state": "Mendoza",
+                        "country": "AR",
+                        "bounds": [-68.6, -33.2, -68.3, -33.0],
+                        "boundary": {
+                            "file": "boundary.geojson",
+                            "snapshot_sha256": "0" * 64,
+                            "authority": {
+                                "kind": "official",
+                                "publisher": "Fixture controlada",
+                                "source_url": "https://example.invalid/official-boundary",
+                                "department_code": "XX",
+                                "global_id": "{BROKEN-BOUNDARY-FIXTURE}",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"DATA_DIR": temp_dir}, clear=False):
+                response = self.client.get(
+                    "/api/v2/analytics/operations/heatmap"
+                    "?include_ai=0&source=tickets&categoria=broken_boundary_probe",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Tenant-Slug": broken_tenant.slug,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("points"), [])
+        self.assertEqual(payload.get("cells"), [])
+        self.assertEqual(payload.get("hotspots"), [])
+        self.assertEqual(payload.get("operational_hotspots"), [])
+        geo_layers = payload.get("geo_layers") or {}
+        self.assertEqual(((geo_layers.get("points") or {}).get("features")), [])
+        self.assertEqual(((geo_layers.get("cells") or {}).get("features")), [])
+        self.assertEqual(((geo_layers.get("hotspots") or {}).get("features")), [])
+        self.assertNotIn("boundaries", geo_layers)
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertFalse(jurisdiction.get("containment_verified"))
+        self.assertEqual(jurisdiction.get("containment_method"), "operational_envelope")
+        self.assertEqual(jurisdiction.get("map_eligibility_state"), "blocked")
+        self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 2)
+        self.assertEqual(jurisdiction.get("excluded_by_source"), [])
+        self.assertEqual(jurisdiction.get("unverified_coordinate_records"), 2)
+        self.assertEqual(
+            jurisdiction.get("unverified_by_source"),
+            [{"key": "tickets", "label": "tickets", "count": 2}],
+        )
+        self.assertEqual(jurisdiction.get("review_candidate_count"), 2)
+        self.assertEqual((payload.get("summary") or {}).get("points"), 0)
+        self.assertEqual((payload.get("quality") or {}).get("reason_code"), "official_jurisdiction_boundary_unavailable")
+        self.assertEqual(
+            (payload.get("render_contract") or {}).get("empty_reason"),
+            "official_jurisdiction_boundary_unavailable",
+        )
+        self.assertFalse((payload.get("render_contract") or {}).get("can_render_heatmap"))
+        self.assertEqual(
+            (payload.get("location_quality") or {}).get("ticket_records_unverified_jurisdiction"),
+            2,
+        )
+        self.assertEqual(
+            (payload.get("location_quality") or {}).get("ticket_records_outside_jurisdiction"),
+            0,
+        )
+        self.assertEqual(
+            ((payload.get("territorial_facets") or {}).get("summary") or {}).get("records_unverified_jurisdiction"),
+            2,
+        )
+        facets = payload.get("territorial_facets") or {}
+        self.assertEqual((facets.get("summary") or {}).get("records_outside_jurisdiction"), 0)
+        category = next(
+            item
+            for item in facets.get("categories") or []
+            if item.get("key") == "broken_boundary_probe"
+        )
+        self.assertEqual(category.get("outside_jurisdiction_count"), 0)
+        self.assertEqual(category.get("unverified_jurisdiction_count"), 2)
+        review = payload.get("jurisdiction_review") or {}
+        self.assertEqual(review.get("reason_code"), "official_jurisdiction_boundary_unavailable")
+        self.assertEqual(review.get("candidate_count"), 2)
+        self.assertTrue(
+            all(
+                candidate.get("reason_code") == "official_jurisdiction_boundary_unavailable"
+                for candidate in review.get("candidates") or []
+            )
+        )
 
     def test_tenant_jurisdiction_never_uses_junin_config_for_an_unconfigured_tenant(self):
         from services.territorial_evidence import resolve_tenant_jurisdiction
@@ -1266,6 +1506,186 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(contract.get("state"), "unconfigured")
         self.assertIsNone(contract.get("bounds"))
         self.assertEqual(contract.get("truth_boundary"), "no_tenant_specific_envelope")
+
+    def test_unenforced_non_government_tenant_with_valid_point_is_map_eligible(self):
+        owner = User(
+            name="Pyme territorial",
+            email="pyme-territorial@test.com",
+            rol="admin",
+            tenant_slug="pyme-territorial",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="pyme-territorial",
+            nombre="Pyme territorial",
+            tipo="pyme",
+            pyme_id=owner.id,
+            plan="full",
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        ticket = TenantTicket(
+            tenant_id=tenant.id,
+            user_id=owner.id,
+            categoria="entrega_comercial",
+            descripcion="Punto valido de cobertura comercial",
+            estado="nuevo",
+            origen="web",
+            latitud=-33.136,
+            longitud=-68.49,
+        )
+        db.session.add(ticket)
+        db.session.commit()
+
+        token = jwt.encode(
+            {
+                "user_id": owner.id,
+                "rol": owner.rol,
+                "tenant_slug": owner.tenant_slug,
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        response = self.client.get(
+            "/api/v2/analytics/operations/heatmap"
+            "?include_ai=0&source=tickets&categoria=entrega_comercial",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "X-Tenant-Slug": tenant.slug,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(len(payload.get("points") or []), 1)
+        self.assertEqual((payload.get("points") or [])[0].get("ticket_id"), ticket.id)
+        jurisdiction = payload.get("jurisdiction") or {}
+        self.assertFalse(jurisdiction.get("enforced"))
+        self.assertEqual(jurisdiction.get("map_eligibility_state"), "eligible")
+        self.assertEqual(
+            jurisdiction.get("map_eligibility_reason_code"),
+            "verified_jurisdiction_not_required",
+        )
+        self.assertEqual((payload.get("render_contract") or {}).get("state"), "ready")
+        self.assertTrue((payload.get("render_contract") or {}).get("can_render_heatmap"))
+
+    def test_geojson_array_root_fails_closed_without_breaking_heatmap_endpoint(self):
+        owner = User(
+            name="Municipio GeoJSON invalido",
+            email="geojson-array@test.com",
+            rol="admin",
+            tenant_slug="geojson-array",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="geojson-array",
+            nombre="GeoJSON Array",
+            tipo="municipio",
+            municipio_id=owner.id,
+            plan="full",
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        db.session.add(
+            TenantTicket(
+                tenant_id=tenant.id,
+                user_id=owner.id,
+                categoria="geojson_array_probe",
+                descripcion="No debe publicarse sin limite oficial valido",
+                estado="nuevo",
+                origen="web",
+                latitud=-33.136,
+                longitud=-68.49,
+            )
+        )
+        db.session.commit()
+
+        token = jwt.encode(
+            {
+                "user_id": owner.id,
+                "rol": owner.rol,
+                "tenant_slug": owner.tenant_slug,
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        malformed_boundary = json.dumps([{"type": "FeatureCollection", "features": []}]).encode("utf-8")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "municipios" / tenant.slug
+            config_dir.mkdir(parents=True)
+            (config_dir / "boundary.geojson").write_bytes(malformed_boundary)
+            (config_dir / "geo.json").write_text(
+                json.dumps(
+                    {
+                        "city": "GeoJSON Array",
+                        "state": "Mendoza",
+                        "country": "AR",
+                        "bounds": [-68.6, -33.2, -68.3, -33.0],
+                        "boundary": {
+                            "file": "boundary.geojson",
+                            "snapshot_sha256": hashlib.sha256(malformed_boundary).hexdigest(),
+                            "authority": {
+                                "kind": "official",
+                                "publisher": "Fixture controlada",
+                                "source_url": "https://example.invalid/official-boundary",
+                                "department_code": "XX",
+                                "global_id": "{ARRAY-ROOT}",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"DATA_DIR": temp_dir}, clear=False):
+                response = self.client.get(
+                    "/api/v2/analytics/operations/heatmap"
+                    "?include_ai=0&source=tickets&categoria=geojson_array_probe",
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "X-Tenant-Slug": tenant.slug,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        payload = response.get_json()
+        self.assertEqual(payload.get("points"), [])
+        self.assertEqual((payload.get("jurisdiction") or {}).get("map_eligibility_state"), "blocked")
+        self.assertEqual(
+            (payload.get("jurisdiction") or {}).get("map_eligibility_reason_code"),
+            "official_jurisdiction_boundary_unavailable",
+        )
+        self.assertEqual(
+            (payload.get("jurisdiction_review") or {}).get("reason_code"),
+            "official_jurisdiction_boundary_unavailable",
+        )
+
+    def test_multipolygon_containment_respects_holes_and_disjoint_polygons(self):
+        geometry = _validated_boundary_geometry(
+            {
+                "type": "MultiPolygon",
+                "coordinates": [
+                    [
+                        [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]],
+                        [[4, 4], [6, 4], [6, 6], [4, 6], [4, 4]],
+                    ],
+                    [[[20, 20], [22, 20], [22, 22], [20, 22], [20, 20]]],
+                ],
+            }
+        )
+
+        self.assertIsNotNone(geometry)
+        self.assertTrue(_boundary_contains_position(geometry or {}, 2, 2))
+        self.assertFalse(_boundary_contains_position(geometry or {}, 5, 5))
+        self.assertTrue(_boundary_contains_position(geometry or {}, 21, 21))
+        self.assertFalse(_boundary_contains_position(geometry or {}, 15, 15))
 
     def test_nested_location_without_scalar_address_is_not_stringified(self):
         from services.operational_intelligence import _tenant_ticket_record
@@ -1888,7 +2308,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         )
 
         bbox_response = self.client.get(
-            "/api/v2/analytics/operations/heatmap?include_ai=0&bbox=-68.47165,-33.08375,-68.47155,-33.08365",
+            "/api/v2/analytics/operations/heatmap?include_ai=0&bbox=-68.49005,-33.13605,-68.48995,-33.13595",
             headers=self._auth(),
         )
         self.assertEqual(bbox_response.status_code, 200)

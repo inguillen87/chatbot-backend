@@ -4,5 +4,21 @@
   "country": "AR",
   "region_hint": "ar",
   "locale": "es-AR",
-  "bounds": [-68.6, -33.2, -68.3, -32.9]
+  "bounds": [-68.6, -33.2, -68.3, -32.9],
+  "boundary": {
+    "file": "official_department_boundary.geojson",
+    "authority": {
+      "kind": "official",
+      "publisher": "Infraestructura de Datos Espaciales de Mendoza",
+      "service": "Hosted/Departamentos_Mendoza/FeatureServer/0",
+      "source_url": "https://ide.mendoza.gov.ar/server/rest/services/Hosted/Departamentos_Mendoza/FeatureServer/0/query?where=codigo_dep%3D%2709%27&outFields=departamen%2Ccodigo_dep%2Cglobalid&returnGeometry=true&outSR=4326&f=geojson&maxAllowableOffset=0.0001&geometryPrecision=6",
+      "department_code": "09",
+      "global_id": "{FEA13AA1-46F3-4570-BAEE-188FF11AFF94}"
+    },
+    "snapshot_sha256": "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
+    "out_sr": 4326,
+    "geometry_precision": 6,
+    "max_allowable_offset_degrees": 0.0001,
+    "generalization_note": "Geometria oficial generalizada para visualizacion y contencion departamental; no sustituye mensura catastral."
+  }
 }
