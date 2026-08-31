@@ -123,6 +123,166 @@ def test_heatmap_applies_bbox_filter_to_real_survey_coordinates():
         db.drop_all()
 
 
+def test_government_survey_heatmap_exposes_boundary_evidence_per_point():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        owner = User(
+            name="Admin territorial",
+            email="heatmap-government@test.local",
+            rol="admin",
+            tenant_slug="junin",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="junin",
+            nombre="Municipalidad de Junín",
+            tipo="municipio",
+            municipio_id=owner.id,
+            plan="full",
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        survey = EncEncuesta(
+            tenant_id=tenant.id,
+            slug="government-survey-evidence",
+            titulo="Consulta territorial",
+            estado="publicada",
+            tipo="opinion",
+        )
+        db.session.add(survey)
+        db.session.flush()
+        db.session.add_all(
+            [
+                EncRespuesta(
+                    encuesta_id=survey.id,
+                    tenant_id=tenant.id,
+                    canal="web",
+                    barrio="Centro",
+                    lat=-33.136,
+                    lng=-68.49,
+                    response_origin="real",
+                    submitted_at=datetime.now(timezone.utc),
+                ),
+                EncRespuesta(
+                    encuesta_id=survey.id,
+                    tenant_id=tenant.id,
+                    canal="web",
+                    barrio="Otra jurisdicción",
+                    lat=-34.5889,
+                    lng=-60.9462,
+                    response_origin="real",
+                    submitted_at=datetime.now(timezone.utc),
+                ),
+            ]
+        )
+        db.session.commit()
+
+        payload = get_heatmap(survey.id)
+
+        assert payload["render_contract"]["state"] == "ready"
+        assert len(payload["points"]) == 1
+        assert len(payload["cells"]) == 1
+        point = payload["points"][0]
+        assert point["lat"] == -33.136
+        assert point["lng"] == -68.49
+        assert point["containment_verified"] is True
+        assert point["coordinate_jurisdiction_status"] == "within"
+        assert "ide.mendoza.gov.ar" in point["source_ref"]
+        assert point["snapshot_sha256"] == (
+            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731"
+        )
+        jurisdiction = payload["metadata"]["jurisdiction"]
+        assert jurisdiction["state"] == "verified"
+        assert jurisdiction["enforced"] is True
+        assert jurisdiction["boundary_authority"]["kind"] == "official"
+        assert payload["metadata"]["map"]["render_ready"] is True
+        assert payload["metadata"]["map"]["available"] is True
+        assert payload["metadata"]["map"]["provider_hint"]
+        provenance = payload["metadata"]["provenance"]
+        assert provenance["input_points"] == 2
+        assert provenance["authorized_points"] == 1
+        assert provenance["excluded_points"] == 1
+        assert provenance["writes_performed"] is False
+        assert payload["metadata"]["points_geojson"]["features"][0][
+            "properties"
+        ]["containment_verified"] is True
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_government_survey_heatmap_blocks_without_official_boundary():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        owner = User(
+            name="Admin sin límite",
+            email="heatmap-no-boundary@test.local",
+            rol="admin",
+            tenant_slug="government-without-boundary",
+        )
+        owner.set_password("secret123")
+        db.session.add(owner)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="government-without-boundary",
+            nombre="Gobierno sin límite oficial",
+            tipo="gobierno",
+            municipio_id=owner.id,
+            plan="full",
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        owner.tenant_id = tenant.id
+        survey = EncEncuesta(
+            tenant_id=tenant.id,
+            slug="blocked-government-heatmap",
+            titulo="Consulta sin límite",
+            estado="publicada",
+            tipo="opinion",
+        )
+        db.session.add(survey)
+        db.session.flush()
+        db.session.add(
+            EncRespuesta(
+                encuesta_id=survey.id,
+                tenant_id=tenant.id,
+                canal="web",
+                lat=-33.136,
+                lng=-68.49,
+                response_origin="real",
+                submitted_at=datetime.now(timezone.utc),
+            )
+        )
+        db.session.commit()
+
+        payload = get_heatmap(survey.id, {"allow_synthetic_geo": True})
+
+        assert payload["points"] == []
+        assert payload["cells"] == []
+        assert payload["render_contract"]["state"] == "blocked"
+        assert payload["render_contract"]["empty_reason"] == (
+            "official_jurisdiction_boundary_unavailable"
+        )
+        assert payload["metadata"]["can_render_heatmap"] is False
+        assert payload["metadata"]["using_synthetic_points"] is False
+        assert payload["metadata"]["jurisdiction"]["state"] == "blocked"
+        assert payload["metadata"]["jurisdiction"]["enforced"] is True
+        assert payload["metadata"]["map"]["render_ready"] is False
+        assert payload["metadata"]["map"]["reason_code"] == (
+            "official_jurisdiction_boundary_unavailable"
+        )
+        assert payload["metadata"]["provenance"]["authorized_points"] == 0
+        assert payload["metadata"]["provenance"]["excluded_points"] == 1
+
+        db.session.remove()
+        db.drop_all()
+
+
 def test_survey_publication_contract_exposes_public_links_and_live_results():
     app = create_app(TestConfig)
     with app.app_context():

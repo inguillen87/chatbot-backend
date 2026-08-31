@@ -48,6 +48,13 @@ from services.survey_response_provenance import (
     filter_survey_response_query_by_origin,
     is_trusted_demo_seed_response,
 )
+from services.survey_jurisdiction import (
+    tenant_requires_government_survey_evidence,
+)
+from services.territorial_evidence import (
+    coordinate_jurisdiction_status,
+    resolve_tenant_jurisdiction,
+)
 from utils.heatmap import (
     build_feature_collection,
     compute_heatmap_cell_id,
@@ -4409,6 +4416,34 @@ def get_heatmap(
     resolution: Optional[int] = None,
 ) -> Dict[str, Any]:
     encuesta = get_encuesta(encuesta_id)
+    survey_tenant_id = getattr(encuesta, "tenant_id", None)
+    tenant = (
+        db.session.get(TenantProfile, int(survey_tenant_id))
+        if survey_tenant_id is not None
+        else None
+    )
+    government_evidence_required = tenant_requires_government_survey_evidence(
+        tenant
+    )
+    jurisdiction = (
+        resolve_tenant_jurisdiction(tenant)
+        if government_evidence_required and tenant is not None
+        else {}
+    )
+    authority = (
+        jurisdiction.get("boundary_authority")
+        if isinstance(jurisdiction.get("boundary_authority"), Mapping)
+        else {}
+    )
+    jurisdiction_verified = bool(
+        government_evidence_required
+        and jurisdiction.get("enforced") is True
+        and jurisdiction.get("containment_verified") is True
+        and jurisdiction.get("containment_method") == "point_in_polygon"
+        and authority.get("kind") == "official"
+        and authority.get("source_ref")
+        and authority.get("snapshot_sha256")
+    )
     snapshot = _get_response_snapshot(encuesta, filtros)
     respuestas = list(snapshot["sample"])
     data_provenance = dict(snapshot["provenance"])
@@ -4434,11 +4469,118 @@ def get_heatmap(
     )
     allow_synthetic = bool(_as_bool((filtros or {}).get("allow_synthetic_geo") or (filtros or {}).get("include_synthetic_geo")))
     used_synthetic_points = False
-    if allow_synthetic and not points and respuestas:
+    if (
+        allow_synthetic
+        and not government_evidence_required
+        and not points
+        and respuestas
+    ):
         synthetic_points = _build_synthetic_heatmap_points(encuesta, respuestas)
         if synthetic_points:
             points = synthetic_points
             used_synthetic_points = True
+    jurisdiction_input_points = len(points)
+    jurisdiction_excluded_points = 0
+    if government_evidence_required:
+        authorized_points: List[Dict[str, Any]] = []
+        for point in points:
+            coordinate_status = coordinate_jurisdiction_status(
+                point.get("lat"), point.get("lng"), jurisdiction
+            )
+            if not jurisdiction_verified or coordinate_status != "within":
+                jurisdiction_excluded_points += 1
+                continue
+            source_ref = authority.get("source_ref")
+            snapshot_sha256 = authority.get("snapshot_sha256")
+            authorized_points.append(
+                {
+                    **point,
+                    "coordinate_jurisdiction_status": coordinate_status,
+                    "containment_verified": True,
+                    "source_ref": source_ref,
+                    "snapshot_sha256": snapshot_sha256,
+                    "jurisdiction_evidence": {
+                        "contract_version": (
+                            "surveys.heatmap.point_jurisdiction_evidence.v1"
+                        ),
+                        "containment_verified": True,
+                        "coordinate_jurisdiction_status": coordinate_status,
+                        "containment_method": "point_in_polygon",
+                        "authority_kind": "official",
+                        "source_ref": source_ref,
+                        "snapshot_sha256": snapshot_sha256,
+                    },
+                }
+            )
+        points = authorized_points
+        enrich_heatmap_points(
+            points,
+            property_keys=(
+                "barrio",
+                "ciudad",
+                "provincia",
+                "pais",
+                "canal",
+                "containment_verified",
+                "coordinate_jurisdiction_status",
+                "source_ref",
+                "snapshot_sha256",
+                "jurisdiction_evidence",
+            ),
+        )
+        # Exact SQL cells can mix accepted and rejected coordinates. Rebuild
+        # cells solely from authorized points so no rejected observation can
+        # influence a centroid or count.
+        authorized_cells: Dict[str, Dict[str, Any]] = {}
+        effective_resolution = resolution or DEFAULT_HEATMAP_RESOLUTION
+        for point in points:
+            cell_id = compute_heatmap_cell_id(
+                float(point["lat"]), float(point["lng"]), effective_resolution
+            )
+            cell = authorized_cells.setdefault(
+                cell_id,
+                {
+                    "cell_id": cell_id,
+                    "count": 0,
+                    "lat_sum": 0.0,
+                    "lng_sum": 0.0,
+                    "barrios": defaultdict(int),
+                    "canales": defaultdict(int),
+                },
+            )
+            cell["count"] += 1
+            cell["lat_sum"] += float(point["lat"])
+            cell["lng_sum"] += float(point["lng"])
+            if point.get("barrio"):
+                cell["barrios"][point["barrio"]] += 1
+            if point.get("canal"):
+                cell["canales"][point["canal"]] += 1
+        cells = []
+        for cell in authorized_cells.values():
+            centroid_lat, centroid_lng = compute_heatmap_centroid(
+                cell["cell_id"],
+                lat_sum=cell["lat_sum"],
+                lng_sum=cell["lng_sum"],
+                count=cell["count"],
+            )
+            cells.append(
+                {
+                    "cell_id": cell["cell_id"],
+                    "count": cell["count"],
+                    "centroid_lat": round(centroid_lat, 6),
+                    "centroid_lon": round(centroid_lng, 6),
+                    "barrios": dict(cell["barrios"]),
+                    "canales": dict(cell["canales"]),
+                }
+            )
+        cells.sort(key=lambda item: item["count"], reverse=True)
+        enrich_heatmap_cells(cells, property_keys=("barrios", "canales"))
+        cell_sampling = {
+            "cell_count": len(cells),
+            "partial": bool(point_sampling.get("partial")),
+            "source": "authorized_contained_points",
+            "excluded_by_jurisdiction": jurisdiction_excluded_points,
+        }
     metadata = _build_heatmap_metadata(encuesta, points)
     map_filter = _build_map_filter(points)
     metadata.update(
@@ -4448,9 +4590,66 @@ def get_heatmap(
             "has_coordinates": bool(points),
             "using_synthetic_points": used_synthetic_points,
             "can_render_heatmap": bool(points or cells),
-            "empty_reason": None if points or cells else "no_real_geo_points",
+            "empty_reason": (
+                "official_jurisdiction_boundary_unavailable"
+                if government_evidence_required and not jurisdiction_verified
+                else (
+                    None
+                    if points or cells
+                    else (
+                        "no_contained_geo_points"
+                        if government_evidence_required
+                        else "no_real_geo_points"
+                    )
+                )
+            ),
             "point_sampling": point_sampling,
             "cell_aggregation": cell_sampling,
+            "jurisdiction": {
+                "contract_version": "surveys.heatmap.jurisdiction.v1",
+                "required": government_evidence_required,
+                "enforced": government_evidence_required,
+                "state": (
+                    "verified"
+                    if jurisdiction_verified
+                    else (
+                        "blocked"
+                        if government_evidence_required
+                        else "not_required"
+                    )
+                ),
+                "containment_verified": jurisdiction_verified,
+                "containment_method": (
+                    jurisdiction.get("containment_method")
+                    if jurisdiction_verified
+                    else None
+                ),
+                "boundary_authority": dict(authority),
+                "reason_code": (
+                    "official_point_in_polygon_verified"
+                    if jurisdiction_verified
+                    else (
+                        "official_jurisdiction_boundary_unavailable"
+                        if government_evidence_required
+                        else "government_jurisdiction_not_required"
+                    )
+                ),
+            },
+            "provenance": {
+                "contract_version": "surveys.heatmap.territorial_provenance.v1",
+                "coordinate_policy": "persisted_coordinates_only",
+                "writes_performed": False,
+                "synthetic_coordinates_allowed": not government_evidence_required,
+                "source_ref": authority.get("source_ref") if jurisdiction_verified else None,
+                "snapshot_sha256": (
+                    authority.get("snapshot_sha256")
+                    if jurisdiction_verified
+                    else None
+                ),
+                "input_points": jurisdiction_input_points,
+                "authorized_points": len(points),
+                "excluded_points": jurisdiction_excluded_points,
+            },
         }
     )
     data_provenance.update(
@@ -4477,6 +4676,33 @@ def get_heatmap(
     provider_hint = map_config.get("provider") if isinstance(map_config, dict) else None
     if not provider_hint or provider_hint == "none":
         provider_hint = "maplibre"
+    map_render_ready = bool(
+        (points or cells)
+        and (
+            not government_evidence_required
+            or jurisdiction_verified
+        )
+    )
+    metadata["map"] = {
+        "contract_version": "surveys.heatmap.map_render.v1",
+        "render_ready": map_render_ready,
+        "available": bool(points or cells),
+        "provider_hint": provider_hint,
+        "fallback_provider": "maplibre",
+        "reason_code": (
+            "authorized_points_available"
+            if map_render_ready
+            else (
+                "official_jurisdiction_boundary_unavailable"
+                if government_evidence_required and not jurisdiction_verified
+                else (
+                    "no_contained_geo_points"
+                    if government_evidence_required
+                    else "no_real_geo_points"
+                )
+            )
+        ),
+    }
     heatmap_layer = {
         "kind": "heatmap",
         "supported_formats": supported_formats,
@@ -4531,16 +4757,35 @@ def get_heatmap(
         empty_state = "Sin puntos geograficos publicados para los filtros actuales."
         recommended_action = {"label": "Cambiar filtros", "route": f"/admin/encuestas/{encuesta_id}/analytics/heatmap"}
     legend = category_layers.get("legend") or {"mode": "category_weight", "min_weight": 0, "max_weight": 0}
+    government_boundary_blocked = bool(
+        government_evidence_required and not jurisdiction_verified
+    )
     render_contract = {
         "module": "heatmap",
-        "state": "ready" if bool(points or cells) else "empty",
+        "state": (
+            "blocked"
+            if government_boundary_blocked
+            else ("ready" if bool(points or cells) else "empty")
+        ),
         "dataset_key": "points",
         "fallback_dataset_key": "cells",
         "source_keys": ["points", "cells", "metadata.map_layers.heatmap"],
         "chart_hierarchy": ["echarts", "recharts", "plotly"],
         "map_hierarchy": [provider_hint, "maplibre", "google"],
         "can_render_heatmap": bool(points or cells),
-        "empty_reason": None if points or cells else "no_real_geo_points",
+        "empty_reason": (
+            "official_jurisdiction_boundary_unavailable"
+            if government_boundary_blocked
+            else (
+                None
+                if points or cells
+                else (
+                    "no_contained_geo_points"
+                    if government_evidence_required
+                    else "no_real_geo_points"
+                )
+            )
+        ),
         "ai_layers": True,
         "recommended_views": [
             "interactive_heatmap",
