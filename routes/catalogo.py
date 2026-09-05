@@ -581,6 +581,7 @@ def buscar_en_catalogo(user):
         consulta,
         limite=limite,
         coleccion=coleccion,
+        tenant_id=getattr(user, "tenant_id", None),
     )
     productos = []
     for hit in resultados:

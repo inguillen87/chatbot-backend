@@ -144,6 +144,8 @@ def _verificar_y_crear_indices_default(client: Any, collection_name: str) -> Non
     """Crea los índices requeridos para las consultas.
 
     Asegura los campos para filtros:
+    - tenant_id (integer)
+    - catalog_version (keyword)
     - user_id (integer)
     - categoria_qdrant (keyword)
     - texto_original_para_embedding (text) para búsqueda full-text exacta
@@ -153,6 +155,8 @@ def _verificar_y_crear_indices_default(client: Any, collection_name: str) -> Non
     """
 
     indices_requeridos = {
+        "tenant_id": "integer",
+        "catalog_version": "keyword",
         "user_id": "integer",
         "categoria_qdrant": "keyword",
         "texto_original_para_embedding": "text",

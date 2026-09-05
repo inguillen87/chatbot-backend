@@ -138,6 +138,7 @@ class AgregarItemCarritoAction(BaseActionHandler):
             pregunta=product_identifier,
             limite=max(1, int(limit or 1)),
             coleccion=qdrant_collection,
+            tenant_id=_resolve_tenant_id_from_context(self.context),
         )
 
         candidates: List[Dict[str, Any]] = []
@@ -402,7 +403,13 @@ class ConsultarProductoAction(BaseActionHandler):
         rubro_nombre = getattr(pyme_user.rubro, "nombre", "general") if pyme_user and hasattr(pyme_user, "rubro") else "general"
         qdrant_collection = CATALOGO_PYME
 
-        resultados = buscar_catalogo_qdrant(user_id=pyme_id, pregunta=query, limite=3, coleccion=qdrant_collection)
+        resultados = buscar_catalogo_qdrant(
+            user_id=pyme_id,
+            pregunta=query,
+            limite=3,
+            coleccion=qdrant_collection,
+            tenant_id=_resolve_tenant_id_from_context(self.context),
+        )
 
         if not resultados:
             return {"success": True, "message_to_user": f"No encontré productos para '{query}'. ¿Intentar otra búsqueda?"}

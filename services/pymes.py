@@ -1643,7 +1643,8 @@ class CatalogoHandler(BaseHandler):
             coleccion=self.context.get("coleccion_qdrant", CATALOGO_PYME),
             en_promocion=en_promocion,
             con_stock=con_stock,
-            precio_max=precio_max
+            precio_max=precio_max,
+            tenant_id=self.context.get("tenant_id"),
         )
 
         # Fallback mechanism: If Qdrant returns nothing, try SQL DB
@@ -1653,7 +1654,8 @@ class CatalogoHandler(BaseHandler):
                     user_id=self.pyme_id_actual,
                     pregunta=query_qdrant,
                     limite=3,
-                    precio_max=precio_max
+                    precio_max=precio_max,
+                    tenant_id=self.context.get("tenant_id"),
                 )
                 if resultados_qdrant:
                     logger.info(f"Fallback DB search success for '{pregunta}'")
@@ -3776,6 +3778,7 @@ def sugerir_productos_relacionados(
             categoria=rubro_nombre or "general",
             limite=3,
             coleccion=CATALOGO_PYME,
+            tenant_id=pyme_ctx.get("tenant_id"),
         )
         # elegí el primer hit decente
         for hit in hits or []:

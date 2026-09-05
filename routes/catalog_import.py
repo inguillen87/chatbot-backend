@@ -14,6 +14,16 @@ from services.catalog_inventory import (
     new_catalog_version,
     stock_value_from_row,
 )
+from services.catalog_ingestion_assurance import (
+    build_ingestion_assurance,
+    committed_assurance,
+    degraded_index_assurance,
+    extracted_stage,
+    index_catalog_item_with_ack,
+    pending_stage,
+    persist_catalog_source,
+    stored_pending,
+)
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
@@ -63,6 +73,75 @@ def _catalog_forbidden_response():
         "No tenes permisos para administrar el catalogo de este tenant.",
         403,
     )
+
+
+def _explicit_catalog_tenant_slug() -> str | None:
+    """Return only a selector explicitly supplied by this API caller."""
+
+    body = request.get_json(silent=True) if request.is_json else None
+    raw_slug = (
+        request.form.get("tenant_slug")
+        or request.form.get("tenant")
+        or request.args.get("tenant_slug")
+        or request.args.get("tenant")
+        or (body.get("tenant_slug") if isinstance(body, dict) else None)
+        or (body.get("tenant") if isinstance(body, dict) else None)
+        or request.headers.get("X-Tenant-Slug")
+        or request.headers.get("X-Tenant")
+    )
+    normalized = str(raw_slug or "").strip().lower()
+    return normalized or None
+
+
+def _exact_catalog_tenant(current_user):
+    """Resolve an active tenant without aliases, owner fallback or row-one fallback."""
+
+    tenant_slug = _explicit_catalog_tenant_slug()
+    if not tenant_slug:
+        return None, _catalog_import_error(
+            "catalog_tenant_required",
+            "Selecciona explicitamente el tenant del catalogo.",
+            400,
+        )
+
+    tenant = (
+        TenantProfile.query.filter(
+            TenantProfile.slug == tenant_slug,
+            TenantProfile.is_active.is_(True),
+        )
+        .limit(1)
+        .first()
+    )
+    if tenant is None:
+        return None, _catalog_import_error(
+            "catalog_tenant_not_found",
+            "El tenant indicado no existe o no esta activo.",
+            404,
+        )
+
+    middleware_tenant = getattr(g, "tenant_profile", None)
+    if middleware_tenant is not None and getattr(middleware_tenant, "id", None) != tenant.id:
+        return None, _catalog_forbidden_response()
+    if not can_manage_tenant_catalog(current_user, tenant):
+        return None, _catalog_forbidden_response()
+    return tenant, None
+
+
+def _ingestion_assurance_from_upload(upload: CatalogUpload) -> dict:
+    stats = upload.stats if isinstance(upload.stats, dict) else {}
+    assurance = stats.get("ingestion_assurance")
+    return assurance if isinstance(assurance, dict) else {}
+
+
+def _set_ingestion_assurance(
+    upload: CatalogUpload,
+    assurance: dict,
+    *,
+    stats: dict | None = None,
+) -> None:
+    next_stats = dict(stats if isinstance(stats, dict) else (upload.stats or {}))
+    next_stats["ingestion_assurance"] = assurance
+    upload.stats = next_stats
 
 
 def _catalog_writes_allowed(tenant) -> bool:
@@ -335,6 +414,7 @@ def _catalog_suggested_actions(quality_summary: dict, image_summary: dict) -> li
 
 def _catalog_import_preview_contract(upload: CatalogUpload, *, request_id: str | None = None) -> dict:
     base = upload.to_dict()
+    ingestion_assurance = _ingestion_assurance_from_upload(upload)
     preview = base.get("preview_data") if isinstance(base.get("preview_data"), dict) else {}
     rows = preview.get("items") or preview.get("rows") or []
     if not isinstance(rows, list):
@@ -365,6 +445,8 @@ def _catalog_import_preview_contract(upload: CatalogUpload, *, request_id: str |
             "contract_version": "catalog.import_preview.v1",
             "upload_id": upload.id,
             "request_id": request_id or request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}",
+            "data_status": ingestion_assurance.get("status") or "pending",
+            "ingestion_assurance": ingestion_assurance,
             "source_file": {
                 "name": upload.filename,
                 "type": upload.mime_type,
@@ -387,6 +469,7 @@ def _catalog_import_preview_contract(upload: CatalogUpload, *, request_id: str |
                 "render_as": "catalog_import_preview",
                 "editable_rows": True,
                 "publish_requires_admin_confirmation": True,
+                "provider_readiness_source": "ingestion_assurance",
             },
         }
     )
@@ -552,42 +635,64 @@ def legacy_catalog_import():
 @token_requerido
 @require_tenant
 def create_import_session(current_user):
-    tenant = g.tenant_profile
-    if not can_manage_tenant_catalog(current_user, tenant):
-        return _catalog_forbidden_response()
+    tenant, tenant_error = _exact_catalog_tenant(current_user)
+    if tenant_error is not None:
+        return tenant_error
     if not _catalog_writes_allowed(tenant):
         return _catalog_plan_required_response(tenant)
 
     file = request.files.get('file')
 
     if not file:
-        return jsonify({"error": "No file"}), 400
+        return _catalog_import_error(
+            "catalog_file_required",
+            "Adjunta un archivo de catalogo.",
+            400,
+        )
 
-    filename = secure_filename(file.filename)
+    filename = secure_filename(file.filename or "")
+    if not filename:
+        return _catalog_import_error(
+            "catalog_filename_invalid",
+            "El archivo no tiene un nombre valido.",
+            400,
+        )
+
+    stored = persist_catalog_source(file)
+    if stored.get("reason_code") == "catalog_source_too_large":
+        return _catalog_import_error(
+            "catalog_source_too_large",
+            "El archivo supera el tamano permitido.",
+            413,
+        )
+
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-    path = os.path.join(UPLOAD_FOLDER, f"{tenant.slug}_{filename}")
+    path = os.path.join(UPLOAD_FOLDER, f"{tenant.id}_{uuid.uuid4().hex}_{filename}")
+    file.seek(0)
     file.save(path)
 
-    # Calculate hash
-    hasher = hashlib.md5()
+    hasher = hashlib.sha256()
     with open(path, 'rb') as f:
-        buf = f.read()
-        hasher.update(buf)
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            hasher.update(chunk)
     file_hash = hasher.hexdigest()
 
-    # Create Upload Record
+    initial_assurance = build_ingestion_assurance(
+        stored=stored,
+        extracted=pending_stage(reason_code="catalog_extraction_not_started"),
+    )
     upload = CatalogUpload(
         tenant_id=tenant.id,
         filename=filename,
         mime_type=file.mimetype,
         status="processing",
         processor_slug="generic_v2",
-        file_hash=file_hash
+        file_hash=file_hash,
+        stats={"ingestion_assurance": initial_assurance},
     )
     db.session.add(upload)
     db.session.commit()
 
-    # Trigger Processing
     try:
         from services.catalog_pipeline import CatalogPipeline
         pipeline = CatalogPipeline()
@@ -598,7 +703,6 @@ def create_import_session(current_user):
         elif tenant.pyme and tenant.pyme.rubro:
              rubro_slug = tenant.pyme.rubro.nombre
 
-        # Process upload
         extraction_result = pipeline.process_upload_preview(upload.id, path, file.mimetype, rubro_slug)
 
         items = extraction_result.get('items') or []
@@ -610,37 +714,72 @@ def create_import_session(current_user):
         else:
             image_summary = {"with_images": 0, "missing_images": 0}
 
-        # Store full result
         upload.preview_data = extraction_result
         upload.warnings = extraction_result.get('warnings', [])
         upload.engine_used = extraction_result.get('engine', 'unknown')
-        upload.stats = {
+        assurance = build_ingestion_assurance(
+            stored=stored,
+            extracted=extracted_stage(len(items)),
+        )
+        next_stats = {
             "confidence": extraction_result.get('confidence', 0),
             "total_rows": len(items),
             "with_images": image_summary.get("with_images", 0),
             "missing_images": image_summary.get("missing_images", 0),
         }
+        _set_ingestion_assurance(upload, assurance, stats=next_stats)
 
-        # Validation Logic
         if not items:
-             upload.status = "failed"
-             upload.errors = extraction_result.get('errors', []) + ["No structured data found"]
-             if not upload.errors:
-                 upload.errors = ["No se encontraron productos válidos."]
+            upload.status = "failed"
+            upload.errors = [
+                {
+                    "code": "catalog_structured_rows_missing",
+                    "message": "No se encontraron filas estructuradas para revisar.",
+                }
+            ]
+        elif stored.get("status") != "verified" or stored.get("acknowledged") is not True:
+            upload.status = "storage_pending"
+            upload.errors = []
         else:
-             upload.status = "ready_to_commit"
+            upload.status = "ready_to_commit"
+            upload.errors = []
 
         db.session.commit()
 
-    except Exception as e:
-        logger.error(f"Import failed: {e}", exc_info=True)
+    except Exception as exc:
+        db.session.rollback()
+        upload = CatalogUpload.query.filter_by(id=upload.id, tenant_id=tenant.id).first()
+        logger.error(
+            "Catalog extraction failed error_type=%s",
+            type(exc).__name__,
+        )
         upload.status = "failed"
-        upload.errors = [str(e)]
+        assurance = build_ingestion_assurance(
+            stored=stored,
+            extracted={
+                "status": "failed",
+                "acknowledged": False,
+                "reason_code": "catalog_extraction_failed",
+                "item_count": 0,
+            },
+        )
+        _set_ingestion_assurance(upload, assurance)
+        upload.errors = [
+            {
+                "code": "catalog_extraction_failed",
+                "message": "No se pudo extraer el catalogo. Revisa el formato e intenta nuevamente.",
+            }
+        ]
         db.session.commit()
-        return jsonify({"error": "Processing failed", "details": str(e)}), 500
+        return jsonify(_catalog_import_preview_contract(upload)), 422
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
     resp = _catalog_import_preview_contract(upload)
-    return jsonify(resp)
+    return jsonify(resp), 200 if upload.status in {"ready_to_commit", "failed"} else 202
 
 @catalog_import_bp.route('/api/admin/catalog/import/<int:upload_id>', methods=['OPTIONS'])
 def options_import_session(upload_id):
@@ -650,9 +789,9 @@ def options_import_session(upload_id):
 @token_requerido
 @require_tenant
 def get_import_session(current_user, upload_id):
-    tenant = g.tenant_profile
-    if not can_manage_tenant_catalog(current_user, tenant):
-        return _catalog_forbidden_response()
+    tenant, tenant_error = _exact_catalog_tenant(current_user)
+    if tenant_error is not None:
+        return tenant_error
     upload = CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id).first()
     if not upload:
         return jsonify({"error": "Not found"}), 404
@@ -665,9 +804,9 @@ def get_import_session(current_user, upload_id):
 @token_requerido
 @require_tenant
 def update_import_preview(current_user, upload_id):
-    tenant = g.tenant_profile
-    if not can_manage_tenant_catalog(current_user, tenant):
-        return _catalog_forbidden_response()
+    tenant, tenant_error = _exact_catalog_tenant(current_user)
+    if tenant_error is not None:
+        return tenant_error
     if not _catalog_writes_allowed(tenant):
         return _catalog_plan_required_response(tenant)
 
@@ -677,18 +816,47 @@ def update_import_preview(current_user, upload_id):
 
     data = request.json or {}
     if 'preview_data' in data:
-        # User is manually correcting the data
         preview = data['preview_data'] or {}
+        if not isinstance(preview, dict):
+            return _catalog_import_error(
+                "catalog_preview_invalid",
+                "La vista previa debe ser un objeto estructurado.",
+                400,
+            )
         items = preview.get("items") or preview.get("rows") or []
-        if isinstance(items, list):
-            normalized_items, image_summary = _normalize_rows_for_images(items)
-            if "rows" in preview and "items" not in preview:
-                preview["rows"] = normalized_items
-            else:
-                preview["items"] = normalized_items
-            preview["image_summary"] = image_summary
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            return _catalog_import_error(
+                "catalog_preview_rows_invalid",
+                "Las filas del catalogo deben ser una lista de objetos.",
+                400,
+            )
+        normalized_items, image_summary = _normalize_rows_for_images(items)
+        if "rows" in preview and "items" not in preview:
+            preview["rows"] = normalized_items
+        else:
+            preview["items"] = normalized_items
+        preview["image_summary"] = image_summary
         upload.preview_data = preview
-        upload.status = "ready_to_commit"
+        previous_assurance = _ingestion_assurance_from_upload(upload)
+        previous_stages = (
+            previous_assurance.get("stages")
+            if isinstance(previous_assurance.get("stages"), dict)
+            else {}
+        )
+        stored = previous_stages.get("stored")
+        if not isinstance(stored, dict):
+            stored = stored_pending(reason_code="r2_ack_missing")
+        assurance = build_ingestion_assurance(
+            stored=stored,
+            extracted=extracted_stage(len(normalized_items)),
+        )
+        _set_ingestion_assurance(upload, assurance)
+        if not normalized_items:
+            upload.status = "failed"
+        elif stored.get("status") == "verified" and stored.get("acknowledged") is True:
+            upload.status = "ready_to_commit"
+        else:
+            upload.status = "storage_pending"
 
     db.session.commit()
     return jsonify(_catalog_import_preview_contract(upload))
@@ -697,31 +865,102 @@ def update_import_preview(current_user, upload_id):
 @token_requerido
 @require_tenant
 def commit_import_session(current_user, upload_id):
-    tenant = g.tenant_profile
-    if not can_manage_tenant_catalog(current_user, tenant):
-        return _catalog_forbidden_response()
+    tenant, tenant_error = _exact_catalog_tenant(current_user)
+    if tenant_error is not None:
+        return tenant_error
     if not _catalog_writes_allowed(tenant):
         return _catalog_plan_required_response(tenant)
 
-    upload = CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id).first()
+    # Serialize publication for this tenant.  The lock protects both the
+    # catalog rows and the single active vector-version pointer.
+    tenant = (
+        TenantProfile.query.filter_by(id=tenant.id)
+        .with_for_update()
+        .first()
+    )
+    if tenant is None or not tenant.is_active:
+        return _catalog_import_error(
+            "catalog_tenant_not_found",
+            "El tenant indicado no existe o no esta activo.",
+            404,
+        )
+    if not _catalog_writes_allowed(tenant):
+        return _catalog_plan_required_response(tenant)
+
+    upload = (
+        CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id)
+        .with_for_update()
+        .first()
+    )
     if not upload:
-        return jsonify({"error": "Not found"}), 404
+        return _catalog_import_error(
+            "catalog_upload_not_found",
+            "La importacion no existe para este tenant.",
+            404,
+        )
+
+    previous_assurance = _ingestion_assurance_from_upload(upload)
+    if upload.status == "committed":
+        stats = upload.stats if isinstance(upload.stats, dict) else {}
+        return jsonify(
+            {
+                "ok": True,
+                "success": True,
+                "contract_version": "catalog.import_commit.v1",
+                "upload_id": upload.id,
+                "status": "committed",
+                "idempotent_replay": True,
+                "catalog_version": stats.get("catalog_version"),
+                "ingestion_assurance": previous_assurance,
+            }
+        )
+    stages = (
+        previous_assurance.get("stages")
+        if isinstance(previous_assurance.get("stages"), dict)
+        else {}
+    )
+    stored = stages.get("stored") if isinstance(stages, dict) else None
+    if not (
+        isinstance(stored, dict)
+        and stored.get("status") == "verified"
+        and stored.get("acknowledged") is True
+    ):
+        response = jsonify(
+            {
+                "codigo": "catalog_storage_ack_required",
+                "mensaje": "El archivo aun no tiene confirmacion de almacenamiento durable en R2.",
+                "upload_id": upload.id,
+                "ingestion_assurance": previous_assurance,
+            }
+        )
+        response.status_code = 409
+        return response
 
     if upload.status != "ready_to_commit":
-        return jsonify({"error": "Upload not ready"}), 400
+        response = jsonify(
+            {
+                "codigo": "catalog_upload_not_ready",
+                "mensaje": "La importacion todavia no esta lista para confirmar.",
+                "upload_id": upload.id,
+                "ingestion_assurance": previous_assurance,
+            }
+        )
+        response.status_code = 409
+        return response
 
     preview = upload.preview_data or {}
     items = preview.get('items') or preview.get('rows') or []
-    if isinstance(items, list):
-        items, image_summary = _normalize_rows_for_images(items)
-        preview["items"] = items
-        preview["image_summary"] = image_summary
-        upload.preview_data = preview
-    else:
-        image_summary = {"with_images": 0, "missing_images": 0}
-    count = 0
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        return _catalog_import_error(
+            "catalog_preview_rows_invalid",
+            "Las filas del catalogo no tienen un formato valido.",
+            400,
+        )
+    items, image_summary = _normalize_rows_for_images(items)
+    preview["items"] = items
+    preview["image_summary"] = image_summary
+    upload.preview_data = preview
 
-    from services.qdrant_service import index_catalog_item
     from services.embedding_service import embed_textos_llm
 
     body = request.get_json(silent=True) or {}
@@ -731,143 +970,265 @@ def commit_import_session(current_user, upload_id):
     if mode not in {"replace", "upsert", "stock_only"}:
         return jsonify({"error": "Invalid import mode", "allowed_modes": ["replace", "upsert", "stock_only"]}), 400
 
+    # This transition is intentionally flushed, not committed.  Another
+    # transaction cannot claim this tenant/upload while publication is in
+    # progress, and a crash rolls the state back with the catalog mutation.
+    upload.status = "committing"
+    db.session.flush()
+
     replace = mode == "replace"
     stock_only = mode == "stock_only"
     created_count = 0
     updated_count = 0
     stock_updated_count = 0
     skipped_rows: list[dict] = []
+    indexed_count = 0
+    retrieval_count = 0
+    provider_reason = "catalog_commit_failed"
+    prepared_items: list[CatalogoItem] = []
+    candidate_catalog_version = (
+        f"{new_catalog_version(tenant.id)}_{uuid.uuid4().hex[:8]}"
+    )
+    prior_replace_ids = (
+        [row[0] for row in db.session.query(CatalogoItem.id).filter_by(tenant_id=tenant.id).all()]
+        if replace
+        else []
+    )
+    owner_user_id = tenant.pyme_id or tenant.municipio_id or current_user.id
 
-    if replace:
-        CatalogoItem.query.filter_by(tenant_id=tenant.id).delete()
+    rubro_nombre = "general"
+    if tenant.pyme and tenant.pyme.rubro:
+        rubro_nombre = tenant.pyme.rubro.nombre
+    elif tenant.municipio and tenant.municipio.rubro:
+        rubro_nombre = tenant.municipio.rubro.nombre
 
-    for item in items:
-        # Flexible key access
-        sku = item.get('sku') or item.get('SKU')
-        title = item.get('title') or item.get('nombre') or item.get('Producto')
-        price = item.get('price') or item.get('precio') or item.get('Precio')
-        raw_stock = stock_value_from_row(item)
+    try:
+        for item in items:
+            sku = str(item.get('sku') or item.get('SKU') or f"GEN-{uuid.uuid4().hex[:8]}").strip()
+            title = item.get('title') or item.get('nombre') or item.get('Producto')
+            price = item.get('price') or item.get('precio') or item.get('Precio')
+            raw_stock = stock_value_from_row(item)
 
-        if not sku:
-             sku = f"GEN-{uuid.uuid4().hex[:8]}"
-
-        if not title and not stock_only:
-            continue # minimal requirement for product upsert/replace
-
-        item_obj = None
-        existing = CatalogoItem.query.filter_by(tenant_id=tenant.id, sku=sku).first()
-        if not existing and tenant.pyme_id:
-             existing = CatalogoItem.query.filter_by(user_id=tenant.pyme_id, sku=sku).first()
-
-        if existing:
-            item_obj = existing
-            updated_count += 1
-        else:
-            if stock_only:
-                skipped_rows.append(
-                    {
-                        "sku": sku,
-                        "reason_code": "sku_not_found_for_stock_only_import",
-                    }
-                )
+            if not title and not stock_only:
+                skipped_rows.append({"sku": sku, "reason_code": "catalog_title_required"})
                 continue
-            new_item = CatalogoItem(
-                user_id=tenant.pyme_id or current_user.id,
-                tenant_id=tenant.id,
-                sku=str(sku),
-                nombre=str(title),
-                precio=str(price),
-                precio_monetario=0.0,
-                modalidad="venta",
-                disponible=True
+
+            existing = None
+            if not replace:
+                existing = CatalogoItem.query.filter_by(tenant_id=tenant.id, sku=sku).first()
+
+            if existing is not None:
+                item_obj = existing
+                updated_count += 1
+            else:
+                if stock_only:
+                    skipped_rows.append(
+                        {
+                            "sku": sku,
+                            "reason_code": "sku_not_found_for_stock_only_import",
+                        }
+                    )
+                    continue
+                item_obj = CatalogoItem(
+                    user_id=owner_user_id,
+                    tenant_id=tenant.id,
+                    sku=sku,
+                    nombre=str(title),
+                    precio=str(price or ""),
+                    precio_monetario=0.0,
+                    modalidad="venta",
+                    disponible=True,
+                )
+                db.session.add(item_obj)
+                created_count += 1
+
+            if not title:
+                title = item_obj.nombre
+
+            if not stock_only:
+                item_obj.nombre = str(title)
+                item_obj.precio = str(price or "")
+                try:
+                    clean_price = re.sub(r'[^\d\.,]', '', str(price or ""))
+                    clean_price = clean_price.replace(',', '.')
+                    item_obj.precio_monetario = float(clean_price) if clean_price else 0.0
+                except (TypeError, ValueError):
+                    item_obj.precio_monetario = 0.0
+
+                item_obj.categoria = item.get('category') or item.get('categoria')
+                item_obj.moneda = item.get('currency') or item.get('moneda') or 'ARS'
+                item_obj.marca = item.get('brand') or item.get('marca')
+                item_obj.descripcion = item.get('description') or item.get('descripcion') or item_obj.descripcion
+                primary_image, gallery_urls = _product_images_from_row(item)
+                if primary_image is not None:
+                    item_obj.imagen_url = primary_image
+                metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
+                metadata = dict(metadata)
+                if gallery_urls:
+                    metadata["gallery_urls"] = gallery_urls
+                    metadata["image_status"] = "ready"
+                elif not item_obj.imagen_url:
+                    metadata["image_status"] = "missing"
+                item_obj.extra_metadata = metadata
+
+            if raw_stock is not None:
+                item_obj.cantidad = str(raw_stock)
+                stock_updated_count += 1
+                metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
+                metadata = dict(metadata)
+                metadata["inventory_source"] = "catalog_import"
+                metadata["stock_updated_at"] = datetime.now(timezone.utc).isoformat()
+                item_obj.extra_metadata = metadata
+
+            prepared_items.append(item_obj)
+
+        if not prepared_items:
+            db.session.rollback()
+            return _catalog_import_error(
+                "catalog_rows_not_applicable",
+                "Ninguna fila valida puede aplicarse con el modo seleccionado.",
+                422,
             )
-            db.session.add(new_item)
-            item_obj = new_item
-            created_count += 1
-
-        if not title:
-            title = item_obj.nombre
-
-        if not stock_only:
-            item_obj.nombre = str(title)
-            item_obj.precio = str(price)
-            try:
-                 import re
-                 clean_price = re.sub(r'[^\d\.,]', '', str(price))
-                 clean_price = clean_price.replace(',', '.')
-                 item_obj.precio_monetario = float(clean_price)
-            except:
-                 item_obj.precio_monetario = 0.0
-
-            item_obj.categoria = item.get('category') or item.get('categoria')
-            item_obj.moneda = item.get('currency') or item.get('moneda') or 'ARS'
-            item_obj.marca = item.get('brand') or item.get('marca')
-            item_obj.descripcion = item.get('description') or item.get('descripcion') or item_obj.descripcion
-            primary_image, gallery_urls = _product_images_from_row(item)
-            if primary_image is not None:
-                item_obj.imagen_url = primary_image
-            metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
-            metadata = dict(metadata)
-            if gallery_urls:
-                metadata["gallery_urls"] = gallery_urls
-                metadata["image_status"] = "ready"
-            elif not item_obj.imagen_url:
-                metadata["image_status"] = "missing"
-            item_obj.extra_metadata = metadata
-
-        if raw_stock is not None:
-            item_obj.cantidad = str(raw_stock)
-            stock_updated_count += 1
-            metadata = item_obj.extra_metadata if isinstance(item_obj.extra_metadata, dict) else {}
-            metadata = dict(metadata)
-            metadata["inventory_source"] = "catalog_import"
-            metadata["stock_updated_at"] = datetime.now(timezone.utc).isoformat()
-            item_obj.extra_metadata = metadata
 
         db.session.flush()
-
-        try:
-            text_to_embed = f"{item_obj.nombre} {item_obj.categoria or ''} {item_obj.precio}"
+        # Upsert and stock-only publication must carry forward every unchanged
+        # row into the new immutable vector snapshot.  Replace publishes only
+        # the candidate rows and retires the previous SQL rows after provider
+        # readback succeeds.
+        items_to_index = (
+            list(prepared_items)
+            if replace
+            else CatalogoItem.query.filter_by(tenant_id=tenant.id)
+            .order_by(CatalogoItem.id.asc())
+            .all()
+        )
+        expected_count = len(items_to_index)
+        for item_obj in items_to_index:
+            text_to_embed = f"{item_obj.nombre} {item_obj.categoria or ''} {item_obj.precio or ''}".strip()
             embedding_list = embed_textos_llm([text_to_embed])
-            if embedding_list and embedding_list[0]:
-                rubro_nombre = "general"
-                if tenant.pyme and tenant.pyme.rubro:
-                    rubro_nombre = tenant.pyme.rubro.nombre
+            embedding = embedding_list[0] if embedding_list and embedding_list[0] else None
+            item_data = {
+                "id": item_obj.id,
+                "nombre": item_obj.nombre,
+                "descripcion": item_obj.descripcion or "",
+                "precio": float(item_obj.precio_monetario or 0),
+                "rubro": rubro_nombre,
+                "stock": item_obj.cantidad,
+                "sku": item_obj.sku,
+                "categoria": item_obj.categoria,
+                "marca": item_obj.marca,
+                "extra_metadata": item_obj.extra_metadata or {},
+                "user_id": item_obj.user_id,
+                "tenant_id": tenant.id,
+                "catalog_version": candidate_catalog_version,
+                "imagen_url": item_obj.imagen_url,
+            }
+            provider_ack = index_catalog_item_with_ack(tenant.id, item_data, embedding)
+            provider_reason = str(provider_ack.get("reason_code") or "catalog_provider_unavailable")
+            if provider_ack.get("indexed") is True:
+                indexed_count += 1
+            else:
+                raise RuntimeError("catalog_index_ack_missing")
+            if provider_ack.get("retrieval_verified") is True:
+                retrieval_count += 1
+            else:
+                raise RuntimeError("catalog_retrieval_ack_missing")
 
-                owner_user_id = None
-                if tenant.pyme:
-                    owner_user_id = tenant.pyme.id
-                elif tenant.municipio:
-                    owner_user_id = tenant.municipio.id
+        if replace and prior_replace_ids:
+            CatalogoItem.query.filter(
+                CatalogoItem.tenant_id == tenant.id,
+                CatalogoItem.id.in_(prior_replace_ids),
+            ).delete(synchronize_session=False)
 
-                item_data = {
-                    "id": item_obj.id,
-                    "nombre": item_obj.nombre,
-                    "descripcion": item_obj.descripcion or "",
-                    "precio": float(item_obj.precio_monetario or 0),
-                    "rubro": rubro_nombre,
-                    "stock": item_obj.cantidad,
-                    "user_id": owner_user_id or tenant.id,
-                    "tenant_id": tenant.id,
-                    "imagen_url": item_obj.imagen_url,
+        assurance = committed_assurance(
+            previous_assurance,
+            expected_count=expected_count,
+            indexed_count=indexed_count,
+            retrieval_count=retrieval_count,
+        )
+        if not assurance.get("ready"):
+            provider_reason = "catalog_provider_ack_incomplete"
+            raise RuntimeError("catalog_provider_ack_incomplete")
+
+        upload.status = "committed"
+        upload_stats = dict(upload.stats) if isinstance(upload.stats, dict) else {}
+        upload_stats["catalog_version"] = candidate_catalog_version
+        upload_stats["published_item_count"] = expected_count
+        _set_ingestion_assurance(upload, assurance, stats=upload_stats)
+        cfg = dict(tenant.configuracion) if isinstance(tenant.configuracion, dict) else {}
+        catalog_version = candidate_catalog_version
+        cfg["catalog_version"] = catalog_version
+        cfg["catalog_vector_version"] = catalog_version
+        cfg["catalog_last_import_id"] = upload.id
+        cfg["catalog_last_import_mode"] = mode
+        cfg["catalog_last_inventory_update_at"] = catalog_version
+        tenant.configuracion = cfg
+        flag_modified(tenant, "configuracion")
+        db.session.commit()
+    except Exception as exc:
+        logger.warning(
+            "Catalog commit stopped before publication error_type=%s reason_code=%s",
+            type(exc).__name__,
+            provider_reason,
+        )
+        db.session.rollback()
+        # Reclaim the publication lock before recording degradation.  If a
+        # concurrent retry already committed while this request unwound, never
+        # overwrite that successful state.
+        TenantProfile.query.filter_by(id=tenant.id).with_for_update().first()
+        upload = (
+            CatalogUpload.query.filter_by(id=upload_id, tenant_id=tenant.id)
+            .with_for_update()
+            .first()
+        )
+        if upload is None:
+            return _catalog_import_error(
+                "catalog_upload_not_found",
+                "La importacion no existe para este tenant.",
+                404,
+            )
+        if upload.status == "committed":
+            committed_stats = upload.stats if isinstance(upload.stats, dict) else {}
+            return jsonify(
+                {
+                    "ok": True,
+                    "success": True,
+                    "contract_version": "catalog.import_commit.v1",
+                    "upload_id": upload.id,
+                    "status": "committed",
+                    "idempotent_replay": True,
+                    "catalog_version": committed_stats.get("catalog_version"),
+                    "ingestion_assurance": _ingestion_assurance_from_upload(upload),
                 }
-                index_catalog_item(tenant.id, item_data, embedding_list[0])
-
-        except Exception as e:
-            logger.warning(f"Failed to index item {sku}: {e}")
-
-        count += 1
-
-    upload.status = "committed"
-    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
-    catalog_version = new_catalog_version(tenant.id)
-    cfg["catalog_version"] = catalog_version
-    cfg["catalog_last_import_id"] = upload.id
-    cfg["catalog_last_import_mode"] = mode
-    cfg["catalog_last_inventory_update_at"] = catalog_version
-    tenant.configuracion = cfg
-    flag_modified(tenant, "configuracion")
-    db.session.commit()
+            )
+        expected_count = len(prepared_items)
+        assurance = degraded_index_assurance(
+            previous_assurance,
+            expected_count=expected_count,
+            indexed_count=indexed_count,
+            retrieval_count=retrieval_count,
+            reason_code=provider_reason,
+        )
+        upload.status = "index_degraded"
+        _set_ingestion_assurance(upload, assurance)
+        upload.errors = [
+            {
+                "code": provider_reason,
+                "message": "La preparacion o verificacion no pudo completarse. El catalogo anterior se conserva.",
+            }
+        ]
+        db.session.commit()
+        response = jsonify(
+            {
+                "codigo": provider_reason,
+                "mensaje": "No se publico el catalogo. El catalogo anterior se conserva sin cambios.",
+                "upload_id": upload.id,
+                "ingestion_assurance": assurance,
+                "previous_catalog_preserved": True,
+            }
+        )
+        response.status_code = 503
+        return response
 
     request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
     return jsonify(
@@ -878,7 +1239,7 @@ def commit_import_session(current_user, upload_id):
             "request_id": request_id,
             "upload_id": upload.id,
             "mode": mode,
-            "count": count,
+            "count": len(prepared_items),
             "created": created_count,
             "updated": updated_count,
             "stock_updated": stock_updated_count,
@@ -891,6 +1252,7 @@ def commit_import_session(current_user, upload_id):
             },
             "warnings": [],
             "catalog_version": catalog_version,
+            "ingestion_assurance": assurance,
             "image_summary": image_summary,
             "inventory_summary": _catalog_inventory_summary(items),
         }

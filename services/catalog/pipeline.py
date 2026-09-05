@@ -77,7 +77,7 @@ class CatalogPipeline:
     def process_upload_preview(self, upload_id: int, file_path: str, mime_type: str, rubro_slug: str = "generic") -> Dict[str, Any]:
         """
         Processes a file (XLSX, CSV) and returns a list of detected items and warnings.
-        For PDF, we might use a mock or heuristic parser for P0.
+        Provider failures remain empty/degraded; this path never fabricates rows.
         """
         items = []
         warnings = []
@@ -129,21 +129,19 @@ class CatalogPipeline:
                     warnings.extend(extraction_warnings)
 
             if not items and mime_type and "pdf" in mime_type:
-                # Attempt to use legacy extraction if available, otherwise fallback
+                # Attempt the legacy extractor only when it is actually installed.
                 try:
-                    # Try to import legacy extractor (if exists)
                     from services.pdf_extractor import extract_table_from_file
                     items = extract_table_from_file(file_path)
                 except ImportError:
-                    logger.warning(f"Legacy PDF extractor not found. Using mock for {file_path}")
-                    items = [
-                        {"sku": "PDF-001", "title": "Producto PDF Detectado 1", "price": 1500.0, "category": "General"},
-                        {"sku": "PDF-002", "title": "Producto PDF Detectado 2", "price": 2500.0, "category": "General"}
-                    ]
-                    warnings.append("PDF extraction is in beta mode (legacy extractor unavailable).")
-                except Exception as e:
-                    logger.error(f"Legacy PDF extraction failed: {e}")
-                    warnings.append("PDF extraction failed.")
+                    logger.warning("Legacy PDF extractor is unavailable; no rows were produced.")
+                    warnings.append("PDF extractor unavailable; no structured rows were produced.")
+                except Exception as exc:
+                    logger.error(
+                        "Legacy PDF extraction failed error_type=%s",
+                        type(exc).__name__,
+                    )
+                    warnings.append("PDF extraction failed; no structured rows were produced.")
 
             if not items and mime_type not in [
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -152,8 +150,8 @@ class CatalogPipeline:
             ]:
                 warnings.append(f"Unsupported file type: {mime_type}")
 
-        except Exception as e:
-            logger.error(f"Pipeline error: {e}")
-            warnings.append(f"Error processing file: {str(e)}")
+        except Exception as exc:
+            logger.error("Catalog pipeline failed error_type=%s", type(exc).__name__)
+            warnings.append("Catalog processing failed; no structured rows were produced.")
 
         return {"items": items, "warnings": warnings}

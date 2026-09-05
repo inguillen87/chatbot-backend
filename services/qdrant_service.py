@@ -192,8 +192,32 @@ def _normalize_qdrant_point_id(raw_point_id: Any, tenant_id: str) -> Any:
     return str(uuid.uuid5(namespace, point_as_text or "sin-id"))
 
 
+def _catalog_qdrant_point_id(
+    raw_point_id: Any,
+    tenant_id: str,
+    catalog_version: str | None,
+) -> Any:
+    """Namespace staged catalog points by tenant and immutable version."""
+
+    normalized_version = str(catalog_version or "").strip()
+    if not normalized_version:
+        return _normalize_qdrant_point_id(raw_point_id, tenant_id)
+    namespace = uuid.uuid5(
+        uuid.NAMESPACE_DNS,
+        f"chatboc:{tenant_id}:catalog:{normalized_version}",
+    )
+    point_as_text = str(raw_point_id or "sin-id").strip() or "sin-id"
+    return str(uuid.uuid5(namespace, point_as_text))
+
+
 def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: List[float]):
     """Index a catalog item into the Qdrant catalog collections."""
+    try:
+        scoped_tenant_id = int(tenant_id)
+    except (TypeError, ValueError):
+        return False
+    if scoped_tenant_id <= 0:
+        return False
     client = get_qdrant_utils_client()
     if not client:
         return False
@@ -208,7 +232,12 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         return False
 
     point_id = item_data.get("id")
-    qdrant_point_id = _normalize_qdrant_point_id(point_id, str(tenant_id))
+    catalog_version = str(item_data.get("catalog_version") or "").strip() or None
+    qdrant_point_id = _catalog_qdrant_point_id(
+        point_id,
+        str(tenant_id),
+        catalog_version,
+    )
     precio_raw = item_data.get("precio", 0)
     _, precio_float, _ = parse_precio_flexible(precio_raw)
     if precio_float is None:
@@ -251,13 +280,15 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         "precio_por_caja": item_data.get("precio_por_caja"),
         "unidad_por_caja": item_data.get("unidad_por_caja"),
         "user_id": item_data.get("user_id") or item_data.get("owner_id") or tenant_id,
-        "tenant_id": item_data.get("tenant_id") or tenant_id,
+        "tenant_id": scoped_tenant_id,
         "rubro_slug": rubro,
         "texto_original_para_embedding": texto_original,
         "varietal": extra_metadata.get("varietal"),
         "anada": extra_metadata.get("anada"),
         "presentacion": extra_metadata.get("presentacion_original"),
     }
+    if catalog_version:
+        payload["catalog_version"] = catalog_version
 
     client.upsert(
         collection_name=coleccion,
@@ -270,6 +301,57 @@ def index_catalog_item(tenant_id: str, item_data: Dict[str, Any], embedding: Lis
         ],
     )
     return True
+
+
+def verify_catalog_item_index(tenant_id: str, item_data: Dict[str, Any]) -> bool:
+    """Read back one catalog point and verify its tenant-scoped payload.
+
+    A successful ``upsert`` call alone is not enough evidence that retrieval is
+    available.  This check is deliberately fail-closed and does not fall back
+    to another tenant, collection or local embedding store.
+    """
+
+    client = get_qdrant_utils_client()
+    if not client:
+        return False
+
+    point_id = item_data.get("id")
+    catalog_version = str(item_data.get("catalog_version") or "").strip()
+    if point_id in (None, "") or not catalog_version:
+        return False
+    rubro = item_data.get("rubro") or "general"
+    collection_name = coleccion_catalogo_para_rubro(rubro)
+    qdrant_point_id = _catalog_qdrant_point_id(
+        point_id,
+        str(tenant_id),
+        catalog_version,
+    )
+    try:
+        records = client.retrieve(
+            collection_name=collection_name,
+            ids=[qdrant_point_id],
+            with_payload=["tenant_id", "db_id", "catalog_version"],
+            with_vectors=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Catalog retrieval verification failed error_type=%s",
+            type(exc).__name__,
+        )
+        return False
+
+    for record in records or []:
+        payload = getattr(record, "payload", None)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("tenant_id")) != str(tenant_id):
+            continue
+        if str(payload.get("db_id")) != str(point_id):
+            continue
+        if str(payload.get("catalog_version")) != catalog_version:
+            continue
+        return True
+    return False
 
 
 def search_catalog(tenant_id: str, query_vector: List[float], limit: int = 5, filters: Dict = None):

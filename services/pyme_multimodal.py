@@ -1906,7 +1906,8 @@ def handle_image_payload(
                     user_id=state.pyme_id,
                     pregunta=raw_name,
                     limite=1,
-                    coleccion=CATALOGO_PYME
+                    coleccion=CATALOGO_PYME,
+                    tenant_id=tenant_id,
                 )
                 if hits:
                     payload = getattr(hits[0], "payload", {})
