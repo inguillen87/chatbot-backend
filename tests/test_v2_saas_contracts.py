@@ -4502,14 +4502,24 @@ class V2SaasContractsTest(unittest.TestCase):
             return ticket
 
         def mutate(ticket, action, actor):
+            payload = {
+                "action": action,
+                "source_model": "MunicipioTicket",
+                "ticket_id": ticket.id,
+            }
+            headers = self._auth(actor)
+            if action == "handoff":
+                payload.update(
+                    channel="operator",
+                    reason="Derivacion operativa con ownership verificado",
+                )
+                headers["Idempotency-Key"] = (
+                    f"legacy-handoff-{ticket.id}-{actor.id}"
+                )
             return self.client.post(
                 "/api/v2/inbox/omnichannel/actions",
-                json={
-                    "action": action,
-                    "source_model": "MunicipioTicket",
-                    "ticket_id": ticket.id,
-                },
-                headers=self._auth(actor),
+                json=payload,
+                headers=headers,
             )
 
         unassigned = ticket_for("close", None)
@@ -4615,10 +4625,19 @@ class V2SaasContractsTest(unittest.TestCase):
         ):
             endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
             identity = {"source_model": source_model, "ticket_id": ticket.id}
+            request_payload = {
+                **identity,
+                "action": "handoff",
+                "channel": "operator",
+            }
+            request_headers = self._auth(operator_a)
+            if source_model == "MunicipioTicket":
+                request_payload["reason"] = "Transferencia operativa A a B"
+                request_headers["Idempotency-Key"] = "legacy-handoff-a-b-0001"
             requested = self.client.post(
                 endpoint,
-                json={**identity, "action": "handoff", "channel": "operator"},
-                headers=self._auth(operator_a),
+                json=request_payload,
+                headers=request_headers,
             )
             self.assertEqual(requested.status_code, 200, requested.get_json())
             accept_contract = next(
@@ -8514,10 +8533,22 @@ class V2SaasContractsTest(unittest.TestCase):
         db.session.commit()
 
         def post_action(action, user=None):
+            payload = {
+                "source_model": "MunicipioTicket",
+                "legacy_id": legacy.id,
+                "action": action,
+            }
+            headers = self._auth(user or self.owner)
+            if action == "handoff":
+                payload.update(
+                    channel="operator",
+                    reason="La persona solicita atencion humana",
+                )
+                headers["Idempotency-Key"] = "legacy-handoff-lifecycle-0001"
             return self.client.post(
                 "/api/v2/inbox/omnichannel/actions",
-                json={"source_model": "MunicipioTicket", "legacy_id": legacy.id, "action": action},
-                headers=self._auth(user or self.owner),
+                json=payload,
+                headers=headers,
             )
 
         detail = self.client.get(
@@ -8545,7 +8576,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(), 1)
 
         duplicate = post_action("handoff")
-        self.assertEqual(duplicate.status_code, 409, duplicate.get_json())
+        self.assertEqual(duplicate.status_code, 200, duplicate.get_json())
+        self.assertTrue(duplicate.get_json()["delivery"]["idempotency"]["replayed"])
         self.assertEqual(TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(), 1)
 
         accepted = post_action("accept_handoff", self.employee)

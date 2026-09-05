@@ -637,5 +637,5 @@ def test_migration_is_the_single_alembic_head():
     config = AlembicConfig(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260905_municipio_reply_v1"
+        "20260905_municipio_handoff_v1"
     ]

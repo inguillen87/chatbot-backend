@@ -30,6 +30,7 @@ from models import (
     MarketOrder,
     MessageTemplateRegistry,
     MunicipioTicket,
+    MunicipioTicketHandoffEvent,
     MunicipioTicketReplyEvent,
     Notification,
     NotificationTemplate,
@@ -5004,6 +5005,36 @@ def _handoff_action_contracts(
         "delivery_mode": "internal_event",
         "external_dispatch": False,
     }
+    is_municipio_claim = defaults.get("source_model") == "MunicipioTicket"
+    if is_municipio_claim and action_id == "handoff":
+        action["requires"] = ["channel", "reason", "idempotency_key_header"]
+        action["idempotency"] = {
+            "contract_version": "municipio_ticket.handoff_idempotency.v1",
+            "required_header": "Idempotency-Key",
+            "body_fallback": False,
+            "same_key_same_payload": "replay",
+            "same_key_different_payload": "conflict_409",
+            "raw_value_persisted": False,
+        }
+        action["ledger"] = {
+            "contract_version": MunicipioTicketHandoffEvent.CONTRACT_VERSION,
+            "normalized_event": True,
+            "projection_contract_version": (
+                MunicipioTicketHandoffEvent.PROJECTION_CONTRACT_VERSION
+            ),
+            "external_dispatch": False,
+        }
+    elif is_municipio_claim and action_id in {"accept_handoff", "resume_ai"}:
+        # These pre-existing lifecycle mutations still use the historical
+        # datos_extra/comment projection.  Do not advertise normalized or
+        # idempotent persistence until a dedicated follow-up event exists.
+        action["ledger"] = {
+            "contract_version": "municipio_ticket.handoff_follow_up.v1",
+            "normalized_event": False,
+            "mode": "legacy_projection_only",
+            "idempotency_supported": False,
+            "external_dispatch": False,
+        }
     if action_id == "accept_handoff":
         action["authorization"] = {
             "mode": "handoff_recipient",
@@ -6054,6 +6085,12 @@ def _legacy_claim_inbox_payload(
         session=db.session,
     )
     durable_latest_delivery = reply_deliveries[-1] if reply_deliveries else None
+    from services.municipio_ticket_handoff import list_handoff_events
+
+    handoff_events = list_handoff_events(
+        tenant_id=int(tenant.id),
+        ticket_id=int(ticket.id),
+    )
     reply_contract = _ticket_reply_contract(
         source_model="MunicipioTicket", ticket_id=ticket.id, channel=channel,
         actor=actor, assignee_id=ticket.asignado_a_id,
@@ -6109,6 +6146,16 @@ def _legacy_claim_inbox_payload(
         "allowed_actions": actions,
         "reply_contract": reply_contract,
         "reply_deliveries": reply_deliveries,
+        "handoff_events": handoff_events,
+        "handoff_contract": {
+            "contract_version": MunicipioTicketHandoffEvent.CONTRACT_VERSION,
+            "normalized_actions": ["handoff"],
+            "legacy_projection_only_actions": ["accept_handoff", "resume_ai"],
+            "projection_contract_version": (
+                MunicipioTicketHandoffEvent.PROJECTION_CONTRACT_VERSION
+            ),
+            "external_dispatch": False,
+        },
         "next_steps": _legacy_claim_next_steps(ticket),
         "source_metadata": {
             "origin": "municipio_ticket",
@@ -7434,6 +7481,120 @@ def _emit_legacy_claim_realtime_state(
     return emitted
 
 
+def _municipio_handoff_action_response(
+    *,
+    current_user: User,
+    tenant: TenantProfile,
+    ticket: MunicipioTicket,
+    payload: Mapping[str, Any],
+):
+    """Persist or replay one normalized municipal handoff request."""
+
+    from services.municipio_ticket_handoff import (
+        MunicipioTicketHandoffError,
+        request_human_handoff,
+    )
+
+    if "channel" in payload and "target_channel" in payload:
+        return _error_response(
+            "Usa un solo campo para el canal de handoff.",
+            400,
+            "handoff_channel_alias_conflict",
+            "send_channel_only",
+        )
+    raw_channel = (
+        payload.get("channel")
+        if "channel" in payload
+        else payload.get("target_channel")
+    )
+    try:
+        result = request_human_handoff(
+            ticket=ticket,
+            actor=current_user,
+            tenant_id=int(tenant.id),
+            raw_idempotency_key=request.headers.get("Idempotency-Key"),
+            raw_channel=raw_channel,
+            raw_reason=payload.get("reason"),
+        )
+    except MunicipioTicketHandoffError as exc:
+        db.session.rollback()
+        return _error_response(
+            exc.message,
+            exc.status_code,
+            exc.reason_code,
+            exc.action_hint,
+        )
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception(
+            "MunicipioTicket durable handoff failed ticket=%s tenant=%s: %s",
+            ticket.id,
+            tenant.id,
+            exc,
+        )
+        return _error_response(
+            "No se pudo guardar el handoff de forma durable",
+            503,
+            "handoff_durability_unavailable",
+            "retry_with_same_idempotency_key",
+        )
+
+    refreshed = result.ticket
+    live_chat_status = _tenant_inbox_live_chat_status(tenant)
+    ticket_payload = _legacy_claim_inbox_payload(
+        refreshed,
+        tenant=tenant,
+        live_chat_status=live_chat_status,
+        actor=current_user,
+    )
+    delivery = _inbox_action_delivery_payload(
+        action="handoff",
+        channel="crm",
+        timeline_updated=not result.replayed,
+        source_model="MunicipioTicket",
+        status="already_recorded" if result.replayed else "requested",
+        reason=(
+            "idempotent_replay_no_duplicate"
+            if result.replayed
+            else "human_handoff_durably_recorded"
+        ),
+        external_dispatch=False,
+    )
+    delivery["receipt_persisted"] = True
+    delivery["idempotency"] = {
+        "contract_version": "municipio_ticket.handoff_idempotency.v1",
+        "replayed": result.replayed,
+        "source": "Idempotency-Key",
+        "raw_value_persisted": False,
+    }
+    delivery["ledger"] = {
+        "contract_version": MunicipioTicketHandoffEvent.CONTRACT_VERSION,
+        "event_id": result.event.event_id,
+        "normalized_event": True,
+        "projection_updated": not result.replayed,
+        "external_dispatch": False,
+    }
+    delivery["realtime"] = {
+        "emitted": False,
+        "event": None,
+        "events": [],
+        "room": f"tenant_{tenant.id}",
+        "fallback": "http_polling",
+    }
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "inbox.omnichannel.action.v1",
+            "tenant": _tenant_ref(tenant),
+            "action": "handoff",
+            "handoff_event": result.event.to_event_dict(),
+            "delivery": delivery,
+            "live_chat": ticket_payload.get("live_chat"),
+            "ticket": ticket_payload,
+        }
+    )
+
+
 def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfile, ticket_id: int, payload: Mapping[str, Any]):
     ticket = (
         _legacy_claim_query_for_tenant(tenant)
@@ -7447,6 +7608,20 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
     if action not in {"claim", "assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen", "attach_file", "share_location", "send_form"}:
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
+
+    if action == "handoff":
+        ownership_error = _operational_ownership_error(
+            current_user,
+            ticket.asignado_a_id,
+        )
+        if ownership_error is not None:
+            return ownership_error
+        return _municipio_handoff_action_response(
+            current_user=current_user,
+            tenant=tenant,
+            ticket=ticket,
+            payload=payload,
+        )
 
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -7589,27 +7764,6 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 )
             )
             timeline_updated = True
-
-    elif action == "handoff":
-        channel = _normalize_handoff_channel(payload.get("channel") or payload.get("target_channel"))
-        if channel is None:
-            return _error_response(
-                "El canal de handoff no es valido",
-                400,
-                "invalid_handoff_channel",
-                "choose_supported_handoff_channel",
-            )
-        _apply_handoff_transition(
-            extra,
-            action="handoff",
-            actor=current_user,
-            occurred_at=now_iso,
-            channel=channel,
-            reason=payload.get("reason"),
-        )
-        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
-            ticket.estado = "en_proceso"
-        handoff_event_body = f"Handoff solicitado al equipo ({channel})"
 
     elif action == "accept_handoff":
         current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
@@ -8137,6 +8291,14 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             "expected_assignee_id": assignment_expected_id,
             "assignee_id": assignment_target_id,
             "replayed": assignment_idempotent,
+        }
+    if action in {"accept_handoff", "resume_ai"}:
+        delivery["ledger"] = {
+            "contract_version": "municipio_ticket.handoff_follow_up.v1",
+            "normalized_event": False,
+            "mode": "legacy_projection_only",
+            "idempotency_supported": False,
+            "external_dispatch": False,
         }
     reply_realtime_event = (
         "ticket_update"

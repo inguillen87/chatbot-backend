@@ -1084,6 +1084,165 @@ class MunicipioTicketReplyEvent(db.Model):
         }
 
 
+class MunicipioTicketHandoffEvent(db.Model):
+    """Immutable receipt for a human handoff requested on a municipal claim.
+
+    ``MunicipioTicket.datos_extra.handoff`` remains the backwards-compatible
+    read projection.  This normalized row is the authoritative, tenant-scoped
+    idempotency and audit boundary for the request itself.  Raw idempotency
+    keys are never persisted.  Deletion follows the aggregate's authorized
+    tenant/ticket retention lifecycle.
+    """
+
+    __tablename__ = "municipio_ticket_handoff_event"
+
+    CONTRACT_VERSION = "municipio_ticket.handoff_event.v1"
+    PROJECTION_CONTRACT_VERSION = "inbox.handoff.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_model = db.Column(
+        db.String(32),
+        nullable=False,
+        default="MunicipioTicket",
+        server_default="MunicipioTicket",
+    )
+    ticket_id = db.Column(
+        db.Integer,
+        db.ForeignKey("municipio_ticket.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    comment_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ticket_comentario.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_id = db.Column(db.String(64), nullable=False)
+    action = db.Column(
+        db.String(24), nullable=False, default="handoff", server_default="handoff"
+    )
+    status = db.Column(
+        db.String(24), nullable=False, default="requested", server_default="requested"
+    )
+    channel = db.Column(db.String(32), nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    actor_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    previous_assignee_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_digest = db.Column(db.String(64), nullable=False)
+    projection_contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=PROJECTION_CONTRACT_VERSION,
+        server_default=PROJECTION_CONTRACT_VERSION,
+    )
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "event_id",
+            name="uq_municipio_handoff_tenant_event",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key_hash",
+            name="uq_municipio_handoff_tenant_idempotency",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "comment_id",
+            name="uq_municipio_handoff_tenant_comment",
+        ),
+        db.CheckConstraint(
+            "source_model = 'MunicipioTicket'",
+            name="ck_municipio_handoff_source_model",
+        ),
+        db.CheckConstraint(
+            "action = 'handoff' AND status = 'requested'",
+            name="ck_municipio_handoff_action_status",
+        ),
+        db.CheckConstraint(
+            "channel IN ('operator', 'live_chat', 'phone')",
+            name="ck_municipio_handoff_channel",
+        ),
+        db.CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_municipio_handoff_reason_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(reason) <= 500",
+            name="ck_municipio_handoff_reason_bounded",
+        ),
+        db.CheckConstraint(
+            "length(trim(event_id)) > 0",
+            name="ck_municipio_handoff_event_id_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(idempotency_key_hash) = 64 AND length(request_digest) = 64",
+            name="ck_municipio_handoff_digests",
+        ),
+        db.CheckConstraint(
+            "projection_contract_version = 'inbox.handoff.v1' AND "
+            "contract_version = 'municipio_ticket.handoff_event.v1'",
+            name="ck_municipio_handoff_contract_versions",
+        ),
+        db.Index(
+            "ix_municipio_handoff_ticket",
+            "tenant_id",
+            "ticket_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    def to_event_dict(self) -> dict:
+        return {
+            "id": self.event_id,
+            "type": "human_handoff",
+            "origin": "admin_panel",
+            "source_model": self.source_model,
+            "ticket_id": self.ticket_id,
+            "action": self.action,
+            "status": self.status,
+            "channel": self.channel,
+            "reason": self.reason,
+            "created_at": (
+                datetime_to_iso_utc(self.created_at) if self.created_at else None
+            ),
+            "actor": {"id": self.actor_user_id, "type": "operator"},
+            "receipt": {
+                "persisted": True,
+                "raw_idempotency_key_persisted": False,
+            },
+            "contract_version": self.contract_version,
+            "projection_contract_version": self.projection_contract_version,
+        }
+
+
 class InboxTicketArtifact(db.Model):
     """Tenant-scoped CRM artifact attached to an exact inbox ticket identity.
 
