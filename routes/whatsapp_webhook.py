@@ -9415,6 +9415,14 @@ def twilio_whatsapp_status():
     tenant_ticket_reply_event_id = str(
         request.args.get("tenant_ticket_reply_event_id") or ""
     ).strip()
+    municipio_ticket_reply_event_id = str(
+        request.args.get("municipio_ticket_reply_event_id") or ""
+    ).strip()
+    if tenant_ticket_reply_event_id and municipio_ticket_reply_event_id:
+        current_app.logger.warning(
+            "[TWILIO_WHATSAPP_STATUS] Reply callback has conflicting aggregate scopes"
+        )
+        return "Forbidden", 403
     if tenant_ticket_reply_event_id:
         if (
             not tenant
@@ -9479,6 +9487,74 @@ def twilio_whatsapp_status():
             db.session.rollback()
             current_app.logger.warning(
                 "[TWILIO_WHATSAPP_STATUS] TenantTicket reply reconciliation failed "
+                "tenant_id=%s sender_id=%s error_type=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+                type(exc).__name__,
+            )
+            return "RETRY", 503
+    if municipio_ticket_reply_event_id:
+        if (
+            not tenant
+            or not getattr(tenant, "id", None)
+            or not provider_sender
+            or not getattr(provider_sender, "id", None)
+            or not persisted_status_event
+            or not getattr(persisted_status_event, "id", None)
+        ):
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply callback lacks signed scope"
+            )
+            return "Forbidden", 403
+        try:
+            from services.municipio_ticket_reply_delivery import (
+                MunicipioTicketReplyProviderMessageCollision,
+                emit_delivery_invalidation,
+                reconcile_provider_callback,
+            )
+
+            reconciled_reply = reconcile_provider_callback(
+                tenant_id=int(tenant.id),
+                reply_event_record_id=municipio_ticket_reply_event_id,
+                provider_message_id=message_sid,
+                provider_status=message_status,
+                provider_sender_id=int(provider_sender.id),
+                delivery_event_id=int(persisted_status_event.id),
+                error_code=error_code,
+            )
+            if reconciled_reply is None:
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply callback scope mismatch "
+                    "tenant_id=%s sender_id=%s",
+                    tenant.id,
+                    provider_sender.id,
+                )
+                return "Forbidden", 403
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception as exc:  # HTTP polling remains authoritative.
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply realtime invalidation failed "
+                    "tenant_id=%s error_type=%s",
+                    tenant.id,
+                    type(exc).__name__,
+                )
+        except MunicipioTicketReplyProviderMessageCollision:
+            current_app.logger.error(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply provider message "
+                "collision quarantined tenant_id=%s sender_id=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+            )
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception:  # HTTP polling remains authoritative.
+                pass
+            return "OK", 200
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply reconciliation failed "
                 "tenant_id=%s sender_id=%s error_type=%s",
                 getattr(tenant, "id", None),
                 getattr(provider_sender, "id", None),

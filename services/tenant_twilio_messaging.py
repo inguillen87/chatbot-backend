@@ -30,6 +30,7 @@ from twilio.rest import Client
 
 from models import (
     MessageTemplateRegistry,
+    MunicipioTicketReplyEvent,
     Notification,
     NotificationAttempt,
     ProviderConnection,
@@ -60,6 +61,7 @@ _CONTENT_VARIABLE_KEY_RE = re.compile(r"^[1-9][0-9]{0,2}$")
 _TEMPLATE_VARIABLE_RE = re.compile(r"{{\s*([1-9][0-9]{0,2})\s*}}")
 _STATUS_CALLBACK_ATTEMPT_PARAM = "notification_attempt_id"
 _STATUS_CALLBACK_TENANT_REPLY_PARAM = "tenant_ticket_reply_event_id"
+_STATUS_CALLBACK_MUNICIPIO_REPLY_PARAM = "municipio_ticket_reply_event_id"
 _MAX_CALLBACK_URL_LENGTH = 2048
 _MAX_CONTENT_VARIABLES = 100
 _MAX_CONTENT_VARIABLE_LENGTH = 1000
@@ -552,6 +554,7 @@ def _status_callback_for_message(
     sender: ProviderSender,
     notification_attempt_id: Any,
     tenant_ticket_reply_event_id: Any,
+    municipio_ticket_reply_event_id: Any,
     recipient: str,
     session,
 ) -> tuple[str | None, str | None]:
@@ -564,7 +567,16 @@ def _status_callback_for_message(
 
     canonical_attempt_id: str | None = None
     canonical_reply_event_id: int | None = None
-    if notification_attempt_id is not None and tenant_ticket_reply_event_id is not None:
+    canonical_municipio_reply_event_id: int | None = None
+    scoped_callback_ids = sum(
+        value is not None
+        for value in (
+            notification_attempt_id,
+            tenant_ticket_reply_event_id,
+            municipio_ticket_reply_event_id,
+        )
+    )
+    if scoped_callback_ids > 1:
         return None, "status_callback_scope_conflict"
     if notification_attempt_id is not None:
         canonical_attempt_id = _canonical_notification_attempt_id(
@@ -632,6 +644,45 @@ def _status_callback_for_message(
         ):
             return None, "tenant_ticket_reply_event_scope_mismatch"
 
+    if municipio_ticket_reply_event_id is not None:
+        canonical_municipio_reply_event_id = (
+            _canonical_tenant_ticket_reply_event_id(
+                municipio_ticket_reply_event_id
+            )
+        )
+        if canonical_municipio_reply_event_id is None or callback is None:
+            return None, (
+                "municipio_ticket_reply_event_scope_mismatch"
+                if canonical_municipio_reply_event_id is None
+                else f"{channel}_status_callback_missing"
+            )
+        municipio_reply_event = (
+            session.query(MunicipioTicketReplyEvent)
+            .filter_by(
+                id=canonical_municipio_reply_event_id,
+                tenant_id=int(tenant_id),
+                source_model="MunicipioTicket",
+            )
+            .one_or_none()
+        )
+        pinned_recipient = _normalized_e164(
+            getattr(municipio_reply_event, "recipient_phone", None)
+        )
+        pinned_sender_id = getattr(
+            municipio_reply_event,
+            "whatsapp_provider_sender_id",
+            None,
+        )
+        if (
+            channel != "whatsapp"
+            or municipio_reply_event is None
+            or not pinned_recipient
+            or not hmac.compare_digest(pinned_recipient, recipient)
+            or pinned_sender_id is None
+            or int(pinned_sender_id) != int(sender.id)
+        ):
+            return None, "municipio_ticket_reply_event_scope_mismatch"
+
     if callback is None:
         return None, None
 
@@ -645,11 +696,20 @@ def _status_callback_for_message(
     except ValueError:
         return None, f"{channel}_status_callback_invalid"
 
+    reserved_params = {
+        _STATUS_CALLBACK_ATTEMPT_PARAM,
+        _STATUS_CALLBACK_TENANT_REPLY_PARAM,
+        _STATUS_CALLBACK_MUNICIPIO_REPLY_PARAM,
+    }
     reserved_present = any(
-        key in {_STATUS_CALLBACK_ATTEMPT_PARAM, _STATUS_CALLBACK_TENANT_REPLY_PARAM}
+        key in reserved_params
         for key, _value in query_items
     )
-    if canonical_attempt_id is None and canonical_reply_event_id is None:
+    if (
+        canonical_attempt_id is None
+        and canonical_reply_event_id is None
+        and canonical_municipio_reply_event_id is None
+    ):
         if reserved_present:
             return None, f"{channel}_status_callback_invalid"
         return callback, None
@@ -657,12 +717,19 @@ def _status_callback_for_message(
     query_items = [
         (key, value)
         for key, value in query_items
-        if key not in {_STATUS_CALLBACK_ATTEMPT_PARAM, _STATUS_CALLBACK_TENANT_REPLY_PARAM}
+        if key not in reserved_params
     ]
     if canonical_attempt_id is not None:
         query_items.append((_STATUS_CALLBACK_ATTEMPT_PARAM, canonical_attempt_id))
     if canonical_reply_event_id is not None:
         query_items.append((_STATUS_CALLBACK_TENANT_REPLY_PARAM, str(canonical_reply_event_id)))
+    if canonical_municipio_reply_event_id is not None:
+        query_items.append(
+            (
+                _STATUS_CALLBACK_MUNICIPIO_REPLY_PARAM,
+                str(canonical_municipio_reply_event_id),
+            )
+        )
     derived = urlunparse(parsed._replace(query=urlencode(query_items)))
     validated = _valid_callback_url(derived)
     if validated is None:
@@ -683,6 +750,7 @@ def prepare_bound_tenant_twilio_message(
     expected_template_fingerprint: str | None = None,
     notification_attempt_id: str | None = None,
     tenant_ticket_reply_event_id: int | None = None,
+    municipio_ticket_reply_event_id: int | None = None,
     session=None,
 ) -> TenantTwilioMessagePreflight:
     """Validate tenant scope and return an immutable Twilio provider call.
@@ -842,6 +910,7 @@ def prepare_bound_tenant_twilio_message(
         sender=sender,
         notification_attempt_id=notification_attempt_id,
         tenant_ticket_reply_event_id=tenant_ticket_reply_event_id,
+        municipio_ticket_reply_event_id=municipio_ticket_reply_event_id,
         recipient=normalized_recipient,
         session=effect_session,
     )

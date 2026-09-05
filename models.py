@@ -918,6 +918,172 @@ class TenantTicketReplyEvent(db.Model):
         }
 
 
+class MunicipioTicketReplyEvent(db.Model):
+    """Immutable WhatsApp delivery source for one municipal operator reply.
+
+    Municipal claims keep their visible conversation in ``TicketComentario``.
+    This row pins the exact tenant, legacy model, ticket, comment, operator,
+    recipient, sender and policy snapshot used by the durable outbox worker so
+    delayed delivery cannot be redirected by mutable ticket/profile data.
+    """
+
+    __tablename__ = "municipio_ticket_reply_event"
+
+    CONTRACT_VERSION = "municipio_ticket.reply_event.v1"
+    DELIVERY_CONTRACT_VERSION = "municipio_ticket.reply_delivery.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_model = db.Column(
+        db.String(32),
+        nullable=False,
+        default="MunicipioTicket",
+        server_default="MunicipioTicket",
+    )
+    ticket_id = db.Column(
+        db.Integer,
+        db.ForeignKey("municipio_ticket.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    comment_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ticket_comentario.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_id = db.Column(db.String(64), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    visibility = db.Column(
+        db.String(16),
+        nullable=False,
+        default="public",
+        server_default="public",
+    )
+    actor_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    actor_name = db.Column(db.String(255), nullable=False)
+    actor_role = db.Column(db.String(32), nullable=False)
+    recipient_phone = db.Column(db.String(64), nullable=False)
+    whatsapp_template_registry_id = db.Column(
+        db.Integer,
+        db.ForeignKey("message_template_registry.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_template_variables = db.Column(JSONType, nullable=True)
+    whatsapp_policy_snapshot = db.Column(JSONType, nullable=False)
+    whatsapp_delivery_status = db.Column(
+        db.String(24), nullable=False, default="saved", server_default="saved"
+    )
+    whatsapp_provider_message_id = db.Column(db.String(180), nullable=True)
+    whatsapp_provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    whatsapp_provider_status = db.Column(db.String(80), nullable=True)
+    whatsapp_error_code = db.Column(db.String(80), nullable=True)
+    whatsapp_status_event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("messaging_event_ledger.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_status_updated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_provider_accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_delivered_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_read_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_failed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "event_id",
+            name="uq_municipio_reply_tenant_event",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "comment_id",
+            name="uq_municipio_reply_tenant_comment",
+        ),
+        db.CheckConstraint(
+            "source_model = 'MunicipioTicket'",
+            name="ck_municipio_reply_source_model",
+        ),
+        db.CheckConstraint(
+            "visibility = 'public'",
+            name="ck_municipio_reply_public_visibility",
+        ),
+        db.CheckConstraint(
+            "length(trim(body)) > 0",
+            name="ck_municipio_reply_body_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(trim(event_id)) > 0",
+            name="ck_municipio_reply_event_id_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(trim(recipient_phone)) > 0",
+            name="ck_municipio_reply_recipient_nonempty",
+        ),
+        db.CheckConstraint(
+            "whatsapp_delivery_status IN ('saved', 'queued', "
+            "'uncertain', 'provider_accepted', 'delivered', 'read', 'failed')",
+            name="ck_municipio_reply_wa_delivery_status",
+        ),
+        db.Index(
+            "ix_municipio_reply_ticket",
+            "tenant_id",
+            "ticket_id",
+            "created_at",
+        ),
+        db.Index(
+            "ix_municipio_reply_wa_provider_message",
+            "tenant_id",
+            "whatsapp_provider_message_id",
+            unique=True,
+        ),
+    )
+
+    def to_event_dict(self) -> dict:
+        return {
+            "id": self.event_id,
+            "origin": "admin_panel",
+            "action": "reply",
+            "body": self.body,
+            "content_source": (
+                "approved_whatsapp_template"
+                if self.whatsapp_template_registry_id
+                else "operator_free_form"
+            ),
+            "visibility": self.visibility,
+            "created_at": (
+                datetime_to_iso_utc(self.created_at) if self.created_at else None
+            ),
+            "actor": {
+                "id": self.actor_user_id,
+                "name": self.actor_name,
+                "role": self.actor_role,
+            },
+        }
+
+
 class InboxTicketArtifact(db.Model):
     """Tenant-scoped CRM artifact attached to an exact inbox ticket identity.
 

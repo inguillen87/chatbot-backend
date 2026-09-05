@@ -30,6 +30,7 @@ from models import (
     MarketOrder,
     MessageTemplateRegistry,
     MunicipioTicket,
+    MunicipioTicketReplyEvent,
     Notification,
     NotificationTemplate,
     PublicSurvey,
@@ -5396,7 +5397,7 @@ def _ticket_reply_contract(
     phone_present = bool(normalized_phone)
     email_present = bool(str(contact.get("email") or "").strip())
     sender_reason_code = None
-    if source_model == "TenantTicket":
+    if source_model in {"TenantTicket", "MunicipioTicket"}:
         from services.tenant_twilio_messaging import (
             resolve_tenant_twilio_sender_snapshot,
         )
@@ -5411,9 +5412,9 @@ def _ticket_reply_contract(
         )
         sender_reason_code = sender_snapshot.reason_code
     else:
-        sender_present = bool(_tenant_whatsapp_sender(tenant))
+        sender_present = False
     tenant_outbox_enabled = True
-    if source_model == "TenantTicket":
+    if source_model in {"TenantTicket", "MunicipioTicket"}:
         from services.domain_effect_gate import resolve_domain_effect_outbox_policy
 
         tenant_outbox_enabled = resolve_domain_effect_outbox_policy(
@@ -5424,7 +5425,7 @@ def _ticket_reply_contract(
         and phone_present
         and sender_present
         and tenant_outbox_enabled
-        and source_model == "TenantTicket"
+        and source_model in {"TenantTicket", "MunicipioTicket"}
     )
     whatsapp_reason_code = None
     if not whatsapp_enabled:
@@ -5435,6 +5436,8 @@ def _ticket_reply_contract(
                 "contact_phone_invalid" if raw_phone else "contact_phone_missing"
             )
         elif source_model == "MunicipioTicket":
+            # Preserve the stable legacy surface code.  The nested municipal
+            # WhatsApp contract exposes the precise readiness failure.
             whatsapp_reason_code = "legacy_whatsapp_enterprise_cutover_required"
         elif not sender_present:
             whatsapp_reason_code = (
@@ -5858,14 +5861,40 @@ def _legacy_claim_allowed_actions(
         assignee_id=ticket.asignado_a_id,
         payload_defaults=defaults,
     )
+    reply_readiness = _ticket_reply_contract(
+        source_model="MunicipioTicket",
+        ticket_id=int(ticket.id),
+        channel=ticket.canal_ingreso,
+        actor=actor,
+        assignee_id=ticket.asignado_a_id,
+        closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        contact={"phone": ticket.telefono_vecino, "email": ticket.email_vecino},
+        tenant=tenant,
+    )
+    whatsapp_readiness = next(
+        (
+            item
+            for item in reply_readiness.get("delivery_channels", [])
+            if item.get("id") == "whatsapp"
+        ),
+        {},
+    )
+    whatsapp_ready = bool(whatsapp_readiness.get("enabled"))
     reply_action.update(
         {
-            "delivery_mode": "timeline_only",
-            "external_dispatch": False,
-            "external_channel_reason_code": "legacy_whatsapp_enterprise_cutover_required",
+            "delivery_mode": "durable_queue" if whatsapp_ready else "timeline_only",
+            "external_dispatch": whatsapp_ready,
+            # Keep the legacy action contract stable for older frontends; the
+            # precise readiness failure remains available in reply_contract.
+            "external_channel_reason_code": (
+                None
+                if whatsapp_ready
+                else "legacy_whatsapp_enterprise_cutover_required"
+            ),
             "operator_message": (
-                "La respuesta se registra en el CRM y el seguimiento publico. "
-                "El envio por WhatsApp requiere migrar el caso al flujo enterprise."
+                "La respuesta se registra y se entrega por la cola WhatsApp auditable."
+                if whatsapp_ready
+                else "La respuesta puede registrarse en CRM; revisá la habilitación de WhatsApp."
             ),
         }
     )
@@ -6015,12 +6044,26 @@ def _legacy_claim_inbox_payload(
 
     delivery_history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
     latest_delivery = extra.get("reply_delivery_latest_evidence") if isinstance(extra.get("reply_delivery_latest_evidence"), Mapping) else None
+    from services.municipio_ticket_reply_delivery import (
+        list_ticket_reply_deliveries as list_municipio_ticket_reply_deliveries,
+    )
+
+    reply_deliveries = list_municipio_ticket_reply_deliveries(
+        tenant_id=int(tenant.id),
+        ticket_id=int(ticket.id),
+        session=db.session,
+    )
+    durable_latest_delivery = reply_deliveries[-1] if reply_deliveries else None
     reply_contract = _ticket_reply_contract(
         source_model="MunicipioTicket", ticket_id=ticket.id, channel=channel,
         actor=actor, assignee_id=ticket.asignado_a_id,
         closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
         contact={"phone": ticket.telefono_vecino, "email": ticket.email_vecino},
-        tenant=tenant, latest_delivery=latest_delivery or (delivery_history[-1] if delivery_history else None),
+        tenant=tenant, latest_delivery=durable_latest_delivery or latest_delivery or (delivery_history[-1] if delivery_history else None),
+    )
+    reply_contract["whatsapp"] = _municipio_ticket_whatsapp_reply_contract(
+        ticket,
+        tenant,
     )
     return {
         "id": f"municipio:{ticket.id}",
@@ -6065,6 +6108,7 @@ def _legacy_claim_inbox_payload(
         "actions": [item["id"] for item in actions],
         "allowed_actions": actions,
         "reply_contract": reply_contract,
+        "reply_deliveries": reply_deliveries,
         "next_steps": _legacy_claim_next_steps(ticket),
         "source_metadata": {
             "origin": "municipio_ticket",
@@ -6093,6 +6137,91 @@ def _legacy_claim_inbox_payload(
             "uses_legacy_bridge": True,
             "avatar_policy": "consented_real_image_or_deterministic_fallback",
         },
+    }
+
+
+def _municipio_ticket_whatsapp_reply_contract(
+    ticket: MunicipioTicket,
+    tenant: TenantProfile,
+) -> dict[str, Any]:
+    from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+    from services.tenant_ticket_reply_delivery import (
+        approved_whatsapp_templates,
+        whatsapp_service_window,
+    )
+    from services.tenant_twilio_messaging import (
+        resolve_tenant_twilio_sender_snapshot,
+    )
+    from utils.validators import normalize_phone
+
+    raw_recipient = str(ticket.telefono_vecino or "").strip()
+    recipient = normalize_phone(raw_recipient)
+    sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+        tenant_id=int(tenant.id),
+        channel="whatsapp",
+        session=db.session,
+    )
+    sender_ready = bool(
+        sender_snapshot.sender is not None and not sender_snapshot.reason_code
+    )
+    if sender_ready:
+        service_window = whatsapp_service_window(
+            tenant_id=int(tenant.id),
+            provider_sender_id=int(sender_snapshot.sender.id),
+            recipient=recipient,
+            session=db.session,
+        )
+    else:
+        service_window = {
+            "contract_version": "whatsapp.service_window.v1",
+            "status": "unknown",
+            "last_inbound_at": None,
+            "expires_at": None,
+            "free_form_allowed": False,
+            "template_required": True,
+            "sender_bound": True,
+            "authoritative_source": "provider_sender_unavailable",
+        }
+    outbox_enabled = resolve_domain_effect_outbox_policy(
+        current_app.config,
+        tenant_id=int(tenant.id),
+    ).enabled
+    external_dispatch_enabled = bool(outbox_enabled and sender_ready and recipient)
+    disabled_reason = None
+    if not recipient:
+        disabled_reason = (
+            "contact_phone_invalid" if raw_recipient else "contact_phone_missing"
+        )
+    elif not sender_ready:
+        disabled_reason = (
+            sender_snapshot.reason_code
+            or "whatsapp_tenant_sender_resolution_invalid"
+        )
+    elif not outbox_enabled:
+        disabled_reason = "whatsapp_outbox_cutover_required"
+    return {
+        "contract_version": "inbox.municipio_ticket_reply.v1",
+        "source_model": "MunicipioTicket",
+        "channel": "whatsapp",
+        "recipient_available": bool(recipient),
+        "sender_available": sender_ready,
+        "service_window": service_window,
+        "free_form_allowed": bool(
+            external_dispatch_enabled and service_window["free_form_allowed"]
+        ),
+        "template_required": bool(service_window["template_required"]),
+        "approved_templates": approved_whatsapp_templates(
+            tenant_id=int(tenant.id),
+            session=db.session,
+        ),
+        "request_fields": {
+            "template_registry_id": "positive_integer_or_null",
+            "template_variables": "numbered_string_map_or_null",
+        },
+        "dispatch_mode": "durable_outbox" if outbox_enabled else "crm_only",
+        "external_dispatch_enabled": external_dispatch_enabled,
+        "disabled_reason": disabled_reason,
+        "final_delivery_evidence": "signed_provider_status_callback",
     }
 
 
@@ -7342,6 +7471,8 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     reply_outbox_external_effect_count = 0
     reply_replayed = False
     reply_idempotency_source: str | None = None
+    reply_event: dict[str, Any] | None = None
+    reply_record: MunicipioTicketReplyEvent | None = None
     claim_idempotent = False
     assignment_idempotent = False
     assignment_expected_id: int | None = None
@@ -7525,9 +7656,9 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     elif action == "reply":
         if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
             return _error_response("El reclamo esta cerrado. Reabrilo antes de responder.", 403, "ticket_closed", "reopen_ticket")
-        body = str(payload.get("body") or payload.get("message") or payload.get("comentario") or "").strip()
-        if not body:
-            return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
+        body, body_error = _omnichannel_reply_body(payload)
+        if body_error is not None:
+            return body_error
         raw_visibility = payload["visibility"] if "visibility" in payload else "public"
         if not isinstance(raw_visibility, str):
             return _error_response(
@@ -7558,13 +7689,13 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                     else "review_reply_delivery_fields"
                 ),
             )
-        if requested_channels == ["whatsapp"]:
-            # The legacy MunicipioTicket delivery path cannot yet pin the
-            # immutable recipient/template snapshot required by the enterprise
-            # 24-hour-window and sender-bound WhatsApp policy.  Keep the reply
-            # durable in CRM/realtime, but fail closed before provider I/O.
-            legacy_whatsapp_cutover_blocked = True
-            requested_channels = []
+        if "template_variables" in payload and "content_variables" in payload:
+            return _error_response(
+                "Usá un solo campo para las variables de la plantilla.",
+                400,
+                "whatsapp_template_variable_alias_conflict",
+                "send_template_variables_only",
+            )
         reply_idempotency_key, reply_idempotency_source, idempotency_error = (
             _omnichannel_reply_idempotency_identity(payload, tenant_id=tenant.id)
         )
@@ -7585,62 +7716,151 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             tenant_id=tenant.id,
         )
         reply_outbox_enabled = outbox_policy.enabled
-        existing_receipt = TicketDomainEffectReceipt.query.filter_by(
-            tenant_id=tenant.id,
-            idempotency_key=reply_idempotency_key,
-        ).one_or_none()
-        existing_comment = None
-        if (
-            existing_receipt is not None
-            and existing_receipt.effect_kind == "ticket.comment.municipio"
-            and existing_receipt.resource_type == "ticket_comentario"
-        ):
-            existing_comment = db.session.get(
-                TicketComentario,
-                existing_receipt.resource_id,
-            )
-
-        current_status = str(ticket.estado or "")
-        target_status = (
-            current_status
-            if reply_visibility == "internal"
-            else (
-                "en_proceso"
-                if current_status.lower() in {"nuevo", "open"}
-                else current_status
-            )
+        # Preserve the historical compatibility contract for callers that do
+        # not declare a delivery target.  The secure provider path is opt-in
+        # through an explicit channel (or ``send_external: true``), which lets
+        # the v2 CRM adopt the durable municipal reply contract without
+        # silently changing older timeline-only clients.
+        explicit_delivery_target = bool(
+            "delivery_channels" in payload
+            or "channels" in payload
+            or payload.get("send_external") is True
         )
-        comment_status = (
-            str(existing_comment.estado_ticket or target_status)
-            if existing_comment is not None
-            else target_status
+        if not explicit_delivery_target and requested_channels == ["whatsapp"]:
+            # Preserve the historical timeline-only behaviour for older
+            # clients that inferred WhatsApp from the ticket source without
+            # explicitly requesting external delivery.  New CRM clients opt
+            # into the enterprise outbox contract by declaring the channel.
+            legacy_whatsapp_cutover_blocked = True
+            requested_channels = []
+        enterprise_whatsapp_reply = bool(
+            explicit_delivery_target and requested_channels == ["whatsapp"]
         )
-        if existing_receipt is None:
-            ticket.estado = target_status
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyDeliveryError,
+        )
 
         try:
-            recent_comment = ServicioTickets().crear_comentario(
-                ticket.id,
-                "municipio",
-                {
-                    "comentario": body,
-                    "user_id": current_user.id,
-                    "es_admin": True,
-                    "origen": (
-                        "internal"
-                        if reply_visibility == "internal"
-                        else "admin_panel"
-                    ),
-                    "estado_ticket": comment_status,
-                    "emit_notifications": bool(requested_channels),
-                    "emit_socket": True,
-                    "requested_channels": requested_channels,
-                },
-                idempotency_key=reply_idempotency_key,
-                idempotency_tenant_id=tenant.id,
-                legacy_effects_owned_by_caller=True,
-                reply_actor=current_user,
-            )
+            if enterprise_whatsapp_reply:
+                reply_result = ServicioTickets().crear_respuesta_municipio(
+                    ticket,
+                    {
+                        "body": body,
+                        "visibility": reply_visibility,
+                        "actor_user_id": current_user.id,
+                        "actor_name": current_user.name,
+                        "actor_role": current_user.rol,
+                        "requested_channels": requested_channels,
+                        "template_registry_id": payload.get(
+                            "template_registry_id"
+                        ),
+                        "template_variables": (
+                            payload.get("template_variables")
+                            if "template_variables" in payload
+                            else payload.get("content_variables")
+                        ),
+                        "emit_socket": True,
+                    },
+                    idempotency_key=reply_idempotency_key,
+                    idempotency_tenant_id=tenant.id,
+                    reply_actor=current_user,
+                )
+                ticket = reply_result["ticket"]
+                recent_comment = reply_result["comment"]
+                reply_event = dict(reply_result["event"])
+                reply_record = reply_result.get("reply_record")
+                reply_replayed = bool(reply_result.get("replayed"))
+                timeline_updated = not reply_replayed
+                aggregate_ref = str(reply_result.get("aggregate_ref") or "")
+                if aggregate_ref:
+                    reply_outbox_effects = DomainEffectOutbox.query.filter_by(
+                        tenant_id=tenant.id,
+                        aggregate_type="municipio_ticket_reply",
+                        aggregate_ref=aggregate_ref,
+                    ).all()
+                    reply_outbox_effect_count = len(reply_outbox_effects)
+                    reply_outbox_external_effect_count = sum(
+                        1
+                        for effect in reply_outbox_effects
+                        if effect.channel != "realtime"
+                    )
+            else:
+                existing_receipt = TicketDomainEffectReceipt.query.filter_by(
+                    tenant_id=tenant.id,
+                    idempotency_key=reply_idempotency_key,
+                ).one_or_none()
+                existing_comment = None
+                if (
+                    existing_receipt is not None
+                    and existing_receipt.effect_kind == "ticket.comment.municipio"
+                    and existing_receipt.resource_type == "ticket_comentario"
+                ):
+                    existing_comment = db.session.get(
+                        TicketComentario,
+                        existing_receipt.resource_id,
+                    )
+
+                current_status = str(ticket.estado or "")
+                target_status = (
+                    current_status
+                    if reply_visibility == "internal"
+                    else (
+                        "en_proceso"
+                        if current_status.lower() in {"nuevo", "open"}
+                        else current_status
+                    )
+                )
+                comment_status = (
+                    str(existing_comment.estado_ticket or target_status)
+                    if existing_comment is not None
+                    else target_status
+                )
+                if existing_receipt is None:
+                    ticket.estado = target_status
+                recent_comment = ServicioTickets().crear_comentario(
+                    ticket.id,
+                    "municipio",
+                    {
+                        "comentario": body,
+                        "user_id": current_user.id,
+                        "es_admin": True,
+                        "origen": (
+                            "internal"
+                            if reply_visibility == "internal"
+                            else "admin_panel"
+                        ),
+                        "estado_ticket": comment_status,
+                        "emit_notifications": bool(requested_channels),
+                        "emit_socket": True,
+                        "requested_channels": requested_channels,
+                    },
+                    idempotency_key=reply_idempotency_key,
+                    idempotency_tenant_id=tenant.id,
+                    legacy_effects_owned_by_caller=True,
+                    reply_actor=current_user,
+                )
+                if recent_comment is None:
+                    db.session.rollback()
+                    return _error_response(
+                        "No se pudo guardar la respuesta",
+                        500,
+                        "reply_persistence_failed",
+                        "retry_with_same_idempotency_key",
+                    )
+                reply_replayed = existing_receipt is not None
+                timeline_updated = not reply_replayed
+                if reply_outbox_enabled:
+                    reply_outbox_effects = DomainEffectOutbox.query.filter_by(
+                        tenant_id=tenant.id,
+                        aggregate_type="municipio_ticket_comment",
+                        aggregate_ref=str(recent_comment.id),
+                    ).all()
+                    reply_outbox_effect_count = len(reply_outbox_effects)
+                    reply_outbox_external_effect_count = sum(
+                        1
+                        for effect in reply_outbox_effects
+                        if effect.channel != "realtime"
+                    )
         except TicketReplyOwnershipError as exc:
             db.session.rollback()
             return _error_response(
@@ -7677,25 +7897,47 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 "reply_idempotency_replay_unavailable",
                 "refresh_inbox",
             )
-        if recent_comment is None:
+        except TenantTicketReplyDeliveryError as exc:
             db.session.rollback()
+            is_window_error = exc.code == "whatsapp_template_required_outside_24h"
+            is_template_body_mismatch = exc.code == "whatsapp_template_body_mismatch"
             return _error_response(
-                "No se pudo guardar la respuesta",
-                500,
-                "reply_persistence_failed",
-                "retry_with_same_idempotency_key",
+                (
+                    "La ventana de atención de 24 horas está cerrada. "
+                    "Seleccioná una plantilla aprobada para responder por WhatsApp."
+                    if is_window_error
+                    else (
+                        "El texto visible no coincide con la plantilla aprobada. "
+                        "Volvé a generar la vista previa antes de enviarla."
+                        if is_template_body_mismatch
+                        else "La configuración de WhatsApp, la plantilla o sus variables no son válidas."
+                    )
+                ),
+                409 if is_window_error or is_template_body_mismatch else 400,
+                exc.code,
+                "choose_approved_template"
+                if is_window_error
+                else (
+                    "refresh_approved_template_preview"
+                    if is_template_body_mismatch
+                    else "review_whatsapp_delivery_fields"
+                ),
             )
-        reply_replayed = existing_receipt is not None
-        timeline_updated = not reply_replayed
-        if reply_outbox_enabled:
-            reply_outbox_effects = DomainEffectOutbox.query.filter_by(
-                tenant_id=tenant.id,
-                aggregate_type="municipio_ticket_comment",
-                aggregate_ref=str(recent_comment.id),
-            ).all()
-            reply_outbox_effect_count = len(reply_outbox_effects)
-            reply_outbox_external_effect_count = sum(
-                1 for effect in reply_outbox_effects if effect.channel != "realtime"
+        except Exception as exc:
+            db.session.rollback()
+            if not enterprise_whatsapp_reply:
+                raise
+            current_app.logger.exception(
+                "MunicipioTicket durable reply failed ticket=%s tenant=%s: %s",
+                ticket.id,
+                tenant.id,
+                exc,
+            )
+            return _error_response(
+                "No se pudo guardar la respuesta de forma durable",
+                503,
+                "reply_durability_unavailable",
+                "retry_with_same_idempotency_key",
             )
 
     elif action == "close":
@@ -7913,6 +8155,50 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         "fallback": "http_polling",
     }
     if action == "reply":
+        if reply_record is not None and "whatsapp" in (requested_channels or []):
+            from services.municipio_ticket_reply_delivery import (
+                serialize_reply_delivery as serialize_municipio_reply_delivery,
+            )
+
+            delivery["final_delivery"] = serialize_municipio_reply_delivery(
+                reply_record,
+                session=db.session,
+            )
+            delivery["reply_event_id"] = reply_record.event_id
+            delivery["evidence_stage"] = delivery["final_delivery"]["status"]
+            delivery["realtime"] = {
+                "contract_version": "municipio_ticket.reply.realtime.v1",
+                "emitted": False,
+                "queued": bool(reply_outbox_effect_count and not reply_replayed),
+                "event": "ticket_update" if reply_outbox_effect_count else None,
+                "events": (
+                    [
+                        "ticket_update",
+                        *(
+                            ["ticket.reply.delivery.updated"]
+                            if reply_outbox_external_effect_count
+                            else []
+                        ),
+                    ]
+                    if reply_outbox_effect_count
+                    else []
+                ),
+                "delivery_status_event": (
+                    "ticket.reply.delivery.updated"
+                    if reply_outbox_external_effect_count
+                    else None
+                ),
+                "room": f"tenant_{tenant.id}",
+                "scope": "authenticated_tenant_operators",
+                "fallback": "http_polling",
+                "polling": {
+                    "method": "GET",
+                    "href": (
+                        f"/api/v2/inbox/omnichannel/{ticket.id}"
+                        "?source_model=MunicipioTicket"
+                    ),
+                },
+            }
         delivery["idempotency"] = {
             "contract_version": "inbox.reply_idempotency.v1",
             "replayed": reply_replayed,
@@ -7930,7 +8216,8 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     if action == "reply" and reply_replayed:
         durable_extra = _ticket_extra(ticket)
         delivery["receipt_persisted"] = bool(
-            durable_extra.get("reply_delivery_latest_evidence")
+            reply_record is not None
+            or durable_extra.get("reply_delivery_latest_evidence")
             or durable_extra.get("reply_delivery_history")
         )
         if not delivery["receipt_persisted"]:

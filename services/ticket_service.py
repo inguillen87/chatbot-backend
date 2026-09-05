@@ -12,8 +12,10 @@ from decimal import Decimal
 from typing import Dict, Any, Literal, Union, Iterable, Optional
 
 from models import (
+    AuditEvent,
     ArchivoAdjunto,
     MunicipioTicket,
+    MunicipioTicketReplyEvent,
     PymeTicket,
     TenantTicket,
     TenantTicketReplyEvent,
@@ -219,6 +221,7 @@ class MunicipioTicketCreator(TicketCreator):
             nro_ticket=ticket_data.get("nro_ticket"),
             consulta_pin=ticket_data.get("consulta_pin"),
             direccion=ticket_data.get("direccion"),
+            distrito=ticket_data.get("distrito"),
             latitud=lat,
             longitud=lon,
             # Campos adicionales para información del vecino/contacto
@@ -813,6 +816,70 @@ class ServicioTickets:
             "ticket": ticket,
             "event": event,
             "aggregate_ref": str(result.get("aggregate_ref") or f"{ticket.id}:{event_id}"),
+            "reply_record": reply_record,
+            "replayed": True,
+            "effects_queued": False,
+        }
+
+    def _replay_municipio_reply_effect(
+        self,
+        receipt: TicketDomainEffectReceipt,
+        *,
+        payload_hash: str,
+    ) -> Dict[str, Any]:
+        self._verify_effect_receipt(
+            receipt,
+            effect_kind="ticket.comment.municipio",
+            payload_hash=payload_hash,
+            resource_type="ticket_comentario",
+        )
+        result = receipt.result_json if isinstance(receipt.result_json, dict) else {}
+        try:
+            ticket_id = int(result.get("ticket_id"))
+            reply_record_id = int(result.get("reply_event_record_id"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise TicketIdempotencyReplayUnavailable(
+                "The municipal reply receipt has an invalid durable identity."
+            ) from exc
+        event_id = str(result.get("event_id") or "").strip()
+        if ticket_id <= 0 or reply_record_id <= 0 or not event_id:
+            raise TicketIdempotencyReplayUnavailable(
+                "The municipal reply receipt has an invalid durable identity."
+            )
+        ticket = MunicipioTicket.query.filter_by(
+            id=ticket_id,
+            tenant_id=receipt.tenant_id,
+        ).one_or_none()
+        comment = TicketComentario.query.filter_by(
+            id=receipt.resource_id,
+            municipio_ticket_id=ticket_id,
+            pyme_ticket_id=None,
+        ).one_or_none()
+        reply_record = MunicipioTicketReplyEvent.query.filter_by(
+            id=reply_record_id,
+            tenant_id=receipt.tenant_id,
+            source_model="MunicipioTicket",
+            ticket_id=ticket_id,
+            comment_id=receipt.resource_id,
+            event_id=event_id,
+        ).one_or_none()
+        if ticket is None or comment is None or reply_record is None:
+            raise TicketIdempotencyReplayUnavailable(
+                "The municipal reply receipt exists but its durable objects are unavailable."
+            )
+        logger.info(
+            "Replaying MunicipioTicket reply receipt_id=%s tenant_id=%s ticket_id=%s",
+            receipt.id,
+            receipt.tenant_id,
+            ticket.id,
+        )
+        return {
+            "ticket": ticket,
+            "comment": comment,
+            "event": reply_record.to_event_dict(),
+            "aggregate_ref": str(
+                result.get("aggregate_ref") or f"{ticket.id}:{event_id}"
+            ),
             "reply_record": reply_record,
             "replayed": True,
             "effects_queued": False,
@@ -1434,6 +1501,389 @@ class ServicioTickets:
                 type(exc).__name__,
             )
             return None
+
+    def crear_respuesta_municipio(
+        self,
+        ticket: MunicipioTicket,
+        reply_data: Dict[str, Any],
+        *,
+        idempotency_key: str,
+        idempotency_tenant_id: int,
+        reply_actor: User,
+    ) -> Dict[str, Any]:
+        """Persist and queue one tenant-bound municipal WhatsApp reply."""
+
+        if not isinstance(ticket, MunicipioTicket):
+            raise TicketIdempotencyValidationError(
+                "A MunicipioTicket reply requires a MunicipioTicket aggregate."
+            )
+        reply_data = dict(reply_data or {})
+        idempotency_identity = self._prepare_idempotency_identity(
+            idempotency_key,
+            idempotency_tenant_id,
+        )
+        if idempotency_identity is None:
+            raise TicketIdempotencyValidationError(
+                "A MunicipioTicket reply requires an idempotency identity."
+            )
+        normalized_key, normalized_tenant_id = idempotency_identity
+        if int(getattr(ticket, "tenant_id", 0) or 0) != normalized_tenant_id:
+            raise TicketIdempotencyValidationError(
+                "MunicipioTicket tenant_id does not match its reply tenant."
+            )
+        if (
+            reply_actor is None
+            or not getattr(reply_actor, "id", None)
+            or int(getattr(reply_actor, "tenant_id", 0) or 0)
+            != normalized_tenant_id
+            or int(reply_data.get("actor_user_id") or 0) != int(reply_actor.id)
+        ):
+            raise TicketReplyOwnershipError("ticket_reply_actor_scope_mismatch")
+
+        body = str(reply_data.get("body") or "").strip()
+        if not body:
+            raise TicketIdempotencyValidationError(
+                "A MunicipioTicket reply requires a non-empty body."
+            )
+        raw_visibility = reply_data.get("visibility", "public")
+        if not isinstance(raw_visibility, str) or raw_visibility.strip().lower() != "public":
+            raise TicketIdempotencyValidationError(
+                "MunicipioTicket WhatsApp replies must be public."
+            )
+        visibility = "public"
+
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyDeliveryError,
+            normalize_template_variables,
+        )
+
+        raw_channels = reply_data.get("requested_channels") or []
+        if not isinstance(raw_channels, (list, tuple)):
+            raise TenantTicketReplyDeliveryError(
+                "municipio_ticket_reply_channels_invalid"
+            )
+        requested_channels: list[str] = []
+        for raw_channel in raw_channels:
+            if not isinstance(raw_channel, str):
+                raise TenantTicketReplyDeliveryError(
+                    "municipio_ticket_reply_channels_invalid"
+                )
+            channel = raw_channel.strip().lower()
+            if channel not in requested_channels:
+                requested_channels.append(channel)
+        if requested_channels != ["whatsapp"]:
+            raise TenantTicketReplyDeliveryError(
+                "municipio_ticket_reply_channels_invalid"
+            )
+
+        raw_template_registry_id = reply_data.get("template_registry_id")
+        template_registry_id = None
+        if raw_template_registry_id not in (None, ""):
+            try:
+                template_registry_id = int(raw_template_registry_id)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TenantTicketReplyDeliveryError(
+                    "whatsapp_template_registry_invalid"
+                ) from exc
+            if isinstance(raw_template_registry_id, bool) or template_registry_id <= 0:
+                raise TenantTicketReplyDeliveryError(
+                    "whatsapp_template_registry_invalid"
+                )
+        template_variables = normalize_template_variables(
+            reply_data.get("template_variables")
+        )
+
+        from flask import current_app, has_app_context
+        from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+
+        if not has_app_context():
+            raise TenantTicketReplyDeliveryError(
+                "domain_effect_app_context_required"
+            )
+        outbox_policy = resolve_domain_effect_outbox_policy(
+            current_app.config,
+            tenant_id=normalized_tenant_id,
+        )
+        if not outbox_policy.enabled:
+            raise TenantTicketReplyDeliveryError(
+                "whatsapp_outbox_cutover_required"
+            )
+
+        emit_socket = bool(reply_data.get("emit_socket", True))
+        effect_kind = "ticket.comment.municipio"
+        payload_hash = canonical_ticket_payload_hash(
+            effect_kind,
+            {
+                "ticket_id": int(ticket.id),
+                "source_model": "MunicipioTicket",
+                "body": body,
+                "visibility": visibility,
+                "actor_user_id": int(reply_actor.id),
+                "requested_channels": requested_channels,
+                "template_registry_id": template_registry_id,
+                "template_variables": template_variables,
+                "emit_socket": emit_socket,
+            },
+        )
+        existing_receipt = self._find_effect_receipt(
+            normalized_tenant_id,
+            normalized_key,
+        )
+        if existing_receipt is not None:
+            return self._replay_municipio_reply_effect(
+                existing_receipt,
+                payload_hash=payload_hash,
+            )
+
+        locked_ticket = (
+            MunicipioTicket.query.filter_by(
+                id=ticket.id,
+                tenant_id=normalized_tenant_id,
+            )
+            .with_for_update()
+            .populate_existing()
+            .one_or_none()
+        )
+        if locked_ticket is None:
+            raise TicketIdempotencyReplayUnavailable(
+                "MunicipioTicket is unavailable while persisting its reply."
+            )
+        ticket = locked_ticket
+        tenant_profile = db.session.get(TenantProfile, normalized_tenant_id)
+        if (
+            tenant_profile is None
+            or str(getattr(tenant_profile, "tipo", "")).strip() != "municipio"
+            or not bool(getattr(tenant_profile, "is_active", False))
+            or int(getattr(tenant_profile, "municipio_id", 0) or 0)
+            != int(getattr(ticket, "municipio_id", 0) or 0)
+        ):
+            raise TicketReplyOwnershipError("ticket_tenant_binding_invalid")
+        _assert_locked_reply_owner(reply_actor, ticket.asignado_a_id)
+        if (
+            not actor_can_assign_tickets(reply_actor)
+            and not ticket_assignee_is_compatible(reply_actor, ticket)
+        ):
+            raise TicketReplyOwnershipError("assignee_category_scope_mismatch")
+
+        from services.tenant_twilio_messaging import (
+            resolve_tenant_twilio_sender_snapshot,
+        )
+        from services.tenant_ticket_reply_delivery import (
+            prepare_whatsapp_reply_policy,
+        )
+        from utils.validators import normalize_phone
+
+        normalized_phone = normalize_phone(
+            str(getattr(ticket, "telefono_vecino", None) or "").strip()
+        )
+        if not normalized_phone:
+            raise TenantTicketReplyDeliveryError("contact_phone_invalid")
+        sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+            tenant_id=normalized_tenant_id,
+            channel="whatsapp",
+            session=db.session,
+        )
+        if sender_snapshot.reason_code or sender_snapshot.sender is None:
+            raise TenantTicketReplyDeliveryError(
+                sender_snapshot.reason_code
+                or "whatsapp_tenant_sender_resolution_invalid"
+            )
+        (
+            template_registry_id,
+            template_variables,
+            whatsapp_policy_snapshot,
+        ) = prepare_whatsapp_reply_policy(
+            tenant_id=normalized_tenant_id,
+            provider_sender_id=int(sender_snapshot.sender.id),
+            provider_sender_binding=sender_snapshot.binding,
+            recipient=normalized_phone,
+            template_registry_id=template_registry_id,
+            template_variables=template_variables,
+            session=db.session,
+            dispatch_enabled=True,
+        )
+        content_source = "operator_free_form"
+        if template_registry_id is not None:
+            delivery_binding = (
+                whatsapp_policy_snapshot.get("_delivery_binding")
+                if isinstance(whatsapp_policy_snapshot, dict)
+                else None
+            )
+            delivery_body = str(
+                (delivery_binding or {}).get("delivery_body_snapshot") or ""
+            ).strip()
+            if not delivery_body:
+                raise TenantTicketReplyDeliveryError(
+                    "whatsapp_template_body_snapshot_missing"
+                )
+            if body != delivery_body:
+                raise TenantTicketReplyDeliveryError(
+                    "whatsapp_template_body_mismatch"
+                )
+            body = delivery_body
+            content_source = "approved_whatsapp_template"
+
+        event_created_at = get_local_now()
+        event_id = uuid.uuid4().hex
+        aggregate_ref = f"{ticket.id}:{event_id}"
+        event = {
+            "id": event_id,
+            "origin": "admin_panel",
+            "action": "reply",
+            "body": body,
+            "content_source": content_source,
+            "visibility": visibility,
+            "created_at": datetime_to_iso_utc(event_created_at),
+            "actor": {
+                "id": int(reply_actor.id),
+                "name": str(reply_actor.name or "").strip(),
+                "role": str(reply_actor.rol or "").strip(),
+            },
+        }
+        try:
+            comment = TicketComentario(
+                municipio_ticket_id=ticket.id,
+                comentario=body,
+                user_id=int(reply_actor.id),
+                es_admin=True,
+                origen="admin_panel",
+                fecha=event_created_at,
+            )
+            db.session.add(comment)
+            if str(ticket.estado or "").strip().lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            ticket.ultima_actividad = event_created_at
+            db.session.add(ticket)
+            db.session.flush()
+
+            reply_record = MunicipioTicketReplyEvent(
+                tenant_id=normalized_tenant_id,
+                source_model="MunicipioTicket",
+                ticket_id=ticket.id,
+                comment_id=comment.id,
+                event_id=event_id,
+                body=body,
+                visibility=visibility,
+                actor_user_id=int(reply_actor.id),
+                actor_name=str(reply_actor.name or "").strip() or "Operador",
+                actor_role=str(reply_actor.rol or "").strip() or "empleado",
+                recipient_phone=normalized_phone,
+                whatsapp_template_registry_id=template_registry_id,
+                whatsapp_template_variables=template_variables,
+                whatsapp_policy_snapshot=whatsapp_policy_snapshot,
+                whatsapp_delivery_status="saved",
+                whatsapp_provider_sender_id=int(sender_snapshot.sender.id),
+                whatsapp_status_updated_at=event_created_at,
+                created_at=event_created_at,
+            )
+            db.session.add(reply_record)
+            db.session.flush()
+            receipt = TicketDomainEffectReceipt(
+                tenant_id=normalized_tenant_id,
+                idempotency_key=normalized_key,
+                effect_kind=effect_kind,
+                payload_hash=payload_hash,
+                resource_type="ticket_comentario",
+                resource_id=comment.id,
+                result_json={
+                    "ticket_id": ticket.id,
+                    "comment_id": comment.id,
+                    "event_id": event_id,
+                    "reply_event_record_id": reply_record.id,
+                    "aggregate_ref": aggregate_ref,
+                    "source_model": "MunicipioTicket",
+                },
+            )
+            db.session.add(receipt)
+            db.session.add(
+                AuditEvent(
+                    tenant_id=normalized_tenant_id,
+                    actor_user_id=int(reply_actor.id),
+                    event_type="municipio_ticket.reply.whatsapp.queued",
+                    resource_type="municipio_ticket_reply_event",
+                    resource_id=str(reply_record.id),
+                    details={
+                        "contract_version": (
+                            MunicipioTicketReplyEvent.DELIVERY_CONTRACT_VERSION
+                        ),
+                        "source_model": "MunicipioTicket",
+                        "ticket_id": ticket.id,
+                        "comment_id": comment.id,
+                        "event_id": event_id,
+                        "provider_sender_id": int(sender_snapshot.sender.id),
+                        "template_registry_id": template_registry_id,
+                        "service_window_status": whatsapp_policy_snapshot.get(
+                            "status"
+                        ),
+                        "idempotency_key_sha256": hashlib.sha256(
+                            normalized_key.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                )
+            )
+            db.session.flush()
+            from services.ticket_domain_effects import (
+                stage_municipio_ticket_reply_effects,
+            )
+
+            effects_queued = stage_municipio_ticket_reply_effects(
+                ticket,
+                reply_record,
+                requested_channels=requested_channels,
+                emit_socket=emit_socket,
+                session=db.session,
+            )
+            if not effects_queued:
+                raise TenantTicketReplyDeliveryError(
+                    "whatsapp_outbox_cutover_required"
+                )
+            reply_record.whatsapp_delivery_status = "queued"
+            reply_record.whatsapp_status_updated_at = event_created_at
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            winning_receipt = self._find_effect_receipt(
+                normalized_tenant_id,
+                normalized_key,
+            )
+            if winning_receipt is not None:
+                return self._replay_municipio_reply_effect(
+                    winning_receipt,
+                    payload_hash=payload_hash,
+                )
+            raise
+        except TenantTicketReplyDeliveryError:
+            db.session.rollback()
+            raise
+        except Exception:
+            db.session.rollback()
+            logger.exception(
+                "MunicipioTicket reply persistence failed tenant_id=%s ticket_id=%s",
+                normalized_tenant_id,
+                getattr(ticket, "id", None),
+            )
+            raise
+
+        try:
+            from services.domain_effect_worker import enqueue_domain_effect_dispatch
+
+            enqueue_domain_effect_dispatch(tenant_id=normalized_tenant_id)
+        except Exception as exc:
+            logger.warning(
+                "MunicipioTicket reply outbox wakeup failed tenant_id=%s ticket_id=%s error_type=%s",
+                normalized_tenant_id,
+                ticket.id,
+                type(exc).__name__,
+            )
+        return {
+            "ticket": ticket,
+            "comment": comment,
+            "event": event,
+            "aggregate_ref": aggregate_ref,
+            "reply_record": reply_record,
+            "replayed": False,
+            "effects_queued": True,
+        }
 
     def crear_respuesta_tenant(
         self,
