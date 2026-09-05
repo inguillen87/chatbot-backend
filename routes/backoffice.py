@@ -654,6 +654,17 @@ def _modules_for(tenant: TenantProfile, current_user: User, *, analytics_modes: 
             "priority": 7,
         },
     ]
+    if role in {ROLE_TENANT_ADMIN, ROLE_SUPERADMIN}:
+        modules.append(
+            {
+                "id": "implementation",
+                "label": "Implementacion",
+                "description": "Marca, accesibilidad, territorio, canales y controles de salida a produccion.",
+                "route": "/implementacion",
+                "enabled": _capability_enabled(capabilities, "implementation", default=True),
+                "priority": 8,
+            }
+        )
     return sorted(modules, key=lambda item: int(item.get("priority") or 999))
 
 

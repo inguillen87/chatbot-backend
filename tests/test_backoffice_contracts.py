@@ -74,7 +74,9 @@ def test_backoffice_navigation_exposes_role_based_modules(client):
     assert payload["tenant_slug"] == tenant.slug
     assert payload["role"] == "admin"
     module_ids = [item["id"] for item in payload["modules"] if item["enabled"]]
-    assert {"operations", "reports", "surveys", "people", "maps", "advanced_analytics"}.issubset(set(module_ids))
+    assert {"operations", "reports", "surveys", "people", "maps", "advanced_analytics", "implementation"}.issubset(set(module_ids))
+    implementation = next(item for item in payload["modules"] if item["id"] == "implementation")
+    assert implementation["route"] == "/implementacion"
     assert payload["analytics_modes"]["statistics"]["enabled"] is True
     assert payload["analytics_modes"]["advanced_analytics"]["enabled"] is True
     assert payload["surveys_overview"]["route"] == "/admin/encuestas"
@@ -561,6 +563,10 @@ def test_backoffice_employee_requires_explicit_operational_scope(client):
             headers=_auth_headers(scoped_employee),
         )
         assert allowed.status_code == 200
+        if endpoint.endswith("/navigation"):
+            assert "implementation" not in {
+                item["id"] for item in allowed.get_json()["modules"]
+            }
 
 
 def test_backoffice_survey_overview_uses_one_bounded_aggregate_and_excludes_nonreal_geo(client):

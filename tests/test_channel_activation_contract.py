@@ -62,6 +62,9 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert payload["integration_access"]["enabled"] is False
     by_id = {item["id"]: item for item in payload["channels"]}
     assert by_id["crm"]["status"] == "ready"
+    assert by_id["institutional_branding"]["status"] == "action_required"
+    assert by_id["accessibility"]["status"] == "action_required"
+    assert by_id["territorial_intelligence"]["status"] == "action_required"
     assert by_id["whatsapp"]["status"] == "locked"
     assert by_id["widget"]["status"] == "locked"
     assert by_id["templates"]["status"] == "locked"
@@ -80,6 +83,40 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert route_payload["contract_version"] == "tenant.channel_activation.v1"
     assert route_payload["tenant"]["slug"] == tenant.slug
     assert "secret-widget-token" not in str(route_payload)
+
+
+def test_channel_activation_contract_requires_explicit_government_setup_evidence(client):
+    owner, tenant = _create_owner_and_tenant(
+        slug="government-implementation",
+        plan="full",
+        configuracion={
+            "accessibility": {
+                "enabled": True,
+                "features": ["keyboard_navigation", "plain_language", "screen_reader"],
+                "human_handoff": True,
+            }
+        },
+    )
+    owner_id = owner.id
+    tenant.logo_url = "https://assets.example.test/tenant-logo.svg"
+    tenant.tema = {"primaryColor": "#075985", "secondaryColor": "#e0f2fe"}
+    tenant.dominio = "gobierno.example.test"
+    tenant.jurisdiction_status = "verified"
+    tenant.jurisdiction_ref = "official:government-implementation:v1"
+    tenant.jurisdiction_evidence_ref = "evidence:government-implementation:v1"
+    tenant.jurisdiction_verified_by_user_id = owner_id
+    tenant.jurisdiction_verified_at = datetime.now().astimezone()
+    db.session.commit()
+
+    payload = build_channel_activation_payload(tenant)
+
+    by_id = {item["id"]: item for item in payload["channels"]}
+    assert by_id["institutional_branding"]["status"] == "ready"
+    assert by_id["accessibility"]["status"] == "ready"
+    assert by_id["territorial_intelligence"]["status"] == "ready"
+    assert "tenant-logo.svg" not in str(by_id["institutional_branding"])
+    assert "official:government-implementation:v1" not in str(by_id["territorial_intelligence"])
+    assert "evidence:government-implementation:v1" not in str(by_id["territorial_intelligence"])
 
 
 def test_channel_activation_contract_marks_ready_full_tenant_channels(client):

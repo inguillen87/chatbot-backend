@@ -443,6 +443,136 @@ def _counts(tenant: TenantProfile | None) -> dict[str, int]:
     }
 
 
+def _institutional_branding_status(
+    tenant: TenantProfile | None,
+) -> tuple[str, list[str], str | None, str]:
+    """Report explicit tenant branding without treating platform defaults as setup."""
+
+    if tenant is None:
+        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su identidad visual."
+
+    logo_configured = bool(str(getattr(tenant, "logo_url", None) or "").strip())
+    palette_configured = bool(
+        isinstance(getattr(tenant, "tema", None), Mapping)
+        and getattr(tenant, "tema", None)
+    ) or bool(
+        isinstance(getattr(tenant, "theme_json", None), Mapping)
+        and getattr(tenant, "theme_json", None)
+    )
+    domain_configured = bool(str(getattr(tenant, "dominio", None) or "").strip())
+
+    evidence: list[str] = []
+    if logo_configured:
+        evidence.append("logo institucional configurado")
+    if palette_configured:
+        evidence.append("paleta institucional configurada")
+    if domain_configured:
+        evidence.append("dominio institucional registrado")
+
+    missing: list[str] = []
+    if not logo_configured:
+        missing.append("logo")
+    if not palette_configured:
+        missing.append("paleta")
+    if missing:
+        return (
+            "action_required",
+            evidence,
+            "institutional_branding_incomplete",
+            f"Completar identidad institucional: {', '.join(missing)}. El dominio propio puede incorporarse en una etapa posterior.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Identidad institucional lista; el dominio propio es opcional para operar sobre Chatboc.ar.",
+    )
+
+
+def _accessibility_status(
+    cfg: Mapping[str, Any],
+) -> tuple[str, list[str], str | None, str]:
+    """Require an explicit tenant policy instead of inferring readiness globally."""
+
+    accessibility = _as_mapping(cfg.get("accessibility"))
+    if not accessibility:
+        return (
+            "action_required",
+            ["componentes accesibles disponibles en plataforma"],
+            "accessibility_policy_required",
+            "Definir la politica del tenant: lectura, contraste, navegacion por teclado, lenguaje claro y derivacion humana.",
+        )
+
+    if accessibility.get("enabled") is False:
+        return (
+            "blocked",
+            ["politica del tenant deshabilitada"],
+            "accessibility_disabled",
+            "Habilitar la politica de accesibilidad antes de publicar los canales ciudadanos.",
+        )
+
+    configured_features = accessibility.get("features")
+    feature_count = len(configured_features) if isinstance(configured_features, list) else 0
+    evidence = ["politica del tenant configurada"]
+    if feature_count:
+        evidence.append(f"{feature_count} apoyos declarados")
+    if accessibility.get("human_handoff") is True:
+        evidence.append("derivacion humana declarada")
+
+    if accessibility.get("enabled") is True and feature_count > 0:
+        return (
+            "ready",
+            evidence,
+            None,
+            "Politica accesible declarada. La validacion con usuarios y dispositivos sigue siendo un gate de publicacion.",
+        )
+    return (
+        "pending",
+        evidence,
+        "accessibility_validation_pending",
+        "Completar apoyos accesibles y validar la experiencia con usuarios y dispositivos antes de publicar.",
+    )
+
+
+def _territorial_status(
+    tenant: TenantProfile | None,
+) -> tuple[str, list[str], str | None, str]:
+    """Only accept the server-owned jurisdiction attestation as territorial readiness."""
+
+    if tenant is None:
+        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su jurisdiccion."
+
+    status = str(getattr(tenant, "jurisdiction_status", None) or "unverified").strip().lower()
+    if status == "not_applicable":
+        return (
+            "ready",
+            ["jurisdiccion no requerida para este tenant"],
+            None,
+            "El tenant declaro que no necesita agregacion territorial oficial.",
+        )
+
+    verified = bool(
+        status == "verified"
+        and str(getattr(tenant, "jurisdiction_ref", None) or "").strip()
+        and str(getattr(tenant, "jurisdiction_evidence_ref", None) or "").strip()
+        and getattr(tenant, "jurisdiction_verified_by_user_id", None)
+        and getattr(tenant, "jurisdiction_verified_at", None)
+    )
+    if verified:
+        return (
+            "ready",
+            ["jurisdiccion oficial verificada", "evidencia institucional registrada"],
+            None,
+            "La delimitacion oficial esta lista para validar puntos, zonas y agregaciones.",
+        )
+    return (
+        "action_required",
+        [f"estado:{status}"],
+        "official_jurisdiction_required",
+        "Registrar y aprobar limites oficiales antes de publicar rankings, tasas o comparaciones por zona.",
+    )
+
+
 def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, Any]:
     """Build a public, secret-free checklist for post-onboarding channel activation."""
 
@@ -460,6 +590,9 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     public_security_status, public_security_evidence, public_security_reason, public_security_hint = (
         _public_intake_security_status()
     )
+    branding_status, branding_evidence, branding_reason, branding_hint = _institutional_branding_status(tenant)
+    accessibility_status, accessibility_evidence, accessibility_reason, accessibility_hint = _accessibility_status(cfg)
+    territory_status, territory_evidence, territory_reason, territory_hint = _territorial_status(tenant)
 
     widget_configured = bool(
         getattr(tenant, "widget_settings", None)
@@ -472,6 +605,36 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     analytics_status = "ready" if counts["surveys"] > 0 else "action_required"
 
     channels = [
+        _channel(
+            "institutional_branding",
+            "Identidad institucional",
+            branding_status,
+            "Logo, paleta y dominio opcional para una experiencia white-label gobernada por tenant.",
+            actions=[_action("open_branding", "Configurar identidad", _profile_path("perfil"), primary=True)],
+            evidence=branding_evidence,
+            reason_code=branding_reason,
+            progress_hint=branding_hint,
+        ),
+        _channel(
+            "accessibility",
+            "Accesibilidad e inclusion",
+            accessibility_status,
+            "Politica accesible para web, WhatsApp, formularios y derivacion humana.",
+            actions=[_action("open_accessibility", "Configurar accesibilidad", _profile_path("perfil"), primary=True)],
+            evidence=accessibility_evidence,
+            reason_code=accessibility_reason,
+            progress_hint=accessibility_hint,
+        ),
+        _channel(
+            "territorial_intelligence",
+            "Territorio y mapas",
+            territory_status,
+            "Jurisdiccion oficial para validar direcciones, zonas, categorias y mapas de calor.",
+            actions=[_action("open_territory", "Configurar territorio", _profile_path("mapas"), primary=True)],
+            evidence=territory_evidence,
+            reason_code=territory_reason,
+            progress_hint=territory_hint,
+        ),
         _channel(
             "crm",
             "CRM operativo",
