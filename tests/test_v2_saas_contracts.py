@@ -428,6 +428,55 @@ class V2SaasContractsTest(unittest.TestCase):
             DOMAIN_EFFECT_OUTBOX_MAX_ATTEMPTS=8,
         )
 
+    def _configure_tenant_whatsapp_sender(
+        self,
+        *,
+        suffix: str,
+        last_inbound_at=None,
+    ) -> ProviderSender:
+        token_ref = f"TWILIO_SUBACCOUNT_AUTH_TOKEN_{suffix}_{self.tenant.id}"
+        account_sid = f"AC-{suffix}-{self.tenant.id}"
+        self.app.config[token_ref] = f"test-token-{suffix}-{self.tenant.id}"
+        self.tenant.configuracion = {
+            **(self.tenant.configuracion or {}),
+            "twilio_tech_provider": {
+                "twilio_account_sid": account_sid,
+                "twilio_subaccount_token_ref": token_ref,
+            },
+        }
+        connection = ProviderConnection(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            environment="production",
+            status="online",
+            external_account_id=account_sid,
+            credentials_ref=f"env:{token_ref}",
+        )
+        db.session.add(connection)
+        db.session.flush()
+        sender = ProviderSender(
+            tenant_id=self.tenant.id,
+            provider_connection_id=connection.id,
+            channel="whatsapp",
+            sender_type="whatsapp_business",
+            phone_number="+15005550006",
+            sender_id="whatsapp:+15005550006",
+            status="online",
+            status_callback_url="https://api.example.test/twilio/whatsapp/status",
+        )
+        db.session.add(sender)
+        db.session.flush()
+        state = WhatsAppContactState.query.filter_by(
+            tenant_id=self.tenant.id,
+            recipient="whatsapp:+5491111111111",
+        ).one()
+        state.provider_sender_id = sender.id
+        state.last_inbound_at = last_inbound_at or datetime.now(timezone.utc)
+        db.session.add_all([self.tenant, state])
+        db.session.commit()
+        return sender
+
     def _tenant_reply_side_effect_snapshot(self):
         db.session.expire_all()
         ticket = db.session.get(TenantTicket, self.ticket.id)
@@ -2083,7 +2132,11 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         channels = {entry["id"]: entry for entry in reply_contract["delivery_channels"]}
         self.assertTrue(channels["crm"]["enabled"])
-        self.assertTrue(channels["whatsapp"]["enabled"])
+        self.assertFalse(channels["whatsapp"]["enabled"])
+        self.assertEqual(
+            channels["whatsapp"]["reason_code"],
+            "whatsapp_tenant_sender_missing",
+        )
         self.assertFalse(channels["email"]["enabled"])
         self.assertEqual(
             reply_contract["delivery_state_machine"]["states"],
@@ -2709,10 +2762,10 @@ class V2SaasContractsTest(unittest.TestCase):
         reply_action = next(action for action in item["allowed_actions"] if action["id"] == "reply")
         self.assertEqual(
             reply_action["delivery_mode"],
-            "durable_queue_or_provider_acceptance",
+            "crm_only",
         )
         self.assertEqual(reply_action["fallback"], "http_polling")
-        self.assertTrue(reply_action["external_dispatch"])
+        self.assertFalse(reply_action["external_dispatch"])
         self.assertIn(
             "client_message_id_or_idempotency_key",
             reply_action["requires"],
@@ -2803,6 +2856,13 @@ class V2SaasContractsTest(unittest.TestCase):
             legacy_reply_action["delivery_contract_version"],
             "inbox.action_delivery.v2",
         )
+        self.assertEqual(legacy_reply_action["delivery_mode"], "timeline_only")
+        self.assertFalse(legacy_reply_action["external_dispatch"])
+        self.assertEqual(
+            legacy_reply_action["external_channel_reason_code"],
+            "legacy_whatsapp_enterprise_cutover_required",
+        )
+        self.assertIn("CRM", legacy_reply_action["operator_message"])
         tracking_action = next(action for action in legacy_item["allowed_actions"] if action["id"] == "open_tracking")
         self.assertEqual(
             tracking_action["endpoint"],
@@ -2823,6 +2883,15 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertIsNone(legacy_item["contact"]["avatar"]["url"])
         self.assertEqual(legacy_item["frontend_contract"]["avatar_policy"], "consented_real_image_or_deterministic_fallback")
+        legacy_channels = {
+            entry["id"]: entry
+            for entry in legacy_item["reply_contract"]["delivery_channels"]
+        }
+        self.assertFalse(legacy_channels["whatsapp"]["enabled"])
+        self.assertEqual(
+            legacy_channels["whatsapp"]["reason_code"],
+            "legacy_whatsapp_enterprise_cutover_required",
+        )
 
         detail = self.client.get(
             f"/api/v2/inbox/omnichannel/{legacy.id}?source_model=MunicipioTicket",
@@ -2846,14 +2915,17 @@ class V2SaasContractsTest(unittest.TestCase):
                 headers={**self._auth(self.owner), "Idempotency-Key": "legacy-helpdesk-reply-1"},
             )
         self.assertEqual(reply.status_code, 200, reply.get_json())
-        dispatch_update.assert_called_once()
+        dispatch_update.assert_not_called()
         reply_payload = reply.get_json()
         delivery = reply_payload["delivery"]
         self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v2")
         self.assertEqual(delivery["legacy_contract_version"], "inbox.action_delivery.v1")
         self.assertEqual(delivery["mode"], "timeline_only")
         self.assertEqual(delivery["status"], "saved_to_crm")
-        self.assertEqual(delivery["reason"], "external_dispatch_no_channel_confirmed")
+        self.assertEqual(
+            delivery["reason"],
+            "legacy_whatsapp_enterprise_cutover_required",
+        )
         self.assertEqual(delivery["reply_status"], "saved_to_timeline")
         self.assertEqual(delivery["admin_surface"], "tenant_claims_inbox")
         self.assertFalse(delivery["external_dispatch"])
@@ -2914,7 +2986,7 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         self.assertEqual(closed_public_status.args[1]["estado"], "cerrado")
 
-    def test_omnichannel_legacy_claim_reply_reports_provider_acceptance_only(self):
+    def test_omnichannel_legacy_claim_whatsapp_reply_is_saved_without_unsafe_provider_io(self):
         self._set_tenant_as_municipio()
         legacy = MunicipioTicket(
             tenant_id=self.tenant.id,
@@ -2950,38 +3022,49 @@ class V2SaasContractsTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200, response.get_json())
-        dispatch_update.assert_called_once()
+        dispatch_update.assert_not_called()
         payload = response.get_json()
         self.assertEqual(payload.get("request_id"), "legacy-whatsapp-delivery-1")
         delivery = payload["delivery"]
         self.assertEqual(delivery["contract_version"], "inbox.action_delivery.v2")
         self.assertEqual(delivery["legacy_contract_version"], "inbox.action_delivery.v1")
-        self.assertEqual(delivery["mode"], "real_message")
-        self.assertEqual(delivery["channel"], "whatsapp")
-        self.assertEqual(delivery["status"], "dispatch_attempted")
-        self.assertEqual(delivery["reason"], "acceptance_unverified")
-        self.assertEqual(delivery["reply_status"], "dispatch_attempted")
-        self.assertEqual(delivery["evidence_stage"], "acceptance_unverified")
+        self.assertEqual(delivery["mode"], "timeline_only")
+        self.assertEqual(delivery["channel"], "crm")
+        self.assertEqual(delivery["status"], "saved_to_crm")
+        self.assertEqual(
+            delivery["reason"],
+            "legacy_whatsapp_enterprise_cutover_required",
+        )
+        self.assertEqual(delivery["reply_status"], "saved_to_timeline")
+        self.assertEqual(delivery["evidence_stage"], "crm_only")
         self.assertEqual(delivery["delivery_results_semantics"], "dispatch_attempt_boolean_not_provider_receipt")
         self.assertFalse(delivery["evidence"]["provider_accepted"])
         self.assertNotIn("provider_message_id", delivery)
-        self.assertEqual(delivery["final_delivery"]["status"], "pending_provider_callback")
-        self.assertEqual(delivery["final_delivery"]["authoritative_source"], "provider_status_callback")
+        self.assertEqual(delivery["final_delivery"]["status"], "not_dispatched")
+        self.assertEqual(delivery["final_delivery"]["authoritative_source"], "not_applicable")
         self.assertNotEqual(delivery["final_delivery"]["status"], "delivered")
         self.assertEqual(delivery["admin_surface"], "tenant_claims_inbox")
-        self.assertTrue(delivery["external_dispatch"])
+        self.assertFalse(delivery["external_dispatch"])
         self.assertTrue(delivery["receipt_persisted"])
-        self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": True})
+        self.assertEqual(delivery["delivery_results"], {"email": False, "sms": False, "whatsapp": False})
+        self.assertEqual(
+            delivery["delivery_skipped"],
+            {"whatsapp": "legacy_whatsapp_enterprise_cutover_required"},
+        )
+        self.assertEqual(
+            delivery["delivery_skipped"],
+            {"whatsapp": "legacy_whatsapp_enterprise_cutover_required"},
+        )
         self.assertTrue(any("equipo ya fue avisado" in event["body"].lower() for event in payload["ticket"]["timeline"]))
         db.session.refresh(legacy)
         history = legacy.datos_extra.get("reply_delivery_history") or []
         self.assertEqual(len(history), 1)
-        self.assertEqual(history[-1]["status"], "dispatch_attempted")
+        self.assertEqual(history[-1]["status"], "saved_to_crm")
         self.assertTrue(history[-1]["receipt_persisted"])
         self.assertIsNone(history[-1]["provider_message_id"])
         self.assertEqual(
             legacy.datos_extra["reply_delivery_latest_evidence"]["status"],
-            "dispatch_attempted",
+            "saved_to_crm",
         )
         self.assertTrue(
             legacy.datos_extra["reply_delivery_latest_evidence"]["receipt_persisted"]
@@ -3003,7 +3086,9 @@ class V2SaasContractsTest(unittest.TestCase):
             direccion="Belgrano 200, Junin, Mendoza",
             nombre_vecino="Marcelo",
             telefono_vecino="+5492613168608",
+            email_vecino="marcelo@example.com",
         )
+        legacy.canal_ingreso = "email"
         db.session.add(legacy)
         db.session.commit()
 
@@ -3119,7 +3204,7 @@ class V2SaasContractsTest(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200, first.get_json())
         self.assertEqual(replay.status_code, 200, replay.get_json())
-        dispatch_update.assert_called_once()
+        dispatch_update.assert_not_called()
         service_email.assert_not_called()
         service_sms.assert_not_called()
         service_whatsapp.assert_not_called()
@@ -3135,11 +3220,18 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertTrue(receipt.idempotency_key.startswith("crm-reply:"))
         self.assertNotIn("crm-client-message-777003", receipt.idempotency_key)
         self.assertEqual(DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(), 0)
-        self.assertEqual(first.get_json()["delivery"]["status"], "dispatch_attempted")
+        self.assertEqual(first.get_json()["delivery"]["status"], "saved_to_crm")
+        self.assertEqual(
+            first.get_json()["delivery"]["reason"],
+            "legacy_whatsapp_enterprise_cutover_required",
+        )
         replay_delivery = replay.get_json()["delivery"]
         self.assertEqual(replay_delivery["mode"], "idempotent_replay")
         self.assertEqual(replay_delivery["status"], "already_recorded")
-        self.assertEqual(replay_delivery["reason"], "idempotent_replay_no_redispatch")
+        self.assertEqual(
+            replay_delivery["reason"],
+            "legacy_whatsapp_enterprise_cutover_required",
+        )
         self.assertFalse(replay_delivery["external_dispatch"])
         self.assertFalse(replay_delivery["timeline_updated"])
         self.assertTrue(replay_delivery["idempotency"]["replayed"])
@@ -3151,14 +3243,14 @@ class V2SaasContractsTest(unittest.TestCase):
         db.session.refresh(legacy)
         history = legacy.datos_extra.get("reply_delivery_history") or []
         self.assertEqual(len(history), 1)
-        self.assertEqual(history[0]["status"], "dispatch_attempted")
+        self.assertEqual(history[0]["status"], "saved_to_crm")
         refreshed = self.client.get(
             f"/api/v2/inbox/omnichannel/{legacy.id}?source_model=MunicipioTicket",
             headers=self._auth(self.owner),
         )
         self.assertEqual(refreshed.status_code, 200, refreshed.get_json())
         latest = refreshed.get_json()["ticket"]["reply_contract"]["delivery_state_machine"]["latest_evidence"]
-        self.assertTrue(latest["dispatch_attempted"])
+        self.assertFalse(latest["dispatch_attempted"])
         self.assertFalse(latest["provider_accepted"])
 
     def test_omnichannel_legacy_claim_reply_rejects_same_key_with_different_payload(self):
@@ -3207,7 +3299,7 @@ class V2SaasContractsTest(unittest.TestCase):
             conflict.get_json()["reason_code"],
             "reply_idempotency_payload_conflict",
         )
-        dispatch_update.assert_called_once()
+        dispatch_update.assert_not_called()
         self.assertEqual(
             TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
             1,
@@ -3257,6 +3349,142 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(
             TicketDomainEffectReceipt.query.filter_by(tenant_id=self.tenant.id).count(),
             0,
+        )
+
+    def test_omnichannel_legacy_claim_rejects_cross_channel_reply_before_persistence(self):
+        self._set_tenant_as_municipio()
+        cases = (
+            ("web", ["whatsapp"]),
+            ("email", ["whatsapp"]),
+            ("whatsapp", ["email"]),
+            ("whatsapp", ["whatsapp", "email"]),
+        )
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update"
+        ) as dispatch_update:
+            for index, (source_channel, requested_channels) in enumerate(cases, start=1):
+                legacy = MunicipioTicket(
+                    tenant_id=self.tenant.id,
+                    municipio_id=self.owner.id,
+                    nro_ticket=f"M-CHANNEL-GUARD-{index}",
+                    consulta_pin=f"88{index:04d}",
+                    pregunta="Prueba de canal",
+                    categoria="luminaria",
+                    detalles="No debe enviarse por otro canal",
+                    estado="nuevo",
+                    canal_ingreso=source_channel,
+                    telefono_vecino="+5492613168608",
+                    email_vecino="marcelo@example.com",
+                )
+                db.session.add(legacy)
+                db.session.commit()
+
+                response = self.client.post(
+                    "/api/v2/inbox/omnichannel/actions",
+                    json={
+                        "source_model": "MunicipioTicket",
+                        "legacy_id": legacy.id,
+                        "action": "reply",
+                        "body": "Respuesta que no debe persistirse.",
+                        "delivery_channels": requested_channels,
+                        "client_message_id": f"channel-guard-{index}-0001",
+                    },
+                    headers=self._auth(self.owner),
+                )
+
+                self.assertEqual(response.status_code, 409, response.get_json())
+                self.assertEqual(
+                    response.get_json()["reason_code"],
+                    "reply_channel_source_mismatch",
+                )
+                self.assertEqual(
+                    TicketComentario.query.filter_by(
+                        municipio_ticket_id=legacy.id
+                    ).count(),
+                    0,
+                )
+                self.assertEqual(
+                    TicketDomainEffectReceipt.query.filter_by(
+                        tenant_id=self.tenant.id,
+                    ).count(),
+                    0,
+                )
+
+        dispatch_update.assert_not_called()
+        self.assertEqual(
+            DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+
+    def test_omnichannel_legacy_internal_note_is_tenant_only_and_never_dispatched(self):
+        self._set_tenant_as_municipio()
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-INTERNAL-777008",
+            consulta_pin="777008",
+            pregunta="Nota operativa",
+            categoria="luminaria",
+            detalles="Seguimiento interno",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        with patch(
+            "services.notification_dispatcher.dispatch_ticket_update"
+        ) as dispatch_update, patch("socket_service.socketio.emit") as socket_emit:
+            response = self.client.post(
+                "/api/v2/inbox/omnichannel/actions",
+                json={
+                    "source_model": "MunicipioTicket",
+                    "legacy_id": legacy.id,
+                    "action": "reply",
+                    "body": "Coordinar cuadrilla antes de responder.",
+                    "visibility": "internal",
+                    "send_external": False,
+                    "client_message_id": "internal-note-777008-0001",
+                },
+                headers=self._auth(self.owner),
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        dispatch_update.assert_not_called()
+        payload = response.get_json()
+        self.assertEqual(payload["ticket"]["status"], "nuevo")
+        delivery = payload["delivery"]
+        self.assertEqual(delivery["requested_channels"], [])
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertEqual(delivery["realtime"]["event"], "ticket_update")
+        self.assertEqual(delivery["realtime"]["room"], f"tenant_{self.tenant.id}")
+        comment = TicketComentario.query.filter_by(
+            municipio_ticket_id=legacy.id
+        ).one()
+        self.assertEqual(comment.origen, "internal")
+        self.assertEqual(
+            [
+                call
+                for call in socket_emit.call_args_list
+                if call.args and call.args[0] == "new_chat_message"
+            ],
+            [],
+        )
+        tenant_invalidations = [
+            call
+            for call in socket_emit.call_args_list
+            if call.args and call.args[0] == "ticket_update"
+        ]
+        self.assertEqual(len(tenant_invalidations), 1)
+        self.assertEqual(
+            tenant_invalidations[0].kwargs.get("room"),
+            f"tenant_{self.tenant.id}",
+        )
+        self.assertEqual(
+            set(tenant_invalidations[0].args[1]),
+            {"contract_version", "resource", "reason", "refetch"},
         )
 
     def test_omnichannel_legacy_claim_canary_stages_effects_and_replays_without_direct_io(self):
@@ -3321,29 +3549,34 @@ class V2SaasContractsTest(unittest.TestCase):
             1,
         )
         effects = DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).all()
-        self.assertEqual(len(effects), 4)
+        self.assertEqual(len(effects), 1)
         self.assertEqual(
             {row.channel for row in effects},
-            {"email", "sms", "whatsapp", "realtime"},
+            {"realtime"},
         )
         first_delivery = first.get_json()["delivery"]
-        self.assertEqual(first_delivery["mode"], "durable_queue")
-        self.assertEqual(first_delivery["status"], "durably_staged")
-        self.assertEqual(first_delivery["reason"], "domain_effects_durably_staged")
-        self.assertEqual(first_delivery["reply_status"], "queued_for_delivery")
+        self.assertEqual(first_delivery["mode"], "timeline_only")
+        self.assertEqual(first_delivery["status"], "saved_to_crm")
+        self.assertEqual(
+            first_delivery["reason"],
+            "legacy_whatsapp_enterprise_cutover_required",
+        )
+        self.assertEqual(first_delivery["reply_status"], "saved_to_timeline")
         self.assertFalse(first_delivery["external_dispatch"])
-        self.assertEqual(first_delivery["outbox"]["effect_count"], 4)
+        self.assertEqual(first_delivery["outbox"]["effect_count"], 1)
+        self.assertEqual(first_delivery["outbox"]["external_effect_count"], 0)
+        self.assertFalse(first_delivery["outbox"]["durably_staged"])
         self.assertFalse(first_delivery["outbox"]["direct_dispatch_performed"])
         self.assertEqual(
             first_delivery["final_delivery"]["status"],
-            "pending_provider_callback",
+            "not_dispatched",
         )
         replay_delivery = replay.get_json()["delivery"]
         self.assertEqual(replay_delivery["mode"], "idempotent_replay")
         self.assertEqual(replay_delivery["status"], "already_recorded")
         self.assertEqual(
             replay_delivery["reason"],
-            "idempotent_replay_domain_effects_preserved",
+            "legacy_whatsapp_enterprise_cutover_required",
         )
         self.assertTrue(replay_delivery["idempotency"]["replayed"])
 
@@ -3362,7 +3595,9 @@ class V2SaasContractsTest(unittest.TestCase):
             canal_ingreso="whatsapp",
             nombre_vecino="Marcelo",
             telefono_vecino="+5492613168608",
+            email_vecino="marcelo@example.com",
         )
+        legacy.canal_ingreso = "email"
         db.session.add(legacy)
         db.session.commit()
         from services import ticket_domain_effects
@@ -3840,6 +4075,13 @@ class V2SaasContractsTest(unittest.TestCase):
             **assigned_to_other.datos_extra,
             "assignee_id": other.id,
         }
+        db.session.add(
+            WhatsAppContactState(
+                tenant_id=self.tenant.id,
+                recipient="whatsapp:+5491111111199",
+                last_inbound_at=datetime.now(timezone.utc),
+            )
+        )
         db.session.commit()
 
         detail = self.client.get(
@@ -5275,24 +5517,21 @@ class V2SaasContractsTest(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        send_whatsapp.assert_called_once_with(
-            "+5491111111111",
-            "Estamos revisando tu caso.",
-            from_number="whatsapp:+100",
-        )
+        send_whatsapp.assert_not_called()
         payload = response.get_json()
         self.assertEqual(payload.get("contract_version"), "inbox.omnichannel.action.v1")
         self.assertEqual(payload.get("request_id"), "inbox-action-1")
         self.assertEqual(payload["delivery"]["contract_version"], "inbox.action_delivery.v2")
         self.assertEqual(payload["delivery"]["legacy_contract_version"], "inbox.action_delivery.v1")
-        self.assertEqual(payload["delivery"]["mode"], "real_message")
-        self.assertEqual(payload["delivery"]["delivery_mode"], "real_message")
-        self.assertEqual(payload["delivery"]["status"], "dispatch_attempted")
-        self.assertEqual(payload["delivery"]["fallback"], "provider_receipt_pending")
-        self.assertEqual(payload["delivery"]["reply_status"], "dispatch_attempted")
-        self.assertEqual(payload["delivery"]["final_delivery"]["status"], "pending_provider_callback")
+        self.assertEqual(payload["delivery"]["mode"], "timeline_only")
+        self.assertEqual(payload["delivery"]["delivery_mode"], "timeline_only")
+        self.assertEqual(payload["delivery"]["status"], "saved_to_crm")
+        self.assertEqual(payload["delivery"]["reason"], "whatsapp_outbox_cutover_required")
+        self.assertEqual(payload["delivery"]["fallback"], "saved_to_crm_no_external_dispatch")
+        self.assertEqual(payload["delivery"]["reply_status"], "saved_to_timeline")
+        self.assertEqual(payload["delivery"]["final_delivery"]["status"], "saved")
         self.assertEqual(payload["delivery"]["admin_surface"], "omnichannel_inbox")
-        self.assertTrue(payload["delivery"]["external_dispatch"])
+        self.assertFalse(payload["delivery"]["external_dispatch"])
         self.assertTrue(payload["delivery"]["timeline_updated"])
         self.assertTrue(payload["delivery"]["receipt_persisted"])
         self.assertEqual(
@@ -5300,7 +5539,7 @@ class V2SaasContractsTest(unittest.TestCase):
             {
                 "contract_version": "inbox.reply_delivery_evidence.v1",
                 "saved_in_crm": True,
-                "dispatch_attempted": True,
+                "dispatch_attempted": False,
                 "provider_accepted": False,
                 "delivered": False,
                 "failed": False,
@@ -5310,29 +5549,267 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(payload["delivery"]["requested_channels"], ["whatsapp"])
         self.assertEqual(
             payload["delivery"]["delivery_results"],
-            {"email": False, "sms": False, "whatsapp": True},
+            {"email": False, "sms": False, "whatsapp": False},
         )
-        self.assertIn("sin verificar", payload["delivery"]["operator_message"].lower())
+        self.assertEqual(
+            payload["delivery"]["delivery_skipped"],
+            {"whatsapp": "whatsapp_outbox_cutover_required"},
+        )
+        self.assertIn("guardado en el crm", payload["delivery"]["operator_message"].lower())
         self.assertTrue(payload["ticket"]["timeline"])
         self.assertTrue(any(item.get("body") == "Estamos revisando tu caso." for item in payload["ticket"]["timeline"]))
         db.session.refresh(self.ticket)
         delivery_history = self.ticket.datos_extra.get("reply_delivery_history") or []
-        self.assertEqual(delivery_history[-1]["mode"], "real_message")
-        self.assertEqual(delivery_history[-1]["status"], "dispatch_attempted")
+        self.assertEqual(delivery_history[-1]["mode"], "timeline_only")
+        self.assertEqual(delivery_history[-1]["status"], "saved_to_crm")
         self.assertTrue(delivery_history[-1]["receipt_persisted"])
         self.assertEqual(
             delivery_history[-1]["final_delivery"]["status"],
-            "pending_provider_callback",
+            "saved",
         )
-        self.assertTrue(delivery_history[-1]["external_dispatch"])
+        self.assertFalse(delivery_history[-1]["external_dispatch"])
         refreshed = self.client.get(
             f"/api/v2/inbox/omnichannel/{self.ticket.id}",
             headers=self._auth(self.owner),
         )
         self.assertEqual(refreshed.status_code, 200, refreshed.get_json())
         latest = refreshed.get_json()["item"]["reply_contract"]["delivery_state_machine"]["latest_evidence"]
-        self.assertTrue(latest["dispatch_attempted"])
+        self.assertFalse(latest["dispatch_attempted"])
         self.assertFalse(latest["provider_accepted"])
+
+    def test_tenant_reply_rejects_invalid_visibility_boolean_and_channels_before_persistence(self):
+        cases = (
+            ({"visibility": "internla"}, "reply_visibility_invalid"),
+            ({"visibility": False}, "reply_visibility_invalid"),
+            ({"visibility": 0}, "reply_visibility_invalid"),
+            ({"visibility": ""}, "reply_visibility_invalid"),
+            ({"visibility": []}, "reply_visibility_invalid"),
+            ({"visibility": None}, "reply_visibility_invalid"),
+            ({"send_external": "false"}, "reply_send_external_boolean_required"),
+            ({"send_external": None}, "reply_send_external_boolean_required"),
+            ({"delivery_channels": []}, "reply_channel_invalid"),
+            ({"delivery_channels": None}, "reply_channel_invalid"),
+            ({"delivery_channels": ["fax"]}, "reply_channel_invalid"),
+            (
+                {"delivery_channels": ["whatsapp"], "channels": ["whatsapp"]},
+                "reply_channel_alias_conflict",
+            ),
+            (
+                {"template_variables": {"1": "A"}, "content_variables": {"1": "A"}},
+                "whatsapp_template_variable_alias_conflict",
+            ),
+            (
+                {"delivery_channels": ["whatsapp", "fax"]},
+                "reply_channel_invalid",
+            ),
+        )
+        original_comments = copy.deepcopy((self.ticket.datos_extra or {}).get("comments"))
+
+        with patch(
+            "services.ticket_service.ServicioTickets.crear_respuesta_tenant"
+        ) as create_reply:
+            for index, (invalid_fields, expected_reason) in enumerate(cases, start=1):
+                response = self.client.post(
+                    f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                    json={
+                        "action": "reply",
+                        "source_model": "TenantTicket",
+                        "body": "No debe persistirse ni enviarse.",
+                        "client_message_id": f"invalid-delivery-contract-{index}",
+                        **invalid_fields,
+                    },
+                    headers=self._auth(self.owner),
+                )
+
+                self.assertEqual(response.status_code, 400, response.get_json())
+                self.assertEqual(response.get_json()["reason_code"], expected_reason)
+
+        create_reply.assert_not_called()
+        db.session.expire_all()
+        persisted = db.session.get(TenantTicket, self.ticket.id)
+        self.assertEqual((persisted.datos_extra or {}).get("comments"), original_comments)
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+
+    def test_legacy_reply_rejects_ambiguous_delivery_fields_before_provider_io(self):
+        self._set_tenant_as_municipio()
+        legacy = MunicipioTicket(
+            tenant_id=self.tenant.id,
+            municipio_id=self.owner.id,
+            nro_ticket="M-STRICT-VISIBILITY",
+            consulta_pin="481516",
+            pregunta="Luminaria apagada",
+            asunto="Luminaria",
+            categoria="luminaria",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+            telefono_vecino="+5492613168608",
+        )
+        db.session.add(legacy)
+        db.session.commit()
+
+        cases = (
+            ({"visibility": False}, "reply_visibility_invalid"),
+            ({"send_external": None}, "reply_send_external_boolean_required"),
+            ({"delivery_channels": None}, "reply_channel_invalid"),
+            (
+                {"delivery_channels": ["whatsapp"], "channels": ["whatsapp"]},
+                "reply_channel_alias_conflict",
+            ),
+        )
+        with patch("routes.v2.saas._dispatch_legacy_claim_reply") as dispatch:
+            for index, (invalid_fields, reason_code) in enumerate(cases, start=1):
+                response = self.client.post(
+                    "/api/v2/inbox/omnichannel/actions",
+                    json={
+                        "source_model": "MunicipioTicket",
+                        "legacy_id": legacy.id,
+                        "action": "reply",
+                        "body": "No debe persistirse ni enviarse.",
+                        **invalid_fields,
+                    },
+                    headers={
+                        **self._auth(self.owner),
+                        "Idempotency-Key": f"legacy-invalid-delivery-{index}",
+                    },
+                )
+                self.assertEqual(response.status_code, 400, response.get_json())
+                self.assertEqual(response.get_json()["reason_code"], reason_code)
+
+        dispatch.assert_not_called()
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=legacy.id).count(),
+            0,
+        )
+
+    def test_tenant_reply_service_boundary_rejects_false_visibility(self):
+        from services.ticket_service import (
+            ServicioTickets,
+            TicketIdempotencyValidationError,
+        )
+
+        with self.assertRaises(TicketIdempotencyValidationError):
+            ServicioTickets().crear_respuesta_tenant(
+                self.ticket,
+                {
+                    "body": "No debe convertirse silenciosamente en respuesta publica.",
+                    "visibility": False,
+                    "requested_channels": [],
+                    "emit_socket": False,
+                },
+                idempotency_key="tenant-service-invalid-visibility-false",
+                idempotency_tenant_id=self.tenant.id,
+                reply_actor=self.owner,
+            )
+
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            0,
+        )
+
+    def test_tenant_reply_rejects_mixed_cross_source_channels_before_persistence(self):
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={
+                "action": "reply",
+                "source_model": "TenantTicket",
+                "body": "No debe cruzar canales.",
+                "visibility": "public",
+                "delivery_channels": ["whatsapp", "email"],
+                "client_message_id": "mixed-channel-contract-0001",
+            },
+            headers=self._auth(self.owner),
+        )
+
+        self.assertEqual(response.status_code, 409, response.get_json())
+        self.assertEqual(
+            response.get_json()["reason_code"],
+            "reply_channel_source_mismatch",
+        )
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            0,
+        )
+
+    def test_tenant_whatsapp_reply_rejects_missing_or_invalid_phone_before_queue(self):
+        self._enable_tenant_domain_outbox()
+        for index, (phone, expected_reason) in enumerate(
+            (
+                (None, "contact_phone_missing"),
+                ("telefono-invalido", "contact_phone_invalid"),
+            ),
+            start=1,
+        ):
+            extra = copy.deepcopy(self.ticket.datos_extra or {})
+            extra["contact"] = {**(extra.get("contact") or {}), "phone": phone}
+            extra["contact_key"] = None
+            self.ticket.datos_extra = extra
+            db.session.add(self.ticket)
+            db.session.commit()
+
+            detail = self.client.get(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+                headers=self._auth(self.owner),
+            )
+            self.assertEqual(detail.status_code, 200, detail.get_json())
+            contract = detail.get_json()["ticket"]["reply_contract"]
+            channels = {
+                item["id"]: item for item in contract["delivery_channels"]
+            }
+            self.assertFalse(channels["whatsapp"]["enabled"])
+            self.assertEqual(
+                channels["whatsapp"]["reason_code"],
+                expected_reason,
+            )
+            self.assertFalse(contract["whatsapp"]["external_dispatch_enabled"])
+            self.assertEqual(
+                contract["whatsapp"]["disabled_reason"],
+                expected_reason,
+            )
+
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "source_model": "TenantTicket",
+                    "body": "No debe encolarse sin destinatario válido.",
+                    "visibility": "public",
+                    "delivery_channels": ["whatsapp"],
+                    "client_message_id": f"invalid-phone-reply-{index}-0001",
+                },
+                headers=self._auth(self.owner),
+            )
+
+            self.assertEqual(response.status_code, 400, response.get_json())
+            self.assertEqual(response.get_json()["reason_code"], expected_reason)
+            self.assertEqual(
+                TenantTicketReplyEvent.query.filter_by(
+                    tenant_id=self.tenant.id,
+                    ticket_id=self.ticket.id,
+                ).count(),
+                0,
+            )
+            self.assertEqual(
+                DomainEffectOutbox.query.filter_by(
+                    tenant_id=self.tenant.id,
+                ).count(),
+                0,
+            )
 
     def test_omnichannel_reply_truthfully_reports_receipt_persistence_failure(self):
         client_message_id = "crm-reply:receipt-failure-0001"
@@ -5442,7 +5919,53 @@ class V2SaasContractsTest(unittest.TestCase):
             {"email": False, "sms": False, "whatsapp": False},
         )
 
-    def test_omnichannel_tenant_reply_dispatches_email_from_user_profile(self):
+    def test_tenant_internal_reply_outbox_is_realtime_only_not_external_delivery(self):
+        self._enable_tenant_domain_outbox()
+        client_message_id = "crm-reply:internal-realtime-only-0001"
+
+        with patch(
+            "services.domain_effect_worker.enqueue_domain_effect_dispatch"
+        ) as enqueue_dispatch:
+            response = self.client.post(
+                f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+                json={
+                    "action": "reply",
+                    "source_model": "TenantTicket",
+                    "body": "Nota interna reservada al equipo.",
+                    "visibility": "internal",
+                    "send_external": False,
+                    "client_message_id": client_message_id,
+                },
+                headers={
+                    **self._auth(self.owner),
+                    "Idempotency-Key": client_message_id,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        enqueue_dispatch.assert_called_once_with(tenant_id=self.tenant.id)
+        effects = DomainEffectOutbox.query.filter_by(
+            tenant_id=self.tenant.id,
+            aggregate_type="tenant_ticket_reply",
+        ).all()
+        self.assertEqual(len(effects), 1)
+        self.assertEqual(effects[0].channel, "realtime")
+        delivery = response.get_json()["delivery"]
+        self.assertEqual(delivery["mode"], "timeline_only")
+        self.assertEqual(delivery["status"], "saved_to_crm")
+        self.assertEqual(delivery["final_delivery"]["status"], "not_dispatched")
+        self.assertEqual(
+            delivery["final_delivery"]["authoritative_source"],
+            "not_applicable",
+        )
+        self.assertFalse(delivery["external_dispatch"])
+        self.assertEqual(delivery["outbox"]["effect_count"], 1)
+        self.assertEqual(delivery["outbox"]["external_effect_count"], 0)
+        self.assertFalse(delivery["outbox"]["durably_staged"])
+        self.assertIsNone(delivery["realtime"]["delivery_status_event"])
+        self.assertEqual(delivery["realtime"]["events"], ["ticket_update"])
+
+    def test_omnichannel_tenant_reply_rejects_cross_channel_email_dispatch(self):
         with patch("services.email_service.enviar_email", return_value=True) as send_email:
             response = self.client.post(
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
@@ -5457,24 +5980,14 @@ class V2SaasContractsTest(unittest.TestCase):
                 headers=self._auth(self.owner),
             )
 
-        self.assertEqual(response.status_code, 200, response.get_json())
-        send_email.assert_called_once_with(
-            self.owner.email,
-            f"Respuesta de {self.tenant.nombre} - solicitud #{self.ticket.id}",
-            "<p>&lt;Gracias&gt;<br>Seguimos con tu caso.</p>",
-            cuerpo_texto="<Gracias>\nSeguimos con tu caso.",
-        )
-        delivery = response.get_json()["delivery"]
-        self.assertEqual(delivery["mode"], "real_message")
-        self.assertEqual(delivery["channel"], "email")
-        self.assertEqual(delivery["requested_channels"], ["email"])
+        self.assertEqual(response.status_code, 409, response.get_json())
         self.assertEqual(
-            delivery["delivery_results"],
-            {"email": True, "sms": False, "whatsapp": False},
+            response.get_json()["reason_code"],
+            "reply_channel_source_mismatch",
         )
-        self.assertTrue(delivery["external_dispatch"])
+        send_email.assert_not_called()
 
-    def test_omnichannel_tenant_reply_retries_once_without_duplicate_dispatch(self):
+    def test_omnichannel_tenant_reply_legacy_mode_saves_crm_without_whatsapp_dispatch(self):
         client_message_id = "crm-reply:tenant-retry-0001"
         request_payload = {
             "action": "reply",
@@ -5508,7 +6021,7 @@ class V2SaasContractsTest(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200, first.get_json())
         self.assertEqual(replay.status_code, 200, replay.get_json())
-        send_whatsapp.assert_called_once()
+        send_whatsapp.assert_not_called()
         emit_realtime.assert_called_once()
         db.session.refresh(self.ticket)
         matching_events = [
@@ -5523,7 +6036,18 @@ class V2SaasContractsTest(unittest.TestCase):
         ).all()
         self.assertEqual(len(receipts), 1)
         self.assertNotIn(client_message_id, receipts[0].idempotency_key)
-        self.assertEqual(first.get_json()["delivery"]["mode"], "real_message")
+        first_delivery = first.get_json()["delivery"]
+        self.assertEqual(first_delivery["mode"], "timeline_only")
+        self.assertEqual(
+            first_delivery["reason"], "whatsapp_outbox_cutover_required"
+        )
+        self.assertFalse(first_delivery["external_dispatch"])
+        self.assertEqual(
+            first_delivery["delivery_skipped"],
+            {"whatsapp": "whatsapp_outbox_cutover_required"},
+        )
+        self.assertEqual(first_delivery["final_delivery"]["status"], "saved")
+        self.assertFalse(first_delivery["final_delivery"]["automatic_retry_allowed"])
         replay_delivery = replay.get_json()["delivery"]
         self.assertEqual(replay_delivery["mode"], "idempotent_replay")
         self.assertEqual(replay_delivery["status"], "already_recorded")
@@ -5585,7 +6109,12 @@ class V2SaasContractsTest(unittest.TestCase):
             1,
         )
 
-    def test_omnichannel_tenant_reply_provider_failure_is_durable_and_not_resent(self):
+    def test_omnichannel_tenant_reply_outside_24h_requires_template_before_any_io(self):
+        self._enable_tenant_domain_outbox()
+        self._configure_tenant_whatsapp_sender(
+            suffix="outside-window",
+            last_inbound_at=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
         client_message_id = "crm-reply:tenant-provider-failure-0001"
         request_payload = {
             "action": "reply",
@@ -5603,47 +6132,232 @@ class V2SaasContractsTest(unittest.TestCase):
             "utils.whatsapp.enviar_mensaje_whatsapp_con_fallback",
             side_effect=RuntimeError("provider unavailable"),
         ) as send_whatsapp, patch(
-            "routes.v2.saas._emit_tenant_ticket_realtime_reply",
-            return_value=True,
-        ):
+            "routes.v2.saas._dispatch_tenant_ticket_reply"
+        ) as legacy_dispatch, patch(
+            "services.ticket_domain_effects.send_prepared_tenant_twilio_message"
+        ) as tenant_provider_send:
             first = self.client.post(
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
                 json=request_payload,
                 headers=headers,
             )
-            replay = self.client.post(
+
+        self.assertEqual(first.status_code, 409, first.get_json())
+        self.assertEqual(
+            first.get_json()["reason_code"],
+            "whatsapp_template_required_outside_24h",
+        )
+        send_whatsapp.assert_not_called()
+        legacy_dispatch.assert_not_called()
+        tenant_provider_send.assert_not_called()
+        self.assertEqual(
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id, ticket_id=self.ticket.id
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(), 0
+        )
+
+    def test_omnichannel_template_reply_rejects_body_that_differs_from_provider_content(self):
+        self._enable_tenant_domain_outbox()
+        self._configure_tenant_whatsapp_sender(
+            suffix="template-body-mismatch",
+            last_inbound_at=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
+        template = MessageTemplateRegistry(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="municipio_reclamo_actualizado",
+            language="es_AR",
+            category="UTILITY",
+            status="approved",
+            content_sid="HX" + ("d" * 32),
+            last_sync_at=datetime.now(timezone.utc),
+            body_preview="Actualizamos el reclamo {{1}}: {{2}}.",
+        )
+        db.session.add(template)
+        db.session.commit()
+        client_message_id = "crm-reply:template-body-mismatch-0001"
+
+        with patch(
+            "services.ticket_domain_effects.send_prepared_tenant_twilio_message"
+        ) as provider_send:
+            response = self.client.post(
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
-                json=request_payload,
-                headers=headers,
+                json={
+                    "action": "reply",
+                    "source_model": "TenantTicket",
+                    "body": "El caso fue resuelto.",
+                    "visibility": "public",
+                    "delivery_channels": ["whatsapp"],
+                    "template_registry_id": template.id,
+                    "template_variables": {
+                        "1": "M-419",
+                        "2": "cuadrilla asignada",
+                    },
+                    "client_message_id": client_message_id,
+                },
+                headers={
+                    **self._auth(self.owner),
+                    "Idempotency-Key": client_message_id,
+                },
             )
 
-        self.assertEqual(first.status_code, 200, first.get_json())
-        self.assertEqual(replay.status_code, 200, replay.get_json())
-        send_whatsapp.assert_called_once()
-        first_delivery = first.get_json()["delivery"]
-        self.assertEqual(first_delivery["mode"], "timeline_only")
-        self.assertEqual(first_delivery["reason"], "external_dispatch_failed")
+        self.assertEqual(response.status_code, 409, response.get_json())
         self.assertEqual(
-            first_delivery["delivery_skipped"],
-            {"whatsapp": "provider_error"},
+            response.get_json()["reason_code"],
+            "whatsapp_template_body_mismatch",
         )
-        self.assertFalse(first_delivery["external_dispatch"])
         self.assertEqual(
-            replay.get_json()["delivery"]["reason"],
-            "idempotent_replay_no_redispatch",
+            response.get_json()["action_hint"],
+            "refresh_approved_template_preview",
         )
-        db.session.refresh(self.ticket)
+        provider_send.assert_not_called()
         self.assertEqual(
-            sum(
-                1
-                for event in self.ticket.datos_extra.get("comments", [])
-                if event.get("body") == request_payload["body"]
+            TenantTicketReplyEvent.query.filter_by(
+                tenant_id=self.tenant.id,
+                ticket_id=self.ticket.id,
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            DomainEffectOutbox.query.filter_by(tenant_id=self.tenant.id).count(),
+            0,
+        )
+
+    def test_template_reply_worker_rejects_tampered_delivery_body_before_provider_io(self):
+        self._enable_tenant_domain_outbox()
+        self._configure_tenant_whatsapp_sender(
+            suffix="template-body-tamper",
+            last_inbound_at=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
+        template = MessageTemplateRegistry(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="municipio_reclamo_seguimiento",
+            language="es_AR",
+            category="UTILITY",
+            status="approved",
+            content_sid="HX" + ("e" * 32),
+            last_sync_at=datetime.now(timezone.utc),
+            body_preview="Actualizamos el reclamo {{1}}: {{2}}.",
+        )
+        db.session.add(template)
+        db.session.commit()
+        rendered_body = "Actualizamos el reclamo M-419: cuadrilla asignada."
+        client_message_id = "crm-reply:template-body-tamper-0001"
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={
+                "action": "reply",
+                "source_model": "TenantTicket",
+                "body": rendered_body,
+                "visibility": "public",
+                "delivery_channels": ["whatsapp"],
+                "template_registry_id": template.id,
+                "template_variables": {
+                    "1": "M-419",
+                    "2": "cuadrilla asignada",
+                },
+                "client_message_id": client_message_id,
+            },
+            headers={
+                **self._auth(self.owner),
+                "Idempotency-Key": client_message_id,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+
+        reply = TenantTicketReplyEvent.query.filter_by(
+            tenant_id=self.tenant.id,
+            ticket_id=self.ticket.id,
+        ).one()
+        self.assertEqual(reply.body, rendered_body)
+        self.assertEqual(
+            reply.to_event_dict()["content_source"],
+            "approved_whatsapp_template",
+        )
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        persisted_timeline_item = next(
+            item
+            for item in detail.get_json()["item"]["timeline"]
+            if item.get("id") == reply.event_id
+        )
+        self.assertEqual(
+            persisted_timeline_item["content_source"],
+            "approved_whatsapp_template",
+        )
+        policy_snapshot = dict(reply.whatsapp_policy_snapshot or {})
+        delivery_binding = dict(policy_snapshot.get("_delivery_binding") or {})
+        self.assertEqual(delivery_binding["delivery_body_snapshot"], rendered_body)
+        delivery_binding["delivery_body_snapshot"] = "Contenido alterado."
+        policy_snapshot["_delivery_binding"] = delivery_binding
+        reply.whatsapp_policy_snapshot = policy_snapshot
+        db.session.add(reply)
+        db.session.commit()
+
+        whatsapp_effect = DomainEffectOutbox.query.filter_by(
+            tenant_id=self.tenant.id,
+            aggregate_type="tenant_ticket_reply",
+            aggregate_ref=f"{self.ticket.id}:{reply.event_id}",
+            channel="whatsapp",
+        ).one()
+        from services.domain_effect_outbox import (
+            DomainEffectClaim,
+            PermanentDomainEffectError,
+        )
+        from services.ticket_domain_effects import (
+            _prepare_tenant_reply_whatsapp,
+            _tenant_reply_recipient_ref,
+        )
+
+        claim = DomainEffectClaim(
+            effect_id=whatsapp_effect.id,
+            tenant_id=whatsapp_effect.tenant_id,
+            contract_version=whatsapp_effect.contract_version,
+            aggregate_type=whatsapp_effect.aggregate_type,
+            aggregate_ref=whatsapp_effect.aggregate_ref,
+            effect_type=whatsapp_effect.effect_type,
+            handler_name=whatsapp_effect.handler_name,
+            channel=whatsapp_effect.channel,
+            recipient_ref=_tenant_reply_recipient_ref(
+                secret=self.app.config["DOMAIN_EFFECT_OUTBOX_SECRET"],
+                reply_event=reply,
+                channel="whatsapp",
             ),
-            1,
+            effect_key=whatsapp_effect.effect_key,
+            intent_hmac=whatsapp_effect.intent_hmac,
+            payload=dict(whatsapp_effect.payload_json or {}),
+            attempt_count=0,
+            max_attempts=whatsapp_effect.max_attempts,
+            lease_token="template-body-tamper-test",
         )
+        with patch(
+            "services.ticket_domain_effects.prepare_bound_tenant_twilio_message"
+        ) as provider_preflight, patch(
+            "services.ticket_domain_effects.send_prepared_tenant_twilio_message"
+        ) as provider_send:
+            with self.assertRaises(PermanentDomainEffectError) as raised:
+                _prepare_tenant_reply_whatsapp(claim)
+
+        self.assertEqual(
+            str(raised.exception),
+            "tenant_ticket_reply_template_body_snapshot_mismatch",
+        )
+        provider_preflight.assert_not_called()
+        provider_send.assert_not_called()
 
     def test_omnichannel_tenant_reply_outbox_stages_once_and_replays(self):
         self._enable_tenant_domain_outbox()
+        self._configure_tenant_whatsapp_sender(suffix="outbox-replay")
         client_message_id = "crm-reply:tenant-outbox-0001"
         request_payload = {
             "action": "reply",
@@ -5738,18 +6452,25 @@ class V2SaasContractsTest(unittest.TestCase):
         )
         db.session.add(connection)
         db.session.flush()
-        db.session.add(
-            ProviderSender(
-                tenant_id=self.tenant.id,
-                provider_connection_id=connection.id,
-                channel="whatsapp",
-                sender_type="whatsapp_business",
-                phone_number="+15005550006",
-                sender_id="whatsapp:+15005550006",
-                status="online",
-                status_callback_url="https://api.example.test/twilio/whatsapp/status",
-            )
+        sender = ProviderSender(
+            tenant_id=self.tenant.id,
+            provider_connection_id=connection.id,
+            channel="whatsapp",
+            sender_type="whatsapp_business",
+            phone_number="+15005550006",
+            sender_id="whatsapp:+15005550006",
+            status="online",
+            status_callback_url="https://api.example.test/twilio/whatsapp/status",
         )
+        db.session.add(sender)
+        db.session.flush()
+        contact_state = WhatsAppContactState.query.filter_by(
+            tenant_id=self.tenant.id,
+            recipient="whatsapp:+5491111111111",
+        ).one()
+        contact_state.provider_sender_id = sender.id
+        contact_state.last_inbound_at = datetime.now(timezone.utc)
+        db.session.add(contact_state)
         db.session.commit()
 
         first_body = "Respuesta que debe sobrevivir a la poda del timeline."
@@ -5759,7 +6480,7 @@ class V2SaasContractsTest(unittest.TestCase):
             "source_model": "TenantTicket",
             "body": first_body,
             "visibility": "public",
-            "delivery_channels": ["email", "whatsapp"],
+            "delivery_channels": ["whatsapp"],
             "client_message_id": client_message_id,
         }
         headers = {
@@ -5812,7 +6533,7 @@ class V2SaasContractsTest(unittest.TestCase):
             ticket_id=self.ticket.id,
             body=first_body,
         ).one()
-        self.assertEqual(pinned.recipient_email, original_email)
+        self.assertIsNone(pinned.recipient_email)
         self.assertEqual(pinned.recipient_phone, original_phone)
 
         changed_extra = dict(ticket.datos_extra or {})
@@ -5831,7 +6552,7 @@ class V2SaasContractsTest(unittest.TestCase):
             aggregate_type="tenant_ticket_reply",
             aggregate_ref=f"{self.ticket.id}:{pinned.event_id}",
         ).all()
-        self.assertEqual(len(effects), 3)
+        self.assertEqual(len(effects), 2)
         for effect in effects:
             self.assertTrue(effect.recipient_ref.startswith("recipient_hash:"))
             serialized = json.dumps(effect.payload_json, sort_keys=True)
@@ -5855,12 +6576,6 @@ class V2SaasContractsTest(unittest.TestCase):
         from services.domain_effect_worker import dispatch_domain_effect_batch
 
         with patch(
-            "services.ticket_domain_effects._email_preflight_error",
-            return_value=None,
-        ), patch(
-            "services.email_service.enviar_email",
-            return_value=True,
-        ) as send_email, patch(
             "services.ticket_domain_effects.send_prepared_tenant_twilio_message",
             return_value="SM-pinned-reply",
         ) as send_whatsapp, patch(
@@ -5880,12 +6595,9 @@ class V2SaasContractsTest(unittest.TestCase):
                 limit=10,
             )
 
-        self.assertEqual(batch["processed"], 3)
-        self.assertEqual(batch["succeeded"], 3)
+        self.assertEqual(batch["processed"], 2)
+        self.assertEqual(batch["succeeded"], 2)
         self.assertEqual(empty_batch["processed"], 0)
-        send_email.assert_called_once()
-        self.assertEqual(send_email.call_args.args[0], original_email)
-        self.assertNotEqual(send_email.call_args.args[0], "redirected@test.com")
         send_whatsapp.assert_called_once()
         prepared = send_whatsapp.call_args.args[0]
         self.assertEqual(prepared.params["to"], f"whatsapp:{original_phone}")
@@ -5914,6 +6626,7 @@ class V2SaasContractsTest(unittest.TestCase):
 
     def test_tenant_reply_transaction_rolls_back_snapshot_receipt_and_timeline(self):
         self._enable_tenant_domain_outbox()
+        self._configure_tenant_whatsapp_sender(suffix="rollback")
         original_timeline = list(self.ticket.datos_extra.get("comments") or [])
         with patch(
             "services.ticket_domain_effects.stage_tenant_ticket_reply_effects",
@@ -5990,6 +6703,14 @@ class V2SaasContractsTest(unittest.TestCase):
             status_callback_url="https://api.example.test/twilio/whatsapp/status",
         )
         db.session.add(sender)
+        db.session.flush()
+        contact_state = WhatsAppContactState.query.filter_by(
+            tenant_id=self.tenant.id,
+            recipient="whatsapp:+5491111111111",
+        ).one()
+        contact_state.provider_sender_id = sender.id
+        contact_state.last_inbound_at = datetime.now(timezone.utc)
+        db.session.add(contact_state)
         db.session.commit()
 
         client_message_id = "crm-reply:tenant-provider-unknown-0001"
@@ -6040,6 +6761,22 @@ class V2SaasContractsTest(unittest.TestCase):
         ).one()
         self.assertEqual(whatsapp_effect.status, DomainEffectOutbox.STATUS_UNKNOWN)
         self.assertIsNotNone(whatsapp_effect.io_started_at)
+        reply = TenantTicketReplyEvent.query.filter_by(
+            tenant_id=self.tenant.id,
+            ticket_id=self.ticket.id,
+        ).one()
+        self.assertEqual(reply.whatsapp_delivery_status, "uncertain")
+        self.assertIsNone(reply.whatsapp_failed_at)
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        exposed = detail.get_json()["ticket"]["reply_deliveries"][0]
+        self.assertEqual(exposed["status"], "uncertain")
+        self.assertEqual(exposed["error_code"], "provider_acceptance_unknown")
+        self.assertFalse(exposed["automatic_retry_allowed"])
+        self.assertTrue(exposed["reconciliation_required"])
 
     def test_omnichannel_tenant_reply_rejects_cross_tenant_target_before_receipt(self):
         foreign_owner = User(

@@ -35,6 +35,7 @@ from models import (
     ProviderConnection,
     ProviderSender,
     TenantProfile,
+    TenantTicketReplyEvent,
     db,
 )
 from services.llm_provider_network_policy import (
@@ -56,7 +57,9 @@ _HEX_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _MESSAGE_SERVICE_RE = re.compile(r"^MG[A-Za-z0-9]{8,64}$")
 _TWILIO_CONTENT_SID_RE = re.compile(r"^HX[0-9a-fA-F]{32}$")
 _CONTENT_VARIABLE_KEY_RE = re.compile(r"^[1-9][0-9]{0,2}$")
+_TEMPLATE_VARIABLE_RE = re.compile(r"{{\s*([1-9][0-9]{0,2})\s*}}")
 _STATUS_CALLBACK_ATTEMPT_PARAM = "notification_attempt_id"
+_STATUS_CALLBACK_TENANT_REPLY_PARAM = "tenant_ticket_reply_event_id"
 _MAX_CALLBACK_URL_LENGTH = 2048
 _MAX_CONTENT_VARIABLES = 100
 _MAX_CONTENT_VARIABLE_LENGTH = 1000
@@ -98,6 +101,60 @@ class TenantTwilioMessagePreflight:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _template_variable_keys(*values: Any) -> tuple[str, ...]:
+    indexes: set[int] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            indexes.update(int(match) for match in _TEMPLATE_VARIABLE_RE.findall(value))
+        elif isinstance(value, Mapping):
+            for key, nested in value.items():
+                visit(key)
+                visit(nested)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for nested in value:
+                visit(nested)
+
+    for value in values:
+        visit(value)
+    return tuple(str(index) for index in sorted(indexes))
+
+
+def tenant_template_delivery_snapshot(registry: MessageTemplateRegistry) -> dict[str, Any]:
+    """Return the immutable provider semantics signed by a durable reply."""
+
+    document = {
+        "registry_id": _positive_int(getattr(registry, "id", None)),
+        "tenant_id": _positive_int(getattr(registry, "tenant_id", None)),
+        "provider": _clean(getattr(registry, "provider", None)).lower(),
+        "channel": _clean(getattr(registry, "channel", None)).lower(),
+        "name": _clean(getattr(registry, "name", None)),
+        "language": _clean(getattr(registry, "language", None)),
+        "category": _clean(getattr(registry, "category", None)),
+        "content_sid": _clean(getattr(registry, "content_sid", None)),
+        "external_template_id": _clean(
+            getattr(registry, "external_template_id", None)
+        ),
+        "body_preview": str(getattr(registry, "body_preview", None) or ""),
+        "components": getattr(registry, "components", None),
+    }
+    variable_keys = _template_variable_keys(
+        document["body_preview"], document["components"]
+    )
+    encoded = json.dumps(
+        document,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return {
+        **document,
+        "variable_keys": list(variable_keys),
+        "fingerprint": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _positive_int(value: Any) -> int | None:
@@ -345,10 +402,10 @@ def _validated_media_urls(values: Sequence[Any]) -> tuple[str, ...] | None:
     return tuple(normalized)
 
 
-def _serialized_content_variables(
-    values: Mapping[str, Any] | None,
-) -> tuple[str | None, str | None]:
-    """Return Twilio's JSON string without accepting transport-shaped input."""
+def normalize_whatsapp_template_variables(
+    values: Any,
+) -> tuple[dict[str, str] | None, str | None]:
+    """Return the one canonical variable map accepted by every send boundary."""
 
     if values is None:
         return None, None
@@ -403,6 +460,18 @@ def _serialized_content_variables(
     )
     if len(serialized.encode("utf-8")) > _MAX_CONTENT_VARIABLES_JSON_LENGTH:
         return None, "whatsapp_template_variables_invalid"
+    return normalized, None
+
+
+def _serialized_content_variables(
+    values: Mapping[str, Any] | None,
+) -> tuple[str | None, str | None]:
+    """Return Twilio's JSON string from the shared canonical variable map."""
+
+    normalized, error = normalize_whatsapp_template_variables(values)
+    if error or normalized is None:
+        return None, error
+    serialized = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
     return serialized, None
 
 
@@ -410,6 +479,7 @@ def _tenant_template_content_sid(
     *,
     tenant_id: int,
     template_registry_id: Any,
+    expected_template_fingerprint: str | None,
     session,
 ) -> tuple[str | None, str | None]:
     registry_id = _positive_int(template_registry_id)
@@ -428,6 +498,16 @@ def _tenant_template_content_sid(
     )
     if registry is None:
         return None, "whatsapp_template_registry_mismatch"
+
+    if expected_template_fingerprint is not None:
+        expected_fingerprint = _clean(expected_template_fingerprint).lower()
+        if not _HEX_DIGEST_RE.fullmatch(expected_fingerprint):
+            return None, "whatsapp_template_snapshot_required"
+        current_fingerprint = str(
+            tenant_template_delivery_snapshot(registry).get("fingerprint") or ""
+        ).lower()
+        if not hmac.compare_digest(current_fingerprint, expected_fingerprint):
+            return None, "whatsapp_template_snapshot_mismatch"
 
     content_sid = _clean(getattr(registry, "content_sid", None))
     if not _TWILIO_CONTENT_SID_RE.fullmatch(content_sid):
@@ -455,12 +535,24 @@ def _canonical_notification_attempt_id(value: Any) -> str | None:
     return canonical if rendered.lower() == canonical else None
 
 
+def _canonical_tenant_ticket_reply_event_id(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return normalized if normalized > 0 and str(value).strip() == str(normalized) else None
+
+
 def _status_callback_for_message(
     *,
     tenant_id: int,
     channel: TwilioChannel,
     sender: ProviderSender,
     notification_attempt_id: Any,
+    tenant_ticket_reply_event_id: Any,
+    recipient: str,
     session,
 ) -> tuple[str | None, str | None]:
     """Derive a per-attempt callback only from the bound sender base URL."""
@@ -471,6 +563,9 @@ def _status_callback_for_message(
         return None, f"{channel}_status_callback_invalid"
 
     canonical_attempt_id: str | None = None
+    canonical_reply_event_id: int | None = None
+    if notification_attempt_id is not None and tenant_ticket_reply_event_id is not None:
+        return None, "status_callback_scope_conflict"
     if notification_attempt_id is not None:
         canonical_attempt_id = _canonical_notification_attempt_id(
             notification_attempt_id
@@ -511,6 +606,32 @@ def _status_callback_for_message(
         ):
             return None, "notification_attempt_scope_mismatch"
 
+    if tenant_ticket_reply_event_id is not None:
+        canonical_reply_event_id = _canonical_tenant_ticket_reply_event_id(
+            tenant_ticket_reply_event_id
+        )
+        if canonical_reply_event_id is None or callback is None:
+            return None, (
+                "tenant_ticket_reply_event_scope_mismatch"
+                if canonical_reply_event_id is None
+                else f"{channel}_status_callback_missing"
+            )
+        reply_event = (
+            session.query(TenantTicketReplyEvent)
+            .filter_by(id=canonical_reply_event_id, tenant_id=int(tenant_id))
+            .one_or_none()
+        )
+        pinned_recipient = _normalized_e164(
+            getattr(reply_event, "recipient_phone", None)
+        )
+        if (
+            channel != "whatsapp"
+            or reply_event is None
+            or not pinned_recipient
+            or not hmac.compare_digest(pinned_recipient, recipient)
+        ):
+            return None, "tenant_ticket_reply_event_scope_mismatch"
+
     if callback is None:
         return None, None
 
@@ -525,9 +646,10 @@ def _status_callback_for_message(
         return None, f"{channel}_status_callback_invalid"
 
     reserved_present = any(
-        key == _STATUS_CALLBACK_ATTEMPT_PARAM for key, _value in query_items
+        key in {_STATUS_CALLBACK_ATTEMPT_PARAM, _STATUS_CALLBACK_TENANT_REPLY_PARAM}
+        for key, _value in query_items
     )
-    if canonical_attempt_id is None:
+    if canonical_attempt_id is None and canonical_reply_event_id is None:
         if reserved_present:
             return None, f"{channel}_status_callback_invalid"
         return callback, None
@@ -535,9 +657,12 @@ def _status_callback_for_message(
     query_items = [
         (key, value)
         for key, value in query_items
-        if key != _STATUS_CALLBACK_ATTEMPT_PARAM
+        if key not in {_STATUS_CALLBACK_ATTEMPT_PARAM, _STATUS_CALLBACK_TENANT_REPLY_PARAM}
     ]
-    query_items.append((_STATUS_CALLBACK_ATTEMPT_PARAM, canonical_attempt_id))
+    if canonical_attempt_id is not None:
+        query_items.append((_STATUS_CALLBACK_ATTEMPT_PARAM, canonical_attempt_id))
+    if canonical_reply_event_id is not None:
+        query_items.append((_STATUS_CALLBACK_TENANT_REPLY_PARAM, str(canonical_reply_event_id)))
     derived = urlunparse(parsed._replace(query=urlencode(query_items)))
     validated = _valid_callback_url(derived)
     if validated is None:
@@ -555,7 +680,9 @@ def prepare_bound_tenant_twilio_message(
     media_urls: Sequence[str] = (),
     template_registry_id: int | None = None,
     content_variables: Mapping[str, Any] | None = None,
+    expected_template_fingerprint: str | None = None,
     notification_attempt_id: str | None = None,
+    tenant_ticket_reply_event_id: int | None = None,
     session=None,
 ) -> TenantTwilioMessagePreflight:
     """Validate tenant scope and return an immutable Twilio provider call.
@@ -647,6 +774,7 @@ def prepare_bound_tenant_twilio_message(
         content_sid, template_error = _tenant_template_content_sid(
             tenant_id=int(tenant_id),
             template_registry_id=template_registry_id,
+            expected_template_fingerprint=expected_template_fingerprint,
             session=effect_session,
         )
         if template_error:
@@ -713,6 +841,8 @@ def prepare_bound_tenant_twilio_message(
         channel=channel,
         sender=sender,
         notification_attempt_id=notification_attempt_id,
+        tenant_ticket_reply_event_id=tenant_ticket_reply_event_id,
+        recipient=normalized_recipient,
         session=effect_session,
     )
     if callback_error:
@@ -777,6 +907,7 @@ __all__ = [
     "TenantTwilioScopeError",
     "TenantTwilioSenderSnapshot",
     "build_tenant_twilio_sender_binding",
+    "normalize_whatsapp_template_variables",
     "prepare_bound_tenant_twilio_message",
     "resolve_tenant_twilio_sender_snapshot",
     "send_prepared_tenant_twilio_message",

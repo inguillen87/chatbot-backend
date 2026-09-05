@@ -50,6 +50,9 @@ PUBLIC_TICKET_COMMENT_ORIGINS = {
     "widget",
 }
 TENANT_TICKET_INVALIDATION_CONTRACT_VERSION = "tickets.collection.invalidated.v1"
+TENANT_TICKET_REPLY_DELIVERY_REALTIME_CONTRACT_VERSION = (
+    "tenant_ticket.reply_delivery.realtime.v1"
+)
 
 SURVEY_EFFECT_WORKER_ROLE = "survey-effect-worker"
 _SOCKET_QUEUE_CHANNEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
@@ -617,6 +620,26 @@ def _resolve_ticket_room(payload: Any) -> Optional[str]:
 def emit_ticket_update(data: Any) -> None:
     """Invalidate tenant ticket collections without broadcasting case data."""
 
+    _emit_tenant_ticket_invalidation(data)
+
+
+def emit_ticket_reply_delivery_updated(data: Any) -> None:
+    """Invalidate delivery receipts without exposing case or provider data."""
+
+    room = _resolve_tenant_ticket_room(data)
+    if not room:
+        current_app.logger.warning("Dropped unscoped ticket reply delivery invalidation")
+        return
+    _emit_with_outbox_budget(
+        "ticket.reply.delivery.updated",
+        {
+            "contract_version": TENANT_TICKET_REPLY_DELIVERY_REALTIME_CONTRACT_VERSION,
+            "resource": "reply_deliveries",
+            "reason": "delivery_status_changed",
+            "refetch": True,
+        },
+        room=room,
+    )
     _emit_tenant_ticket_invalidation(data)
 
 

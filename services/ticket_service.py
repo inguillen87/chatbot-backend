@@ -56,6 +56,21 @@ _WHATSAPP_TURN_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,80}$")
 _EFFECT_SUFFIX_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 
 
+def _is_internal_ticket_comment(comment: TicketComentario) -> bool:
+    """Treat whitespace/case variants of ``internal`` as private notes."""
+
+    return str(getattr(comment, "origen", None) or "").strip().casefold() == "internal"
+
+
+def _public_ticket_comment_filter():
+    """SQL predicate matching comments that may be shown outside backoffice."""
+
+    return or_(
+        TicketComentario.origen.is_(None),
+        func.lower(func.trim(TicketComentario.origen)) != "internal",
+    )
+
+
 class TicketIdempotencyError(RuntimeError):
     """Base error for fail-closed ticket idempotency decisions."""
 
@@ -1283,6 +1298,9 @@ class ServicioTickets:
                             comentario_data.get("emit_notifications", True)
                         ),
                         emit_socket=bool(comentario_data.get("emit_socket", True)),
+                        requested_channels=comentario_data.get(
+                            "requested_channels"
+                        ),
                         session=db.session,
                     )
             except Exception:
@@ -1458,15 +1476,78 @@ class ServicioTickets:
             raise TicketIdempotencyValidationError(
                 "A TenantTicket reply requires a non-empty body."
             )
-        visibility = str(reply_data.get("visibility") or "public").strip().lower()
-        visibility = "internal" if visibility == "internal" else "public"
-        requested_channels = sorted(
-            {
-                str(channel or "").strip().lower()
-                for channel in (reply_data.get("requested_channels") or [])
-                if str(channel or "").strip().lower() in {"email", "whatsapp"}
-            }
+        raw_visibility = (
+            reply_data["visibility"] if "visibility" in reply_data else "public"
         )
+        if not isinstance(raw_visibility, str):
+            raise TicketIdempotencyValidationError(
+                "TenantTicket reply visibility must be public or internal."
+            )
+        visibility = raw_visibility.strip().lower()
+        if visibility not in {"public", "internal"}:
+            raise TicketIdempotencyValidationError(
+                "TenantTicket reply visibility must be public or internal."
+            )
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyDeliveryError,
+            normalize_template_variables,
+        )
+
+        raw_requested_channels = reply_data.get("requested_channels") or []
+        if not isinstance(raw_requested_channels, (list, tuple)):
+            raise TenantTicketReplyDeliveryError(
+                "tenant_ticket_reply_channels_invalid"
+            )
+        requested_channels_set: set[str] = set()
+        for raw_channel in raw_requested_channels:
+            if not isinstance(raw_channel, str):
+                raise TenantTicketReplyDeliveryError(
+                    "tenant_ticket_reply_channels_invalid"
+                )
+            normalized_channel = raw_channel.strip().lower()
+            if normalized_channel not in {"email", "whatsapp"}:
+                raise TenantTicketReplyDeliveryError(
+                    "tenant_ticket_reply_channels_invalid"
+                )
+            requested_channels_set.add(normalized_channel)
+        requested_channels = sorted(requested_channels_set)
+
+        raw_template_registry_id = reply_data.get("template_registry_id")
+        template_registry_id = None
+        if raw_template_registry_id not in (None, ""):
+            try:
+                template_registry_id = int(raw_template_registry_id)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise TenantTicketReplyDeliveryError(
+                    "whatsapp_template_registry_invalid"
+                ) from exc
+            if isinstance(raw_template_registry_id, bool) or template_registry_id <= 0:
+                raise TenantTicketReplyDeliveryError(
+                    "whatsapp_template_registry_invalid"
+                )
+        template_variables = normalize_template_variables(
+            reply_data.get("template_variables")
+        )
+        if (template_registry_id is not None or template_variables is not None) and (
+            "whatsapp" not in requested_channels
+        ):
+            raise TenantTicketReplyDeliveryError(
+                "whatsapp_template_requires_whatsapp_channel"
+            )
+        whatsapp_dispatch_enabled = False
+        if "whatsapp" in requested_channels:
+            from flask import has_app_context
+
+            if has_app_context():
+                from flask import current_app
+                from services.domain_effect_gate import (
+                    resolve_domain_effect_outbox_policy,
+                )
+
+                whatsapp_dispatch_enabled = resolve_domain_effect_outbox_policy(
+                    current_app.config,
+                    tenant_id=normalized_tenant_id,
+                ).enabled
         emit_socket = bool(reply_data.get("emit_socket", True))
         effect_kind = "ticket.comment.tenant"
         payload_hash = canonical_ticket_payload_hash(
@@ -1477,6 +1558,8 @@ class ServicioTickets:
                 "visibility": visibility,
                 "actor_user_id": reply_data.get("actor_user_id"),
                 "requested_channels": requested_channels,
+                "template_registry_id": template_registry_id,
+                "template_variables": template_variables,
                 "emit_socket": emit_socket,
             },
         )
@@ -1521,6 +1604,7 @@ class ServicioTickets:
             "origin": "admin_panel",
             "action": "reply",
             "body": body,
+            "content_source": "operator_free_form",
             "visibility": visibility,
             "created_at": datetime_to_iso_utc(event_created_at),
             "actor": {
@@ -1542,6 +1626,68 @@ class ServicioTickets:
             normalized_contact_phone = (
                 normalize_phone(contact_phone) if contact_phone else None
             )
+            whatsapp_policy_snapshot = None
+            if "whatsapp" in requested_channels:
+                if not contact_phone:
+                    raise TenantTicketReplyDeliveryError(
+                        "contact_phone_missing"
+                    )
+                if not normalized_contact_phone:
+                    raise TenantTicketReplyDeliveryError(
+                        "contact_phone_invalid"
+                    )
+                from services.tenant_ticket_reply_delivery import (
+                    TenantTicketReplyDeliveryError,
+                    prepare_whatsapp_reply_policy,
+                )
+                from services.tenant_twilio_messaging import (
+                    resolve_tenant_twilio_sender_snapshot,
+                )
+
+                sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+                    tenant_id=normalized_tenant_id,
+                    channel="whatsapp",
+                    session=db.session,
+                )
+                if sender_snapshot.reason_code or sender_snapshot.sender is None:
+                    raise TenantTicketReplyDeliveryError(
+                        sender_snapshot.reason_code
+                        or "whatsapp_tenant_sender_resolution_invalid"
+                    )
+
+                (
+                    template_registry_id,
+                    template_variables,
+                    whatsapp_policy_snapshot,
+                ) = prepare_whatsapp_reply_policy(
+                    tenant_id=normalized_tenant_id,
+                    provider_sender_id=int(sender_snapshot.sender.id),
+                    provider_sender_binding=sender_snapshot.binding,
+                    recipient=normalized_contact_phone,
+                    template_registry_id=template_registry_id,
+                    template_variables=template_variables,
+                    session=db.session,
+                    dispatch_enabled=whatsapp_dispatch_enabled,
+                )
+                if template_registry_id is not None:
+                    delivery_binding = (
+                        whatsapp_policy_snapshot.get("_delivery_binding")
+                        if isinstance(whatsapp_policy_snapshot, dict)
+                        else None
+                    )
+                    delivery_body = str(
+                        (delivery_binding or {}).get("delivery_body_snapshot") or ""
+                    ).strip()
+                    if not delivery_body:
+                        raise TenantTicketReplyDeliveryError(
+                            "whatsapp_template_body_snapshot_missing"
+                        )
+                    if body != delivery_body:
+                        raise TenantTicketReplyDeliveryError(
+                            "whatsapp_template_body_mismatch"
+                        )
+                    event["body"] = delivery_body
+                    event["content_source"] = "approved_whatsapp_template"
             extra = dict(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
             comments = list(extra.get("comments")) if isinstance(extra.get("comments"), list) else []
             comments.append(event)
@@ -1574,7 +1720,7 @@ class ServicioTickets:
                 tenant_id=normalized_tenant_id,
                 ticket_id=ticket.id,
                 event_id=event_id,
-                body=body,
+                body=str(event["body"]),
                 visibility=visibility,
                 actor_user_id=reply_data.get("actor_user_id"),
                 actor_name=str(reply_data.get("actor_name") or "").strip() or None,
@@ -1589,6 +1735,11 @@ class ServicioTickets:
                     if "whatsapp" in requested_channels
                     else None
                 ),
+                whatsapp_template_registry_id=template_registry_id,
+                whatsapp_template_variables=template_variables,
+                whatsapp_policy_snapshot=whatsapp_policy_snapshot,
+                whatsapp_delivery_status="saved",
+                whatsapp_status_updated_at=event_created_at,
                 created_at=event_created_at,
             )
             db.session.add(reply_record)
@@ -1625,6 +1776,9 @@ class ServicioTickets:
                     emit_socket=emit_socket,
                     session=db.session,
                 )
+                if effects_queued and "whatsapp" in requested_channels:
+                    reply_record.whatsapp_delivery_status = "queued"
+                    reply_record.whatsapp_status_updated_at = event_created_at
             db.session.commit()
         except IntegrityError:
             db.session.rollback()
@@ -1642,6 +1796,9 @@ class ServicioTickets:
                         "visibility": visibility,
                     },
                 )
+            raise
+        except TenantTicketReplyDeliveryError:
+            db.session.rollback()
             raise
         except Exception:
             db.session.rollback()
@@ -1978,7 +2135,12 @@ class ServicioTickets:
             )
             return []
 
-    def obtener_historial_chat(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+    def obtener_historial_chat(
+        self,
+        ticket: Union[MunicipioTicket, PymeTicket],
+        *,
+        include_internal: bool = True,
+    ) -> list[dict]:
         """Devuelve el historial completo de conversación para un ticket.
 
         Combina el historial previo almacenado en ``Conversacion`` (pregunta/
@@ -2045,11 +2207,16 @@ class ServicioTickets:
 
         # --- Comentarios del ticket (posteriores) ---
         try:
-            comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+            comentarios_query = ticket.comentarios
+            if not include_internal:
+                comentarios_query = comentarios_query.filter(_public_ticket_comment_filter())
+            comentarios = comentarios_query.order_by(TicketComentario.fecha.asc()).all()
         except Exception:
             comentarios = []
 
         for c in comentarios:
+            if not include_internal and _is_internal_ticket_comment(c):
+                continue
             data = c.to_dict()
             data["texto"] = data.pop("comentario")
             data["fecha"] = datetime_to_iso_utc(c.fecha)
@@ -2059,10 +2226,18 @@ class ServicioTickets:
         mensajes.sort(key=lambda x: x["fecha"])
         return mensajes
 
-    def obtener_timeline_ticket(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+    def obtener_timeline_ticket(
+        self,
+        ticket: Union[MunicipioTicket, PymeTicket],
+        *,
+        include_internal: bool = True,
+    ) -> list[dict]:
         """Construye la línea de tiempo de un ticket con comentarios y cambios de estado."""
         try:
-            comentarios = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+            comentarios_query = ticket.comentarios
+            if not include_internal:
+                comentarios_query = comentarios_query.filter(_public_ticket_comment_filter())
+            comentarios = comentarios_query.order_by(TicketComentario.fecha.asc()).all()
         except Exception:
             comentarios = []
 
@@ -2079,6 +2254,8 @@ class ServicioTickets:
         ]
 
         for c in comentarios:
+            if not include_internal and _is_internal_ticket_comment(c):
+                continue
             if c.estado_ticket:
                 timeline.append(
                     {
@@ -2145,9 +2322,14 @@ class ServicioTickets:
 
         return timeline
 
-    def obtener_estado_progreso(self, ticket: Union[MunicipioTicket, PymeTicket]) -> list[dict]:
+    def obtener_estado_progreso(
+        self,
+        ticket: Union[MunicipioTicket, PymeTicket],
+        *,
+        include_internal: bool = True,
+    ) -> list[dict]:
         """Genera una lista ordenada con los estados principales del ticket."""
-        timeline = self.obtener_timeline_ticket(ticket)
+        timeline = self.obtener_timeline_ticket(ticket, include_internal=include_internal)
 
         estados = {
             "nuevo": {"completado": False, "fecha": None},

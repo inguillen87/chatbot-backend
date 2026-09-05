@@ -272,6 +272,62 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertNotIn("storage_url", evidence_event["attachments"][0])
         self.assertNotIn("provider_media_ref", response.get_data(as_text=True))
 
+    def test_public_claim_tracking_never_exposes_internal_notes(self):
+        internal_attachment = ArchivoAdjunto(
+            filename="internal-operator-brief.pdf",
+            nombre_original="internal-operator-brief.pdf",
+            mime="application/pdf",
+            tamano=1024,
+            tipo="internal_note",
+            municipio_ticket_id=self.claim.id,
+            url="https://cdn.example.test/internal-operator-brief.pdf",
+        )
+        public_attachment = ArchivoAdjunto(
+            filename="public-status.pdf",
+            nombre_original="public-status.pdf",
+            mime="application/pdf",
+            tamano=768,
+            tipo="claim_update",
+            municipio_ticket_id=self.claim.id,
+            url="https://cdn.example.test/public-status.pdf",
+        )
+        db.session.add_all([internal_attachment, public_attachment])
+        db.session.flush()
+        internal = TicketComentario(
+            municipio_ticket_id=self.claim.id,
+            comentario="Dato operativo reservado para el equipo",
+            es_admin=True,
+            origen="  InTeRnAl  ",
+            archivo_adjunto_id=internal_attachment.id,
+        )
+        public = TicketComentario(
+            municipio_ticket_id=self.claim.id,
+            comentario="La cuadrilla ya recibió el reclamo",
+            es_admin=True,
+            origen="admin_panel",
+            archivo_adjunto_id=public_attachment.id,
+        )
+        db.session.add_all([internal, public])
+        db.session.commit()
+
+        response = self.client.get(
+            "/api/public/tracking/experience?kind=claim&code=M-123456",
+            headers={"X-Tracking-Pin": "654321"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        serialized = response.get_data(as_text=True)
+        self.assertNotIn("Dato operativo reservado", serialized)
+        self.assertNotIn("internal-operator-brief.pdf", serialized)
+        self.assertIn("La cuadrilla ya recibi", serialized)
+        self.assertIn("public-status.pdf", serialized)
+        timeline_ids = {item["id"] for item in response.get_json()["timeline"]}
+        self.assertNotIn(internal.id, timeline_ids)
+        self.assertIn(public.id, timeline_ids)
+        attachment_ids = {item["id"] for item in response.get_json()["attachments"]}
+        self.assertNotIn(internal_attachment.id, attachment_ids)
+        self.assertIn(public_attachment.id, attachment_ids)
+
     def test_public_claim_tracking_support_cta_differs_by_live_mode(self):
         base_status = {
             "contract_version": "live_chat.schedule.v1",
@@ -638,6 +694,23 @@ class TrackingExperienceContractTest(unittest.TestCase):
         self.assertEqual(response.headers.get("Cache-Control"), "private, no-store, max-age=0")
 
     def test_legacy_claim_tracking_page_requires_pin_before_rendering_private_data(self):
+        db.session.add_all(
+            [
+                TicketComentario(
+                    municipio_ticket_id=self.claim.id,
+                    comentario="Nota interna que nunca debe renderizarse",
+                    es_admin=True,
+                    origen=" INTERNAL ",
+                ),
+                TicketComentario(
+                    municipio_ticket_id=self.claim.id,
+                    comentario="Actualizacion publica del equipo",
+                    es_admin=True,
+                    origen="admin_panel",
+                ),
+            ]
+        )
+        db.session.commit()
         rejected = self.client.get("/tracking/claim/123456")
 
         self.assertEqual(rejected.status_code, 403)
@@ -646,6 +719,8 @@ class TrackingExperienceContractTest(unittest.TestCase):
         accepted = self.client.get("/tracking/claim/123456?pin=654321")
         self.assertEqual(accepted.status_code, 200)
         self.assertIn(b"Cuadrilla asignada", accepted.data)
+        self.assertNotIn(b"Nota interna que nunca", accepted.data)
+        self.assertIn(b"Actualizacion publica del equipo", accepted.data)
         self.assertIn(b'pin: "654321"', accepted.data)
 
     def test_legacy_claim_message_endpoint_requires_pin_when_ticket_has_pin(self):

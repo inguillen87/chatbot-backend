@@ -782,6 +782,16 @@ class TenantTicketReplyEvent(db.Model):
     __tablename__ = "tenant_ticket_reply_event"
 
     CONTRACT_VERSION = "tenant_ticket.reply_event.v1"
+    DELIVERY_CONTRACT_VERSION = "tenant_ticket.reply_delivery.v1"
+    WHATSAPP_DELIVERY_STATUSES = (
+        "saved",
+        "queued",
+        "uncertain",
+        "provider_accepted",
+        "delivered",
+        "read",
+        "failed",
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(
@@ -807,6 +817,34 @@ class TenantTicketReplyEvent(db.Model):
     actor_role = db.Column(db.String(32), nullable=True)
     recipient_email = db.Column(db.String(320), nullable=True)
     recipient_phone = db.Column(db.String(64), nullable=True)
+    whatsapp_template_registry_id = db.Column(
+        db.Integer,
+        db.ForeignKey("message_template_registry.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_template_variables = db.Column(JSONType, nullable=True)
+    whatsapp_policy_snapshot = db.Column(JSONType, nullable=True)
+    whatsapp_delivery_status = db.Column(
+        db.String(24), nullable=False, default="saved", server_default="saved"
+    )
+    whatsapp_provider_message_id = db.Column(db.String(180), nullable=True)
+    whatsapp_provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_provider_status = db.Column(db.String(80), nullable=True)
+    whatsapp_error_code = db.Column(db.String(80), nullable=True)
+    whatsapp_status_event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("messaging_event_ledger.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_status_updated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_provider_accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_delivered_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_read_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_failed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     contract_version = db.Column(
         db.String(48),
         nullable=False,
@@ -838,11 +876,22 @@ class TenantTicketReplyEvent(db.Model):
             "length(trim(event_id)) > 0",
             name="ck_tenant_ticket_reply_event_id_nonempty",
         ),
+        db.CheckConstraint(
+            "whatsapp_delivery_status IN ('saved', 'queued', "
+            "'uncertain', 'provider_accepted', 'delivered', 'read', 'failed')",
+            name="ck_tenant_ticket_reply_event_wa_delivery_status",
+        ),
         db.Index(
             "ix_tenant_ticket_reply_event_ticket",
             "tenant_id",
             "ticket_id",
             "created_at",
+        ),
+        db.Index(
+            "ix_tenant_ticket_reply_event_wa_provider_message",
+            "tenant_id",
+            "whatsapp_provider_message_id",
+            unique=True,
         ),
     )
 
@@ -852,6 +901,11 @@ class TenantTicketReplyEvent(db.Model):
             "origin": "admin_panel",
             "action": "reply",
             "body": self.body,
+            "content_source": (
+                "approved_whatsapp_template"
+                if self.whatsapp_template_registry_id
+                else "operator_free_form"
+            ),
             "visibility": self.visibility,
             "created_at": (
                 datetime_to_iso_utc(self.created_at) if self.created_at else None
@@ -4008,13 +4062,24 @@ class WhatsAppContactState(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     recipient = db.Column(db.String(255), nullable=False, index=True)
     last_inbound_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
 
     __table_args__ = (
-        db.UniqueConstraint("tenant_id", "recipient", name="uq_whatsapp_contact_state_tenant_recipient"),
+        db.UniqueConstraint(
+            "tenant_id",
+            "provider_sender_id",
+            "recipient",
+            name="uq_whatsapp_contact_state_tenant_sender_recipient",
+        ),
     )
 
 

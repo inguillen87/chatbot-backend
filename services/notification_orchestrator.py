@@ -482,18 +482,6 @@ class NotificationOrchestrator:
         sender_snapshot = None
         if registry_id is not None:
             registry = self._approved_whatsapp_registry(registry_id)
-            from services.tenant_twilio_messaging import (
-                resolve_tenant_twilio_sender_snapshot,
-            )
-
-            sender_snapshot = resolve_tenant_twilio_sender_snapshot(
-                tenant_id=self.tenant_id,
-                channel="whatsapp",
-            )
-            if sender_snapshot.reason_code or sender_snapshot.sender is None:
-                raise ValueError(
-                    sender_snapshot.reason_code or "whatsapp_tenant_sender_missing"
-                )
             # For direct provider-template queues, the provider-synced preview
             # is authoritative. A client-supplied body must not masquerade as
             # the approved content represented by ContentSid.
@@ -507,6 +495,27 @@ class NotificationOrchestrator:
             )
         else:
             safe_metadata["is_template"] = False
+
+        if channel == "whatsapp":
+            from services.tenant_twilio_messaging import (
+                resolve_tenant_twilio_sender_snapshot,
+            )
+
+            sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+                tenant_id=self.tenant_id,
+                channel="whatsapp",
+            )
+            # Every queued WhatsApp notification is pinned to the exact tenant
+            # sender whenever one valid sender exists. Approved templates fail
+            # closed immediately; free-form traffic may remain queued so the
+            # worker can expose the precise configuration blocker.
+            if (
+                registry_id is not None
+                and (sender_snapshot.reason_code or sender_snapshot.sender is None)
+            ):
+                raise ValueError(
+                    sender_snapshot.reason_code or "whatsapp_tenant_sender_missing"
+                )
 
         if not (rendered_body or "").strip():
             raise ValueError("body is required")
@@ -552,11 +561,14 @@ class NotificationOrchestrator:
             provider_connection_id=(
                 int(sender_snapshot.sender.provider_connection_id)
                 if sender_snapshot is not None
+                and sender_snapshot.sender is not None
                 and sender_snapshot.sender.provider_connection_id is not None
                 else None
             ),
             provider_sender_id=(
-                int(sender_snapshot.sender.id) if sender_snapshot is not None else None
+                int(sender_snapshot.sender.id)
+                if sender_snapshot is not None and sender_snapshot.sender is not None
+                else None
             ),
             sender_binding=(sender_snapshot.binding if sender_snapshot is not None else None),
             content_sid=(str(registry.content_sid) if registry is not None else None),
@@ -913,6 +925,9 @@ class NotificationOrchestrator:
             **metadata,
             "is_template": notification.message_template_registry_id is not None,
             "recipient": notification.recipient,
+            # The customer-service window is bound to the exact sender that
+            # received the inbound message, never to the tenant globally.
+            "provider_sender_id": notification.provider_sender_id,
         }
         policy_body = "\n".join(
             [

@@ -1292,6 +1292,21 @@ def _safe_ticket_realtime_summary(ticket_type: str, ticket_id: int, request_id: 
         )
 
 
+def _is_internal_ticket_comment(comment: TicketComentario | None) -> bool:
+    """Treat whitespace/case variants of ``internal`` as private notes."""
+
+    return str(getattr(comment, "origen", None) or "").strip().casefold() == "internal"
+
+
+def _public_ticket_comment_filter():
+    """SQL predicate for comments safe to expose to a ticket owner or PIN viewer."""
+
+    return or_(
+        TicketComentario.origen.is_(None),
+        func.lower(func.trim(TicketComentario.origen)) != "internal",
+    )
+
+
 def _safe_ticket_comment_payload(comment: TicketComentario, request_id: Optional[str] = None) -> dict:
     try:
         data = comment.to_dict()
@@ -3022,7 +3037,7 @@ def _ticket_ai_enrichment_payload(ticket) -> dict[str, Any]:
     }
 
 
-def _serialize_ticket_details(ticket, ticket_type):
+def _serialize_ticket_details(ticket, ticket_type, *, include_internal: bool = True):
     """Serializa los detalles de un ticket (municipio o pyme) a un diccionario JSON."""
     user_data = _get_user_info(ticket, User)
     contact_identity = _ticket_contact_identity(ticket, ticket_type, user_data)
@@ -3030,10 +3045,14 @@ def _serialize_ticket_details(ticket, ticket_type):
     degraded_reasons: list[str] = []
 
     try:
-        comentarios_source = ticket.comentarios.order_by(TicketComentario.fecha.asc()).all()
+        comentarios_query = ticket.comentarios
+        if not include_internal:
+            comentarios_query = comentarios_query.filter(_public_ticket_comment_filter())
+        comentarios_source = comentarios_query.order_by(TicketComentario.fecha.asc()).all()
         comentarios = [
             _safe_ticket_comment_payload(c, request_id=getattr(g, "request_id", None))
             for c in comentarios_source
+            if include_internal or not _is_internal_ticket_comment(c)
         ]
     except Exception as exc:
         current_app.logger.warning(
@@ -3047,7 +3066,10 @@ def _serialize_ticket_details(ticket, ticket_type):
         degraded_reasons.append("ticket_comments_unavailable")
 
     try:
-        timeline = servicio_tickets.obtener_timeline_ticket(ticket)
+        timeline = servicio_tickets.obtener_timeline_ticket(
+            ticket,
+            include_internal=include_internal,
+        )
     except Exception as exc:
         current_app.logger.warning(
             "Ticket detail timeline degraded for %s ticket %s: %s",
@@ -3060,7 +3082,10 @@ def _serialize_ticket_details(ticket, ticket_type):
         degraded_reasons.append("ticket_timeline_unavailable")
 
     try:
-        progreso_estados = servicio_tickets.obtener_estado_progreso(ticket)
+        progreso_estados = servicio_tickets.obtener_estado_progreso(
+            ticket,
+            include_internal=include_internal,
+        )
     except Exception as exc:
         current_app.logger.warning(
             "Ticket detail progress degraded for %s ticket %s: %s",
@@ -3073,7 +3098,10 @@ def _serialize_ticket_details(ticket, ticket_type):
         degraded_reasons.append("ticket_progress_unavailable")
 
     try:
-        historial_chat = servicio_tickets.obtener_historial_chat(ticket)
+        historial_chat = servicio_tickets.obtener_historial_chat(
+            ticket,
+            include_internal=include_internal,
+        )
     except Exception as exc:
         current_app.logger.warning(
             "Ticket detail chat history degraded for %s ticket %s: %s",
@@ -3090,6 +3118,11 @@ def _serialize_ticket_details(ticket, ticket_type):
         if hasattr(ticket, 'archivos'):
             archivos_list = ticket.archivos.all() if hasattr(ticket.archivos, 'all') else ticket.archivos
             for adj in archivos_list:
+                if (
+                    not include_internal
+                    and _is_internal_ticket_comment(getattr(adj, "comentario_asociado", None))
+                ):
+                    continue
                 analisis_data = None
                 if adj.analisis:
                     analisis = adj.analisis
@@ -3364,7 +3397,12 @@ def get_ticket_by_number_public(current_user, owner_user, anon_id, nro_ticket: s
             (jsonify({"error": "Ticket no encontrado."}), 404)
         )
 
-    ticket_data = _serialize_ticket_details(ticket, "municipio")
+    agent_access = _resolver_acceso_chat_ticket(ticket, actor_user)
+    ticket_data = _serialize_ticket_details(
+        ticket,
+        "municipio",
+        include_internal=bool(agent_access.get("es_agente")),
+    )
     return _ticket_private_no_store_response(
         _ticket_json(ticket_data, request_id=request_id)
     )
@@ -4205,15 +4243,19 @@ def get_chat_mensajes(current_user: User, ticket_id: int, anon_id: str = None, o
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
-        mensajes_nuevos = (
-            TicketComentario.query
-            .filter(
-                TicketComentario.municipio_ticket_id == ticket_id,
-                TicketComentario.id > ultimo_mensaje_id
-            )
-            .order_by(TicketComentario.fecha.asc())
-            .all()
+        mensajes_query = TicketComentario.query.filter(
+            TicketComentario.municipio_ticket_id == ticket_id,
+            TicketComentario.id > ultimo_mensaje_id,
         )
+        if not es_agente_municipal:
+            mensajes_query = mensajes_query.filter(_public_ticket_comment_filter())
+        mensajes_nuevos = mensajes_query.order_by(TicketComentario.fecha.asc()).all()
+        if not es_agente_municipal:
+            mensajes_nuevos = [
+                message
+                for message in mensajes_nuevos
+                if not _is_internal_ticket_comment(message)
+            ]
         mensajes_formateados = _format_ticket_chat_messages(mensajes_nuevos, request_id=request_id)
         realtime_state = _safe_ticket_realtime_summary("municipio", ticket_id, request_id=request_id)
         degraded_reasons = []
@@ -4274,15 +4316,19 @@ def get_chat_mensajes_pyme(current_user: User, ticket_id: int, anon_id: str = No
             return jsonify({"error": MENSAJE_CHAT_CERRADO}), 403
 
         ultimo_mensaje_id = request.args.get('ultimo_mensaje_id', default=0, type=int)
-        mensajes_nuevos = (
-            TicketComentario.query
-            .filter(
-                TicketComentario.pyme_ticket_id == ticket_id,
-                TicketComentario.id > ultimo_mensaje_id
-            )
-            .order_by(TicketComentario.fecha.asc())
-            .all()
+        mensajes_query = TicketComentario.query.filter(
+            TicketComentario.pyme_ticket_id == ticket_id,
+            TicketComentario.id > ultimo_mensaje_id,
         )
+        if not es_agente_pyme:
+            mensajes_query = mensajes_query.filter(_public_ticket_comment_filter())
+        mensajes_nuevos = mensajes_query.order_by(TicketComentario.fecha.asc()).all()
+        if not es_agente_pyme:
+            mensajes_nuevos = [
+                message
+                for message in mensajes_nuevos
+                if not _is_internal_ticket_comment(message)
+            ]
         mensajes_formateados = _format_ticket_chat_messages(mensajes_nuevos, request_id=request_id)
         realtime_state = _safe_ticket_realtime_summary("pyme", ticket_id, request_id=request_id)
         degraded_reasons = []
@@ -4387,7 +4433,10 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
     degraded_reasons: list[str] = []
     try:
         try:
-            timeline = servicio_tickets.obtener_timeline_ticket(ticket_obj)
+            timeline = servicio_tickets.obtener_timeline_ticket(
+                ticket_obj,
+                include_internal=bool(access and access.get("es_agente")),
+            )
         except Exception as exc:
             current_app.logger.warning(
                 "Ticket timeline degraded for %s ticket %s request_id=%s: %s",
@@ -4401,7 +4450,10 @@ def get_ticket_timeline(current_user: User, tipo: str, ticket_id: int, anon_id: 
             degraded_reasons.append("ticket_timeline_unavailable")
 
         try:
-            historial_chat = servicio_tickets.obtener_historial_chat(ticket_obj)
+            historial_chat = servicio_tickets.obtener_historial_chat(
+                ticket_obj,
+                include_internal=bool(access and access.get("es_agente")),
+            )
         except Exception as exc:
             current_app.logger.warning(
                 "Ticket chat history degraded for %s ticket %s request_id=%s: %s",

@@ -310,6 +310,9 @@ def _tenant_reply_recipient_ref(
             "actor_user_id": reply_event.actor_user_id,
             "actor_name": reply_event.actor_name,
             "actor_role": reply_event.actor_role,
+            "whatsapp_template_registry_id": reply_event.whatsapp_template_registry_id,
+            "whatsapp_template_variables": reply_event.whatsapp_template_variables,
+            "whatsapp_policy_snapshot": reply_event.whatsapp_policy_snapshot,
             "created_at": reply_event.to_event_dict().get("created_at"),
         },
         ensure_ascii=False,
@@ -1066,13 +1069,101 @@ def _prepare_tenant_reply_whatsapp(
     normalized_phone = normalize_phone(raw_phone)
     if not normalized_phone:
         return _skip("requester_phone_invalid")
+    pinned_policy_snapshot = (
+        reply_event.whatsapp_policy_snapshot
+        if isinstance(reply_event.whatsapp_policy_snapshot, Mapping)
+        else {}
+    )
+    pinned_delivery_binding = (
+        pinned_policy_snapshot.get("_delivery_binding")
+        if isinstance(pinned_policy_snapshot.get("_delivery_binding"), Mapping)
+        else {}
+    )
+    pinned_sender_id = _positive_int(
+        pinned_delivery_binding.get("provider_sender_id")
+    )
+    pinned_sender_binding = str(
+        pinned_delivery_binding.get("provider_sender_binding") or ""
+    ).strip().lower()
+    claim_sender_binding = _claim_provider_sender_binding(claim)
+    if (
+        pinned_sender_id is None
+        or not pinned_sender_binding
+        or not hmac.compare_digest(pinned_sender_binding, claim_sender_binding)
+    ):
+        raise PermanentDomainEffectError(
+            "tenant_ticket_reply_sender_snapshot_mismatch"
+        )
+    pinned_template_snapshot = (
+        pinned_delivery_binding.get("template")
+        if isinstance(pinned_delivery_binding.get("template"), Mapping)
+        else {}
+    )
+    expected_template_fingerprint = str(
+        pinned_template_snapshot.get("fingerprint") or ""
+    ).strip().lower() or None
+    if reply_event.whatsapp_template_registry_id and not expected_template_fingerprint:
+        raise PermanentDomainEffectError(
+            "tenant_ticket_reply_template_snapshot_missing"
+        )
+    try:
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyDeliveryError,
+            prepare_whatsapp_reply_policy,
+        )
+
+        template_registry_id, template_variables, _policy_snapshot = (
+            prepare_whatsapp_reply_policy(
+                tenant_id=int(claim.tenant_id),
+                provider_sender_id=pinned_sender_id,
+                provider_sender_binding=pinned_sender_binding,
+                recipient=normalized_phone,
+                template_registry_id=reply_event.whatsapp_template_registry_id,
+                template_variables=reply_event.whatsapp_template_variables,
+                session=db.session,
+            )
+        )
+    except TenantTicketReplyDeliveryError as exc:
+        raise PermanentDomainEffectError(exc.code) from exc
+    fresh_delivery_binding = (
+        _policy_snapshot.get("_delivery_binding")
+        if isinstance(_policy_snapshot, Mapping)
+        and isinstance(_policy_snapshot.get("_delivery_binding"), Mapping)
+        else {}
+    )
+    pinned_delivery_body = str(
+        pinned_delivery_binding.get("delivery_body_snapshot") or ""
+    ).strip()
+    fresh_delivery_body = str(
+        fresh_delivery_binding.get("delivery_body_snapshot") or ""
+    ).strip()
+    if template_registry_id is not None and (
+        not pinned_delivery_body
+        or not fresh_delivery_body
+        or not hmac.compare_digest(pinned_delivery_body, fresh_delivery_body)
+        or not hmac.compare_digest(
+            str(event.get("body") or "").strip(),
+            pinned_delivery_body,
+        )
+    ):
+        raise PermanentDomainEffectError(
+            "tenant_ticket_reply_template_body_snapshot_mismatch"
+        )
     try:
         twilio_preflight = prepare_bound_tenant_twilio_message(
             tenant_id=int(claim.tenant_id),
             channel="whatsapp",
             expected_sender_binding=_claim_provider_sender_binding(claim),
             recipient=normalized_phone,
-            body=str(event.get("body") or "").strip(),
+            body=(
+                None
+                if template_registry_id is not None
+                else str(event.get("body") or "").strip()
+            ),
+            template_registry_id=template_registry_id,
+            content_variables=template_variables,
+            expected_template_fingerprint=expected_template_fingerprint,
+            tenant_ticket_reply_event_id=int(reply_event.id),
         )
     except TenantTwilioScopeError as exc:
         raise PermanentDomainEffectError(exc.code) from exc
@@ -1082,10 +1173,72 @@ def _prepare_tenant_reply_whatsapp(
     if prepared_message is None:
         raise PermanentDomainEffectError("tenant_ticket_reply_twilio_preflight_invalid")
 
+    from services.whatsapp_enterprise_rules import (
+        WhatsAppEnterpriseRulesService,
+    )
+
+    policy_body = (
+        pinned_delivery_body
+        if template_registry_id is not None
+        else str(event.get("body") or "").strip()
+    )
+    allowed, policy_error = WhatsAppEnterpriseRulesService(
+        int(claim.tenant_id)
+    ).reserve_outbound(
+        body=policy_body,
+        reservation_key=f"tenant-reply:{int(reply_event.id)}",
+        metadata={
+            "recipient": normalized_phone,
+            "provider_sender_id": prepared_message.provider_sender_id,
+            "within_24h_window": _policy_snapshot.get("status") == "open",
+            "is_template": template_registry_id is not None,
+        },
+        provider="twilio",
+        provider_sender_id=prepared_message.provider_sender_id,
+        source="tenant_ticket_human_reply",
+    )
+    if not allowed:
+        raise PermanentDomainEffectError(
+            f"whatsapp_enterprise_policy_{policy_error or 'blocked'}"
+        )
+
     def deliver() -> DeliveredDomainEffect:
-        provider_ref = send_prepared_tenant_twilio_message(prepared_message)
-        if not provider_ref:
-            raise AmbiguousDomainEffectError("provider_acceptance_unknown")
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyProviderMessageCollision,
+            record_provider_acceptance,
+            record_provider_uncertainty,
+        )
+        try:
+            provider_ref = send_prepared_tenant_twilio_message(prepared_message)
+            if not provider_ref:
+                raise AmbiguousDomainEffectError("provider_acceptance_unknown")
+            record_provider_acceptance(
+                reply_event_record_id=int(reply_event.id),
+                tenant_id=int(claim.tenant_id),
+                provider_message_id=provider_ref,
+                provider_sender_id=int(prepared_message.provider_sender_id),
+            )
+        except TenantTicketReplyProviderMessageCollision:
+            # The provider may already have accepted this exact send.  The
+            # collision recorder quarantines it durably; retrying could create
+            # a duplicate citizen message.
+            raise
+        except Exception as exc:
+            try:
+                record_provider_uncertainty(
+                    reply_event_record_id=int(reply_event.id),
+                    tenant_id=int(claim.tenant_id),
+                )
+            except Exception as persistence_error:
+                current_app.logger.warning(
+                    "Tenant reply uncertainty persistence failed "
+                    "tenant_id=%s error_type=%s",
+                    claim.tenant_id,
+                    type(persistence_error).__name__,
+                )
+            if isinstance(exc, AmbiguousDomainEffectError):
+                raise
+            raise AmbiguousDomainEffectError("provider_acceptance_unknown") from exc
         return DeliveredDomainEffect(
             provider_ref=provider_ref,
             result={"delivery": "provider_accepted"},
@@ -1329,6 +1482,7 @@ def stage_ticket_comment_effects(
     tipo_ticket: TicketType,
     emit_notifications: bool = True,
     emit_socket: bool = True,
+    requested_channels: list[str] | tuple[str, ...] | set[str] | None = None,
     session=None,
     registry: DomainEffectRegistry | None = None,
 ) -> bool:
@@ -1430,27 +1584,48 @@ def stage_ticket_comment_effects(
         tipo_ticket,
         profile_owner,
     )
+    normalized_requested_channels = (
+        {
+            str(channel or "").strip().lower()
+            for channel in requested_channels
+            if str(channel or "").strip().lower()
+            in {"email", "sms", "whatsapp"}
+        }
+        if requested_channels is not None
+        else None
+    )
+
+    def channel_requested(channel: str) -> bool:
+        return (
+            normalized_requested_channels is None
+            or channel in normalized_requested_channels
+        )
+
     specs: list[dict[str, str]] = []
     if emit_notifications:
         if bool(getattr(comment, "es_admin", False)):
-            specs.extend(
-                [
+            if channel_requested("email"):
+                specs.append(
                     {
                         "effect_type": "ticket.comment.email.requester",
                         "handler_name": COMMENT_REQUESTER_EMAIL_HANDLER,
                         "channel": "email",
                         "recipient_ref": TICKET_REQUESTER_RECIPIENT,
-                    },
+                    }
+                )
+            if channel_requested("sms"):
+                specs.append(
                     {
                         "effect_type": "ticket.comment.sms.requester",
                         "handler_name": COMMENT_REQUESTER_SMS_HANDLER,
                         "channel": "sms",
                         "recipient_ref": TICKET_REQUESTER_RECIPIENT,
-                    },
-                ]
-            )
-            if tipo_ticket == "municipio" or (
+                    }
+                )
+            if channel_requested("whatsapp") and (
+                tipo_ticket == "municipio" or (
                 tipo_ticket == "pyme" and pyme_whatsapp_chat_enabled()
+                )
             ):
                 specs.append(
                     {

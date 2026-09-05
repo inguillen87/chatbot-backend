@@ -95,5 +95,5 @@ def test_domain_effect_outbox_is_single_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260820_survey_content_jurisdiction_v1"
+        "20260904_tenant_reply_delivery_v1"
     ]

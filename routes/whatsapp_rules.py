@@ -79,6 +79,102 @@ META_FLOW_PUBLICATION_ATTESTATION_TTL_SECONDS = 60 * 60
 WHATSAPP_TEMPLATE_PACKS_READ = "whatsapp.templates.read"
 WHATSAPP_TEMPLATE_PACKS_MANAGE = "whatsapp.templates.manage"
 WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER = "chatboc"
+WHATSAPP_RULES_CONTRACT_VERSION = "whatsapp.enterprise_rules.v1"
+_WHATSAPP_RULE_FIELDS = {
+    "enforce_template_outside_24h",
+    "max_outbound_per_hour",
+    "quiet_hours_start",
+    "quiet_hours_end",
+    "blocked_keywords",
+}
+
+
+class WhatsAppRuleValidationError(ValueError):
+    def __init__(self, code: str, *, field: str | None = None) -> None:
+        self.code = str(code)
+        self.field = field
+        super().__init__(self.code)
+
+
+def _bounded_rule_integer(
+    value,
+    *,
+    field: str,
+    minimum: int,
+    maximum: int,
+    nullable: bool = True,
+) -> int | None:
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_integer_required",
+            field=field,
+        )
+    if value < minimum or value > maximum:
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_integer_out_of_range",
+            field=field,
+        )
+    return int(value)
+
+
+def _normalize_blocked_keywords(value) -> list[str]:
+    if not isinstance(value, list):
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_keywords_list_required",
+            field="blocked_keywords",
+        )
+    if len(value) > 50:
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_keywords_limit_exceeded",
+            field="blocked_keywords",
+        )
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise WhatsAppRuleValidationError(
+                "whatsapp_rules_keyword_invalid",
+                field="blocked_keywords",
+            )
+        keyword = item.strip()
+        if (
+            not keyword
+            or len(keyword) > 80
+            or any(ord(character) < 32 for character in keyword)
+        ):
+            raise WhatsAppRuleValidationError(
+                "whatsapp_rules_keyword_invalid",
+                field="blocked_keywords",
+            )
+        identity = keyword.casefold()
+        if identity not in seen:
+            normalized.append(keyword)
+            seen.add(identity)
+    return normalized
+
+
+def _rule_audit_snapshot(rule) -> dict:
+    keywords = rule.blocked_keywords if isinstance(rule.blocked_keywords, list) else []
+    keyword_digest = hashlib.sha256(
+        json.dumps(
+            keywords,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "enforce_template_outside_24h": bool(
+            rule.enforce_template_outside_24h
+        ),
+        "max_outbound_per_hour": rule.max_outbound_per_hour,
+        "quiet_hours_start": rule.quiet_hours_start,
+        "quiet_hours_end": rule.quiet_hours_end,
+        "quiet_hours_timezone": "UTC",
+        "blocked_keywords_count": len(keywords),
+        "blocked_keywords_sha256": keyword_digest,
+    }
 
 
 class TwilioContentApiError(RuntimeError):
@@ -1154,11 +1250,13 @@ def get_rules(user: User):
     rule = WhatsAppEnterpriseRulesService(tenant.id).get_or_create()
     return jsonify(
         {
+            "contract_version": WHATSAPP_RULES_CONTRACT_VERSION,
             "tenant_id": tenant.id,
             "enforce_template_outside_24h": rule.enforce_template_outside_24h,
             "max_outbound_per_hour": rule.max_outbound_per_hour,
             "quiet_hours_start": rule.quiet_hours_start,
             "quiet_hours_end": rule.quiet_hours_end,
+            "quiet_hours_timezone": "UTC",
             "blocked_keywords": rule.blocked_keywords or [],
         }
     )
@@ -1171,20 +1269,109 @@ def update_rules(user: User):
     tenant = g.tenant_profile
     _guard(user, tenant)
 
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": "whatsapp_rules_object_required",
+            }
+        ), 400
+    unknown_fields = sorted(set(payload) - _WHATSAPP_RULE_FIELDS)
+    if unknown_fields:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": "whatsapp_rules_unknown_fields",
+                "fields": unknown_fields,
+            }
+        ), 400
+    if not payload:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": "whatsapp_rules_update_required",
+            }
+        ), 400
     svc = WhatsAppEnterpriseRulesService(tenant.id)
     rule = svc.get_or_create()
+    before = _rule_audit_snapshot(rule)
 
-    if "enforce_template_outside_24h" in payload:
-        rule.enforce_template_outside_24h = bool(payload.get("enforce_template_outside_24h"))
-    if "max_outbound_per_hour" in payload:
-        rule.max_outbound_per_hour = payload.get("max_outbound_per_hour")
-    if "quiet_hours_start" in payload:
-        rule.quiet_hours_start = payload.get("quiet_hours_start")
-    if "quiet_hours_end" in payload:
-        rule.quiet_hours_end = payload.get("quiet_hours_end")
-    if isinstance(payload.get("blocked_keywords"), list):
-        rule.blocked_keywords = payload.get("blocked_keywords")
+    try:
+        if "enforce_template_outside_24h" in payload:
+            enforce_template = payload.get("enforce_template_outside_24h")
+            if not isinstance(enforce_template, bool):
+                raise WhatsAppRuleValidationError(
+                    "whatsapp_rules_boolean_required",
+                    field="enforce_template_outside_24h",
+                )
+            rule.enforce_template_outside_24h = enforce_template
+        if "max_outbound_per_hour" in payload:
+            rule.max_outbound_per_hour = _bounded_rule_integer(
+                payload.get("max_outbound_per_hour"),
+                field="max_outbound_per_hour",
+                minimum=1,
+                maximum=100000,
+            )
+        proposed_quiet_start = (
+            payload.get("quiet_hours_start")
+            if "quiet_hours_start" in payload
+            else rule.quiet_hours_start
+        )
+        proposed_quiet_end = (
+            payload.get("quiet_hours_end")
+            if "quiet_hours_end" in payload
+            else rule.quiet_hours_end
+        )
+        if "quiet_hours_start" in payload or "quiet_hours_end" in payload:
+            proposed_quiet_start = _bounded_rule_integer(
+                proposed_quiet_start,
+                field="quiet_hours_start",
+                minimum=0,
+                maximum=23,
+            )
+            proposed_quiet_end = _bounded_rule_integer(
+                proposed_quiet_end,
+                field="quiet_hours_end",
+                minimum=0,
+                maximum=23,
+            )
+            if (proposed_quiet_start is None) != (proposed_quiet_end is None):
+                raise WhatsAppRuleValidationError(
+                    "whatsapp_rules_quiet_hours_pair_required",
+                    field="quiet_hours",
+                )
+            if (
+                proposed_quiet_start is not None
+                and proposed_quiet_start == proposed_quiet_end
+            ):
+                raise WhatsAppRuleValidationError(
+                    "whatsapp_rules_quiet_hours_empty_window",
+                    field="quiet_hours",
+                )
+            rule.quiet_hours_start = proposed_quiet_start
+            rule.quiet_hours_end = proposed_quiet_end
+        if "blocked_keywords" in payload:
+            rule.blocked_keywords = _normalize_blocked_keywords(
+                payload.get("blocked_keywords")
+            )
+    except WhatsAppRuleValidationError as exc:
+        db.session.rollback()
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": exc.code,
+                "field": exc.field,
+            }
+        ), 400
+
+    db.session.add(rule)
+    db.session.flush()
+    after = _rule_audit_snapshot(rule)
 
     db.session.add(
         AuditEvent(
@@ -1193,13 +1380,33 @@ def update_rules(user: User):
             event_type="whatsapp_rules.updated",
             resource_type="whatsapp_enterprise_rule",
             resource_id=str(rule.id),
-            details=payload,
+            details={
+                "contract_version": WHATSAPP_RULES_CONTRACT_VERSION,
+                "changed_fields": sorted(payload),
+                "before": before,
+                "after": after,
+            },
             ip_address=request.remote_addr,
         )
     )
     db.session.commit()
 
-    return jsonify({"updated": True})
+    return jsonify(
+        {
+            "updated": True,
+            "contract_version": WHATSAPP_RULES_CONTRACT_VERSION,
+            "rules": {
+                "enforce_template_outside_24h": (
+                    rule.enforce_template_outside_24h
+                ),
+                "max_outbound_per_hour": rule.max_outbound_per_hour,
+                "quiet_hours_start": rule.quiet_hours_start,
+                "quiet_hours_end": rule.quiet_hours_end,
+                "quiet_hours_timezone": "UTC",
+                "blocked_keywords": rule.blocked_keywords or [],
+            },
+        }
+    )
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/template-packs", methods=["GET"])

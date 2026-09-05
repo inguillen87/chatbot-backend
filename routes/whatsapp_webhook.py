@@ -4989,12 +4989,18 @@ def _allowed_native_flow_ids_for_tenant(tenant: Optional[TenantProfile]) -> set[
     return allowed
 
 
-def _register_whatsapp_inbound_activity(tenant_id: Optional[int], from_number: Optional[str]) -> None:
-    if not tenant_id or not from_number:
+def _register_whatsapp_inbound_activity(
+    tenant_id: Optional[int],
+    from_number: Optional[str],
+    *,
+    provider_sender_id: Optional[int],
+) -> None:
+    if not tenant_id or not from_number or not provider_sender_id:
         return
     try:
         WhatsAppEnterpriseRulesService(int(tenant_id)).register_inbound_activity(
             recipient=from_number,
+            provider_sender_id=int(provider_sender_id),
         )
     except Exception as exc:
         _log(
@@ -6810,7 +6816,11 @@ def whatsapp_webhook():
         session_context_db_entry.context_data["last_whatsapp_flow_submission"] = deepcopy(
             safe_flow_submission
         )
-    _register_whatsapp_inbound_activity(tenant_id, from_number_cleaned)
+    _register_whatsapp_inbound_activity(
+        tenant_id,
+        from_number_cleaned,
+        provider_sender_id=getattr(provider_sender, "id", None),
+    )
     safe_flag_modified(session_context_db_entry, "context_data")
     db.session.add(session_context_db_entry)
     db.session.commit()
@@ -9400,5 +9410,79 @@ def twilio_whatsapp_status():
             # retries using Twilio connection overrides. Returning 200 here
             # would permanently discard the only automatic reconciliation of
             # a send whose API outcome may be unknown.
+            return "RETRY", 503
+
+    tenant_ticket_reply_event_id = str(
+        request.args.get("tenant_ticket_reply_event_id") or ""
+    ).strip()
+    if tenant_ticket_reply_event_id:
+        if (
+            not tenant
+            or not getattr(tenant, "id", None)
+            or not provider_sender
+            or not getattr(provider_sender, "id", None)
+            or not persisted_status_event
+            or not getattr(persisted_status_event, "id", None)
+        ):
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply callback lacks signed scope"
+            )
+            return "Forbidden", 403
+        try:
+            from services.tenant_ticket_reply_delivery import (
+                TenantTicketReplyProviderMessageCollision,
+                emit_delivery_invalidation,
+                reconcile_provider_callback,
+            )
+
+            reconciled_reply = reconcile_provider_callback(
+                tenant_id=int(tenant.id),
+                reply_event_record_id=tenant_ticket_reply_event_id,
+                provider_message_id=message_sid,
+                provider_status=message_status,
+                provider_sender_id=int(provider_sender.id),
+                delivery_event_id=int(persisted_status_event.id),
+                error_code=error_code,
+            )
+            if reconciled_reply is None:
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] TenantTicket reply callback scope mismatch "
+                    "tenant_id=%s sender_id=%s",
+                    tenant.id,
+                    provider_sender.id,
+                )
+                return "Forbidden", 403
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception as exc:  # HTTP polling remains authoritative.
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] TenantTicket reply realtime invalidation failed "
+                    "tenant_id=%s error_type=%s",
+                    tenant.id,
+                    type(exc).__name__,
+                )
+        except TenantTicketReplyProviderMessageCollision:
+            current_app.logger.error(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply provider message "
+                "collision quarantined tenant_id=%s sender_id=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+            )
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception:  # HTTP polling remains authoritative.
+                pass
+            # The callback is valid and has been quarantined durably.  A 5xx
+            # would make Twilio retry the same collision without adding truth.
+            return "OK", 200
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply reconciliation failed "
+                "tenant_id=%s sender_id=%s error_type=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+                type(exc).__name__,
+            )
             return "RETRY", 503
     return "OK", 200

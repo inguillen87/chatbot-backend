@@ -12,6 +12,7 @@ from socket_service import (
     emit_conversation_message_read,
     emit_conversation_linked,
     emit_ticket_unread_changed,
+    emit_ticket_reply_delivery_updated,
     emit_crm_contact_update,
     emit_crm_notification_update,
     emit_survey_update,
@@ -50,6 +51,40 @@ class SocketServiceEventTests(unittest.TestCase):
 
         self.assertEqual(len(mock_emit.call_args_list), 1)
         self._assert_opaque_invalidation(mock_emit.call_args, room='municipio_7')
+
+    def test_reply_delivery_event_is_opaque_and_only_requests_refetch(self):
+        private_payload = {
+            "tenant_id": 7,
+            "ticket_id": 419,
+            "event_id": "private-reply-event",
+            "provider_message_id": "SM-private-provider-id",
+            "status": "read",
+            "body": "contenido privado del vecino",
+        }
+
+        with patch('socket_service.socketio.emit') as mock_emit:
+            emit_ticket_reply_delivery_updated(private_payload)
+
+        self.assertEqual(len(mock_emit.call_args_list), 2)
+        delivery_event = mock_emit.call_args_list[0]
+        self.assertEqual(delivery_event.args[0], 'ticket.reply.delivery.updated')
+        self.assertEqual(delivery_event.kwargs, {'room': 'tenant_7'})
+        self.assertEqual(
+            delivery_event.args[1],
+            {
+                'contract_version': 'tenant_ticket.reply_delivery.realtime.v1',
+                'resource': 'reply_deliveries',
+                'reason': 'delivery_status_changed',
+                'refetch': True,
+            },
+        )
+        self._assert_opaque_invalidation(
+            mock_emit.call_args_list[1], room='tenant_7'
+        )
+        serialized = str(mock_emit.call_args_list)
+        self.assertNotIn('private-reply-event', serialized)
+        self.assertNotIn('SM-private-provider-id', serialized)
+        self.assertNotIn('contenido privado del vecino', serialized)
 
     def test_emit_ticket_comment_prefers_explicit_room(self):
         payload = {

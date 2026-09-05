@@ -4887,6 +4887,7 @@ def _timeline_items(extra: Mapping[str, Any], *, limit: int = 30) -> list[dict[s
                 "type": comment.get("type") or "message",
                 "origin": origin,
                 "body": comment.get("body") or "",
+                "content_source": comment.get("content_source") or "operator_free_form",
                 "visibility": comment.get("visibility") or "public",
                 "created_at": comment.get("created_at"),
                 "actor": comment.get("actor") if isinstance(comment.get("actor"), dict) else None,
@@ -5388,10 +5389,59 @@ def _ticket_reply_contract(
 
     whatsapp_source = normalized_channel in {"whatsapp", "wa", "twilio", "whatsapp_business"}
     email_source = normalized_channel in {"email", "mail", "correo"}
-    phone_present = bool(str(contact.get("phone") or contact.get("telefono") or "").strip())
+    raw_phone = str(contact.get("phone") or contact.get("telefono") or "").strip()
+    from utils.validators import normalize_phone
+
+    normalized_phone = normalize_phone(raw_phone) if raw_phone else None
+    phone_present = bool(normalized_phone)
     email_present = bool(str(contact.get("email") or "").strip())
-    sender_present = bool(_tenant_whatsapp_sender(tenant))
-    whatsapp_enabled = whatsapp_source and phone_present and sender_present
+    sender_reason_code = None
+    if source_model == "TenantTicket":
+        from services.tenant_twilio_messaging import (
+            resolve_tenant_twilio_sender_snapshot,
+        )
+
+        sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+            tenant_id=int(tenant.id),
+            channel="whatsapp",
+            session=db.session,
+        )
+        sender_present = bool(
+            sender_snapshot.sender is not None and not sender_snapshot.reason_code
+        )
+        sender_reason_code = sender_snapshot.reason_code
+    else:
+        sender_present = bool(_tenant_whatsapp_sender(tenant))
+    tenant_outbox_enabled = True
+    if source_model == "TenantTicket":
+        from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+
+        tenant_outbox_enabled = resolve_domain_effect_outbox_policy(
+            current_app.config, tenant_id=int(tenant.id)
+        ).enabled
+    whatsapp_enabled = (
+        whatsapp_source
+        and phone_present
+        and sender_present
+        and tenant_outbox_enabled
+        and source_model == "TenantTicket"
+    )
+    whatsapp_reason_code = None
+    if not whatsapp_enabled:
+        if not whatsapp_source:
+            whatsapp_reason_code = "ticket_channel_not_whatsapp"
+        elif not phone_present:
+            whatsapp_reason_code = (
+                "contact_phone_invalid" if raw_phone else "contact_phone_missing"
+            )
+        elif source_model == "MunicipioTicket":
+            whatsapp_reason_code = "legacy_whatsapp_enterprise_cutover_required"
+        elif not sender_present:
+            whatsapp_reason_code = (
+                sender_reason_code or "tenant_whatsapp_sender_missing"
+            )
+        else:
+            whatsapp_reason_code = "whatsapp_outbox_cutover_required"
     email_enabled = email_source and email_present
     return {
         "contract_version": "inbox.reply_contract.v1",
@@ -5425,7 +5475,7 @@ def _ticket_reply_contract(
         "delivery_channels": [
             {"id": "crm", "enabled": reason_code is None, "evidence": "durable_timeline"},
             {"id": "whatsapp", "enabled": reason_code is None and whatsapp_enabled,
-             "reason_code": None if whatsapp_enabled else ("ticket_channel_not_whatsapp" if not whatsapp_source else ("contact_phone_missing" if not phone_present else "tenant_whatsapp_sender_missing")),
+             "reason_code": whatsapp_reason_code,
              "acceptance_semantics": "provider_accepted_is_not_delivered"},
             {"id": "email", "enabled": reason_code is None and email_enabled,
              "reason_code": None if email_enabled else ("ticket_channel_not_email" if not email_source else "contact_email_missing"),
@@ -5456,13 +5506,38 @@ def _allowed_inbox_actions(
         assignee_id=extra.get("assignee_id"),
         payload_defaults=defaults,
     )
+    from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+
+    outbox_enabled = resolve_domain_effect_outbox_policy(
+        current_app.config, tenant_id=int(tenant.id)
+    ).enabled
+    whatsapp_source = _ticket_channel(ticket) in {
+        "whatsapp",
+        "wa",
+        "twilio",
+        "whatsapp_business",
+    }
+    external_dispatch_enabled = bool(outbox_enabled or not whatsapp_source)
     reply_action.update(
-        delivery_mode="durable_queue_or_provider_acceptance",
+        delivery_mode=(
+            "durable_queue"
+            if outbox_enabled
+            else ("crm_only" if whatsapp_source else "provider_acceptance")
+        ),
         fallback="http_polling",
-        external_dispatch=True,
+        external_dispatch=external_dispatch_enabled,
         operator_message=(
-            "La respuesta se guarda primero y usa el canal del ticket. "
-            "Los reintentos conservan la misma identidad sin duplicar el envio."
+            (
+                "La respuesta se guarda primero y se entrega mediante la cola durable. "
+                "Los reintentos conservan la misma identidad sin duplicar el envio."
+            )
+            if outbox_enabled
+            else (
+                "La respuesta se guarda en el CRM sin despacho externo. "
+                "WhatsApp requiere activar el cutover durable del tenant."
+                if whatsapp_source
+                else "La respuesta se guarda primero y usa el canal del ticket."
+            )
         ),
     )
     actions = [reply_action]
@@ -5777,14 +5852,24 @@ def _legacy_claim_allowed_actions(
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     tracking_links = _legacy_claim_tracking_links(ticket)
-    actions = [
-        _reply_action_contract(
-            endpoint=base_endpoint,
-            actor=actor,
-            assignee_id=ticket.asignado_a_id,
-            payload_defaults=defaults,
-        )
-    ]
+    reply_action = _reply_action_contract(
+        endpoint=base_endpoint,
+        actor=actor,
+        assignee_id=ticket.asignado_a_id,
+        payload_defaults=defaults,
+    )
+    reply_action.update(
+        {
+            "delivery_mode": "timeline_only",
+            "external_dispatch": False,
+            "external_channel_reason_code": "legacy_whatsapp_enterprise_cutover_required",
+            "operator_message": (
+                "La respuesta se registra en el CRM y el seguimiento publico. "
+                "El envio por WhatsApp requiere migrar el caso al flujo enterprise."
+            ),
+        }
+    )
+    actions = [reply_action]
     if not ticket.asignado_a_id:
         actions.append(
             {
@@ -6011,6 +6096,88 @@ def _legacy_claim_inbox_payload(
     }
 
 
+def _tenant_ticket_whatsapp_reply_contract(
+    ticket: TenantTicket,
+    tenant: TenantProfile,
+) -> dict[str, Any]:
+    from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+    from services.tenant_ticket_reply_delivery import (
+        approved_whatsapp_templates,
+        whatsapp_service_window,
+    )
+    from services.tenant_twilio_messaging import (
+        resolve_tenant_twilio_sender_snapshot,
+    )
+    from utils.validators import normalize_phone
+
+    contact = _tenant_ticket_reply_contact(ticket)
+    raw_recipient = str(contact.get("phone") or "").strip()
+    recipient = normalize_phone(raw_recipient)
+    sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+        tenant_id=int(tenant.id),
+        channel="whatsapp",
+        session=db.session,
+    )
+    sender_ready = bool(
+        sender_snapshot.sender is not None and not sender_snapshot.reason_code
+    )
+    if sender_ready:
+        service_window = whatsapp_service_window(
+            tenant_id=int(tenant.id),
+            provider_sender_id=int(sender_snapshot.sender.id),
+            recipient=recipient,
+            session=db.session,
+        )
+    else:
+        service_window = {
+            "contract_version": "whatsapp.service_window.v1",
+            "status": "unknown",
+            "last_inbound_at": None,
+            "expires_at": None,
+            "free_form_allowed": False,
+            "template_required": True,
+            "sender_bound": True,
+            "authoritative_source": "provider_sender_unavailable",
+        }
+    outbox_enabled = resolve_domain_effect_outbox_policy(
+        current_app.config, tenant_id=int(tenant.id)
+    ).enabled
+    external_dispatch_enabled = bool(outbox_enabled and sender_ready and recipient)
+    disabled_reason = None
+    if not recipient:
+        disabled_reason = (
+            "contact_phone_invalid" if raw_recipient else "contact_phone_missing"
+        )
+    elif not sender_ready:
+        disabled_reason = (
+            sender_snapshot.reason_code or "whatsapp_tenant_sender_resolution_invalid"
+        )
+    elif not outbox_enabled:
+        disabled_reason = "whatsapp_outbox_cutover_required"
+    return {
+        "contract_version": "inbox.tenant_ticket_reply.v1",
+        "channel": "whatsapp",
+        "recipient_available": bool(recipient),
+        "sender_available": sender_ready,
+        "service_window": service_window,
+        "free_form_allowed": bool(
+            external_dispatch_enabled and service_window["free_form_allowed"]
+        ),
+        "template_required": bool(service_window["template_required"]),
+        "approved_templates": approved_whatsapp_templates(
+            tenant_id=int(tenant.id), session=db.session
+        ),
+        "request_fields": {
+            "template_registry_id": "positive_integer_or_null",
+            "template_variables": "numbered_string_map_or_null",
+        },
+        "dispatch_mode": "durable_outbox" if outbox_enabled else "crm_only",
+        "external_dispatch_enabled": external_dispatch_enabled,
+        "disabled_reason": disabled_reason,
+        "final_delivery_evidence": "signed_provider_status_callback",
+    }
+
+
 def _inbox_ticket_payload(
     ticket: TenantTicket,
     tenant: TenantProfile,
@@ -6056,6 +6223,14 @@ def _inbox_ticket_payload(
         contact=extra.get("contact") if isinstance(extra.get("contact"), Mapping) else {},
         tenant=tenant, latest_delivery=latest_delivery or (delivery_history[-1] if delivery_history else None),
     )
+    from services.tenant_ticket_reply_delivery import list_ticket_reply_deliveries
+
+    reply_contract["whatsapp"] = _tenant_ticket_whatsapp_reply_contract(
+        ticket, tenant
+    )
+    reply_deliveries = list_ticket_reply_deliveries(
+        tenant_id=int(tenant.id), ticket_id=int(ticket.id), session=db.session
+    )
     return {
         "id": ticket.id,
         "ticket_id": ticket.id,
@@ -6084,6 +6259,7 @@ def _inbox_ticket_payload(
         "actions": [item["id"] for item in actions],
         "allowed_actions": actions,
         "reply_contract": reply_contract,
+        "reply_deliveries": reply_deliveries,
         "next_steps": _next_steps(ticket, extra),
         "source_metadata": _source_metadata(ticket, extra),
         "handoff": handoff,
@@ -6713,6 +6889,74 @@ def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | 
     return str(fallback or "crm").strip().lower() or "crm"
 
 
+def _legacy_claim_delivery_channels(
+    ticket: MunicipioTicket,
+    payload: Mapping[str, Any],
+    *,
+    visibility: str,
+) -> tuple[list[str], str | None]:
+    """Select one explicit legacy reply channel without cross-channel blasts."""
+
+    if visibility not in {"public", "internal"}:
+        return [], "reply_visibility_invalid"
+    has_send_external = "send_external" in payload
+    send_external = payload.get("send_external")
+    if has_send_external and not isinstance(send_external, bool):
+        return [], "reply_send_external_boolean_required"
+    if visibility == "internal" or send_external is False:
+        return [], None
+
+    aliases = {
+        "wa": "whatsapp",
+        "twilio": "whatsapp",
+        "whatsapp_business": "whatsapp",
+        "mail": "email",
+        "correo": "email",
+        "text": "sms",
+        "texto": "sms",
+    }
+    has_delivery_channels = "delivery_channels" in payload
+    has_channels_alias = "channels" in payload
+    if has_delivery_channels and has_channels_alias:
+        return [], "reply_channel_alias_conflict"
+    explicit = has_delivery_channels or has_channels_alias
+    raw_channels = (
+        payload.get("delivery_channels")
+        if has_delivery_channels
+        else payload.get("channels")
+    )
+    if explicit:
+        if raw_channels is None:
+            return [], "reply_channel_invalid"
+        values = (
+            raw_channels
+            if isinstance(raw_channels, (list, tuple, set))
+            else [raw_channels]
+        )
+        requested: list[str] = []
+        for value in values:
+            channel = aliases.get(
+                str(value or "").strip().lower(),
+                str(value or "").strip().lower(),
+            )
+            if channel not in {"whatsapp", "email", "sms"}:
+                return [], "reply_channel_invalid"
+            if channel not in requested:
+                requested.append(channel)
+        if not requested:
+            return [], "reply_channel_invalid"
+    else:
+        source = str(getattr(ticket, "canal_ingreso", None) or "web").strip().lower()
+        source = aliases.get(source, source)
+        requested = [source] if source in {"whatsapp", "email", "sms"} else []
+
+    source = str(getattr(ticket, "canal_ingreso", None) or "web").strip().lower()
+    source = aliases.get(source, source)
+    if requested and (source not in {"whatsapp", "email", "sms"} or requested != [source]):
+        return [], "reply_channel_source_mismatch"
+    return requested, None
+
+
 def _tenant_ticket_reply_contact(ticket: TenantTicket) -> dict[str, str]:
     from services.ticket_domain_effects import tenant_ticket_reply_contact
 
@@ -6724,14 +6968,31 @@ def _tenant_ticket_delivery_channels(
     payload: Mapping[str, Any],
     *,
     visibility: str,
-) -> list[str]:
-    if visibility != "public" or payload.get("send_external") is False:
-        return []
+) -> tuple[list[str], str | None]:
+    """Validate the exact external channel contract before persisting a reply."""
 
-    raw_channels = payload.get("delivery_channels")
-    if raw_channels is None and "channels" in payload:
-        raw_channels = payload.get("channels")
-    if raw_channels is not None:
+    if visibility not in {"public", "internal"}:
+        return [], "reply_visibility_invalid"
+    has_send_external = "send_external" in payload
+    send_external = payload.get("send_external")
+    if has_send_external and not isinstance(send_external, bool):
+        return [], "reply_send_external_boolean_required"
+    if visibility == "internal" or send_external is False:
+        return [], None
+
+    has_delivery_channels = "delivery_channels" in payload
+    has_channels_alias = "channels" in payload
+    if has_delivery_channels and has_channels_alias:
+        return [], "reply_channel_alias_conflict"
+    explicit_channels = has_delivery_channels or has_channels_alias
+    raw_channels = (
+        payload.get("delivery_channels")
+        if has_delivery_channels
+        else payload.get("channels")
+    )
+    if explicit_channels:
+        if raw_channels is None:
+            return [], "reply_channel_invalid"
         values = raw_channels if isinstance(raw_channels, (list, tuple, set)) else [raw_channels]
         normalized = []
         for value in values:
@@ -6740,16 +7001,20 @@ def _tenant_ticket_delivery_channels(
                 channel = "whatsapp"
             elif channel in {"mail", "correo"}:
                 channel = "email"
-            if channel in {"whatsapp", "email"} and channel not in normalized:
+            if channel not in {"whatsapp", "email"}:
+                return [], "reply_channel_invalid"
+            if channel not in normalized:
                 normalized.append(channel)
-        return normalized
+        if not normalized:
+            return [], "reply_channel_invalid"
+        return normalized, None
 
     source_channel = _ticket_channel(ticket)
     if source_channel in {"whatsapp", "wa", "twilio", "whatsapp_business"}:
-        return ["whatsapp"]
+        return ["whatsapp"], None
     if source_channel in {"email", "mail", "correo"}:
-        return ["email"]
-    return []
+        return ["email"], None
+    return [], None
 
 
 def _tenant_whatsapp_sender(tenant: TenantProfile) -> str | None:
@@ -6787,32 +7052,9 @@ def _dispatch_tenant_ticket_reply(
     attempted = False
 
     if "whatsapp" in requested_channels:
-        phone = contact.get("phone")
-        sender = _tenant_whatsapp_sender(tenant)
-        if not phone:
-            skipped["whatsapp"] = "contact_phone_missing"
-        elif not sender:
-            skipped["whatsapp"] = "tenant_whatsapp_sender_missing"
-        else:
-            attempted = True
-            try:
-                from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
-
-                results["whatsapp"] = bool(
-                    enviar_mensaje_whatsapp_con_fallback(
-                        phone,
-                        body,
-                        from_number=sender,
-                    )
-                )
-            except Exception as exc:  # pragma: no cover - defensive production logging
-                current_app.logger.exception(
-                    "Error dispatching TenantTicket WhatsApp reply ticket=%s tenant=%s: %s",
-                    ticket.id,
-                    tenant.slug,
-                    exc,
-                )
-                skipped["whatsapp"] = "provider_error"
+        # TenantTicket WhatsApp is outbox-only. The historical global helper
+        # can select credentials outside this tenant-bound aggregate.
+        skipped["whatsapp"] = "whatsapp_outbox_cutover_required"
 
     if "email" in requested_channels:
         email = contact.get("email")
@@ -6847,6 +7089,8 @@ def _dispatch_tenant_ticket_reply(
         return results, None, skipped
     if attempted:
         return results, "external_dispatch_failed", skipped
+    if skipped.get("whatsapp") == "whatsapp_outbox_cutover_required":
+        return results, "whatsapp_outbox_cutover_required", skipped
     return results, "external_dispatch_contact_or_sender_missing", skipped
 
 
@@ -6929,6 +7173,8 @@ def _dispatch_legacy_claim_reply(
     ticket: MunicipioTicket,
     body: str,
     recent_comment: TicketComentario | None,
+    *,
+    requested_channels: list[str],
 ) -> tuple[dict[str, bool], str | None]:
     try:
         from services.notification_dispatcher import dispatch_ticket_update
@@ -6938,15 +7184,16 @@ def _dispatch_legacy_claim_reply(
             "municipio",
             body,
             comentario_reciente=recent_comment,
-            enable_whatsapp=True,
+            enable_whatsapp="whatsapp" in requested_channels,
+            enabled_channels=requested_channels,
             archivos_adjuntos=[],
         )
         if not isinstance(raw_results, Mapping):
             return {"email": False, "sms": False, "whatsapp": False}, "notification_dispatch_invalid_result"
         return {
-            "email": bool(raw_results.get("email")),
-            "sms": bool(raw_results.get("sms")),
-            "whatsapp": bool(raw_results.get("whatsapp")),
+            "email": "email" in requested_channels and bool(raw_results.get("email")),
+            "sms": "sms" in requested_channels and bool(raw_results.get("sms")),
+            "whatsapp": "whatsapp" in requested_channels and bool(raw_results.get("whatsapp")),
         }, None
     except Exception as exc:  # pragma: no cover - defensive production logging
         current_app.logger.exception(
@@ -6961,10 +7208,28 @@ def _emit_legacy_claim_realtime_reply(
     ticket: MunicipioTicket,
     comment: TicketComentario,
     actor: User,
+    *,
+    visibility: str = "public",
 ) -> bool:
-    """Emit a durable public CRM reply to the ticket's signed citizen room."""
+    """Emit public replies to the case room and internal notes as opaque refetches."""
 
     try:
+        if visibility == "internal":
+            from socket_service import emit_new_chat_message
+
+            # Omitting case identifiers deliberately prevents a message body
+            # from reaching the signed citizen room.  The socket boundary uses
+            # the tenant id only to emit an opaque collection invalidation.
+            emit_new_chat_message(
+                {
+                    "tenant_type": "municipio",
+                    "tipo": "municipio",
+                    "tenant_profile_id": getattr(ticket, "tenant_id", None),
+                    "municipio_id": getattr(ticket, "municipio_id", None),
+                }
+            )
+            return True
+
         from socket_service import emit_ticket_comment
 
         emit_ticket_comment(
@@ -7074,12 +7339,16 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     handoff_event_body: str | None = None
     reply_outbox_enabled = False
     reply_outbox_effect_count = 0
+    reply_outbox_external_effect_count = 0
     reply_replayed = False
     reply_idempotency_source: str | None = None
     claim_idempotent = False
     assignment_idempotent = False
     assignment_expected_id: int | None = None
     assignment_target_id: int | None = None
+    requested_channels: list[str] | None = None
+    reply_visibility = "public"
+    legacy_whatsapp_cutover_blocked = False
 
     if action in _OPERATIONAL_OWNERSHIP_ACTIONS:
         ownership_error = _operational_ownership_error(current_user, ticket.asignado_a_id)
@@ -7259,6 +7528,43 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         body = str(payload.get("body") or payload.get("message") or payload.get("comentario") or "").strip()
         if not body:
             return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
+        raw_visibility = payload["visibility"] if "visibility" in payload else "public"
+        if not isinstance(raw_visibility, str):
+            return _error_response(
+                "La visibilidad de la respuesta no es valida.",
+                400,
+                "reply_visibility_invalid",
+                "choose_public_or_internal_visibility",
+            )
+        reply_visibility = raw_visibility.strip().lower()
+        requested_channels, channel_error = _legacy_claim_delivery_channels(
+            ticket,
+            payload,
+            visibility=reply_visibility,
+        )
+        if channel_error is not None:
+            is_source_mismatch = channel_error == "reply_channel_source_mismatch"
+            return _error_response(
+                (
+                    "El canal solicitado no coincide con el canal de origen del reclamo."
+                    if is_source_mismatch
+                    else "La configuración de entrega de la respuesta no es válida."
+                ),
+                409 if is_source_mismatch else 400,
+                channel_error,
+                (
+                    "use_original_channel_or_internal_note"
+                    if is_source_mismatch
+                    else "review_reply_delivery_fields"
+                ),
+            )
+        if requested_channels == ["whatsapp"]:
+            # The legacy MunicipioTicket delivery path cannot yet pin the
+            # immutable recipient/template snapshot required by the enterprise
+            # 24-hour-window and sender-bound WhatsApp policy.  Keep the reply
+            # durable in CRM/realtime, but fail closed before provider I/O.
+            legacy_whatsapp_cutover_blocked = True
+            requested_channels = []
         reply_idempotency_key, reply_idempotency_source, idempotency_error = (
             _omnichannel_reply_idempotency_identity(payload, tenant_id=tenant.id)
         )
@@ -7294,10 +7600,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 existing_receipt.resource_id,
             )
 
+        current_status = str(ticket.estado or "")
         target_status = (
-            "en_proceso"
-            if str(ticket.estado or "").lower() in {"nuevo", "open"}
-            else str(ticket.estado or "")
+            current_status
+            if reply_visibility == "internal"
+            else (
+                "en_proceso"
+                if current_status.lower() in {"nuevo", "open"}
+                else current_status
+            )
         )
         comment_status = (
             str(existing_comment.estado_ticket or target_status)
@@ -7315,10 +7626,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                     "comentario": body,
                     "user_id": current_user.id,
                     "es_admin": True,
-                    "origen": "admin_panel",
+                    "origen": (
+                        "internal"
+                        if reply_visibility == "internal"
+                        else "admin_panel"
+                    ),
                     "estado_ticket": comment_status,
-                    "emit_notifications": True,
+                    "emit_notifications": bool(requested_channels),
                     "emit_socket": True,
+                    "requested_channels": requested_channels,
                 },
                 idempotency_key=reply_idempotency_key,
                 idempotency_tenant_id=tenant.id,
@@ -7372,11 +7688,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         reply_replayed = existing_receipt is not None
         timeline_updated = not reply_replayed
         if reply_outbox_enabled:
-            reply_outbox_effect_count = DomainEffectOutbox.query.filter_by(
+            reply_outbox_effects = DomainEffectOutbox.query.filter_by(
                 tenant_id=tenant.id,
                 aggregate_type="municipio_ticket_comment",
                 aggregate_ref=str(recent_comment.id),
-            ).count()
+            ).all()
+            reply_outbox_effect_count = len(reply_outbox_effects)
+            reply_outbox_external_effect_count = sum(
+                1 for effect in reply_outbox_effects if effect.channel != "realtime"
+            )
 
     elif action == "close":
         target_status = _ticket_transition_status("close", payload.get("status"), default="cerrado")
@@ -7465,13 +7785,33 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         and not reply_outbox_enabled
         and not reply_replayed
     ):
-        delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(ticket, body, recent_comment)
-        realtime_emitted = _emit_legacy_claim_realtime_reply(ticket, recent_comment, current_user)
+        if requested_channels:
+            delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(
+                ticket,
+                body,
+                recent_comment,
+                requested_channels=requested_channels,
+            )
+        else:
+            delivery_results = {"email": False, "sms": False, "whatsapp": False}
+            dispatch_error_reason = (
+                "legacy_whatsapp_enterprise_cutover_required"
+                if legacy_whatsapp_cutover_blocked
+                else "external_dispatch_no_channel_requested"
+            )
+        realtime_emitted = _emit_legacy_claim_realtime_reply(
+            ticket,
+            recent_comment,
+            current_user,
+            visibility=reply_visibility,
+        )
 
     external_dispatch = bool(delivery_results and any(delivery_results.values()))
     delivery_reason = None
     if action == "reply":
-        if reply_outbox_enabled:
+        if legacy_whatsapp_cutover_blocked:
+            delivery_reason = "legacy_whatsapp_enterprise_cutover_required"
+        elif reply_outbox_enabled:
             delivery_reason = (
                 "idempotent_replay_domain_effects_preserved"
                 if reply_replayed and reply_outbox_effect_count
@@ -7494,6 +7834,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         channel=(
             "crm"
             if action in {"claim", "handoff", "accept_handoff", "resume_ai"}
+            or (action == "reply" and not requested_channels)
             else _ticket_delivery_channel(delivery_results, ticket.canal_ingreso or "whatsapp")
         ),
         timeline_updated=timeline_updated,
@@ -7527,16 +7868,23 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
         requested_channels=(
-            ["email", "sms", "whatsapp", "realtime"]
+            [*(requested_channels or []), "realtime"]
             if action == "reply" and reply_outbox_effect_count
-            else None
+            else (requested_channels if action == "reply" else None)
         ),
         durably_staged=(
-            action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
+            action == "reply"
+            and bool(reply_outbox_external_effect_count)
+            and not reply_replayed
         ),
         idempotent_replay=(
             (action == "reply" and reply_replayed)
             or (action == "assign" and assignment_idempotent)
+        ),
+        delivery_skipped=(
+            {"whatsapp": "legacy_whatsapp_enterprise_cutover_required"}
+            if action == "reply" and legacy_whatsapp_cutover_blocked
+            else None
         ),
     )
     if action == "assign":
@@ -7548,11 +7896,20 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             "assignee_id": assignment_target_id,
             "replayed": assignment_idempotent,
         }
+    reply_realtime_event = (
+        "ticket_update"
+        if action == "reply" and reply_visibility == "internal"
+        else "new_chat_message"
+    )
     delivery["realtime"] = {
         "emitted": bool(realtime_emitted or realtime_state_events),
-        "event": "new_chat_message" if realtime_emitted else (realtime_state_events[0] if realtime_state_events else None),
-        "events": (["new_chat_message"] if realtime_emitted else []) + realtime_state_events,
-        "room": f"ticket_municipio_{ticket.id}",
+        "event": reply_realtime_event if realtime_emitted else (realtime_state_events[0] if realtime_state_events else None),
+        "events": ([reply_realtime_event] if realtime_emitted else []) + realtime_state_events,
+        "room": (
+            f"tenant_{tenant.id}"
+            if action == "reply" and reply_visibility == "internal"
+            else f"ticket_municipio_{ticket.id}"
+        ),
         "fallback": "http_polling",
     }
     if action == "reply":
@@ -7564,8 +7921,9 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         }
     if action == "reply" and reply_outbox_enabled:
         delivery["outbox"] = {
-            "durably_staged": bool(reply_outbox_effect_count),
+            "durably_staged": bool(reply_outbox_external_effect_count),
             "effect_count": reply_outbox_effect_count,
+            "external_effect_count": reply_outbox_external_effect_count,
             "worker_authoritative": bool(reply_outbox_effect_count),
             "direct_dispatch_performed": False,
         }
@@ -7736,6 +8094,7 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     reply_replayed = False
     reply_idempotency_source: str | None = None
     reply_outbox_effect_count = 0
+    reply_outbox_external_effect_count = 0
     realtime_emitted = False
     claim_idempotent = False
     assignment_idempotent = False
@@ -7904,19 +8263,77 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         body, body_error = _omnichannel_reply_body(payload)
         if body_error is not None:
             return body_error
-        visibility = str(payload.get("visibility") or "public").strip().lower()
-        reply_visibility = "internal" if visibility == "internal" else "public"
+        raw_visibility = payload["visibility"] if "visibility" in payload else "public"
+        if not isinstance(raw_visibility, str):
+            return _error_response(
+                "La visibilidad de la respuesta no es válida.",
+                400,
+                "reply_visibility_invalid",
+                "choose_public_or_internal_visibility",
+            )
+        visibility = raw_visibility.strip().lower()
+        if visibility not in {"public", "internal"}:
+            return _error_response(
+                "La visibilidad de la respuesta no es válida.",
+                400,
+                "reply_visibility_invalid",
+                "choose_public_or_internal_visibility",
+            )
+        reply_visibility = visibility
         event_body = body
         reply_idempotency_key, reply_idempotency_source, idempotency_error = (
             _omnichannel_reply_idempotency_identity(payload, tenant_id=tenant.id)
         )
         if idempotency_error is not None:
             return idempotency_error
-        requested_channels = _tenant_ticket_delivery_channels(
+        requested_channels, channel_contract_error = _tenant_ticket_delivery_channels(
             ticket,
             payload,
             visibility=reply_visibility,
         )
+        if channel_contract_error is not None:
+            return _error_response(
+                "La configuración de entrega de la respuesta no es válida.",
+                400,
+                channel_contract_error,
+                "review_reply_delivery_fields",
+            )
+        source_channel = _ticket_channel(ticket)
+        source_is_whatsapp = source_channel in {
+            "whatsapp", "wa", "twilio", "whatsapp_business"
+        }
+        source_is_email = source_channel in {"email", "mail", "correo"}
+        if "whatsapp" in requested_channels and not source_is_whatsapp:
+            return _error_response(
+                "Este expediente no se originó en WhatsApp; no se habilitó una salida externa por ese canal.",
+                409,
+                "reply_channel_source_mismatch",
+                "use_original_channel_or_internal_note",
+            )
+        if "email" in requested_channels and not source_is_email:
+            return _error_response(
+                "Este expediente no se originó por email; no se habilitó una salida externa por ese canal.",
+                409,
+                "reply_channel_source_mismatch",
+                "use_original_channel_or_internal_note",
+            )
+        if "template_variables" in payload and "content_variables" in payload:
+            return _error_response(
+                "Usá un solo campo para las variables de la plantilla.",
+                400,
+                "whatsapp_template_variable_alias_conflict",
+                "send_template_variables_only",
+            )
+        from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+
+        tenant_outbox_enabled = resolve_domain_effect_outbox_policy(
+            current_app.config, tenant_id=int(tenant.id)
+        ).enabled
+        persisted_delivery_channels = [
+            channel
+            for channel in requested_channels
+            if channel != "whatsapp" or tenant_outbox_enabled
+        ]
 
         from services.ticket_service import (
             ServicioTickets,
@@ -7924,6 +8341,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             TicketIdempotencyReplayUnavailable,
             TicketIdempotencyValidationError,
             TicketReplyOwnershipError,
+        )
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyDeliveryError,
         )
 
         try:
@@ -7935,7 +8355,21 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                     "actor_user_id": current_user.id,
                     "actor_name": current_user.name,
                     "actor_role": current_user.rol,
-                    "requested_channels": requested_channels,
+                    "requested_channels": persisted_delivery_channels,
+                    "template_registry_id": (
+                        payload.get("template_registry_id")
+                        if "whatsapp" in persisted_delivery_channels
+                        else None
+                    ),
+                    "template_variables": (
+                        (
+                            payload.get("template_variables")
+                            if "template_variables" in payload
+                            else payload.get("content_variables")
+                        )
+                        if "whatsapp" in persisted_delivery_channels
+                        else None
+                    ),
                     "emit_socket": True,
                 },
                 idempotency_key=reply_idempotency_key,
@@ -7978,6 +8412,32 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 "reply_idempotency_replay_unavailable",
                 "refresh_inbox",
             )
+        except TenantTicketReplyDeliveryError as exc:
+            db.session.rollback()
+            is_window_error = exc.code == "whatsapp_template_required_outside_24h"
+            is_template_body_mismatch = exc.code == "whatsapp_template_body_mismatch"
+            return _error_response(
+                (
+                    "La ventana de atención de 24 horas está cerrada. "
+                    "Seleccioná una plantilla aprobada para responder por WhatsApp."
+                    if is_window_error
+                    else (
+                        "El texto visible no coincide con la plantilla aprobada. "
+                        "Volvé a generar la vista previa antes de enviarla."
+                        if is_template_body_mismatch
+                        else "La configuración de WhatsApp, la plantilla o sus variables no son válidas."
+                    )
+                ),
+                409 if is_window_error or is_template_body_mismatch else 400,
+                exc.code,
+                "choose_approved_template"
+                if is_window_error
+                else (
+                    "refresh_approved_template_preview"
+                    if is_template_body_mismatch
+                    else "review_whatsapp_delivery_fields"
+                ),
+            )
         except Exception as exc:
             db.session.rollback()
             current_app.logger.exception(
@@ -8000,11 +8460,15 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         timeline_updated = not reply_replayed
         aggregate_ref = str(reply_result.get("aggregate_ref") or "")
         if aggregate_ref:
-            reply_outbox_effect_count = DomainEffectOutbox.query.filter_by(
+            reply_outbox_effects = DomainEffectOutbox.query.filter_by(
                 tenant_id=tenant.id,
                 aggregate_type="tenant_ticket_reply",
                 aggregate_ref=aggregate_ref,
-            ).count()
+            ).all()
+            reply_outbox_effect_count = len(reply_outbox_effects)
+            reply_outbox_external_effect_count = sum(
+                1 for effect in reply_outbox_effects if effect.channel != "realtime"
+            )
 
     elif action == "close":
         target_status = _ticket_transition_status("close", payload.get("status"), default="cerrado")
@@ -8085,13 +8549,39 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         and not reply_replayed
         and not reply_outbox_effect_count
     ):
-        delivery_results, dispatch_reason, delivery_skipped = _dispatch_tenant_ticket_reply(
-            tenant=tenant,
-            ticket=ticket,
-            body=event_body,
-            requested_channels=requested_channels or [],
-            reply_record=reply_record,
-        )
+        legacy_dispatch_channels = [
+            channel
+            for channel in (requested_channels or [])
+            if channel != "whatsapp"
+        ]
+        if legacy_dispatch_channels:
+            delivery_results, dispatch_reason, delivery_skipped = (
+                _dispatch_tenant_ticket_reply(
+                    tenant=tenant,
+                    ticket=ticket,
+                    body=event_body,
+                    requested_channels=legacy_dispatch_channels,
+                    reply_record=reply_record,
+                )
+            )
+            if "whatsapp" in (requested_channels or []):
+                delivery_skipped["whatsapp"] = "whatsapp_outbox_cutover_required"
+        elif "whatsapp" in (requested_channels or []):
+            delivery_results = {"email": False, "sms": False, "whatsapp": False}
+            dispatch_reason = "whatsapp_outbox_cutover_required"
+            delivery_skipped = {
+                "whatsapp": "whatsapp_outbox_cutover_required"
+            }
+        else:
+            delivery_results, dispatch_reason, delivery_skipped = (
+                _dispatch_tenant_ticket_reply(
+                    tenant=tenant,
+                    ticket=ticket,
+                    body=event_body,
+                    requested_channels=[],
+                    reply_record=reply_record,
+                )
+            )
         external_dispatch = any(delivery_results.values())
         if reply_event is not None:
             realtime_emitted = _emit_tenant_ticket_realtime_reply(ticket, reply_event)
@@ -8101,10 +8591,10 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         if reply_replayed:
             delivery_reason = (
                 "idempotent_replay_domain_effects_preserved"
-                if reply_outbox_effect_count
+                if reply_outbox_external_effect_count
                 else "idempotent_replay_no_redispatch"
             )
-        elif reply_outbox_effect_count:
+        elif reply_outbox_external_effect_count:
             delivery_reason = "domain_effects_durably_staged"
         elif external_dispatch:
             delivery_reason = "acceptance_unverified"
@@ -8156,7 +8646,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         requested_channels=requested_channels,
         delivery_skipped=delivery_skipped,
         durably_staged=(
-            action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
+            action == "reply"
+            and bool(reply_outbox_external_effect_count)
+            and not reply_replayed
         ),
         idempotent_replay=(
             (action == "reply" and reply_replayed)
@@ -8173,6 +8665,14 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             "replayed": assignment_idempotent,
         }
     if action == "reply":
+        if reply_record is not None and "whatsapp" in (requested_channels or []):
+            from services.tenant_ticket_reply_delivery import serialize_reply_delivery
+
+            delivery["final_delivery"] = serialize_reply_delivery(
+                reply_record, session=db.session
+            )
+            delivery["reply_event_id"] = reply_record.event_id
+            delivery["evidence_stage"] = delivery["final_delivery"]["status"]
         delivery["idempotency"] = {
             "contract_version": "inbox.reply_idempotency.v1",
             "replayed": reply_replayed,
@@ -8184,7 +8684,23 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             "emitted": realtime_emitted,
             "queued": bool(reply_outbox_effect_count and not reply_replayed),
             "event": "ticket_update" if (realtime_emitted or reply_outbox_effect_count) else None,
-            "events": ["ticket_update"] if (realtime_emitted or reply_outbox_effect_count) else [],
+            "events": (
+                [
+                    "ticket_update",
+                    *(
+                        ["ticket.reply.delivery.updated"]
+                        if reply_outbox_external_effect_count
+                        else []
+                    ),
+                ]
+                if (realtime_emitted or reply_outbox_effect_count)
+                else []
+            ),
+            "delivery_status_event": (
+                "ticket.reply.delivery.updated"
+                if reply_outbox_external_effect_count
+                else None
+            ),
             "room": f"tenant_{tenant.id}",
             "scope": "authenticated_tenant_operators",
             "fallback": "http_polling",
@@ -8195,8 +8711,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         }
         if reply_outbox_effect_count:
             delivery["outbox"] = {
-                "durably_staged": True,
+                "durably_staged": bool(reply_outbox_external_effect_count),
                 "effect_count": reply_outbox_effect_count,
+                "external_effect_count": reply_outbox_external_effect_count,
                 "worker_authoritative": True,
                 "direct_dispatch_performed": False,
             }

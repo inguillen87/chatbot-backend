@@ -276,6 +276,21 @@ def _validated_external_code(value: Any, *, field_name: str) -> str:
     return raw
 
 
+def _exception_error_code(exc: BaseException) -> str:
+    """Prefer an explicit bounded domain code over a Python class name."""
+
+    external_code = getattr(exc, "code", None)
+    if external_code not in (None, ""):
+        try:
+            return _validated_external_code(
+                external_code,
+                field_name="exception_code",
+            )
+        except DomainEffectValidationError:
+            pass
+    return _safe_error_code(type(exc).__name__)
+
+
 def _error_digest(exc: BaseException | str) -> str:
     if isinstance(exc, BaseException):
         material = f"{type(exc).__name__}:{str(exc)}"
@@ -1039,7 +1054,7 @@ def _dispatch_claim(
                 "lease_token": None,
                 "leased_until": None,
                 "processed_at": _utcnow(),
-                "last_error_code": _safe_error_code(type(exc).__name__),
+                "last_error_code": _exception_error_code(exc),
                 "last_error_digest": _error_digest(exc),
             },
             session=session,
