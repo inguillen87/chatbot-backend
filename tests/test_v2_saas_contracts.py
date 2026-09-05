@@ -6358,7 +6358,10 @@ class V2SaasContractsTest(unittest.TestCase):
             return_value="SM" + ("9" * 32),
         ) as provider_send, patch(
             "socket_service.emit_new_chat_message"
-        ) as emit_realtime:
+        ) as emit_realtime, patch(
+            "services.whatsapp_enterprise_rules.get_local_now",
+            return_value=datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+        ):
             batch = dispatch_domain_effect_batch(
                 tenant_id=self.tenant.id,
                 limit=10,
@@ -6743,7 +6746,10 @@ class V2SaasContractsTest(unittest.TestCase):
             return_value="SM-pinned-reply",
         ) as send_whatsapp, patch(
             "socket_service.emit_new_chat_message"
-        ) as emit_realtime:
+        ) as emit_realtime, patch(
+            "services.whatsapp_enterprise_rules.get_local_now",
+            return_value=datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+        ):
             batch = dispatch_domain_effect_batch(
                 tenant_id=self.tenant.id,
                 limit=10,
@@ -6899,7 +6905,10 @@ class V2SaasContractsTest(unittest.TestCase):
         with patch(
             "services.ticket_domain_effects.send_prepared_tenant_twilio_message",
             side_effect=RuntimeError("provider acknowledgement lost"),
-        ) as provider_send, patch("socket_service.emit_new_chat_message"):
+        ) as provider_send, patch("socket_service.emit_new_chat_message"), patch(
+            "services.whatsapp_enterprise_rules.get_local_now",
+            return_value=datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
+        ):
             first_batch = dispatch_domain_effect_batch(
                 tenant_id=self.tenant.id,
                 limit=1,
