@@ -393,4 +393,4 @@ def test_domain_effect_outbox_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["20260904_tenant_reply_delivery_v1"]
+    assert heads == ["20260904_geo_execution_v2"]

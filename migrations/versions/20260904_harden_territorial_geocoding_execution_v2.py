@@ -1,7 +1,7 @@
 """harden territorial geocoding execution fencing
 
 Revision ID: 20260904_geo_execution_v2
-Revises: 20260831_inbox_artifact_v1
+Revises: 20260904_tenant_reply_delivery_v1
 Create Date: 2026-09-04 22:00:00.000000
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "20260904_geo_execution_v2"
-down_revision = "20260831_inbox_artifact_v1"
+down_revision = "20260904_tenant_reply_delivery_v1"
 branch_labels = None
 depends_on = None
 

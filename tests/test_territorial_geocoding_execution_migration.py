@@ -34,7 +34,7 @@ def test_execution_fencing_migration_round_trips_on_sqlite(tmp_path):
         "20260904_harden_territorial_geocoding_execution_v2.py",
     )
     assert execution.revision == "20260904_geo_execution_v2"
-    assert execution.down_revision == "20260831_inbox_artifact_v1"
+    assert execution.down_revision == "20260904_tenant_reply_delivery_v1"
 
     engine = sa.create_engine(f"sqlite:///{(tmp_path / 'execution.sqlite3').as_posix()}")
     try:
