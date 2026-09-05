@@ -6,6 +6,11 @@ import re
 from flask import Blueprint, g, jsonify, request
 
 from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
+from services.auth_assurance_service import (
+    AuthAssuranceError,
+    STRICT_MFA,
+    require_request_auth_assurance,
+)
 from services.tenant_blueprints import (
     TenantBlueprintError,
     apply_blueprint,
@@ -168,6 +173,13 @@ def tenant_blueprint_apply_v2(current_user, tenant_slug: str, blueprint_id: str)
             "La aplicacion inicial requiere un superadmin autorizado.",
             403,
         )
+
+    try:
+        require_request_auth_assurance(STRICT_MFA)
+    except AuthAssuranceError as exc:
+        payload = exc.to_payload()
+        payload["request_id"] = _request_id()
+        return _response(payload, 403)
 
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):

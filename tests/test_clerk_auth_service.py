@@ -1,11 +1,19 @@
 from datetime import datetime, timezone
 
 import jwt
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 from database import db
 from models import TenantFollower, TenantProfile, User
 import services.clerk_auth_service as clerk_service
+from services.auth_assurance_service import (
+    AUTH_ASSURANCE_CLAIM,
+    AuthAssuranceError,
+    build_clerk_auth_assurance_snapshot,
+    mark_verified_clerk_claims,
+    require_token_auth_assurance,
+)
 from services.clerk_auth_service import (
     ClerkAuthError,
     ClerkNotConfigured,
@@ -33,6 +41,76 @@ def _claims(sub="user_clerk_123", email="owner@chatboc.test"):
         "email": email,
         "email_verified": True,
         "iat": int(datetime.now(timezone.utc).timestamp()),
+    }
+
+
+def _verified_claims(*, fva=...):
+    claims = _claims()
+    if fva is not ...:
+        claims["fva"] = fva
+    return mark_verified_clerk_claims(claims)
+
+
+def test_clerk_fva_normalizes_only_after_verified_session_claims():
+    issued_at = 1_800_000_000
+    raw_claims = _claims() | {"iat": issued_at, "fva": [2, 4]}
+
+    untrusted = build_clerk_auth_assurance_snapshot(raw_claims)
+    trusted = build_clerk_auth_assurance_snapshot(
+        mark_verified_clerk_claims(raw_claims)
+    )
+
+    assert untrusted["status"] == "unverified_source"
+    assert untrusted["first_factor_verified_at"] is None
+    assert trusted == {
+        "version": "auth.assurance.v1",
+        "source": "clerk_v2_fva",
+        "status": "verified",
+        "first_factor_verified_at": issued_at - 120,
+        "second_factor_verified_at": issued_at - 240,
+    }
+
+
+@pytest.mark.parametrize(
+    ("fva", "expected_status"),
+    [
+        (..., "missing"),
+        ("0,0", "malformed"),
+        ([0], "malformed"),
+        ([True, 0], "malformed"),
+        ([0, -1], "mfa_enrollment_required"),
+    ],
+)
+def test_clerk_fva_fails_closed_for_unusable_assurance(fva, expected_status):
+    snapshot = build_clerk_auth_assurance_snapshot(_verified_claims(fva=fva))
+
+    assert snapshot["status"] == expected_status
+    assert snapshot["second_factor_verified_at"] is None
+
+
+def test_strict_mfa_guard_adds_elapsed_time_to_signed_snapshot():
+    snapshot = build_clerk_auth_assurance_snapshot(
+        mark_verified_clerk_claims(
+            _claims() | {"iat": 1_800_000_000, "fva": [0, 0]}
+        )
+    )
+    token_payload = {AUTH_ASSURANCE_CLAIM: snapshot}
+
+    assert require_token_auth_assurance(
+        token_payload,
+        now_epoch=1_800_000_600,
+    )["status"] == "verified"
+    with pytest.raises(AuthAssuranceError) as exc_info:
+        require_token_auth_assurance(
+            token_payload,
+            now_epoch=1_800_000_601,
+        )
+
+    assert exc_info.value.reason_code == "step_up_required"
+    assert exc_info.value.clerk_error == {
+        "type": "forbidden",
+        "reason": "reverification-error",
+        "metadata": {"reverification": "strict_mfa"},
     }
 
 
@@ -130,7 +208,17 @@ def test_clerk_superadmin_role_is_limited_to_allowlisted_email(client, monkeypat
         db.session.commit()
 
         assert allowed.rol == "super_admin"
-        payload = build_chatboc_session_payload(allowed, clerk_claims=_claims(sub="user_superadmin", email="guillen.marce@gmail.com"))
+        verified_claims = mark_verified_clerk_claims(
+            _claims(
+                sub="user_superadmin",
+                email="guillen.marce@gmail.com",
+            )
+            | {"fva": [0, 0]}
+        )
+        payload = build_chatboc_session_payload(
+            allowed,
+            clerk_claims=verified_claims,
+        )
         assert payload["user"]["role"] == "super_admin"
         assert payload["onboarding"]["required"] is False
         assert payload["onboarding"]["status"] == "platform_admin"
@@ -145,6 +233,14 @@ def test_clerk_superadmin_role_is_limited_to_allowlisted_email(client, monkeypat
         assert decoded["clerk_user_id"] == "user_superadmin"
         assert decoded["jti"]
         assert decoded["sv"] == 1
+        assert decoded["exp"] - decoded["iat"] == 3600
+        assert decoded[AUTH_ASSURANCE_CLAIM] == {
+            "version": "auth.assurance.v1",
+            "source": "clerk_v2_fva",
+            "status": "verified",
+            "first_factor_verified_at": verified_claims["iat"],
+            "second_factor_verified_at": verified_claims["iat"],
+        }
 
 
 def test_clerk_session_is_not_issued_before_onboarding(client):
@@ -639,6 +735,8 @@ def test_verify_clerk_session_confirms_active_sid_with_backend_api(client, monke
             "sts": "active",
             "azp": "https://chatboc.ar",
             "exp": 9999999999,
+            "iat": 1_800_000_000,
+            "fva": [1, 2],
         },
     )
     monkeypatch.setattr(
@@ -651,6 +749,10 @@ def test_verify_clerk_session_confirms_active_sid_with_backend_api(client, monke
         claims = verify_clerk_session_token("header.payload.signature")
 
     assert claims["sid"] == "sess_active_lookup"
+    assert build_clerk_auth_assurance_snapshot(claims)["status"] == "verified"
+    assert build_clerk_auth_assurance_snapshot(claims)[
+        "second_factor_verified_at"
+    ] == 1_799_999_880
     assert requested[0][0] == "https://api.clerk.com/v1/sessions/sess_active_lookup"
     assert requested[0][1]["headers"]["Authorization"] == "Bearer test-clerk-backend-secret"
     assert requested[0][1]["timeout"] == 5

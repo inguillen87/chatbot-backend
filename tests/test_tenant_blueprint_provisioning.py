@@ -85,8 +85,9 @@ def blueprint_context():
     admin_b.tenant_id = tenant_b.id
     db.session.commit()
 
-    def token_for(user: User) -> str:
+    def token_for(user: User, *, assurance_state: str = "valid") -> str:
         now = datetime.now(timezone.utc)
+        now_epoch = int(now.timestamp())
         payload = {
             "user_id": user.id,
             "tenant_slug": user.tenant_slug,
@@ -105,6 +106,40 @@ def blueprint_context():
                     "iat": now,
                 }
             )
+            if assurance_state == "valid":
+                payload["auth_assurance"] = {
+                    "version": "auth.assurance.v1",
+                    "source": "clerk_v2_fva",
+                    "status": "verified",
+                    "first_factor_verified_at": now_epoch,
+                    "second_factor_verified_at": now_epoch,
+                }
+            elif assurance_state == "malformed":
+                payload["auth_assurance"] = {
+                    "version": "auth.assurance.v1",
+                    "source": "clerk_v2_fva",
+                    "status": "verified",
+                    "first_factor_verified_at": "not-a-timestamp",
+                    "second_factor_verified_at": now_epoch,
+                }
+            elif assurance_state == "mfa_enrollment_required":
+                payload["auth_assurance"] = {
+                    "version": "auth.assurance.v1",
+                    "source": "clerk_v2_fva",
+                    "status": "mfa_enrollment_required",
+                    "first_factor_verified_at": now_epoch,
+                    "second_factor_verified_at": None,
+                }
+            elif assurance_state == "stale":
+                payload["auth_assurance"] = {
+                    "version": "auth.assurance.v1",
+                    "source": "clerk_v2_fva",
+                    "status": "verified",
+                    "first_factor_verified_at": now_epoch - 601,
+                    "second_factor_verified_at": now_epoch - 601,
+                }
+            elif assurance_state != "missing":
+                raise ValueError(f"Unknown assurance state: {assurance_state}")
         return jwt.encode(payload, app.config["SECRET_KEY"], algorithm="HS256")
 
     yield {
@@ -124,8 +159,18 @@ def blueprint_context():
     context.pop()
 
 
-def _headers(ctx, user, *, idempotency_key: str | None = None):
-    headers = {"Authorization": f"Bearer {ctx['token_for'](user)}"}
+def _headers(
+    ctx,
+    user,
+    *,
+    idempotency_key: str | None = None,
+    assurance_state: str = "valid",
+):
+    headers = {
+        "Authorization": (
+            f"Bearer {ctx['token_for'](user, assurance_state=assurance_state)}"
+        )
+    }
     if idempotency_key is not None:
         headers["Idempotency-Key"] = idempotency_key
     return headers
@@ -220,6 +265,106 @@ def test_preview_is_tenant_scoped_and_has_no_writes(blueprint_context):
     )
     assert employee_denied.status_code == 403
 
+    superadmin_preview_without_assurance = ctx["client"].post(
+        "/api/v2/tenants/government-a/blueprints/government-core/preview",
+        headers=_headers(
+            ctx,
+            ctx["superadmin"],
+            assurance_state="missing",
+        ),
+    )
+    assert superadmin_preview_without_assurance.status_code == 200
+    assert TenantBlueprintApplication.query.count() == 0
+
+
+@pytest.mark.parametrize("assurance_state", ["missing", "malformed", "stale"])
+def test_apply_requires_recent_strict_mfa_before_any_write(
+    blueprint_context,
+    assurance_state,
+    monkeypatch,
+):
+    ctx = blueprint_context
+    digest = _manifest_digest(ctx)
+    before = json.loads(json.dumps(ctx["tenant_a"].configuracion))
+
+    def unexpected_apply(*_args, **_kwargs):
+        raise AssertionError("apply_blueprint must not run before strict MFA")
+
+    monkeypatch.setattr(
+        "routes.v2.tenant_blueprints.apply_blueprint",
+        unexpected_apply,
+    )
+
+    response = ctx["client"].post(
+        "/api/v2/tenants/government-a/blueprints/government-core/apply",
+        json={"manifest_digest": digest},
+        headers=_headers(
+            ctx,
+            ctx["superadmin"],
+            idempotency_key=f"assurance-{assurance_state}",
+            assurance_state=assurance_state,
+        ),
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert payload["contract_version"] == "auth.assurance.error.v1"
+    assert payload["reason_code"] == "step_up_required"
+    assert payload["retryable"] is False
+    assert payload["clerk_error"] == {
+        "type": "forbidden",
+        "reason": "reverification-error",
+        "metadata": {"reverification": "strict_mfa"},
+    }
+    assert TenantBlueprintApplication.query.count() == 0
+    db.session.refresh(ctx["tenant_a"])
+    assert ctx["tenant_a"].configuracion == before
+
+    if assurance_state == "missing":
+        malformed_request = ctx["client"].post(
+            "/api/v2/tenants/government-a/blueprints/government-core/apply",
+            data="{",
+            content_type="application/json",
+            headers=_headers(
+                ctx,
+                ctx["superadmin"],
+                assurance_state="missing",
+            ),
+        )
+        assert malformed_request.status_code == 403
+        assert malformed_request.get_json()["reason_code"] == "step_up_required"
+
+
+def test_apply_requires_mfa_enrollment_without_reverification_loop(
+    blueprint_context,
+):
+    ctx = blueprint_context
+    digest = _manifest_digest(ctx)
+
+    response = ctx["client"].post(
+        "/api/v2/tenants/government-a/blueprints/government-core/apply",
+        json={"manifest_digest": digest},
+        headers=_headers(
+            ctx,
+            ctx["superadmin"],
+            idempotency_key="assurance-enrollment",
+            assurance_state="mfa_enrollment_required",
+        ),
+    )
+
+    assert response.status_code == 403
+    payload = response.get_json()
+    assert payload["reason_code"] == "mfa_enrollment_required"
+    assert payload["retryable"] is False
+    assert payload["no_retry"] is True
+    assert payload["clerk_error"]["reason"] == "mfa-enrollment-required"
+    assert payload["clerk_error"]["metadata"] == {
+        "reverification": "strict_mfa",
+        "enrollment_required": True,
+        "retry_after_reverification": False,
+    }
+    assert TenantBlueprintApplication.query.count() == 0
+
 
 def test_apply_is_superadmin_only_idempotent_and_does_not_activate_runtime(
     blueprint_context, monkeypatch
@@ -287,6 +432,20 @@ def test_apply_is_superadmin_only_idempotent_and_does_not_activate_runtime(
     assert replay.headers["Idempotency-Replayed"] == "true"
     assert replay.get_json()["replayed"] is True
     assert replay.get_json()["write_performed"] is False
+    assert TenantBlueprintApplication.query.count() == 1
+
+    stale_replay = ctx["client"].post(
+        "/api/v2/tenants/government-a/blueprints/government-core/apply",
+        json={"manifest_digest": digest},
+        headers=_headers(
+            ctx,
+            ctx["superadmin"],
+            idempotency_key="tenant-apply-001",
+            assurance_state="stale",
+        ),
+    )
+    assert stale_replay.status_code == 403
+    assert stale_replay.get_json()["reason_code"] == "step_up_required"
     assert TenantBlueprintApplication.query.count() == 1
 
     other_tenant = ctx["client"].post(
