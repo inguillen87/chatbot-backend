@@ -631,3 +631,72 @@ def test_llm_context_preserves_tenant_config_after_legacy_refresh(monkeypatch, o
     assert captured["municipio_config_actual"]["base_chat_url"] == "https://chatboc.test/chat"
     assert captured["municipio_config_actual"]["tenant_slug"] == "junin-context-regression"
     assert captured["municipio_id"] == str(owner_user.id)
+
+
+def test_non_junin_tenant_never_inherits_legacy_junin_identity(monkeypatch, owner_user):
+    tenant = ensure_owner_tenant(owner_user)
+    tenant.slug = "mendoza-government-isolation"
+    tenant.nombre = "Gobierno de Mendoza"
+    tenant.configuracion = {
+        "assistant_name": "Asistente Mendoza",
+        "nombre": "Gobierno de Mendoza",
+        "tenant_slug": "mendoza-government-isolation",
+    }
+    db.session.add(tenant)
+    db.session.commit()
+
+    captured = {}
+
+    def fake_handle_llm(app, pregunta, context, viewer, owner, chat_ctx, municipio_ctx, demo_metadata=None):
+        captured.update(context)
+        return ({"message_body": "ok", "fuente": "tenant_isolation"}, municipio_ctx)
+
+    monkeypatch.setattr(
+        "services.municipio_responder.handle_llm_interaction",
+        fake_handle_llm,
+    )
+
+    result = run_turn(
+        "continuar",
+        state="ESPERANDO_INFO_RECLAMO_LLM",
+        owner_user=owner_user,
+    )
+
+    assert result.response["fuente"] == "tenant_isolation"
+    runtime_config = captured["municipio_config_actual"]
+    assert runtime_config["assistant_name"] == "Asistente Mendoza"
+    assert runtime_config["nombre"] == "Gobierno de Mendoza"
+    assert "junin" not in str(runtime_config).lower()
+    assert "juninmendoza.gov.ar" not in str(runtime_config).lower()
+
+
+def test_explicit_junin_tenant_keeps_legacy_junin_package(monkeypatch, owner_user):
+    tenant = ensure_owner_tenant(owner_user)
+    tenant.slug = "junin"
+    tenant.nombre = "Municipalidad de Junín"
+    tenant.configuracion = {}
+    db.session.add(tenant)
+    db.session.commit()
+
+    captured = {}
+
+    def fake_handle_llm(app, pregunta, context, viewer, owner, chat_ctx, municipio_ctx, demo_metadata=None):
+        captured.update(context)
+        return ({"message_body": "ok", "fuente": "junin_package"}, municipio_ctx)
+
+    monkeypatch.setattr(
+        "services.municipio_responder.handle_llm_interaction",
+        fake_handle_llm,
+    )
+
+    result = run_turn(
+        "continuar",
+        state="ESPERANDO_INFO_RECLAMO_LLM",
+        owner_user=owner_user,
+    )
+
+    assert result.response["fuente"] == "junin_package"
+    runtime_config = captured["municipio_config_actual"]
+    assert runtime_config["assistant_name"] == "JUNI"
+    assert runtime_config["nombre"] == "Municipalidad de Junín"
+    assert runtime_config["web_url"] == "https://www.juninmendoza.gov.ar"

@@ -2863,8 +2863,15 @@ TWILIO_WHATSAPP_NUMBER = os.environ.get(
 TWILIO_WHATSAPP_CONTENT_SID = os.environ.get("TWILIO_WHATSAPP_CONTENT_SID")
 
 MUNICIPIO_ID = os.environ.get("MUNICIPIO_ID", "default")
-# Configuración base (se puede sobrescribir por municipio en cada request)
-CONFIG_MUNICIPIO = cargar_configuracion_municipio("default", "config.json")
+# Neutral runtime defaults. The bundled ``default`` package is legacy Junín
+# content and must never become another government's identity or public links.
+CONFIG_MUNICIPIO = {
+    "nombre": "Municipio",
+    "nombre_municipio": "Municipio",
+    "assistant_name": "Asistente municipal",
+    "pais": "Argentina",
+    "base_chat_url": "https://www.chatboc.ar/chat",
+}
 
 TODAS_LAS_CATEGORIAS_UNICAS = sorted(list(set(KEYWORD_TO_CATEGORY_MAP.values())))
 BOTONES_TODAS_CATEGORIAS = [{"texto": cat} for cat in TODAS_LAS_CATEGORIAS_UNICAS]
@@ -10724,7 +10731,11 @@ def responder_municipio(
     )
 
     # Load from JSON file
-    loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+    loaded_specific_config = cargar_configuracion_municipio(
+        owner_user_municipio_id_str,
+        "config.json",
+        fallback_to_default=False,
+    )
     if loaded_specific_config:
         final_municipio_config.update(loaded_specific_config)
 
@@ -10737,8 +10748,14 @@ def responder_municipio(
             explicit_tenant_id=kwargs.get("tenant_id"),
         )
         if tenant_profile and isinstance(tenant_profile.configuracion, dict):
-            final_municipio_config.update(tenant_profile.configuracion)
-            if not final_municipio_config.get("nombre") and tenant_profile.nombre:
+            tenant_runtime_config = tenant_profile.configuracion
+            final_municipio_config.update(tenant_runtime_config)
+            if final_municipio_config.get("nombre") in (
+                None,
+                "",
+                "Municipio",
+                "Municipio Inteligente",
+            ) and tenant_profile.nombre:
                 final_municipio_config["nombre"] = tenant_profile.nombre
     except Exception:  # pragma: no cover - defensive for optional tenant profiles
         tenant_profile = None
@@ -10750,12 +10767,45 @@ def responder_municipio(
             or owner_email == "mauricio@junin.com"
         )
         if is_junin_tenant:
+            # Preserve the deployed Junín experience explicitly while keeping
+            # its legacy package out of every other jurisdiction.
+            tenant_overrides = (
+                tenant_profile.configuracion
+                if isinstance(tenant_profile.configuracion, dict)
+                else {}
+            )
+            junin_runtime_config = cargar_configuracion_municipio(
+                "default",
+                "config.json",
+                fallback_to_default=False,
+            )
+            final_municipio_config = {
+                **CONFIG_MUNICIPIO,
+                **junin_runtime_config,
+                **loaded_specific_config,
+                **tenant_overrides,
+            }
             updated_config = False
-            if final_municipio_config.get("nombre") in (None, "", "Municipio Inteligente"):
+            if final_municipio_config.get("nombre") in (
+                None,
+                "",
+                "Municipio",
+                "Municipio Inteligente",
+            ):
                 final_municipio_config["nombre"] = "Municipalidad de Junín"
-            if not final_municipio_config.get("assistant_name"):
+            if final_municipio_config.get("assistant_name") in (
+                None,
+                "",
+                "Asistente municipal",
+            ):
                 final_municipio_config["assistant_name"] = "JUNI"
-            final_municipio_config.setdefault("nombre_municipio", "Municipalidad de Junín")
+            if final_municipio_config.get("nombre_municipio") in (
+                None,
+                "",
+                "Municipio",
+                "Municipio Inteligente",
+            ):
+                final_municipio_config["nombre_municipio"] = "Municipalidad de Junín"
             configuracion = tenant_profile.configuracion
             if not isinstance(configuracion, dict):
                 configuracion = {}
@@ -12019,7 +12069,11 @@ def responder_municipio(
     resolved_specific_identifier = resolve_municipio_identifier(owner_user)
     if resolved_specific_identifier is not None:
         owner_user_municipio_id_str = str(resolved_specific_identifier)
-        loaded_specific_config = cargar_configuracion_municipio(owner_user_municipio_id_str, "config.json")
+        loaded_specific_config = cargar_configuracion_municipio(
+            owner_user_municipio_id_str,
+            "config.json",
+            fallback_to_default=False,
+        )
         if loaded_specific_config:
             for config_key, config_value in loaded_specific_config.items():
                 final_municipio_config.setdefault(config_key, config_value)

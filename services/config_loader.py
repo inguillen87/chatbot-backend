@@ -51,7 +51,12 @@ _pyme_config_cache = {}
 _pyme_mtime_cache = {}
 
 
-def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
+def cargar_configuracion_municipio(
+    municipio_id: str,
+    archivo: str,
+    *,
+    fallback_to_default: bool = True,
+) -> dict:
     """Carga un archivo de configuración JSON para el municipio indicado.
 
     `municipio_id` puede recibirse como ``int`` o ``str``. Para evitar errores
@@ -71,7 +76,7 @@ def cargar_configuracion_municipio(municipio_id: str, archivo: str) -> dict:
     if not os.path.exists(ruta):
         if os.path.exists(repo_ruta):
             ruta = repo_ruta
-        elif municipio_id != "default":
+        elif municipio_id != "default" and fallback_to_default:
             # Fallback to the shared "default" configuration when a municipality
             # specific file is missing. This prevents noisy errors in logs and
             # keeps behaviour consistent for municipalities that have not yet
