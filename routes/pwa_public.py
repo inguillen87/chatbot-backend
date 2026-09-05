@@ -555,6 +555,9 @@ def public_catalog():
         prod["catalog_item_id"] = item.id
         prod["tenant_id"] = tenant.id
         prod["tenant_slug"] = tenant.slug
+        metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+        prod["data_origin"] = metadata.get("data_origin") or "tenant_catalog"
+        prod["synthetic_demo"] = metadata.get("synthetic_demo") is True
         productos.append(prod)
 
     if search_text:

@@ -36,6 +36,7 @@ from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import resolve_unique_tenant_for_owner
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
+from services.catalog_seed import provision_demo_catalog
 from services.auth_notification_service import send_verification_email
 from services.channel_activation import build_channel_activation_payload
 from services.clerk_auth_service import (
@@ -2136,6 +2137,13 @@ def login_demo():
 
     if not tenant_obj:
         return jsonify({"error": f"Rubro demo '{candidate or demo_slug or ''}' no válido"}), 404
+
+    # Synthetic catalog rows are provisioned only inside this explicit POST
+    # demo journey and only when the tenant opted in. Public catalog reads are
+    # deliberately side-effect free.
+    demo_catalog_owner = tenant_obj.municipio or tenant_obj.pyme
+    if demo_catalog_owner is not None:
+        provision_demo_catalog(demo_catalog_owner, tenant_obj)
 
     demo_user = _get_or_create_demo_user_for_tenant(tenant_obj)
     _attach_user_to_tenant(demo_user, tenant_obj)

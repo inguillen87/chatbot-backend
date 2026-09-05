@@ -3,6 +3,7 @@ import unittest
 from app import create_app, db
 from config import Config
 from models import AnalyticsEventV2, CatalogoItem, TenantProfile, User
+from services.catalog_seed import provision_demo_catalog
 
 
 class TestConfig(Config):
@@ -40,23 +41,32 @@ class PublicCatalogAndCartTest(unittest.TestCase):
 
         self.client = self.app.test_client()
 
+    def _provision_demo_catalog(self):
+        self.app.config["ENABLE_DEMO_MODE"] = True
+        self.tenant.configuracion = {"demo_mode": True, "demo_catalog_seed": True}
+        db.session.add(self.tenant)
+        db.session.commit()
+        self.assertTrue(provision_demo_catalog(self.owner, self.tenant))
+
     def tearDown(self):
         db.session.remove()
         db.drop_all()
         self.app_context.pop()
 
-    def test_public_catalog_seeds_items(self):
+    def test_empty_real_tenant_catalog_get_is_side_effect_free(self):
         response = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
-        self.assertGreaterEqual(len(data), 3)
-        self.assertTrue(all("catalogo_item_id" in prod for prod in data))
-        self.assertTrue(all(prod.get("catalog_item_id") == prod.get("catalogo_item_id") for prod in data))
-        self.assertTrue(all(prod.get("tenant_id") == self.tenant.id for prod in data))
-        self.assertTrue(all(prod.get("tenant_slug") == self.tenant.slug for prod in data))
-        self.assertGreater(CatalogoItem.query.filter_by(user_id=self.owner.id).count(), 0)
+        self.assertEqual(data, [])
+        self.assertEqual(CatalogoItem.query.filter_by(user_id=self.owner.id).count(), 0)
+
+        repeated = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.get_json(), [])
+        self.assertEqual(CatalogoItem.query.filter_by(user_id=self.owner.id).count(), 0)
 
     def test_public_cart_flow(self):
+        self._provision_demo_catalog()
         catalog_resp = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(catalog_resp.status_code, 200)
         catalog = catalog_resp.get_json()
@@ -197,11 +207,14 @@ class PublicCatalogAndCartTest(unittest.TestCase):
         self.assertEqual(response.headers.get("X-Request-Id"), "cart-cross-1")
 
     def test_catalog_prices_and_rewards_endpoint(self):
+        self._provision_demo_catalog()
         response = self.client.get(f"/api/pwa/public/catalog?tenant={self.tenant.slug}")
         self.assertEqual(response.status_code, 200)
         data = response.get_json()
         self.assertTrue(any(item.get("precio_texto") for item in data))
         self.assertTrue(all(item.get("imagen_url") for item in data))
+        self.assertTrue(all(item.get("data_origin") == "synthetic_demo" for item in data))
+        self.assertTrue(all(item.get("synthetic_demo") is True for item in data))
 
         rewards_resp = self.client.get(f"/api/pwa/public/rewards?tenant={self.tenant.slug}")
         self.assertEqual(rewards_resp.status_code, 200)

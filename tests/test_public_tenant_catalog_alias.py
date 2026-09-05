@@ -3,6 +3,7 @@ from urllib.parse import unquote_plus, urlparse
 from app import db
 from models import AnalyticsEventV2, CatalogoItem, ChatSessionContext, EncEncuesta, EncLink, MarketCart, MarketCartItem, MunicipioTicket, Promocion, PromocionAlcance, PymePedido, TenantFollower, TenantProfile, User
 from services.catalog_share import build_catalog_share_payload
+from services.catalog_seed import provision_demo_catalog
 
 
 def _seed_pyme_tenant_with_catalog():
@@ -330,11 +331,78 @@ def test_public_market_catalog_contract_for_empty_catalog_promotes_assisted_inta
     payload = resp.get_json()
     assert payload["products"] == []
     assert payload["total"] == 0
+    assert payload["data_state"] == "catalog_not_configured"
+    assert payload["contains_synthetic_demo_data"] is False
+    assert payload["synthetic_demo_product_count"] == 0
     assert payload["heroSubtitle"] == "Marketplace asistido para pedidos, boletas y documentos sin registro."
     assert payload["assisted_intake"]["mode"] == "assisted_first"
     assert payload["assisted_intake"]["show_on_empty_catalog"] is True
     assert payload["assisted_intake"]["empty_state"]["primary_cta"] == "Subir pedido o documento"
     assert payload["frontend_contract"]["empty_catalog_mode"] == "assisted_first"
+
+
+def test_empty_real_municipality_catalog_get_is_side_effect_free(client):
+    owner = User(
+        email="owner-empty-municipality@test.com",
+        name="Municipio vacío",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="municipality-empty-real",
+        nombre="Municipio vacío",
+        tipo="municipio",
+        plan="full",
+        municipio_id=owner.id,
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    for _ in range(2):
+        response = client.get(f"/api/public/tenants/{tenant.slug}/catalog")
+        assert response.status_code == 200
+        assert response.get_json() == []
+        assert CatalogoItem.query.filter_by(tenant_id=tenant.id).count() == 0
+
+
+def test_explicit_demo_catalog_discloses_synthetic_origin(client):
+    owner = User(
+        email="owner-synthetic-demo@test.com",
+        name="Municipio Demo",
+        rol="admin",
+        tipo_chat="municipio",
+    )
+    owner.set_password("pass")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="municipality-synthetic-demo",
+        nombre="Municipio Demo",
+        tipo="municipio",
+        plan="full",
+        municipio_id=owner.id,
+        configuracion={"demo_mode": True, "demo_catalog_seed": True},
+    )
+    db.session.add(tenant)
+    db.session.commit()
+    client.application.config["ENABLE_DEMO_MODE"] = True
+
+    assert provision_demo_catalog(owner, tenant) is True
+    response = client.get(
+        f"/api/public/tenants/{tenant.slug}/catalog?contract=marketplace"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["data_state"] == "configured"
+    assert payload["contains_synthetic_demo_data"] is True
+    assert payload["synthetic_demo_product_count"] == len(payload["products"])
+    assert payload["products"]
+    assert all(product["data_origin"] == "synthetic_demo" for product in payload["products"])
+    assert all(product["synthetic_demo"] is True for product in payload["products"])
 
 
 def test_market_catalog_contract_matches_public_catalog_contract_shape(client):
