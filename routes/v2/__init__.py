@@ -9,6 +9,7 @@ from routes.v2.saas import v2_saas_bp
 from routes.v2.sla import v2_sla_bp
 from routes.v2.surveys import v2_public_surveys_bp, v2_surveys_bp
 from routes.v2.tenants import v2_tenants_bp
+from routes.v2.tenant_blueprints import v2_tenant_blueprints_bp
 from routes.v2.tickets import v2_tickets_bp
 
 
@@ -19,6 +20,7 @@ def register_v2_blueprints(app):
     app.register_blueprint(demo_compat_bp)
     app.register_blueprint(v2_auth_bp)
     app.register_blueprint(v2_tenants_bp)
+    app.register_blueprint(v2_tenant_blueprints_bp)
     app.register_blueprint(v2_tickets_bp)
     app.register_blueprint(v2_sla_bp)
     app.register_blueprint(v2_surveys_bp)

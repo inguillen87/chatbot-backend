@@ -13,6 +13,8 @@ instance/*
 !data/demo_scripts/*.json
 !data/product_synonyms.json
 !data/product_catalog.json
+!data/tenant_blueprints/
+!data/tenant_blueprints/*.json
 !data/subastas.json
 !data/vocabulary/ticket_vocabulary.json
 !data/encuestas_bootstrap/
@@ -31,6 +33,7 @@ venv/
 test_venv/
 sandbox_venv/
 .codex-venv/
+.codex-temp/
 
 # Nunca versionar artefactos de ejecucion local: pueden contener secretos.
 .codex-run-logs/

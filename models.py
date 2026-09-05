@@ -5456,3 +5456,4 @@ from models_territorial_geocoding import (
     TerritorialGeocodingReview,
     TerritorialGeocodingSyncReceipt,
 )
+from models_tenant_blueprints import TenantBlueprintApplication
