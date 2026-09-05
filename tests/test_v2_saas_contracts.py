@@ -6228,6 +6228,150 @@ class V2SaasContractsTest(unittest.TestCase):
             0,
         )
 
+    def test_omnichannel_template_reply_preserves_approved_content_end_to_end(self):
+        self._enable_tenant_domain_outbox()
+        sender = self._configure_tenant_whatsapp_sender(
+            suffix="template-positive-path",
+            last_inbound_at=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
+        template = MessageTemplateRegistry(
+            tenant_id=self.tenant.id,
+            provider="twilio",
+            channel="whatsapp",
+            name="municipio_reclamo_actualizado_integral",
+            language="es_AR",
+            category="UTILITY",
+            status="approved",
+            content_sid="HX" + ("f" * 32),
+            last_sync_at=datetime.now(timezone.utc),
+            body_preview="Actualizamos el reclamo {{1}}: {{2}}.",
+        )
+        db.session.add(template)
+        db.session.commit()
+        rendered_body = "Actualizamos el reclamo M-419: cuadrilla asignada."
+        template_variables = {
+            "1": "M-419",
+            "2": "cuadrilla asignada",
+        }
+        client_message_id = "crm-reply:template-positive-path-0001"
+
+        response = self.client.post(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
+            json={
+                "action": "reply",
+                "source_model": "TenantTicket",
+                "body": rendered_body,
+                "visibility": "public",
+                "delivery_channels": ["whatsapp"],
+                "template_registry_id": template.id,
+                "template_variables": template_variables,
+                "client_message_id": client_message_id,
+            },
+            headers={
+                **self._auth(self.owner),
+                "Idempotency-Key": client_message_id,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["delivery"]["mode"], "durable_queue")
+        reply = TenantTicketReplyEvent.query.filter_by(
+            tenant_id=self.tenant.id,
+            ticket_id=self.ticket.id,
+        ).one()
+        self.assertEqual(reply.body, rendered_body)
+        self.assertEqual(reply.whatsapp_template_registry_id, template.id)
+        self.assertEqual(reply.whatsapp_template_variables, template_variables)
+        self.assertEqual(
+            reply.to_event_dict()["content_source"],
+            "approved_whatsapp_template",
+        )
+
+        db.session.refresh(self.ticket)
+        stored_comment = next(
+            item
+            for item in self.ticket.datos_extra.get("comments", [])
+            if item.get("id") == reply.event_id
+        )
+        self.assertEqual(stored_comment["body"], rendered_body)
+        self.assertEqual(
+            stored_comment["content_source"],
+            "approved_whatsapp_template",
+        )
+        response_timeline_item = next(
+            item
+            for item in response.get_json()["ticket"]["timeline"]
+            if item.get("id") == reply.event_id
+        )
+        self.assertEqual(response_timeline_item["body"], rendered_body)
+        self.assertEqual(
+            response_timeline_item["content_source"],
+            "approved_whatsapp_template",
+        )
+        detail = self.client.get(
+            f"/api/v2/inbox/omnichannel/{self.ticket.id}",
+            headers=self._auth(self.owner),
+        )
+        self.assertEqual(detail.status_code, 200, detail.get_json())
+        detail_timeline_item = next(
+            item
+            for item in detail.get_json()["item"]["timeline"]
+            if item.get("id") == reply.event_id
+        )
+        self.assertEqual(detail_timeline_item["body"], rendered_body)
+        self.assertEqual(
+            detail_timeline_item["content_source"],
+            "approved_whatsapp_template",
+        )
+
+        effects = DomainEffectOutbox.query.filter_by(
+            tenant_id=self.tenant.id,
+            aggregate_type="tenant_ticket_reply",
+            aggregate_ref=f"{self.ticket.id}:{reply.event_id}",
+        ).all()
+        self.assertEqual(len(effects), 2)
+        self.assertEqual({effect.channel for effect in effects}, {"whatsapp", "realtime"})
+
+        from services.domain_effect_worker import dispatch_domain_effect_batch
+
+        with patch(
+            "services.ticket_domain_effects.send_prepared_tenant_twilio_message",
+            return_value="SM" + ("9" * 32),
+        ) as provider_send, patch(
+            "socket_service.emit_new_chat_message"
+        ) as emit_realtime:
+            batch = dispatch_domain_effect_batch(
+                tenant_id=self.tenant.id,
+                limit=10,
+            )
+
+        self.assertEqual(batch["processed"], 2)
+        self.assertEqual(batch["succeeded"], 2)
+        provider_send.assert_called_once()
+        prepared = provider_send.call_args.args[0]
+        self.assertEqual(prepared.params["content_sid"], template.content_sid)
+        self.assertEqual(
+            json.loads(prepared.params["content_variables"]),
+            template_variables,
+        )
+        self.assertEqual(prepared.params["to"], "whatsapp:+5491111111111")
+        self.assertEqual(prepared.params["from_"], sender.sender_id)
+        self.assertNotIn("body", prepared.params)
+        self.assertNotIn("media_url", prepared.params)
+        self.assertIn(
+            f"tenant_ticket_reply_event_id={reply.id}",
+            prepared.params["status_callback"],
+        )
+        emit_realtime.assert_called_once_with(
+            {
+                "contract_version": "tenant_ticket.reply.realtime.v1",
+                "tenant_type": "tenant",
+                "tipo": "tenant",
+                "tenant_profile_id": self.tenant.id,
+                "delivery": "tenant_collection_invalidation",
+            }
+        )
+
     def test_template_reply_worker_rejects_tampered_delivery_body_before_provider_io(self):
         self._enable_tenant_domain_outbox()
         self._configure_tenant_whatsapp_sender(
