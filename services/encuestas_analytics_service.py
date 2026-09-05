@@ -1512,18 +1512,12 @@ def _bounded_geo_points(
                 "sampled": False,
                 "partial": False,
             }
-        rows = (
+        responses = (
             snapshot["selected_query"]
-            .with_entities(
-                EncRespuesta.id,
-                EncRespuesta.lat,
-                EncRespuesta.lng,
-                EncRespuesta.barrio,
-                EncRespuesta.ciudad,
-                EncRespuesta.provincia,
-                EncRespuesta.pais,
-                EncRespuesta.canal,
-                EncRespuesta.submitted_at,
+            .options(
+                selectinload(EncRespuesta.detalles).joinedload(
+                    EncRespuestaDetalle.opcion
+                )
             )
             .filter(
                 EncRespuesta.lat.isnot(None),
@@ -1538,38 +1532,36 @@ def _bounded_geo_points(
             .limit(effective_limit + 1)
             .all()
         )
-        partial = len(rows) > effective_limit
-        rows = rows[:effective_limit]
+        partial = len(responses) > effective_limit
+        responses = responses[:effective_limit]
         points = [
             {
-                "response_id": int(response_id),
-                "lat": float(lat),
-                "lng": float(lng),
+                "response_id": int(response.id),
+                "lat": float(response.lat),
+                "lng": float(response.lng),
                 "weight": 1,
-                "barrio": barrio,
-                "ciudad": ciudad,
-                "provincia": provincia,
-                "pais": pais,
-                "canal": canal,
-                "submitted_at": submitted_at.isoformat()
-                if submitted_at
+                "categoria": _extract_response_category(response),
+                "barrio": response.barrio,
+                "ciudad": response.ciudad,
+                "provincia": response.provincia,
+                "pais": response.pais,
+                "canal": response.canal,
+                "submitted_at": response.submitted_at.isoformat()
+                if response.submitted_at
                 else None,
             }
-            for (
-                response_id,
-                lat,
-                lng,
-                barrio,
-                ciudad,
-                provincia,
-                pais,
-                canal,
-                submitted_at,
-            ) in rows
+            for response in responses
         ]
         enrich_heatmap_points(
             points,
-            property_keys=("barrio", "ciudad", "provincia", "pais", "canal"),
+            property_keys=(
+                "categoria",
+                "barrio",
+                "ciudad",
+                "provincia",
+                "pais",
+                "canal",
+            ),
         )
         return points, {
             "sample_limit": effective_limit,

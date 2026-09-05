@@ -5,7 +5,16 @@ os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
 
 from app import create_app, db
 from config import Config
-from models import EncEncuesta, EncRespuesta, EncLink, TenantProfile, User
+from models import (
+    EncEncuesta,
+    EncLink,
+    EncOpcion,
+    EncPregunta,
+    EncRespuesta,
+    EncRespuestaDetalle,
+    TenantProfile,
+    User,
+)
 from services.encuestas_analytics_service import get_heatmap, _build_survey_publication_contract
 
 
@@ -118,6 +127,72 @@ def test_heatmap_applies_bbox_filter_to_real_survey_coordinates():
         assert len(payload["cells"]) == 1
         assert payload["metadata"]["has_coordinates"] is True
         assert payload["metadata"]["using_synthetic_points"] is False
+
+        db.session.remove()
+        db.drop_all()
+
+
+def test_heatmap_preserves_response_category_in_points_and_maplibre_layers():
+    app = create_app(TestConfig)
+    with app.app_context():
+        db.create_all()
+        encuesta = EncEncuesta(
+            tenant_id=1,
+            slug="encuesta-categorias-territoriales",
+            titulo="Prioridades territoriales",
+            estado="publicada",
+            tipo="opinion",
+        )
+        db.session.add(encuesta)
+        db.session.flush()
+        pregunta = EncPregunta(
+            encuesta_id=encuesta.id,
+            orden=1,
+            texto="¿Qué tema necesita atención?",
+            tipo="opcion_unica",
+            obligatoria=True,
+        )
+        db.session.add(pregunta)
+        db.session.flush()
+        luminarias = EncOpcion(
+            pregunta_id=pregunta.id,
+            orden=1,
+            texto="Luminarias",
+            valor="luminarias",
+        )
+        db.session.add(luminarias)
+        db.session.flush()
+        respuesta = EncRespuesta(
+            encuesta_id=encuesta.id,
+            tenant_id=encuesta.tenant_id,
+            canal="whatsapp",
+            barrio="Centro",
+            ciudad="Junín",
+            provincia="Buenos Aires",
+            pais="Argentina",
+            lat=-34.5838,
+            lng=-60.9433,
+            submitted_at=datetime.now(timezone.utc),
+        )
+        db.session.add(respuesta)
+        db.session.flush()
+        db.session.add(
+            EncRespuestaDetalle(
+                respuesta_id=respuesta.id,
+                pregunta_id=pregunta.id,
+                opcion_id=luminarias.id,
+            )
+        )
+        db.session.commit()
+
+        payload = get_heatmap(encuesta.id)
+
+        assert payload["points"][0]["categoria"] == "Luminarias"
+        assert payload["points"][0]["feature"]["properties"]["categoria"] == "Luminarias"
+        categories = payload["metadata"]["category_layers"]["categories"]
+        assert [category["categoria"] for category in categories] == ["luminarias"]
+        feature = payload["metadata"]["category_layers"]["source"]["features"][0]
+        assert feature["properties"]["categoria"] == "luminarias"
 
         db.session.remove()
         db.drop_all()
