@@ -1047,6 +1047,7 @@ def operations_geocoding_job_review_v2(current_user, job_id: str):
         payload = review_geocoding_job(
             db.session,
             tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
             job_id=job_id,
             reviewer_user_id=current_user.id,
             idempotency_key=request.headers.get("Idempotency-Key"),

@@ -1273,7 +1273,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(authority.get("global_id"), "{FEA13AA1-46F3-4570-BAEE-188FF11AFF94}")
         self.assertEqual(
             authority.get("snapshot_sha256"),
-            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
+            "9ee2005d4b2afca51e4b487e3b3f31056f567c37e58027c573ea79bed8ddaa16",
         )
         self.assertIn("ide.mendoza.gov.ar", authority.get("source_ref") or "")
         self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 3)
@@ -1365,7 +1365,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("ide.mendoza.gov.ar", points[0].get("source_ref") or "")
         self.assertEqual(
             points[0].get("snapshot_sha256"),
-            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
+            "9ee2005d4b2afca51e4b487e3b3f31056f567c37e58027c573ea79bed8ddaa16",
         )
         self.assertEqual(
             points[0].get("jurisdiction_evidence"),

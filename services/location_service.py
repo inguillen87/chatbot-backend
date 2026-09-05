@@ -185,25 +185,32 @@ def geocode_address_with_receipt(
     if not gmaps:
         return None, False
 
-    context = _resolve_geo_ctx(geo_ctx)
-    query_address = address
-    if context and isinstance(address, str):
-        city = context.get("city") or context.get("ciudad")
-        state = context.get("state") or context.get("provincia")
-        lower_addr = address.lower()
-        if city and str(city).lower() not in lower_addr:
-            query_address = f"{query_address}, {city}"
-        if state and str(state).lower() not in lower_addr:
-            query_address = f"{query_address}, {state}"
-    components = _build_components(context, include_locality=True)
-    region = _select_region(context)
-    bounds = _build_bounds(context)
-    request_kwargs: Dict[str, Any] = {
-        "region": region,
-        "components": components,
-    }
-    if bounds:
-        request_kwargs["bounds"] = bounds
+    try:
+        context = _resolve_geo_ctx(geo_ctx)
+        query_address = address
+        if context and isinstance(address, str):
+            city = context.get("city") or context.get("ciudad")
+            state = context.get("state") or context.get("provincia")
+            lower_addr = address.lower()
+            if city and str(city).lower() not in lower_addr:
+                query_address = f"{query_address}, {city}"
+            if state and str(state).lower() not in lower_addr:
+                query_address = f"{query_address}, {state}"
+        components = _build_components(context, include_locality=True)
+        region = _select_region(context)
+        bounds = _build_bounds(context)
+        request_kwargs: Dict[str, Any] = {
+            "region": region,
+            "components": components,
+        }
+        if bounds:
+            request_kwargs["bounds"] = bounds
+    except Exception as exc:
+        logger.error(
+            "Error preparing Google Maps geocoding request error_type=%s",
+            type(exc).__name__,
+        )
+        return None, False
 
     try:
         geocode_result = gmaps.geocode(

@@ -201,6 +201,8 @@ def test_resolve_audits_bounded_wgs84_proposal_without_writing_ticket(monkeypatc
             "write_performed": False,
         }
         assert result["proposal"]["coordinate_reference"] == "WGS84"
+        assert "place_id" not in result["proposal"]
+        assert result["proposal"]["provider_reference_present"] is True
         assert result["proposal"]["provenance"]["source_address_retained"] is False
         assert job.validation_json["auto_apply_eligible"] is True
         assert TerritorialGeocodingAttempt.query.one().write_performed is False
@@ -235,6 +237,7 @@ def test_apply_requires_current_review_and_commits_coordinates_with_applied_atte
         review_geocoding_job(
             db.session,
             tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
             job_id=job.id,
             reviewer_user_id=admin.id,
             idempotency_key="approve-job-419",
@@ -312,13 +315,13 @@ def test_apply_requires_current_review_and_commits_coordinates_with_applied_atte
         _teardown(context)
 
 
-def test_resolve_idempotency_is_durable_across_newer_searches(monkeypatch):
+def test_resolve_idempotency_is_durable_across_newer_searches_and_source_completion(monkeypatch):
     official = _official_jurisdiction()
     monkeypatch.setattr(
         "services.territorial_geocoding_execution.resolve_tenant_jurisdiction",
         lambda _tenant: official,
     )
-    _app, context, admin, tenant, _ticket, job = _setup(jurisdiction=official)
+    _app, context, admin, tenant, ticket, job = _setup(jurisdiction=official)
     calls = []
     try:
         def provider(_address, provider_context):
@@ -346,6 +349,9 @@ def test_resolve_idempotency_is_durable_across_newer_searches(monkeypatch):
             geocoder=provider,
             provider_timeout_seconds=3,
         )
+        ticket.latitud = -33.05
+        ticket.longitud = -68.47
+        db.session.flush()
         replay = resolve_territorial_geocoding_job(
             db.session,
             tenant=tenant,
@@ -400,6 +406,61 @@ def test_provider_receipt_and_timeout_are_truthful_and_bounded():
         _teardown(context)
 
 
+def test_provider_call_truth_survives_adapter_and_result_processing_failures(monkeypatch):
+    _app, context, admin, tenant, _ticket, job = _setup()
+    try:
+        adapter_failure = resolve_territorial_geocoding_job(
+            db.session,
+            tenant=tenant,
+            job_id=job.id,
+            actor_user_id=admin.id,
+            idempotency_key="resolve-adapter-failure",
+            geocoder=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("no receipt")
+            ),
+            provider_timeout_seconds=3,
+        )
+        assert adapter_failure["execution"]["provider_call_performed"] is False
+
+        monkeypatch.setattr(
+            "services.territorial_geocoding_execution.evaluate_geocoding_result",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                ValueError("invalid provider payload")
+            ),
+        )
+        before_io = resolve_territorial_geocoding_job(
+            db.session,
+            tenant=tenant,
+            job_id=job.id,
+            actor_user_id=admin.id,
+            idempotency_key="resolve-result-false-receipt",
+            geocoder=lambda *_args, **_kwargs: TerritorialGeocodingProviderReceipt(
+                payload=None,
+                external_call_performed=False,
+            ),
+            provider_timeout_seconds=3,
+        )
+        after_io = resolve_territorial_geocoding_job(
+            db.session,
+            tenant=tenant,
+            job_id=job.id,
+            actor_user_id=admin.id,
+            idempotency_key="resolve-result-true-receipt",
+            geocoder=lambda *_args, **_kwargs: TerritorialGeocodingProviderReceipt(
+                payload={"unexpected": "shape"},
+                external_call_performed=True,
+            ),
+            provider_timeout_seconds=3,
+        )
+
+        assert before_io["reason_code"] == "provider_result_invalid"
+        assert before_io["execution"]["provider_call_performed"] is False
+        assert after_io["reason_code"] == "provider_result_invalid"
+        assert after_io["execution"]["provider_call_performed"] is True
+    finally:
+        _teardown(context)
+
+
 @pytest.mark.parametrize(
     ("source_mutation", "expected_reason"),
     [
@@ -431,6 +492,7 @@ def test_apply_locks_and_rejects_changed_source_state(
         review_geocoding_job(
             db.session,
             tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
             job_id=job.id,
             reviewer_user_id=admin.id,
             idempotency_key="approve-source-guard",
@@ -525,6 +587,7 @@ def test_http_apply_rolls_back_when_authority_epoch_changes_before_commit(monkey
         review_geocoding_job(
             db.session,
             tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
             job_id=job.id,
             reviewer_user_id=admin.id,
             idempotency_key="approve-epoch-guard",

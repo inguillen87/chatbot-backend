@@ -458,7 +458,6 @@ def evaluate_geocoding_result(
             # Provider place identifiers are not required to apply WGS84
             # coordinates and create an unnecessary cross-system identifier.
             # Keep only a non-identifying presence signal in operational audit.
-            "place_id": None,
             "provider_reference_present": bool(
                 str(result.get("place_id") or "").strip()
             ),

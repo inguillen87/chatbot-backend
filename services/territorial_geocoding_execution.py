@@ -442,9 +442,6 @@ def resolve_territorial_geocoding_job(
 
     _key, key_hash = _idempotency_key(idempotency_key, action="resolve")
     job = _tenant_job(session, tenant_id=int(tenant.id), job_id=job_id)
-    candidate, _jurisdiction, _record = _rehydrate_candidate(
-        session, tenant=tenant, job=job
-    )
     digest = _request_digest(
         action="resolve",
         tenant_id=int(tenant.id),
@@ -466,6 +463,13 @@ def resolve_territorial_geocoding_job(
             job_id=job.id, action="resolve", outcome=replay
         )
 
+    # A durable key replays before touching mutable source state. This keeps a
+    # historical receipt available even if the ticket was completed, corrected
+    # or deleted after the original provider attempt, and it guarantees an old
+    # key can never cross the provider boundary again.
+    candidate, _jurisdiction, _record = _rehydrate_candidate(
+        session, tenant=tenant, job=job
+    )
     if len(candidate.address) > _MAX_PROVIDER_ADDRESS_CHARS:
         raise TerritorialGeocodingAdminError(
             "geocoding_provider_input_too_long",
@@ -478,23 +482,10 @@ def resolve_territorial_geocoding_job(
     provider_call_performed = False
     try:
         provider_result = geocoder(candidate.address, context)
-        if isinstance(provider_result, TerritorialGeocodingProviderReceipt):
-            provider_payload = provider_result.payload
-            provider_call_performed = bool(
-                provider_result.external_call_performed
-            )
-        else:
-            # Third-party/test adapters implement the provider call directly;
-            # entering them is the externally observable attempt boundary.
-            provider_payload = provider_result
-            provider_call_performed = True
-        outcome = evaluate_geocoding_result(
-            candidate, provider_payload, provider_name=provider_name
-        )
     except Exception:
-        # An adapter exception after invocation is an uncertain provider
-        # attempt. Persist it under the same durable idempotency key.
-        provider_call_performed = True
+        # The production adapter reports the provider-call boundary explicitly.
+        # If an adapter escapes without a receipt, no external call can be
+        # truthfully attested; fail closed instead of inventing a provider call.
         outcome = {
             "status": "failed",
             "reason_code": "provider_request_failed",
@@ -505,6 +496,34 @@ def resolve_territorial_geocoding_job(
                 "issues": ["provider_request_failed"],
             },
         }
+    else:
+        if isinstance(provider_result, TerritorialGeocodingProviderReceipt):
+            provider_payload = provider_result.payload
+            provider_call_performed = bool(
+                provider_result.external_call_performed
+            )
+        else:
+            # Third-party/test adapters implement the provider call directly;
+            # entering them is the externally observable attempt boundary.
+            provider_payload = provider_result
+            provider_call_performed = True
+        try:
+            outcome = evaluate_geocoding_result(
+                candidate, provider_payload, provider_name=provider_name
+            )
+        except Exception:
+            # Result parsing happens after the adapter's explicit receipt. Keep
+            # the receipt's external-call truth unchanged if parsing fails.
+            outcome = {
+                "status": "failed",
+                "reason_code": "provider_result_invalid",
+                "provider": provider_name,
+                "proposal": None,
+                "validation": {
+                    "auto_apply_eligible": False,
+                    "issues": ["provider_result_invalid"],
+                },
+            }
     outcome = {
         **outcome,
         "contract_version": "operations.territorial_geocoding.v1",
@@ -644,7 +663,6 @@ def apply_territorial_geocoding_job(
         "coordinate_reference": "WGS84",
         "location_type": job.location_type,
         "partial_match": job.partial_match,
-        "place_id": None,
         "provider_reference_present": bool(
             (
                 job.result_json.get("proposal", {})

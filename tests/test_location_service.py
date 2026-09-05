@@ -100,5 +100,27 @@ class TestLocationService(unittest.TestCase):
         self.assertTrue(called)
         mock_client.assert_called_once_with(key="test", timeout=10.0)
 
+    @patch.dict(
+        os.environ,
+        {"GOOGLE_MAPS_ALLOW_NETWORK_IN_TESTS": "1"},
+        clear=False,
+    )
+    @patch("services.location_service.GOOGLE_MAPS_API_KEY", "test")
+    @patch("services.location_service.googlemaps.Client")
+    def test_geocode_receipt_marks_request_preparation_failure_as_no_provider_call(
+        self, mock_client, *_
+    ):
+        from services import location_service as ls
+
+        with patch(
+            "services.location_service._resolve_geo_ctx",
+            side_effect=RuntimeError("request preparation failed"),
+        ):
+            payload, called = ls.geocode_address_with_receipt("San Martin", {})
+
+        self.assertIsNone(payload)
+        self.assertFalse(called)
+        mock_client.return_value.geocode.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

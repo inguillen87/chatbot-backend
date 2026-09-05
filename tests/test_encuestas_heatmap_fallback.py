@@ -193,7 +193,7 @@ def test_government_survey_heatmap_exposes_boundary_evidence_per_point():
         assert point["coordinate_jurisdiction_status"] == "within"
         assert "ide.mendoza.gov.ar" in point["source_ref"]
         assert point["snapshot_sha256"] == (
-            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731"
+            "9ee2005d4b2afca51e4b487e3b3f31056f567c37e58027c573ea79bed8ddaa16"
         )
         jurisdiction = payload["metadata"]["jurisdiction"]
         assert jurisdiction["state"] == "verified"

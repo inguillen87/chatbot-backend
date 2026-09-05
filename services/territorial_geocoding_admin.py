@@ -297,6 +297,7 @@ def _review_view(
         "reviewer_user_id": review.reviewer_user_id,
         "reviewed_job_status": review.reviewed_job_status,
         "proposal_current": is_current,
+        "proposal_digest": review.proposal_digest,
         "proposal_attempt_id": review.proposal_attempt_id,
         "proposal_attempt_number": review.proposal_attempt_number,
         "coordinate_write_performed": False,
@@ -855,6 +856,7 @@ def review_geocoding_job(
     session: Any,
     *,
     tenant_id: int,
+    tenant_slug: str,
     job_id: str,
     reviewer_user_id: int,
     idempotency_key: Any,
@@ -862,6 +864,13 @@ def review_geocoding_job(
 ) -> dict[str, Any]:
     """Append one idempotent human review; never call provider or write coords."""
 
+    normalized_tenant_slug = str(tenant_slug or "").strip().lower()
+    if not normalized_tenant_slug:
+        raise TerritorialGeocodingAdminError(
+            "geocoding_review_tenant_identity_invalid",
+            status_code=409,
+            action_hint="refresh_geocoding_detail",
+        )
     job = _tenant_job(
         session,
         tenant_id=tenant_id,
@@ -944,8 +953,15 @@ def review_geocoding_job(
             )
         return {
             "contract_version": CONTRACT_VERSION,
+            "action": "review",
             "tenant_id": int(tenant_id),
+            "tenant_slug": normalized_tenant_slug,
             "job_id": job.id,
+            "proposal_digest": current_proposal_digest,
+            "proposal_version": {
+                "attempt_id": current_attempt.id,
+                "attempt_number": int(current_attempt.attempt_number),
+            },
             "review": _review_view(
                 existing,
                 current_proposal_digest=current_proposal_digest,
@@ -1005,8 +1021,15 @@ def review_geocoding_job(
 
     return {
         "contract_version": CONTRACT_VERSION,
+        "action": "review",
         "tenant_id": int(tenant_id),
+        "tenant_slug": normalized_tenant_slug,
         "job_id": str(job_id),
+        "proposal_digest": current_proposal_digest,
+        "proposal_version": {
+            "attempt_id": current_attempt.id,
+            "attempt_number": int(current_attempt.attempt_number),
+        },
         "review": _review_view(
             review,
             current_proposal_digest=current_proposal_digest,

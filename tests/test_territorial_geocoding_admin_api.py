@@ -374,7 +374,16 @@ def test_review_is_idempotent_human_only_and_never_applies_coordinates():
         replay_payload = replay.get_json()
         assert created_payload["idempotent_replay"] is False
         assert replay_payload["idempotent_replay"] is True
+        assert created_payload["action"] == "review"
+        assert created_payload["tenant_slug"] == tenant.slug
+        assert created_payload["proposal_digest"] == body["expected_proposal_digest"]
+        assert created_payload["proposal_version"] == {
+            "attempt_id": body["expected_attempt_id"],
+            "attempt_number": body["expected_attempt_number"],
+        }
         assert created_payload["review"]["decision"] == "approved"
+        assert created_payload["review"]["proposal_digest"] == body["expected_proposal_digest"]
+        assert replay_payload["proposal_digest"] == created_payload["proposal_digest"]
         assert created_payload["provider_call_performed"] is False
         assert created_payload["coordinate_write_performed"] is False
         assert TerritorialGeocodingReview.query.count() == 1
