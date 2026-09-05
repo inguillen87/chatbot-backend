@@ -32,4 +32,4 @@ RUN python -m compileall -q -j 0 /app
 
 RUN mkdir -p /app/instance /app/logs /app/temp_uploads /tmp/chatboc
 
-CMD ["sh", "-c", "if [ -n \"${GOOGLE_SERVICE_ACCOUNT_JSON:-}\" ]; then umask 077; printf '%s' \"$GOOGLE_SERVICE_ACCOUNT_JSON\" > /tmp/google_service_key.json; export GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_key.json; fi; exec gunicorn --config gunicorn.conf.py --bind 0.0.0.0:${PORT:-80} app:app"]
+CMD ["sh", "-c", "if [ -n \"${GOOGLE_SERVICE_ACCOUNT_JSON:-}\" ]; then umask 077; printf '%s' \"$GOOGLE_SERVICE_ACCOUNT_JSON\" > /tmp/google_service_key.json; export GOOGLE_APPLICATION_CREDENTIALS=/tmp/google_service_key.json; fi; exec gunicorn --config gunicorn.conf.py --bind 0.0.0.0:${PORT:-80} bootstrap_wsgi:application"]
