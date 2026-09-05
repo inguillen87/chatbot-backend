@@ -2309,6 +2309,7 @@ def create_tenant():
                 "owner_email_generated": bool((tenant.configuracion or {}).get("owner_email_generated")),
             },
             "whatsapp_onboarding": (tenant.configuracion or {}).get("whatsapp_onboarding"),
+            "provisioning_readiness": (tenant.configuracion or {}).get("provisioning_readiness"),
             "integration_access": integration_access_payload(tenant),
         }), 201
     except ValueError as e:
@@ -2361,6 +2362,8 @@ def get_tenant_config_bundle(current_user, slug):
             "widget_customization": integration_access["enabled"]
         },
         "integration_access": integration_access,
+        "provisioning_readiness": (tenant.configuracion or {}).get("provisioning_readiness"),
+        "template": (tenant.configuracion or {}).get("template"),
     }
     return jsonify(response)
 

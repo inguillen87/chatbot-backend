@@ -1,0 +1,27 @@
+{
+  "contract_version": "tenant.template_bundle.v1",
+  "template_key": "municipio_default",
+  "tenant_type": "municipio",
+  "configs": {
+    "menu": {
+      "contract_version": "tenant.menu.v1",
+      "status": "configuration_required",
+      "items": []
+    },
+    "contacts": {
+      "contract_version": "tenant.contacts.v1",
+      "status": "configuration_required",
+      "items": []
+    },
+    "links": {
+      "contract_version": "tenant.links.v1",
+      "status": "configuration_required",
+      "items": []
+    },
+    "widget": {
+      "contract_version": "tenant.widget.v1",
+      "status": "configuration_required",
+      "enabled": false
+    }
+  }
+}
