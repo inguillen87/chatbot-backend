@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import jwt
 
 from database import db
-from models import CatalogoItem, MessageTemplateRegistry, TenantProfile, User
+from models import CatalogoItem, CategoriaTicket, MessageTemplateRegistry, TenantProfile, User
 from services.channel_activation import build_channel_activation_payload
 
 
@@ -61,7 +61,8 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert "secret-widget-token" not in str(payload)
     assert payload["integration_access"]["enabled"] is False
     by_id = {item["id"]: item for item in payload["channels"]}
-    assert by_id["crm"]["status"] == "ready"
+    assert by_id["crm"]["status"] == "action_required"
+    assert by_id["crm"]["reason_code"] == "mesa_unica_categories_required"
     assert by_id["institutional_branding"]["status"] == "action_required"
     assert by_id["accessibility"]["status"] == "action_required"
     assert by_id["territorial_intelligence"]["status"] == "action_required"
@@ -161,6 +162,14 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     )
     operator.set_password("secret123")
     db.session.add(operator)
+    category = CategoriaTicket(
+        tenant_id=tenant.id,
+        nombre="Alumbrado publico",
+        tipo="ticket",
+    )
+    db.session.add(category)
+    db.session.flush()
+    operator.categorias_ticket = [category]
     db.session.add(
         CatalogoItem(
             user_id=owner.id,
@@ -191,12 +200,52 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     assert by_id["templates"]["status"] == "ready"
     assert by_id["catalog_marketplace"]["status"] == "ready"
     assert by_id["payments_checkout"]["status"] == "ready"
+    assert by_id["crm"]["status"] == "ready"
     assert by_id["team_routing"]["status"] == "ready"
     assert by_id["live_chat"]["status"] == "ready"
     assert payload["counts"]["approved_templates"] == 1
     assert payload["counts"]["catalog_items"] == 1
     assert payload["counts"]["team_members"] == 1
+    assert payload["counts"]["ticket_categories"] == 1
+    assert payload["counts"]["routed_team_members"] == 1
     assert "APP_USR-secret-token" not in str(payload)
+
+
+def test_channel_activation_marks_mesa_unica_prepared_but_not_ready_without_routing(client):
+    _, tenant = _create_owner_and_tenant(
+        slug="prepared-service-desk",
+        plan="full",
+    )
+    operator = User(
+        name="Operador sin ruta",
+        email="operador-sin-ruta@chatboc.test",
+        rol="empleado",
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        es_empleado=True,
+    )
+    operator.set_password("secret123")
+    db.session.add_all(
+        [
+            operator,
+            CategoriaTicket(
+                tenant_id=tenant.id,
+                nombre="Baches y calzada",
+                tipo="ticket",
+            ),
+        ]
+    )
+    db.session.commit()
+
+    payload = build_channel_activation_payload(tenant)
+    by_id = {item["id"]: item for item in payload["channels"]}
+
+    assert by_id["crm"]["status"] == "pending"
+    assert by_id["crm"]["reason_code"] == "mesa_unica_routing_required"
+    assert by_id["team_routing"]["status"] == "pending"
+    assert by_id["team_routing"]["reason_code"] == "team_category_routing_required"
+    assert payload["counts"]["ticket_categories"] == 1
+    assert payload["counts"]["routed_team_members"] == 0
 
 
 def test_channel_activation_contract_keeps_registered_sender_pending_until_twilio_approves(client):

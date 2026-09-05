@@ -4,7 +4,16 @@ from datetime import datetime, timezone
 import os
 from typing import Any, Mapping
 
-from models import CatalogoItem, CatalogUpload, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
+from models import (
+    CatalogoItem,
+    CatalogUpload,
+    CategoriaTicket,
+    EncEncuesta,
+    MessageTemplateRegistry,
+    PublicSurvey,
+    TenantProfile,
+    User,
+)
 from services.commerce_contracts import payment_capabilities
 from services.live_chat_schedule import build_live_chat_status
 from services.plan_access import integration_access_payload
@@ -438,6 +447,8 @@ def _counts(tenant: TenantProfile | None) -> dict[str, int]:
             "approved_templates": 0,
             "surveys": 0,
             "team_members": 0,
+            "ticket_categories": 0,
+            "routed_team_members": 0,
         }
     return {
         "catalog_items": _safe_count(CatalogoItem.query.filter_by(tenant_id=tenant.id)),
@@ -450,7 +461,86 @@ def _counts(tenant: TenantProfile | None) -> dict[str, int]:
         "surveys": _safe_count(EncEncuesta.query.filter_by(tenant_id=tenant.id))
         + _safe_count(PublicSurvey.query.filter_by(tenant_id=tenant.id)),
         "team_members": _safe_count(User.query.filter_by(tenant_id=tenant.id, es_empleado=True)),
+        "ticket_categories": _safe_count(
+            CategoriaTicket.query.filter_by(tenant_id=tenant.id, tipo="ticket")
+        ),
+        "routed_team_members": _safe_count(
+            User.query.join(User.categorias_ticket)
+            .filter(
+                User.tenant_id == tenant.id,
+                User.es_empleado.is_(True),
+                CategoriaTicket.tenant_id == tenant.id,
+                CategoriaTicket.tipo == "ticket",
+            )
+            .distinct()
+        ),
     }
+
+
+def _mesa_unica_status(
+    counts: Mapping[str, int],
+) -> tuple[str, list[str], str | None, str]:
+    category_count = max(0, int(counts.get("ticket_categories") or 0))
+    routed_count = max(0, int(counts.get("routed_team_members") or 0))
+    evidence: list[str] = []
+    if category_count:
+        evidence.append(f"{category_count} categorias operativas")
+    if routed_count:
+        evidence.append(f"{routed_count} responsables con enrutamiento")
+
+    if not category_count:
+        return (
+            "action_required",
+            evidence,
+            "mesa_unica_categories_required",
+            "Preparar las categorias institucionales antes de habilitar la Mesa Unica.",
+        )
+    if not routed_count:
+        return (
+            "pending",
+            evidence,
+            "mesa_unica_routing_required",
+            "Las categorias estan preparadas; falta asignar responsables para operar casos reales.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Mesa Unica preparada con categorias y responsables enrutados.",
+    )
+
+
+def _team_routing_status(
+    counts: Mapping[str, int],
+) -> tuple[str, list[str], str | None, str]:
+    member_count = max(0, int(counts.get("team_members") or 0))
+    routed_count = max(0, int(counts.get("routed_team_members") or 0))
+    evidence: list[str] = []
+    if member_count:
+        evidence.append(f"{member_count} operadores")
+    if routed_count:
+        evidence.append(f"{routed_count} con categorias asignadas")
+
+    if not member_count:
+        return (
+            "action_required",
+            evidence,
+            "team_required",
+            "Agregar operadores y responsables antes de recibir casos reales.",
+        )
+    if not routed_count:
+        return (
+            "pending",
+            evidence,
+            "team_category_routing_required",
+            "El equipo existe, pero falta asignar categorias operativas a sus responsables.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Equipo operativo con categorias y responsables asignados.",
+    )
 
 
 def _knowledge_content_status(counts: Mapping[str, int]) -> tuple[str, list[str], str, str]:
@@ -630,6 +720,8 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     accessibility_status, accessibility_evidence, accessibility_reason, accessibility_hint = _accessibility_status(cfg)
     territory_status, territory_evidence, territory_reason, territory_hint = _territorial_status(tenant)
     knowledge_status, knowledge_evidence, knowledge_reason, knowledge_hint = _knowledge_content_status(counts)
+    crm_status, crm_evidence, crm_reason, crm_hint = _mesa_unica_status(counts)
+    team_status, team_evidence, team_reason, team_hint = _team_routing_status(counts)
 
     widget_configured = bool(
         getattr(tenant, "widget_settings", None)
@@ -674,11 +766,20 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         ),
         _channel(
             "crm",
-            "CRM operativo",
-            "ready" if tenant else "blocked",
-            "Bandeja de reclamos, pedidos y conversaciones para operar desde el primer dia.",
-            actions=[_action("open_crm", "Abrir reclamos/tickets", _profile_path("tickets"), primary=True)],
-            evidence=["tenant creado"] if tenant else [],
+            "Mesa Unica y CRM operativo",
+            crm_status,
+            "Bandeja de reclamos, pedidos y conversaciones con categorias y responsables verificables.",
+            actions=[
+                _action(
+                    "prepare_service_desk" if crm_reason == "mesa_unica_categories_required" else "open_crm",
+                    "Preparar Mesa Unica" if crm_reason == "mesa_unica_categories_required" else "Abrir reclamos/tickets",
+                    _profile_path("categorias") if crm_reason == "mesa_unica_categories_required" else _profile_path("tickets"),
+                    primary=True,
+                )
+            ],
+            evidence=crm_evidence,
+            reason_code=crm_reason,
+            progress_hint=crm_hint,
         ),
         _channel(
             "identity_auth",
@@ -764,11 +865,12 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         _channel(
             "team_routing",
             "Equipo y responsables",
-            "ready" if counts["team_members"] > 0 else "action_required",
+            team_status,
             "Operadores, permisos y categorias para que reclamos, pedidos y chats no queden sin responsable.",
             actions=[_action("open_team", "Configurar equipo", _profile_path("empleados"), primary=True)],
-            evidence=[f"{counts['team_members']} operadores"] if counts["team_members"] else [],
-            reason_code=None if counts["team_members"] > 0 else "team_required",
+            evidence=team_evidence,
+            reason_code=team_reason,
+            progress_hint=team_hint,
         ),
         _channel(
             "live_chat",
@@ -844,6 +946,8 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "bootstrap": "/auth/session/bootstrap",
             "whatsapp_status": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/integrations/whatsapp/status",
             "live_chat_schedule": f"/api/admin/tenants/{getattr(tenant, 'slug', '')}/live-chat/schedule",
+            "mesa_unica_preview": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/blueprints/government-core/launch/mesa-unica/preview",
+            "mesa_unica_apply": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/blueprints/government-core/launch/mesa-unica/apply",
         },
         "security": {
             "secret_free": True,

@@ -30,6 +30,7 @@ import models_survey_eligibility  # Ensure opaque survey eligibility models are 
 import models_voice_lifecycle  # Ensure voice consent/lifecycle models are imported
 import models_whatsapp_workflows  # Ensure immutable Workflow Studio ledgers are imported
 import models_tenant_blueprints  # Ensure immutable tenant blueprint receipts are imported
+import models_government_launch  # Ensure append-only government launch receipts are imported
 
 target_metadata = db.metadata
 

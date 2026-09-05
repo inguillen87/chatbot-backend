@@ -399,4 +399,4 @@ def test_model_schema_drift_repair_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["20260904_geo_execution_v2"]
+    assert heads == ["20260905_government_launch_v1"]

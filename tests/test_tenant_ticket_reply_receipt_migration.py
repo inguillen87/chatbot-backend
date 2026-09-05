@@ -136,4 +136,4 @@ def test_tenant_reply_receipt_constraint_upgrade_is_additive_and_idempotent(tmp_
 def test_tenant_reply_receipt_migration_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20260904_geo_execution_v2"]
+    assert script.get_heads() == ["20260905_government_launch_v1"]
