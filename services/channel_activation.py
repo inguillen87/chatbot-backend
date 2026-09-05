@@ -4,10 +4,11 @@ from datetime import datetime, timezone
 import os
 from typing import Any, Mapping
 
-from models import CatalogoItem, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
+from models import CatalogoItem, CatalogUpload, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
 from services.commerce_contracts import payment_capabilities
 from services.live_chat_schedule import build_live_chat_status
 from services.plan_access import integration_access_payload
+from services.tenant_implementation_journey import build_implementation_journey
 from services.twilio_tech_provider import STATE_KEY
 from utils.roles import superadmin_email_allowlist_configured
 
@@ -431,9 +432,18 @@ def _public_intake_security_status() -> tuple[str, list[str], str | None, str | 
 
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
     if tenant is None or not getattr(tenant, "id", None):
-        return {"catalog_items": 0, "approved_templates": 0, "surveys": 0, "team_members": 0}
+        return {
+            "catalog_items": 0,
+            "catalog_imports_committed": 0,
+            "approved_templates": 0,
+            "surveys": 0,
+            "team_members": 0,
+        }
     return {
         "catalog_items": _safe_count(CatalogoItem.query.filter_by(tenant_id=tenant.id)),
+        "catalog_imports_committed": _safe_count(
+            CatalogUpload.query.filter_by(tenant_id=tenant.id, status="committed")
+        ),
         "approved_templates": _safe_count(
             MessageTemplateRegistry.query.filter_by(tenant_id=tenant.id, channel="whatsapp", status="approved")
         ),
@@ -441,6 +451,32 @@ def _counts(tenant: TenantProfile | None) -> dict[str, int]:
         + _safe_count(PublicSurvey.query.filter_by(tenant_id=tenant.id)),
         "team_members": _safe_count(User.query.filter_by(tenant_id=tenant.id, es_empleado=True)),
     }
+
+
+def _knowledge_content_status(counts: Mapping[str, int]) -> tuple[str, list[str], str, str]:
+    """Keep content presence separate from verified retrieval readiness."""
+
+    item_count = max(0, int(counts.get("catalog_items") or 0))
+    committed_imports = max(0, int(counts.get("catalog_imports_committed") or 0))
+    evidence: list[str] = []
+    if item_count:
+        evidence.append(f"{item_count} contenidos estructurados")
+    if committed_imports:
+        evidence.append(f"{committed_imports} importaciones confirmadas")
+
+    if not item_count:
+        return (
+            "action_required",
+            evidence,
+            "knowledge_content_required",
+            "Cargar tramites, servicios o documentos institucionales y revisar su procedencia.",
+        )
+    return (
+        "pending",
+        evidence,
+        "knowledge_retrieval_verification_required",
+        "El contenido existe, pero falta un recibo verificable de indexacion y una prueba de recuperacion antes de declararlo listo.",
+    )
 
 
 def _institutional_branding_status(
@@ -593,6 +629,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     branding_status, branding_evidence, branding_reason, branding_hint = _institutional_branding_status(tenant)
     accessibility_status, accessibility_evidence, accessibility_reason, accessibility_hint = _accessibility_status(cfg)
     territory_status, territory_evidence, territory_reason, territory_hint = _territorial_status(tenant)
+    knowledge_status, knowledge_evidence, knowledge_reason, knowledge_hint = _knowledge_content_status(counts)
 
     widget_configured = bool(
         getattr(tenant, "widget_settings", None)
@@ -705,6 +742,16 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             evidence=[f"{counts['catalog_items']} items"] if counts["catalog_items"] else [],
         ),
         _channel(
+            "knowledge_content",
+            "Conocimiento institucional",
+            knowledge_status,
+            "Tramites, servicios y documentos con procedencia, indexacion y recuperacion verificables.",
+            actions=[_action("open_knowledge", "Gestionar contenidos", _profile_path("catalogo"), primary=True)],
+            evidence=knowledge_evidence,
+            reason_code=knowledge_reason,
+            progress_hint=knowledge_hint,
+        ),
+        _channel(
             "payments_checkout",
             "Cobros y checkout",
             payment_status,
@@ -747,6 +794,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     attention_count = len(channels) - ready_count - locked_count
     progress = round((ready_count / max(1, len(channels))) * 100)
     first_actionable = next((item for item in channels if not item["ready"] and item["actions"]), None)
+    implementation_journey = build_implementation_journey(channels)
     blockers = [
         {
             "id": item["id"],
@@ -775,6 +823,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         "preferred_channels": preferred_channels,
         "counts": counts,
         "channels": channels,
+        "implementation_journey": implementation_journey,
         "blockers": blockers,
         "integration_access": {
             "enabled": access.get("enabled"),

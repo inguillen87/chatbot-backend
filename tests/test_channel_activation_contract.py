@@ -73,6 +73,20 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert by_id["team_routing"]["status"] == "action_required"
     assert by_id["team_routing"]["reason_code"] == "team_required"
     assert payload["preferred_channels"] == ["whatsapp", "webchat"]
+    journey = payload["implementation_journey"]
+    assert journey["contract_version"] == "tenant.implementation_journey.v1"
+    assert journey["summary"]["current_stage_id"] == "institutional_identity"
+    assert journey["summary"]["next_action"]["id"] == "open_branding"
+    assert [item["id"] for item in journey["stages"]] == [
+        "institutional_identity",
+        "channels",
+        "knowledge",
+        "team",
+        "validation_release",
+    ]
+    knowledge = next(item for item in payload["channels"] if item["id"] == "knowledge_content")
+    assert knowledge["status"] == "action_required"
+    assert knowledge["reason_code"] == "knowledge_content_required"
 
     response = client.get(
         f"/api/v2/tenants/{tenant.slug}/activation/channels",
