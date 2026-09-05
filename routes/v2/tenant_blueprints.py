@@ -4,8 +4,9 @@ import uuid
 import re
 
 from flask import Blueprint, g, jsonify, request
+from sqlalchemy import func
 
-from routes.v2.tenants import V2TenantResolutionError, resolve_tenant_v2
+from models import TenantProfile
 from services.auth_assurance_service import (
     AuthAssuranceError,
     STRICT_MFA,
@@ -18,12 +19,14 @@ from services.tenant_blueprints import (
     list_blueprints,
     preview_blueprint,
 )
-from utils.auth_helpers import token_requerido
+from utils.auth_helpers import auth_sin_escrituras_implicitas, token_requerido
 from utils.roles import (
     ROLE_SUPERADMIN,
     ROLE_TENANT_ADMIN,
     canonical_role,
     is_authorized_superadmin_user,
+    is_generic_tenant_slug,
+    normalize_tenant_slug,
 )
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 
@@ -91,14 +94,24 @@ def _handle_blueprint_error(exc: TenantBlueprintError):
 
 
 def _resolve_exact_tenant(tenant_slug: str):
-    try:
-        return resolve_tenant_v2(explicit_slug=tenant_slug)
-    except V2TenantResolutionError as exc:
+    cleaned = normalize_tenant_slug(tenant_slug)
+    if not cleaned or is_generic_tenant_slug(cleaned):
         raise TenantBlueprintError(
-            "tenant_not_found" if exc.status_code == 404 else "tenant_required",
-            exc.message,
-            exc.status_code,
-        ) from exc
+            "tenant_not_found",
+            "Tenant no encontrado.",
+            404,
+        )
+    tenant = TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == cleaned
+    ).first()
+    if tenant is None:
+        raise TenantBlueprintError(
+            "tenant_not_found",
+            "Tenant no encontrado.",
+            404,
+        )
+    g.v2_tenant = tenant
+    return tenant
 
 
 @v2_tenant_blueprints_bp.route("/tenant-blueprints", methods=["GET"])
@@ -166,6 +179,7 @@ def tenant_blueprint_preview_v2(current_user, tenant_slug: str, blueprint_id: st
     methods=["POST"],
 )
 @token_requerido
+@auth_sin_escrituras_implicitas
 def tenant_blueprint_apply_v2(current_user, tenant_slug: str, blueprint_id: str):
     if not is_authorized_superadmin_user(current_user):
         return _error(

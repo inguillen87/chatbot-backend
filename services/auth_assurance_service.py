@@ -112,13 +112,10 @@ def build_clerk_auth_assurance_snapshot(
         int(round(issued_at - (first_age * 60))) if first_age >= 0 else None
     )
     if second_age == -1:
-        return {
-            "version": AUTH_ASSURANCE_CONTRACT_VERSION,
-            "source": _CLERK_FVA_SOURCE,
-            "status": "mfa_enrollment_required",
-            "first_factor_verified_at": first_verified_at,
-            "second_factor_verified_at": None,
-        }
+        # Clerk documents -1 as "not verified". It does not prove whether the
+        # factor is unenrolled or merely absent from this session, so request a
+        # normal step-up and let Clerk choose the valid verification strategy.
+        return _unavailable_snapshot("missing")
     if first_age == -1:
         return _unavailable_snapshot("malformed")
 
@@ -142,26 +139,6 @@ def _step_up_required() -> AuthAssuranceError:
             "reason": "reverification-error",
             "metadata": {"reverification": STRICT_MFA},
         },
-    )
-
-
-def _mfa_enrollment_required() -> AuthAssuranceError:
-    return AuthAssuranceError(
-        "mfa_enrollment_required",
-        (
-            "Esta accion sensible requiere configurar un segundo factor "
-            "antes de continuar."
-        ),
-        clerk_error={
-            "type": "forbidden",
-            "reason": "mfa-enrollment-required",
-            "metadata": {
-                "reverification": STRICT_MFA,
-                "enrollment_required": True,
-                "retry_after_reverification": False,
-            },
-        },
-        no_retry=True,
     )
 
 
@@ -190,8 +167,6 @@ def require_token_auth_assurance(
         raise _step_up_required()
 
     status = snapshot.get("status")
-    if status == "mfa_enrollment_required":
-        raise _mfa_enrollment_required()
     if status != "verified":
         raise _step_up_required()
 

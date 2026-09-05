@@ -78,7 +78,7 @@ def test_clerk_fva_normalizes_only_after_verified_session_claims():
         ("0,0", "malformed"),
         ([0], "malformed"),
         ([True, 0], "malformed"),
-        ([0, -1], "mfa_enrollment_required"),
+        ([0, -1], "missing"),
     ],
 )
 def test_clerk_fva_fails_closed_for_unusable_assurance(fva, expected_status):

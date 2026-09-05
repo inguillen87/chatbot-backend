@@ -122,12 +122,12 @@ def blueprint_context():
                     "first_factor_verified_at": "not-a-timestamp",
                     "second_factor_verified_at": now_epoch,
                 }
-            elif assurance_state == "mfa_enrollment_required":
+            elif assurance_state == "second_factor_unverified":
                 payload["auth_assurance"] = {
                     "version": "auth.assurance.v1",
                     "source": "clerk_v2_fva",
-                    "status": "mfa_enrollment_required",
-                    "first_factor_verified_at": now_epoch,
+                    "status": "missing",
+                    "first_factor_verified_at": None,
                     "second_factor_verified_at": None,
                 }
             elif assurance_state == "stale":
@@ -277,7 +277,10 @@ def test_preview_is_tenant_scoped_and_has_no_writes(blueprint_context):
     assert TenantBlueprintApplication.query.count() == 0
 
 
-@pytest.mark.parametrize("assurance_state", ["missing", "malformed", "stale"])
+@pytest.mark.parametrize(
+    "assurance_state",
+    ["missing", "malformed", "stale", "second_factor_unverified"],
+)
 def test_apply_requires_recent_strict_mfa_before_any_write(
     blueprint_context,
     assurance_state,
@@ -317,6 +320,8 @@ def test_apply_requires_recent_strict_mfa_before_any_write(
         "metadata": {"reverification": "strict_mfa"},
     }
     assert TenantBlueprintApplication.query.count() == 0
+    assert payload["request_id"] == response.headers["X-Request-Id"]
+    assert response.headers["Cache-Control"] == "no-store"
     db.session.refresh(ctx["tenant_a"])
     assert ctx["tenant_a"].configuracion == before
 
@@ -335,35 +340,72 @@ def test_apply_requires_recent_strict_mfa_before_any_write(
         assert malformed_request.get_json()["reason_code"] == "step_up_required"
 
 
-def test_apply_requires_mfa_enrollment_without_reverification_loop(
+def test_apply_with_recent_mfa_keeps_existing_invalid_json_contract(
+    blueprint_context,
+):
+    ctx = blueprint_context
+    response = ctx["client"].post(
+        "/api/v2/tenants/government-a/blueprints/government-core/apply",
+        data="{",
+        content_type="application/json",
+        headers=_headers(
+            ctx,
+            ctx["superadmin"],
+            idempotency_key="assurance-valid-invalid-json",
+        ),
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_json"
+    assert TenantBlueprintApplication.query.count() == 0
+
+
+def test_apply_does_not_fall_back_from_unknown_path_slug_to_header_tenant(
     blueprint_context,
 ):
     ctx = blueprint_context
     digest = _manifest_digest(ctx)
+    before = json.loads(json.dumps(ctx["tenant_a"].configuracion))
+    headers = _headers(
+        ctx,
+        ctx["superadmin"],
+        idempotency_key="exact-slug-required",
+    )
+    headers["X-Tenant-Slug"] = "government-a"
+
+    response = ctx["client"].post(
+        "/api/v2/tenants/government-typo/blueprints/government-core/apply",
+        json={"manifest_digest": digest},
+        headers=headers,
+    )
+
+    assert response.status_code == 404
+    assert response.get_json()["reason_code"] == "tenant_not_found"
+    assert TenantBlueprintApplication.query.count() == 0
+    db.session.refresh(ctx["tenant_a"])
+    assert ctx["tenant_a"].configuracion == before
+
+
+def test_apply_cookie_authentication_has_no_implicit_entity_token_write(
+    blueprint_context,
+):
+    ctx = blueprint_context
+    digest = _manifest_digest(ctx)
+    token = ctx["token_for"](ctx["superadmin"])
+    ctx["client"].set_cookie("auth_token", token)
+    with ctx["client"].session_transaction() as flask_session:
+        flask_session["_user_id"] = str(ctx["superadmin"].id)
+        flask_session["_fresh"] = True
 
     response = ctx["client"].post(
         "/api/v2/tenants/government-a/blueprints/government-core/apply",
         json={"manifest_digest": digest},
-        headers=_headers(
-            ctx,
-            ctx["superadmin"],
-            idempotency_key="assurance-enrollment",
-            assurance_state="mfa_enrollment_required",
-        ),
+        headers={"Idempotency-Key": "cookie-auth-read-only"},
     )
 
-    assert response.status_code == 403
-    payload = response.get_json()
-    assert payload["reason_code"] == "mfa_enrollment_required"
-    assert payload["retryable"] is False
-    assert payload["no_retry"] is True
-    assert payload["clerk_error"]["reason"] == "mfa-enrollment-required"
-    assert payload["clerk_error"]["metadata"] == {
-        "reverification": "strict_mfa",
-        "enrollment_required": True,
-        "retry_after_reverification": False,
-    }
-    assert TenantBlueprintApplication.query.count() == 0
+    assert response.status_code == 201
+    db.session.refresh(ctx["superadmin"])
+    assert ctx["superadmin"].entity_token is None
 
 
 def test_apply_is_superadmin_only_idempotent_and_does_not_activate_runtime(
