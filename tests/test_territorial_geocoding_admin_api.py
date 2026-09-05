@@ -16,6 +16,7 @@ from models_territorial_geocoding import (
     TerritorialGeocodingJob,
     TerritorialGeocodingReview,
 )
+from services.territorial_geocoding_admin import proposal_digest
 
 
 class TerritorialGeocodingAdminTestConfig(Config):
@@ -113,6 +114,8 @@ def _attempt(job: TerritorialGeocodingJob) -> TerritorialGeocodingAttempt:
         tenant_id=job.tenant_id,
         attempt_number=1,
         request_digest="d" * 64,
+        action="resolve",
+        idempotency_key_hash="f" * 64,
         provider="google",
         outcome_status="needs_review",
         reason_code="provider_partial_match",
@@ -120,6 +123,10 @@ def _attempt(job: TerritorialGeocodingJob) -> TerritorialGeocodingAttempt:
         write_performed=False,
         result_digest="e" * 64,
         result_json={
+            "execution": {
+                "action": "resolve",
+                "idempotency_key_hash": "f" * 64,
+            },
             "formatted_address": "San Martin 250, Junin, Mendoza",
             "direccion": "San Martin 250, Junin",
             "proposal": {
@@ -140,6 +147,18 @@ def _attempt(job: TerritorialGeocodingJob) -> TerritorialGeocodingAttempt:
         },
         created_at=datetime.now(timezone.utc),
     )
+
+
+def _expected_proposal(job: TerritorialGeocodingJob) -> dict[str, object]:
+    attempt = TerritorialGeocodingAttempt.query.filter_by(
+        job_id=job.id,
+        action="resolve",
+    ).one()
+    return {
+        "expected_proposal_digest": proposal_digest(job),
+        "expected_attempt_id": attempt.id,
+        "expected_attempt_number": attempt.attempt_number,
+    }
 
 
 def _setup():
@@ -296,9 +315,22 @@ def test_detail_and_attempts_expose_quality_not_raw_address_to_admin_only():
         assert attempt_payload["attempts"][0]["reason_code"] == "provider_partial_match"
         assert attempt_payload["attempts"][0]["external_call_performed"] is True
         assert attempt_payload["attempts"][0]["coordinate_write_performed"] is False
+        assert attempt_payload["privacy"]["exact_coordinates_exposed"] is True
+        assert (
+            attempt_payload["privacy"]["exact_coordinates_access"]
+            == "tenant_admin_only"
+        )
+        assert attempt_payload["privacy"]["provider_place_id_exposed"] is False
         assert "San Martin 250" not in json.dumps(detail_payload, ensure_ascii=False)
         assert "San Martin 250" not in json.dumps(attempt_payload, ensure_ascii=False)
         assert "formatted_address" not in json.dumps(attempt_payload)
+        assert "place-sensitive-419" not in json.dumps(detail_payload)
+        assert detail_payload["selected"]["proposal"]["provider_reference_present"] is True
+        assert detail_payload["privacy"]["provider_place_id_exposed"] is False
+        assert (
+            detail_payload["privacy"]["exact_coordinates_classification"]
+            == "restricted_operational"
+        )
 
         employee_denied = client.get(
             "/api/v2/analytics/operations/geocoding-queue",
@@ -330,6 +362,7 @@ def test_review_is_idempotent_human_only_and_never_applies_coordinates():
             "decision": "approved",
             "reason_code": "verified_on_map",
             "apply_coordinates": False,
+            **_expected_proposal(reviewable),
         }
 
         created = client.post(endpoint, headers=headers, json=body)
@@ -356,6 +389,7 @@ def test_review_is_idempotent_human_only_and_never_applies_coordinates():
                 "decision": "rejected",
                 "reason_code": "incorrect_location",
                 "apply_coordinates": False,
+                **_expected_proposal(reviewable),
             },
         )
         assert conflict.status_code == 409
@@ -372,6 +406,7 @@ def test_review_is_idempotent_human_only_and_never_applies_coordinates():
                 "decision": "approved",
                 "reason_code": "verified_on_map",
                 "apply_coordinates": True,
+                **_expected_proposal(reviewable),
             },
         )
         assert coordinate_write.status_code == 409
@@ -390,6 +425,9 @@ def test_review_is_idempotent_human_only_and_never_applies_coordinates():
             json={
                 "decision": "approved",
                 "reason_code": "verified_against_source",
+                "expected_proposal_digest": "0" * 64,
+                "expected_attempt_id": "missing-attempt",
+                "expected_attempt_number": 1,
             },
         )
         assert approve_without_proposal.status_code == 409
@@ -411,6 +449,7 @@ def test_changed_proposal_marks_previous_review_stale_and_filters_it():
             json={
                 "decision": "rejected",
                 "reason_code": "ambiguous_candidate",
+                **_expected_proposal(reviewable),
             },
         )
         assert reviewed.status_code == 201

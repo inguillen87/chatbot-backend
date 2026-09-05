@@ -5,11 +5,12 @@ import hashlib
 import json
 from typing import Any, Callable
 
-from models import MunicipioTicket, PymeTicket, TenantTicket
+from models import MunicipioTicket, PymeTicket, TenantProfile, TenantTicket
 from models_territorial_geocoding import (
     TerritorialGeocodingAttempt,
     TerritorialGeocodingJob,
 )
+from services.tenant_ticket_scope import municipio_ticket_belongs_to_tenant
 from services.territorial_evidence import extract_location_evidence, normalize_address_key
 from services.territorial_geocoding import TerritorialGeocodingCandidate
 
@@ -64,7 +65,7 @@ class SQLAlchemyTerritorialGeocodingAuditStore:
         *,
         external_call_performed: bool,
         write_performed: bool,
-    ) -> None:
+    ) -> TerritorialGeocodingAttempt:
         now = datetime.now(timezone.utc)
         job = (
             self.session.query(TerritorialGeocodingJob).filter_by(
@@ -95,11 +96,22 @@ class SQLAlchemyTerritorialGeocodingAuditStore:
             request_digest=request_digest,
         ).one_or_none()
         if existing is not None:
-            return
+            return existing
 
         safe_outcome = _json_copy(outcome)
         proposal = safe_outcome.get("proposal") if isinstance(safe_outcome.get("proposal"), dict) else {}
         validation = safe_outcome.get("validation") if isinstance(safe_outcome.get("validation"), dict) else {}
+        execution = safe_outcome.get("execution") if isinstance(safe_outcome.get("execution"), dict) else {}
+        action = str(execution.get("action") or "").strip().lower() or None
+        idempotency_key_hash = (
+            str(execution.get("idempotency_key_hash") or "").strip().lower()
+            or None
+        )
+        if action not in {"resolve", "apply"}:
+            action = None
+            idempotency_key_hash = None
+        if idempotency_key_hash is not None and len(idempotency_key_hash) != 64:
+            raise ValueError("territorial geocoding idempotency hash invalid")
         status = str(safe_outcome.get("status") or "failed")
         attempt_number = int(job.attempt_count or 0) + 1
         attempt = TerritorialGeocodingAttempt(
@@ -107,6 +119,8 @@ class SQLAlchemyTerritorialGeocodingAuditStore:
             tenant_id=candidate.tenant_id,
             attempt_number=attempt_number,
             request_digest=request_digest,
+            action=action,
+            idempotency_key_hash=idempotency_key_hash,
             provider=str(safe_outcome.get("provider") or "").strip() or None,
             outcome_status=status,
             reason_code=str(safe_outcome.get("reason_code") or "unknown"),
@@ -137,6 +151,7 @@ class SQLAlchemyTerritorialGeocodingAuditStore:
         job.attempt_count = attempt_number
         job.last_attempt_at = now
         self.session.flush()
+        return attempt
 
 
 def _persisted_address(record_source: str, record: Any) -> str | None:
@@ -150,6 +165,8 @@ def _persisted_address(record_source: str, record: Any) -> str | None:
 
 def build_ticket_coordinate_applier(
     session: Any,
+    *,
+    locked_source_record: Any | None = None,
 ) -> Callable[[TerritorialGeocodingCandidate, dict[str, Any]], bool]:
     """Build the explicit, tenant-scoped callback required by the write gate."""
 
@@ -172,12 +189,44 @@ def build_ticket_coordinate_applier(
             lng = float(proposal["lng"])
         except (KeyError, TypeError, ValueError):
             return False
-        record = session.query(model).filter_by(
-            id=record_id,
-            tenant_id=candidate.tenant_id,
-        ).one_or_none()
+        record = locked_source_record
+        if record is not None and (
+            not isinstance(record, model) or int(getattr(record, "id", -1)) != record_id
+        ):
+            return False
+        tenant_scoped_record = record is not None
+        if record is None:
+            record = session.query(model).filter_by(
+                id=record_id,
+                tenant_id=candidate.tenant_id,
+            ).with_for_update().one_or_none()
+            tenant_scoped_record = record is not None
+        if record is None and candidate.record_source == "municipio_ticket":
+            legacy_record = (
+                session.query(model).filter_by(id=record_id).with_for_update().one_or_none()
+            )
+            tenant = session.query(TenantProfile).filter_by(
+                id=candidate.tenant_id
+            ).one_or_none()
+            record = (
+                legacy_record
+                if tenant is not None
+                and municipio_ticket_belongs_to_tenant(legacy_record, tenant)
+                else None
+            )
         if record is None:
             return False
+        if (
+            getattr(record, "tenant_id", None) != candidate.tenant_id
+            and candidate.record_source != "municipio_ticket"
+        ):
+            return False
+        if candidate.record_source == "municipio_ticket" and not tenant_scoped_record:
+            tenant = session.query(TenantProfile).filter_by(
+                id=candidate.tenant_id
+            ).one_or_none()
+            if tenant is None or not municipio_ticket_belongs_to_tenant(record, tenant):
+                return False
 
         # Reject stale jobs if the operator corrected the address after discovery.
         current_address = normalize_address_key(
@@ -189,13 +238,45 @@ def build_ticket_coordinate_applier(
         current_lat = getattr(record, "latitud", None)
         current_lng = getattr(record, "longitud", None)
         if current_lat is not None or current_lng is not None:
-            try:
-                return abs(float(current_lat) - lat) < 1e-8 and abs(float(current_lng) - lng) < 1e-8
-            except (TypeError, ValueError):
-                return False
+            # Replays are handled by the durable attempt receipt before this
+            # callback. Reaching a populated source row here means another
+            # writer won the race or provenance is unknown; never overwrite or
+            # silently accept it.
+            return False
+
+        existing_metadata = getattr(record, "datos_extra", None)
+        if (
+            isinstance(existing_metadata, dict)
+            and existing_metadata.get("territorial_coordinate_provenance")
+            is not None
+        ):
+            return False
 
         record.latitud = lat
         record.longitud = lng
+        if hasattr(record, "datos_extra"):
+            metadata = (
+                dict(getattr(record, "datos_extra", None))
+                if isinstance(getattr(record, "datos_extra", None), dict)
+                else {}
+            )
+            provenance = proposal.get("provenance")
+            metadata["territorial_coordinate_provenance"] = {
+                "contract_version": "operations.coordinate_provenance.v1",
+                "coordinate_reference": "WGS84",
+                "source": "approved_geocoding_proposal",
+                "provider": (
+                    provenance.get("provider")
+                    if isinstance(provenance, dict)
+                    else None
+                ),
+                "proposal_digest": (
+                    provenance.get("proposal_digest")
+                    if isinstance(provenance, dict)
+                    else None
+                ),
+            }
+            record.datos_extra = metadata
         session.flush()
         return True
 

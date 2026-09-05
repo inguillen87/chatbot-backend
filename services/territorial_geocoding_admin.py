@@ -115,6 +115,8 @@ def _candidate_metadata(job: TerritorialGeocodingJob) -> dict[str, Any]:
 
 def _proposal_snapshot(job: TerritorialGeocodingJob) -> dict[str, Any]:
     validation = _mapping(job.validation_json)
+    stored_proposal = _mapping(_mapping(job.result_json).get("proposal"))
+    stored_provenance = _mapping(stored_proposal.get("provenance"))
     lat = _finite_float(job.proposed_lat)
     lng = _finite_float(job.proposed_lng)
     return {
@@ -125,7 +127,25 @@ def _proposal_snapshot(job: TerritorialGeocodingJob) -> dict[str, Any]:
             bool(job.partial_match) if job.partial_match is not None else None
         ),
         "provider": _safe_label(job.provider, maximum=32),
-        "provider_place_id": _safe_label(job.provider_place_id, maximum=255),
+        # A provider place id is an unnecessary cross-system identifier for
+        # this workflow. Preserve only whether a provider reference existed.
+        "provider_reference_present": bool(
+            stored_proposal.get("provider_reference_present")
+            or job.provider_place_id
+        ),
+        "coordinate_reference": (
+            "WGS84" if stored_proposal.get("coordinate_reference") == "WGS84" else None
+        ),
+        "provenance": {
+            "source": _safe_label(stored_provenance.get("source"), maximum=64),
+            "provider": _safe_label(stored_provenance.get("provider"), maximum=32),
+            "proposal_digest": _safe_label(
+                stored_provenance.get("proposal_digest"), maximum=64
+            ),
+            "source_address_retained": False,
+        }
+        if stored_provenance
+        else None,
         "validation": {
             "auto_apply_eligible": bool(validation.get("auto_apply_eligible")),
             "issues": [
@@ -146,7 +166,13 @@ def _proposal_snapshot(job: TerritorialGeocodingJob) -> dict[str, Any]:
 def proposal_digest(job: TerritorialGeocodingJob) -> str:
     """Bind a review to the exact proposal and validation visible to the admin."""
 
-    return _canonical_digest(_proposal_snapshot(job))
+    snapshot = _proposal_snapshot(job)
+    # Provenance describes the lifecycle of a proposal and changes from
+    # provider proposal to approved application. Reviews bind to the proposed
+    # coordinates and their validation, not to that post-apply audit metadata.
+    # Keeping it out also makes an apply retry replay the original result.
+    snapshot.pop("provenance", None)
+    return _canonical_digest(snapshot)
 
 
 def _quality(job: TerritorialGeocodingJob) -> dict[str, Any]:
@@ -201,13 +227,52 @@ def _latest_reviews(
     return {review.job_id: review for review in reviews}
 
 
+def _latest_attempts(
+    session: Any,
+    *,
+    tenant_id: int,
+    job_ids: Iterable[str],
+) -> dict[str, TerritorialGeocodingAttempt]:
+    normalized_ids = [str(job_id) for job_id in job_ids if str(job_id)]
+    if not normalized_ids:
+        return {}
+    attempts = (
+        session.query(TerritorialGeocodingAttempt)
+        .filter(
+            TerritorialGeocodingAttempt.tenant_id == int(tenant_id),
+            TerritorialGeocodingAttempt.job_id.in_(normalized_ids),
+            TerritorialGeocodingAttempt.action == "resolve",
+        )
+        .order_by(
+            TerritorialGeocodingAttempt.attempt_number.asc(),
+            TerritorialGeocodingAttempt.id.asc(),
+        )
+        .all()
+    )
+    return {attempt.job_id: attempt for attempt in attempts}
+
+
+def _review_matches_current_proposal(
+    job: TerritorialGeocodingJob,
+    review: TerritorialGeocodingReview,
+    current_attempt: TerritorialGeocodingAttempt | None,
+) -> bool:
+    return bool(
+        current_attempt is not None
+        and review.proposal_digest == proposal_digest(job)
+        and review.proposal_attempt_id == current_attempt.id
+        and review.proposal_attempt_number == current_attempt.attempt_number
+    )
+
+
 def _review_state(
     job: TerritorialGeocodingJob,
     review: TerritorialGeocodingReview | None,
+    current_attempt: TerritorialGeocodingAttempt | None,
 ) -> str:
     if review is None:
         return "unreviewed"
-    if review.proposal_digest != proposal_digest(job):
+    if not _review_matches_current_proposal(job, review, current_attempt):
         return "stale"
     return str(review.decision)
 
@@ -216,8 +281,14 @@ def _review_view(
     review: TerritorialGeocodingReview,
     *,
     current_proposal_digest: str,
+    current_attempt: TerritorialGeocodingAttempt | None,
 ) -> dict[str, Any]:
-    is_current = review.proposal_digest == current_proposal_digest
+    is_current = bool(
+        current_attempt is not None
+        and review.proposal_digest == current_proposal_digest
+        and review.proposal_attempt_id == current_attempt.id
+        and review.proposal_attempt_number == current_attempt.attempt_number
+    )
     return {
         "id": review.id,
         "decision": review.decision,
@@ -226,14 +297,28 @@ def _review_view(
         "reviewer_user_id": review.reviewer_user_id,
         "reviewed_job_status": review.reviewed_job_status,
         "proposal_current": is_current,
+        "proposal_attempt_id": review.proposal_attempt_id,
+        "proposal_attempt_number": review.proposal_attempt_number,
         "coordinate_write_performed": False,
         "created_at": _iso(review.created_at),
     }
 
 
-def _actions(job: TerritorialGeocodingJob) -> dict[str, Any]:
+def _actions(
+    job: TerritorialGeocodingJob,
+    latest_review: TerritorialGeocodingReview | None,
+    current_attempt: TerritorialGeocodingAttempt | None,
+) -> dict[str, Any]:
     base = f"{QUEUE_PATH}/{job.id}"
     can_review = job.status != "applied"
+    review_state = _review_state(job, latest_review, current_attempt)
+    can_resolve = job.status != "applied"
+    can_apply = bool(
+        job.status != "applied"
+        and _quality(job)["has_proposal"]
+        and _quality(job)["auto_apply_eligible"]
+        and review_state == "approved"
+    )
     return {
         "detail": {"method": "GET", "href": base},
         "attempts": {"method": "GET", "href": f"{base}/attempts"},
@@ -249,16 +334,49 @@ def _actions(job: TerritorialGeocodingJob) -> dict[str, Any]:
             },
             "coordinate_application_supported": False,
         },
+        "resolve": {
+            "method": "POST",
+            "href": f"{base}/resolve",
+            "idempotency_header": "Idempotency-Key",
+            "enabled": can_resolve,
+            "mutates_ticket": False,
+            "provider_call": "bounded_single_lookup",
+            "reason_code": (
+                "provider_lookup_available" if can_resolve else "job_already_applied"
+            ),
+        },
+        "apply": {
+            "method": "POST",
+            "href": f"{base}/apply",
+            "idempotency_header": "Idempotency-Key",
+            "enabled": can_apply,
+            "confirmation_required": True,
+            "mutates_ticket": True,
+            "reason_code": (
+                "current_approved_auto_apply_proposal"
+                if can_apply
+                else "proposal_or_current_approval_missing"
+            ),
+            "server_gates": [
+                "current_source_fingerprint",
+                "source_has_no_coordinates",
+                "auto_apply_eligible",
+                "current_human_approval",
+                "verified_official_polygon",
+                "global_writer_authority",
+            ],
+        },
     }
 
 
 def _item_view(
     job: TerritorialGeocodingJob,
     latest_review: TerritorialGeocodingReview | None,
+    current_attempt: TerritorialGeocodingAttempt | None,
 ) -> dict[str, Any]:
     metadata = _candidate_metadata(job)
     digest = proposal_digest(job)
-    review_state = _review_state(job, latest_review)
+    review_state = _review_state(job, latest_review, current_attempt)
     return {
         "id": job.id,
         "ticket_id": job.source_id,
@@ -267,7 +385,11 @@ def _item_view(
         "reason_code": job.reason_code,
         "review_state": review_state,
         "latest_review": (
-            _review_view(latest_review, current_proposal_digest=digest)
+            _review_view(
+                latest_review,
+                current_proposal_digest=digest,
+                current_attempt=current_attempt,
+            )
             if latest_review is not None
             else None
         ),
@@ -278,7 +400,7 @@ def _item_view(
         "last_attempt_at": _iso(job.last_attempt_at),
         "created_at": _iso(job.created_at),
         "updated_at": _iso(job.updated_at),
-        "actions": _actions(job),
+        "actions": _actions(job, latest_review, current_attempt),
     }
 
 
@@ -368,8 +490,15 @@ def list_geocoding_queue(
         tenant_id=normalized_tenant_id,
         job_ids=[job.id for job in jobs],
     )
+    attempts = _latest_attempts(
+        session,
+        tenant_id=normalized_tenant_id,
+        job_ids=[job.id for job in jobs],
+    )
 
-    views = [_item_view(job, reviews.get(job.id)) for job in jobs]
+    views = [
+        _item_view(job, reviews.get(job.id), attempts.get(job.id)) for job in jobs
+    ]
     if normalized_review:
         views = [item for item in views if item["review_state"] == normalized_review]
     if normalized_category:
@@ -519,6 +648,14 @@ def _attempt_view(attempt: TerritorialGeocodingAttempt) -> dict[str, Any]:
     }
 
 
+def _attempt_has_exact_coordinates(attempt: TerritorialGeocodingAttempt) -> bool:
+    proposal = _mapping(_mapping(attempt.result_json).get("proposal"))
+    return bool(
+        _finite_float(proposal.get("lat")) is not None
+        and _finite_float(proposal.get("lng")) is not None
+    )
+
+
 def geocoding_job_detail(
     session: Any,
     *,
@@ -548,7 +685,11 @@ def geocoding_job_detail(
         .all()
     )
     current_digest = proposal_digest(job)
-    item = _item_view(job, reviews[0] if reviews else None)
+    current_attempt = next(
+        (attempt for attempt in attempts if attempt.action == "resolve"),
+        None,
+    )
+    item = _item_view(job, reviews[0] if reviews else None, current_attempt)
     proposal = _proposal_snapshot(job)
     return {
         "contract_version": CONTRACT_VERSION,
@@ -557,9 +698,19 @@ def geocoding_job_detail(
         "selected": {
             "proposal": proposal,
             "proposal_digest": current_digest,
+            "proposal_version": {
+                "attempt_id": current_attempt.id,
+                "attempt_number": int(current_attempt.attempt_number),
+            }
+            if current_attempt is not None
+            else None,
             "attempts": [_attempt_view(attempt) for attempt in attempts],
             "reviews": [
-                _review_view(review, current_proposal_digest=current_digest)
+                _review_view(
+                    review,
+                    current_proposal_digest=current_digest,
+                    current_attempt=current_attempt,
+                )
                 for review in reviews
             ],
         },
@@ -569,13 +720,18 @@ def geocoding_job_detail(
             "exact_coordinates_exposed": bool(
                 proposal["lat"] is not None and proposal["lng"] is not None
             ),
+            "exact_coordinates_classification": "restricted_operational",
+            "exact_coordinates_access": "tenant_admin_only",
+            "provider_place_id_exposed": False,
+            "provider_place_id_retained_for_new_attempts": False,
             "authorized_admin_detail": True,
         },
         "write_policy": {
             "get_is_read_only": True,
             "provider_call_performed": False,
-            "coordinate_application_supported": False,
+            "coordinate_application_supported": True,
             "review_is_human_decision_only": True,
+            "apply_requires_separate_confirmed_post": True,
         },
     }
 
@@ -596,6 +752,9 @@ def geocoding_job_attempts(
         .order_by(TerritorialGeocodingAttempt.attempt_number.desc())
         .all()
     )
+    exact_coordinates_exposed = any(
+        _attempt_has_exact_coordinates(attempt) for attempt in attempts
+    )
     return {
         "contract_version": CONTRACT_VERSION,
         "tenant_id": int(tenant_id),
@@ -606,6 +765,10 @@ def geocoding_job_attempts(
         "privacy": {
             "raw_address_exposed": False,
             "address_digest_exposed": False,
+            "exact_coordinates_exposed": exact_coordinates_exposed,
+            "exact_coordinates_classification": "restricted_operational",
+            "exact_coordinates_access": "tenant_admin_only",
+            "provider_place_id_exposed": False,
             "authorized_admin_detail": True,
         },
     }
@@ -621,12 +784,19 @@ def _idempotency_key(value: Any) -> str:
     return normalized
 
 
-def _review_payload(payload: Any) -> tuple[str, str]:
+def _review_payload(payload: Any) -> tuple[str, str, str, str, int]:
     if not isinstance(payload, dict):
         raise TerritorialGeocodingAdminError(
             "geocoding_review_payload_invalid"
         )
-    supported_fields = {"decision", "reason_code", "apply_coordinates"}
+    supported_fields = {
+        "decision",
+        "reason_code",
+        "apply_coordinates",
+        "expected_proposal_digest",
+        "expected_attempt_id",
+        "expected_attempt_number",
+    }
     if set(payload) - supported_fields:
         raise TerritorialGeocodingAdminError(
             "geocoding_review_payload_fields_unsupported",
@@ -654,7 +824,31 @@ def _review_payload(payload: Any) -> tuple[str, str]:
             "geocoding_review_reason_code_invalid",
             action_hint="use_reason_code_for_decision",
         )
-    return decision, reason_code
+    expected_digest = str(payload.get("expected_proposal_digest") or "").strip().lower()
+    expected_attempt_id = str(payload.get("expected_attempt_id") or "").strip()
+    try:
+        expected_attempt_number = int(payload.get("expected_attempt_number"))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise TerritorialGeocodingAdminError(
+            "geocoding_review_expected_version_invalid",
+            action_hint="refresh_geocoding_detail",
+        ) from exc
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", expected_digest)
+        or not re.fullmatch(r"[A-Za-z0-9-]{8,64}", expected_attempt_id)
+        or expected_attempt_number <= 0
+    ):
+        raise TerritorialGeocodingAdminError(
+            "geocoding_review_expected_version_invalid",
+            action_hint="refresh_geocoding_detail",
+        )
+    return (
+        decision,
+        reason_code,
+        expected_digest,
+        expected_attempt_id,
+        expected_attempt_number,
+    )
 
 
 def review_geocoding_job(
@@ -674,7 +868,19 @@ def review_geocoding_job(
         job_id=job_id,
         for_update=True,
     )
-    decision, reason_code = _review_payload(payload)
+    (
+        decision,
+        reason_code,
+        expected_proposal_digest,
+        expected_attempt_id,
+        expected_attempt_number,
+    ) = _review_payload(payload)
+    if decision == "approved" and not _quality(job)["has_proposal"]:
+        raise TerritorialGeocodingAdminError(
+            "geocoding_proposal_missing",
+            status_code=409,
+            action_hint="inspect_attempts_or_reject_job",
+        )
     key = _idempotency_key(idempotency_key)
     key_hash = _canonical_digest(
         {
@@ -685,6 +891,28 @@ def review_geocoding_job(
         }
     )
     current_proposal_digest = proposal_digest(job)
+    current_attempt = (
+        session.query(TerritorialGeocodingAttempt)
+        .filter(
+            TerritorialGeocodingAttempt.tenant_id == int(tenant_id),
+            TerritorialGeocodingAttempt.job_id == job.id,
+            TerritorialGeocodingAttempt.action == "resolve",
+        )
+        .order_by(TerritorialGeocodingAttempt.attempt_number.desc())
+        .with_for_update()
+        .first()
+    )
+    if (
+        current_attempt is None
+        or expected_proposal_digest != current_proposal_digest
+        or expected_attempt_id != current_attempt.id
+        or expected_attempt_number != current_attempt.attempt_number
+    ):
+        raise TerritorialGeocodingAdminError(
+            "geocoding_review_proposal_version_stale",
+            status_code=409,
+            action_hint="refresh_geocoding_detail",
+        )
     request_digest = _canonical_digest(
         {
             "tenant_id": int(tenant_id),
@@ -693,6 +921,8 @@ def review_geocoding_job(
             "decision": decision,
             "reason_code": reason_code,
             "proposal_digest": current_proposal_digest,
+            "proposal_attempt_id": current_attempt.id,
+            "proposal_attempt_number": current_attempt.attempt_number,
         }
     )
 
@@ -717,7 +947,9 @@ def review_geocoding_job(
             "tenant_id": int(tenant_id),
             "job_id": job.id,
             "review": _review_view(
-                existing, current_proposal_digest=current_proposal_digest
+                existing,
+                current_proposal_digest=current_proposal_digest,
+                current_attempt=current_attempt,
             ),
             "idempotent_replay": True,
             "provider_call_performed": False,
@@ -731,13 +963,6 @@ def review_geocoding_job(
             action_hint="inspect_applied_job",
         )
 
-    if decision == "approved" and not _quality(job)["has_proposal"]:
-        raise TerritorialGeocodingAdminError(
-            "geocoding_proposal_missing",
-            status_code=409,
-            action_hint="inspect_attempts_or_reject_job",
-        )
-
     review = TerritorialGeocodingReview(
         tenant_id=int(tenant_id),
         job_id=job.id,
@@ -747,6 +972,8 @@ def review_geocoding_job(
         reason_code=reason_code,
         reviewed_job_status=job.status,
         proposal_digest=current_proposal_digest,
+        proposal_attempt_id=current_attempt.id,
+        proposal_attempt_number=current_attempt.attempt_number,
         idempotency_key_hash=key_hash,
         request_digest=request_digest,
         coordinate_write_performed=False,
@@ -781,7 +1008,9 @@ def review_geocoding_job(
         "tenant_id": int(tenant_id),
         "job_id": str(job_id),
         "review": _review_view(
-            review, current_proposal_digest=current_proposal_digest
+            review,
+            current_proposal_digest=current_proposal_digest,
+            current_attempt=current_attempt,
         ),
         "idempotent_replay": replayed,
         "provider_call_performed": False,

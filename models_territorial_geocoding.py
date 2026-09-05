@@ -106,6 +106,8 @@ class TerritorialGeocodingAttempt(db.Model):
     )
     attempt_number = db.Column(db.Integer, nullable=False)
     request_digest = db.Column(db.String(64), nullable=False)
+    action = db.Column(db.String(16), nullable=True)
+    idempotency_key_hash = db.Column(db.String(64), nullable=True)
     provider = db.Column(db.String(32), nullable=True)
     outcome_status = db.Column(db.String(20), nullable=False)
     reason_code = db.Column(db.String(96), nullable=False)
@@ -132,6 +134,12 @@ class TerritorialGeocodingAttempt(db.Model):
             "attempt_number",
             name="uq_territorial_geocoding_attempt_number",
         ),
+        db.UniqueConstraint(
+            "job_id",
+            "action",
+            "idempotency_key_hash",
+            name="uq_territorial_geocoding_attempt_idempotency",
+        ),
         db.CheckConstraint(
             "outcome_status IN ('pending', 'needs_review', 'applied', 'failed')",
             name="ck_territorial_geocoding_attempt_status",
@@ -143,6 +151,11 @@ class TerritorialGeocodingAttempt(db.Model):
         db.CheckConstraint(
             "length(request_digest) = 64",
             name="ck_territorial_geocoding_attempt_request_digest",
+        ),
+        db.CheckConstraint(
+            "(action IS NULL AND idempotency_key_hash IS NULL) OR "
+            "(action IN ('resolve', 'apply') AND length(idempotency_key_hash) = 64)",
+            name="ck_territorial_geocoding_attempt_idempotency",
         ),
         db.CheckConstraint(
             "length(result_digest) = 64",
@@ -203,6 +216,13 @@ class TerritorialGeocodingReview(db.Model):
     reason_code = db.Column(db.String(96), nullable=False)
     reviewed_job_status = db.Column(db.String(20), nullable=False)
     proposal_digest = db.Column(db.String(64), nullable=False)
+    proposal_attempt_id = db.Column(
+        db.String(36),
+        db.ForeignKey("territorial_geocoding_attempt.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    proposal_attempt_number = db.Column(db.Integer, nullable=True)
     idempotency_key_hash = db.Column(db.String(64), nullable=False)
     request_digest = db.Column(db.String(64), nullable=False)
     coordinate_write_performed = db.Column(
@@ -232,6 +252,11 @@ class TerritorialGeocodingReview(db.Model):
             "length(idempotency_key_hash) = 64 AND "
             "length(request_digest) = 64",
             name="ck_territorial_geocoding_review_digests",
+        ),
+        db.CheckConstraint(
+            "(proposal_attempt_id IS NULL AND proposal_attempt_number IS NULL) OR "
+            "(length(proposal_attempt_id) = 36 AND proposal_attempt_number > 0)",
+            name="ck_territorial_geocoding_review_proposal_attempt",
         ),
         db.CheckConstraint(
             "coordinate_write_performed IS FALSE",

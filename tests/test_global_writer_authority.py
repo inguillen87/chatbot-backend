@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from flask import Flask
@@ -200,6 +201,41 @@ def test_authority_database_failure_is_fail_closed_without_exception_details(mon
     )
     assert decision.allowed is False
     assert decision.reason_code == "global_writer_authority_database_unavailable"
+
+
+def test_authority_state_can_be_held_with_a_shared_row_lock():
+    class _Rows:
+        def mappings(self):
+            return self
+
+        def one_or_none(self):
+            return {
+                "owner_runtime": "vercel",
+                "epoch": 17,
+                "render_fenced": True,
+                "vercel_fenced": False,
+            }
+
+    class _PostgresExecutor:
+        dialect = SimpleNamespace(name="postgresql")
+
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, parameters):
+            self.calls.append((str(statement), parameters))
+            return _Rows()
+
+    executor = _PostgresExecutor()
+    state = authority.load_global_writer_authority_state(
+        executor,
+        lock_for_share=True,
+    )
+
+    assert state.epoch == 17
+    assert state.owner_runtime == "vercel"
+    assert "FOR SHARE" in executor.calls[0][0]
+    assert executor.calls[0][1] == {"authority_key": "primary"}
 
 
 def test_enabled_gate_never_falls_back_to_the_runtime_application_database():

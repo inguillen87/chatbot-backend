@@ -63,6 +63,19 @@ class GlobalWriterAuthorityDecision:
     epoch: int | None = None
 
 
+@dataclass(frozen=True)
+class GlobalWriterAuthorityLease:
+    """Shared-row lease held until the protected application commit finishes."""
+
+    decision: GlobalWriterAuthorityDecision
+    executor: Any | None
+
+    def revalidate(
+        self, config: Mapping[str, Any] | None = None
+    ) -> GlobalWriterAuthorityDecision:
+        return evaluate_global_writer_authority(config, executor=self.executor)
+
+
 class GlobalWriterAuthorityTransitionError(RuntimeError):
     """Stable control-plane failure that never includes a DSN or payload."""
 
@@ -187,20 +200,24 @@ def global_writer_authority_connection(config: Mapping[str, Any] | None = None):
         ) from exc
 
 
-def load_global_writer_authority_state(executor: Any) -> GlobalWriterAuthorityState:
+def load_global_writer_authority_state(
+    executor: Any, *, lock_for_share: bool = False
+) -> GlobalWriterAuthorityState:
     """Read and strictly validate the singleton authority row."""
 
     if _executor_dialect_name(executor) != "postgresql":
         raise GlobalWriterAuthorityTransitionError(
             "global_writer_authority_requires_postgresql"
         )
+    lock_clause = "FOR SHARE" if lock_for_share else ""
     try:
         row = executor.execute(
             text(
-                """
+                f"""
                 SELECT owner_runtime, epoch, render_fenced, vercel_fenced
                 FROM public.cutover_global_writer_authority
                 WHERE authority_key = :authority_key
+                {lock_clause}
                 """
             ),
             {"authority_key": AUTHORITY_KEY},
@@ -303,6 +320,63 @@ def evaluate_global_writer_authority(
         reason_code="runtime_is_global_writer_owner",
         epoch=state.epoch,
     )
+
+
+@contextmanager
+def global_writer_authority_lease(
+    config: Mapping[str, Any] | None = None,
+):
+    """Hold a shared control-row lock across the protected application commit.
+
+    Authority transitions update the singleton row and therefore wait for this
+    PostgreSQL ``FOR SHARE`` lease. The caller must revalidate the yielded
+    decision immediately before committing its application transaction.
+    """
+
+    if not global_writer_authority_enabled(config):
+        yield GlobalWriterAuthorityLease(
+            decision=GlobalWriterAuthorityDecision(
+                allowed=True,
+                enabled=False,
+                reason_code="global_writer_authority_disabled",
+            ),
+            executor=None,
+        )
+        return
+    runtime = configured_writer_runtime(config)
+    if runtime is None:
+        yield GlobalWriterAuthorityLease(
+            decision=GlobalWriterAuthorityDecision(
+                allowed=False,
+                enabled=True,
+                reason_code="global_writer_runtime_identity_invalid",
+            ),
+            executor=None,
+        )
+        return
+    if cutover_writer_fence_enabled(config):
+        yield GlobalWriterAuthorityLease(
+            decision=GlobalWriterAuthorityDecision(
+                allowed=False,
+                enabled=True,
+                reason_code="cutover_writer_fence_enabled",
+            ),
+            executor=None,
+        )
+        return
+
+    with global_writer_authority_connection(config) as control_connection:
+        with control_connection.begin():
+            load_global_writer_authority_state(
+                control_connection, lock_for_share=True
+            )
+            decision = evaluate_global_writer_authority(
+                config, executor=control_connection
+            )
+            yield GlobalWriterAuthorityLease(
+                decision=decision,
+                executor=control_connection,
+            )
 
 
 def background_global_writer_authority_report(
@@ -502,6 +576,7 @@ __all__ = [
     "CONTROL_POOL_TIMEOUT_SECONDS",
     "CONTROL_STATEMENT_TIMEOUT_MS",
     "GlobalWriterAuthorityDecision",
+    "GlobalWriterAuthorityLease",
     "GlobalWriterAuthorityState",
     "GlobalWriterAuthorityTransitionError",
     "activate_global_writer_owner",
@@ -510,6 +585,7 @@ __all__ = [
     "bootstrap_global_writer_owner",
     "evaluate_global_writer_authority",
     "global_writer_authority_connection",
+    "global_writer_authority_lease",
     "load_global_writer_authority_state",
     "transfer_global_writer_owner",
 ]

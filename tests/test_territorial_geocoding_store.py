@@ -144,6 +144,9 @@ class _FakeQuery:
         self.filters = filters
         return self
 
+    def with_for_update(self):
+        return self
+
     def one_or_none(self):
         return self.record
 
@@ -191,6 +194,7 @@ def test_ticket_coordinate_applier_updates_matching_source_once():
     assert record.latitud == -33.05
     assert record.longitud == -67.55
     assert session.flush_count == 1
-    # Replaying identical coordinates is a successful no-op, not an overwrite.
-    assert apply(_candidate(), {"lat": -33.05, "lng": -67.55}) is True
+    # Replays must be handled by the durable execution receipt. Once the
+    # source has coordinates, the low-level writer never silently accepts it.
+    assert apply(_candidate(), {"lat": -33.05, "lng": -67.55}) is False
     assert session.flush_count == 1

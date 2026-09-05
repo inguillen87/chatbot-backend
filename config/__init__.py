@@ -767,6 +767,18 @@ class Config:
 
     # Maps provider configuration
     MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    TERRITORIAL_GEOCODING_PROVIDER_ENABLED = os.getenv(
+        "TERRITORIAL_GEOCODING_PROVIDER_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    TERRITORIAL_GEOCODING_WRITES_ENABLED = os.getenv(
+        "TERRITORIAL_GEOCODING_WRITES_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    TERRITORIAL_GEOCODING_PROVIDER_TIMEOUT_SECONDS = _bounded_timeout_seconds(
+        os.getenv("TERRITORIAL_GEOCODING_PROVIDER_TIMEOUT_SECONDS", "5"),
+        default=5.0,
+        minimum=1.0,
+        maximum=10.0,
+    )
     MAPS_DEFAULT_PROVIDER = os.getenv("MAPS_DEFAULT_PROVIDER", "google")
 
     # LLM provider configuration. Gemini is server-side only; do not expose this

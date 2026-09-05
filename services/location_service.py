@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 from typing import Any, Dict, Optional
 
@@ -137,29 +138,52 @@ def _select_language(geo_ctx: Optional[Dict[str, Any]]) -> str:
     return "es"
 
 
-def get_gmaps_client():
+def get_gmaps_client(*, timeout_seconds: float | None = None):
     if not GOOGLE_MAPS_API_KEY:
         logger.error("GOOGLE_MAPS_API_KEY not set.")
         return None
     if not _google_maps_network_allowed():
         logger.info("Google Maps provider blocked reason=test_network_disabled")
         return None
-    return googlemaps.Client(key=GOOGLE_MAPS_API_KEY)
+    kwargs: Dict[str, Any] = {"key": GOOGLE_MAPS_API_KEY}
+    if timeout_seconds is not None:
+        try:
+            bounded_timeout = float(timeout_seconds)
+        except (TypeError, ValueError, OverflowError):
+            bounded_timeout = 5.0
+        if not math.isfinite(bounded_timeout):
+            bounded_timeout = 5.0
+        kwargs["timeout"] = max(1.0, min(bounded_timeout, 10.0))
+    return googlemaps.Client(**kwargs)
 
 
-def geocode_address(address: str, geo_ctx: Optional[Dict[str, Any]] = None):
+def geocode_address_with_receipt(
+    address: str,
+    geo_ctx: Optional[Dict[str, Any]] = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """Geocode and report whether a provider request was actually attempted.
+
+    A missing/disabled client returns ``False``. Once ``gmaps.geocode`` is
+    entered the attempt is ``True`` even when the provider rejects, times out,
+    or returns no result. This keeps operational receipts truthful.
     """
-    Geocodes an address using the Google Geocoding API.
 
-    Args:
-        address (str): The address to geocode.
-
-    Returns:
-        dict: A dictionary containing the geocoding results, or None if an error occurs.
-    """
-    gmaps = get_gmaps_client()
+    provider_timeout = None
+    if isinstance(geo_ctx, dict):
+        try:
+            provider_timeout = float(geo_ctx.get("provider_timeout_seconds"))
+        except (TypeError, ValueError, OverflowError):
+            provider_timeout = None
+    try:
+        gmaps = get_gmaps_client(timeout_seconds=provider_timeout)
+    except Exception as exc:
+        logger.error(
+            "Error creating Google Maps client error_type=%s",
+            type(exc).__name__,
+        )
+        return None, False
     if not gmaps:
-        return None
+        return None, False
 
     context = _resolve_geo_ctx(geo_ctx)
     query_address = address
@@ -187,25 +211,35 @@ def geocode_address(address: str, geo_ctx: Optional[Dict[str, Any]] = None):
             **request_kwargs,
         )
         if geocode_result:
-            return geocode_result[0]
-        return None
+            return geocode_result[0], True
+        return None, True
     except googlemaps.exceptions.ApiError as e:
         if getattr(e, "status", "") == "REQUEST_DENIED":
             logger.warning("Google Maps Geocoding disabled or denied. Falling back.")
-            return None
+            return None, True
         logger.error(
             "Error geocoding address error_type=%s input_chars=%s",
             type(e).__name__,
             len(str(address or "")),
         )
-        return None
+        return None, True
     except Exception as e:
         logger.error(
             "Error geocoding address error_type=%s input_chars=%s",
             type(e).__name__,
             len(str(address or "")),
         )
-        return None
+        return None, True
+
+
+def geocode_address(address: str, geo_ctx: Optional[Dict[str, Any]] = None):
+    """Backward-compatible payload-only Google geocoding helper."""
+
+    payload, _provider_call_performed = geocode_address_with_receipt(
+        address,
+        geo_ctx,
+    )
+    return payload
 
 
 def autocomplete_address(query: str, geo_ctx: Optional[Dict[str, Any]] = None):

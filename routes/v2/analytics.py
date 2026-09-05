@@ -44,6 +44,15 @@ from services.territorial_geocoding_sync import (
     preview_territorial_geocoding_queue,
     sync_territorial_geocoding_queue,
 )
+from services.territorial_geocoding import google_geocoding_adapter
+from services.territorial_geocoding_execution import (
+    apply_territorial_geocoding_job,
+    resolve_territorial_geocoding_job,
+)
+from services.global_writer_authority import (
+    GlobalWriterAuthorityTransitionError,
+    global_writer_authority_lease,
+)
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 
@@ -847,6 +856,178 @@ def operations_geocoding_job_attempts_v2(current_user, job_id: str):
     except TerritorialGeocodingAdminError as exc:
         return _geocoding_admin_error_response(exc)
     return _geocoding_admin_response(payload)
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/<string:job_id>/resolve", methods=["POST"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_job_resolve_v2(current_user, job_id: str):
+    """Consult one bounded provider and audit a proposal; never write a ticket."""
+
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+    body = request.get_json(silent=True)
+    if body not in (None, {}):
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_resolve_payload_unsupported",
+                action_hint="send_empty_json_body",
+            )
+        )
+    if not (
+        current_app.config.get("TERRITORIAL_GEOCODING_PROVIDER_ENABLED", False)
+        and str(current_app.config.get("MAPS_API_KEY") or "").strip()
+    ):
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_provider_unavailable",
+                status_code=503,
+                action_hint="configure_provider_without_retrying_blindly",
+                message="El proveedor territorial no está habilitado o no tiene credencial disponible.",
+            )
+        )
+    try:
+        payload = resolve_territorial_geocoding_job(
+            db.session,
+            tenant=tenant,
+            job_id=job_id,
+            actor_user_id=current_user.id,
+            idempotency_key=request.headers.get("Idempotency-Key"),
+            geocoder=google_geocoding_adapter,
+            provider_name="google",
+            provider_timeout_seconds=current_app.config.get(
+                "TERRITORIAL_GEOCODING_PROVIDER_TIMEOUT_SECONDS", 5.0
+            ),
+        )
+        db.session.commit()
+    except TerritorialGeocodingAdminError as exc:
+        db.session.rollback()
+        return _geocoding_admin_error_response(exc)
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Territorial geocoding resolve failed tenant_id=%s", tenant.id
+        )
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_resolve_persistence_failed",
+                status_code=500,
+                action_hint="retry_with_same_idempotency_key",
+            )
+        )
+    return _geocoding_admin_response(
+        payload, 200 if payload.get("idempotent_replay") else 201
+    )
+
+
+@v2_analytics_bp.route(
+    "/operations/geocoding-queue/<string:job_id>/apply", methods=["POST"]
+)
+@token_requerido
+@require_role("admin", "super_admin")
+@_legacy_tenant_wide_analytics_admin_only
+def operations_geocoding_job_apply_v2(current_user, job_id: str):
+    """Apply the current human-approved proposal under all write fences."""
+
+    tenant, error = _resolve_tenant_or_error(current_user)
+    if error:
+        return error
+    if not _feature_enabled(_integration_access(tenant), "heatmaps"):
+        return _integration_plan_required_response(tenant, "heatmaps")
+    body = request.get_json(silent=True)
+    expected_fields = {
+        "confirmed",
+        "expected_proposal_digest",
+        "expected_attempt_id",
+        "expected_attempt_number",
+    }
+    if (
+        not isinstance(body, dict)
+        or set(body) != expected_fields
+        or body.get("confirmed") is not True
+    ):
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_apply_confirmation_required",
+                action_hint="confirm_coordinate_application",
+                message="La aplicación requiere confirmación y la versión exacta de la propuesta visible.",
+            )
+        )
+    if not current_app.config.get("TERRITORIAL_GEOCODING_WRITES_ENABLED", False):
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_write_gate_closed",
+                status_code=503,
+                action_hint="enable_authorized_territorial_writes",
+            )
+        )
+    try:
+        with global_writer_authority_lease(current_app.config) as authority_lease:
+            authority = authority_lease.decision
+            authority_confirmed = bool(
+                authority.enabled and authority.allowed and authority.epoch is not None
+            )
+            payload = apply_territorial_geocoding_job(
+                db.session,
+                tenant=tenant,
+                job_id=job_id,
+                actor_user_id=current_user.id,
+                idempotency_key=request.headers.get("Idempotency-Key"),
+                writer_authority_confirmed=authority_confirmed,
+                writer_authority_reason=authority.reason_code,
+                writer_authority_epoch=authority.epoch,
+                expected_proposal_digest=body.get("expected_proposal_digest"),
+                expected_attempt_id=body.get("expected_attempt_id"),
+                expected_attempt_number=body.get("expected_attempt_number"),
+            )
+            revalidated = authority_lease.revalidate(current_app.config)
+            if (
+                not revalidated.enabled
+                or not revalidated.allowed
+                or revalidated.epoch != authority.epoch
+                or revalidated.reason_code != authority.reason_code
+            ):
+                raise TerritorialGeocodingAdminError(
+                    "geocoding_writer_authority_lease_lost",
+                    status_code=503,
+                    action_hint="restore_global_writer_authority",
+                )
+            # The source row remains locked and the authority lease remains held
+            # while coordinates, provenance, attempt and applied state commit.
+            db.session.commit()
+    except TerritorialGeocodingAdminError as exc:
+        db.session.rollback()
+        return _geocoding_admin_error_response(exc)
+    except GlobalWriterAuthorityTransitionError as exc:
+        db.session.rollback()
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                exc.reason_code,
+                status_code=503,
+                action_hint="restore_global_writer_authority",
+            )
+        )
+    except Exception:
+        db.session.rollback()
+        current_app.logger.exception(
+            "Territorial geocoding apply failed tenant_id=%s", tenant.id
+        )
+        return _geocoding_admin_error_response(
+            TerritorialGeocodingAdminError(
+                "geocoding_apply_persistence_failed",
+                status_code=500,
+                action_hint="retry_with_same_idempotency_key",
+            )
+        )
+    return _geocoding_admin_response(
+        payload, 200 if payload.get("idempotent_replay") else 201
+    )
 
 
 @v2_analytics_bp.route(

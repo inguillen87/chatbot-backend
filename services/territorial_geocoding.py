@@ -39,6 +39,14 @@ AUTO_APPLY_LOCATION_TYPES = frozenset({"ROOFTOP", "RANGE_INTERPOLATED"})
 VALID_STATES = frozenset({"pending", "needs_review", "applied", "failed"})
 
 
+@dataclass(frozen=True)
+class TerritorialGeocodingProviderReceipt:
+    """Provider adapter result with explicit network-attempt evidence."""
+
+    payload: Any
+    external_call_performed: bool
+
+
 def _canonical_digest(value: Any) -> str:
     encoded = json.dumps(
         value,
@@ -110,6 +118,16 @@ def _safe_jurisdiction(value: dict[str, Any] | None) -> dict[str, Any]:
                 }
         except (TypeError, ValueError):
             safe_bounds = None
+    containment_verified = bool(
+        jurisdiction.get("containment_verified")
+        and jurisdiction.get("containment_method") == "point_in_polygon"
+        and isinstance(jurisdiction.get("boundary_geometry"), dict)
+    )
+    boundary_authority = (
+        jurisdiction.get("boundary_authority")
+        if isinstance(jurisdiction.get("boundary_authority"), dict)
+        else {}
+    )
     return {
         "contract_version": str(
             jurisdiction.get("contract_version")
@@ -132,6 +150,20 @@ def _safe_jurisdiction(value: dict[str, Any] | None) -> dict[str, Any]:
         "locale": str(jurisdiction.get("locale") or "").strip() or None,
         "region_hint": str(jurisdiction.get("region_hint") or "").strip() or None,
         "bounds": safe_bounds,
+        # A verified polygon is part of the candidate identity.  A boundary
+        # snapshot change therefore invalidates both a proposal and its human
+        # approval even when the coarse bounding box did not change.
+        "containment_method": (
+            "point_in_polygon" if containment_verified else "operational_envelope"
+        ),
+        "containment_verified": containment_verified,
+        "boundary_snapshot_sha256": (
+            str(boundary_authority.get("snapshot_sha256") or "").strip().lower()
+            or None
+        ),
+        "boundary_geometry": (
+            jurisdiction.get("boundary_geometry") if containment_verified else None
+        ),
         "source": jurisdiction.get("source") if isinstance(jurisdiction.get("source"), dict) else None,
     }
 
@@ -420,9 +452,23 @@ def evaluate_geocoding_result(
         "proposal": {
             "lat": lat,
             "lng": lng,
+            "coordinate_reference": "WGS84",
             "location_type": location_type or None,
             "partial_match": partial_match,
-            "place_id": str(result.get("place_id") or "").strip() or None,
+            # Provider place identifiers are not required to apply WGS84
+            # coordinates and create an unnecessary cross-system identifier.
+            # Keep only a non-identifying presence signal in operational audit.
+            "place_id": None,
+            "provider_reference_present": bool(
+                str(result.get("place_id") or "").strip()
+            ),
+            "provenance": {
+                "contract_version": "operations.coordinate_provenance.v1",
+                "source": "geocoding_provider",
+                "provider": provider_name,
+                "provider_result_retained": False,
+                "source_address_retained": False,
+            },
         },
         "validation": {
             "auto_apply_eligible": auto_apply_eligible,
@@ -645,9 +691,16 @@ def process_territorial_geocoding_candidate(
 def google_geocoding_adapter(address: str, context: dict[str, Any]) -> Any:
     """Explicit adapter; importing this module alone never calls the network."""
 
-    from services.location_service import geocode_address
+    from services.location_service import geocode_address_with_receipt
 
-    return geocode_address(address, geo_ctx=context)
+    payload, external_call_performed = geocode_address_with_receipt(
+        address,
+        geo_ctx=context,
+    )
+    return TerritorialGeocodingProviderReceipt(
+        payload=payload,
+        external_call_performed=external_call_performed,
+    )
 
 
 __all__ = [
@@ -656,6 +709,7 @@ __all__ = [
     "InMemoryTerritorialGeocodingAuditStore",
     "TerritorialGeocodingAuditStore",
     "TerritorialGeocodingCandidate",
+    "TerritorialGeocodingProviderReceipt",
     "build_territorial_geocoding_candidate",
     "discover_territorial_geocoding_candidates",
     "evaluate_geocoding_result",
