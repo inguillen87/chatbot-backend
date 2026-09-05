@@ -39,10 +39,12 @@ from routes.carrito import _product_query_for_tenant
 from services.commerce_unified import dedupe_unified_orders, serialize_unified_order, summarize_unified_orders
 from services.common_utils import parse_precio_flexible
 from services.catalog_seed import ensure_seed_catalog
-from services.catalog_inventory import inventory_columns_contract, inventory_contract, new_catalog_version
-from services.embedding_service import embed_textos_llm
+from services.catalog_inventory import inventory_columns_contract, inventory_contract
+from services.catalog_ingestion_assurance import (
+    CatalogSnapshotPublicationError,
+    publish_tenant_catalog_snapshot,
+)
 from services.pymes import tiene_archivo_catalogo
-from services.qdrant_service import index_catalog_item
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_resolver import apply_tenant_alias
 from services.survey_response_provenance import (
@@ -2035,6 +2037,17 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
     if not _is_authorized_for_tenant(current_user, tenant):
         return jsonify({"error": "Unauthorized"}), 403
 
+    # Serialize catalog publication for the exact authorized tenant.  The
+    # snapshot publisher advances the active version only after R2 and Qdrant
+    # acknowledgements, inside this same SQL transaction.
+    tenant = (
+        TenantProfile.query.filter_by(id=tenant.id)
+        .with_for_update()
+        .first()
+    )
+    if tenant is None or not tenant.is_active:
+        return jsonify({"error": "Tenant not found"}), 404
+
     owner = tenant.municipio or tenant.pyme
     if not owner:
         return jsonify({"error": "Tenant owner not found"}), 404
@@ -2125,58 +2138,39 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
         metadata["stock_updated_at"] = datetime.now(timezone.utc).isoformat()
         item.extra_metadata = metadata
 
-    cfg = tenant.configuracion if isinstance(tenant.configuracion, dict) else {}
-    catalog_version = new_catalog_version(tenant.id)
-    cfg["catalog_version"] = catalog_version
-    cfg["catalog_last_inventory_update_at"] = datetime.now(timezone.utc).isoformat()
-    tenant.configuracion = cfg
-    flag_modified(tenant, "configuracion")
-
-    db.session.commit()
-
-    text_parts = [
-        item.nombre,
-        item.descripcion or "",
-        item.sku or "",
-    ]
-    if isinstance(item.extra_metadata, dict):
-        text_parts.extend(
-            str(value)
-            for value in item.extra_metadata.values()
-            if value and not isinstance(value, (list, dict))
-        )
-    texto = " ".join(part for part in text_parts if part).strip()
-    embeddings = embed_textos_llm([texto]) if texto else []
-    if embeddings and embeddings[0]:
-        rubro_nombre = "general"
-        if getattr(owner, "rubro", None) and owner.rubro.nombre:
-            rubro_nombre = owner.rubro.nombre
-
-        index_catalog_item(
-            tenant.id,
+    try:
+        publication = publish_tenant_catalog_snapshot(tenant.id)
+        db.session.commit()
+    except CatalogSnapshotPublicationError as exc:
+        db.session.rollback()
+        response = jsonify(
             {
-                "id": item.id,
-                "nombre": item.nombre,
-                "descripcion": item.descripcion,
-                "precio": item.precio or item.precio_monetario or 0,
-                "rubro": rubro_nombre,
-                "stock": item.cantidad,
-                "user_id": owner.id,
-                "tenant_id": tenant.id,
-                "sku": item.sku,
-                "marca": item.marca,
-                "categoria": item.categoria,
-                "moneda": item.moneda,
-                "unidad": item.unidad,
-                "precio_por_caja": item.precio_por_caja,
-                "unidad_por_caja": item.unidad_por_caja,
-                "extra_metadata": item.extra_metadata or {},
-            },
-            embeddings[0],
+                "codigo": exc.reason_code,
+                "mensaje": "No se actualizó el catálogo. La versión anterior continúa activa.",
+                "previous_catalog_preserved": True,
+                "ingestion_assurance": exc.assurance,
+            }
         )
+        response.status_code = 503
+        return response
+    except Exception as exc:
+        current_app.logger.warning(
+            "Catalog inline publication stopped error_type=%s",
+            type(exc).__name__,
+        )
+        db.session.rollback()
+        response = jsonify(
+            {
+                "codigo": "catalog_snapshot_publication_failed",
+                "mensaje": "No se actualizó el catálogo. La versión anterior continúa activa.",
+                "previous_catalog_preserved": True,
+            }
+        )
+        response.status_code = 503
+        return response
 
     request_id = _request_id()
-    catalog_version = cfg.get("catalog_version") or _catalog_version_for_tenant(tenant)
+    catalog_version = publication["catalog_version"]
     formatted = _formatear_producto(
         {
             "nombre": item.nombre,
@@ -2214,6 +2208,7 @@ def admin_update_catalog_item(current_user, slug, item_id: int):
             "contract_version": "tenant.catalog_item_update.v1",
             "request_id": request_id,
             "catalog_version": catalog_version,
+            "ingestion_assurance": publication["ingestion_assurance"],
             "item": formatted,
         }
     )

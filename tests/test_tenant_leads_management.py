@@ -936,7 +936,7 @@ def test_employee_admin_experience_is_category_scoped_and_empty_scope_fails_clos
     )
 
 
-def test_admin_tenant_catalog_supports_commercial_filters(client, app):
+def test_admin_tenant_catalog_supports_commercial_filters(client, app, monkeypatch):
     owner = User(email="owner-catalog@test.com", name="Owner Catalog", rol="admin", tipo_chat="pyme")
     owner.set_password("pass")
     db.session.add(owner)
@@ -997,6 +997,13 @@ def test_admin_tenant_catalog_supports_commercial_filters(client, app):
     assert items[0]["inventory"]["can_confirm_order"] is True
 
     item_id = items[0]["catalogo_item_id"]
+    monkeypatch.setattr(
+        "routes.admin_tenant.publish_tenant_catalog_snapshot",
+        lambda tenant_id: {
+            "catalog_version": f"cat_{tenant_id}_verified",
+            "ingestion_assurance": {"ready": True, "status": "ready"},
+        },
+    )
     patch_resp = client.patch(
         f"/api/admin/tenants/{tenant.slug}/catalog/items/{item_id}",
         json={"stock_quantity": 18, "inventory_source": "test_inline_stock"},

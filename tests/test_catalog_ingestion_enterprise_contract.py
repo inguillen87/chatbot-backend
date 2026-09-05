@@ -21,6 +21,7 @@ from services.catalog_ingestion_assurance import (
     extracted_stage,
     index_catalog_item_with_ack,
     persist_catalog_source,
+    publish_tenant_catalog_snapshot,
 )
 from services.catalog_quality import _has_verified_catalog_retrieval
 from services.qdrant_service import _catalog_qdrant_point_id, verify_catalog_item_index
@@ -663,3 +664,195 @@ def test_legacy_pdf_pipeline_never_fabricates_catalog_rows(monkeypatch, tmp_path
     assert result["items"] == []
     assert "PDF-001" not in json.dumps(result)
     assert "mock" not in json.dumps(result).lower()
+
+
+def test_snapshot_publisher_requires_r2_then_indexes_full_tenant_version(app, monkeypatch):
+    owner, tenant = _tenant("catalog-inline-snapshot")
+    tenant.configuracion = {
+        "catalog_version": "catalog-previous-v1",
+        "catalog_vector_version": "catalog-previous-v1",
+    }
+    db.session.add_all(
+        [
+            CatalogoItem(
+                user_id=owner.id,
+                tenant_id=tenant.id,
+                sku="ONE-1",
+                nombre="Producto uno",
+                categoria="General",
+                precio="100",
+                modalidad="venta",
+                extra_metadata={
+                    "gallery_urls": ["https://assets.invalid/one.jpg"],
+                    "api_token": "must-not-leave-sql",
+                },
+            ),
+            CatalogoItem(
+                user_id=owner.id,
+                tenant_id=tenant.id,
+                sku="TWO-2",
+                nombre="Producto dos",
+                categoria="General",
+                precio="200",
+                modalidad="venta",
+            ),
+        ]
+    )
+    db.session.commit()
+    order = []
+    stored_snapshot = {}
+    indexed_payloads = []
+
+    def storage_ack(source):
+        order.append("r2")
+        stored_snapshot.update(json.loads(source.stream.read().decode("utf-8")))
+        return _verified_storage()
+
+    def provider_ack(scoped_tenant_id, item_data, embedding):
+        order.append("qdrant")
+        assert scoped_tenant_id == tenant.id
+        assert embedding == [0.1, 0.2]
+        indexed_payloads.append(dict(item_data))
+        return {"indexed": True, "retrieval_verified": True, "reason_code": None}
+
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.persist_catalog_source",
+        storage_ack,
+    )
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.embed_textos_llm",
+        lambda texts: [[0.1, 0.2] for _ in texts],
+    )
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.index_catalog_item_with_ack",
+        provider_ack,
+    )
+
+    publication = publish_tenant_catalog_snapshot(tenant.id)
+    db.session.commit()
+
+    assert order == ["r2", "qdrant", "qdrant"]
+    assert publication["ingestion_assurance"]["ready"] is True
+    assert publication["item_count"] == 2
+    assert {payload["tenant_id"] for payload in indexed_payloads} == {tenant.id}
+    assert {payload["catalog_version"] for payload in indexed_payloads} == {
+        publication["catalog_version"]
+    }
+    assert {payload["sku"] for payload in indexed_payloads} == {"ONE-1", "TWO-2"}
+    assert "must-not-leave-sql" not in json.dumps(stored_snapshot)
+    assert stored_snapshot["tenant_id"] == tenant.id
+    assert len(stored_snapshot["items"]) == 2
+    db.session.refresh(tenant)
+    assert tenant.configuracion["catalog_version"] == publication["catalog_version"]
+    assert tenant.configuracion["catalog_vector_version"] == publication["catalog_version"]
+    assert tenant.configuracion["catalog_snapshot_receipt_ref"] == "r2:test-receipt"
+
+
+def test_inline_edit_rolls_back_sql_and_pointer_when_qdrant_readback_fails(
+    app,
+    client,
+    monkeypatch,
+):
+    owner, tenant = _tenant("catalog-inline-rollback")
+    tenant.configuracion = {
+        "catalog_version": "catalog-previous-v1",
+        "catalog_vector_version": "catalog-previous-v1",
+    }
+    item = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        sku="KEEP-1",
+        nombre="Producto anterior",
+        precio="900",
+        cantidad="4",
+        modalidad="venta",
+    )
+    db.session.add(item)
+    db.session.commit()
+    item_id = item.id
+
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.persist_catalog_source",
+        lambda source: _verified_storage(),
+    )
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.embed_textos_llm",
+        lambda texts: [[0.1, 0.2] for _ in texts],
+    )
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.index_catalog_item_with_ack",
+        lambda *args, **kwargs: {
+            "indexed": True,
+            "retrieval_verified": False,
+            "reason_code": "qdrant_retrieval_ack_missing",
+        },
+    )
+
+    response = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/catalog/items/{item_id}",
+        json={"stock_quantity": 18},
+        headers=_headers(app, owner, tenant),
+    )
+
+    assert response.status_code == 503
+    body = response.get_json()
+    assert body["codigo"] == "qdrant_retrieval_ack_missing"
+    assert body["previous_catalog_preserved"] is True
+    assert body["ingestion_assurance"]["ready"] is False
+    db.session.expire_all()
+    preserved = CatalogoItem.query.filter_by(id=item_id, tenant_id=tenant.id).one()
+    refreshed_tenant = db.session.get(TenantProfile, tenant.id)
+    assert preserved.cantidad == "4"
+    assert refreshed_tenant.configuracion["catalog_version"] == "catalog-previous-v1"
+    assert refreshed_tenant.configuracion["catalog_vector_version"] == "catalog-previous-v1"
+
+
+def test_inline_edit_never_indexes_before_r2_ack(app, client, monkeypatch):
+    owner, tenant = _tenant("catalog-inline-r2-gate")
+    tenant.configuracion = {"catalog_vector_version": "catalog-previous-v1"}
+    item = CatalogoItem(
+        user_id=owner.id,
+        tenant_id=tenant.id,
+        sku="KEEP-1",
+        nombre="Producto anterior",
+        precio="900",
+        cantidad="4",
+        modalidad="venta",
+    )
+    db.session.add(item)
+    db.session.commit()
+    item_id = item.id
+    provider_called = False
+
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.persist_catalog_source",
+        lambda source: {
+            "status": "pending",
+            "provider": "cloudflare_r2",
+            "acknowledged": False,
+            "reason_code": "r2_provider_unavailable",
+        },
+    )
+
+    def unexpected_provider_call(*args, **kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return {"indexed": True, "retrieval_verified": True, "reason_code": None}
+
+    monkeypatch.setattr(
+        "services.catalog_ingestion_assurance.index_catalog_item_with_ack",
+        unexpected_provider_call,
+    )
+
+    response = client.patch(
+        f"/api/admin/tenants/{tenant.slug}/catalog/items/{item_id}",
+        json={"stock_quantity": 18},
+        headers=_headers(app, owner, tenant),
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["codigo"] == "r2_provider_unavailable"
+    assert provider_called is False
+    db.session.expire_all()
+    assert db.session.get(CatalogoItem, item_id).cantidad == "4"
+    assert db.session.get(TenantProfile, tenant.id).configuracion["catalog_vector_version"] == "catalog-previous-v1"
