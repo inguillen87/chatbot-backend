@@ -46,6 +46,7 @@ from services.catalog_ingestion_assurance import (
 )
 from services.pymes import tiene_archivo_catalogo
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
+from services.tenant_provisioning_readiness import build_tenant_provisioning_readiness
 from services.tenant_resolver import apply_tenant_alias
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_REAL,
@@ -2309,7 +2310,8 @@ def create_tenant():
                 "owner_email_generated": bool((tenant.configuracion or {}).get("owner_email_generated")),
             },
             "whatsapp_onboarding": (tenant.configuracion or {}).get("whatsapp_onboarding"),
-            "provisioning_readiness": (tenant.configuracion or {}).get("provisioning_readiness"),
+            "provisioning_readiness": build_tenant_provisioning_readiness(tenant),
+            "readiness_endpoint": f"/api/admin/tenants/{tenant.slug}/provisioning-readiness",
             "integration_access": integration_access_payload(tenant),
         }), 201
     except ValueError as e:
@@ -2362,10 +2364,28 @@ def get_tenant_config_bundle(current_user, slug):
             "widget_customization": integration_access["enabled"]
         },
         "integration_access": integration_access,
-        "provisioning_readiness": (tenant.configuracion or {}).get("provisioning_readiness"),
+        "provisioning_readiness": build_tenant_provisioning_readiness(tenant),
+        "readiness_endpoint": f"/api/admin/tenants/{tenant.slug}/provisioning-readiness",
         "template": (tenant.configuracion or {}).get("template"),
     }
     return jsonify(response)
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/provisioning-readiness', methods=['GET'])
+@token_requerido
+@require_tenant
+def get_tenant_provisioning_readiness(current_user, slug):
+    """Return current tenant configuration readiness without running providers."""
+
+    tenant = _resolve_admin_tenant(current_user, slug)
+    if not tenant:
+        return jsonify({"error": "Tenant not found"}), 404
+    if not _is_authorized_for_tenant(current_user, tenant):
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    response = jsonify(build_tenant_provisioning_readiness(tenant))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/catalog/items', methods=['GET', 'OPTIONS'])
@@ -2563,8 +2583,14 @@ def update_tenant_config_bundle(current_user, slug):
                 cfg = TenantConfig(tenant_id=tenant.id, key=key, channel=chan_val, json_value=value)
                 db.session.add(cfg)
 
+    db.session.flush()
+    readiness = build_tenant_provisioning_readiness(tenant)
     db.session.commit()
-    return jsonify({"message": "Config updated"})
+    return jsonify({
+        "message": "Config updated",
+        "provisioning_readiness": readiness,
+        "readiness_endpoint": f"/api/admin/tenants/{tenant.slug}/provisioning-readiness",
+    })
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/assign-whatsapp-number', methods=['POST'])
 @token_requerido
