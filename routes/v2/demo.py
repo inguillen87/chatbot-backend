@@ -12,6 +12,7 @@ import uuid
 from flask import Blueprint, abort, current_app, jsonify, request, send_from_directory
 from limits import parse
 
+from cutover_writer_fence import cutover_read_only_view
 from extensions import limiter
 from models import MunicipioTicket, TenantProfile, WhatsappNumero
 from routes.auth import (
@@ -3064,6 +3065,7 @@ def demo_whatsapp_sandbox_launcher_v2():
 @demo_compat_bp.route("/v2/demo/session", methods=["POST", "OPTIONS"])
 @demo_compat_bp.route("/api/v1/demo/session", methods=["POST", "OPTIONS"])
 @demo_compat_bp.route("/v1/demo/session", methods=["POST", "OPTIONS"])
+@cutover_read_only_view
 def demo_session_v2():
     if request.method == "OPTIONS":
         return _options_response()

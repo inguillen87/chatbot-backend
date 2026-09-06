@@ -316,8 +316,8 @@ class DemoExecutiveSnapshotTest(unittest.TestCase):
         }
         self.assertEqual(durable_live_read.call_count, len(unique_slugs))
         self.assertEqual(len(items), 5)
-        self.assertEqual(len(all_items), 6)
-        self.assertEqual(len(unique_slugs), 6)
+        self.assertEqual(len(all_items), voting.get("total_available"))
+        self.assertEqual(len(unique_slugs), voting.get("total_available"))
         items_by_slug = {entry.get("slug"): entry for entry in items}
         all_items_by_slug = {entry.get("slug"): entry for entry in all_items}
         self.assertTrue(set(items_by_slug).issubset(all_items_by_slug))

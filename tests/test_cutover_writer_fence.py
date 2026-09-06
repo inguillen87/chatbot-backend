@@ -59,6 +59,21 @@ def test_cutover_writer_fence_keeps_health_and_safe_methods_available(client):
         client.application.config["CUTOVER_WRITER_FENCE_ENABLED"] = previous
 
 
+def test_cutover_writer_fence_keeps_read_only_demo_session_bootstrap_available(client):
+    previous = _set_fence(client, True)
+    try:
+        response = client.post(
+            "/api/v2/demo/session",
+            json={"sector": "empresas", "response_profile": "widget"},
+        )
+
+        assert response.status_code == 200
+        assert response.get_json()["contract_version"] == "demo.session.v2"
+        assert response.get_json()["next_step"] == "select_rubro"
+    finally:
+        client.application.config["CUTOVER_WRITER_FENCE_ENABLED"] = previous
+
+
 def test_marked_get_and_head_are_fenced_before_handler_but_read_only_get_remains_available():
     app = Flask(__name__)
     app.config["CUTOVER_WRITER_FENCE_ENABLED"] = True
