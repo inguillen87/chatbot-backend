@@ -7,25 +7,25 @@ import time
 import unittest
 from unittest.mock import patch
 
-from bootstrap_wsgi import LazyApplication, _startup_wait_seconds
+from bootstrap_wsgi import LazyApplication, _warmup_delay_seconds
 
 
 class LazyApplicationTests(unittest.TestCase):
-    def test_vercel_startup_wait_default_and_override_stay_below_readiness_budget(self) -> None:
+    def test_vercel_warmup_delay_default_and_override_stay_below_readiness_budget(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_startup_wait_seconds(), 1.0)
+            self.assertEqual(_warmup_delay_seconds(), 0.1)
         with patch.dict(
             os.environ,
-            {"VERCEL_WSGI_STARTUP_WAIT_SECONDS": "9"},
+            {"VERCEL_WSGI_WARMUP_DELAY_SECONDS": "9"},
             clear=True,
         ):
-            self.assertEqual(_startup_wait_seconds(), 1.5)
+            self.assertEqual(_warmup_delay_seconds(), 0.5)
         with patch.dict(
             os.environ,
-            {"VERCEL_WSGI_STARTUP_WAIT_SECONDS": "0.25"},
+            {"VERCEL_WSGI_WARMUP_DELAY_SECONDS": "0.25"},
             clear=True,
         ):
-            self.assertEqual(_startup_wait_seconds(), 0.25)
+            self.assertEqual(_warmup_delay_seconds(), 0.25)
 
     def test_loader_is_deferred_until_first_request_and_cached(self) -> None:
         loads: list[str] = []
@@ -93,7 +93,7 @@ class LazyApplicationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "not callable"):
             application({}, lambda status, headers: None)
 
-    def test_background_warmup_starts_before_first_request_and_is_cached(self) -> None:
+    def test_background_warmup_starts_after_first_retryable_response_and_is_cached(self) -> None:
         loader_started = threading.Event()
         release_loader = threading.Event()
         loads: list[str] = []
@@ -111,9 +111,9 @@ class LazyApplicationTests(unittest.TestCase):
         application = LazyApplication(
             loader,
             background_warmup=True,
-            startup_wait_seconds=0,
+            warmup_delay_seconds=0.01,
         )
-        self.assertTrue(loader_started.wait(0.5))
+        self.assertFalse(loader_started.is_set())
 
         statuses: list[str] = []
         headers: list[tuple[str, str]] = []
@@ -140,6 +140,7 @@ class LazyApplicationTests(unittest.TestCase):
         })
         self.assertIn(("Retry-After", "1"), headers)
         self.assertIn(("Cache-Control", "no-store"), headers)
+        self.assertTrue(loader_started.wait(0.5))
 
         release_loader.set()
         self.assertTrue(application._ready.wait(0.5))
@@ -173,9 +174,8 @@ class LazyApplicationTests(unittest.TestCase):
         application = LazyApplication(
             loader,
             background_warmup=True,
-            startup_wait_seconds=0,
+            warmup_delay_seconds=0.01,
         )
-        self.assertTrue(loader_started.wait(0.5))
 
         statuses: list[str] = []
         statuses_lock = threading.Lock()
@@ -207,12 +207,13 @@ class LazyApplicationTests(unittest.TestCase):
             thread.join()
         elapsed = time.monotonic() - started_at
 
+        self.assertTrue(loader_started.wait(0.5))
         self.assertEqual(load_count, 1)
         self.assertEqual(statuses, ["503 Service Unavailable"] * 12)
         self.assertLess(elapsed, 0.5)
         release_loader.set()
 
-    def test_only_one_request_waits_for_background_warmup(self) -> None:
+    def test_background_requests_never_wait_for_warmup(self) -> None:
         loader_started = threading.Event()
         release_loader = threading.Event()
 
@@ -228,27 +229,8 @@ class LazyApplicationTests(unittest.TestCase):
         application = LazyApplication(
             loader,
             background_warmup=True,
-            startup_wait_seconds=0.5,
+            warmup_delay_seconds=0.01,
         )
-        self.assertTrue(loader_started.wait(0.5))
-
-        waiting_statuses: list[str] = []
-        waiting_response: list[list[bytes]] = []
-
-        def waiting_request() -> None:
-            waiting_response.append(
-                application(
-                    {"PATH_INFO": "/api/v2/demo/catalog", "REQUEST_METHOD": "GET"},
-                    lambda status, headers: waiting_statuses.append(status),
-                )
-            )
-
-        thread = threading.Thread(target=waiting_request)
-        thread.start()
-        deadline = time.monotonic() + 0.25
-        while not application._waiter_lock.locked() and time.monotonic() < deadline:
-            time.sleep(0.001)
-        self.assertTrue(application._waiter_lock.locked())
 
         shed_statuses: list[str] = []
         started_at = time.monotonic()
@@ -264,12 +246,10 @@ class LazyApplicationTests(unittest.TestCase):
             json.loads(b"".join(shed_response))["reason_code"],
             "application_initializing",
         )
+        self.assertTrue(loader_started.wait(0.5))
 
         release_loader.set()
-        thread.join(0.5)
-        self.assertFalse(thread.is_alive())
-        self.assertEqual(waiting_statuses, ["200 OK"])
-        self.assertEqual(waiting_response, [[b"/api/v2/demo/catalog"]])
+        self.assertTrue(application._ready.wait(0.5))
 
     def test_background_warmup_fails_closed_without_exposing_exception(self) -> None:
         secret_detail = "private-runtime-secret"
@@ -280,7 +260,11 @@ class LazyApplicationTests(unittest.TestCase):
         application = LazyApplication(
             loader,
             background_warmup=True,
-            startup_wait_seconds=0.1,
+            warmup_delay_seconds=0.01,
+        )
+        application(
+            {"PATH_INFO": "/api/v2/tickets", "REQUEST_METHOD": "POST"},
+            lambda status, headers: None,
         )
         self.assertTrue(application._ready.wait(0.5))
         statuses: list[str] = []

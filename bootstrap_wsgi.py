@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from importlib import import_module
-from threading import Event, Lock, Thread
+from threading import Event, Lock, Timer
 from typing import Any, Callable
 
 
@@ -30,12 +30,12 @@ WsgiApplication = Callable[[dict[str, Any], StartResponse], Any]
 
 logger = logging.getLogger("chatboc.bootstrap")
 _TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
-# Vercel's container readiness budget includes roughly two seconds before the
-# first WSGI call reaches this proxy.  Keeping the request-side wait at one
-# second leaves enough headroom to return the retryable bootstrap contract
-# before the platform terminates an otherwise healthy warming container.
-_DEFAULT_STARTUP_WAIT_SECONDS = 1.0
-_MAX_STARTUP_WAIT_SECONDS = 1.5
+# Give Gunicorn enough time to finish booting the worker and flush the first
+# retryable response before the canonical app begins its import-heavy startup.
+# Starting that work in ``__init__`` lets the loader compete for the GIL while
+# Vercel is still deciding whether the container is responsive.
+_DEFAULT_WARMUP_DELAY_SECONDS = 0.1
+_MAX_WARMUP_DELAY_SECONDS = 0.5
 
 
 def _is_vercel_runtime() -> bool:
@@ -47,28 +47,27 @@ def _is_vercel_runtime() -> bool:
     )
 
 
-def _startup_wait_seconds() -> float:
-    """Return a bounded wait below Vercel's container-init failure window."""
+def _warmup_delay_seconds() -> float:
+    """Return the bounded delay that protects the first container response."""
 
-    raw_value = os.getenv("VERCEL_WSGI_STARTUP_WAIT_SECONDS")
+    raw_value = os.getenv("VERCEL_WSGI_WARMUP_DELAY_SECONDS")
     if raw_value is None:
-        return _DEFAULT_STARTUP_WAIT_SECONDS
+        return _DEFAULT_WARMUP_DELAY_SECONDS
     try:
         parsed = float(raw_value.strip())
     except (AttributeError, ValueError):
-        return _DEFAULT_STARTUP_WAIT_SECONDS
-    return min(_MAX_STARTUP_WAIT_SECONDS, max(0.0, parsed))
+        return _DEFAULT_WARMUP_DELAY_SECONDS
+    return min(_MAX_WARMUP_DELAY_SECONDS, max(0.0, parsed))
 
 
 class LazyApplication:
     """Load the canonical Flask application once, safely across threads.
 
-    ``background_warmup`` is reserved for the Vercel web entrypoint.  Other
+    ``background_warmup`` is reserved for the Vercel web entrypoint. Other
     runtimes and tests keep the original synchronous lazy-loading behaviour.
-    While that warmup is running, at most one request waits for a bounded
-    interval.  Extra concurrent requests receive a small retryable response,
-    which prevents a burst of public reads from pinning every Gunicorn thread
-    behind the same import lock.
+    While that warmup is running, requests receive a small retryable response
+    immediately, which prevents a burst of public reads from pinning Gunicorn
+    threads behind the same import lock.
     """
 
     def __init__(
@@ -76,23 +75,20 @@ class LazyApplication:
         loader: Callable[[], WsgiApplication] | None = None,
         *,
         background_warmup: bool = False,
-        startup_wait_seconds: float = _DEFAULT_STARTUP_WAIT_SECONDS,
+        warmup_delay_seconds: float = _DEFAULT_WARMUP_DELAY_SECONDS,
     ) -> None:
         self._loader = loader or self._load_canonical_application
         self._application: WsgiApplication | None = None
         self._load_failed = False
         self._lock = Lock()
         self._start_lock = Lock()
-        self._waiter_lock = Lock()
         self._ready = Event()
         self._warmup_started = False
         self._background_warmup = bool(background_warmup)
-        self._startup_wait_seconds = min(
-            _MAX_STARTUP_WAIT_SECONDS,
-            max(0.0, float(startup_wait_seconds)),
+        self._warmup_delay_seconds = min(
+            _MAX_WARMUP_DELAY_SECONDS,
+            max(0.0, float(warmup_delay_seconds)),
         )
-        if self._background_warmup:
-            self.start_warmup()
 
     @staticmethod
     def _load_canonical_application() -> WsgiApplication:
@@ -137,17 +133,19 @@ class LazyApplication:
             )
 
     def start_warmup(self) -> None:
-        """Start one daemon warmup without delaying Gunicorn socket readiness."""
+        """Schedule one daemon warmup after Gunicorn can answer the first request."""
 
         with self._start_lock:
             if self._warmup_started:
                 return
             self._warmup_started = True
-            Thread(
-                target=self._background_load,
-                name="chatboc-wsgi-warmup",
-                daemon=True,
-            ).start()
+            timer = Timer(
+                self._warmup_delay_seconds,
+                self._background_load,
+            )
+            timer.name = "chatboc-wsgi-warmup"
+            timer.daemon = True
+            timer.start()
 
     @staticmethod
     def _bootstrap_response(
@@ -206,13 +204,13 @@ class LazyApplication:
         if not self._background_warmup:
             return self._load_and_cache()(environ, start_response)
 
+        # The first response is intentionally immediate.  Vercel treats a
+        # container that cannot answer during its short initialization window
+        # as failed.  Waiting here (or starting imports in ``__init__``) lets
+        # the canonical route tree hold the GIL during that window.  A 503 with
+        # Retry-After keeps the public contract explicit while the same warm
+        # instance finishes loading in the background.
         self.start_warmup()
-        if not self._ready.is_set() and self._waiter_lock.acquire(blocking=False):
-            try:
-                self._ready.wait(self._startup_wait_seconds)
-            finally:
-                self._waiter_lock.release()
-
         application = self._application
         if application is not None:
             return application(environ, start_response)
@@ -225,5 +223,5 @@ class LazyApplication:
 
 application = LazyApplication(
     background_warmup=_is_vercel_runtime(),
-    startup_wait_seconds=_startup_wait_seconds(),
+    warmup_delay_seconds=_warmup_delay_seconds(),
 )
