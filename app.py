@@ -56,7 +56,6 @@ _suppress_sensitive_third_party_info_logs()
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from flask_cors import CORS
-from flask_session import Session
 from sqlalchemy import event as sa_event
 
 from config import (
@@ -76,6 +75,7 @@ from utils.contact_identity import (
 )
 from utils.safe_logging import describe_database_uri
 from utils.runtime_environment import is_production_runtime, is_render_runtime
+from utils.migration_managed_session import init_migration_managed_session
 
 
 def _truthy_env(name: str) -> bool:
@@ -319,7 +319,6 @@ def create_app(config_class=Config):
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:
-        session_ext = Session()
         secret_key = app.config.get("SECRET_KEY")
         app.logger.info(
             "Session config: secret_key=%s secure=%s samesite=%s type=%s domain=%s",
@@ -469,13 +468,12 @@ def create_app(config_class=Config):
     # Sesiones en servidor (solo runtime normal)
     if not MIGRATIONS_ONLY:
         app.config['SESSION_SQLALCHEMY'] = db
-        session_ext = Session()
         if app.config.get("TESTING"):
             from cachelib.simple import SimpleCache
 
             app.config['SESSION_TYPE'] = 'cachelib'
             app.config['SESSION_CACHELIB'] = SimpleCache(default_timeout=300)
-        session_ext.init_app(app)
+        init_migration_managed_session(app, db)
 
     # Logging de app
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
