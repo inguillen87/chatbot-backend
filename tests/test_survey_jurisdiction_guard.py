@@ -32,6 +32,10 @@ from services.survey_governance import (
     create_release,
     publish_release,
 )
+from tests.junin_product_flow_support import (
+    JUNIN_JURISDICTION_EVIDENCE_REF,
+    JUNIN_JURISDICTION_REF,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -69,8 +73,8 @@ def _user_and_tenant(
     )
     if verified:
         tenant.jurisdiction_status = "verified"
-        tenant.jurisdiction_ref = "ar:ba:junin"
-        tenant.jurisdiction_evidence_ref = "registry:municipal-jurisdiction:junin"
+        tenant.jurisdiction_ref = JUNIN_JURISDICTION_REF
+        tenant.jurisdiction_evidence_ref = JUNIN_JURISDICTION_EVIDENCE_REF
         tenant.jurisdiction_verified_by_user_id = user.id
         tenant.jurisdiction_verified_at = datetime.now(timezone.utc)
     db.session.add(tenant)
@@ -224,8 +228,8 @@ def test_enforce_publish_requires_verified_binding_and_exact_human_review(client
         assert db.session.get(EncEncuesta, survey.id).estado == "borrador"
 
         tenant.jurisdiction_status = "verified"
-        tenant.jurisdiction_ref = "ar:ba:junin"
-        tenant.jurisdiction_evidence_ref = "registry:municipal-jurisdiction:junin"
+        tenant.jurisdiction_ref = JUNIN_JURISDICTION_REF
+        tenant.jurisdiction_evidence_ref = JUNIN_JURISDICTION_EVIDENCE_REF
         tenant.jurisdiction_verified_by_user_id = user.id
         tenant.jurisdiction_verified_at = datetime.now(timezone.utc)
         db.session.commit()
@@ -384,7 +388,7 @@ def test_legacy_admin_publish_route_explains_cross_jurisdiction_conflict(
     )
     assert payload["survey_id"] == survey_id
     assert payload["current_state"] == "borrador"
-    assert payload["jurisdiction"]["tenant_jurisdiction_ref"] == "ar:ba:junin"
+    assert payload["jurisdiction"]["tenant_jurisdiction_ref"] == JUNIN_JURISDICTION_REF
     assert payload["jurisdiction"]["survey_jurisdiction_ref"] == "ar:tf:ushuaia"
     assert payload["jurisdiction"]["allowed_to_publish"] is False
 
@@ -670,8 +674,8 @@ def test_bind_requires_reload_and_route_never_approves_post_bind_hash_implicitly
         )
         survey = create_encuesta(_payload("Flujo bind y reload"), user)
         tenant.jurisdiction_status = "verified"
-        tenant.jurisdiction_ref = "ar:ba:junin"
-        tenant.jurisdiction_evidence_ref = "registry:municipal-jurisdiction:junin"
+        tenant.jurisdiction_ref = JUNIN_JURISDICTION_REF
+        tenant.jurisdiction_evidence_ref = JUNIN_JURISDICTION_EVIDENCE_REF
         tenant.jurisdiction_verified_by_user_id = user.id
         tenant.jurisdiction_verified_at = datetime.now(timezone.utc)
         db.session.commit()

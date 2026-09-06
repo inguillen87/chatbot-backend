@@ -13,6 +13,10 @@ from services.survey_governance import create_release
 from services.survey_response_provenance import (
     SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
 )
+from tests.junin_product_flow_support import (
+    JUNIN_JURISDICTION_EVIDENCE_REF,
+    JUNIN_JURISDICTION_REF,
+)
 from utils.auth_helpers import generar_token
 
 
@@ -275,8 +279,8 @@ def test_admin_list_separates_persisted_jurisdiction_conflict_from_operational_k
     monkeypatch.setattr(admin_routes, "FEATURE_ENCUESTAS", True)
     owner, tenant = _tenant("survey-jurisdiction-scope")
     owner_id = owner.id
-    tenant.jurisdiction_ref = "ar:ba:junin"
-    tenant.jurisdiction_evidence_ref = "registry:municipal-jurisdiction:junin"
+    tenant.jurisdiction_ref = JUNIN_JURISDICTION_REF
+    tenant.jurisdiction_evidence_ref = JUNIN_JURISDICTION_EVIDENCE_REF
     tenant.jurisdiction_verified_by_user_id = owner_id
     tenant.jurisdiction_verified_at = datetime.now(timezone.utc)
     tenant.jurisdiction_status = "verified"
@@ -328,8 +332,8 @@ def test_admin_list_separates_persisted_jurisdiction_conflict_from_operational_k
         "compatible": True,
         "reason_code": "survey_jurisdiction_compatible",
         "action_hint": None,
-        "tenant_verified_ref": "ar:ba:junin",
-        "survey_ref": "ar:ba:junin",
+        "tenant_verified_ref": JUNIN_JURISDICTION_REF,
+        "survey_ref": JUNIN_JURISDICTION_REF,
         "authoritative_source": "server_owned_persisted_refs",
         "content_review_included": False,
     }

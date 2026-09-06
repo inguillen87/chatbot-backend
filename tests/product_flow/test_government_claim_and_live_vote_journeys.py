@@ -28,6 +28,12 @@ from routes.v2.tenants import create_demo_session_token
 from services import meta_flow_runtime
 from services.meta_flow_media import DownloadedFlowMedia
 from socket_service import socketio
+from tests.junin_product_flow_support import (
+    JUNIN_QA_ADDRESS,
+    JUNIN_QA_LAT,
+    JUNIN_QA_LNG,
+    publish_governed_junin_survey,
+)
 from utils.demo_session import stable_demo_chat_session_id
 
 
@@ -58,19 +64,19 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.client = self.app.test_client()
 
         self.admin = User(
-            name="Gobierno QA",
+            name="Municipalidad de Junín QA",
             email="gobierno-qa@test.com",
             rol="admin",
             tipo_chat="municipio",
-            tenant_slug="gobierno-qa",
+            tenant_slug="junin",
         )
         self.admin.set_password("secret123")
         db.session.add(self.admin)
         db.session.flush()
 
         self.tenant = TenantProfile(
-            slug="gobierno-qa",
-            nombre="Gobierno QA",
+            slug="junin",
+            nombre="Municipalidad de Junín QA",
             tipo="municipio",
             vertical="gobierno",
             plan="full",
@@ -230,9 +236,9 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             "demo_mode": True,
             "tenant_slug": self.tenant.slug,
             "location": {
-                "lat": -34.6101,
-                "lng": -58.4402,
-                "address": "Escuela 12, San Martin 500",
+                "lat": JUNIN_QA_LAT,
+                "lng": JUNIN_QA_LNG,
+                "address": JUNIN_QA_ADDRESS,
             },
         }
         intake_headers = {
@@ -270,9 +276,9 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertEqual(ticket.municipio_id, self.admin.id)
         self.assertEqual(ticket.anon_id, "anon-gov-traceable-claim")
         self.assertEqual(ticket.canal_ingreso, "web_demo_widget")
-        self.assertEqual(ticket.latitud, -34.6101)
-        self.assertEqual(ticket.longitud, -58.4402)
-        self.assertEqual(ticket.direccion, "Escuela 12, San Martin 500")
+        self.assertEqual(ticket.latitud, JUNIN_QA_LAT)
+        self.assertEqual(ticket.longitud, JUNIN_QA_LNG)
+        self.assertEqual(ticket.direccion, JUNIN_QA_ADDRESS)
         ticket_details = json.loads(ticket.detalles or "{}")
         self.assertEqual(ticket_details.get("source"), "demo_municipio_runtime")
         self.assertEqual(ticket_details.get("chat_session_id"), chat_session_id)
@@ -282,8 +288,8 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         tracking_payload = tracking.get_json()
         self.assertEqual(tracking_payload["resource"]["id"], ticket_id)
         self.assertEqual(tracking_payload["resource"]["channel"], "web_demo_widget")
-        self.assertEqual(tracking_payload["location"]["lat"], -34.6101)
-        self.assertEqual(tracking_payload["location"]["lng"], -58.4402)
+        self.assertEqual(tracking_payload["location"]["lat"], JUNIN_QA_LAT)
+        self.assertEqual(tracking_payload["location"]["lng"], JUNIN_QA_LNG)
         self.assertTrue(tracking_payload["map"]["has_coordinates"])
 
         inbox = self.client.get(
@@ -303,8 +309,8 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertEqual(inbox_item["legacy_id"], ticket_id)
         self.assertEqual(inbox_item["conversation_id"], f"municipio-ticket-{ticket_id}")
         self.assertEqual(inbox_item["channel"], "web_demo_widget")
-        self.assertEqual(inbox_item["location"]["lat"], -34.6101)
-        self.assertEqual(inbox_item["location"]["lng"], -58.4402)
+        self.assertEqual(inbox_item["location"]["lat"], JUNIN_QA_LAT)
+        self.assertEqual(inbox_item["location"]["lng"], JUNIN_QA_LNG)
         self.assertTrue(inbox_item["map"]["can_render"])
 
         preview = self.client.get(
@@ -327,8 +333,8 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertEqual(preview_item["id"], f"ticket-{ticket_id}")
         self.assertEqual(preview_item["detail_endpoint"], f"/api/v2/inbox/omnichannel/{ticket_id}")
         self.assertEqual(preview_point["id"], f"ticket-{ticket_id}")
-        self.assertEqual(preview_point["lat"], -34.6101)
-        self.assertEqual(preview_point["lng"], -58.4402)
+        self.assertEqual(preview_point["lat"], JUNIN_QA_LAT)
+        self.assertEqual(preview_point["lng"], JUNIN_QA_LNG)
         self.assertTrue((preview_payload.get("map") or {}).get("enabled"))
 
         with patch(
@@ -390,8 +396,8 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         )
         self.assertEqual(heatmap_point["record_source"], "municipio_ticket")
         self.assertEqual(heatmap_point["channel"], "web_demo_widget")
-        self.assertEqual(heatmap_point["lat"], -34.6101)
-        self.assertEqual(heatmap_point["lng"], -58.4402)
+        self.assertEqual(heatmap_point["lat"], JUNIN_QA_LAT)
+        self.assertEqual(heatmap_point["lng"], JUNIN_QA_LNG)
         self.assertEqual(
             int((dashboard_payload.get("summary") or {}).get("heatmap_points") or 0),
             int(((dashboard_payload.get("maps") or {}).get("heatmap") or {}).get("summary", {}).get("points") or 0),
@@ -416,9 +422,9 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
                     "demo_mode": True,
                     "tenant_slug": self.tenant.slug,
                     "location": {
-                        "lat": -34.6101,
-                        "lng": -58.4402,
-                        "address": "Escuela 12, San Martin 500",
+                        "lat": JUNIN_QA_LAT,
+                        "lng": JUNIN_QA_LNG,
+                        "address": JUNIN_QA_ADDRESS,
                     },
                 },
                 headers={
@@ -449,7 +455,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
             self.assertEqual(ticket.tenant_id, self.tenant.id)
             self.assertEqual(ticket.municipio_id, self.admin.id)
             self.assertEqual(ticket.categoria, "Baches y calzada")
-            self.assertEqual(ticket.direccion, "Escuela 12, San Martin 500")
+            self.assertEqual(ticket.direccion, JUNIN_QA_ADDRESS)
             self.assertTrue(ticket.consulta_pin)
             self.assertEqual(
                 tracking_href,
@@ -937,13 +943,16 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         self.assertFalse(created_payload["anonimo_permitido"])
         self.assertTrue(created_payload["es_votacion_envivo"])
 
-        published = self.client.post(
-            f"/api/v2/surveys/{survey_id}/publish",
-            headers={**self._admin_headers(), "X-Request-Id": "gov-vote-publish-1"},
+        publication = publish_governed_junin_survey(
+            self.client,
+            survey_id=survey_id,
+            tenant=self.tenant,
+            reviewer_user_id=self.admin.id,
+            headers={**self._admin_headers(), "X-Request-Id": "gov-vote-governance-1"},
+            idempotency_prefix=f"government-live-vote-{survey_id}",
         )
-        self.assertEqual(published.status_code, 200, published.get_json())
-        published_payload = published.get_json()
-        public_token = published_payload["public_token"]
+        published_payload = publication.public_payload
+        public_token = publication.public_token
         expected_room = f"encuesta:{self.tenant.slug}:{public_token}"
         self.assertEqual(published_payload["public_state"]["status"], "live")
         self.assertEqual(published_payload["realtime"]["room"], expected_room)
@@ -975,6 +984,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         second_option = question["opciones"][1]
         first_submission_id = "gov-vote-first-submission-0001"
         first_vote_body = {
+            **publication.response_contract,
             "submission_id": first_submission_id,
             "user_id": self.citizen.id,
             "anon_id": "browser-installation-a",
@@ -1040,6 +1050,7 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         duplicate_vote = self.client.post(
             published_payload["links"]["respond_endpoint"],
             json={
+                **publication.response_contract,
                 "submission_id": duplicate_submission_id,
                 "user_id": self.citizen.id,
                 "anon_id": "browser-installation-b",
@@ -1111,17 +1122,23 @@ class GovernmentClaimAndLiveVoteJourneysTest(unittest.TestCase):
         )
 
         closed = self.client.post(
-            f"/api/v2/surveys/{survey_id}/close",
-            headers={**self._admin_headers(), "X-Request-Id": "gov-vote-close-1"},
+            f"/api/v2/surveys/{survey_id}/releases/{publication.release_id}/close",
+            json={"human_review_reference": "review:GovernmentLiveVoteClose0001"},
+            headers={
+                **self._admin_headers(),
+                "Idempotency-Key": "gov-vote-close-0001",
+                "X-Request-Id": "gov-vote-close-1",
+            },
         )
         self.assertEqual(closed.status_code, 200, closed.get_json())
-        self.assertEqual(closed.get_json()["estado"], "cerrada")
+        self.assertEqual(closed.get_json()["status"], "closed")
         socket_client.get_received()
 
         late_submission_id = "gov-vote-after-close-submission-0001"
         late_vote = self.client.post(
             published_payload["links"]["respond_endpoint"],
             json={
+                **publication.response_contract,
                 "submission_id": late_submission_id,
                 "user_id": late_citizen.id,
                 "source": "web",
