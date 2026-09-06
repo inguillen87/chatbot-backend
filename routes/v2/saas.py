@@ -7057,6 +7057,45 @@ def _inbox_action_delivery_payload(
     return payload
 
 
+def _claim_action_evidence(*, source_model: str, replayed: bool) -> dict[str, Any]:
+    """Describe self-claim idempotency and audit behavior without case PII.
+
+    Claims are serialized by the locked ticket row and use the persisted
+    assignee as their replay identity.  The audit event is written in the same
+    transaction as the first assignment; a same-operator replay deliberately
+    creates neither another assignment nor another audit entry.
+    """
+
+    normalized_source = str(source_model or "").strip()
+    audit_storage = (
+        "ticket_comment"
+        if normalized_source == "MunicipioTicket"
+        else "ticket_metadata_timeline"
+    )
+    is_replay = bool(replayed)
+    return {
+        "idempotent_replay": is_replay,
+        "idempotency": {
+            "contract_version": "inbox.claim_idempotency.v1",
+            "strategy": "locked_current_assignee",
+            "replayed": is_replay,
+            "same_operator_replay_only": True,
+            "idempotency_key_required": False,
+            "raw_idempotency_key_persisted": False,
+        },
+        "audit": {
+            "contract_version": "inbox.claim_audit.v1",
+            "event_type": "ticket_claimed",
+            "storage": audit_storage,
+            "assignment_event_transactionally_coupled": True,
+            "event_recorded": not is_replay,
+            "replay_deduplicated": is_replay,
+            "duplicate_event_created": False,
+            "response_includes_contact_data": False,
+        },
+    }
+
+
 def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | None) -> str:
     normalized_results = results or {}
     for channel in ("whatsapp", "sms", "email"):
@@ -8283,6 +8322,13 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             else None
         ),
     )
+    if action == "claim":
+        delivery.update(
+            _claim_action_evidence(
+                source_model="MunicipioTicket",
+                replayed=claim_idempotent,
+            )
+        )
     if action == "assign":
         delivery["assignment"] = {
             "contract_version": "inbox.assignment_cas.v1",
@@ -9104,6 +9150,13 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             or (action == "assign" and assignment_idempotent)
         ),
     )
+    if action == "claim":
+        delivery.update(
+            _claim_action_evidence(
+                source_model="TenantTicket",
+                replayed=claim_idempotent,
+            )
+        )
     if action == "assign":
         delivery["assignment"] = {
             "contract_version": "inbox.assignment_cas.v1",

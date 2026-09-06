@@ -680,7 +680,36 @@ class V2SaasContractsTest(unittest.TestCase):
             canal_ingreso="whatsapp",
             asignado_a_id=employee.id,
         )
-        db.session.add_all([visible, hidden])
+        foreign_owner = User(
+            name="Owner municipal extranjero",
+            email="routing-foreign-owner@test.com",
+            rol="admin",
+            tipo_chat="municipio",
+            tenant_slug="routing-foreign",
+        )
+        foreign_owner.set_password("secret123")
+        db.session.add(foreign_owner)
+        db.session.flush()
+        foreign_tenant = TenantProfile(
+            slug="routing-foreign",
+            nombre="Municipio extranjero",
+            tipo="municipio",
+            municipio_id=foreign_owner.id,
+        )
+        db.session.add(foreign_tenant)
+        db.session.flush()
+        foreign_owner.tenant_id = foreign_tenant.id
+        foreign_ticket = MunicipioTicket(
+            tenant_id=foreign_tenant.id,
+            municipio_id=foreign_owner.id,
+            nro_ticket="M-FOREIGN-419",
+            pregunta="Luminaria de otro tenant",
+            asunto="Caso municipal aislado",
+            categoria="luminaria",
+            estado="nuevo",
+            canal_ingreso="whatsapp",
+        )
+        db.session.add_all([visible, hidden, foreign_ticket])
         db.session.commit()
 
         response = self.client.get(
@@ -740,6 +769,24 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(forbidden_apply.status_code, 403, forbidden_apply.get_json())
         self.assertEqual(forbidden_apply.get_json()["reason_code"], "ticket_assignment_forbidden")
 
+        non_operator_claim = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "ticket_id": visible.id,
+                "action": "claim",
+            },
+            headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(non_operator_claim.status_code, 404, non_operator_claim.get_json())
+        self.assertEqual(non_operator_claim.get_json()["reason_code"], "ticket_not_found")
+        db.session.expire_all()
+        self.assertIsNone(db.session.get(MunicipioTicket, visible.id).asignado_a_id)
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=visible.id).count(),
+            0,
+        )
+
         claim = self.client.post(
             "/api/v2/inbox/omnichannel/actions",
             json={
@@ -750,9 +797,72 @@ class V2SaasContractsTest(unittest.TestCase):
             headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
         )
         self.assertEqual(claim.status_code, 200, claim.get_json())
+        claim_delivery = claim.get_json()["delivery"]
+        self.assertFalse(claim_delivery["idempotent_replay"])
+        self.assertEqual(
+            claim_delivery["idempotency"],
+            {
+                "contract_version": "inbox.claim_idempotency.v1",
+                "strategy": "locked_current_assignee",
+                "replayed": False,
+                "same_operator_replay_only": True,
+                "idempotency_key_required": False,
+                "raw_idempotency_key_persisted": False,
+            },
+        )
+        self.assertEqual(
+            claim_delivery["audit"],
+            {
+                "contract_version": "inbox.claim_audit.v1",
+                "event_type": "ticket_claimed",
+                "storage": "ticket_comment",
+                "assignment_event_transactionally_coupled": True,
+                "event_recorded": True,
+                "replay_deduplicated": False,
+                "duplicate_event_created": False,
+                "response_includes_contact_data": False,
+            },
+        )
+        claim_evidence = json.dumps(
+            {
+                "idempotency": claim_delivery["idempotency"],
+                "audit": claim_delivery["audit"],
+            },
+            sort_keys=True,
+        )
+        self.assertNotIn(employee.email, claim_evidence)
+        self.assertNotIn(visible.pregunta, claim_evidence)
         db.session.expire_all()
         self.assertEqual(db.session.get(MunicipioTicket, visible.id).asignado_a_id, employee.id)
         self.assertEqual(db.session.get(MunicipioTicket, hidden.id).asignado_a_id, employee.id)
+        claim_audit = TicketComentario.query.filter_by(
+            municipio_ticket_id=visible.id,
+            user_id=employee.id,
+            origen="admin_panel",
+        ).one()
+        self.assertTrue(claim_audit.es_admin)
+        self.assertEqual(claim_audit.estado_ticket, "en_proceso")
+
+        replay = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "ticket_id": visible.id,
+                "action": "claim",
+            },
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        replay_delivery = replay.get_json()["delivery"]
+        self.assertTrue(replay_delivery["idempotent_replay"])
+        self.assertTrue(replay_delivery["idempotency"]["replayed"])
+        self.assertFalse(replay_delivery["audit"]["event_recorded"])
+        self.assertTrue(replay_delivery["audit"]["replay_deduplicated"])
+        self.assertFalse(replay_delivery["audit"]["duplicate_event_created"])
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=visible.id).count(),
+            1,
+        )
 
         forbidden_claim = self.client.post(
             "/api/v2/inbox/omnichannel/actions",
@@ -769,6 +879,24 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(forbidden_claim.get_json().get("reason_code"), "ticket_not_found")
         db.session.expire_all()
         self.assertEqual(db.session.get(MunicipioTicket, hidden.id).asignado_a_id, employee.id)
+
+        cross_tenant_claim = self.client.post(
+            "/api/v2/inbox/omnichannel/actions",
+            json={
+                "source_model": "MunicipioTicket",
+                "ticket_id": foreign_ticket.id,
+                "action": "claim",
+            },
+            headers={**self._auth(employee), "X-Tenant-Slug": tenant.slug},
+        )
+        self.assertEqual(cross_tenant_claim.status_code, 404, cross_tenant_claim.get_json())
+        self.assertEqual(cross_tenant_claim.get_json()["reason_code"], "ticket_not_found")
+        db.session.expire_all()
+        self.assertIsNone(db.session.get(MunicipioTicket, foreign_ticket.id).asignado_a_id)
+        self.assertEqual(
+            TicketComentario.query.filter_by(municipio_ticket_id=foreign_ticket.id).count(),
+            0,
+        )
 
     def test_employee_routing_pyme_rubro_fallback_only_includes_unowned_legacy_tickets(self):
         self.owner.rubro_id = 7719
@@ -3931,6 +4059,13 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(first_payload["delivery"]["status"], "claimed")
         self.assertEqual(first_payload["delivery"]["reason"], "claim_acquired")
         self.assertTrue(first_payload["delivery"]["timeline_updated"])
+        self.assertFalse(first_payload["delivery"]["idempotent_replay"])
+        self.assertFalse(first_payload["delivery"]["idempotency"]["replayed"])
+        self.assertEqual(
+            first_payload["delivery"]["audit"]["storage"],
+            "ticket_metadata_timeline",
+        )
+        self.assertTrue(first_payload["delivery"]["audit"]["event_recorded"])
         self.assertEqual(first_payload["ticket"]["assignee"]["id"], self.employee.id)
         self.assertNotIn(
             "claim",
@@ -3958,6 +4093,10 @@ class V2SaasContractsTest(unittest.TestCase):
             "claim_idempotent_same_operator",
         )
         self.assertFalse(replay_payload["delivery"]["timeline_updated"])
+        self.assertTrue(replay_payload["delivery"]["idempotent_replay"])
+        self.assertTrue(replay_payload["delivery"]["idempotency"]["replayed"])
+        self.assertFalse(replay_payload["delivery"]["audit"]["event_recorded"])
+        self.assertTrue(replay_payload["delivery"]["audit"]["replay_deduplicated"])
 
         db.session.expire_all()
         replayed = db.session.get(TenantTicket, ticket.id)
