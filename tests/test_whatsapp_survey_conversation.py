@@ -40,6 +40,7 @@ from services.whatsapp_survey_conversation import (
     WHATSAPP_SURVEY_FLOW_STATE_KEY,
     _live_results,
     _load_instrument,
+    _shared_location_from_context,
     handle_whatsapp_survey_flow_turn,
     start_whatsapp_survey_flow,
 )
@@ -727,7 +728,111 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             survey_context["whatsapp_inbound_content"],
             inbound_content,
         )
+        state = chat_context.context_data[CONTEXTO_MUNICIPIO][
+            WHATSAPP_SURVEY_FLOW_STATE_KEY
+        ]
+        self.assertEqual(
+            state["shared_location"],
+            {"lat": -33.136, "lng": -68.49},
+        )
         self._assert_active_survey_state_preserved(chat_context, survey)
+
+        vote_question = self._respond_active_survey(
+            chat_context,
+            {
+                "pregunta": "",
+                "action": self._action(
+                    response,
+                    "encuesta_wa::consent_accept::",
+                ),
+            },
+        )
+        city_question = self._respond_active_survey(
+            chat_context,
+            {
+                "pregunta": "",
+                "action": self._action(
+                    vote_question,
+                    "encuesta_wa::answer::",
+                ),
+            },
+        )
+        receipt = self._respond_active_survey(
+            chat_context,
+            {
+                "pregunta": "",
+                "action": self._action(
+                    city_question,
+                    "encuesta_wa::answer::",
+                ),
+            },
+        )
+
+        self.assertEqual(receipt["fuente"], "encuesta_whatsapp_confirmada_v1")
+        persisted = EncRespuesta.query.filter_by(encuesta_id=survey.id).one()
+        self.assertAlmostEqual(persisted.lat, -33.136)
+        self.assertAlmostEqual(persisted.lng, -68.49)
+
+    def test_shared_survey_location_rejects_partial_or_invalid_coordinates(self):
+        self.assertEqual(
+            _shared_location_from_context(
+                {
+                    "es_ubicacion": True,
+                    "ubicacion_usuario": {"latitude": -33.136},
+                }
+            ),
+            {},
+        )
+        self.assertEqual(
+            _shared_location_from_context(
+                {
+                    "es_ubicacion": True,
+                    "ubicacion_usuario": {
+                        "latitude": 91,
+                        "longitude": -68.49,
+                    },
+                }
+            ),
+            {},
+        )
+        self.assertEqual(
+            _shared_location_from_context(
+                {
+                    "es_ubicacion": True,
+                    "ubicacion_usuario": {"lat": 0, "lng": 0},
+                }
+            ),
+            {"lat": 0.0, "lng": 0.0},
+        )
+
+    def test_source_anonymous_survey_does_not_retain_shared_coordinates(self):
+        survey = self._create_governed_survey(
+            slug="gestion-junin-anonima-ubicacion",
+            privacy_mode="source_anonymous",
+        )
+        context = self._context()
+        start = start_whatsapp_survey_flow(context, survey.slug)
+
+        response = handle_whatsapp_survey_flow_turn(
+            {
+                **context,
+                "es_ubicacion": True,
+                "ubicacion_usuario": {
+                    "latitude": -33.136,
+                    "longitude": -68.49,
+                },
+            },
+            text="",
+        )
+
+        self.assertEqual(response["fuente"], "encuesta_whatsapp_respuesta_ambigua_v1")
+        state = context["chat_db_context_data"][CONTEXTO_MUNICIPIO][
+            WHATSAPP_SURVEY_FLOW_STATE_KEY
+        ]
+        self.assertNotIn("shared_location", state)
+        self.assertTrue(
+            self._action(start, "encuesta_wa::consent_accept::")
+        )
 
     @staticmethod
     def _action(payload: dict, prefix: str) -> str:
