@@ -29,7 +29,6 @@ from datetime import datetime, timedelta, timezone
 import time
 import jwt
 from jwt import algorithms as jwt_algorithms
-import base64
 from cutover_writer_fence import cutover_writer_view
 from services.google_auth import login_o_crear_usuario
 from services.tenant_resolver import resolve_tenant_only
@@ -1323,7 +1322,7 @@ WIDGET_TOKEN_CONTRACT_VERSION = "auth.widget_token.v1"
 def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
     """Expose a minimal JWKS for widget token verification."""
 
-    alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper()
+    alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).strip().upper()
     kid = current_app.config.get("WIDGET_JWT_KID", "widget-hs256")
 
     if alg in {"RS256", "ES256"}:
@@ -1343,19 +1342,10 @@ def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
         jwk_payload.update({"use": "sig", "alg": alg, "kid": kid})
         return {"keys": [jwk_payload]}
 
-    secret = str(current_app.config.get("WIDGET_JWT_SECRET") or current_app.config.get("SECRET_KEY", ""))
-    encoded_secret = base64.urlsafe_b64encode(secret.encode("utf-8")).rstrip(b"=").decode("utf-8")
-    return {
-        "keys": [
-            {
-                "kty": "oct",
-                "use": "sig",
-                "alg": "HS256",
-                "kid": kid,
-                "k": encoded_secret,
-            }
-        ]
-    }
+    # A shared HMAC key is private signing material, not a public key. Keep
+    # HS* token issuance/verification available internally while publishing no
+    # verifier material until the widget is migrated to an asymmetric key.
+    return {"keys": []}
 
 
 @auth_api_bp.route("/.well-known/jwks.json", methods=["GET"], strict_slashes=False)
@@ -1363,9 +1353,13 @@ def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
 @auth_bp.route("/.well-known/jwks.json", methods=["GET"], strict_slashes=False)
 @auth_bp.route("/widget/jwks.json", methods=["GET"], strict_slashes=False)
 def widget_jwks():
+    alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).strip().upper()
     payload = _widget_jwks_payload()
     resp = jsonify(payload)
-    resp.headers.setdefault("Cache-Control", "public, max-age=3600")
+    if alg.startswith("HS"):
+        resp.headers["Cache-Control"] = "no-store"
+    else:
+        resp.headers.setdefault("Cache-Control", "public, max-age=3600")
     return resp
 
 
@@ -1400,12 +1394,15 @@ def widget_bootstrap():
     market_payload.setdefault("public_path", path)
     market_payload.setdefault("public_market_url", full_url)
 
-    jwks_url = current_app.config.get("WIDGET_JWKS_URL")
-    if not jwks_url:
-        try:
-            jwks_url = url_for("auth.widget_jwks", _external=True)
-        except Exception:
-            jwks_url = None
+    widget_alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).strip().upper()
+    jwks_url = None
+    if not widget_alg.startswith("HS"):
+        jwks_url = current_app.config.get("WIDGET_JWKS_URL")
+        if not jwks_url:
+            try:
+                jwks_url = url_for("auth.widget_jwks", _external=True)
+            except Exception:
+                jwks_url = None
 
     response_payload = {
         "contract_version": WIDGET_BOOTSTRAP_CONTRACT_VERSION,
@@ -1414,7 +1411,7 @@ def widget_bootstrap():
         "features": _widget_features_for_tenant(tenant),
         "jwks": {
             "url": jwks_url,
-            "alg": str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper(),
+            "alg": widget_alg,
             "kid": current_app.config.get("WIDGET_JWT_KID", "widget-hs256"),
         },
         "widget": {
