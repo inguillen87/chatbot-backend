@@ -10,3 +10,4 @@ logs/**
 temp_uploads/**
 .codex-run-logs/**
 .qa-artifacts/**
+.deploy-*.zip
