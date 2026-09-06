@@ -61,6 +61,7 @@ TENANT_BLUEPRINT_REVISION = "20260905_tenant_blueprint_v1"
 GOVERNMENT_LAUNCH_REVISION = "20260905_government_launch_v1"
 MUNICIPIO_REPLY_REVISION = "20260905_municipio_reply_v1"
 MUNICIPIO_HANDOFF_REVISION = "20260905_municipio_handoff_v1"
+FLASK_SESSIONS_REVISION = "20260906_flask_sessions_v1"
 MIGRATION_STEPS = (
     REPAIR_REVISION,
     IDEMPOTENCY_REVISION,
@@ -76,6 +77,7 @@ MIGRATION_STEPS = (
     GOVERNMENT_LAUNCH_REVISION,
     MUNICIPIO_REPLY_REVISION,
     MUNICIPIO_HANDOFF_REVISION,
+    FLASK_SESSIONS_REVISION,
 )
 FINAL_MIGRATION_REVISION = REVIEWED_MIGRATION_HEAD
 EXPECTED_MIGRATION_SOURCE_SHA256 = {
@@ -118,6 +120,9 @@ EXPECTED_MIGRATION_SOURCE_SHA256 = {
     ),
     MUNICIPIO_HANDOFF_REVISION: (
         "beec0006b9bc998b71fec9576b909d2f40f5a96b587ad510220edf60ca09dc74"
+    ),
+    FLASK_SESSIONS_REVISION: (
+        "b8e4e5bcc2b7c75686e344a7d66fad9161e8d41739e106ddd3868199ca1f3ced"
     ),
 }
 
@@ -587,6 +592,23 @@ POST_SYNC_SCHEMA_REQUIREMENTS: Mapping[str, tuple[Mapping[str, Any], ...]] = {
                 "ix_municipio_handoff_ticket": (("tenant_id", "ticket_id", "created_at", "id"), False),
             },
             "triggers": {"trg_municipio_ticket_handoff_event_immutable"},
+        },
+    ),
+    FLASK_SESSIONS_REVISION: (
+        {
+            "table": "flask_sessions",
+            "columns": {"id", "session_id", "data", "expiry"},
+            "exact_columns": True,
+            "constraints": {
+                "flask_sessions_pkey",
+                "flask_sessions_session_id_key",
+            },
+            "foreign_keys": set(),
+            "exact_foreign_keys": True,
+            "indexes": {
+                "flask_sessions_pkey": (("id",), True),
+                "flask_sessions_session_id_key": (("session_id",), True),
+            },
         },
     ),
 }
