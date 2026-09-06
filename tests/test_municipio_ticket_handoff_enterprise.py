@@ -33,6 +33,7 @@ from models import (
     db,
 )
 from services.municipio_ticket_handoff import list_handoff_events
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = (
@@ -542,6 +543,4 @@ def test_handoff_migration_is_linear_constrained_immutable_and_reversible():
 def test_handoff_migration_is_the_single_alembic_head():
     config = AlembicConfig(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260905_municipio_handoff_v1"
-    ]
+    assert ScriptDirectory.from_config(config).get_heads() == [REVIEWED_MIGRATION_HEAD]

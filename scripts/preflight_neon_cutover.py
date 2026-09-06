@@ -30,14 +30,25 @@ DEFAULT_BRANCH_ID_ENVIRONMENT_VARIABLE = "EXPECTED_NEON_BRANCH_ID"
 ENVIRONMENT_VARIABLE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 NEON_PROJECT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{2,63}$")
 NEON_BRANCH_ID_PATTERN = re.compile(r"^br-[a-z0-9-]{3,63}$")
+# This is the reviewed cutover boundary, not merely whichever migration was
+# added most recently.  Both read-only preflight and the writer use this single
+# allowlist value so a new or branched Alembic head fails closed until reviewed.
+REVIEWED_MIGRATION_HEAD = "20260905_municipio_handoff_v1"
 REQUIRED_HEAD_TABLES = (
     "cutover_global_writer_authority",
     "demo_survey_participation",
+    "inbox_ticket_artifact",
+    "municipio_ticket_handoff_event",
+    "municipio_ticket_reply_event",
     "municipio_chat_idempotency_receipt",
+    "tenant_blueprint_application",
+    "tenant_blueprint_launch_receipt",
+    "tenant_ticket_reply_event",
     "territorial_geocoding_attempt",
     "territorial_geocoding_job",
     "territorial_geocoding_review",
     "territorial_geocoding_sync_receipt",
+    "whatsapp_contact_state",
 )
 EXPECTED_DEMO_TRIGGER = "trg_demo_survey_participation_immutable"
 EXPECTED_DEMO_INDEXES = {
@@ -276,22 +287,36 @@ def _load_migration_directory(project_root: Path) -> ScriptDirectory:
     return ScriptDirectory.from_config(config)
 
 
+def _single_migration_head(script: ScriptDirectory) -> str:
+    """Return the reviewed sole head or fail closed on graph drift."""
+
+    expected_heads = sorted({str(value).strip() for value in script.get_heads()})
+    if len(expected_heads) != 1 or not expected_heads[0]:
+        raise PreflightFailure("local_migration_heads_ambiguous")
+    actual_head = expected_heads[0]
+    if actual_head != REVIEWED_MIGRATION_HEAD:
+        raise PreflightFailure("local_migration_head_not_allowlisted")
+    return actual_head
+
+
 def _migration_state(
     script: ScriptDirectory,
     current_revisions: Sequence[str],
 ) -> dict[str, Any]:
-    expected_heads = sorted(script.get_heads())
+    expected_heads = [_single_migration_head(script)]
     current = sorted({str(value).strip() for value in current_revisions if str(value).strip()})
-    if len(expected_heads) != 1:
-        raise PreflightFailure("local_migration_heads_ambiguous")
     if not current:
         raise PreflightFailure("database_migration_revision_missing")
+    if len(current) != 1:
+        raise PreflightFailure("database_migration_heads_ambiguous")
 
     for revision in current:
         try:
-            script.get_revision(revision)
+            resolved = script.get_revision(revision)
         except Exception as exc:
             raise PreflightFailure("database_migration_revision_unknown") from exc
+        if resolved is None:
+            raise PreflightFailure("database_migration_revision_unknown")
 
     if current == expected_heads:
         pending: list[str] = []

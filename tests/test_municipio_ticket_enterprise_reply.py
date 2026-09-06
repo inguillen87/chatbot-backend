@@ -40,6 +40,7 @@ from models import (
 )
 from services.domain_effect_outbox import dispatch_domain_effects
 from services.municipio_ticket_reply_delivery import reconcile_provider_callback
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
 from services.ticket_domain_effects import TICKET_DOMAIN_EFFECT_REGISTRY
 from services.ticket_service import MunicipioTicketCreator
 
@@ -636,6 +637,4 @@ def test_migration_is_linear_constrained_indexed_and_reversible():
 def test_migration_is_the_single_alembic_head():
     config = AlembicConfig(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260905_municipio_handoff_v1"
-    ]
+    assert ScriptDirectory.from_config(config).get_heads() == [REVIEWED_MIGRATION_HEAD]

@@ -11,6 +11,8 @@ from alembic.script import ScriptDirectory
 import pytest
 import sqlalchemy as sa
 
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = (
@@ -192,6 +194,4 @@ def test_ticket_effect_migration_compiles_offline(url):
 def test_domain_effect_outbox_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20260905_government_launch_v1"
-    ]
+    assert ScriptDirectory.from_config(config).get_heads() == [REVIEWED_MIGRATION_HEAD]

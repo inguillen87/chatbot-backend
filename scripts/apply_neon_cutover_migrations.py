@@ -30,12 +30,16 @@ from sqlalchemy.pool import NullPool
 try:  # Supports both ``python -m scripts...`` and direct script execution.
     from scripts.preflight_neon_cutover import (
         PreflightFailure,
+        REVIEWED_MIGRATION_HEAD,
+        _single_migration_head,
         _validate_environment_variable_name,
         _validate_neon_direct_url,
     )
 except ModuleNotFoundError:  # pragma: no cover - direct-script import mode
     from preflight_neon_cutover import (  # type: ignore[no-redef]
         PreflightFailure,
+        REVIEWED_MIGRATION_HEAD,
+        _single_migration_head,
         _validate_environment_variable_name,
         _validate_neon_direct_url,
     )
@@ -50,6 +54,13 @@ GLOBAL_WRITER_AUTHORITY_REVISION = "20260829_global_writer_authority_v1"
 TERRITORIAL_GEOCODING_REVISION = "20260830_territorial_geocoding_v1"
 TERRITORIAL_GEOCODING_REVIEW_REVISION = "20260830_geo_review_v1"
 TERRITORIAL_GEOCODING_SYNC_REVISION = "20260830_geo_sync_v1"
+INBOX_ARTIFACT_REVISION = "20260831_inbox_artifact_v1"
+TENANT_REPLY_DELIVERY_REVISION = "20260904_tenant_reply_delivery_v1"
+TERRITORIAL_EXECUTION_REVISION = "20260904_geo_execution_v2"
+TENANT_BLUEPRINT_REVISION = "20260905_tenant_blueprint_v1"
+GOVERNMENT_LAUNCH_REVISION = "20260905_government_launch_v1"
+MUNICIPIO_REPLY_REVISION = "20260905_municipio_reply_v1"
+MUNICIPIO_HANDOFF_REVISION = "20260905_municipio_handoff_v1"
 MIGRATION_STEPS = (
     REPAIR_REVISION,
     IDEMPOTENCY_REVISION,
@@ -58,7 +69,15 @@ MIGRATION_STEPS = (
     TERRITORIAL_GEOCODING_REVISION,
     TERRITORIAL_GEOCODING_REVIEW_REVISION,
     TERRITORIAL_GEOCODING_SYNC_REVISION,
+    INBOX_ARTIFACT_REVISION,
+    TENANT_REPLY_DELIVERY_REVISION,
+    TERRITORIAL_EXECUTION_REVISION,
+    TENANT_BLUEPRINT_REVISION,
+    GOVERNMENT_LAUNCH_REVISION,
+    MUNICIPIO_REPLY_REVISION,
+    MUNICIPIO_HANDOFF_REVISION,
 )
+FINAL_MIGRATION_REVISION = REVIEWED_MIGRATION_HEAD
 EXPECTED_MIGRATION_SOURCE_SHA256 = {
     REPAIR_REVISION: "956193d0258e4937b662d4b83d6d7f308ee4ea5f426eab41d5418b2bd0d11a7a",
     IDEMPOTENCY_REVISION: (
@@ -78,6 +97,27 @@ EXPECTED_MIGRATION_SOURCE_SHA256 = {
     ),
     TERRITORIAL_GEOCODING_SYNC_REVISION: (
         "36cf3a43b025986bc2e30d16e7d5f6055c42c5699e53fd5b41087a84c593389c"
+    ),
+    INBOX_ARTIFACT_REVISION: (
+        "2eac84cb0250ab97d70f27d466632f470b704359c4a782407593bea455911181"
+    ),
+    TENANT_REPLY_DELIVERY_REVISION: (
+        "764a54e8c91b2a14af5e92a825264947ce799709e1de4df6fbbf6df0e996fbca"
+    ),
+    TERRITORIAL_EXECUTION_REVISION: (
+        "6dd63fc71c42e9fd217a5329ee5ab50db5d1d78defb52f54e62e7d46a38a0b38"
+    ),
+    TENANT_BLUEPRINT_REVISION: (
+        "3c81b358d62947804ce727bd05d169ead98486414ae95b0b235cb3e023c8cdbf"
+    ),
+    GOVERNMENT_LAUNCH_REVISION: (
+        "9f358829e217384e72582a391d78fd3941536250b931b845c302f9fc60a3399b"
+    ),
+    MUNICIPIO_REPLY_REVISION: (
+        "fd0d93da0845794e9c60c2f7728059c4277dfba7f9f3bd28e6d839e6ee22ebff"
+    ),
+    MUNICIPIO_HANDOFF_REVISION: (
+        "beec0006b9bc998b71fec9576b909d2f40f5a96b587ad510220edf60ca09dc74"
     ),
 }
 
@@ -333,6 +373,224 @@ EXPECTED_TERRITORIAL_SCHEMA = {
     },
 }
 
+# Every post-territorial migration remains explicitly reviewed and fingerprinted.
+# The graph head itself is resolved from Alembic; this schema allowlist prevents a
+# newly-added migration from becoming cutover-approved merely because it is a head.
+POST_SYNC_SCHEMA_REQUIREMENTS: Mapping[str, tuple[Mapping[str, Any], ...]] = {
+    INBOX_ARTIFACT_REVISION: (
+        {
+            "table": "inbox_ticket_artifact",
+            "columns": {
+                "id", "tenant_id", "source_model", "ticket_id", "action",
+                "payload_json", "actor_user_id", "idempotency_key_hash",
+                "request_digest", "contract_version", "created_at",
+            },
+            "exact_columns": True,
+            "constraints": {
+                "ck_inbox_ticket_artifact_source_model",
+                "ck_inbox_ticket_artifact_action",
+                "uq_inbox_ticket_artifact_idempotency",
+            },
+            "foreign_keys": {
+                ("tenant_id", "tenant_profile", "id", "CASCADE"),
+                ("actor_user_id", "user", "id", "RESTRICT"),
+            },
+            "indexes": {
+                "ix_inbox_ticket_artifact_ticket": (
+                    ("tenant_id", "source_model", "ticket_id", "created_at", "id"),
+                    False,
+                ),
+            },
+        },
+    ),
+    TENANT_REPLY_DELIVERY_REVISION: (
+        {
+            "table": "tenant_ticket_reply_event",
+            "columns": {
+                "whatsapp_template_registry_id", "whatsapp_template_variables",
+                "whatsapp_policy_snapshot", "whatsapp_delivery_status",
+                "whatsapp_provider_message_id", "whatsapp_provider_sender_id",
+                "whatsapp_provider_status", "whatsapp_error_code",
+                "whatsapp_status_event_id", "whatsapp_status_updated_at",
+                "whatsapp_provider_accepted_at", "whatsapp_delivered_at",
+                "whatsapp_read_at", "whatsapp_failed_at",
+            },
+            "constraints": {"ck_tenant_ticket_reply_event_wa_delivery_status"},
+            "foreign_keys": {
+                ("whatsapp_template_registry_id", "message_template_registry", "id", "SET NULL"),
+                ("whatsapp_provider_sender_id", "provider_sender", "id", "SET NULL"),
+                ("whatsapp_status_event_id", "messaging_event_ledger", "id", "SET NULL"),
+            },
+            "indexes": {
+                "ix_tenant_ticket_reply_event_wa_provider_message": (
+                    ("tenant_id", "whatsapp_provider_message_id"), True,
+                ),
+            },
+        },
+        {
+            "table": "whatsapp_contact_state",
+            "columns": {"provider_sender_id"},
+            "constraints": {"uq_whatsapp_contact_state_tenant_sender_recipient"},
+            "foreign_keys": {
+                ("provider_sender_id", "provider_sender", "id", "CASCADE"),
+            },
+            "indexes": {
+                "ix_whatsapp_contact_state_provider_sender_id": (
+                    ("provider_sender_id",), False,
+                ),
+            },
+        },
+    ),
+    TERRITORIAL_EXECUTION_REVISION: (
+        {
+            "table": "territorial_geocoding_attempt",
+            "columns": {"action", "idempotency_key_hash"},
+            "constraints": {
+                "ck_territorial_geocoding_attempt_idempotency",
+                "uq_territorial_geocoding_attempt_idempotency",
+            },
+        },
+        {
+            "table": "territorial_geocoding_review",
+            "columns": {"proposal_attempt_id", "proposal_attempt_number"},
+            "constraints": {"ck_territorial_geocoding_review_proposal_attempt"},
+            "foreign_keys": {
+                ("proposal_attempt_id", "territorial_geocoding_attempt", "id", "RESTRICT"),
+            },
+            "indexes": {
+                "ix_territorial_geocoding_review_proposal_attempt_id": (
+                    ("proposal_attempt_id",), False,
+                ),
+            },
+        },
+    ),
+    TENANT_BLUEPRINT_REVISION: (
+        {
+            "table": "tenant_blueprint_application",
+            "columns": {
+                "id", "tenant_id", "contract_version", "blueprint_id",
+                "blueprint_version", "manifest_digest", "request_digest",
+                "idempotency_key_hash", "status", "application_snapshot",
+                "applied_by_user_id", "created_at",
+            },
+            "exact_columns": True,
+            "constraints": {
+                "ck_tenant_blueprint_application_status",
+                "ck_tenant_blueprint_application_digests",
+                "uq_tenant_blueprint_application_version",
+                "uq_tenant_blueprint_application_idempotency",
+            },
+            "foreign_keys": {
+                ("tenant_id", "tenant_profile", "id", "CASCADE"),
+                ("applied_by_user_id", "user", "id", "RESTRICT"),
+            },
+            "indexes": {
+                "ix_tenant_blueprint_application_tenant_id": (("tenant_id",), False),
+                "ix_tenant_blueprint_application_applied_by_user_id": (("applied_by_user_id",), False),
+                "ix_tenant_blueprint_application_tenant_created": (("tenant_id", "created_at", "id"), False),
+            },
+        },
+    ),
+    GOVERNMENT_LAUNCH_REVISION: (
+        {
+            "table": "tenant_blueprint_launch_receipt",
+            "columns": {
+                "id", "tenant_id", "blueprint_application_id", "contract_version",
+                "blueprint_id", "blueprint_version", "launch_id", "manifest_digest",
+                "launch_digest", "request_digest", "idempotency_key_hash", "status",
+                "application_snapshot", "applied_by_user_id", "created_at",
+            },
+            "exact_columns": True,
+            "constraints": {
+                "ck_tenant_blueprint_launch_status",
+                "ck_tenant_blueprint_launch_digests",
+                "uq_tenant_blueprint_launch_module_version",
+                "uq_tenant_blueprint_launch_idempotency",
+            },
+            "foreign_keys": {
+                ("tenant_id", "tenant_profile", "id", "CASCADE"),
+                ("blueprint_application_id", "tenant_blueprint_application", "id", "RESTRICT"),
+                ("applied_by_user_id", "user", "id", "RESTRICT"),
+            },
+            "indexes": {
+                "ix_tenant_blueprint_launch_tenant_id": (("tenant_id",), False),
+                "ix_tenant_blueprint_launch_blueprint_application_id": (("blueprint_application_id",), False),
+                "ix_tenant_blueprint_launch_applied_by_user_id": (("applied_by_user_id",), False),
+                "ix_tenant_blueprint_launch_tenant_created": (("tenant_id", "created_at", "id"), False),
+            },
+            "triggers": {"trg_tenant_blueprint_launch_receipt_immutable"},
+        },
+    ),
+    MUNICIPIO_REPLY_REVISION: (
+        {
+            "table": "municipio_ticket_reply_event",
+            "columns": {
+                "id", "tenant_id", "source_model", "ticket_id", "comment_id",
+                "event_id", "body", "visibility", "actor_user_id", "actor_name",
+                "actor_role", "recipient_phone", "whatsapp_template_registry_id",
+                "whatsapp_template_variables", "whatsapp_policy_snapshot",
+                "whatsapp_delivery_status", "whatsapp_provider_message_id",
+                "whatsapp_provider_sender_id", "whatsapp_provider_status",
+                "whatsapp_error_code", "whatsapp_status_event_id",
+                "whatsapp_status_updated_at", "whatsapp_provider_accepted_at",
+                "whatsapp_delivered_at", "whatsapp_read_at", "whatsapp_failed_at",
+                "contract_version", "created_at",
+            },
+            "exact_columns": True,
+            "constraints": {
+                "ck_municipio_reply_source_model", "ck_municipio_reply_public_visibility",
+                "ck_municipio_reply_body_nonempty", "ck_municipio_reply_event_id_nonempty",
+                "ck_municipio_reply_recipient_nonempty", "ck_municipio_reply_wa_delivery_status",
+                "uq_municipio_reply_tenant_event", "uq_municipio_reply_tenant_comment",
+            },
+            "foreign_keys": {
+                ("tenant_id", "tenant_profile", "id", "CASCADE"),
+                ("ticket_id", "municipio_ticket", "id", "CASCADE"),
+                ("comment_id", "ticket_comentario", "id", "CASCADE"),
+                ("actor_user_id", "user", "id", "RESTRICT"),
+                ("whatsapp_template_registry_id", "message_template_registry", "id", "SET NULL"),
+                ("whatsapp_provider_sender_id", "provider_sender", "id", "RESTRICT"),
+                ("whatsapp_status_event_id", "messaging_event_ledger", "id", "SET NULL"),
+            },
+            "indexes": {
+                "ix_municipio_reply_ticket": (("tenant_id", "ticket_id", "created_at"), False),
+                "ix_municipio_reply_wa_provider_message": (("tenant_id", "whatsapp_provider_message_id"), True),
+            },
+        },
+    ),
+    MUNICIPIO_HANDOFF_REVISION: (
+        {
+            "table": "municipio_ticket_handoff_event",
+            "columns": {
+                "id", "tenant_id", "source_model", "ticket_id", "comment_id",
+                "event_id", "action", "status", "channel", "reason", "actor_user_id",
+                "previous_assignee_user_id", "idempotency_key_hash", "request_digest",
+                "projection_contract_version", "contract_version", "created_at",
+            },
+            "exact_columns": True,
+            "constraints": {
+                "ck_municipio_handoff_source_model", "ck_municipio_handoff_action_status",
+                "ck_municipio_handoff_channel", "ck_municipio_handoff_reason_nonempty",
+                "ck_municipio_handoff_reason_bounded", "ck_municipio_handoff_event_id_nonempty",
+                "ck_municipio_handoff_digests", "ck_municipio_handoff_contract_versions",
+                "uq_municipio_handoff_tenant_event", "uq_municipio_handoff_tenant_idempotency",
+                "uq_municipio_handoff_tenant_comment",
+            },
+            "foreign_keys": {
+                ("tenant_id", "tenant_profile", "id", "CASCADE"),
+                ("ticket_id", "municipio_ticket", "id", "CASCADE"),
+                ("comment_id", "ticket_comentario", "id", "RESTRICT"),
+                ("actor_user_id", "user", "id", "RESTRICT"),
+                ("previous_assignee_user_id", "user", "id", "RESTRICT"),
+            },
+            "indexes": {
+                "ix_municipio_handoff_ticket": (("tenant_id", "ticket_id", "created_at", "id"), False),
+            },
+            "triggers": {"trg_municipio_ticket_handoff_event_immutable"},
+        },
+    ),
+}
+
 
 class CutoverMigrationFailure(RuntimeError):
     """Stable reason code safe to serialize without provider details."""
@@ -480,70 +738,36 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
     try:
         script = ScriptDirectory.from_config(config)
         initial = script.get_revision(INITIAL_REVISION)
-        repair = script.get_revision(REPAIR_REVISION)
-        idempotency = script.get_revision(IDEMPOTENCY_REVISION)
-        inbound_fifo = script.get_revision(INBOUND_FIFO_REVISION)
-        global_writer_authority = script.get_revision(
-            GLOBAL_WRITER_AUTHORITY_REVISION
-        )
-        territorial_geocoding = script.get_revision(TERRITORIAL_GEOCODING_REVISION)
-        territorial_review = script.get_revision(
-            TERRITORIAL_GEOCODING_REVIEW_REVISION
-        )
-        territorial_sync = script.get_revision(TERRITORIAL_GEOCODING_SYNC_REVISION)
+        revisions = [script.get_revision(value) for value in MIGRATION_STEPS]
     except Exception as exc:
         raise CutoverMigrationFailure("local_migration_graph_unreadable") from exc
 
-    if (
-        initial is None
-        or repair is None
-        or idempotency is None
-        or inbound_fifo is None
-        or global_writer_authority is None
-        or territorial_geocoding is None
-        or territorial_review is None
-        or territorial_sync is None
-    ):
+    try:
+        local_head = _single_migration_head(script)
+    except PreflightFailure as exc:
+        raise CutoverMigrationFailure(exc.reason_code) from exc
+
+    if local_head != FINAL_MIGRATION_REVISION:
+        raise CutoverMigrationFailure("local_migration_head_not_allowlisted")
+    if initial is None or any(revision is None for revision in revisions):
         raise CutoverMigrationFailure("local_cutover_revision_missing")
-    if script.get_heads() != [TERRITORIAL_GEOCODING_SYNC_REVISION]:
-        raise CutoverMigrationFailure("local_migration_heads_not_exact")
-    if repair.down_revision != INITIAL_REVISION:
-        raise CutoverMigrationFailure("local_repair_down_revision_mismatch")
-    if idempotency.down_revision != REPAIR_REVISION:
-        raise CutoverMigrationFailure("local_idempotency_down_revision_mismatch")
-    if inbound_fifo.down_revision != IDEMPOTENCY_REVISION:
-        raise CutoverMigrationFailure("local_inbound_fifo_down_revision_mismatch")
-    if global_writer_authority.down_revision != INBOUND_FIFO_REVISION:
-        raise CutoverMigrationFailure(
-            "local_global_writer_authority_down_revision_mismatch"
-        )
-    if territorial_geocoding.down_revision != GLOBAL_WRITER_AUTHORITY_REVISION:
-        raise CutoverMigrationFailure(
-            "local_territorial_geocoding_down_revision_mismatch"
-        )
-    if territorial_review.down_revision != TERRITORIAL_GEOCODING_REVISION:
-        raise CutoverMigrationFailure("local_territorial_review_down_revision_mismatch")
-    if territorial_sync.down_revision != TERRITORIAL_GEOCODING_REVIEW_REVISION:
-        raise CutoverMigrationFailure("local_territorial_sync_down_revision_mismatch")
-    if set(initial.nextrev) != {REPAIR_REVISION}:
-        raise CutoverMigrationFailure("local_cutover_graph_branches_at_initial")
-    if set(repair.nextrev) != {IDEMPOTENCY_REVISION}:
-        raise CutoverMigrationFailure("local_cutover_graph_branches_at_repair")
-    if set(idempotency.nextrev) != {INBOUND_FIFO_REVISION}:
-        raise CutoverMigrationFailure("local_cutover_graph_branches_at_idempotency")
-    if set(inbound_fifo.nextrev) != {GLOBAL_WRITER_AUTHORITY_REVISION}:
-        raise CutoverMigrationFailure("local_cutover_graph_branches_at_inbound_fifo")
-    if set(global_writer_authority.nextrev) != {TERRITORIAL_GEOCODING_REVISION}:
-        raise CutoverMigrationFailure(
-            "local_cutover_graph_branches_at_global_writer_authority"
-        )
-    if set(territorial_geocoding.nextrev) != {
-        TERRITORIAL_GEOCODING_REVIEW_REVISION
-    }:
-        raise CutoverMigrationFailure("local_cutover_graph_branches_at_territorial")
-    if set(territorial_review.nextrev) != {TERRITORIAL_GEOCODING_SYNC_REVISION}:
-        raise CutoverMigrationFailure("local_cutover_graph_branches_at_review")
-    if set(territorial_sync.nextrev):
+    if set(EXPECTED_MIGRATION_SOURCE_SHA256) != set(MIGRATION_STEPS):
+        raise CutoverMigrationFailure("local_cutover_source_allowlist_mismatch")
+    extension_revisions = MIGRATION_STEPS[
+        MIGRATION_STEPS.index(INBOX_ARTIFACT_REVISION) :
+    ]
+    if set(POST_SYNC_SCHEMA_REQUIREMENTS) != set(extension_revisions):
+        raise CutoverMigrationFailure("local_cutover_schema_allowlist_mismatch")
+
+    typed_revisions = [revision for revision in revisions if revision is not None]
+    previous = initial
+    for revision in typed_revisions:
+        if revision.down_revision != previous.revision:
+            raise CutoverMigrationFailure("local_cutover_down_revision_mismatch")
+        if set(previous.nextrev) != {revision.revision}:
+            raise CutoverMigrationFailure("local_cutover_graph_branches")
+        previous = revision
+    if set(previous.nextrev):
         raise CutoverMigrationFailure("local_cutover_graph_continues_after_target")
 
     try:
@@ -552,7 +776,7 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
             for revision in reversed(
                 list(
                     script.iterate_revisions(
-                        TERRITORIAL_GEOCODING_SYNC_REVISION,
+                        local_head,
                         INITIAL_REVISION,
                     )
                 )
@@ -565,15 +789,7 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
 
     source_fingerprints: dict[str, str] = {}
     graph_document: list[dict[str, str]] = []
-    for revision in (
-        repair,
-        idempotency,
-        inbound_fifo,
-        global_writer_authority,
-        territorial_geocoding,
-        territorial_review,
-        territorial_sync,
-    ):
+    for revision in typed_revisions:
         upgrade = getattr(revision.module, "upgrade", None)
         if not callable(upgrade):
             raise CutoverMigrationFailure("local_cutover_upgrade_missing")
@@ -582,7 +798,11 @@ def _load_exact_migration_plan(project_root: Path) -> ExactMigrationPlan:
             source_sha256 = hashlib.sha256(source_bytes).hexdigest()
         except Exception as exc:
             raise CutoverMigrationFailure("local_cutover_source_unreadable") from exc
-        expected_source_sha256 = EXPECTED_MIGRATION_SOURCE_SHA256[revision.revision]
+        expected_source_sha256 = EXPECTED_MIGRATION_SOURCE_SHA256.get(
+            revision.revision
+        )
+        if expected_source_sha256 is None:
+            raise CutoverMigrationFailure("local_cutover_source_allowlist_mismatch")
         if not hmac.compare_digest(source_sha256, expected_source_sha256):
             raise CutoverMigrationFailure("local_cutover_source_fingerprint_mismatch")
         source_fingerprints[revision.revision] = source_sha256
@@ -989,6 +1209,165 @@ def _territorial_schema_postcheck(
     return contracts
 
 
+def _platform_table_contract(
+    connection: Connection,
+    specification: Mapping[str, Any],
+) -> dict[str, bool]:
+    table_name = str(specification["table"])
+    present = _table_exists(connection, table_name)
+    if not present:
+        return {
+            "table_present": False,
+            "columns_valid": False,
+            "constraints_valid": False,
+            "foreign_keys_valid": False,
+            "indexes_valid": False,
+            "triggers_valid": False,
+        }
+
+    expected_columns = set(specification.get("columns", ()))
+    actual_columns = _column_names(connection, table_name)
+    columns_valid = (
+        actual_columns == expected_columns
+        if specification.get("exact_columns") is True
+        else expected_columns.issubset(actual_columns)
+    )
+    constraints_valid = set(specification.get("constraints", ())).issubset(
+        _constraint_names(connection, table_name)
+    )
+    expected_foreign_keys = set(specification.get("foreign_keys", ()))
+    actual_foreign_keys = _foreign_key_contract(connection, table_name)
+    foreign_keys_valid = (
+        actual_foreign_keys == expected_foreign_keys
+        if specification.get("exact_foreign_keys") is True
+        else expected_foreign_keys.issubset(actual_foreign_keys)
+    )
+
+    indexes_valid = True
+    for index_name, expected_signature in dict(
+        specification.get("indexes", {})
+    ).items():
+        expected_index_columns, expected_unique = expected_signature
+        expected_contract = {
+            "columns": tuple(expected_index_columns),
+            "is_unique": bool(expected_unique),
+            "is_valid": True,
+            "is_ready": True,
+            "is_unfiltered": True,
+            "has_plain_columns": True,
+            "has_no_included_columns": True,
+        }
+        if _index_contract(
+            connection,
+            table_name=table_name,
+            index_name=str(index_name),
+        ) != expected_contract:
+            indexes_valid = False
+            break
+
+    triggers_valid = all(
+        _trigger_exists(connection, table_name, str(trigger_name))
+        for trigger_name in specification.get("triggers", ())
+    )
+    return {
+        "table_present": True,
+        "columns_valid": columns_valid,
+        "constraints_valid": constraints_valid,
+        "foreign_keys_valid": foreign_keys_valid,
+        "indexes_valid": indexes_valid,
+        "triggers_valid": triggers_valid,
+    }
+
+
+def _territorial_execution_schema_postcheck(
+    connection: Connection,
+) -> dict[str, dict[str, bool]]:
+    execution_extensions = {
+        str(specification["table"]): specification
+        for specification in POST_SYNC_SCHEMA_REQUIREMENTS[
+            TERRITORIAL_EXECUTION_REVISION
+        ]
+    }
+    contracts: dict[str, dict[str, bool]] = {}
+    for table_name, base in EXPECTED_TERRITORIAL_SCHEMA.items():
+        extension = execution_extensions.get(table_name, {})
+        specification = {
+            "table": table_name,
+            "columns": set(base["columns"]) | set(extension.get("columns", ())),
+            "exact_columns": True,
+            "constraints": set(base["constraints"])
+            | set(extension.get("constraints", ())),
+            "foreign_keys": set(base["foreign_keys"])
+            | set(extension.get("foreign_keys", ())),
+            "exact_foreign_keys": True,
+            "indexes": {
+                **dict(base["indexes"]),
+                **dict(extension.get("indexes", {})),
+            },
+        }
+        contract = _platform_table_contract(connection, specification)
+        contracts[table_name] = contract
+        if not all(contract.values()):
+            raise CutoverMigrationFailure(
+                "database_territorial_execution_contract_postcheck_failed"
+            )
+    return contracts
+
+
+def _assert_after_territorial_execution(connection: Connection) -> dict[str, Any]:
+    prior_contracts = _assert_current_global_writer_authority(connection)
+    contracts = _territorial_execution_schema_postcheck(connection)
+    return {
+        **prior_contracts,
+        "territorial_geocoding_contract": contracts,
+    }
+
+
+def _platform_extension_schema_postcheck(
+    connection: Connection,
+    revision: str,
+) -> dict[str, dict[str, bool]]:
+    if revision not in POST_SYNC_SCHEMA_REQUIREMENTS:
+        raise CutoverMigrationFailure("migration_target_not_allowlisted")
+
+    first_extension_index = MIGRATION_STEPS.index(INBOX_ARTIFACT_REVISION)
+    target_index = MIGRATION_STEPS.index(revision)
+    contracts: dict[str, dict[str, bool]] = {}
+    for required_revision in MIGRATION_STEPS[
+        first_extension_index : target_index + 1
+    ]:
+        for specification in POST_SYNC_SCHEMA_REQUIREMENTS[required_revision]:
+            table_name = str(specification["table"])
+            contract = _platform_table_contract(connection, specification)
+            contracts[table_name] = contract
+            if not all(contract.values()):
+                raise CutoverMigrationFailure(
+                    "database_platform_extension_contract_postcheck_failed"
+                )
+    return contracts
+
+
+def _assert_after_post_sync_revision(
+    connection: Connection,
+    revision: str,
+) -> dict[str, Any]:
+    if revision not in POST_SYNC_SCHEMA_REQUIREMENTS:
+        raise CutoverMigrationFailure("migration_target_not_allowlisted")
+
+    target_index = MIGRATION_STEPS.index(revision)
+    execution_index = MIGRATION_STEPS.index(TERRITORIAL_EXECUTION_REVISION)
+    prior_contracts = (
+        _assert_after_territorial_sync(connection)
+        if target_index < execution_index
+        else _assert_after_territorial_execution(connection)
+    )
+    contracts = _platform_extension_schema_postcheck(connection, revision)
+    return {
+        **prior_contracts,
+        "platform_extension_contract": contracts,
+    }
+
+
 def _single_alembic_revision(connection: Connection) -> str:
     if not _table_exists(connection, "alembic_version"):
         raise CutoverMigrationFailure("database_migration_table_missing")
@@ -1311,6 +1690,8 @@ def _assert_contract_for_revision(
     connection: Connection,
     revision: str,
 ) -> dict[str, Any]:
+    if revision in POST_SYNC_SCHEMA_REQUIREMENTS:
+        return _assert_after_post_sync_revision(connection, revision)
     validators = {
         INITIAL_REVISION: _assert_baseline_schema,
         REPAIR_REVISION: _assert_after_repair,
@@ -1331,6 +1712,8 @@ def _postcheck_for_applied_revision(
     connection: Connection,
     revision: str,
 ) -> dict[str, Any]:
+    if revision in POST_SYNC_SCHEMA_REQUIREMENTS:
+        return _assert_after_post_sync_revision(connection, revision)
     validators = {
         REPAIR_REVISION: _assert_after_repair,
         IDEMPOTENCY_REVISION: _assert_after_idempotency,
@@ -1527,7 +1910,7 @@ def run_cutover(
             "initial_revision": INITIAL_REVISION,
             "accepted_start_revisions": [INITIAL_REVISION, *MIGRATION_STEPS],
             "revisions": list(MIGRATION_STEPS),
-            "final_revision": TERRITORIAL_GEOCODING_SYNC_REVISION,
+            "final_revision": FINAL_MIGRATION_REVISION,
             "graph_fingerprint_sha256": plan.graph_fingerprint_sha256,
             "migration_source_fingerprints_sha256": dict(
                 plan.source_fingerprints_sha256

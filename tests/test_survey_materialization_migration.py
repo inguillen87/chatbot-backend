@@ -11,6 +11,8 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION_PATH = ROOT / "migrations" / "versions" / "20260728_add_survey_materialization.py"
@@ -201,4 +203,4 @@ def test_domain_effect_outbox_is_the_single_alembic_head():
     config = Config(str(ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(ROOT / "migrations"))
     heads = ScriptDirectory.from_config(config).get_heads()
-    assert heads == ["20260905_government_launch_v1"]
+    assert heads == [REVIEWED_MIGRATION_HEAD]

@@ -104,7 +104,7 @@ def test_target_rejects_a_valid_neon_url_with_the_wrong_host_fingerprint():
     assert DIRECT_HOST not in str(captured.value)
 
 
-def test_local_graph_is_exactly_the_seven_reviewed_revisions():
+def test_local_graph_is_exactly_the_reviewed_chain_through_repository_head():
     plan = cutover._load_exact_migration_plan(ROOT)
 
     assert list(plan.source_fingerprints_sha256) == list(cutover.MIGRATION_STEPS)
@@ -113,7 +113,54 @@ def test_local_graph_is_exactly_the_seven_reviewed_revisions():
     )
     assert all(len(value) == 64 for value in plan.source_fingerprints_sha256.values())
     assert len(plan.graph_fingerprint_sha256) == 64
-    assert plan.script.get_heads() == [cutover.TERRITORIAL_GEOCODING_SYNC_REVISION]
+    assert plan.script.get_heads() == [cutover.FINAL_MIGRATION_REVISION]
+
+
+def test_local_graph_rejects_an_unreviewed_or_ambiguous_head(monkeypatch):
+    monkeypatch.setattr(
+        cutover,
+        "_single_migration_head",
+        lambda _script: "20990101_unreviewed_head",
+    )
+    with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+        cutover._load_exact_migration_plan(ROOT)
+    assert captured.value.reason_code == "local_migration_head_not_allowlisted"
+
+    def ambiguous(_script):
+        raise cutover.PreflightFailure("local_migration_heads_ambiguous")
+
+    monkeypatch.setattr(cutover, "_single_migration_head", ambiguous)
+    with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+        cutover._load_exact_migration_plan(ROOT)
+    assert captured.value.reason_code == "local_migration_heads_ambiguous"
+
+
+def test_local_graph_rejects_incomplete_review_allowlists(monkeypatch):
+    with monkeypatch.context() as context:
+        source_allowlist = dict(cutover.EXPECTED_MIGRATION_SOURCE_SHA256)
+        source_allowlist.pop(cutover.FINAL_MIGRATION_REVISION)
+        context.setattr(
+            cutover,
+            "EXPECTED_MIGRATION_SOURCE_SHA256",
+            source_allowlist,
+        )
+        with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+            cutover._load_exact_migration_plan(ROOT)
+        assert (
+            captured.value.reason_code
+            == "local_cutover_source_allowlist_mismatch"
+        )
+
+    with monkeypatch.context() as context:
+        schema_allowlist = dict(cutover.POST_SYNC_SCHEMA_REQUIREMENTS)
+        schema_allowlist.pop(cutover.FINAL_MIGRATION_REVISION)
+        context.setattr(cutover, "POST_SYNC_SCHEMA_REQUIREMENTS", schema_allowlist)
+        with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+            cutover._load_exact_migration_plan(ROOT)
+        assert (
+            captured.value.reason_code
+            == "local_cutover_schema_allowlist_mismatch"
+        )
 
 
 def test_territorial_schema_contract_requires_exact_columns_keys_and_indexes(
@@ -210,6 +257,110 @@ def test_territorial_schema_postcheck_rejects_out_of_order_future_table(monkeypa
         captured.value.reason_code
         == "database_territorial_geocoding_contract_postcheck_failed"
     )
+
+
+def test_post_sync_schema_contract_covers_every_reviewed_extension(monkeypatch):
+    monkeypatch.setattr(
+        cutover,
+        "_assert_after_territorial_execution",
+        lambda _connection: {"territorial_execution": True},
+    )
+    seen = []
+
+    def valid_contract(_connection, specification):
+        seen.append(str(specification["table"]))
+        return {
+            "table_present": True,
+            "columns_valid": True,
+            "constraints_valid": True,
+            "foreign_keys_valid": True,
+            "indexes_valid": True,
+            "triggers_valid": True,
+        }
+
+    monkeypatch.setattr(cutover, "_platform_table_contract", valid_contract)
+    state = cutover._assert_after_post_sync_revision(
+        object(),
+        cutover.FINAL_MIGRATION_REVISION,
+    )
+
+    expected_tables = [
+        str(specification["table"])
+        for revision in cutover.MIGRATION_STEPS[
+            cutover.MIGRATION_STEPS.index(cutover.INBOX_ARTIFACT_REVISION) :
+        ]
+        for specification in cutover.POST_SYNC_SCHEMA_REQUIREMENTS[revision]
+    ]
+    assert seen == expected_tables
+    assert set(state["platform_extension_contract"]) == set(expected_tables)
+
+    monkeypatch.setattr(
+        cutover,
+        "_platform_table_contract",
+        lambda _connection, _specification: {
+            "table_present": True,
+            "columns_valid": False,
+            "constraints_valid": True,
+            "foreign_keys_valid": True,
+            "indexes_valid": True,
+            "triggers_valid": True,
+        },
+    )
+    with pytest.raises(cutover.CutoverMigrationFailure) as captured:
+        cutover._assert_after_post_sync_revision(
+            object(),
+            cutover.FINAL_MIGRATION_REVISION,
+        )
+    assert (
+        captured.value.reason_code
+        == "database_platform_extension_contract_postcheck_failed"
+    )
+
+
+def test_territorial_execution_contract_merges_the_reviewed_schema(monkeypatch):
+    monkeypatch.setattr(
+        cutover,
+        "_assert_current_global_writer_authority",
+        lambda _connection: {"writer_authority": True},
+    )
+    specifications = {}
+
+    def valid_contract(_connection, specification):
+        specifications[str(specification["table"])] = specification
+        return {
+            "table_present": True,
+            "columns_valid": True,
+            "constraints_valid": True,
+            "foreign_keys_valid": True,
+            "indexes_valid": True,
+            "triggers_valid": True,
+        }
+
+    monkeypatch.setattr(cutover, "_platform_table_contract", valid_contract)
+    state = cutover._assert_after_territorial_execution(object())
+
+    assert set(specifications) == set(cutover.EXPECTED_TERRITORIAL_SCHEMA)
+    attempt = specifications["territorial_geocoding_attempt"]
+    assert {"action", "idempotency_key_hash"}.issubset(attempt["columns"])
+    assert "uq_territorial_geocoding_attempt_idempotency" in attempt[
+        "constraints"
+    ]
+    review = specifications["territorial_geocoding_review"]
+    assert {"proposal_attempt_id", "proposal_attempt_number"}.issubset(
+        review["columns"]
+    )
+    assert (
+        "proposal_attempt_id",
+        "territorial_geocoding_attempt",
+        "id",
+        "RESTRICT",
+    ) in review["foreign_keys"]
+    assert all(
+        specification["exact_columns"]
+        and specification["exact_foreign_keys"]
+        for specification in specifications.values()
+    )
+    assert state["writer_authority"] is True
 
 
 def test_inbound_fifo_postcheck_requires_the_exact_ordered_plain_index(monkeypatch):
@@ -577,6 +728,11 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
         "_assert_after_territorial_sync",
         lambda _connection: {"territorial_sync": True},
     )
+    monkeypatch.setattr(
+        cutover,
+        "_postcheck_for_applied_revision",
+        lambda _connection, revision: {"revision": revision, "valid": True},
+    )
     monkeypatch.setattr(cutover, "_apply_exact_revision", apply_exact)
     migration_plan = cutover._load_exact_migration_plan(ROOT)
 
@@ -590,7 +746,7 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
 
     assert calls == list(cutover.MIGRATION_STEPS)
     assert state["revision_before"] == cutover.INITIAL_REVISION
-    assert state["revision_after"] == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
+    assert state["revision_after"] == cutover.FINAL_MIGRATION_REVISION
     assert state["advisory_lock_acquired"] is True
     assert [step["revision"] for step in state["steps"]] == list(
         cutover.MIGRATION_STEPS
@@ -598,8 +754,8 @@ def test_apply_orchestration_runs_each_exact_revision_and_postcheck(monkeypatch)
     assert connection.driver_statements[0].endswith("READ WRITE")
 
 
-def test_incremental_apply_from_review_runs_only_exact_sync_child(monkeypatch):
-    current = {"revision": cutover.TERRITORIAL_GEOCODING_REVIEW_REVISION}
+def test_incremental_apply_from_penultimate_revision_runs_only_exact_head(monkeypatch):
+    current = {"revision": cutover.MUNICIPIO_REPLY_REVISION}
     calls = []
 
     class ScalarResult:
@@ -638,11 +794,8 @@ def test_incremental_apply_from_review_runs_only_exact_sync_child(monkeypatch):
         target_revision,
     ):
         assert plan is migration_plan
-        assert (
-            expected_current_revision
-            == cutover.TERRITORIAL_GEOCODING_REVIEW_REVISION
-        )
-        assert target_revision == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
+        assert expected_current_revision == cutover.MUNICIPIO_REPLY_REVISION
+        assert target_revision == cutover.MUNICIPIO_HANDOFF_REVISION
         calls.append(target_revision)
         current["revision"] = target_revision
 
@@ -671,9 +824,9 @@ def test_incremental_apply_from_review_runs_only_exact_sync_child(monkeypatch):
         expected_branch_fingerprint_sha256=BRANCH_FINGERPRINT,
     )
 
-    assert calls == [cutover.TERRITORIAL_GEOCODING_SYNC_REVISION]
-    assert state["revision_before"] == cutover.TERRITORIAL_GEOCODING_REVIEW_REVISION
-    assert state["revision_after"] == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
+    assert calls == [cutover.MUNICIPIO_HANDOFF_REVISION]
+    assert state["revision_before"] == cutover.MUNICIPIO_REPLY_REVISION
+    assert state["revision_after"] == cutover.FINAL_MIGRATION_REVISION
     assert [item["revision"] for item in state["steps"]] == calls
 
 
@@ -742,7 +895,7 @@ def test_default_dry_run_never_locks_or_invokes_an_upgrade(monkeypatch):
     assert connection.driver_statements[0].endswith("READ ONLY")
 
 
-def test_run_cutover_reports_territorial_sync_as_final_revision(monkeypatch):
+def test_run_cutover_reports_the_reviewed_repository_head(monkeypatch):
     class FakeConnection:
         def __enter__(self):
             return self
@@ -786,10 +939,7 @@ def test_run_cutover_reports_territorial_sync_as_final_revision(monkeypatch):
         expected_branch_fingerprint_sha256=BRANCH_FINGERPRINT,
     )
 
-    assert (
-        report["plan"]["final_revision"]
-        == cutover.TERRITORIAL_GEOCODING_SYNC_REVISION
-    )
+    assert report["plan"]["final_revision"] == cutover.FINAL_MIGRATION_REVISION
     assert engine.disposed is True
 
 

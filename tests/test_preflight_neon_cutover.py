@@ -9,6 +9,7 @@ from scripts.preflight_neon_cutover import (
     _failure_payload,
     _load_migration_directory,
     _migration_state,
+    _single_migration_head,
     _wal_position,
     _validate_environment_variable_name,
     _validate_neon_identity_value,
@@ -22,6 +23,17 @@ DIRECT_NEON_URL = (
     "postgresql://cutover_user:cutover_password@"
     "ep-safe-branch.us-east-2.aws.neon.tech/neondb?sslmode=require"
 )
+
+
+POST_TERRITORIAL_REVISIONS = [
+    "20260831_inbox_artifact_v1",
+    "20260904_tenant_reply_delivery_v1",
+    "20260904_geo_execution_v2",
+    "20260905_tenant_blueprint_v1",
+    "20260905_government_launch_v1",
+    "20260905_municipio_reply_v1",
+    "20260905_municipio_handoff_v1",
+]
 
 
 def test_accepts_only_a_direct_tls_neon_postgres_target():
@@ -87,6 +99,7 @@ def test_expected_neon_identity_is_explicit_and_strict():
 
 def test_current_documented_revision_produces_the_complete_upgrade_plan():
     script = _load_migration_directory(ROOT)
+    expected_head = _single_migration_head(script)
 
     state = _migration_state(
         script,
@@ -95,7 +108,7 @@ def test_current_documented_revision_produces_the_complete_upgrade_plan():
 
     assert state == {
         "current_revisions": ["20260820_survey_content_jurisdiction_v1"],
-        "expected_heads": ["20260830_geo_sync_v1"],
+        "expected_heads": [expected_head],
         "pending_revisions": [
             "20260825_demo_survey_participation_v1",
             "20260825_legacy_municipio_ticket_scope_repair_v1",
@@ -105,6 +118,7 @@ def test_current_documented_revision_produces_the_complete_upgrade_plan():
             "20260830_territorial_geocoding_v1",
             "20260830_geo_review_v1",
             "20260830_geo_sync_v1",
+            *POST_TERRITORIAL_REVISIONS,
         ],
         "at_head": False,
     }
@@ -112,6 +126,7 @@ def test_current_documented_revision_produces_the_complete_upgrade_plan():
 
 def test_current_head_has_no_pending_revisions():
     script = _load_migration_directory(ROOT)
+    expected_head = _single_migration_head(script)
 
     previous_head = _migration_state(
         script,
@@ -119,19 +134,48 @@ def test_current_head_has_no_pending_revisions():
     )
     assert previous_head == {
         "current_revisions": ["20260829_global_writer_authority_v1"],
-        "expected_heads": ["20260830_geo_sync_v1"],
+        "expected_heads": [expected_head],
         "pending_revisions": [
             "20260830_territorial_geocoding_v1",
             "20260830_geo_review_v1",
             "20260830_geo_sync_v1",
+            *POST_TERRITORIAL_REVISIONS,
         ],
         "at_head": False,
     }
 
-    state = _migration_state(script, ["20260830_geo_sync_v1"])
+    state = _migration_state(script, [expected_head])
 
     assert state["at_head"] is True
     assert state["pending_revisions"] == []
+
+
+def test_multiple_local_or_database_heads_fail_closed():
+    class BranchedScript:
+        def get_heads(self):
+            return ["branch-a", "branch-b"]
+
+    with pytest.raises(PreflightFailure) as captured:
+        _single_migration_head(BranchedScript())
+    assert captured.value.reason_code == "local_migration_heads_ambiguous"
+
+    script = _load_migration_directory(ROOT)
+    with pytest.raises(PreflightFailure) as captured:
+        _migration_state(
+            script,
+            ["20260830_geo_sync_v1", _single_migration_head(script)],
+        )
+    assert captured.value.reason_code == "database_migration_heads_ambiguous"
+
+
+def test_unique_unreviewed_local_head_fails_closed():
+    class UnreviewedHeadScript:
+        def get_heads(self):
+            return ["20990101_unreviewed_head"]
+
+    with pytest.raises(PreflightFailure) as captured:
+        _single_migration_head(UnreviewedHeadScript())
+    assert captured.value.reason_code == "local_migration_head_not_allowlisted"
 
 
 def test_unknown_database_revision_fails_closed():

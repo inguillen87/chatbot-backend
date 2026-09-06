@@ -29,6 +29,7 @@ from services import whatsapp_inbound_worker
 from services import weekly_analytics_reports
 from services import analisis_archivo_service
 from scripts import run_predeploy_migrations
+from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -238,8 +239,8 @@ def test_render_predeploy_standby_verifies_without_running_migrations_even_if_fe
             "writes_attempted": False,
             "writer_ownership_acquired": False,
             "migration": {
-                "current_revision": "20260830_geo_sync_v1",
-                "expected_revision": "20260830_geo_sync_v1",
+                "current_revision": REVIEWED_MIGRATION_HEAD,
+                "expected_revision": REVIEWED_MIGRATION_HEAD,
                 "at_exact_target": True,
             },
             "schema": {"ready": True},
@@ -390,6 +391,16 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
             "territorial_geocoding_sync_receipt",
         )
     }
+    expected_platform_extension = {
+        "municipio_ticket_handoff_event": {
+            "table_present": True,
+            "columns_valid": True,
+            "constraints_valid": True,
+            "foreign_keys_valid": True,
+            "indexes_valid": True,
+            "triggers_valid": True,
+        }
+    }
 
     monkeypatch.setattr("sqlalchemy.create_engine", lambda *args, **kwargs: engine)
     monkeypatch.setattr(
@@ -450,10 +461,18 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
     )
     monkeypatch.setattr(
         cutover_migrations,
-        "_territorial_schema_postcheck",
-        lambda current, **kwargs: (
-            helper_calls.append(("territorial", current, kwargs))
+        "_territorial_execution_schema_postcheck",
+        lambda current: (
+            helper_calls.append(("territorial", current))
             or expected_territorial
+        ),
+    )
+    monkeypatch.setattr(
+        cutover_migrations,
+        "_platform_extension_schema_postcheck",
+        lambda current, revision: (
+            helper_calls.append(("platform", current, revision))
+            or expected_platform_extension
         ),
     )
 
@@ -471,7 +490,11 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
     assert report["migration"]["at_exact_target"] is True
     assert (
         report["migration"]["expected_revision"]
-        == cutover_migrations.TERRITORIAL_GEOCODING_SYNC_REVISION
+        == cutover_migrations.FINAL_MIGRATION_REVISION
+    )
+    assert (
+        report["schema"]["contracts"]["platform_extension"]
+        == expected_platform_extension
     )
     assert (
         report["schema"]["contracts"]["territorial_geocoding"]
@@ -485,21 +508,13 @@ def test_render_standby_verifier_uses_read_only_rollback_and_exact_schema(
     assert helper_calls[0] == (
         "revision",
         connection,
-        cutover_migrations.TERRITORIAL_GEOCODING_SYNC_REVISION,
+        cutover_migrations.FINAL_MIGRATION_REVISION,
     )
+    assert ("territorial", connection) in helper_calls
     assert (
-        "territorial",
+        "platform",
         connection,
-        {
-            "required_tables": (
-                "territorial_geocoding_job",
-                "territorial_geocoding_attempt",
-                "territorial_geocoding_review",
-                "territorial_geocoding_sync_receipt",
-            ),
-            "absent_tables": (),
-            "reason_code": "database_territorial_sync_contract_invalid",
-        },
+        cutover_migrations.FINAL_MIGRATION_REVISION,
     ) in helper_calls
     assert all(
         not statement.upper().startswith(
