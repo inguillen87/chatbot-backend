@@ -1,14 +1,32 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
-from bootstrap_wsgi import LazyApplication
+from bootstrap_wsgi import LazyApplication, _startup_wait_seconds
 
 
 class LazyApplicationTests(unittest.TestCase):
+    def test_vercel_startup_wait_default_and_override_stay_below_readiness_budget(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(_startup_wait_seconds(), 1.0)
+        with patch.dict(
+            os.environ,
+            {"VERCEL_WSGI_STARTUP_WAIT_SECONDS": "9"},
+            clear=True,
+        ):
+            self.assertEqual(_startup_wait_seconds(), 1.5)
+        with patch.dict(
+            os.environ,
+            {"VERCEL_WSGI_STARTUP_WAIT_SECONDS": "0.25"},
+            clear=True,
+        ):
+            self.assertEqual(_startup_wait_seconds(), 0.25)
+
     def test_loader_is_deferred_until_first_request_and_cached(self) -> None:
         loads: list[str] = []
 

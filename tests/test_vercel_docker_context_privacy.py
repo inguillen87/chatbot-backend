@@ -28,3 +28,22 @@ def test_runtime_upload_directories_are_excluded_from_vercel_container():
         "data/archivos_tickets/**",
         "data/catalogos/**",
     }.issubset(vercel_patterns)
+
+
+def test_local_tooling_and_test_evidence_are_excluded_from_vercel_upload():
+    vercel_patterns = _patterns(".vercelignore")
+
+    assert {
+        ".git/**",
+        ".vercel/**",
+        ".env",
+        ".codex-venv/**",
+        ".venv/**",
+        "venv/**",
+        "tests/**",
+        "docs/**",
+        "**/__pycache__/**",
+        ".pytest_cache*/**",
+        "local_tmp*.db",
+        "*.backup.db",
+    }.issubset(vercel_patterns)

@@ -1,3 +1,32 @@
+# Repository and local configuration are not deployment inputs.
+.git/**
+.github/**
+.vercel/**
+.env
+.env.*
+!.env.example
+
+# Local runtimes and generated Python state previously inflated uploads by
+# hundreds of megabytes even though Docker excluded them from the final image.
+.codex-venv/**
+.venv/**
+venv/**
+env/**
+test_venv/**
+sandbox_venv/**
+node_modules/**
+**/__pycache__/**
+*.py[cod]
+.pytest_cache*/**
+.coverage
+htmlcov/**
+
+# Development-only evidence and source fixtures are not required at runtime.
+tests/**
+docs/**
+frontend_tasks/**
+marketing_assets/**
+
 # Runtime/user-generated legacy media must never be uploaded to Vercel.
 data/archivos/**
 data/archivos_tickets/**
@@ -7,7 +36,10 @@ data/catalogos/**
 artifacts/**
 instance/**
 logs/**
+flask_session/**
 temp_uploads/**
 .codex-run-logs/**
 .qa-artifacts/**
 .deploy-*.zip
+local_tmp*.db
+*.backup.db

@@ -30,8 +30,12 @@ WsgiApplication = Callable[[dict[str, Any], StartResponse], Any]
 
 logger = logging.getLogger("chatboc.bootstrap")
 _TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
-_DEFAULT_STARTUP_WAIT_SECONDS = 3.5
-_MAX_STARTUP_WAIT_SECONDS = 4.0
+# Vercel's container readiness budget includes roughly two seconds before the
+# first WSGI call reaches this proxy.  Keeping the request-side wait at one
+# second leaves enough headroom to return the retryable bootstrap contract
+# before the platform terminates an otherwise healthy warming container.
+_DEFAULT_STARTUP_WAIT_SECONDS = 1.0
+_MAX_STARTUP_WAIT_SECONDS = 1.5
 
 
 def _is_vercel_runtime() -> bool:
