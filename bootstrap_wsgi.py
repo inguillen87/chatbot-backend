@@ -4,10 +4,9 @@ The application imports a large, intentionally modular Flask route tree.  A
 Gunicorn worker that imports that tree during process boot can miss Vercel's
 container-initialisation deadline even though the application is healthy.  This
 WSGI proxy lets the worker start accepting requests immediately and performs
-the one-time application import in the background.  A bounded waiter can use
-the application as soon as it is ready; concurrent requests are shed with a
-short, retryable ``503`` instead of all occupying Gunicorn threads until
-Vercel kills the cold container.
+the one-time application import in the background.  Safe reads and two
+side-effect-free demo bootstrap requests may join a bounded single-flight wait;
+real mutations are still shed with a short, retryable ``503`` before dispatch.
 
 Render keeps using ``app:app``.  This entrypoint is deliberately scoped to the
 Vercel Dockerfile so it does not change the established Render runtime.
@@ -30,12 +29,21 @@ WsgiApplication = Callable[[dict[str, Any], StartResponse], Any]
 
 logger = logging.getLogger("chatboc.bootstrap")
 _TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
-# Give Gunicorn enough time to finish booting the worker and flush the first
-# retryable response before the canonical app begins its import-heavy startup.
-# Starting that work in ``__init__`` lets the loader compete for the GIL while
-# Vercel is still deciding whether the container is responsive.
+# Give Gunicorn enough time to finish booting the worker before the canonical
+# app begins its import-heavy startup. Starting that work in ``__init__`` lets
+# the loader compete for the GIL while Vercel is still bringing the container
+# online.
 _DEFAULT_WARMUP_DELAY_SECONDS = 0.1
 _MAX_WARMUP_DELAY_SECONDS = 0.5
+_DEFAULT_SAFE_REQUEST_WAIT_SECONDS = 6.0
+_MAX_SAFE_REQUEST_WAIT_SECONDS = 10.0
+_SAFE_REQUEST_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_SAFE_DEMO_POST_PATHS = frozenset(
+    {
+        "/api/v2/demo/session",
+        "/api/v2/demo/whatsapp-sandbox",
+    }
+)
 
 
 def _is_vercel_runtime() -> bool:
@@ -60,14 +68,37 @@ def _warmup_delay_seconds() -> float:
     return min(_MAX_WARMUP_DELAY_SECONDS, max(0.0, parsed))
 
 
+def _safe_request_wait_seconds() -> float:
+    """Return the bounded time safe requests may join the bootstrap flight."""
+
+    raw_value = os.getenv("VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS")
+    if raw_value is None:
+        return _DEFAULT_SAFE_REQUEST_WAIT_SECONDS
+    try:
+        parsed = float(raw_value.strip())
+    except (AttributeError, ValueError):
+        return _DEFAULT_SAFE_REQUEST_WAIT_SECONDS
+    return min(_MAX_SAFE_REQUEST_WAIT_SECONDS, max(0.0, parsed))
+
+
+def _request_can_wait_for_application(environ: dict[str, Any]) -> bool:
+    """Allow waiting only where replay cannot create an external side effect."""
+
+    method = str(environ.get("REQUEST_METHOD") or "GET").strip().upper()
+    if method in _SAFE_REQUEST_METHODS:
+        return True
+    path = str(environ.get("PATH_INFO") or "")
+    return method == "POST" and path in _SAFE_DEMO_POST_PATHS
+
+
 class LazyApplication:
     """Load the canonical Flask application once, safely across threads.
 
     ``background_warmup`` is reserved for the Vercel web entrypoint. Other
     runtimes and tests keep the original synchronous lazy-loading behaviour.
-    While that warmup is running, requests receive a small retryable response
-    immediately, which prevents a burst of public reads from pinning Gunicorn
-    threads behind the same import lock.
+    While that warmup is running, safe requests may wait on the shared ready
+    event for a bounded interval. Mutations that are not explicitly allowlisted
+    receive a small retryable response before the canonical app is dispatched.
     """
 
     def __init__(
@@ -76,6 +107,7 @@ class LazyApplication:
         *,
         background_warmup: bool = False,
         warmup_delay_seconds: float = _DEFAULT_WARMUP_DELAY_SECONDS,
+        safe_request_wait_seconds: float = _DEFAULT_SAFE_REQUEST_WAIT_SECONDS,
     ) -> None:
         self._loader = loader or self._load_canonical_application
         self._application: WsgiApplication | None = None
@@ -88,6 +120,10 @@ class LazyApplication:
         self._warmup_delay_seconds = min(
             _MAX_WARMUP_DELAY_SECONDS,
             max(0.0, float(warmup_delay_seconds)),
+        )
+        self._safe_request_wait_seconds = min(
+            _MAX_SAFE_REQUEST_WAIT_SECONDS,
+            max(0.0, float(safe_request_wait_seconds)),
         )
 
     @staticmethod
@@ -204,16 +240,22 @@ class LazyApplication:
         if not self._background_warmup:
             return self._load_and_cache()(environ, start_response)
 
-        # The first response is intentionally immediate.  Vercel treats a
-        # container that cannot answer during its short initialization window
-        # as failed.  Waiting here (or starting imports in ``__init__``) lets
-        # the canonical route tree hold the GIL during that window.  A 503 with
-        # Retry-After keeps the public contract explicit while the same warm
-        # instance finishes loading in the background.
+        # Every request joins the same background initialization flight. Safe
+        # reads and the two explicitly side-effect-free demo POSTs may wait for
+        # it for a bounded interval. Real mutations remain fail-fast so a
+        # client retry cannot duplicate an action whose dispatch is ambiguous.
         self.start_warmup()
         application = self._application
         if application is not None:
             return application(environ, start_response)
+        if (
+            _request_can_wait_for_application(environ)
+            and self._safe_request_wait_seconds > 0
+        ):
+            self._ready.wait(self._safe_request_wait_seconds)
+            application = self._application
+            if application is not None:
+                return application(environ, start_response)
         return self._bootstrap_response(
             environ,
             start_response,
@@ -224,4 +266,5 @@ class LazyApplication:
 application = LazyApplication(
     background_warmup=_is_vercel_runtime(),
     warmup_delay_seconds=_warmup_delay_seconds(),
+    safe_request_wait_seconds=_safe_request_wait_seconds(),
 )
