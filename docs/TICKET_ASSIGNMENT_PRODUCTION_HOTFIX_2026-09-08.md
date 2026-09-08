@@ -101,20 +101,26 @@ tenant fallback and post-lock category/SLA consistency issues. These were correc
 and regressions added. The final static review reported no remaining blocking
 finding inside this diff; reviewer also ran 18 pure policy checks and diff hygiene.
 
-## Release gates (not completed by local tests)
+## Release gates
 
 - SQLite does not implement PostgreSQL `SELECT FOR UPDATE` semantics. The stale
   identity-map test demonstrates refresh preservation, not competing transaction
   scheduling. Real PostgreSQL two-session claim/CAS/comment interleaving remains a
   separate pre-release verification gate against a disposable local test database.
+  **Subsequently completed on 2026-09-08:** 18 real PostgreSQL 17.11 two-session
+  contention tests passed, each observing actual blocker PIDs before release.
+  Claim/CAS/replay, stale JSON preservation and post-lock category denial passed;
+  see `TICKET_ASSIGNMENT_POSTGRES_QA_2026-09-08.md` for exact scope and evidence.
 - Local runtime inventory on 2026-09-08 found no `postgres`, `pg_ctl`, `initdb`,
   `psql` or Docker on PATH, no matching service, no PostgreSQL installation/installed
   program registry entry, and no binaries in Program Files (64/32 bit) or the user
   Local Programs directory. Conventional portable/Scoop/Chocolatey locations did
   not supply a candidate. WSL 2.7.13.0 is installed, but its distribution inventory
   is empty. No service/distribution was started and no database was accessed.
-  **The PostgreSQL concurrency gate remains pending: a disposable local instance
-  must be explicitly provisioned before that evidence can be collected.**
+  Following explicit provisioning authorization, portable official binaries were
+  used for a new loopback-only disposable cluster. No service, remote database,
+  environment file or system configuration was used. The original runtime gap is
+  resolved for this local gate; it does not establish Production verification.
 - Parent verified Render still serves baseline `b68021923`: service
   `chatbot-backend` / `srv-d0rq2rp5pdvs738t3bhg`, branch `main`. Its existing predeploy
   runs `scripts/apply_migrations.py` against `DATABASE_URL`. Do not deploy the full
