@@ -34,13 +34,13 @@ class LazyApplicationTests(unittest.TestCase):
 
     def test_safe_request_wait_default_and_override_are_bounded(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(_safe_request_wait_seconds(), 6.0)
+            self.assertEqual(_safe_request_wait_seconds(), 2.0)
         with patch.dict(
             os.environ,
             {"VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS": "99"},
             clear=True,
         ):
-            self.assertEqual(_safe_request_wait_seconds(), 10.0)
+            self.assertEqual(_safe_request_wait_seconds(), 4.0)
         with patch.dict(
             os.environ,
             {"VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS": "-3"},
@@ -52,7 +52,7 @@ class LazyApplicationTests(unittest.TestCase):
             {"VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS": "invalid"},
             clear=True,
         ):
-            self.assertEqual(_safe_request_wait_seconds(), 6.0)
+            self.assertEqual(_safe_request_wait_seconds(), 2.0)
 
     def test_loader_is_deferred_until_first_request_and_cached(self) -> None:
         loads: list[str] = []
@@ -120,15 +120,11 @@ class LazyApplicationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "not callable"):
             application({}, lambda status, headers: None)
 
-    def test_all_http_methods_wait_then_dispatch_exactly_once(self) -> None:
+    def test_safe_http_methods_wait_then_dispatch_exactly_once(self) -> None:
         for method, path in (
             ("GET", "/api/v2/demo/catalog"),
             ("HEAD", "/health"),
             ("OPTIONS", "/api/v2/tickets"),
-            ("POST", "/api/v2/tickets"),
-            ("PUT", "/api/v2/tickets/419"),
-            ("PATCH", "/api/v2/tickets/419"),
-            ("DELETE", "/api/v2/tickets/419"),
         ):
             with self.subTest(method=method, path=path):
                 loader_started = threading.Event()
@@ -228,8 +224,8 @@ class LazyApplicationTests(unittest.TestCase):
         requests = (
             ("/api/v2/demo/catalog", "GET"),
             ("/api/app/me/tenants", "GET"),
-            ("/api/v2/tickets", "POST"),
-            ("/api/admin/encuestas/632/publicar", "POST"),
+            ("/api/v2/tickets", "HEAD"),
+            ("/api/admin/encuestas/632/publicar", "OPTIONS"),
         )
         threads = [
             threading.Thread(
@@ -252,59 +248,60 @@ class LazyApplicationTests(unittest.TestCase):
         self.assertEqual(sorted(dispatch_ids), list(range(12)))
         self.assertLess(elapsed, 0.5)
 
-    def test_mutation_wait_is_bounded_and_timeout_never_dispatches(self) -> None:
-        loader_started = threading.Event()
-        release_loader = threading.Event()
-        dispatch_count = 0
+    def test_cold_mutations_fail_fast_and_only_an_explicit_retry_dispatches(self) -> None:
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            with self.subTest(method=method):
+                loader_started = threading.Event()
+                release_loader = threading.Event()
+                dispatch_count = 0
 
-        def target(environ, start_response):
-            nonlocal dispatch_count
-            dispatch_count += 1
-            start_response("200 OK", [])
-            return [environ["PATH_INFO"].encode()]
+                def target(environ, start_response):
+                    nonlocal dispatch_count
+                    dispatch_count += 1
+                    start_response("200 OK", [])
+                    return [environ["PATH_INFO"].encode()]
 
-        def loader():
-            loader_started.set()
-            release_loader.wait(1)
-            return target
+                def loader():
+                    loader_started.set()
+                    release_loader.wait(1)
+                    return target
 
-        application = LazyApplication(
-            loader,
-            background_warmup=True,
-            warmup_delay_seconds=0.0,
-            safe_request_wait_seconds=0.03,
-        )
+                application = LazyApplication(
+                    loader,
+                    background_warmup=True,
+                    warmup_delay_seconds=0.0,
+                    safe_request_wait_seconds=0.5,
+                )
 
-        shed_statuses: list[str] = []
-        started_at = time.monotonic()
-        shed_response = application(
-            {"PATH_INFO": "/api/v2/tickets", "REQUEST_METHOD": "POST"},
-            lambda status, headers: shed_statuses.append(status),
-        )
-        shed_elapsed = time.monotonic() - started_at
+                shed_statuses: list[str] = []
+                started_at = time.monotonic()
+                shed_response = application(
+                    {"PATH_INFO": "/api/v2/tickets", "REQUEST_METHOD": method},
+                    lambda status, headers: shed_statuses.append(status),
+                )
+                shed_elapsed = time.monotonic() - started_at
 
-        self.assertTrue(loader_started.wait(0.2))
-        self.assertGreaterEqual(shed_elapsed, 0.02)
-        self.assertLess(shed_elapsed, 0.2)
-        self.assertEqual(shed_statuses, ["503 Service Unavailable"])
-        self.assertEqual(
-            json.loads(b"".join(shed_response))["reason_code"],
-            "application_initializing",
-        )
-        self.assertEqual(dispatch_count, 0)
+                self.assertTrue(loader_started.wait(0.2))
+                self.assertLess(shed_elapsed, 0.2)
+                self.assertEqual(shed_statuses, ["503 Service Unavailable"])
+                self.assertEqual(
+                    json.loads(b"".join(shed_response))["reason_code"],
+                    "application_initializing",
+                )
+                self.assertEqual(dispatch_count, 0)
 
-        release_loader.set()
-        self.assertTrue(application._ready.wait(0.5))
-        self.assertEqual(dispatch_count, 0)
+                release_loader.set()
+                self.assertTrue(application._ready.wait(0.5))
+                self.assertEqual(dispatch_count, 0)
 
-        retry_statuses: list[str] = []
-        retry_response = application(
-            {"PATH_INFO": "/api/v2/tickets", "REQUEST_METHOD": "POST"},
-            lambda status, headers: retry_statuses.append(status),
-        )
-        self.assertEqual(retry_statuses, ["200 OK"])
-        self.assertEqual(retry_response, [b"/api/v2/tickets"])
-        self.assertEqual(dispatch_count, 1)
+                retry_statuses: list[str] = []
+                retry_response = application(
+                    {"PATH_INFO": "/api/v2/tickets", "REQUEST_METHOD": method},
+                    lambda status, headers: retry_statuses.append(status),
+                )
+                self.assertEqual(retry_statuses, ["200 OK"])
+                self.assertEqual(retry_response, [b"/api/v2/tickets"])
+                self.assertEqual(dispatch_count, 1)
 
     def test_read_wait_is_bounded_then_returns_retryable_contract(self) -> None:
         loader_started = threading.Event()
@@ -327,9 +324,13 @@ class LazyApplicationTests(unittest.TestCase):
         )
         statuses: list[str] = []
         started_at = time.monotonic()
+        response_headers: list[tuple[str, str]] = []
         response = application(
             {"PATH_INFO": "/api/v2/demo/catalog", "REQUEST_METHOD": "GET"},
-            lambda status, headers: statuses.append(status),
+            lambda status, headers: (
+                statuses.append(status),
+                response_headers.extend(headers),
+            ),
         )
         elapsed = time.monotonic() - started_at
 
@@ -341,6 +342,7 @@ class LazyApplicationTests(unittest.TestCase):
             json.loads(b"".join(response))["reason_code"],
             "application_initializing",
         )
+        self.assertEqual(dict(response_headers)["Retry-After"], "2")
         release_loader.set()
         self.assertTrue(application._ready.wait(0.5))
 
@@ -372,7 +374,6 @@ class LazyApplicationTests(unittest.TestCase):
             safe_request_wait_seconds=0.5,
         )
         statuses: list[str] = []
-        responses: list[list[bytes]] = []
         environ = {
             "PATH_INFO": "/api/v2/tickets/419/reply",
             "REQUEST_METHOD": "POST",
@@ -381,23 +382,28 @@ class LazyApplicationTests(unittest.TestCase):
             "HTTP_IDEMPOTENCY_KEY": "reply-419-1",
             "wsgi.input": BytesIO(request_body),
         }
-        request_thread = threading.Thread(
-            target=lambda: responses.append(
-                application(
-                    environ,
-                    lambda status, headers: statuses.append(status),
-                )
-            )
+        first_response = application(
+            environ,
+            lambda status, headers: statuses.append(status),
         )
-        request_thread.start()
         self.assertTrue(loader_started.wait(0.5))
         self.assertEqual(observed, [])
-        release_loader.set()
-        request_thread.join(0.5)
+        self.assertEqual(statuses, ["503 Service Unavailable"])
+        self.assertEqual(
+            json.loads(b"".join(first_response))["reason_code"],
+            "application_initializing",
+        )
 
-        self.assertFalse(request_thread.is_alive())
-        self.assertEqual(statuses, ["200 OK"])
-        self.assertEqual(responses, [[b"accepted"]])
+        release_loader.set()
+        self.assertTrue(application._ready.wait(0.5))
+
+        retry_response = application(
+            environ,
+            lambda status, headers: statuses.append(status),
+        )
+
+        self.assertEqual(statuses, ["503 Service Unavailable", "200 OK"])
+        self.assertEqual(retry_response, [b"accepted"])
         self.assertEqual(observed, [(request_body, "reply-419-1")])
 
     def test_background_warmup_fails_closed_without_exposing_exception(self) -> None:

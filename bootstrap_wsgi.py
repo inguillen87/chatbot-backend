@@ -36,8 +36,16 @@ _TRUTHY_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
 # online.
 _DEFAULT_WARMUP_DELAY_SECONDS = 0.1
 _MAX_WARMUP_DELAY_SECONDS = 0.5
-_DEFAULT_SAFE_REQUEST_WAIT_SECONDS = 6.0
-_MAX_SAFE_REQUEST_WAIT_SECONDS = 10.0
+# Vercel includes image provisioning and process boot in its container
+# initialisation budget.  A slow pull can leave less than five seconds after
+# Gunicorn starts listening.  Keep the join window below that remaining budget
+# so the first request receives our explicit, retryable 503 instead of an
+# opaque platform 500.  The canonical import continues on the same single
+# background flight and the retry is dispatched only after it is ready.
+_DEFAULT_SAFE_REQUEST_WAIT_SECONDS = 2.0
+_MAX_SAFE_REQUEST_WAIT_SECONDS = 4.0
+_BOOTSTRAP_RETRY_AFTER_SECONDS = 2
+_BOOTSTRAP_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 def _is_vercel_runtime() -> bool:
@@ -203,7 +211,7 @@ class LazyApplication:
             ("Content-Type", "application/json; charset=utf-8"),
             ("Content-Length", str(len(payload))),
             ("Cache-Control", "no-store"),
-            ("Retry-After", "1"),
+            ("Retry-After", str(_BOOTSTRAP_RETRY_AFTER_SECONDS)),
             ("X-Chatboc-Bootstrap", "failed" if failed else "initializing"),
         ]
         if environ.get("HTTP_ORIGIN"):
@@ -225,9 +233,19 @@ class LazyApplication:
             return self._load_and_cache()(environ, start_response)
 
         # Every request joins the same background initialization flight before
-        # dispatch. If the bounded wait expires, the request has not reached the
-        # canonical application, so a retry cannot duplicate an action.
+        # dispatch. Mutations fail fast whenever this invocation observed a cold
+        # application. Even if loading completes milliseconds later, only the
+        # caller's explicit retry may execute the action; this prevents a
+        # provider timeout from making the first mutation's outcome ambiguous.
         self.start_warmup()
+        method = str(environ.get("REQUEST_METHOD") or "GET").strip().upper()
+        if method not in _BOOTSTRAP_SAFE_METHODS:
+            return self._bootstrap_response(
+                environ,
+                start_response,
+                failed=self._ready.is_set() and self._load_failed,
+            )
+
         application = self._application
         if application is not None:
             return application(environ, start_response)
