@@ -169,6 +169,46 @@ def test_frozen_suggestion_does_not_bypass_current_owner_cas(assignment_case, mo
     assert snapshot(case, "TenantTicket") == (case.operators[1].id, 0)
 
 
+@pytest.mark.parametrize("change", ["missing_ticket", "incompatible_destination", "owner_cas"])
+def test_reviewed_batch_rolls_back_earlier_assignment_if_later_target_changes(assignment_case, monkeypatch, change):
+    import routes.v2.saas as saas
+    case = assignment_case
+    if change == "owner_cas":
+        case.municipal.asignado_a_id = case.operators[1].id
+        db.session.commit()
+    targets = [_target(case, "TenantTicket"), _target(case, "MunicipioTicket")]
+    _routing(monkeypatch, [_recommendation(target) for target in targets])
+    original_find = saas.find_ticket_for_assignment
+    original_compatible = saas.ticket_assignee_is_compatible
+    original_apply = saas._apply_employee_assignment
+    attempted = []
+
+    def observed_apply(ticket, assignee, actor, **kwargs):
+        attempted.append(type(ticket).__name__)
+        return original_apply(ticket, assignee, actor, **kwargs)
+
+    def changed_find(tenant, model, ticket_id):
+        if model == "MunicipioTicket" and change == "missing_ticket":
+            return None
+        return original_find(tenant, model, ticket_id)
+
+    def changed_compatibility(assignee, ticket):
+        if type(ticket).__name__ == "MunicipioTicket" and change == "incompatible_destination":
+            return False
+        return original_compatible(assignee, ticket)
+
+    monkeypatch.setattr(saas, "_apply_employee_assignment", observed_apply)
+    monkeypatch.setattr(saas, "find_ticket_for_assignment", changed_find)
+    monkeypatch.setattr(saas, "ticket_assignee_is_compatible", changed_compatibility)
+    response = _apply(case, targets)
+    assert response.status_code == 409, response.get_json()
+    expected_reason = "assignment_state_conflict" if change == "owner_cas" else "routing_preview_changed"
+    assert response.get_json()["reason_code"] == expected_reason
+    assert attempted == (["TenantTicket", "MunicipioTicket"] if change == "owner_cas" else ["TenantTicket"])
+    assert snapshot(case, "TenantTicket") == (None, 0)
+    assert snapshot(case, "MunicipioTicket") == (case.operators[1].id if change == "owner_cas" else None, 0)
+
+
 def test_frozen_preview_is_read_only_and_does_not_grant_employee_bulk_authority(assignment_case, monkeypatch):
     case = assignment_case
     target = _target(case)

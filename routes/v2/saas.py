@@ -2068,6 +2068,14 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
                 assignment_reason = "ticket_not_found"
         elif not assignee_id:
             assignment_reason = "no_compatible_assignee"
+        if expected_suggestions and not applied:
+            # A reviewed batch must not commit a subset if a target/destination
+            # disappears or becomes incompatible after the preview check.
+            db.session.rollback()
+            return _error_response(
+                "La seleccion cambio durante la asignacion; revisa una nueva vista previa", 409,
+                "routing_preview_changed", "refresh_routing_preview",
+            )
         results.append(
             {
                 **item,
