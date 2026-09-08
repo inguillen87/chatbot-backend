@@ -4,9 +4,10 @@ The application imports a large, intentionally modular Flask route tree.  A
 Gunicorn worker that imports that tree during process boot can miss Vercel's
 container-initialisation deadline even though the application is healthy.  This
 WSGI proxy lets the worker start accepting requests immediately and performs
-the one-time application import in the background.  Safe reads and two
-side-effect-free demo bootstrap requests may join a bounded single-flight wait;
-real mutations are still shed with a short, retryable ``503`` before dispatch.
+the one-time application import in the background. Every incoming request may
+join that bounded single-flight wait before the canonical application is
+dispatched. A timeout returns a retryable ``503`` without dispatching the
+request, so a cold start cannot partially execute or duplicate a mutation.
 
 Render keeps using ``app:app``.  This entrypoint is deliberately scoped to the
 Vercel Dockerfile so it does not change the established Render runtime.
@@ -37,13 +38,6 @@ _DEFAULT_WARMUP_DELAY_SECONDS = 0.1
 _MAX_WARMUP_DELAY_SECONDS = 0.5
 _DEFAULT_SAFE_REQUEST_WAIT_SECONDS = 6.0
 _MAX_SAFE_REQUEST_WAIT_SECONDS = 10.0
-_SAFE_REQUEST_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-_SAFE_DEMO_POST_PATHS = frozenset(
-    {
-        "/api/v2/demo/session",
-        "/api/v2/demo/whatsapp-sandbox",
-    }
-)
 
 
 def _is_vercel_runtime() -> bool:
@@ -69,7 +63,7 @@ def _warmup_delay_seconds() -> float:
 
 
 def _safe_request_wait_seconds() -> float:
-    """Return the bounded time safe requests may join the bootstrap flight."""
+    """Return the bounded time requests may join the bootstrap flight."""
 
     raw_value = os.getenv("VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS")
     if raw_value is None:
@@ -81,24 +75,14 @@ def _safe_request_wait_seconds() -> float:
     return min(_MAX_SAFE_REQUEST_WAIT_SECONDS, max(0.0, parsed))
 
 
-def _request_can_wait_for_application(environ: dict[str, Any]) -> bool:
-    """Allow waiting only where replay cannot create an external side effect."""
-
-    method = str(environ.get("REQUEST_METHOD") or "GET").strip().upper()
-    if method in _SAFE_REQUEST_METHODS:
-        return True
-    path = str(environ.get("PATH_INFO") or "")
-    return method == "POST" and path in _SAFE_DEMO_POST_PATHS
-
-
 class LazyApplication:
     """Load the canonical Flask application once, safely across threads.
 
     ``background_warmup`` is reserved for the Vercel web entrypoint. Other
     runtimes and tests keep the original synchronous lazy-loading behaviour.
-    While that warmup is running, safe requests may wait on the shared ready
-    event for a bounded interval. Mutations that are not explicitly allowlisted
-    receive a small retryable response before the canonical app is dispatched.
+    While that warmup is running, requests wait on the shared ready event for a
+    bounded interval. The wait happens before the canonical app is dispatched;
+    a timeout therefore cannot leave an ambiguously executed mutation behind.
     """
 
     def __init__(
@@ -240,18 +224,14 @@ class LazyApplication:
         if not self._background_warmup:
             return self._load_and_cache()(environ, start_response)
 
-        # Every request joins the same background initialization flight. Safe
-        # reads and the two explicitly side-effect-free demo POSTs may wait for
-        # it for a bounded interval. Real mutations remain fail-fast so a
-        # client retry cannot duplicate an action whose dispatch is ambiguous.
+        # Every request joins the same background initialization flight before
+        # dispatch. If the bounded wait expires, the request has not reached the
+        # canonical application, so a retry cannot duplicate an action.
         self.start_warmup()
         application = self._application
         if application is not None:
             return application(environ, start_response)
-        if (
-            _request_can_wait_for_application(environ)
-            and self._safe_request_wait_seconds > 0
-        ):
+        if self._safe_request_wait_seconds > 0:
             self._ready.wait(self._safe_request_wait_seconds)
             application = self._application
             if application is not None:

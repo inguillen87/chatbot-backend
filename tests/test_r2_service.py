@@ -1,5 +1,6 @@
 from io import BytesIO
 import re
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -101,6 +102,79 @@ def test_configured_service_builds_r2_client_only_on_first_operation():
 
     create_client.assert_called_once_with()
     assert service.client is client
+
+
+def test_concurrent_client_initialization_waits_and_reuses_the_created_client():
+    client = _RecordingS3Client()
+    environment = {
+        "R2_ENDPOINT_URL": "https://r2.example.test",
+        "R2_ACCESS_KEY_ID": "test-access-key",
+        "R2_SECRET_ACCESS_KEY": "test-secret-key",
+        "R2_BUCKET_NAME": "chatboc-assets",
+    }
+
+    with patch.dict("os.environ", environment, clear=True):
+        service = R2Service()
+
+    creation_started = threading.Event()
+    allow_creation_to_finish = threading.Event()
+
+    class _ObservedLock:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self._attempt_lock = threading.Lock()
+            self._attempts = 0
+            self.second_attempt_started = threading.Event()
+
+        def __enter__(self):
+            with self._attempt_lock:
+                self._attempts += 1
+                if self._attempts == 2:
+                    self.second_attempt_started.set()
+            self._lock.acquire()
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self._lock.release()
+
+    observed_lock = _ObservedLock()
+    service._client_lock = observed_lock
+    results = []
+    errors = []
+
+    def create_client():
+        creation_started.set()
+        if not allow_creation_to_finish.wait(timeout=2):
+            raise AssertionError("client creation was not released by the test")
+        return client
+
+    def get_client():
+        try:
+            results.append(service._get_client())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    first_thread = threading.Thread(target=get_client)
+    second_thread = threading.Thread(target=get_client)
+
+    with patch.object(service, "_create_client", side_effect=create_client) as create_client_mock:
+        first_thread.start()
+        assert creation_started.wait(timeout=2)
+
+        second_thread.start()
+        second_reached_lock = observed_lock.second_attempt_started.wait(timeout=2)
+        allow_creation_to_finish.set()
+
+        first_thread.join(timeout=2)
+        second_thread.join(timeout=2)
+
+    assert second_reached_lock is True
+    assert first_thread.is_alive() is False
+    assert second_thread.is_alive() is False
+    assert errors == []
+    assert len(results) == 2
+    assert all(result is client for result in results)
+    create_client_mock.assert_called_once_with()
 
 
 def test_r2_upload_marks_audio_assets_as_long_lived_cacheable():

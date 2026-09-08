@@ -5,11 +5,11 @@ import os
 import threading
 import time
 import unittest
+from io import BytesIO
 from unittest.mock import patch
 
 from bootstrap_wsgi import (
     LazyApplication,
-    _request_can_wait_for_application,
     _safe_request_wait_seconds,
     _warmup_delay_seconds,
 )
@@ -53,39 +53,6 @@ class LazyApplicationTests(unittest.TestCase):
             clear=True,
         ):
             self.assertEqual(_safe_request_wait_seconds(), 6.0)
-
-    def test_only_reads_and_exact_demo_posts_can_join_bootstrap_wait(self) -> None:
-        for method in ("GET", "HEAD", "OPTIONS"):
-            with self.subTest(method=method):
-                self.assertTrue(
-                    _request_can_wait_for_application(
-                        {"REQUEST_METHOD": method, "PATH_INFO": "/api/anything"}
-                    )
-                )
-
-        for path in (
-            "/api/v2/demo/session",
-            "/api/v2/demo/whatsapp-sandbox",
-        ):
-            with self.subTest(path=path):
-                self.assertTrue(
-                    _request_can_wait_for_application(
-                        {"REQUEST_METHOD": "POST", "PATH_INFO": path}
-                    )
-                )
-
-        for method, path in (
-            ("POST", "/api/v2/tickets"),
-            ("POST", "/api/v2/demo/session/"),
-            ("PUT", "/api/v2/demo/session"),
-            ("DELETE", "/api/v2/demo/whatsapp-sandbox"),
-        ):
-            with self.subTest(method=method, path=path):
-                self.assertFalse(
-                    _request_can_wait_for_application(
-                        {"REQUEST_METHOD": method, "PATH_INFO": path}
-                    )
-                )
 
     def test_loader_is_deferred_until_first_request_and_cached(self) -> None:
         loads: list[str] = []
@@ -153,75 +120,77 @@ class LazyApplicationTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "not callable"):
             application({}, lambda status, headers: None)
 
-    def test_real_mutation_starts_background_warmup_fail_fast_and_is_cached(self) -> None:
-        loader_started = threading.Event()
-        release_loader = threading.Event()
-        loads: list[str] = []
+    def test_all_http_methods_wait_then_dispatch_exactly_once(self) -> None:
+        for method, path in (
+            ("GET", "/api/v2/demo/catalog"),
+            ("HEAD", "/health"),
+            ("OPTIONS", "/api/v2/tickets"),
+            ("POST", "/api/v2/tickets"),
+            ("PUT", "/api/v2/tickets/419"),
+            ("PATCH", "/api/v2/tickets/419"),
+            ("DELETE", "/api/v2/tickets/419"),
+        ):
+            with self.subTest(method=method, path=path):
+                loader_started = threading.Event()
+                release_loader = threading.Event()
+                loads: list[str] = []
+                dispatches: list[tuple[str, str]] = []
 
-        def target(environ, start_response):
-            start_response("200 OK", [("Content-Type", "text/plain")])
-            return [environ["PATH_INFO"].encode()]
+                def target(environ, start_response):
+                    dispatches.append(
+                        (environ["REQUEST_METHOD"], environ["PATH_INFO"])
+                    )
+                    start_response("200 OK", [("Content-Type", "text/plain")])
+                    return [environ["PATH_INFO"].encode()]
 
-        def loader():
-            loads.append("loaded")
-            loader_started.set()
-            release_loader.wait(1)
-            return target
+                def loader():
+                    loads.append("loaded")
+                    loader_started.set()
+                    release_loader.wait(1)
+                    return target
 
-        application = LazyApplication(
-            loader,
-            background_warmup=True,
-            warmup_delay_seconds=0.01,
-        )
-        self.assertFalse(loader_started.is_set())
+                application = LazyApplication(
+                    loader,
+                    background_warmup=True,
+                    warmup_delay_seconds=0.0,
+                    safe_request_wait_seconds=0.5,
+                )
+                statuses: list[str] = []
+                responses: list[list[bytes]] = []
+                request_thread = threading.Thread(
+                    target=lambda: responses.append(
+                        application(
+                            {"PATH_INFO": path, "REQUEST_METHOD": method},
+                            lambda status, response_headers: statuses.append(status),
+                        )
+                    )
+                )
+                request_thread.start()
+                self.assertTrue(loader_started.wait(0.5))
+                self.assertTrue(request_thread.is_alive())
+                self.assertEqual(dispatches, [])
 
-        statuses: list[str] = []
-        headers: list[tuple[str, str]] = []
-        response = application(
-            {"PATH_INFO": "/api/v2/tickets", "REQUEST_METHOD": "POST"},
-            lambda status, response_headers: (
-                statuses.append(status),
-                headers.extend(response_headers),
-            ),
-        )
+                release_loader.set()
+                request_thread.join(0.5)
 
-        self.assertEqual(statuses, ["503 Service Unavailable"])
-        self.assertEqual(json.loads(b"".join(response)), {
-            "contract_version": "chatboc.bootstrap.v1",
-            "ok": False,
-            "status_code": 503,
-            "reason_code": "application_initializing",
-            "retryable": True,
-            "action_hint": "retry_after",
-            "error": {
-                "code": 503,
-                "message": "La aplicacion se esta iniciando. Intentalo nuevamente.",
-            },
-        })
-        self.assertIn(("Retry-After", "1"), headers)
-        self.assertIn(("Cache-Control", "no-store"), headers)
-        self.assertTrue(loader_started.wait(0.5))
+                self.assertFalse(request_thread.is_alive())
+                self.assertEqual(statuses, ["200 OK"])
+                self.assertEqual(responses, [[path.encode()]])
+                self.assertEqual(dispatches, [(method, path)])
+                self.assertEqual(loads, ["loaded"])
 
-        release_loader.set()
-        self.assertTrue(application._ready.wait(0.5))
-        statuses.clear()
-        response = application(
-            {"PATH_INFO": "/health", "REQUEST_METHOD": "GET"},
-            lambda status, response_headers: statuses.append(status),
-        )
-        self.assertEqual(response, [b"/health"])
-        self.assertEqual(statuses, ["200 OK"])
-        self.assertEqual(loads, ["loaded"])
-
-    def test_concurrent_safe_reads_wait_on_one_background_load(self) -> None:
+    def test_concurrent_cold_requests_wait_on_one_background_load(self) -> None:
         loader_started = threading.Event()
         release_loader = threading.Event()
         load_count = 0
         count_lock = threading.Lock()
+        dispatch_ids: list[int] = []
 
         def target(environ, start_response):
+            with count_lock:
+                dispatch_ids.append(environ["chatboc.request_id"])
             start_response("200 OK", [])
-            return [b"ok"]
+            return [str(environ["chatboc.request_id"]).encode()]
 
         def loader():
             nonlocal load_count
@@ -246,19 +215,27 @@ class LazyApplicationTests(unittest.TestCase):
             with statuses_lock:
                 statuses.append(status)
 
-        def request(path: str) -> None:
+        def request(request_id: int, path: str, method: str) -> None:
             application(
-                {"PATH_INFO": path, "REQUEST_METHOD": "GET"},
+                {
+                    "PATH_INFO": path,
+                    "REQUEST_METHOD": method,
+                    "chatboc.request_id": request_id,
+                },
                 capture_status,
             )
 
-        paths = (
-            "/api/v2/demo/catalog",
-            "/api/app/me/tenants",
-            "/api/pwa/anon-id",
+        requests = (
+            ("/api/v2/demo/catalog", "GET"),
+            ("/api/app/me/tenants", "GET"),
+            ("/api/v2/tickets", "POST"),
+            ("/api/admin/encuestas/632/publicar", "POST"),
         )
         threads = [
-            threading.Thread(target=request, args=(paths[index % len(paths)],))
+            threading.Thread(
+                target=request,
+                args=(index, *requests[index % len(requests)]),
+            )
             for index in range(12)
         ]
         started_at = time.monotonic()
@@ -272,13 +249,17 @@ class LazyApplicationTests(unittest.TestCase):
 
         self.assertEqual(load_count, 1)
         self.assertEqual(statuses, ["200 OK"] * 12)
+        self.assertEqual(sorted(dispatch_ids), list(range(12)))
         self.assertLess(elapsed, 0.5)
 
-    def test_real_mutations_never_wait_for_background_warmup(self) -> None:
+    def test_mutation_wait_is_bounded_and_timeout_never_dispatches(self) -> None:
         loader_started = threading.Event()
         release_loader = threading.Event()
+        dispatch_count = 0
 
         def target(environ, start_response):
+            nonlocal dispatch_count
+            dispatch_count += 1
             start_response("200 OK", [])
             return [environ["PATH_INFO"].encode()]
 
@@ -290,8 +271,8 @@ class LazyApplicationTests(unittest.TestCase):
         application = LazyApplication(
             loader,
             background_warmup=True,
-            warmup_delay_seconds=0.01,
-            safe_request_wait_seconds=0.5,
+            warmup_delay_seconds=0.0,
+            safe_request_wait_seconds=0.03,
         )
 
         shed_statuses: list[str] = []
@@ -302,18 +283,30 @@ class LazyApplicationTests(unittest.TestCase):
         )
         shed_elapsed = time.monotonic() - started_at
 
-        self.assertLess(shed_elapsed, 0.1)
+        self.assertTrue(loader_started.wait(0.2))
+        self.assertGreaterEqual(shed_elapsed, 0.02)
+        self.assertLess(shed_elapsed, 0.2)
         self.assertEqual(shed_statuses, ["503 Service Unavailable"])
         self.assertEqual(
             json.loads(b"".join(shed_response))["reason_code"],
             "application_initializing",
         )
-        self.assertTrue(loader_started.wait(0.5))
+        self.assertEqual(dispatch_count, 0)
 
         release_loader.set()
         self.assertTrue(application._ready.wait(0.5))
+        self.assertEqual(dispatch_count, 0)
 
-    def test_safe_read_wait_is_bounded_then_returns_retryable_contract(self) -> None:
+        retry_statuses: list[str] = []
+        retry_response = application(
+            {"PATH_INFO": "/api/v2/tickets", "REQUEST_METHOD": "POST"},
+            lambda status, headers: retry_statuses.append(status),
+        )
+        self.assertEqual(retry_statuses, ["200 OK"])
+        self.assertEqual(retry_response, [b"/api/v2/tickets"])
+        self.assertEqual(dispatch_count, 1)
+
+    def test_read_wait_is_bounded_then_returns_retryable_contract(self) -> None:
         loader_started = threading.Event()
         release_loader = threading.Event()
 
@@ -351,39 +344,61 @@ class LazyApplicationTests(unittest.TestCase):
         release_loader.set()
         self.assertTrue(application._ready.wait(0.5))
 
-    def test_exact_demo_posts_wait_and_dispatch_after_cold_start(self) -> None:
-        for path in (
-            "/api/v2/demo/session",
-            "/api/v2/demo/whatsapp-sandbox",
-        ):
-            with self.subTest(path=path):
-                load_count = 0
+    def test_waiting_mutation_preserves_wsgi_input_and_headers(self) -> None:
+        loader_started = threading.Event()
+        release_loader = threading.Event()
+        observed: list[tuple[bytes, str]] = []
+        request_body = b'{"ticket_id":419,"message":"seguimiento"}'
 
-                def target(environ, start_response):
-                    start_response("200 OK", [])
-                    return [environ["PATH_INFO"].encode()]
-
-                def loader():
-                    nonlocal load_count
-                    load_count += 1
-                    time.sleep(0.02)
-                    return target
-
-                application = LazyApplication(
-                    loader,
-                    background_warmup=True,
-                    warmup_delay_seconds=0.0,
-                    safe_request_wait_seconds=0.2,
+        def target(environ, start_response):
+            observed.append(
+                (
+                    environ["wsgi.input"].read(),
+                    environ["HTTP_IDEMPOTENCY_KEY"],
                 )
-                statuses: list[str] = []
-                response = application(
-                    {"PATH_INFO": path, "REQUEST_METHOD": "POST"},
+            )
+            start_response("200 OK", [])
+            return [b"accepted"]
+
+        def loader():
+            loader_started.set()
+            release_loader.wait(1)
+            return target
+
+        application = LazyApplication(
+            loader,
+            background_warmup=True,
+            warmup_delay_seconds=0.0,
+            safe_request_wait_seconds=0.5,
+        )
+        statuses: list[str] = []
+        responses: list[list[bytes]] = []
+        environ = {
+            "PATH_INFO": "/api/v2/tickets/419/reply",
+            "REQUEST_METHOD": "POST",
+            "CONTENT_LENGTH": str(len(request_body)),
+            "CONTENT_TYPE": "application/json",
+            "HTTP_IDEMPOTENCY_KEY": "reply-419-1",
+            "wsgi.input": BytesIO(request_body),
+        }
+        request_thread = threading.Thread(
+            target=lambda: responses.append(
+                application(
+                    environ,
                     lambda status, headers: statuses.append(status),
                 )
+            )
+        )
+        request_thread.start()
+        self.assertTrue(loader_started.wait(0.5))
+        self.assertEqual(observed, [])
+        release_loader.set()
+        request_thread.join(0.5)
 
-                self.assertEqual(statuses, ["200 OK"])
-                self.assertEqual(response, [path.encode()])
-                self.assertEqual(load_count, 1)
+        self.assertFalse(request_thread.is_alive())
+        self.assertEqual(statuses, ["200 OK"])
+        self.assertEqual(responses, [[b"accepted"]])
+        self.assertEqual(observed, [(request_body, "reply-419-1")])
 
     def test_background_warmup_fails_closed_without_exposing_exception(self) -> None:
         secret_detail = "private-runtime-secret"

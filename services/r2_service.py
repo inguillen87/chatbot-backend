@@ -223,8 +223,6 @@ class R2Service:
         client = self.client
         if client is not None:
             return client
-        if self._client_initialization_attempted:
-            return None
         if not (
             self.endpoint_url
             and self.access_key_id
