@@ -1,5 +1,6 @@
 import jwt
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from flask import current_app
 from sqlalchemy import event
@@ -814,6 +815,72 @@ def test_backoffice_v2_orders_summary_uses_validated_order_amounts(client):
     assert payload["summary"]["unassigned"] is None
     assert "confirm_payment" in payload["actions_by_status"]["pendiente"]
     assert payload["data_quality_notes"]
+
+
+def test_backoffice_v2_orders_summary_does_not_mix_tenants_for_shared_owner(client):
+    from routes.backoffice import _orders_for_tenant
+
+    owner = User(email="shared-orders-owner@test.com", name="Shared owner", rol="admin", tipo_chat="pyme")
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="shared-orders-a",
+        nombre="Shared orders A",
+        tipo="pyme",
+        pyme_id=owner.id,
+        plan="pro",
+    )
+    other_tenant = TenantProfile(
+        slug="shared-orders-b",
+        nombre="Shared orders B",
+        tipo="pyme",
+        pyme_id=owner.id,
+        plan="pro",
+    )
+    db.session.add_all([tenant, other_tenant])
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    local_order = PymePedido(
+        pyme_id=owner.id,
+        tenant_id=tenant.id,
+        asunto="Pedido tenant A",
+        detalles="[]",
+        monto_total=Decimal("10.25"),
+    )
+    foreign_order = PymePedido(
+        pyme_id=owner.id,
+        tenant_id=other_tenant.id,
+        asunto="Pedido tenant B",
+        detalles="[]",
+        monto_total=Decimal("999.99"),
+    )
+    legacy_order = PymePedido(
+        pyme_id=owner.id,
+        tenant_id=None,
+        asunto="Pedido legacy sin tenant",
+        detalles="[]",
+        monto_total=Decimal("5.00"),
+    )
+    db.session.add_all([local_order, foreign_order, legacy_order])
+    db.session.commit()
+
+    response = client.get(
+        "/api/v2/backoffice/orders/summary",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(owner),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["summary"]["total"] == 1
+    assert {item["number"] for item in payload["active_orders"]} == {local_order.nro_pedido}
+    assert {order.id for order in _orders_for_tenant(other_tenant)} == {foreign_order.id}
+    assert legacy_order.id not in {
+        order.id
+        for profile in (tenant, other_tenant)
+        for order in _orders_for_tenant(profile)
+    }
 
 
 def test_backoffice_v2_contacts_summary_publishes_segments_without_frontend_rules(client):

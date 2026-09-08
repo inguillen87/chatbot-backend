@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
-from sqlalchemy import case, func, or_
+from sqlalchemy import and_, case, func, or_
 
 from extensions import db
 from models import (
@@ -1326,8 +1326,16 @@ def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id
 
 def _orders_for_tenant(tenant: TenantProfile) -> list[PymePedido]:
     clauses = [PymePedido.tenant_id == tenant.id]
+    owner_tenant_count = 0
     if tenant.pyme_id:
-        clauses.append(PymePedido.pyme_id == tenant.pyme_id)
+        owner_tenant_count = TenantProfile.query.filter_by(pyme_id=tenant.pyme_id).count()
+    if tenant.pyme_id and owner_tenant_count == 1:
+        clauses.append(
+            and_(
+                PymePedido.tenant_id.is_(None),
+                PymePedido.pyme_id == tenant.pyme_id,
+            )
+        )
     return (
         PymePedido.query.filter(or_(*clauses))
         .order_by(PymePedido.fecha.desc(), PymePedido.id.desc())

@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
-from fuzzywuzzy import process
+from fuzzywuzzy import fuzz, process
 
 from models import Conversacion, db, PymePedido, PymeTicket, ArchivoAdjunto
 try:
@@ -794,7 +794,11 @@ def _find_menu_action_by_input(user_input: str, menu_buttons: list[dict]) -> Opt
                 return button.get("action_id") or button.get("id")
 
     if len(normalized_input) >= 3 and PYME_KEYWORD_MAPPING:
-        best_match = process.extractOne(normalized_input, list(PYME_KEYWORD_MAPPING.keys()))
+        best_match = process.extractOne(
+            normalized_input,
+            list(PYME_KEYWORD_MAPPING.keys()),
+            scorer=fuzz.ratio,
+        )
         if best_match and best_match[1] >= 85:
             return PYME_KEYWORD_MAPPING.get(best_match[0])
 
@@ -1248,6 +1252,15 @@ def _build_pyme_order_success_payload(context: dict, handler_response: dict) -> 
 
     if summary_text:
         message_body = f"{message_body}\n\n{summary_text}".strip()
+
+    if data.get("nota_pedido_pdf_generado"):
+        if email_cliente:
+            message_body += (
+                f"\n\nLa nota de pedido en PDF quedó generada para {email_cliente}; "
+                "el envío se confirma por separado."
+            )
+        else:
+            message_body += "\n\nLa nota de pedido en PDF quedó generada para compartir."
 
     buttons: list[dict] = []
     seen_text_action: set[tuple[str, str]] = set()
@@ -3105,6 +3118,18 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
     if not intent_detected and received_payload.get("action"):
         intent_detected = detect_intent_from_text(received_payload.get("action", ""))
 
+    # Orders assembled by the LLM action handlers live in the persisted
+    # session cart. Keep subsequent order turns in that same orchestration
+    # path instead of diverting them into the separate multimodal cart.
+    if intent_detected in {"confirmar", "pedido"}:
+        persisted_cart_summary = cart_service.get_cart_summary(
+            chat_db_context.context_data.get(cart_service.SESSION_CARTS_KEY, {}),
+            getattr(owner_user, "id", None),
+            getattr(viewer_user, "id", None),
+        )
+        if persisted_cart_summary.get("items_detalle"):
+            intent_detected = None
+
     if intent_detected:
         parsed_items = extraer_productos_pedido(pregunta_str or "") if intent_detected == "pedido" else None
         logger_actual.info(
@@ -3427,6 +3452,21 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
         orchestrator = ChatOrchestrator(global_context=global_context_for_orchestrator)
         action_handler_result = orchestrator.execute_action(llm_response_structured)
 
+    # An action may commit domain records and expire the ORM-backed JSON field.
+    # Reattach the cart mutated by the handler so checkout clears persist with
+    # the rest of the conversation context instead of reviving stale items.
+    action_context_data = global_context_for_orchestrator.get("chat_db_context_data")
+    cart_committing_actions = {"crear_pedido_pyme", "finalizar_compra", "finalizar_pedido_pyme"}
+    if (
+        llm_response_structured.get("accion_backend") in cart_committing_actions
+        and isinstance(action_context_data, dict)
+    ):
+        action_carts = action_context_data.get(cart_service.SESSION_CARTS_KEY)
+        if isinstance(action_carts, dict):
+            refreshed_context_data = dict(chat_db_context.context_data or {})
+            refreshed_context_data[cart_service.SESSION_CARTS_KEY] = action_carts
+            chat_db_context.context_data = refreshed_context_data
+
     if action_handler_result.get("success"):
         handler_source = action_handler_result.get("fuente")
         if handler_source == "pyme_pedido_registrado":
@@ -3441,7 +3481,10 @@ def responder_pyme(pregunta_original, owner_user, rubro_obj, viewer_user=None, c
             action_handler_result = {**action_handler_result, **enriched_payload}
 
     # --- 6. Procesar Resultado del Action Handler y Formatear Respuesta ---
-    respuesta_final_texto = action_handler_result.get("message_body")
+    respuesta_final_texto = (
+        action_handler_result.get("message_body")
+        or action_handler_result.get("message_to_user")
+    )
     if not respuesta_final_texto:
         respuesta_final_texto = llm_response_structured.get("message_body", "No estoy seguro de cómo proceder. ¿Podrías intentarlo de nuevo?")
 
