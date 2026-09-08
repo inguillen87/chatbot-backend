@@ -65,3 +65,15 @@ Frontend predecessor: `82fbc153eddec3158fe3c799c96838842acc6b12`, Vercel deploym
 `dpl_CqDZhUQEkn1n1uoE5L9gkD1C2mYJ`.
 
 At creation of this report the combined candidate is **not yet deployed**.
+
+## Publication completion — 2026-09-08 22:26 UTC
+
+- Published backend: `912446bf96f8330664a9dec009ae57dbf935c73c`.
+- Render: `dep-dag8ijpt0dsc73ecdfug`, service `srv-d0rq2rp5pdvs738t3bhg`; Live 22:23:00 UTC. Public version/health confirmed exact SHA and HTTP 200 at 22:23:26 and 22:26:13 UTC.
+- Frontend: `3c430c2d6c7a470745a42f7e489b2e552726ef54`, Vercel `dpl_Go8eNRudNY1uT23kvWroRqgXuxKp`, promoted to both public domains. Final frontend regression: 377 files / 2781 tests passed; typecheck/build and three focused browser tests passed.
+- Broad backend regression: 377 tests +47 subtests passed, three known environment-fixture cases deselected. Final partial-batch rollback delta: 181 tests +9 subtests passed, one known Twilio manifest fixture deselected. Local PostgreSQL locking gate: 18 tests passed on the combined implementation.
+- During the handover, public health/version returned 502 at 22:22:04 and 22:22:54 UTC. Previous instance `shpc6` logged `RuntimeError: do not call blocking functions from the mainloop` at 22:20:40; replacement `srjrh` listened at 22:22:58 and passed health at 22:23:00. Full lifecycle root cause is not established. This release is not certified as zero-downtime.
+- Unchanged migration preparation finished 22:20:33. The migration tree remains `a917d4862b0baa1c78798876d63c318c86f81b76`; no DB/schema/provider/worker/billing settings were changed.
+- Authenticated Junin queue, details, timeline, message history, workflow metadata and employee-routing returned HTTP 200. Actual tree-claim category offered employee438, while luminarias correctly had no compatible employee because its configured scope contains only tree/calle categories. No claim, assignment, status, permission or outbound-message mutation was used for this production verification.
+- Browser /api/accessibility/me remains HTTP404: server persistence of accessibility preferences is a known separate gap. The installed browser also required a document cache refresh to leave the older frontend; automatic updating of all already-open clients is not certified.
+- Rollback versions above remain available. Render retirement and Neon cutover are explicitly NOT complete.
