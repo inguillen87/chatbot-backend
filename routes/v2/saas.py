@@ -1949,12 +1949,21 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
         return error
 
     payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, Mapping):
+        return _error_response("Publica un objeto JSON valido", 400, "invalid_payload", "send_json_object")
     dry_run = payload.get("dry_run", True) is not False
-    limit = max(1, min(int(payload.get("limit", 25) or 25), 100))
+    raw_limit = payload.get("limit", 25)
+    try:
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, (int, str)):
+            raise ValueError
+        limit = max(1, min(int(raw_limit), 100))
+    except (TypeError, ValueError, OverflowError):
+        return _error_response("limit debe ser un entero", 400, "limit_invalid", "send_integer_limit")
     routing = build_employee_routing_payload(tenant)
     recommendations = routing.get("recommendations") or []
     explicit_tickets = payload.get("tickets") if isinstance(payload.get("tickets"), list) else []
     expected_by_identity = {}
+    expected_suggestions = {}
     if not dry_run:
         if not explicit_tickets:
             return _error_response("La autoasignacion requiere tickets e identidad esperada explicitos", 400,
@@ -1968,14 +1977,27 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
                 if target_id is None or identity in expected_by_identity or "expected_assignee_id" not in target:
                     raise TicketAssignmentPolicyError(400, "assignment_target_invalid", "Publica identidades unicas y expected_assignee_id", "send_unique_assignment_targets")
                 assignment_id(target["expected_assignee_id"], field_name="expected_assignee_id")
+                if "expected_suggested_assignee_id" in target:
+                    try:
+                        suggested_id = assignment_id(
+                            target["expected_suggested_assignee_id"], field_name="expected_suggested_assignee_id",
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        suggested_id = None
+                    if suggested_id is None:
+                        raise TicketAssignmentPolicyError(
+                            400, "expected_suggested_assignee_id_invalid", "expected_suggested_assignee_id requiere un empleado",
+                            "send_valid_expected_suggested_assignee_id",
+                        )
+                    expected_suggestions[identity] = suggested_id
                 expected_by_identity[identity] = target
         except TicketAssignmentPolicyError as exc:
             return _assignment_hotfix_error(exc)
     if explicit_tickets:
-        wanted = {
+        wanted = set(expected_by_identity) if not dry_run else {
             (str(item.get("source_model") or ""), int(item.get("id") or item.get("ticket_id") or 0))
             for item in explicit_tickets
-            if str(item.get("source_model") or "") and str(item.get("id") or item.get("ticket_id") or "").isdigit()
+            if isinstance(item, Mapping) and str(item.get("source_model") or "") and str(item.get("id") or item.get("ticket_id") or "").isdigit()
         }
         recommendations = [
             item
@@ -1987,8 +2009,36 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
             in wanted
         ]
 
+    recommendations = recommendations[:limit]
+    if expected_suggestions:
+        # Freeze the reviewed selection before invoking any assignment writer.
+        # A newly assigned/missing case, duplicate recommendation, truncated
+        # selection or changed suggested operator requires a fresh preview.
+        current_suggestions = {}
+        try:
+            for item in recommendations:
+                ticket_ref = item.get("ticket") or {}
+                identity = (
+                    ticket_ref.get("source_model"), assignment_alias_id(ticket_ref, ("id", "ticket_id")),
+                )
+                if identity in current_suggestions:
+                    raise ValueError("duplicate_recommendation")
+                assignee_ref = item.get("suggested_assignee") or {}
+                current_suggestions[identity] = assignment_alias_id(assignee_ref, ("id", "employee_id"))
+            preview_matches = set(current_suggestions) == set(expected_by_identity) and all(
+                current_suggestions.get(identity) == suggested_id
+                for identity, suggested_id in expected_suggestions.items()
+            )
+        except (AttributeError, TypeError, ValueError):
+            preview_matches = False
+        if not preview_matches:
+            return _error_response(
+                "Las sugerencias cambiaron; revisa una nueva vista previa", 409,
+                "routing_preview_changed", "refresh_routing_preview",
+            )
+
     results = []
-    for item in recommendations[:limit]:
+    for item in recommendations:
         ticket_ref = item.get("ticket") or {}
         assignee_ref = item.get("suggested_assignee") or {}
         assignee_id = assignee_ref.get("id") or assignee_ref.get("employee_id")
