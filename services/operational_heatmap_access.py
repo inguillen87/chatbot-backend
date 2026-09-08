@@ -150,7 +150,7 @@ def build_employee_aggregated_heatmap(
         ],
     }
 
-    return {
+    payload = {
         "contract_version": "operations.heatmap.v1",
         "tenant": {
             "slug": getattr(tenant, "slug", None),
@@ -205,3 +205,16 @@ def build_employee_aggregated_heatmap(
             "cells": geojson_cells,
         },
     }
+    # Only public territory metadata crosses the privacy projection. Exact
+    # points, rejected records, and review counts remain absent; k=5 is intact.
+    jurisdiction = (exact_payload or {}).get("jurisdiction")
+    if isinstance(jurisdiction, dict):
+        payload["jurisdiction"] = jurisdiction
+        boundaries = ((exact_payload or {}).get("geo_layers") or {}).get("boundaries")
+        if isinstance(boundaries, dict):
+            payload["geo_layers"]["boundaries"] = {
+                **boundaries,
+                "features": [{key: value for key, value in feature.items() if key != "id"}
+                             for feature in boundaries.get("features") or []],
+            }
+    return payload

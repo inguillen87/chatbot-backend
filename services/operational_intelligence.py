@@ -43,6 +43,12 @@ from services.survey_response_provenance import (
     build_survey_response_provenance,
 )
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.operational_jurisdiction import (
+    coordinate_jurisdiction_status,
+    public_jurisdiction,
+    resolve_tenant_jurisdiction,
+    scope_heatmap_points,
+)
 
 
 _CLOSED_STATES = {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
@@ -3310,6 +3316,8 @@ def build_operational_heatmap(
         if _point_matches_filters(point, filters) and _point_matches_bbox(point, bbox):
             points.append(point)
 
+    jurisdiction = resolve_tenant_jurisdiction(tenant)
+    points, jurisdiction_review = scope_heatmap_points(points, tenant, jurisdiction)
     points = points[:max_points]
     cells: dict[str, dict[str, Any]] = {}
     recent_cutoff = (_aware_datetime(end_date) or datetime.now(timezone.utc)) - timedelta(hours=24)
@@ -3376,6 +3384,12 @@ def build_operational_heatmap(
 
     cell_items = []
     for cell in cells.values():
+        # A rounded aggregate center can cross a concave boundary. Omit that
+        # cell rather than move it or publish an outside hotspot.
+        if jurisdiction.get("containment_verified") and coordinate_jurisdiction_status(
+            cell["lat"], cell["lng"], jurisdiction
+        ) != "within":
+            continue
         cell_items.append(
             {
                 "id": cell["id"],
@@ -3450,6 +3464,8 @@ def build_operational_heatmap(
         location_quality=location_quality,
         max_points=max_points,
     )
+    if not points and jurisdiction_review.get("reason_code"):
+        quality.update({"state": "blocked", "reason_code": jurisdiction_review["reason_code"]})
     realtime = _heatmap_realtime_contract(points)
     if include_ai:
         ai_insights = build_collection_ai_insights(
@@ -3466,6 +3482,8 @@ def build_operational_heatmap(
     ai_summary = ai_insights.get("summary") or {}
     heatmap_summary = {
         "points": len(points),
+        "outside_jurisdiction": jurisdiction_review["outside_jurisdiction_count"],
+        "unverified_jurisdiction": jurisdiction_review["unverified_jurisdiction_count"],
         "cells": len(cell_items),
         "operational_hotspots": len(operational_hotspots),
         "can_render_heatmap": bool(points),
@@ -3531,6 +3549,8 @@ def build_operational_heatmap(
         hotspots=hotspots,
         category_layers=category_layers,
     )
+    if jurisdiction.get("boundary_feature_collection"):
+        geo_layers["boundaries"] = jurisdiction["boundary_feature_collection"]
     map_layers = _heatmap_map_layers(
         geo_layers=geo_layers,
         category_layers=category_layers,
@@ -3540,11 +3560,13 @@ def build_operational_heatmap(
     payload = {
         "contract_version": "operations.heatmap.v1",
         "tenant": _tenant_ref(tenant),
+        "jurisdiction": public_jurisdiction(jurisdiction),
+        "jurisdiction_review": jurisdiction_review,
         "period": {"from": _iso(start_date), "to": _iso(end_date)},
         "render_contract": {
             "state": "ready" if points else "empty",
             "can_render_heatmap": bool(points),
-            "empty_reason": None if points else "no_real_geo_points",
+            "empty_reason": None if points else (jurisdiction_review.get("reason_code") or "no_real_geo_points"),
             "map_engine": "maplibre",
             "layers": ["tickets", "surveys", "analytics_events", "commerce_activity", "ai_risk", "whatsapp_activity"],
             "point_format": {"lat": "number", "lng": "number", "weight": "number"},
