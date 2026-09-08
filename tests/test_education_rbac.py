@@ -353,7 +353,7 @@ class TestEducationRbac(unittest.TestCase):
         assignment = self.client.post(
             f"/api/v1/education/cases/{case['school_case_id']}/assign",
             headers=self.owner_headers,
-            json={"assignee_id": foreign_staff.id},
+            json={"assignee_id": foreign_staff.id, "expected_assignee_id": None},
         )
         self.assertEqual(assignment.status_code, 400)
         self.assertEqual(
@@ -387,7 +387,7 @@ class TestEducationRbac(unittest.TestCase):
         assignment = self.client.post(
             f"/api/v1/education/cases/{case['school_case_id']}/assign",
             headers=self.owner_headers,
-            json={"assignee_id": employee.id},
+            json={"assignee_id": employee.id, "expected_assignee_id": None},
         )
         self.assertEqual(assignment.status_code, 200, assignment.get_json())
 

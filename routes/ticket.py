@@ -2192,6 +2192,8 @@ def serialize_ticket_to_json(
     serialized_data = {
         "id": ticket.id,
         "tipo": ticket_type,
+        "source_model": "MunicipioTicket" if ticket_type == "municipio" else "PymeTicket",
+        "ticket_type": ticket_type,
         "nro_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "asunto": getattr(ticket, 'asunto', 'Sin Asunto'),
         "estado": estado_serializado,
@@ -3055,6 +3057,8 @@ def _serialize_ticket_details(ticket, ticket_type):
         "id": ticket.id,
         "id_ticket": _generate_friendly_ticket_id(ticket, ticket_type),
         "tipo": ticket_type,
+        "source_model": "MunicipioTicket" if ticket_type == "municipio" else "PymeTicket",
+        "ticket_type": ticket_type,
         "nro_ticket_original": ticket.nro_ticket, # Mantenemos el nro original por si acaso
         "asunto": getattr(ticket, 'asunto', ''),
         "categoria_reclamo": getattr(ticket, 'categoria', ''),
@@ -3401,8 +3405,9 @@ def get_ticket_details(current_user: User, ticket_id: int):
 
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignar', methods=['POST', 'PUT'])
 @token_requerido
-@require_role('admin', 'empleado')
+@require_role('admin', 'empleado', 'supervisor')
 def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
+    from services.ticket_assignment_policy import TicketAssignmentPolicyError, actor_can_assign_tickets, assignment_alias_id, lock_assignment_ticket
     if tipo not in {"municipio", "pyme"}:
         return jsonify({"error": "Tipo de ticket no soportado para asignación."}), 400
 
@@ -3417,23 +3422,19 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
     if not _ticket_scope_access_allows(tipo, ticket_obj, current_user):
         return jsonify({"error": "Ticket no encontrado."}), 404
 
+    ticket_obj = lock_assignment_ticket(ticket_obj)
+    if not _ticket_scope_access_allows(tipo, ticket_obj, current_user):
+        return jsonify({"error": "Ticket no encontrado."}), 404
+
     data = request.get_json(silent=True) or {}
-    requested_user_id = (
-        data.get("user_id")
-        or data.get("assigned_user_id")
-        or data.get("assigned_to")
-        or data.get("agent_id")
-        or data.get("responsable_id")
-    )
-    if isinstance(requested_user_id, dict):
-        requested_user_id = requested_user_id.get("id") or requested_user_id.get("user_id")
     try:
-        requested_user_id = int(requested_user_id) if requested_user_id not in (None, "", "null") else None
-    except (TypeError, ValueError):
-        return jsonify({"error": "El agente seleccionado no es vÃ¡lido."}), 400
+        requested_user_id = assignment_alias_id(data, ("user_id", "assigned_user_id", "assigned_to", "agent_id", "responsable_id", "assignee_id"))
+    except TicketAssignmentPolicyError as exc:
+        return jsonify({"error": exc.message, "reason_code": exc.reason_code}), exc.status_code
     auto = bool(data.get("auto"))
 
-    if _is_employee_user(current_user):
+    self_claim = _is_employee_user(current_user) and not actor_can_assign_tickets(current_user)
+    if self_claim:
         if ticket_obj.asignado_a_id and ticket_obj.asignado_a_id != current_user.id:
             return jsonify({"error": "El ticket ya está asignado a otro agente."}), 400
         requested_user_id = current_user.id
@@ -3446,6 +3447,8 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
                 empleado_id=requested_user_id,
                 auto=auto or requested_user_id is None,
                 actor_id=current_user.id,
+                assignment_payload=data,
+                self_claim=self_claim,
             )
         else:
             empleado_asignado = servicio_tickets.asignar_ticket_pyme(
@@ -3453,7 +3456,12 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
                 empleado_id=requested_user_id,
                 auto=auto or requested_user_id is None,
                 actor_id=current_user.id,
+                assignment_payload=data,
+                self_claim=self_claim,
             )
+    except TicketAssignmentPolicyError as exc:
+        db.session.rollback()
+        return jsonify({"error": exc.message, "reason_code": exc.reason_code}), exc.status_code
     except ValueError as exc:
         db.session.rollback()
         return jsonify({
@@ -3517,7 +3525,7 @@ def asignar_ticket(current_user: User, tipo: str, ticket_id: int):
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/assign', methods=['POST', 'PUT'])
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/asignacion', methods=['POST', 'PUT'])
 @token_requerido
-@require_role('admin', 'empleado')
+@require_role('admin', 'empleado', 'supervisor')
 def asignar_ticket_alias(current_user: User, tipo: str, ticket_id: int):
     """Alias en inglés para compatibilidad con frontends que usan `/assign`.
 

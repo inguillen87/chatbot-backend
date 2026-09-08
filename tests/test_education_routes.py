@@ -902,7 +902,7 @@ class TestEducationRoutes(unittest.TestCase):
         assign_resp = self.client.post(
             f"/api/v1/education/cases/{case_id}/assign",
             headers=self.auth_header,
-            json={"assignee_id": self.owner.id},
+            json={"assignee_id": self.owner.id, "expected_assignee_id": None},
         )
         self.assertEqual(assign_resp.status_code, 200)
         self.assertEqual(assign_resp.get_json()["ticket"]["asignado_a_id"], self.owner.id)

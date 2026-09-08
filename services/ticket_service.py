@@ -31,7 +31,7 @@ from services.employee_ticket_access import (
     ticket_assignee_is_compatible,
 )
 from utils.time_utils import datetime_to_iso_utc, get_local_now
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from .integracion_municipal import enviar_ticket_a_sigem # SIGEM Integration
@@ -284,32 +284,21 @@ class ServicioTickets:
             owner_resolution = None
         if owner_resolution is not None and owner_resolution.status == "unique":
             owner_id = owners[0]
-            conditions.extend(
-                [
+            conditions.append(
+                and_(User.tenant_id.is_(None), or_(
                     User.empresa_id == owner_id,
                     User.municipio_id == owner_id,
                     User.id == owner_id,
-                ]
+                ))
             )
         return or_(*conditions)
 
     def _pyme_employee_scope_filter(self, ticket: PymeTicket, owner_id: Optional[int]):
-        conditions = []
-        if owner_id:
-            conditions.extend(
-                [
-                    User.empresa_id == owner_id,
-                    User.pyme_id == owner_id,
-                    User.id == owner_id,
-                ]
-            )
+        # A shared business sector is not a tenant identity. Legacy orphan rows
+        # require separate ownership repair; never assign across explicit tenants.
         if getattr(ticket, "tenant_id", None):
-            conditions.append(User.tenant_id == ticket.tenant_id)
-        if getattr(ticket, "rubro_id", None):
-            conditions.append(User.rubro_id == ticket.rubro_id)
-        if not conditions:
-            conditions.append(User.id == None)  # noqa: E711
-        return or_(*conditions)
+            return User.tenant_id == ticket.tenant_id
+        return User.id == None  # noqa: E711
 
     def _empleados_para_ticket_municipal(self, ticket: MunicipioTicket) -> list[User]:
         if not ticket.municipio_id and not getattr(ticket, "tenant_id", None):
@@ -317,7 +306,7 @@ class ServicioTickets:
 
         query = User.query.filter(
             self._employee_channel_filter("municipio"),
-            User.rol.in_(["empleado", "admin"]),
+            User.es_empleado.is_(True),
             self._municipal_employee_scope_filter(ticket),
         )
 
@@ -354,17 +343,23 @@ class ServicioTickets:
         *,
         auto: bool = False,
         actor_id: Optional[int] = None,
+        assignment_payload: Optional[dict] = None,
+        self_claim: bool = False,
     ) -> Optional[User]:
         """Asigna el ticket a un empleado compatible con la categoría y municipio."""
 
         if not ticket:
             return None
 
+        from services.ticket_assignment_policy import assignment_transition, claim_transition, lock_assignment_ticket
+        if actor_id is not None:
+            ticket = lock_assignment_ticket(ticket)
+
         if empleado_id:
             empleado = User.query.filter(
                 User.id == empleado_id,
                 self._employee_channel_filter("municipio"),
-                User.rol.in_(["empleado", "admin"]),
+                User.es_empleado.is_(True),
                 self._municipal_employee_scope_filter(ticket),
             ).first()
             if not empleado:
@@ -382,6 +377,15 @@ class ServicioTickets:
 
         if not empleado:
             return None
+
+        if actor_id is not None:
+            if self_claim:
+                transition = claim_transition(actor=db.session.get(User, actor_id), current_assignee_id=ticket.asignado_a_id)
+                if transition.target_assignee_id != empleado.id:
+                    raise ValueError("claim_assignee_mismatch")
+            else:
+                assignment_transition(actor=db.session.get(User, actor_id), payload=assignment_payload or {},
+                                      current_assignee_id=ticket.asignado_a_id, target_assignee_id=empleado.id)
 
         if ticket.asignado_a_id == empleado.id:
             return empleado
@@ -427,7 +431,7 @@ class ServicioTickets:
         candidatos = (
             User.query.filter(
                 self._pyme_employee_scope_filter(ticket, owner_id),
-                User.rol.in_(["empleado", "admin"]),
+                User.es_empleado.is_(True),
                 self._employee_channel_filter("pyme"),
             )
             .order_by(User.id.asc())
@@ -459,18 +463,24 @@ class ServicioTickets:
         *,
         auto: bool = False,
         actor_id: Optional[int] = None,
+        assignment_payload: Optional[dict] = None,
+        self_claim: bool = False,
     ) -> Optional[User]:
         """Asigna el ticket de pyme a un empleado compatible."""
 
         if not ticket:
             return None
 
+        from services.ticket_assignment_policy import assignment_transition, claim_transition, lock_assignment_ticket
+        if actor_id is not None:
+            ticket = lock_assignment_ticket(ticket)
+
         if empleado_id:
             owner_id = self._resolve_pyme_owner_id(ticket, actor_id)
             empleado = User.query.filter(
                 User.id == empleado_id,
                 self._employee_channel_filter("pyme"),
-                User.rol.in_(["empleado", "admin"]),
+                User.es_empleado.is_(True),
                 self._pyme_employee_scope_filter(ticket, owner_id),
             ).first()
             if empleado and not ticket_assignee_is_compatible(empleado, ticket):
@@ -486,6 +496,15 @@ class ServicioTickets:
 
         if not empleado:
             return None
+
+        if actor_id is not None:
+            if self_claim:
+                transition = claim_transition(actor=db.session.get(User, actor_id), current_assignee_id=ticket.asignado_a_id)
+                if transition.target_assignee_id != empleado.id:
+                    raise ValueError("claim_assignee_mismatch")
+            else:
+                assignment_transition(actor=db.session.get(User, actor_id), payload=assignment_payload or {},
+                                      current_assignee_id=ticket.asignado_a_id, target_assignee_id=empleado.id)
 
         if ticket.asignado_a_id == empleado.id:
             return empleado
@@ -1417,6 +1436,9 @@ class ServicioTickets:
             raise TicketIdempotencyValidationError(
                 "TenantTicket tenant_id does not match its reply idempotency tenant."
             )
+
+        from services.ticket_assignment_policy import lock_assignment_ticket
+        ticket = lock_assignment_ticket(ticket)
 
         body = str(reply_data.get("body") or "").strip()
         if not body:

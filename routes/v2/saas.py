@@ -44,6 +44,10 @@ from services.employee_ticket_access import (
     employee_ticket_category_access_allows,
     ticket_assignee_is_compatible,
 )
+from services.ticket_assignment_policy import (
+    TicketAssignmentPolicyError, actor_can_assign_tickets, assignment_alias_id,
+    assignment_id, assignment_transition, claim_transition,
+)
 from services.employee_routing import (
     build_employee_routing_payload,
     employee_ref,
@@ -1857,12 +1861,12 @@ def employee_coverage_v2(current_user, tenant_slug: str | None = None):
 @v2_saas_bp.route("/employee-routing", methods=["GET"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/employee-routing", methods=["GET"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "super_admin")
 def employee_routing_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    return _json_response(build_employee_routing_payload(tenant))
+    return _json_response(build_employee_routing_payload(tenant, viewer=current_user))
 
 
 @v2_saas_bp.route("/employees/<int:employee_id>/routing-scope", methods=["PATCH", "POST"])
@@ -1907,7 +1911,15 @@ def update_employee_routing_scope_v2(current_user, employee_id: int, tenant_slug
     )
 
 
-def _apply_employee_assignment(ticket: Any, assignee: User, actor: User) -> dict[str, Any]:
+def _apply_employee_assignment(ticket: Any, assignee: User, actor: User, *, assignment_payload: Mapping[str, Any]) -> dict[str, Any]:
+    from services.ticket_assignment_policy import lock_assignment_ticket
+    ticket = lock_assignment_ticket(ticket)
+    if not ticket_assignee_is_compatible(assignee, ticket):
+        raise TicketAssignmentPolicyError(409, "assignee_category_scope_mismatch", "La categoria cambio o no esta autorizada", "refresh_ticket_assignment")
+    current_id = _ticket_extra(ticket).get("assignee_id") if isinstance(ticket, TenantTicket) else ticket.asignado_a_id
+    transition = assignment_transition(actor=actor, payload=assignment_payload, current_assignee_id=current_id, target_assignee_id=assignee.id)
+    if transition.replayed:
+        return {"assignee_id": assignee.id, "replayed": True}
     now = datetime.now(timezone.utc)
     if isinstance(ticket, TenantTicket):
         extra = dict(ticket.datos_extra) if isinstance(ticket.datos_extra, dict) else {}
@@ -1942,6 +1954,23 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
     routing = build_employee_routing_payload(tenant)
     recommendations = routing.get("recommendations") or []
     explicit_tickets = payload.get("tickets") if isinstance(payload.get("tickets"), list) else []
+    expected_by_identity = {}
+    if not dry_run:
+        if not explicit_tickets:
+            return _error_response("La autoasignacion requiere tickets e identidad esperada explicitos", 400,
+                                   "explicit_assignment_targets_required", "send_ticket_targets_with_expected_assignee")
+        try:
+            for target in explicit_tickets:
+                if not isinstance(target, Mapping) or target.get("source_model") not in {"MunicipioTicket", "TenantTicket", "PymeTicket"}:
+                    raise TicketAssignmentPolicyError(400, "source_model_required", "source_model no valido", "send_canonical_ticket_identity")
+                target_id = assignment_alias_id(target, ("id", "ticket_id"))
+                identity = (target["source_model"], target_id)
+                if target_id is None or identity in expected_by_identity or "expected_assignee_id" not in target:
+                    raise TicketAssignmentPolicyError(400, "assignment_target_invalid", "Publica identidades unicas y expected_assignee_id", "send_unique_assignment_targets")
+                assignment_id(target["expected_assignee_id"], field_name="expected_assignee_id")
+                expected_by_identity[identity] = target
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_hotfix_error(exc)
     if explicit_tickets:
         wanted = {
             (str(item.get("source_model") or ""), int(item.get("id") or item.get("ticket_id") or 0))
@@ -1972,7 +2001,14 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
             assignee = User.query.filter_by(id=int(assignee_id), tenant_id=tenant.id, es_empleado=True).first()
             ticket = find_ticket_for_assignment(tenant, source_model, int(ticket_id))
             if assignee and ticket and ticket_assignee_is_compatible(assignee, ticket):
-                assignment = _apply_employee_assignment(ticket, assignee, current_user)
+                try:
+                    assignment = _apply_employee_assignment(
+                        ticket, assignee, current_user,
+                        assignment_payload=expected_by_identity[(source_model, int(ticket_id))],
+                    )
+                except TicketAssignmentPolicyError as exc:
+                    db.session.rollback()
+                    return _assignment_hotfix_error(exc)
                 applied = True
             elif assignee and ticket:
                 assignment_reason = "assignee_category_scope_mismatch"
@@ -4522,7 +4558,7 @@ def operational_queue_v2(current_user):
 
 @v2_saas_bp.route("/inbox/omnichannel", methods=["GET"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "super_admin", "supervisor")
 def omnichannel_inbox_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -4861,12 +4897,22 @@ def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> li
                 "Los reintentos conservan la misma identidad sin duplicar el envio."
             ),
         },
-        {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
+        {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint,
+         "requires": ["assignee_id", "expected_assignee_id"],
+         "permission": "tickets.assign", "contract_version": "inbox.assignment_cas.v1",
+         "payload_defaults": {"source_model": "TenantTicket", "ticket_id": ticket.id,
+                              "expected_assignee_id": extra.get("assignee_id")}},
         {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
     ]
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
-    actions.extend(_handoff_action_contracts(endpoint=base_endpoint, handoff=handoff))
+    actions.extend(_handoff_action_contracts(endpoint=base_endpoint, handoff=handoff,
+        payload_defaults={"source_model": "TenantTicket", "ticket_id": ticket.id}))
+    if status not in _CLOSED_TICKET_STATES and not extra.get("assignee_id"):
+        actions.append({"id": "claim", "label": "Tomar para mi", "method": "POST", "endpoint": base_endpoint,
+                        "requires": [], "permission": "operational_employee",
+                        "payload_defaults": {"source_model": "TenantTicket", "ticket_id": ticket.id}})
     if status in _CLOSED_TICKET_STATES:
+        actions = [item for item in actions if item["id"] != "assign"]
         actions.append({"id": "reopen", "label": "Reabrir", "method": "POST", "endpoint": base_endpoint, "requires": []})
     else:
         actions.append({"id": "close", "label": "Cerrar", "method": "POST", "endpoint": base_endpoint, "requires": [], "destructive": True})
@@ -5103,8 +5149,10 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "label": "Asignar",
             "method": "POST",
             "endpoint": base_endpoint,
-            "requires": ["assignee_id"],
-            "payload_defaults": defaults,
+            "requires": ["assignee_id", "expected_assignee_id"],
+            "permission": "tickets.assign",
+            "contract_version": "inbox.assignment_cas.v1",
+            "payload_defaults": {**defaults, "expected_assignee_id": ticket.asignado_a_id},
         },
     ]
     actions.extend(
@@ -5115,6 +5163,7 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
         )
     )
     if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+        actions = [item for item in actions if item["id"] != "assign"]
         actions.append(
             {
                 "id": "reopen",
@@ -5126,6 +5175,10 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             }
         )
     else:
+        if not ticket.asignado_a_id:
+            actions.append({"id": "claim", "label": "Tomar para mi", "method": "POST",
+                            "endpoint": base_endpoint, "requires": [], "permission": "operational_employee",
+                            "payload_defaults": defaults})
         actions.append(
             {
                 "id": "close",
@@ -5339,14 +5392,27 @@ def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, A
 
 @v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>", methods=["GET"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "super_admin", "supervisor")
 def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    source_model = str(request.args.get("source_model") or "").strip().lower()
-    if source_model in {"municipioticket", "municipio_ticket", "municipio"}:
+    source_model = None
+    if "source_model" in request.args:
+        try:
+            source_model = _assignment_source_model(request.args.get("source_model"))
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_hotfix_error(exc)
+    if source_model == "PymeTicket":
+        ticket = PymeTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
+        if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+        from routes.ticket import serialize_ticket_to_json
+        item = serialize_ticket_to_json(ticket, "pyme")
+        return _json_response({"contract_version": "inbox.omnichannel.detail.v1", "tenant": _tenant_ref(tenant),
+                               "item": item, "ticket": item})
+    if source_model == "MunicipioTicket":
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if not legacy_ticket or not employee_ticket_category_access_allows(current_user, legacy_ticket):
             return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
@@ -5363,6 +5429,8 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
 
     ticket = TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
     if not ticket:
+        if source_model == "TenantTicket":
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if legacy_ticket and employee_ticket_category_access_allows(current_user, legacy_ticket):
             item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
@@ -5912,17 +5980,120 @@ def _emit_legacy_claim_realtime_state(
     return emitted
 
 
+def _assignment_hotfix_error(error: TicketAssignmentPolicyError):
+    return _error_response(error.message, error.status_code, error.reason_code, error.action_hint)
+
+
+def _assignment_source_model(value):
+    aliases = {"municipioticket": "MunicipioTicket", "municipio_ticket": "MunicipioTicket",
+               "municipio": "MunicipioTicket", "legacy_claim": "MunicipioTicket",
+               "tenantticket": "TenantTicket", "tenant_ticket": "TenantTicket", "tenant": "TenantTicket",
+               "pymeticket": "PymeTicket", "pyme_ticket": "PymeTicket", "pyme": "PymeTicket"}
+    source = aliases.get(str(value or "").strip().lower())
+    if source is None:
+        raise TicketAssignmentPolicyError(400, "source_model_required", "Publica un source_model valido", "send_canonical_ticket_identity")
+    return source
+
+
+def _atomic_inbox_assignment(current_user, tenant, ticket, payload, action):
+    """The caller has tenant/category-authorized and locked the exact backing row.
+
+    Assignment and its local audit are committed together. No provider, migration,
+    outbox, or infrastructure changes are involved in this production backport.
+    """
+    is_legacy = isinstance(ticket, (MunicipioTicket, PymeTicket))
+    source_model = type(ticket).__name__
+    extra = deepcopy(_ticket_extra(ticket))
+    current_id = ticket.asignado_a_id if is_legacy else extra.get("assignee_id")
+    try:
+        if action == "claim":
+            transition = claim_transition(actor=current_user, current_assignee_id=current_id)
+        else:
+            target_id = assignment_alias_id(payload, ("assignee_id", "user_id"))
+            if target_id is None:
+                raise TicketAssignmentPolicyError(400, "assignee_required", "assignee_id es obligatorio", "send_assignee_id")
+            transition = assignment_transition(
+                actor=current_user, payload=payload, current_assignee_id=current_id, target_assignee_id=target_id,
+            )
+        assignee = User.query.filter_by(
+            id=transition.target_assignee_id, tenant_id=tenant.id, es_empleado=True,
+        ).first()
+        if not assignee:
+            return _error_response("Empleado operativo no encontrado", 404, "assignee_not_found", "choose_valid_assignee")
+        if not ticket_assignee_is_compatible(assignee, ticket):
+            return _error_response("Categoria no autorizada", 409, "assignee_category_scope_mismatch", "choose_compatible_assignee")
+        if not transition.replayed and str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response("El ticket esta cerrado", 409, "ticket_closed", "reopen_ticket")
+    except TicketAssignmentPolicyError as exc:
+        return _assignment_hotfix_error(exc)
+
+    previous_status = str(ticket.estado or "")
+    if not transition.replayed:
+        now = datetime.now(timezone.utc)
+        body = f"Ticket tomado por {assignee.name}" if action == "claim" else f"Asignado a {assignee.name}"
+        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+            ticket.estado = "en_proceso"
+        if is_legacy:
+            ticket.asignado_a_id = assignee.id
+            ticket.asignado_en = now
+            if hasattr(ticket, "ultima_actividad"):
+                ticket.ultima_actividad = now
+            db.session.add(TicketComentario(
+                municipio_ticket_id=ticket.id if isinstance(ticket, MunicipioTicket) else None,
+                pyme_ticket_id=ticket.id if isinstance(ticket, PymeTicket) else None,
+                comentario=body, user_id=current_user.id,
+                es_admin=True, origen="admin_panel", estado_ticket=ticket.estado,
+            ))
+        else:
+            extra.update(assignee_id=assignee.id, assignee_name=assignee.name, assignee_email=assignee.email)
+            _append_ticket_event(extra, action=action, actor=current_user, body=body)
+            ticket.datos_extra = extra
+            ticket.updated_at = now
+            flag_modified(ticket, "datos_extra")
+        db.session.add(ticket)
+        db.session.commit()
+        if isinstance(ticket, MunicipioTicket):
+            _emit_legacy_claim_realtime_state(ticket, action="assign", previous_status=previous_status)
+
+    live_status = _tenant_inbox_live_chat_status(tenant)
+    if isinstance(ticket, PymeTicket):
+        from routes.ticket import serialize_ticket_to_json
+        item = serialize_ticket_to_json(ticket, "pyme")
+    else:
+        item = _legacy_claim_inbox_payload(ticket, live_chat_status=live_status) if is_legacy else _inbox_ticket_payload(ticket, live_chat_status=live_status)
+    return _json_response({
+        "ok": True, "contract_version": "inbox.omnichannel.action.v1", "tenant": _tenant_ref(tenant),
+        "action": action, "ticket": item,
+        "delivery": {
+            "external_dispatch": False, "timeline_updated": not transition.replayed,
+            "source_model": source_model, "idempotent_replay": transition.replayed,
+            "assignment": {"contract_version": "inbox.assignment_cas.v1", "expected_assignee_id": transition.expected_assignee_id,
+                           "assignee_id": assignee.id, "replayed": transition.replayed},
+        },
+    })
+
+
 def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfile, ticket_id: int, payload: Mapping[str, Any]):
     ticket = (
         _legacy_claim_query_for_tenant(tenant)
         .filter(MunicipioTicket.id == ticket_id)
         .with_for_update()
+        .populate_existing()
         .first()
     )
     if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
+    if action in {"claim", "assign"}:
+        return _atomic_inbox_assignment(current_user, tenant, ticket, payload, action)
+    if action == "accept_handoff":
+        try:
+            claim_transition(actor=current_user, current_assignee_id=ticket.asignado_a_id)
+            if not ticket_assignee_is_compatible(current_user, ticket):
+                return _error_response("Categoria no autorizada", 404, "ticket_not_found", "refresh_inbox")
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_hotfix_error(exc)
     if action not in {"assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen"}:
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
 
@@ -6281,7 +6452,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
 @v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>/actions", methods=["POST"])
 @v2_saas_bp.route("/inbox/omnichannel/actions", methods=["POST"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "super_admin")
 def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     payload = _omnichannel_action_json_payload()
 
@@ -6290,10 +6461,35 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         return error
 
     source_model = payload.get("source_model") or payload.get("legacy_model")
+    action = str(payload.get("action") or payload.get("type") or "").strip().lower()
+    if action in {"claim", "assign", "accept_handoff"}:
+        try:
+            actions = [str(payload[key]).strip().lower() for key in ("action", "type") if key in payload]
+            if len(set(actions)) != 1:
+                raise TicketAssignmentPolicyError(400, "action_identity_conflict", "Las acciones no coinciden", "send_consistent_action")
+            sources = [_assignment_source_model(payload[key]) for key in ("source_model", "legacy_model") if key in payload]
+            if not sources or len(set(sources)) != 1:
+                raise TicketAssignmentPolicyError(400, "source_model_required", "Publica un source_model canonico", "send_canonical_ticket_identity")
+            source_model = sources[0]
+            body_id = assignment_alias_id(payload, ("ticket_id", "legacy_id", "id"))
+            if body_id is not None and ticket_id is not None and body_id != ticket_id:
+                raise TicketAssignmentPolicyError(400, "ticket_identity_conflict", "La identidad del ticket no coincide", "send_consistent_ticket_identity")
+            if ticket_id is None and body_id is None:
+                raise TicketAssignmentPolicyError(400, "ticket_id_required", "ticket_id es obligatorio", "send_ticket_id")
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_hotfix_error(exc)
     raw_ticket_id = ticket_id or payload.get("legacy_id") or payload.get("ticket_id") or payload.get("id")
     resolved_ticket_id = _coerce_inbox_ticket_id(raw_ticket_id)
     if resolved_ticket_id is None:
         return _error_response("ticket_id es obligatorio", 400, "ticket_id_required", "send_ticket_id")
+
+    if source_model == "PymeTicket" and action in {"claim", "assign", "accept_handoff"}:
+        ticket = PymeTicket.query.filter_by(id=resolved_ticket_id, tenant_id=tenant.id).populate_existing().with_for_update().first()
+        if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+        if action == "accept_handoff":
+            return _error_response("Derivacion no soportada para este tipo de ticket", 400, "unsupported_inbox_action", "use_supervised_assignment")
+        return _atomic_inbox_assignment(current_user, tenant, ticket, payload, action)
 
     if _is_legacy_claim_source(source_model) or (isinstance(raw_ticket_id, str) and raw_ticket_id.startswith("municipio:")):
         return _omnichannel_legacy_claim_action_v2(current_user, tenant, resolved_ticket_id, payload)
@@ -6301,12 +6497,22 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     ticket = (
         TenantTicket.query.filter_by(id=resolved_ticket_id, tenant_id=tenant.id)
         .with_for_update()
+        .populate_existing()
         .first()
     )
     if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
+    if action in {"claim", "assign"}:
+        return _atomic_inbox_assignment(current_user, tenant, ticket, payload, action)
+    if action == "accept_handoff":
+        try:
+            claim_transition(actor=current_user, current_assignee_id=_ticket_extra(ticket).get("assignee_id"))
+            if not ticket_assignee_is_compatible(current_user, ticket):
+                return _error_response("Categoria no autorizada", 404, "ticket_not_found", "refresh_inbox")
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_hotfix_error(exc)
     if action not in {
         "assign",
         "reply",

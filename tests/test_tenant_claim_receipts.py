@@ -444,11 +444,14 @@ class TenantClaimReceiptTest(unittest.TestCase):
                 "categoria": "alumbrado",
                 "lat": -34.6,
                 "lng": -58.4,
-                "metadata": {"comments": [{"message": "no publicar"}]},
             },
             key="claim-intake-tracking-0001",
         )
         self.assertEqual(response.status_code, 201)
+        # Internal audit metadata is now server-owned, never public intake input.
+        ticket = TenantTicket.query.one()
+        ticket.datos_extra = {**(ticket.datos_extra or {}), "comments": [{"message": "no publicar"}]}
+        db.session.commit()
         return response.get_json()
 
     def test_tenant_tracking_accepts_only_x_tracking_pin_and_does_not_echo_secrets(self):

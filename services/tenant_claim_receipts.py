@@ -36,6 +36,9 @@ _MAX_EXTRAS_DEPTH = 10
 _MAX_EXTRAS_ITEMS = 512
 _MIN_SECRET_BYTES = 32
 _RESERVED_EXTRAS_KEYS = {
+    "assignee_id", "assignee_name", "assignee_email", "assigned_user_id", "assigned_agent_id",
+    "assigned_to", "asignado_a_id", "handoff", "handoff_state", "closed_by", "closed_at",
+    "reopened_by", "reopened_at", "timeline", "events", "comments", "handoff_history",
     "access_pin",
     "claim_pin",
     "consulta_pin",

@@ -13,9 +13,10 @@ from models import TenantTicket, User, TicketComentario
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
+    employee_ticket_category_access_allows,
     ticket_assignee_category_values_are_compatible,
 )
-from services.v2.sla_service import apply_sla_to_ticket, get_policies_for_tenant, is_ticket_overdue
+from services.v2.sla_service import apply_sla_to_ticket, get_policies_for_tenant, is_ticket_overdue, _sla_fields_for_ticket
 from services.v2.ticket_event_service import record_ticket_event
 
 _ALLOWED_STATUSES = {
@@ -78,12 +79,12 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
-def _sla_status(ticket: TenantTicket) -> str:
-    if is_ticket_overdue(ticket):
+def _sla_status(ticket: TenantTicket, *, sla_override: dict[str, Any] | None = None) -> str:
+    if is_ticket_overdue(ticket, sla_override=sla_override):
         return "breached"
 
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
-    sla = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
+    sla = sla_override if isinstance(sla_override, dict) else (extra.get("sla") if isinstance(extra.get("sla"), dict) else {})
     due = _parse_iso(sla.get("resolution_due_at") or sla.get("next_update_due_at"))
     if due is None:
         return "ok"
@@ -317,7 +318,8 @@ def _assisted_marketplace_fields(extra: dict[str, Any], attachments: list[dict[s
     }
 
 
-def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dict[str, Any]:
+def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None,
+                     sla_override: dict[str, Any] | None = None) -> dict[str, Any]:
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
     role = _role_of(viewer)
     comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
@@ -325,7 +327,7 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
         comments = [c for c in comments if (c.get("visibility") or "public") == "public"]
     assignee_id = extra.get("assignee_id")
     assignee = _assignee_payload(assignee_id)
-    sla_status = _sla_status(ticket)
+    sla_status = _sla_status(ticket, sla_override=sla_override)
 
     attachments = ticket_attachment_payloads(ticket)
     assisted_fields = _assisted_marketplace_fields(extra, attachments)
@@ -352,8 +354,8 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
             "lat": ticket.latitud,
             "lng": ticket.longitud,
         },
-        "sla": extra.get("sla") or {},
-        "overdue": is_ticket_overdue(ticket),
+        "sla": sla_override if sla_override is not None else extra.get("sla") or {},
+        "overdue": is_ticket_overdue(ticket, sla_override=sla_override),
         "comments": [serialize_comment(c) for c in comments],
         "attachmentInfo": attachments[0] if attachments else None,
         "attachments": attachments,
@@ -366,6 +368,7 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
 
 
 def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -> TenantTicket:
+    from services.ticket_assignment_policy import assignment_transition
     title = str(payload.get("title") or "").strip()
     description = str(payload.get("description") or "").strip()
     if not title or not description:
@@ -386,13 +389,10 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
     location = _location_from_payload(payload.get("location")) if "location" in payload else {}
     assignee_id = payload.get("assignee_id")
     if assignee_id not in (None, ""):
-        try:
-            assignee_id = int(assignee_id)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("assignee_id invalido") from exc
+        transition = assignment_transition(actor=actor_user, payload=payload, current_assignee_id=None, target_assignee_id=assignee_id)
+        assignee_id = transition.target_assignee_id
         assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
-        assignee_role = str(getattr(assignee, "rol", "") or "").lower() if assignee else ""
-        is_assignable = bool(getattr(assignee, "es_empleado", False)) or assignee_role in {"empleado", "employee", "admin", "tenant_admin"}
+        is_assignable = bool(getattr(assignee, "es_empleado", False))
         if not assignee or not is_assignable:
             raise ValueError("assignee_not_found")
         if not ticket_assignee_category_values_are_compatible(
@@ -505,10 +505,9 @@ def list_tickets(*, tenant, viewer: User | None, filters: dict[str, Any]) -> tup
     paged = filtered[start:end]
 
     policies = get_policies_for_tenant(tenant)
-    for ticket in filtered:
-        apply_sla_to_ticket(ticket, policies)
-
-    items = [serialize_ticket(ticket, viewer=viewer) for ticket in paged]
+    # Listing must not rewrite a stale JSON owner while calculating SLA labels.
+    sla_by_id = {ticket.id: _sla_fields_for_ticket(ticket, policies) for ticket in filtered}
+    items = [serialize_ticket(ticket, viewer=viewer, sla_override=sla_by_id[ticket.id]) for ticket in paged]
 
     summary = {"open": 0, "in_progress": 0, "overdue": 0, "closed": 0}
     for ticket in filtered:
@@ -519,7 +518,7 @@ def list_tickets(*, tenant, viewer: User | None, filters: dict[str, Any]) -> tup
             summary["in_progress"] += 1
         else:
             summary["open"] += 1
-        if is_ticket_overdue(ticket):
+        if is_ticket_overdue(ticket, sla_override=sla_by_id[ticket.id]):
             summary["overdue"] += 1
 
     pagination = {
@@ -533,10 +532,17 @@ def list_tickets(*, tenant, viewer: User | None, filters: dict[str, Any]) -> tup
 
 
 def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, payload: dict[str, Any]) -> TenantTicket:
+    from services.ticket_assignment_policy import assignment_id, assignment_transition, lock_assignment_ticket
     if ticket.tenant_id != tenant.id:
         raise LookupError("ticket_not_found")
 
+    ticket = lock_assignment_ticket(ticket)
+    if not employee_ticket_category_access_allows(actor_user, ticket):
+        raise LookupError("ticket_not_found")
     extra = _ensure_extra(ticket)
+    if "assignee_id" in payload:
+        assignment_transition(actor=actor_user, payload=payload, current_assignee_id=extra.get("assignee_id"),
+                              target_assignee_id=payload.get("assignee_id"))
 
     validated_assignee = None
     if "assignee_id" in payload or "category" in payload:
@@ -547,25 +553,12 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
             else extra.get("assignee_id")
         )
         if final_assignee_id not in (None, ""):
-            try:
-                final_assignee_id = int(final_assignee_id)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("assignee_id invalido") from exc
+            final_assignee_id = assignment_id(final_assignee_id)
             validated_assignee = User.query.filter_by(
                 id=final_assignee_id,
                 tenant_id=tenant.id,
             ).first()
-            assignee_role = (
-                str(getattr(validated_assignee, "rol", "") or "").lower()
-                if validated_assignee
-                else ""
-            )
-            is_assignable = bool(getattr(validated_assignee, "es_empleado", False)) or assignee_role in {
-                "empleado",
-                "employee",
-                "admin",
-                "tenant_admin",
-            }
+            is_assignable = bool(getattr(validated_assignee, "es_empleado", False))
             if not validated_assignee or not is_assignable:
                 raise LookupError("assignee_not_found")
             if not ticket_assignee_category_values_are_compatible(
@@ -654,7 +647,12 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
 
 
 def add_comment(*, tenant, actor_user: User | None, ticket: TenantTicket, body: str, visibility: str) -> dict[str, Any]:
+    from services.ticket_assignment_policy import lock_assignment_ticket
     if ticket.tenant_id != tenant.id:
+        raise LookupError("ticket_not_found")
+
+    ticket = lock_assignment_ticket(ticket)
+    if not employee_ticket_category_access_allows(actor_user, ticket):
         raise LookupError("ticket_not_found")
 
     body = (body or "").strip()
