@@ -490,7 +490,7 @@ class V2SaasContractsTest(unittest.TestCase):
 
         assign_response = self.client.post(
             f"/api/v2/tenants/{tenant.slug}/employee-routing/auto-assign",
-            json={"dry_run": False, "tickets": [{"source_model": "MunicipioTicket", "id": ticket.id}]},
+            json={"dry_run": False, "tickets": [{"source_model": "MunicipioTicket", "id": ticket.id, "expected_assignee_id": None}]},
             headers={**self._auth(owner), "X-Tenant-Slug": tenant.slug, "X-Request-Id": "assign-legacy-muni-1"},
         )
 
@@ -547,7 +547,7 @@ class V2SaasContractsTest(unittest.TestCase):
             "/api/v2/employee-routing/auto-assign",
             json={
                 "dry_run": False,
-                "tickets": [{"source_model": "TenantTicket", "id": unassigned.id}],
+                "tickets": [{"source_model": "TenantTicket", "id": unassigned.id, "expected_assignee_id": None}],
             },
             headers={**self._auth(self.owner), "X-Request-Id": "routing-assign-1"},
         )
@@ -618,7 +618,7 @@ class V2SaasContractsTest(unittest.TestCase):
                 "/api/v2/employee-routing/auto-assign",
                 json={
                     "dry_run": False,
-                    "tickets": [{"source_model": "TenantTicket", "id": restricted.id}],
+                    "tickets": [{"source_model": "TenantTicket", "id": restricted.id, "expected_assignee_id": None}],
                 },
                 headers=self._auth(self.owner),
             )
@@ -4747,7 +4747,7 @@ class V2SaasContractsTest(unittest.TestCase):
         def post_action(action, user=None, **data):
             return self.client.post(
                 f"/api/v2/inbox/omnichannel/{self.ticket.id}/actions",
-                json={"action": action, **data},
+                json={"action": action, "source_model": "TenantTicket", **data},
                 headers=self._auth(user or self.owner),
             )
 
@@ -4760,7 +4760,8 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertIn("handoff", initial_actions)
         self.assertNotIn("accept_handoff", initial_actions)
         self.assertNotIn("resume_ai", initial_actions)
-        self.assertEqual(initial_actions["handoff"]["payload_defaults"], {"channel": "operator"})
+        self.assertEqual(initial_actions["handoff"]["payload_defaults"],
+                         {"channel": "operator", "source_model": "TenantTicket", "ticket_id": self.ticket.id})
         self.assertEqual(initial_actions["handoff"]["requires"], [])
         self.assertFalse(initial_actions["handoff"]["external_dispatch"])
 

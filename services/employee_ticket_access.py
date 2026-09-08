@@ -128,12 +128,7 @@ def ticket_assignee_category_values_are_compatible(
 ) -> bool:
     """Validate the assignment against the case's final category values."""
 
-    if assignee is None:
-        return False
-    role = canonical_role(getattr(assignee, "rol", None))
-    if role not in {ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, ROLE_EMPLEADO} and not bool(
-        getattr(assignee, "es_empleado", False)
-    ):
+    if assignee is None or not bool(getattr(assignee, "es_empleado", False)):
         return False
     return employee_ticket_category_values_allow(
         assignee,

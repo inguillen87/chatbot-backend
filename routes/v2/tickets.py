@@ -77,7 +77,7 @@ def _viewer_role() -> str:
 
 
 def _is_operator() -> bool:
-    return _viewer_role() in {ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, ROLE_EMPLEADO}
+    return _viewer_role() in {ROLE_SUPERADMIN, ROLE_TENANT_ADMIN, ROLE_EMPLEADO, "supervisor"}
 
 
 def _ticket_access_error(ticket: TenantTicket):
@@ -451,6 +451,7 @@ def list_tickets_v2():
 
 @v2_tickets_bp.route("/tickets", methods=["POST"])
 def create_ticket_v2():
+    from services.ticket_assignment_policy import TicketAssignmentPolicyError
     tenant, error = _resolve_tenant_or_error()
     if error:
         return error
@@ -482,6 +483,9 @@ def create_ticket_v2():
     try:
         ticket = create_ticket(tenant=tenant, actor_user=_viewer(), payload=payload)
         db.session.commit()
+    except TicketAssignmentPolicyError as exc:
+        db.session.rollback()
+        return _error_response(exc.message, exc.status_code, exc.reason_code, exc.action_hint)
     except ValueError as exc:
         db.session.rollback()
         if str(exc) == "assignee_category_scope_mismatch":
@@ -535,6 +539,7 @@ def get_ticket_v2(ticket_id: int):
 
 @v2_tickets_bp.route("/tickets/<int:ticket_id>", methods=["PATCH"])
 def patch_ticket_v2(ticket_id: int):
+    from services.ticket_assignment_policy import TicketAssignmentPolicyError
     tenant, error = _resolve_tenant_or_error()
     if error:
         return error
@@ -558,6 +563,9 @@ def patch_ticket_v2(ticket_id: int):
     try:
         updated = patch_ticket(tenant=tenant, actor_user=_viewer(), ticket=ticket, payload=payload)
         db.session.commit()
+    except TicketAssignmentPolicyError as exc:
+        db.session.rollback()
+        return _error_response(exc.message, exc.status_code, exc.reason_code, exc.action_hint)
     except LookupError as exc:
         db.session.rollback()
         if str(exc) == "assignee_not_found":
@@ -610,6 +618,9 @@ def add_ticket_comment_v2(ticket_id: int):
             visibility=payload.get("visibility") or "public",
         )
         db.session.commit()
+    except LookupError:
+        db.session.rollback()
+        return _error_response("ticket no encontrado", 404, "ticket_not_found", "refresh_tickets")
     except ValueError as exc:
         db.session.rollback()
         return _error_response(str(exc), 400, "validation_failed", "fix_comment_payload")

@@ -149,6 +149,8 @@ def detect_sla_breaches_for_tenant(
 
     query = TenantTicket.query.filter_by(tenant_id=tenant.id)
     query = apply_employee_ticket_category_scope(query, actor_user, TenantTicket)
+    if materialize:
+        query = query.populate_existing().with_for_update()
     tickets = query.all()
     for ticket in tickets:
         sla_fields = _sla_fields_for_ticket(ticket, policies)

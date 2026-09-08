@@ -154,7 +154,11 @@ def employee_scope(emp: User) -> dict[str, list[str]]:
     data = emp.accesibilidad if isinstance(emp.accesibilidad, dict) else {}
     scope = data.get("employee_scope") if isinstance(data.get("employee_scope"), dict) else {}
     return {
-        "categorias": normalize_scope_list(scope.get("categorias")),
+        "categorias": normalize_scope_list([
+            *normalize_scope_list(scope.get("categorias")),
+            *normalize_scope_list(getattr(emp, "ticket_categorias", None)),
+            *[category.nombre for category in (getattr(emp, "categorias_ticket", None) or [])],
+        ]),
         "zonas": normalize_scope_list(scope.get("zonas")),
         "permisos": normalize_scope_list(scope.get("permisos")),
         "channels": normalize_scope_list(scope.get("channels")),
@@ -370,16 +374,11 @@ def municipio_ticket_query_for_tenant(tenant: TenantProfile):
 
 
 def pyme_ticket_query_for_tenant(tenant: TenantProfile):
-    conditions = []
-    if getattr(tenant, "id", None):
-        conditions.append(PymeTicket.tenant_id == tenant.id)
-    owner = User.query.get(getattr(tenant, "pyme_id", None)) if getattr(tenant, "pyme_id", None) else None
-    rubro_id = getattr(owner, "rubro_id", None)
-    if rubro_id:
-        conditions.append(PymeTicket.rubro_id == rubro_id)
-    if not conditions:
+    # A shared business sector is not evidence that a ticket belongs to a tenant.
+    # Unbound legacy records require a separate evidence-backed repair.
+    if not getattr(tenant, "id", None):
         return PymeTicket.query.filter(False)
-    return PymeTicket.query.filter(or_(*conditions))
+    return PymeTicket.query.filter(PymeTicket.tenant_id == tenant.id)
 
 
 def _tenant_tickets(tenant: TenantProfile) -> list[Any]:
@@ -470,10 +469,19 @@ def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], work
     return candidates[0] if candidates else None
 
 
-def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
+def build_employee_routing_payload(tenant: TenantProfile, *, viewer: User | None = None) -> dict[str, Any]:
+    from services.employee_ticket_access import employee_ticket_category_values_allow
+    from utils.roles import ROLE_EMPLEADO, canonical_role
+
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).order_by(User.id.asc()).all()
     workloads = workload_by_employee(tenant)
     tickets = tenant_open_ticket_snapshots(tenant)
+    if viewer is not None and canonical_role(viewer.rol) == ROLE_EMPLEADO:
+        operational = bool(viewer.es_empleado and viewer.tenant_id == tenant.id)
+        employees = [viewer] if operational else []
+        tickets = [ticket for ticket in tickets if operational and employee_ticket_category_values_allow(
+            viewer, category=ticket.get("category"), category_id=ticket.get("category_id"),
+        )]
     unassigned = [ticket for ticket in tickets if not ticket.get("assignee_id")]
     supported_dimensions = tenant_operational_dimensions(tenant, tickets)
 

@@ -1867,6 +1867,7 @@ def reply_school_case(current_user, case_id: int, actor_principal=None):
 @education_bp.route("/api/v1/education/cases/<int:case_id>/assign", methods=["POST"])
 @token_requerido
 def assign_school_case(current_user, case_id: int, actor_principal=None):
+    from services.ticket_assignment_policy import TicketAssignmentPolicyError, assignment_alias_id, assignment_transition, lock_assignment_ticket
     actor = actor_principal or current_user
     tenant, access_response = _education_admin_context(
         current_user, actor_principal, EDUCATION_CASES_MANAGE
@@ -1892,7 +1893,12 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
 
     data = request.json or {}
     try:
-        assignee_id = _parse_optional_int(data.get("assignee_id") or data.get("asignado_a_id"), "assignee_id")
+        assignee_id = assignment_alias_id(data, ("assignee_id", "asignado_a_id"))
+        ticket = lock_assignment_ticket(ticket)
+        transition = assignment_transition(actor=actor, payload=data, current_assignee_id=ticket.asignado_a_id,
+                                          target_assignee_id=assignee_id, enforce_authorization=False)
+    except TicketAssignmentPolicyError as exc:
+        return jsonify({"error": {"code": exc.status_code, "message": exc.message}, "reason_code": exc.reason_code}), exc.status_code
     except ValueError as exc:
         return jsonify({"error": {"code": 400, "message": str(exc)}}), 400
     if not assignee_id:
@@ -1910,6 +1916,8 @@ def assign_school_case(current_user, case_id: int, actor_principal=None):
             "education_assignee_invalid",
         )
 
+    if transition.replayed:
+        return jsonify(_case_payload(alias, include_comments=True))
     ticket.asignado_a_id = assignee.id
     ticket.asignado_en = _utc_now()
     if getattr(ticket, "estado", None) == "nuevo":

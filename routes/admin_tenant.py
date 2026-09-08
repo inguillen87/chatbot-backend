@@ -2788,6 +2788,7 @@ def _serialize_admin_employee(emp: User, tenant: TenantProfile) -> dict:
 
 @admin_tenant_bp.route('/api/admin/employees', methods=['POST'])
 @token_requerido
+@require_role('admin', 'super_admin')
 @require_tenant
 def create_employee(current_user):
     """
@@ -2858,6 +2859,7 @@ def create_employee(current_user):
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>', methods=['PUT', 'PATCH'])
 @token_requerido
+@require_role('admin', 'super_admin')
 @require_tenant
 def update_employee_admin(current_user, user_id):
     tenant = g.tenant_profile
@@ -2926,6 +2928,7 @@ def update_employee_admin(current_user, user_id):
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/roles', methods=['POST'])
 @token_requerido
+@require_role('admin', 'super_admin')
 @require_tenant
 def assign_role(current_user, user_id):
     tenant = g.tenant_profile
@@ -2964,6 +2967,7 @@ def assign_role(current_user, user_id):
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/categories', methods=['POST'])
 @token_requerido
+@require_role('admin', 'super_admin')
 @require_tenant
 def assign_categories(current_user, user_id):
     tenant = g.tenant_profile
@@ -2978,7 +2982,7 @@ def assign_categories(current_user, user_id):
     category_ids = data.get('category_ids', [])
 
     user = User.query.get(user_id)
-    if not user:
+    if not user or user.tenant_id != tenant.id or not user.es_empleado:
         return jsonify({'error': 'User not found'}), 404
 
     valid_cats = CategoriaTicket.query.filter(
@@ -3002,6 +3006,7 @@ def assign_categories(current_user, user_id):
 
 @admin_tenant_bp.route('/api/admin/employees/<int:user_id>/scope', methods=['PUT'])
 @token_requerido
+@require_role('admin', 'super_admin')
 @require_tenant
 def update_employee_scope(current_user, user_id):
     tenant = g.tenant_profile
@@ -3068,8 +3073,11 @@ def suggest_assignee(current_user, slug):
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/tickets/<ticket_type>/<int:ticket_id>/auto-assign', methods=['POST'])
 @token_requerido
+@require_role('admin', 'super_admin')
 @require_tenant
 def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
+    from services.ticket_assignment_policy import TicketAssignmentPolicyError, assignment_transition, lock_assignment_ticket
+    from services.employee_ticket_access import ticket_assignee_is_compatible
     tenant = _resolve_admin_tenant(current_user, slug)
     if not tenant:
         return jsonify({'error': 'Tenant not found'}), 404
@@ -3079,6 +3087,8 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
     ticket = MunicipioTicket.query.get(ticket_id) if ticket_type == 'municipio' else PymeTicket.query.get(ticket_id) if ticket_type == 'pyme' else None
     if not ticket or not _ticket_belongs_to_tenant(ticket, tenant):
         return jsonify({'error': 'Ticket no encontrado'}), 404
+
+    ticket = lock_assignment_ticket(ticket)
 
     categoria = str(getattr(ticket, 'categoria', None) or '').strip().lower()
     zona = str(getattr(ticket, 'distrito', None) or getattr(ticket, 'direccion', None) or '').strip().lower()
@@ -3090,6 +3100,8 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
     required_permission = str(payload.get('required_permission') or '').strip().lower()
 
     for emp in employees:
+        if not ticket_assignee_is_compatible(emp, ticket):
+            continue
         scope = _employee_scope(emp)
         if required_permission and not _scope_has_permission(scope, required_permission):
             continue
@@ -3104,6 +3116,15 @@ def auto_assign_ticket(current_user, slug, ticket_type: str, ticket_id: int):
         return jsonify({'ok': False, 'assigned': False, 'reason': 'no_match'}), 200
 
     emp, scope, workload = best
+    try:
+        transition = assignment_transition(actor=current_user, payload=payload,
+                                          current_assignee_id=ticket.asignado_a_id, target_assignee_id=emp.id)
+    except TicketAssignmentPolicyError as exc:
+        db.session.rollback()
+        return jsonify({'error': exc.message, 'reason_code': exc.reason_code}), exc.status_code
+    if transition.replayed:
+        return jsonify({'ok': True, 'assigned': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type,
+                        'replayed': True, 'employee': {'id': emp.id, 'name': emp.name, 'email': emp.email}})
     if hasattr(ticket, 'asignado_a_id'):
         ticket.asignado_a_id = emp.id
         ticket.asignado_en = datetime.now(timezone.utc)
@@ -4716,13 +4737,13 @@ def _save_lead_details(ticket, details: dict):
 
 def _resolve_tenant_lead_ticket(ticket_type: str, ticket_id: int):
     normalized = str(ticket_type or "").strip().lower()
-    if normalized == "municipio":
-        return MunicipioTicket.query.get(ticket_id)
-    if normalized == "pyme":
-        return PymeTicket.query.get(ticket_id)
-    if normalized == "tenant":
-        return TenantTicket.query.get(ticket_id)
-    return None
+    model = {"municipio": MunicipioTicket, "pyme": PymeTicket, "tenant": TenantTicket}.get(normalized)
+    if model is None:
+        return None
+    query = model.query.filter_by(id=ticket_id)
+    if request.method != "GET":
+        query = query.populate_existing().with_for_update()
+    return query.first()
 
 
 def _is_tenant_ticket_lead(ticket: TenantTicket) -> bool:

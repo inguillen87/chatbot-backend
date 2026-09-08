@@ -338,6 +338,8 @@ def _buscar_tenant_ticket_abierto(user: User, tenant: TenantProfile) -> Optional
             TenantTicket.estado.in_(OPEN_STATES),
         )
         .order_by(TenantTicket.updated_at.desc())
+        .populate_existing()
+        .with_for_update()
         .first()
     )
 

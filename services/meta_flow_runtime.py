@@ -1069,6 +1069,9 @@ def _apply_claim_completion(
     )
     realtime_event = None
     if note:
+        if isinstance(ticket, TenantTicket):
+            from services.ticket_assignment_policy import lock_assignment_ticket
+            ticket = lock_assignment_ticket(ticket)
         if isinstance(ticket, (MunicipioTicket, PymeTicket)):
             comment = TicketComentario(
                 municipio_ticket_id=ticket.id if isinstance(ticket, MunicipioTicket) else None,
@@ -1219,6 +1222,9 @@ def _persist_claim_evidence(
     actor_user_id: int | None,
     anon_id: str | None,
 ) -> tuple[list[dict[str, Any]], list[int]]:
+    if isinstance(ticket, TenantTicket):
+        from services.ticket_assignment_policy import lock_assignment_ticket
+        ticket = lock_assignment_ticket(ticket)
     extra = dict(getattr(ticket, "datos_extra", None) or {})
     batches = [
         item
