@@ -45,7 +45,13 @@ Coverage: snapshot hash/identity, Polygon/MultiPolygon/hole/edge containment, in
 | gunicorn.conf.py | 48718cdff5ee652c2fc3c1edceb7d95c2092c75f |
 | app.py | 2e455d1ce9ad16b9f4a9f0b19dbb5400e0e1bdbe |
 
-The existing Render pre-deploy command remains `flask db upgrade`; no migration files were added or altered. Build/start/worker/cron commands in `render.yaml` are identical to baseline.
+The repository `render.yaml` retains `flask db upgrade`; it is not the effective production Settings command. Actual Settings and successful deployment logs show `test -n "$DATABASE_URL" && FLASK_MIGRATIONS_ONLY=1 MIGRATIONS_DATABASE_URL="$DATABASE_URL" python scripts/apply_migrations.py`. No migration files were added or altered. Build/start/worker/cron commands in `render.yaml` are identical to baseline.
+
+## Production verification update
+
+An unchanged retry became Live as Render deployment `dep-dag6uv740ujc738c0l00` at 2026-09-08 20:32:24 UTC, commit `3bc0d397e18435b8fc7fb7bed9f668c68c568e06`; `/api/version` independently confirmed this SHA. The first attempt failed after build without a diagnostic application log, so its precise failure cause is unconfirmed.
+
+The authenticated Junín heatmap returned HTTP 200 and the official containment contract. All 19 existing candidate coordinate pairs were outside the department polygon; no points were fabricated or relocated. There were 31 pending geocoding records and 3 without location among 53 tickets. Existing-coordinate coverage must not be presented as validated map coverage. No database cutover or WhatsApp configuration changes were performed.
 
 ## Remaining release boundary
 
