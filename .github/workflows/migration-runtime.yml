@@ -1,0 +1,42 @@
+name: Migration runtime gate
+"on":
+  pull_request:
+    paths:
+      - bootstrap_wsgi.py
+      - gunicorn.conf.py
+      - scripts/verify_migration_runtime.py
+      - tests/test_bootstrap_wsgi.py
+      - tests/test_vercel_warmup_lifecycle.py
+      - tests/test_verify_migration_runtime.py
+      - tests/migration_warmup_smoke.py
+      - tests/run_migration_warmup_smoke.py
+      - .github/workflows/migration-runtime.yml
+      - .github/requirements/native-thread-runtime-linux-py312.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: migration-runtime-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  readiness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+      - name: Install existing hash-locked Gunicorn runtime
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input --no-deps
+          --only-binary=:all: --require-hashes
+          -r .github/requirements/native-thread-runtime-linux-py312.txt
+      - name: Run isolated lifecycle and readiness-contract regressions
+        run: >-
+          python -m unittest tests.test_bootstrap_wsgi
+          tests.test_vercel_warmup_lifecycle tests.test_verify_migration_runtime -v
+      - name: Verify real Gunicorn warmup before first HTTP request
+        run: python -m tests.run_migration_warmup_smoke

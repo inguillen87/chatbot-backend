@@ -56,3 +56,20 @@ threads = (
     if is_vercel_runtime
     else configured_threads
 )
+
+
+def post_worker_init(worker):
+    """Schedule Vercel warmup after WSGI setup, never in the master process.
+
+    start_warmup schedules the existing delayed single-flight loader and
+    returns immediately. No request is dispatched and Render is unchanged.
+    Waiting for the first incoming request unnecessarily spends its latency
+    budget before even starting the canonical application's imports.
+    """
+    from bootstrap_wsgi import _is_vercel_runtime
+
+    if not _is_vercel_runtime():
+        return
+    warmup = getattr(worker.wsgi, "start_warmup", None)
+    if callable(warmup):
+        warmup()
