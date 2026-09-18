@@ -1,0 +1,82 @@
+name: Migration runtime gate
+"on":
+  pull_request:
+    paths:
+      - bootstrap_wsgi.py
+      - gunicorn.conf.py
+      - scripts/verify_migration_runtime.py
+      - scripts/compile_neon_territorial_rehearsal.py
+      - scripts/apply_neon_cutover_migrations.py
+      - scripts/preflight_neon_cutover.py
+      - tests/test_compile_neon_territorial_rehearsal.py
+      - tests/run_territorial_rehearsal_postgres.py
+      - migrations/versions/**
+      - tests/test_bootstrap_wsgi.py
+      - tests/test_vercel_warmup_lifecycle.py
+      - tests/test_verify_migration_runtime.py
+      - tests/migration_warmup_smoke.py
+      - tests/run_migration_warmup_smoke.py
+      - .github/workflows/migration-runtime.yml
+      - .github/requirements/native-thread-runtime-linux-py312.txt
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: migration-runtime-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  readiness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+      - name: Install existing hash-locked Gunicorn runtime
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input --no-deps
+          --only-binary=:all: --require-hashes
+          -r .github/requirements/native-thread-runtime-linux-py312.txt
+      - name: Run isolated lifecycle and readiness-contract regressions
+        run: >-
+          python -m unittest tests.test_bootstrap_wsgi
+          tests.test_vercel_warmup_lifecycle tests.test_verify_migration_runtime -v
+      - name: Verify real Gunicorn warmup before first HTTP request
+        run: python -m tests.run_migration_warmup_smoke
+
+  territorial-rehearsal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+        env:
+          POSTGRES_DB: render_rehearsal_test
+          POSTGRES_PASSWORD: rehearsal_local_fixture
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d render_rehearsal_test" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+      - name: Install focal migration tooling
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          SQLAlchemy==2.0.41 alembic==1.16.2 psycopg[binary]==3.1.19
+          Werkzeug==3.1.3 Mako==1.3.10 MarkupSafe==3.0.2
+          typing_extensions==4.14.0 greenlet==3.2.3
+      - name: Validate rollback-only compiler
+        run: python -m unittest tests.test_compile_neon_territorial_rehearsal -v
+      - name: Execute exact SQL and prove rollback on disposable PostgreSQL 18
+        env:
+          REHEARSAL_TEST_PASSWORD: rehearsal_local_fixture
+        run: python -m tests.run_territorial_rehearsal_postgres

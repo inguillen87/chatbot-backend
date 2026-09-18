@@ -444,3 +444,15 @@ Preparation may continue safely: code review, tests, isolated Neon rehearsal,
 variable-name inventories and canaries that do not send provider messages.
 The Render writer freeze, managed final export, Neon main mutation, DNS move,
 live WhatsApp canary and Render retirement remain maintenance-window actions.
+
+## September 18 rehearsal checkpoint (not production authorization)
+
+See `TERRITORIAL_REHEARSAL_2026-09-18.md` for the executed isolated Neon rehearsal:
+three source-pinned territorial upgrades succeeded inside one transaction and
+were rolled back; 173 original tables / 52,877 rows remained content-identical.
+This is partial Gate 1 evidence, not completion of the direct-runner, Render
+standby, committed migration, or application acceptance gates.
+
+The code's reviewed head has advanced to `20260906_flask_sessions_v1`.
+Eight revisions after `20260830_geo_sync_v1` still need their own rehearsal.
+Do not infer full schema readiness from the earlier three-revision checklist.
