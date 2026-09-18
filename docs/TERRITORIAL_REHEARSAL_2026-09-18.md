@@ -88,3 +88,15 @@ reviewed head is `20260906_flask_sessions_v1`: eight further revisions follow th
 three tested here. Those eight, the direct-runner rehearsal, Render standby,
 application canaries, exact final parity, ingress replay, and committed migration
 remain open. The old three-step checklist is not full readiness for today's code.
+
+## Validation follow-up
+
+- Local combined suite: **36 tests passed** (12 compiler + 24 bootstrap/runtime).
+- The first new CI job failed during migration graph imports: its clean image
+  lacked Werkzeug, required by an older reviewed migration. No SQL was run in
+  that failed CI job. The tooling manifest now pins Werkzeug and the transitive
+  dependencies; a fresh virtual environment independently passed all 12 compiler
+  tests. The PostgreSQL 18 CI image is pinned to the digest actually pulled.
+- Vercel's deployment API identifies the candidate as waiting in the concurrent
+  builds queue (`isInConcurrentBuildsQueue=true`), not the system queue. No paid
+  concurrency was enabled and no unrelated build was canceled.
