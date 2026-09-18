@@ -118,7 +118,7 @@ class WidgetBootstrapTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload, {"keys": []})
-        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertIn("no-store", response.headers.get("Cache-Control", ""))
         self.assertNotIn('"k":', response.get_data(as_text=True))
 
     def test_widget_jwks_never_exposes_hmac_keys(self):

@@ -17,6 +17,7 @@ from flask import Blueprint, jsonify, request
 from extensions import db
 from models import MarketOrder, OrderEvent, PedidoConversacional, TenantProfile, User
 from socket_service import socketio
+from utils.commerce_realtime import emit_commerce_invalidation
 
 from services.plan_config import (
     MERCADOPAGO_PLAN_LOOKUP,
@@ -182,17 +183,13 @@ def _market_status_from_payment(status: Optional[str], current: Optional[str]) -
 
 
 def _emit_payment_notification(pedido: PedidoConversacional) -> None:
-    payload = {
-        "pedido_id": pedido.id,
-        "estado": pedido.estado,
-        "tipo": pedido.tipo,
-        "tenant_id": pedido.tenant_id,
-        "user_id": pedido.user_id,
-    }
     try:
-        socketio.emit("payment_update", payload, broadcast=True)
+        emit_commerce_invalidation(
+            socketio.emit, tenant_id=pedido.tenant_id,
+            resource="payments", event_name="payment_update",
+        )
     except Exception:
-        logging.exception("Error emitting payment_update notification for pedido %s", pedido.id)
+        logging.exception("Error emitting scoped payment invalidation")
 
 
 @mp_bp.route("/mercadopago_webhook", methods=["POST"])
@@ -335,9 +332,9 @@ def mercadopago_webhook():
             _emit_payment_notification(pedido)
         if order is not None:
             try:
-                socketio.emit(
-                    f"market_order_{order.tenant.slug}",
-                    {"event": "order_update", "order_id": order.id, "status": order.status},
+                emit_commerce_invalidation(
+                    socketio.emit, tenant_id=order.tenant_id, resource="orders",
+                    event_name=f"market_order_{order.tenant.slug}",
                 )
             except Exception:
                 logging.exception("Error emitiendo actualizacion para MarketOrder %s", order.id)
