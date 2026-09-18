@@ -111,27 +111,27 @@ class WidgetBootstrapTest(unittest.TestCase):
             self.assertEqual(response.status_code, 400)
             self.assertIn("tenant", response.get_json().get("error"))
 
-    def test_widget_jwks_exposes_hs256_key(self):
+    def test_widget_jwks_never_exposes_hs256_key(self):
         response = self.client.get("/auth/widget/jwks.json")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIn("keys", payload)
-        self.assertEqual(payload["keys"][0]["kty"], "oct")
-        self.assertEqual(payload["keys"][0]["use"], "sig")
+        self.assertEqual(payload["keys"], [])
+        self.assertIn("no-store", response.headers["Cache-Control"])
 
     def test_widget_jwks_well_known_alias_matches_docs(self):
         response = self.client.get("/auth/.well-known/jwks.json")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIn("keys", payload)
-        self.assertEqual(payload["keys"][0]["kid"], "widget-hs256")
+        self.assertEqual(payload["keys"], [])
 
     def test_widget_jwks_api_alias_matches_frontend_proxy(self):
         response = self.client.get("/api/auth/widget/jwks.json")
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertIn("keys", payload)
-        self.assertEqual(payload["keys"][0]["kid"], "widget-hs256")
+        self.assertEqual(payload["keys"], [])
 
     def test_widget_jwks_rs256_without_public_key_returns_empty_keys(self):
         self.app.config["WIDGET_JWT_ALG"] = "RS256"
