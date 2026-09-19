@@ -3,6 +3,9 @@ name: WhatsApp draft transactions
   pull_request:
     paths:
       - routes/whatsapp_rules.py
+      - routes/auth.py
+      - services/organization_workspace.py
+      - tests/test_organization_workspace.py
       - services/whatsapp_pack_transactions.py
       - services/whatsapp_self_service.py
       - services/twilio_tech_provider.py
@@ -47,4 +50,4 @@ jobs:
       - name: Exercise real PostgreSQL commits, rollback and concurrent writers
         env:
           CHATBOC_DRAFT_TEST_POSTGRES: '1'
-        run: python -m unittest tests.test_whatsapp_pack_transactions tests.test_whatsapp_self_service -v
+        run: python -m unittest tests.test_whatsapp_pack_transactions tests.test_whatsapp_self_service tests.test_organization_workspace -v
