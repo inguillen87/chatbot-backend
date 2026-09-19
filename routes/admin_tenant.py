@@ -1,3 +1,4 @@
+from cutover_writer_fence import cutover_writer_fence_enabled
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
 import uuid
@@ -9,9 +10,13 @@ from cutover_writer_fence import cutover_writer_view
 from utils.auth_helpers import obtener_token, token_requerido, user_from_token
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
+from services.organization_profile_settings import (
+    build_profile_settings, save_profile_settings, ProfileSettingsError,
+)
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 from middleware.tenant_context import require_tenant
 from models import (
+    AuditEvent,
     CatalogoItem,
     db,
     TenantProfile,
@@ -2368,7 +2373,13 @@ def get_tenant_config_bundle(current_user, slug):
         "readiness_endpoint": f"/api/admin/tenants/{tenant.slug}/provisioning-readiness",
         "template": (tenant.configuracion or {}).get("template"),
     }
-    return jsonify(response)
+    owner = tenant.municipio if tenant.municipio_id else tenant.pyme
+    response["organization_profile"] = build_profile_settings(
+        tenant, owner, can_edit=can_manage_tenant_control_plane(current_user, tenant) and not cutover_writer_fence_enabled(current_app.config)
+    )
+    result = jsonify(response)
+    result.headers["Cache-Control"] = "no-store"
+    return result
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/provisioning-readiness', methods=['GET'])
@@ -2536,7 +2547,28 @@ def update_tenant_config_bundle(current_user, slug):
         reason_code = "tenant_inactive" if getattr(tenant, "is_active", True) is not True else "tenant_admin_required"
         return jsonify({"error": "Unauthorized", "reason_code": reason_code}), 403
 
-    data = request.json or {}
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Enviá un objeto JSON válido."}), 400
+    if "organization_profile" in data or "expected_revision" in data:
+        try:
+            result = save_profile_settings(
+                db.session, TenantProfile, User, AuditEvent,
+                tenant_id=tenant.id, actor_id=current_user.id, data=data,
+                authorize=can_manage_tenant_control_plane,
+            )
+        except ProfileSettingsError as exc:
+            result = {"contract_version": "organization.profile_error.v1", "reason_code": exc.code,
+                "error": {"code": exc.status, "message": exc.message},
+                "next_action": "review_latest_profile"}
+            response = jsonify(result)
+            response.headers["Cache-Control"] = "no-store"
+            return response, exc.status
+        response = jsonify(result)
+        response.headers["Cache-Control"] = "no-store"
+        return response, 200
+
+
 
     # Update Tenant fields
     tenant_data = data.get('tenant', {})
