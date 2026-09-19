@@ -1,3 +1,4 @@
+from cutover_writer_fence import cutover_writer_fence_enabled
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
@@ -1026,6 +1027,8 @@ def public_plan_catalog():
 
 
 from services.organization_workspace import build_organization_workspace
+from services.organization_profile_settings import build_profile_settings
+from utils.tenant_admin_access import can_manage_tenant_control_plane
 
 
 def build_profile_payload(user: User) -> Dict[str, Any]:
@@ -1132,6 +1135,12 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
     profile_data["map_config"] = get_map_config()
     profile_data["organization_workspace"] = build_organization_workspace(tenant_profile)
+    profile_owner = None
+    if tenant_profile is not None:
+        profile_owner = tenant_profile.municipio if tenant_profile.municipio_id else tenant_profile.pyme
+    profile_data["organization_profile"] = build_profile_settings(
+        tenant_profile, profile_owner, can_edit=can_manage_tenant_control_plane(user, tenant_profile) and not cutover_writer_fence_enabled(current_app.config)
+    )
 
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
     profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
