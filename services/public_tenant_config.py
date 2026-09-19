@@ -7,6 +7,7 @@ from typing import Any
 
 _PRIVATE_CONFIG_SECTIONS = frozenset(
     {
+        "organization_workspace_branding",
         "credentials",
         "integration_credentials",
         "oauth_credentials",

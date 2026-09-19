@@ -457,3 +457,10 @@ def integration_plan_required_payload(
     if extra:
         payload.update(dict(extra))
     return payload
+
+
+def tenant_allows_workspace_branding(tenant: TenantProfile | None) -> bool:
+    """Explicit server plan only; unrelated configurable capabilities do not grant branding."""
+    return bool(tenant is not None and getattr(tenant,'is_active',False) is True
+        and not tenant_is_demo_context(tenant)
+        and normalize_plan(getattr(tenant,'plan',None)) in FULL_INTEGRATION_PLANS)

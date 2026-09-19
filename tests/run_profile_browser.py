@@ -20,6 +20,12 @@ def main():
     from werkzeug.serving import make_server
     with tempfile.TemporaryDirectory(prefix='chatboc-profile-browser-') as directory:
         app, accounts, synthetic_password = create_disposable_app(directory)
+        # Synthetic Full organization only; this runner is isolated and never connects customer databases.
+        from database import db
+        from models import TenantProfile
+        with app.app_context():
+            db.session.get(TenantProfile, accounts['acceptance-a']['tenant_id']).plan = 'full'
+            db.session.commit()
         server = make_server('127.0.0.1', 0, app, threaded=True)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()

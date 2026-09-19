@@ -1,3 +1,5 @@
+from services.organization_branding import BrandingError, build_branding, save_branding
+from services.plan_access import tenant_allows_workspace_branding
 from cutover_writer_fence import cutover_writer_fence_enabled
 from flask import Blueprint, request, jsonify, g, current_app
 import requests
@@ -2377,6 +2379,9 @@ def get_tenant_config_bundle(current_user, slug):
     response["organization_profile"] = build_profile_settings(
         tenant, owner, can_edit=can_manage_tenant_control_plane(current_user, tenant), writes_blocked=cutover_writer_fence_enabled(current_app.config)
     )
+    response['organization_branding'] = build_branding(tenant,
+        can_edit=can_manage_tenant_control_plane(current_user,tenant),
+        entitled=tenant_allows_workspace_branding(tenant),writes_blocked=cutover_writer_fence_enabled(current_app.config))
     result = jsonify(response)
     result.headers["Cache-Control"] = "no-store"
     return result
@@ -2550,6 +2555,17 @@ def update_tenant_config_bundle(current_user, slug):
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Enviá un objeto JSON válido."}), 400
+    if "organization_branding" in data:
+        try:
+            result=save_branding(db.session,TenantProfile,User,AuditEvent,tenant_id=tenant.id,
+                actor_id=current_user.id,data=data,authorize=can_manage_tenant_control_plane,
+                entitlement=tenant_allows_workspace_branding)
+            status=200
+        except BrandingError as exc:
+            result={'contract_version':'organization.branding_error.v1','reason_code':exc.code,
+                'error':{'code':exc.status,'message':exc.message}};status=exc.status
+        response=jsonify(result);response.headers['Cache-Control']='no-store'
+        return response,status
     if "organization_profile" in data or "expected_revision" in data:
         try:
             result = save_profile_settings(
