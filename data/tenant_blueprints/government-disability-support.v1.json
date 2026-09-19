@@ -1,0 +1,145 @@
+{
+  "contract_version": "tenant.blueprint.manifest.v1",
+  "blueprint_id": "government-disability-support",
+  "version": "1.0.0",
+  "label": "Gobierno · atención accesible y apoyos",
+  "description": "Base para orientar a personas con discapacidad y sus redes de apoyo. Prepara cinco áreas de atención; los contenidos, responsables e integraciones necesitan revisión antes de operar.",
+  "supported_tenant_types": [
+    "municipio",
+    "gobierno"
+  ],
+  "modules": [
+    {
+      "id": "service_desk",
+      "label": "Mesa de atención accesible",
+      "summary": "Recibir consultas y conservar su contexto al solicitar ayuda humana.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "crm",
+      "label": "Personas y redes de apoyo",
+      "summary": "Distinguir a la persona destinataria de quien consulta, con permisos y consentimiento.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "claims",
+      "label": "Consultas y seguimiento",
+      "summary": "Registrar cada caso, su responsable y la evidencia de sus cambios de estado.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "participation",
+      "label": "Evaluación del servicio",
+      "summary": "Preparar preguntas separadas sobre resolución de la consulta y facilidad de uso.",
+      "activation_state": "configuration_required"
+    },
+    {
+      "id": "territory",
+      "label": "Atención por localidad",
+      "summary": "Organizar la demanda por localidades verificadas, sin inventar ubicaciones.",
+      "activation_state": "evidence_required"
+    },
+    {
+      "id": "knowledge",
+      "label": "Información y trámites",
+      "summary": "Revisar fuentes, requisitos y listas de cotejo antes de publicar orientación.",
+      "activation_state": "content_required"
+    },
+    {
+      "id": "channels",
+      "label": "WhatsApp y atención web",
+      "summary": "Conectar canales autorizados y comprobarlos sin activar envíos al aplicar esta base.",
+      "activation_state": "provider_required"
+    },
+    {
+      "id": "accessibility",
+      "label": "Lectura y navegación accesibles",
+      "summary": "Validar lectura fácil, teclado, lector de pantalla y alternativas de voz.",
+      "activation_state": "validation_required"
+    }
+  ],
+  "configuration_defaults": {
+    "operating_model": {
+      "case_intake": "single_desk",
+      "human_handoff": "supervised",
+      "audit_mode": "required"
+    },
+    "ticket_categories": [
+      "Documentación (CUD y CMO)",
+      "Salud, terapias y medicación",
+      "Pensión y licencias",
+      "Escuela, recreación y apoyos",
+      "Trabajo y cursos"
+    ],
+    "employee_routing": {
+      "default_ticket_categories": [],
+      "default_channels": [],
+      "default_zones": [],
+      "assignment_mode": "manual"
+    },
+    "channels": {
+      "web_widget": {
+        "desired": true,
+        "enabled": false,
+        "activation_state": "configuration_required"
+      },
+      "whatsapp": {
+        "desired": true,
+        "enabled": false,
+        "activation_state": "provider_required"
+      }
+    },
+    "accessibility_policy": {
+      "status": "validation_required",
+      "supports": [
+        "keyboard_navigation",
+        "screen_reader",
+        "high_contrast",
+        "reduced_motion",
+        "dyslexia_friendly_reading",
+        "plain_language",
+        "voice_transcription"
+      ]
+    },
+    "module_configuration": {
+      "service_desk": {
+        "desired": true,
+        "activation_state": "configuration_required"
+      },
+      "crm": {
+        "desired": true,
+        "activation_state": "configuration_required"
+      },
+      "claims": {
+        "desired": true,
+        "activation_state": "configuration_required"
+      },
+      "participation": {
+        "desired": true,
+        "activation_state": "configuration_required"
+      },
+      "territory": {
+        "desired": true,
+        "activation_state": "evidence_required"
+      },
+      "knowledge": {
+        "desired": true,
+        "activation_state": "content_required"
+      },
+      "channels": {
+        "desired": true,
+        "activation_state": "provider_required"
+      },
+      "accessibility": {
+        "desired": true,
+        "activation_state": "validation_required"
+      }
+    },
+    "data_governance": {
+      "tenant_isolation": "required",
+      "consent_tracking": "required",
+      "audit_receipts": "required",
+      "territorial_evidence": "required"
+    }
+  }
+}

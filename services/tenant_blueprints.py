@@ -20,7 +20,10 @@ DETAIL_CONTRACT_VERSION = "tenant.blueprint.detail.v1"
 PREVIEW_CONTRACT_VERSION = "tenant.blueprint.preview.v1"
 APPLY_CONTRACT_VERSION = "tenant.blueprint.apply.v1"
 _MANIFEST_ROOT = Path(__file__).resolve().parents[1] / "data" / "tenant_blueprints"
-_BLUEPRINT_REGISTRY = {"government-core": "government-core.v1.json"}
+_BLUEPRINT_REGISTRY = {
+    "government-core": "government-core.v1.json",
+    "government-disability-support": "government-disability-support.v1.json",
+}
 _BLUEPRINT_TOP_LEVEL_KEYS = {
     "contract_version",
     "blueprint_id",
