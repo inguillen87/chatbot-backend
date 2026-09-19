@@ -18,6 +18,7 @@ from services.commerce_contracts import payment_capabilities
 from services.live_chat_schedule import build_live_chat_status
 from services.plan_access import integration_access_payload
 from services.tenant_implementation_journey import build_implementation_journey
+from services.organization_setup_journey import build_organization_setup_journey
 from services.twilio_tech_provider import STATE_KEY
 from utils.roles import superadmin_email_allowlist_configured
 
@@ -926,6 +927,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         "counts": counts,
         "channels": channels,
         "implementation_journey": implementation_journey,
+        "organization_setup": build_organization_setup_journey(tenant, channels),
         "blockers": blockers,
         "integration_access": {
             "enabled": access.get("enabled"),

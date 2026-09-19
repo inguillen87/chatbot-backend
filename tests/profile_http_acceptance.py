@@ -174,6 +174,36 @@ class InstitutionalProfileHttpTests(unittest.TestCase):
                 db.session.get(TenantProfile, self.accounts['acceptance-b']['tenant_id']).is_active = True
                 db.session.commit()
 
+    def test_setup_journey_is_bound_to_authorized_organization(self):
+        browser=self.login()
+        status,body,headers=browser.request('GET','/api/v2/tenants/acceptance-a/activation/channels')
+        self.assertEqual(status,200)
+        setup=body['organization_setup']
+        self.assertEqual(setup['tenant']['slug'],'acceptance-a')
+        self.assertEqual(setup['organization_type'],'municipio')
+        self.assertTrue(setup['government_setup'])
+        self.assertEqual(body['implementation_journey']['contract_version'],'tenant.implementation_journey.v1')
+        self.assertFalse(setup['writes_performed'])
+        status,_,_=self.login('acceptance-b').request('GET','/api/v2/tenants/acceptance-a/activation/channels')
+        self.assertIn(status,(403,404))
+
+    def test_company_setup_preserves_legacy_and_excludes_government_requirements(self):
+        from database import db
+        from models import TenantProfile
+        with self.app.app_context():
+            entity=db.session.get(TenantProfile,self.accounts['acceptance-b']['tenant_id'])
+            old=entity.tipo;entity.tipo='empresa';db.session.commit()
+        try:
+            status,body,_=self.login('acceptance-b').request('GET','/api/v2/tenants/acceptance-b/activation/channels')
+            self.assertEqual(status,200)
+            setup=body['organization_setup'];self.assertEqual(setup['organization_type'],'empresa')
+            self.assertFalse(setup['government_setup'])
+            self.assertIn('payments_checkout',setup['stages'][2]['source_ids'])
+            self.assertNotIn('territorial_intelligence',setup['stages'][-1]['source_ids'])
+        finally:
+            with self.app.app_context():
+                db.session.get(TenantProfile,self.accounts['acceptance-b']['tenant_id']).tipo=old;db.session.commit()
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
