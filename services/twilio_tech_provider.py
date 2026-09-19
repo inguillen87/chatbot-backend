@@ -918,6 +918,9 @@ def _profile_from_payload(tenant, payload: Mapping[str, Any], request_payload: M
     return {key: value for key, value in result.items() if value}
 
 
+from services.whatsapp_self_service import build_whatsapp_self_service
+
+
 def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -> dict[str, Any]:
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
@@ -949,6 +952,7 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
     return {
         "contract_version": CONTRACT_VERSION,
         "provider": "twilio_tech_provider",
+        "self_service": build_whatsapp_self_service(tenant, state),
         "status": status,
         "tenant": {
             "id": getattr(tenant, "id", None),
