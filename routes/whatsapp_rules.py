@@ -17,6 +17,7 @@ from cutover_writer_fence import cutover_writer_view
 from models import (
     AuditEvent,
     MessageTemplateRegistry,
+    TenantProfile,
     MessagingEventLedger,
     NotificationTemplate,
     ProviderConnection,
@@ -24,6 +25,10 @@ from models import (
     User,
     WhatsAppFlowInteraction,
     db,
+)
+from services.whatsapp_pack_transactions import (
+    TemplatePackTransactionError, find_draft_receipt, key_digest,
+    local_draft_transaction,
 )
 from services.provider_platform import is_sender_ready_status
 from services.llm_provider_network_policy import (
@@ -438,20 +443,9 @@ def _template_pack_request_fingerprint(tenant_id: int, vertical: str, pack: dict
 
 
 def _find_template_pack_idempotency_receipt(tenant_id: int, idempotency_key: str) -> dict | None:
-    rows = MessageTemplateRegistry.query.filter_by(
-        tenant_id=tenant_id,
-        provider=WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER,
-        channel="whatsapp",
-    ).all()
-    for row in rows:
-        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
-        receipts = metadata.get("materialization_receipts")
-        if not isinstance(receipts, list):
-            continue
-        for receipt in receipts:
-            if isinstance(receipt, dict) and receipt.get("idempotency_key") == idempotency_key:
-                return dict(receipt)
-    return None
+    return find_draft_receipt(
+        db.session, AuditEvent, MessageTemplateRegistry, tenant_id, idempotency_key
+    )
 
 
 def _find_twilio_manifest_item(tenant, template_id: str) -> dict | None:
@@ -1427,16 +1421,38 @@ def list_whatsapp_template_packs(user: User):
 @token_requerido
 @require_tenant
 def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
-    """Persist immutable local drafts only; this endpoint never contacts Twilio/Meta."""
-
+    """Persist local drafts and one durable audit receipt atomically."""
     tenant = _readiness_tenant_for_user(user)
     _require_template_pack_capability(user, tenant, WHATSAPP_TEMPLATE_PACKS_MANAGE)
     payload = request.get_json(silent=True)
-    if payload is None:
-        payload = {}
-    if not isinstance(payload, dict):
-        abort(400, description="El body debe ser un objeto JSON")
+    if not isinstance(payload, dict) or set(payload) - {"pack_version", "idempotency_key"}:
+        abort(400, description="Envia un objeto JSON con pack_version y una identidad de operacion valida")
+    for field in ("pack_version", "idempotency_key"):
+        if field in payload and (not isinstance(payload[field], str) or not payload[field].strip()):
+            abort(400, description=f"{field} debe ser texto no vacio")
+    try:
+        with local_draft_transaction(db.session, TenantProfile, tenant.id) as locked_tenant:
+            _require_template_pack_capability(user, locked_tenant, WHATSAPP_TEMPLATE_PACKS_MANAGE)
+            return _materialize_template_pack_drafts_locked(user, locked_tenant, vertical, payload)
+    except TemplatePackTransactionError as exc:
+        messages = {
+            "template_pack_invalid_tenant": "No pudimos validar la organización.",
+            "template_pack_tenant_unavailable": "La organización no está disponible para esta operación.",
+            "template_pack_receipt_conflict": "La operación tiene registros incompatibles. Revisá su estado antes de continuar.",
+            "template_pack_write_conflict": "Otra operación está modificando estos borradores. Actualizá su estado antes de reintentar.",
+            "template_pack_retry_same_operation": "No pudimos confirmar el resultado. Actualizá el estado y reintentá conservando la misma operación.",
+        }
+        response = jsonify({
+            "contract_version": "whatsapp.template_pack.error.v1",
+            "reason_code": exc.reason_code, "retryable": exc.status_code >= 500,
+            "next_action": "refresh_authorized_catalog",
+            "error": {"code": exc.status_code, "message": messages.get(exc.reason_code, "No se pudo completar la operación.")},
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response, exc.status_code
 
+
+def _materialize_template_pack_drafts_locked(user: User, tenant, vertical: str, payload: dict):
     normalized_vertical = normalize_whatsapp_template_vertical(vertical)
     pack = whatsapp_template_pack(normalized_vertical)
     if not normalized_vertical or not pack:
@@ -1463,6 +1479,16 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
     if existing_receipt:
         if existing_receipt.get("request_fingerprint") != request_fingerprint:
             abort(409, description="Idempotency-Key ya pertenece a otra operacion")
+        # A receipt is not evidence that its local drafts still exist unchanged.
+        for template in pack["templates"]:
+            row = MessageTemplateRegistry.query.filter_by(
+                tenant_id=tenant.id, provider=WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER,
+                channel="whatsapp", name=template["name"], language=template["language"],
+            ).first()
+            metadata = row.metadata_json if row and isinstance(row.metadata_json, dict) else {}
+            stored_pack = metadata.get("template_pack")
+            if not isinstance(stored_pack, dict) or stored_pack.get("definition_hash") != whatsapp_template_definition_hash(template):
+                abort(409, description="template_pack_receipt_drafts_changed")
         catalog = _template_pack_catalog_payload(tenant, user)
         selected_pack = next(
             item for item in catalog["packs"] if item["vertical"] == normalized_vertical
@@ -1484,7 +1510,7 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
 
     now = datetime.now(timezone.utc)
     receipt = {
-        "idempotency_key": idempotency_key,
+        "idempotency_key_hash": key_digest(idempotency_key),
         "request_fingerprint": request_fingerprint,
         "recorded_at": now.isoformat(),
         "actor_user_id": user.id,
@@ -1568,7 +1594,7 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
                 "vertical": normalized_vertical,
                 "created_count": created_count,
                 "reused_count": reused_count,
-                "idempotency_key": idempotency_key,
+                "idempotency_key_hash": key_digest(idempotency_key),
                 "request_fingerprint": request_fingerprint,
                 "provider_calls_performed": False,
                 "resulting_state": "local_draft",
@@ -1576,11 +1602,6 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
             ip_address=request.remote_addr,
         )
     )
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        abort(409, description="El pack fue materializado por otra operacion concurrente")
 
     catalog = _template_pack_catalog_payload(tenant, user)
     selected_pack = next(
