@@ -2375,7 +2375,7 @@ def get_tenant_config_bundle(current_user, slug):
     }
     owner = tenant.municipio if tenant.municipio_id else tenant.pyme
     response["organization_profile"] = build_profile_settings(
-        tenant, owner, can_edit=can_manage_tenant_control_plane(current_user, tenant) and not cutover_writer_fence_enabled(current_app.config)
+        tenant, owner, can_edit=can_manage_tenant_control_plane(current_user, tenant), writes_blocked=cutover_writer_fence_enabled(current_app.config)
     )
     result = jsonify(response)
     result.headers["Cache-Control"] = "no-store"

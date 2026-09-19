@@ -50,7 +50,18 @@ def profile_revision(tenant, owner, values):
     return sha256(canonical.encode()).hexdigest()
 
 
-def build_profile_settings(tenant, owner, *, can_edit=False):
+def profile_editability(*, can_edit=False, writes_blocked=False):
+    if writes_blocked is True:
+        return {'mode':'read_only', 'reason_code':'maintenance',
+            'message':'El sistema está temporalmente en modo consulta. Tus permisos no cambiaron; volvé a consultar el estado cuando finalice el mantenimiento.'}
+    if can_edit is not True:
+        return {'mode':'read_only', 'reason_code':'tenant_admin_required',
+            'message':'Podés consultar este perfil. Para modificarlo necesitás un permiso de administración en esta organización.'}
+    return {'mode':'editable', 'reason_code':'ready',
+        'message':'Tenés permiso para editar el perfil de esta organización.'}
+
+
+def build_profile_settings(tenant, owner, *, can_edit=False, writes_blocked=False):
     if tenant is None or owner is None or getattr(tenant,'is_active',False) is not True:
         return None
     identifier = getattr(tenant, 'id', None)
@@ -67,9 +78,10 @@ def build_profile_settings(tenant, owner, *, can_edit=False):
         json.dumps(values, allow_nan=False)
     except (TypeError, ValueError):
         return None
+    access = profile_editability(can_edit=can_edit, writes_blocked=writes_blocked)
     return {'contract_version':CONTRACT,'tenant':{'id':tenant.id,'slug':tenant.slug},
         'revision':profile_revision(tenant,owner,values),'values':values,
-        'can_edit':can_edit is True,'save_endpoint':f'/api/admin/tenants/{tenant.slug}/config',
+        'can_edit':access['mode']=='editable','editability':access,'save_endpoint':f'/api/admin/tenants/{tenant.slug}/config',
         'concurrency':'expected_revision','provider_calls_performed':False}
 
 

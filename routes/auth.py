@@ -1139,7 +1139,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     if tenant_profile is not None:
         profile_owner = tenant_profile.municipio if tenant_profile.municipio_id else tenant_profile.pyme
     profile_data["organization_profile"] = build_profile_settings(
-        tenant_profile, profile_owner, can_edit=can_manage_tenant_control_plane(user, tenant_profile) and not cutover_writer_fence_enabled(current_app.config)
+        tenant_profile, profile_owner, can_edit=can_manage_tenant_control_plane(user, tenant_profile), writes_blocked=cutover_writer_fence_enabled(current_app.config)
     )
 
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
