@@ -1025,6 +1025,9 @@ def public_plan_catalog():
     return jsonify({"planes": serialize_plan_catalog()})
 
 
+from services.organization_workspace import build_organization_workspace
+
+
 def build_profile_payload(user: User) -> Dict[str, Any]:
     """Assemble the profile payload shared by the legacy and new endpoints."""
 
@@ -1128,6 +1131,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     }
 
     profile_data["map_config"] = get_map_config()
+    profile_data["organization_workspace"] = build_organization_workspace(tenant_profile)
 
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
     profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
