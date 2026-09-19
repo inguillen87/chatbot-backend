@@ -251,4 +251,28 @@ class OrganizationProfileSettingsTests(unittest.TestCase):
         self.assertEqual(Session.get(User,1).horario,'Consultar disponibilidad')
 
 
+    def test_editability_reason_distinguishes_maintenance_and_permissions(self):
+        tenant=Session.get(Tenant,1);owner=Session.get(User,1)
+        readonly=build_profile_settings(tenant,owner,can_edit=False)
+        self.assertEqual(readonly['editability']['reason_code'],'tenant_admin_required')
+        maintenance=build_profile_settings(tenant,owner,can_edit=True,writes_blocked=True)
+        self.assertFalse(maintenance['can_edit'])
+        self.assertEqual(maintenance['editability']['reason_code'],'maintenance')
+        self.assertIn('Tus permisos no cambiaron',maintenance['editability']['message'])
+
+    def test_editability_change_does_not_change_content_revision(self):
+        tenant=Session.get(Tenant,1);owner=Session.get(User,1)
+        editable=build_profile_settings(tenant,owner,can_edit=True)
+        maintenance=build_profile_settings(tenant,owner,can_edit=True,writes_blocked=True)
+        readonly=build_profile_settings(tenant,owner,can_edit=False)
+        self.assertEqual(editable['revision'],maintenance['revision'])
+        self.assertEqual(editable['revision'],readonly['revision'])
+        self.assertEqual(editable['editability']['reason_code'],'ready')
+
+    def test_editability_does_not_coerce_string_permissions_to_true(self):
+        tenant=Session.get(Tenant,1);owner=Session.get(User,1)
+        result=build_profile_settings(tenant,owner,can_edit='true')
+        self.assertFalse(result['can_edit'])
+        self.assertEqual(result['editability']['mode'],'read_only')
+
 if __name__=='__main__':unittest.main()
