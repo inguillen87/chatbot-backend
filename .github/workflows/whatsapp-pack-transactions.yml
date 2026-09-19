@@ -7,6 +7,10 @@ name: WhatsApp draft transactions
       - services/organization_profile_settings.py
       - tests/test_organization_profile_settings.py
       - services/organization_setup_journey.py
+      - services/organization_branding.py
+      - services/plan_access.py
+      - services/public_tenant_config.py
+      - tests/test_organization_branding.py
       - services/channel_activation.py
       - tests/test_organization_setup_journey.py
       - tests/profile_acceptance_runtime.py
@@ -59,7 +63,7 @@ jobs:
       - name: Exercise real PostgreSQL commits, rollback and concurrent writers
         env:
           CHATBOC_DRAFT_TEST_POSTGRES: '1'
-        run: python -m unittest tests.test_whatsapp_pack_transactions tests.test_whatsapp_self_service tests.test_organization_workspace tests.test_organization_profile_settings tests.test_organization_setup_journey -v
+        run: python -m unittest tests.test_whatsapp_pack_transactions tests.test_whatsapp_self_service tests.test_organization_workspace tests.test_organization_profile_settings tests.test_organization_setup_journey tests.test_organization_branding -v
 
   full-app-http:
     runs-on: ubuntu-24.04

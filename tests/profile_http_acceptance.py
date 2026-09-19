@@ -204,6 +204,86 @@ class InstitutionalProfileHttpTests(unittest.TestCase):
             with self.app.app_context():
                 db.session.get(TenantProfile,self.accounts['acceptance-b']['tenant_id']).tipo=old;db.session.commit()
 
+    def brand_plan(self,plan='full'):
+        from contextlib import contextmanager
+        @contextmanager
+        def setup():
+            from copy import deepcopy
+            from database import db
+            from models import TenantProfile
+            from services.organization_branding import KEY
+            with self.app.app_context():
+                tenant=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+                previous=(tenant.plan,deepcopy(tenant.configuracion))
+                tenant.plan=plan;config=deepcopy(tenant.configuracion or {});config.pop(KEY,None)
+                tenant.configuracion=config;db.session.commit()
+            try:yield
+            finally:
+                with self.app.app_context():
+                    tenant=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+                    tenant.plan,tenant.configuracion=previous;db.session.commit()
+        return setup()
+    def read_brand(self,browser):
+        status,body,_=browser.request('GET','/api/admin/tenants/acceptance-a/config')
+        self.assertEqual(status,200);return body['organization_branding']
+    def post_brand(self,browser,brand,*,restore=None):
+        operation={'operation':'publish','values':{'enabled':True,'primary_color':'#6D28D9','accent_color':'#C2410C'}}
+        if restore is not None:operation={'operation':'restore','version':restore}
+        return browser.request('PUT',brand['save_endpoint'],{'expected_revision':brand['revision'],'organization_branding':operation})
+    def test_branding_full_publish_read_through_me_and_restore(self):
+        with self.brand_plan():
+            first=self.login();second=self.login('second');before=self.read_brand(first)
+            self.assertTrue(before['can_edit'])
+            status,saved,headers=self.post_brand(first,before);self.assertEqual(status,200)
+            self.assertTrue(saved['saved']);self.assertEqual(headers['Cache-Control'],'no-store')
+            reread=self.read_brand(second);self.assertEqual(reread['version'],1)
+            status,me,_=second.request('GET','/api/me?tenant_slug=acceptance-a');self.assertEqual(status,200)
+            self.assertEqual(me['workspace_appearance']['appearance']['primary']['background'],'#6D28D9')
+            self.assertTrue(me['workspace_appearance']['appearance']['active'])
+            status,restored,_=self.post_brand(second,reread,restore=0);self.assertEqual(status,200)
+            self.assertEqual(restored['brand']['version'],2);self.assertFalse(restored['brand']['appearance']['active'])
+    def test_branding_free_plan_and_arbitrary_capabilities_do_not_unlock(self):
+        with self.brand_plan('free'):
+            from database import db
+            from models import TenantProfile
+            with self.app.app_context():
+                row=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+                row.configuracion={**(row.configuracion or {}),'capabilities':['*','integrations.full_access']};db.session.commit()
+            browser=self.login();brand=self.read_brand(browser);self.assertFalse(brand['can_edit'])
+            self.assertEqual(brand['reason_code'],'full_plan_required')
+            self.assertEqual(self.post_brand(browser,brand)[0],403)
+            self.assertEqual(self.read_brand(browser)['version'],0)
+    def test_branding_cross_tenant_and_employee_mutations_are_rejected(self):
+        with self.brand_plan():
+            owner=self.login();brand=self.read_brand(owner)
+            for who in ('acceptance-b','viewer'):
+                self.assertEqual(self.post_brand(self.login(who),brand)[0],403)
+            self.assertEqual(self.read_brand(owner)['version'],0)
+    def test_branding_two_real_sessions_require_latest_revision(self):
+        with self.brand_plan():
+            first,second=self.login(),self.login('second');before=self.read_brand(first)
+            self.assertEqual(self.post_brand(first,before)[0],200)
+            status,body,_=self.post_brand(second,before);self.assertEqual(status,412)
+            self.assertEqual(body['reason_code'],'branding_revision_conflict')
+            self.assertEqual(self.read_brand(second)['version'],1)
+    def test_branding_writer_fence_prevents_publish_without_changing_history(self):
+        with self.brand_plan():
+            browser=self.login();brand=self.read_brand(browser);self.app.config['CUTOVER_WRITER_FENCE_ENABLED']=True
+            try:
+                self.assertEqual(self.read_brand(browser)['reason_code'],'maintenance')
+                self.assertEqual(self.post_brand(browser,brand)[0],503)
+            finally:self.app.config['CUTOVER_WRITER_FENCE_ENABLED']=False
+            self.assertEqual(self.read_brand(browser)['version'],0)
+    def test_branding_generic_integration_grant_does_not_override_trial(self):
+        with self.brand_plan():
+            from database import db
+            from models import TenantProfile
+            with self.app.app_context():
+                row=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+                row.configuracion={**(row.configuracion or {}),'demo_mode':True};db.session.commit()
+            browser=self.login();brand=self.read_brand(browser);self.assertFalse(brand['can_edit'])
+            self.assertEqual(self.post_brand(browser,brand)[0],403)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

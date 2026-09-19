@@ -38,7 +38,7 @@ def _safe_action(action, slug):
     except (ValueError, KeyError): return None
 
 
-def build_organization_setup_journey(tenant, channels):
+def build_organization_setup_journey(tenant, channels, *, workspace_appearance=None):
     workspace = build_organization_workspace(tenant)
     if workspace is None: return None
     kind = workspace['organization_type']; slug = workspace['tenant']['slug']
@@ -69,6 +69,7 @@ def build_organization_setup_journey(tenant, channels):
     heading, description = _LABELS[kind]
     return {
         'contract_version':CONTRACT_VERSION, 'tenant':workspace['tenant'],
+        'workspace_appearance':deepcopy(workspace_appearance),
         'organization_type':kind, 'organization_label':workspace['organization_label'],
         'heading':heading, 'description':description,
         'continuity_note':workspace['continuity']['note'],

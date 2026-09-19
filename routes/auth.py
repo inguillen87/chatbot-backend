@@ -1028,6 +1028,8 @@ def public_plan_catalog():
 
 from services.organization_workspace import build_organization_workspace
 from services.organization_profile_settings import build_profile_settings
+from services.organization_branding import build_workspace_appearance
+from services.plan_access import tenant_allows_workspace_branding
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 
 
@@ -1135,6 +1137,8 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
 
     profile_data["map_config"] = get_map_config()
     profile_data["organization_workspace"] = build_organization_workspace(tenant_profile)
+    profile_data['workspace_appearance'] = build_workspace_appearance(tenant_profile,
+        entitled=tenant_allows_workspace_branding(tenant_profile))
     profile_owner = None
     if tenant_profile is not None:
         profile_owner = tenant_profile.municipio if tenant_profile.municipio_id else tenant_profile.pyme
