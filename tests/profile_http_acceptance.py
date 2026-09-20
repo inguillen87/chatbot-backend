@@ -284,6 +284,34 @@ class InstitutionalProfileHttpTests(unittest.TestCase):
             browser=self.login();brand=self.read_brand(browser);self.assertFalse(brand['can_edit'])
             self.assertEqual(self.post_brand(browser,brand)[0],403)
 
+    def test_modules_full_save_reread_and_journey_consumes_selection(self):
+        with self.brand_plan():
+            browser=self.login();other=self.login('second')
+            status,config,_=browser.request('GET','/api/admin/tenants/acceptance-a/config');self.assertEqual(status,200)
+            before=config['organization_modules'];self.assertTrue(before['can_edit'])
+            status,saved,_=browser.request('PUT',before['save_endpoint'],{'expected_revision':before['revision'],'organization_modules':{'selected':['catalog','payments']}})
+            self.assertEqual(status,200);self.assertEqual(saved['selection']['version'],1)
+            status,again,_=other.request('GET',before['save_endpoint']);self.assertEqual(again['organization_modules']['selected'],['catalog','payments'])
+            status,channels,_=other.request('GET','/api/v2/tenants/acceptance-a/activation/channels');self.assertEqual(status,200)
+            self.assertEqual(channels['organization_setup']['selected_modules'],['catalog','payments'])
+            self.assertNotIn('whatsapp',channels['organization_setup']['stages'][1]['source_ids'])
+            self.assertIn('whatsapp',[c['id'] for c in channels['channels']])
+    def test_modules_free_foreign_and_viewer_cannot_publish(self):
+        for plan in ('free','full'):
+            with self.brand_plan(plan):
+                status,body,_=self.login().request('GET','/api/admin/tenants/acceptance-a/config');snapshot=body['organization_modules']
+                for who in (['acceptance-a'] if plan=='free' else ['acceptance-b','viewer']):
+                    result=self.login(who).request('PUT',snapshot['save_endpoint'],{'expected_revision':snapshot['revision'],'organization_modules':{'selected':[]}})
+                    self.assertEqual(result[0],403)
+    def test_modules_conflict_dependency_and_maintenance_are_enforced(self):
+        with self.brand_plan():
+            browser=self.login();_,body,_=browser.request('GET','/api/admin/tenants/acceptance-a/config');initial=body['organization_modules']
+            def save(selected):return browser.request('PUT',initial['save_endpoint'],{'expected_revision':initial['revision'],'organization_modules':{'selected':selected}})
+            self.assertEqual(save(['payments'])[0],400);self.assertEqual(save(['catalog'])[0],200);self.assertEqual(save([])[0],412)
+            self.app.config['CUTOVER_WRITER_FENCE_ENABLED']=True
+            try:self.assertEqual(save([])[0],503)
+            finally:self.app.config['CUTOVER_WRITER_FENCE_ENABLED']=False
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -464,3 +464,8 @@ def tenant_allows_workspace_branding(tenant: TenantProfile | None) -> bool:
     return bool(tenant is not None and getattr(tenant,'is_active',False) is True
         and not tenant_is_demo_context(tenant)
         and normalize_plan(getattr(tenant,'plan',None)) in FULL_INTEGRATION_PLANS)
+
+
+def tenant_allows_module_selection(tenant: TenantProfile | None) -> bool:
+    """Same explicit Full policy as workspace customization; never a client-editable feature flag."""
+    return tenant_allows_workspace_branding(tenant)
