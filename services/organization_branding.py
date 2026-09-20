@@ -4,6 +4,7 @@ Callers supply the existing tenant authorization and strict commercial entitleme
 Only an explicit publish/restore transaction can change the persisted palette.
 """
 from copy import deepcopy
+from services.organization_branding_ui import build_brand_workflow_ui
 from hashlib import sha256
 import json
 import re
@@ -79,6 +80,7 @@ def build_branding(tenant, *, can_edit=False, entitled=False, writes_blocked=Fal
         'revision':revision(tenant,record),'version':record['version'],'values':values,
         'history':list(reversed(record['history'])),'can_edit':reason=='ready','reason_code':reason,
         'message':messages[reason],'appearance':appearance,'presets':deepcopy(PRESETS),
+        'workflow_ui':build_brand_workflow_ui(tenant),
         'save_endpoint':f'/api/admin/tenants/{tenant.slug}/config','provider_calls_performed':False,
         'heading':'Paleta del espacio','scope_note':'Se aplica al perfil institucional y centro de implementación. No cambia dominios, PWA, WhatsApp ni plantillas aprobadas.'}
 

@@ -48,3 +48,4 @@ flask_session/
 .vercel
 .env.local
 .env.*.local
+.env*
