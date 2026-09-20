@@ -1,3 +1,5 @@
+from services.organization_modules import ModuleSelectionError, build_modules, save_modules
+from services.plan_access import tenant_allows_module_selection
 from services.organization_branding import BrandingError, build_branding, save_branding
 from services.plan_access import tenant_allows_workspace_branding
 from cutover_writer_fence import cutover_writer_fence_enabled
@@ -2379,6 +2381,8 @@ def get_tenant_config_bundle(current_user, slug):
     response["organization_profile"] = build_profile_settings(
         tenant, owner, can_edit=can_manage_tenant_control_plane(current_user, tenant), writes_blocked=cutover_writer_fence_enabled(current_app.config)
     )
+    response['organization_modules'] = build_modules(tenant, can_edit=can_manage_tenant_control_plane(current_user,tenant),
+        entitled=tenant_allows_module_selection(tenant), writes_blocked=cutover_writer_fence_enabled(current_app.config))
     response['organization_branding'] = build_branding(tenant,
         can_edit=can_manage_tenant_control_plane(current_user,tenant),
         entitled=tenant_allows_workspace_branding(tenant),writes_blocked=cutover_writer_fence_enabled(current_app.config))
@@ -2555,6 +2559,15 @@ def update_tenant_config_bundle(current_user, slug):
     data = request.get_json(silent=True)
     if not isinstance(data, dict):
         return jsonify({"error": "Enviá un objeto JSON válido."}), 400
+    if "organization_modules" in data:
+        try:
+            result=save_modules(db.session,TenantProfile,User,AuditEvent,tenant_id=tenant.id,
+                actor_id=current_user.id,data=data,authorize=can_manage_tenant_control_plane,entitlement=tenant_allows_module_selection)
+            status=200
+        except ModuleSelectionError as exc:
+            result={'contract_version':'organization.setup_modules_error.v1','reason_code':exc.code};status=exc.status
+        response=jsonify(result);response.headers['Cache-Control']='no-store'
+        return response,status
     if "organization_branding" in data:
         try:
             result=save_branding(db.session,TenantProfile,User,AuditEvent,tenant_id=tenant.id,

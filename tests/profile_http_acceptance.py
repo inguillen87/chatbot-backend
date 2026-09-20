@@ -284,6 +284,37 @@ class InstitutionalProfileHttpTests(unittest.TestCase):
             browser=self.login();brand=self.read_brand(browser);self.assertFalse(brand['can_edit'])
             self.assertEqual(self.post_brand(browser,brand)[0],403)
 
+    def test_modules_selection_changes_preparation_without_changing_connections(self):
+        with self.brand_plan():
+            first = self.login()
+            status, body, _ = first.request('GET', '/api/admin/tenants/acceptance-a/config')
+            self.assertEqual(status, 200)
+            before = body['organization_modules']
+            self.assertTrue(before['can_edit'])
+            payload = {'expected_revision': before['revision'], 'organization_modules': {'selected': []}}
+            status, saved, _ = first.request('PUT', before['save_endpoint'], payload)
+            self.assertEqual(status, 200)
+            self.assertEqual(saved['modules']['selected'], [])
+            status, current, _ = self.login('second').request('GET', before['save_endpoint'])
+            self.assertEqual(status, 200)
+            self.assertEqual(current['organization_modules']['version'], 1)
+            status, activation, _ = first.request('GET', '/api/v2/tenants/acceptance-a/activation/channels')
+            self.assertEqual(status, 200)
+            journey = activation['organization_setup']
+            self.assertEqual(journey['stages'][1]['source_ids'], ['widget', 'live_chat'])
+            self.assertIn('whatsapp', [row['id'] for row in activation['channels']])
+            self.assertEqual(first.request('PUT', before['save_endpoint'], payload)[0], 412)
+
+    def test_modules_free_and_foreign_sessions_are_rejected(self):
+        with self.brand_plan('free'):
+            first = self.login()
+            _, body, _ = first.request('GET', '/api/admin/tenants/acceptance-a/config')
+            before = body['organization_modules']
+            self.assertFalse(before['can_edit'])
+            payload = {'expected_revision': before['revision'], 'organization_modules': {'selected': []}}
+            self.assertEqual(first.request('PUT', before['save_endpoint'], payload)[0], 403)
+            self.assertEqual(self.login('acceptance-b').request('PUT', before['save_endpoint'], payload)[0], 403)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

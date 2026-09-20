@@ -1,3 +1,4 @@
+from services.organization_modules import apply_setup_selection, ModuleSelectionError
 """Read-only, tenant-bound setup guidance. No provisioning or entitlement changes.
 
 The legacy government journey remains available. This optional v2 projection
@@ -57,6 +58,10 @@ def build_organization_setup_journey(tenant, channels, *, workspace_appearance=N
         if definition['id']=='validation_release' and kind not in ('municipio','gobierno'):
             definition['source_ids']=('crm','identity_auth','accessibility','public_intake_security')
             definition['description']='Revisá atención, acceso, accesibilidad y protección de las consultas. La aceptación productiva se valida por separado.'
+    try:
+        definitions = apply_setup_selection(tenant, definitions)
+    except ModuleSelectionError:
+        return None
     channels = [item for item in channels if isinstance(item, dict)]
     counts = Counter(str(item.get('id','')) for item in channels)
     # Ambiguous source IDs cannot become a successful last-write-wins check.
