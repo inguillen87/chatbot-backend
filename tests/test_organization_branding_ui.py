@@ -23,7 +23,7 @@ class BrandWorkflowUITests(unittest.TestCase):
         self.assertNotIn('can_edit',brand['workflow_ui']['texts'])
         self.assertEqual(build_brand_workflow_ui(tenant())['texts']['discard_action'],TEXTS['discard_action'])
     def test_invalid_overrides_use_server_defaults(self):
-        for value in ('', 'x'*601, '<b>Invalid</b>', chr(0), 5, {'text':'invalid'}, 'Unknown {token}'):
+        for value in ('', 'x'*601, '<b>Invalid</b>', chr(0), 'A'+chr(0x85)+'B', 'A'+chr(0x9B)+'B', 5, {'text':'invalid'}, 'Unknown {token}'):
             with self.subTest(value=value):
                 self.assertEqual(build_brand_workflow_ui(tenant({'discard_action':value}))['texts']['discard_action'],TEXTS['discard_action'])
     def test_required_placeholders_survive_customization(self):

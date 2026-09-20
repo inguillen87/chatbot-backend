@@ -1,5 +1,6 @@
 """Backend-owned plain-text presentation. Does not grant rights or write data."""
 import re
+import unicodedata
 CONFIG_KEY = 'organization_branding_workflow_copy'
 CONTRACT = 'organization.branding_workflow_ui.v1'
 TEXTS = {'studio_label': 'Estudio de marca',
@@ -91,7 +92,7 @@ def build_brand_workflow_ui(tenant):
             candidate = overrides.get(key)
             if not isinstance(candidate, str) or not 1 <= len(candidate.strip()) <= 600:
                 continue
-            if re.search(r'[\x00-\x1f\x7f<>]', candidate):
+            if '<' in candidate or '>' in candidate or any(unicodedata.category(char) == 'Cc' for char in candidate):
                 continue
             if set(re.findall(r'\{([^{}]+)\}', candidate)) != set(re.findall(r'\{([^{}]+)\}', original)):
                 continue

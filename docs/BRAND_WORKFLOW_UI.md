@@ -29,3 +29,8 @@ this backend on disposable SQLite, with original login/sessions/middleware and n
 
 No promotion of production or stable QA aliases. Cold-start 503s and institutional
 QA acceptance remain independent release gates.
+
+Corrección P2 Unicode: se rechaza la categoría Unicode Cc completa, incluidos C1
+U+0085 y U+009B incrustados en texto. Las regresiones se ejecutan en ambos lados;
+la API usa unicodedata.category y el cliente una propiedad Unicode de RegExp.
+La representación sigue siendo texto escapado; el contrato no cambia.
