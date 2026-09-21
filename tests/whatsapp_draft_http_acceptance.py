@@ -205,7 +205,9 @@ class WhatsAppDraftHttpTests(unittest.TestCase):
         with self.app.app_context():
             db.session.get(TenantProfile, self.ids[0]).is_active = False
             db.session.commit()
-        self.assertEqual(self.save(browser, pack)[0], 403)
+        # The complete request chain denies inactive admin context before the
+        # handler-level 403. Preserve that existing authentication boundary.
+        self.assertEqual(self.save(browser, pack)[0], 401)
         self.assertEqual(self.stored(), ([], []))
 
     def test_old_operation_is_recoverable_after_24_following_operations(self):
