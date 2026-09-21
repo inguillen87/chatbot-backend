@@ -365,6 +365,14 @@ def _resolve_tenant_profile() -> Optional[TenantProfile]:
 def tenant_middleware(app) -> None:
     @app.before_request
     def attach_tenant_profile() -> None:
+        # Only this matched platform endpoint is independent of tenant storage.
+        # Do not broaden the exception to the /api/config prefix or trust hints.
+        if request.endpoint == "config_bp.get_runtime_recovery_ui":
+            g.tenant_profile = None
+            g.tenant_profile_slug = None
+            g.current_tenant = None
+            g.current_tenant_slug = None
+            return
         try:
             tenant = _resolve_tenant_profile()
         except Exception as exc:
