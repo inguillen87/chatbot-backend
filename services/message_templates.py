@@ -771,6 +771,7 @@ def whatsapp_template_pack_catalog(
         },
         "frontend_contract": {
             "render_as": "whatsapp_versioned_template_packs",
+            "workspace_ui": copy.deepcopy(WHATSAPP_TEMPLATE_WORKSPACE_UI),
             "copy": {
                 "title": "Packs profesionales de WhatsApp",
                 "description": (
@@ -800,3 +801,34 @@ def whatsapp_template_pack_catalog(
             },
         },
     }
+
+
+# Presentation-only contract; never grants permissions or changes provider state.
+WHATSAPP_TEMPLATE_WORKSPACE_UI = {
+    "contract_version": "whatsapp.template_pack.workspace_ui.v1",
+    "title": "Biblioteca de plantillas de WhatsApp",
+    "description": "Buscá el mensaje que necesita tu organización y revisá su estado antes de preparar borradores.",
+    "provider_notice": "Crear borradores locales no envía mensajes ni solicita aprobación a Meta o Twilio.",
+    "refresh": "Actualizar estado",
+    "pack_label": "Conjunto de plantillas",
+    "search_label": "Buscar en este conjunto",
+    "search_placeholder": "Nombre, contenido o intención",
+    "state_label": "Estado de plantilla",
+    "all_states": "Todos los estados",
+    "results": "{visible} de {total} plantillas",
+    "no_results": "No hay plantillas que coincidan con estos filtros.",
+    "clear_filters": "Limpiar filtros",
+    "empty": "No hay conjuntos disponibles para esta organización.",
+    "create": "Crear borradores locales",
+    "created": "Borradores locales creados",
+    "creating": "Confirmando creación…",
+    "confirm_title": "Revisar creación de borradores",
+    "confirm_description": "Se preparará el conjunto completo en la organización indicada, no sólo las plantillas visibles. No se enviarán mensajes ni se solicitará aprobación al proveedor.",
+    "confirm_action": "Confirmar creación local",
+    "cancel": "Seguir revisando",
+    "selection_label": "Conjunto seleccionado",
+    "tenant_label": "Organización",
+    "stale": "Vista anterior: actualizá el estado antes de crear borradores.",
+    "unverified": "Sin verificación",
+    "approval_note": "La aprobación informada no confirma la entrega de mensajes.",
+}
