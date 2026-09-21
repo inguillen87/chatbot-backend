@@ -1,0 +1,50 @@
+name: WhatsApp draft full application
+"on":
+  pull_request:
+    paths:
+      - tests/whatsapp_draft_http_acceptance.py
+      - tests/run_whatsapp_draft_browser.py
+      - tests/whatsapp-draft-http.browser.mjs
+      - .github/workflows/whatsapp-draft-http.yml
+permissions:
+  contents: read
+concurrency:
+  group: whatsapp-draft-full-app-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  draft-http:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: inguillen87/chatboc-frontend
+          ref: f62bdbda0442c34804f170f1b036c4d42675134e
+          path: frontend
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install unchanged backend requirements
+        working-directory: backend
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Test original auth and durable local draft records over HTTP
+        working-directory: backend
+        run: python -m tests.whatsapp_draft_http_acceptance
+      - name: Install frontend and browser without changing package versions
+        working-directory: frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund && npx playwright install --with-deps chromium
+      - name: Verify the actual templates route against full Flask
+        working-directory: backend
+        run: python -m tests.run_whatsapp_draft_browser --frontend ../frontend
