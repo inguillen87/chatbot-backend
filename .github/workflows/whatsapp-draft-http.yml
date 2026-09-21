@@ -2,6 +2,21 @@ name: WhatsApp draft full application
 "on":
   pull_request:
     paths:
+      # create_app loads these production dependencies before reaching drafts.
+      # Keep docs-only changes cheap, but do not skip the gate on code changes.
+      - '*.py'
+      - routes/**
+      - services/**
+      - utils/**
+      - middleware/**
+      - models/**
+      - config/**
+      - migrations/**
+      - requirements*.txt
+      - pyproject.toml
+      - uv.lock
+      - tests/profile_acceptance_runtime.py
+      - tests/profile_http_acceptance.py
       - tests/whatsapp_draft_http_acceptance.py
       - tests/run_whatsapp_draft_browser.py
       - tests/whatsapp-draft-http.browser.mjs
@@ -23,7 +38,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: inguillen87/chatboc-frontend
-          ref: f62bdbda0442c34804f170f1b036c4d42675134e
+          ref: b0c3ba0382b26d8a45014c84e2c25c90ce57a2a3
           path: frontend
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97

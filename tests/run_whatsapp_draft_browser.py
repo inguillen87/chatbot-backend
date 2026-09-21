@@ -14,7 +14,7 @@ def main():
     parser.add_argument('--frontend', required=True)
     args = parser.parse_args()
     frontend = Path(args.frontend).resolve()
-    expected = 'f62bdbda0442c34804f170f1b036c4d42675134e'
+    expected = 'b0c3ba0382b26d8a45014c84e2c25c90ce57a2a3'
     revision = subprocess.check_output(['git', '-C', str(frontend), 'rev-parse', 'HEAD'], text=True).strip()
     if revision != expected:
         raise RuntimeError('Acceptance requires the reviewed frontend revision')
