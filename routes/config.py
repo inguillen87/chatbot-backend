@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from flask import Blueprint, jsonify, current_app
 
 config_bp = Blueprint('config_bp', __name__)
@@ -25,6 +28,30 @@ def get_version_info():
         'frontend': current_app.config['FRONTEND_VERSION'],
         'backend': current_app.config['BACKEND_VERSION'],
     })
+
+
+def _load_runtime_recovery_ui():
+    """Read only explicit, deployment-owned public status copy; never app secrets."""
+    path = Path(__file__).resolve().parents[1] / 'config' / 'runtime_recovery_ui.json'
+    with path.open(encoding='utf-8') as stream:
+        payload = json.load(stream)
+    if (not isinstance(payload, dict)
+            or payload.get('contract_version') != 'chatboc.runtime_recovery_ui.v1'
+            or payload.get('scope') != 'platform'):
+        raise ValueError('invalid_runtime_recovery_contract')
+    return payload
+
+
+@config_bp.route('/api/config/runtime-recovery', methods=['GET'])
+def get_runtime_recovery_ui():
+    """Publish technical platform copy, without user, tenant or business state."""
+    try:
+        response = jsonify(_load_runtime_recovery_ui())
+    except (OSError, ValueError):
+        response = jsonify({'error': 'runtime_recovery_config_unavailable'})
+        response.status_code = 503
+    response.headers['Cache-Control'] = 'no-store'
+    return response
 
 
 @config_bp.route('/api/config/maps', methods=['GET'])

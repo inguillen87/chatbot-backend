@@ -1,0 +1,67 @@
+name: Public runtime recovery configuration
+"on":
+  pull_request:
+    paths:
+      - routes/config.py
+      - middleware/tenant_context.py
+      - config/runtime_recovery_ui.json
+      - tests/test_runtime_recovery_config.py
+      - tests/test_runtime_recovery_middleware.py
+      - tests/profile_acceptance_runtime.py
+      - tests/runtime_recovery_http_acceptance.py
+      - tests/run_runtime_recovery_browser.py
+      - tests/runtime-recovery-http.browser.mjs
+      - .github/workflows/runtime-recovery-copy.yml
+permissions:
+  contents: read
+concurrency:
+  group: runtime-recovery-copy-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  public-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - run: python -m pip install 'Flask==3.1.1'
+      - run: python -m unittest discover -s tests -p 'test_runtime_recovery*.py' -v
+      - run: python -m compileall -q routes/config.py middleware/tenant_context.py tests/test_runtime_recovery_config.py tests/test_runtime_recovery_middleware.py tests/runtime_recovery_http_acceptance.py tests/run_runtime_recovery_browser.py
+
+  full-app-paired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          path: backend
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: inguillen87/chatboc-frontend
+          ref: 66ab05294d25bf3dfffe436cd98a75bf0c8c92f3
+          path: frontend
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install unchanged application dependencies
+        working-directory: backend
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Exercise full application over real HTTP with disposable identities
+        working-directory: backend
+        run: python -m tests.runtime_recovery_http_acceptance
+      - name: Install unchanged frontend dependencies and browser
+        working-directory: frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund && npx playwright install --with-deps chromium
+      - name: Exercise actual recovery component against full Flask and original sessions
+        working-directory: backend
+        run: python -m tests.run_runtime_recovery_browser --frontend ../frontend
