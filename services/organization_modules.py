@@ -57,6 +57,19 @@ UI.update({'ready':'Seleccionado para preparar','idle':'No seleccionado','requir
     'legacy_note':'Hasta guardar, se usa la sugerencia de la plataforma para esta actividad.',
     'denied':'El acceso cambió. Los datos de esta organización ya no se muestran.'})
 
+# Additive presentation contract: not a permission or an instruction to persist.
+SELECTION_ASSISTANCE = {
+    'contract_version': 'organization.setup_module_assistance.v1',
+    'select_title': 'Revisá las funciones necesarias',
+    'remove_title': 'Revisá las funciones que dependen de esta selección',
+    'detail': 'Este paso sólo modifica tu borrador. Después deberás guardar la selección. No desconecta servicios ni modifica datos, permisos o planes.',
+    'added_heading': 'Se agregarán a tu preparación',
+    'removed_heading': 'Se quitarán de tu preparación',
+    'apply_draft': 'Aplicar al borrador',
+    'cancel': 'Mantener mi selección',
+    'hint': 'Podés elegir una función directamente. Si necesita otras, revisaremos el conjunto antes de cambiar tu borrador.',
+}
+
 
 def normalized_selection(value, offered):
     ids = [item['id'] for item in offered]
@@ -97,6 +110,7 @@ def build_module_selection(tenant, *, can_edit=False, entitled=False, writes_blo
         'organization_type':context['organization_type'],'revision':selection_revision(context,record),
         'version':record['version'],'source':'saved' if record['version'] else 'defaults',
         'selected':record['selected'],'catalog':deepcopy(offered),'ui':deepcopy(UI),
+        'selection_assistance':deepcopy(SELECTION_ASSISTANCE),
         'can_edit':reason=='allowed','reason_code':reason,'message':UI[reason],
         'save_endpoint':f"/api/admin/tenants/{context['tenant']['slug']}/config",
         'provider_calls_performed':False,'changes_runtime_access':False}
