@@ -98,8 +98,11 @@ jobs:
         run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
       - name: Verify password sessions, tenant boundaries and persistence via real HTTP
         run: python -m tests.profile_http_acceptance
-      - name: Install the paired frontend and browser
+      - name: Install the paired frontend and pinned Playwright browser
         working-directory: .acceptance-frontend
-        run: npm ci --ignore-scripts --no-audit --no-fund && npx playwright install --with-deps chromium
+        # Use the runner's native libraries. Do not refresh unrelated APT repositories
+        # or weaken signature checks to install supplemental browser dependencies.
+        # The following real browser test must still launch and pass, without skips.
+        run: npm ci --ignore-scripts --no-audit --no-fund && npx playwright install chromium
       - name: Verify template library confirmation and persistence against full Flask
         run: python -m tests.run_template_workspace_browser --frontend .acceptance-frontend

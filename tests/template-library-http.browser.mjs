@@ -39,14 +39,17 @@ try {
     await page.evaluate(dark=>document.documentElement.classList.toggle('dark',dark),dark);
     await page.getByRole('combobox',{name:ui.state_label}).selectOption('approved');
     await expect(page.getByText(ui.no_results,{exact:true})).toBeVisible();
+    const readFinished = page.waitForResponse(response=>new URL(response.url()).pathname==='/api/admin/whatsapp/template-packs'&&response.request().method()==='GET');
     await page.getByRole('button',{name:ui.refresh,exact:true}).click();
+    assert.equal((await readFinished).status(),200);
+    await expect(page.getByRole('button',{name:ui.refresh,exact:true})).toBeEnabled();
     await expect(page.getByRole('combobox',{name:ui.state_label})).toHaveValue('approved');
     await expect(page.getByText(ui.no_results,{exact:true})).toBeVisible();
     await page.getByRole('button',{name:ui.clear_filters,exact:true}).click();
     await expect(page.getByRole('article')).toHaveCount(5);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
     await page.screenshot({path:`.vercel/template-library-evidence/library-${width}.png`,fullPage:true});
-    results.push({width,dark,noHorizontalOverflow:true,zeroFilterPreserved:true,localDraftsPersisted:true});
+    results.push({width,dark,noHorizontalOverflow:true,zeroFilterPreserved:true,refreshResponseVerified:true,localDraftsPersisted:true});
   }
   assert.deepEqual(errors,[]); assert.equal(writes.length,1);
   const headers = await writes[0].allHeaders(); assert.ok(headers['idempotency-key']);
