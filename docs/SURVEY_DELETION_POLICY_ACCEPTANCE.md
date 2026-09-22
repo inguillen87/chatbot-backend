@@ -2,10 +2,10 @@
 
 ## Pareja aceptada y alcance
 
-Estado verificado el 22 de septiembre de 2026: aceptación integrada aislada
-**aprobada**; publicación coordinada y comprobación del entorno desplegado
-**pendientes**. Esta actualización documental corrige el P2 de Codex
-`discussion_r4067871705` del PR backend #2794. No cambia código ejecutable.
+Aceptación integrada aislada **aprobada**; publicación coordinada y comprobación
+del entorno desplegado **pendientes**. Este registro corrige el P2 de Codex
+`discussion_r4067871705` del PR backend #2794. Sus revisiones y resultados son
+históricos e inmutables: no representan el resultado de commits posteriores.
 
 | Referencia | Revisión exacta |
 | --- | --- |
@@ -14,12 +14,14 @@ Estado verificado el 22 de septiembre de 2026: aceptación integrada aislada
 | Checkout backend ejecutado por la CI del PR | `d1a881d08a48310404577d654494f5684f29c456` |
 | Frontend coordinado, PR #1761 | `1e8b8104c79bc8a1391d0076c25167329f8f62d2` |
 
-El checkout backend es la unión de prueba del head con su base; no es un merge
-productivo. La revisión frontend de esta tabla es la fijada tanto en
-`.github/workflows/survey-deletion-policy.yml` como en
-`tests/run_survey_workspace_browser.py` y en el reporte `persistence.json`.
-La revisión frontend anterior `ec63a2e...` no es la pareja aceptada final.
+El checkout backend es la unión de prueba del head con su base, no un merge
+productivo. La revisión frontend es la fijada en
+`.github/workflows/survey-deletion-policy.yml`,
+`tests/run_survey_workspace_browser.py` y `persistence.json`.
+La revisión anterior `ec63a2e...` no es la pareja aceptada final.
 No se cambia la línea de selección de módulos ni se introducen clientes nuevos.
+
+## Protección del producto
 
 El servicio de borrado existente verifica tenant, gobernanza, materialización y
 recibos institucionales. Este corte añade una precondición HTTP explícita de
@@ -33,88 +35,94 @@ El guard en la fábrica compartida de siete rutas administrativas:
 4. Rechaza con 409 cualquier respuesta registrada, incluso sintética o inconsistente.
 5. Mantiene las comprobaciones previas del servicio de eliminación.
 
-El guard no borra ni confirma la transacción. La consulta de existencia de respuestas
-lee un ID con límite, no carga contenido ni cuenta toda la tabla. Los mensajes y
-códigos del rechazo proceden del backend, con instrucciones para releer/revisar.
+El guard no borra ni confirma la transacción. La consulta de existencia lee un ID
+con límite, no carga contenido ni cuenta toda la tabla. Los mensajes y códigos
+del rechazo proceden del backend, con instrucciones para releer/revisar.
+Alcance exacto: entradas HTTP administrativas compartidas. No se reescribe
+`delete_encuesta` ni se afirma cubierto un caller interno que omita el guard.
+No existe excepción silenciosa para borrar respuestas de prueba.
 
-Alcance exacto: entradas HTTP administrativas compartidas. No se reescribe el
-servicio interno `delete_encuesta` ni se afirma que un caller directo esté
-cubierto. No existe excepción silenciosa para borrar respuestas de prueba.
-
-## Evidencia final ejecutada
+## Evidencia de la pareja aceptada
 
 Backend: [run 35676839086](https://github.com/inguillen87/chatbot-backend/actions/runs/35676839086),
-job `106585025048`, finalizado correctamente. Los pasos finales se volvieron a
-consultar al retomar desde el chat; no se lanzó una nueva CI para esta corrección
-documental ni se presenta la evidencia previa como una ejecución nueva.
+job `106585025048`, finalizado correctamente.
 
 | Suite | Resultado y alcance |
 | --- | --- |
-| Política de borrado | 17 pruebas aprobadas: guard real, SQLite/SQLAlchemy y adaptadores sintéticos de permisos/lock |
-| HTTP de aplicación completa | 12 pruebas aprobadas: `create_app`, login/cookies/modelos/middleware originales y cuentas/SQLite desechables |
+| Política de borrado | 17 aprobadas: guard real, SQLite/SQLAlchemy, adaptadores sintéticos de permisos/lock |
+| HTTP de aplicación completa | 12 aprobadas: `create_app`, login/cookies/modelos/middleware originales y cuentas/SQLite desechables |
 | Navegador del panel SPA completo | 4 recorridos aprobados con el frontend exacto de la tabla, backend original y sin respuestas de API simuladas |
 
-Los recorridos integrados cubren escritorio de 1440 px (cierre), tablet de 820 px
-(borrado), móvil oscuro de 390 px (cierre con recuperación de lectura) y 320 px
-(borrado con recuperación de lectura). Incluyen ingreso por el formulario real,
-búsqueda, identidad visible del instrumento en la confirmación, teclado,
-mutación, lectura posterior, recarga de página y sesión conservada.
+Los recorridos cubren 1440 px (cierre), 820 px (borrado), 390 px oscuro (cierre con
+recuperación) y 320 px (borrado con recuperación). Incluyen formulario real de
+ingreso, búsqueda, identidad del instrumento, teclado, mutación, lectura
+posterior, recarga de página y sesión conservada.
 
-En los dos escenarios de recuperación, el runner provoca un 503 sólo en las
-lecturas posteriores al commit. El panel muestra actualización pendiente,
-bloquea acciones y recupera mediante lectura sin repetir la mutación de encuesta.
-Se observa exactamente una mutación de encuesta por escenario. Login, preferencias
-auxiliares de la SPA y controles del runner son solicitudes distintas.
+En los dos casos de recuperación, el runner provoca 503 sólo en las lecturas
+posteriores al commit. El panel muestra actualización pendiente, bloquea acciones
+y recupera mediante lectura, sin repetir la mutación de encuesta. Se observa
+una mutación de encuesta por escenario; login, preferencias auxiliares y
+controles del runner son solicitudes distintas.
 
 `persistence.json` comprueba en los modelos originales que las dos encuestas
 cerradas siguen presentes con una respuesta cada una, y que los dos borradores
 eliminados ya no existen. Los controles de fallos sólo existen en el runner.
 
 Artefacto integrado: `survey-workspace-acceptance`, ID `10672917734`,
-2.959.367 bytes, 12 archivos. SHA-256 del ZIP comprobado nuevamente:
+2.959.367 bytes, 12 archivos. SHA-256 del ZIP:
 `ee31b110c22a9a267199586d4bf6fc2288d9b647760cbc10bae72e518114b4b5`.
 
 Frontend: [run 35676754880](https://github.com/inguillen87/chatboc-frontend/actions/runs/35676754880),
-job `106584776041`, tipos, build y pruebas aprobados. El reporte Vitest del
-artefacto `10673446661` confirma 3.313 pruebas aprobadas en 423 archivos,
-cero fallidas y cero pendientes. SHA-256 del ZIP comprobado nuevamente:
+job `106584776041`, tipos, build y pruebas aprobados. Vitest del artefacto
+`10673446661`: 3.313 pruebas en 423 archivos, cero fallidas y cero pendientes.
+SHA-256 del ZIP:
 `1ea5fdb433d0f24383c8d86ebeb503ea7fb2476221fb3e4329e86d35c4e6791f`.
-Sus cuatro recorridos de tarjeta con callbacks sintéticos son evidencia separada
-de los cuatro recorridos integrados; no se suman como una sola certificación.
-Los artefactos de CI tienen retención limitada: comprobar disponibilidad antes
-de usarlos como única copia de evidencia.
+Los cuatro recorridos de tarjeta con callbacks sintéticos son evidencia separada
+de los cuatro integrados; no se suman como una sola certificación.
+Los artefactos tienen retención limitada: comprobar disponibilidad antes de
+usarlos como única copia de evidencia.
+
+## Reconsulta y nuevas ejecuciones
+
+Al retomar el 22/09/2026 se consultaron los pasos de ambos jobs anteriores,
+se comprobaron otra vez los digests de los ZIP conservados y se leyeron sus
+reportes. Esa reconsulta no es una nueva ejecución ni una nueva certificación.
+
+El push documental `a6d5bcd77cf857a39240e507a034990ad8d18b76` sí activó
+**automáticamente** el workflow `35781755684`. No se inició manualmente ni se
+atribuyó a ese run un resultado mientras seguía en curso. También los commits
+posteriores de documentación pueden activar CI: consultar su estado por SHA.
+La afirmación inicial de que no habría otra CI era demasiado amplia; se corrige
+expresamente aquí sin alterar ni reemplazar la evidencia histórica de la tabla.
 
 ## Reproducción aislada
 
 Usar checkouts limpios: backend `d1a881d08a48310404577d654494f5684f29c456`
 y frontend `1e8b8104c79bc8a1391d0076c25167329f8f62d2`. Reproducir los pasos
-del workflow, con Python 3.12.14, Node 24 y las dependencias fijadas en los
-repositorios. No cargar archivos `.env` ni bases o claves de clientes.
-El runner comprueba el SHA frontend y crea identidades y SQLite desechables;
-no reemplazar esa comprobación para ejecutar otra revisión y atribuirle este
-resultado. Una nueva pareja requiere evidencia propia.
+del workflow con Python 3.12.14, Node 24 y las dependencias de los repositorios.
+No cargar `.env`, bases ni claves de clientes. El runner comprueba el SHA
+frontend y crea identidades/SQLite desechables. No reemplazar esa comprobación
+para atribuir este resultado a otra revisión: una nueva pareja requiere evidencia propia.
 
 ## Fallos intermedios corregidos
 
-La primera ejecución buscaba `admin_lifecycle` en el detalle legacy; la aserción
-se corrigió para leer el contrato del listado, conservando la comprobación del
-estado en el detalle. Después se corrigió el harness para distinguir la navegación
-HTML `/admin` del proxy de API legacy. No se falsearon payloads administrativos.
-El recorrido real detectó luego que faltaba el nombre del instrumento en el
-diálogo. Frontend `1e8b8104` lo muestra en ambas confirmaciones, escapado y sin
+La primera ejecución buscaba `admin_lifecycle` en el detalle legacy; se corrigió
+la aserción al contrato del listado, conservando la lectura del estado del detalle.
+Después el harness distinguió navegación HTML `/admin` de la API legacy sin
+falsear sus payloads. El recorrido real detectó que faltaba el nombre en el
+diálogo; frontend `1e8b8104` lo muestra en ambas confirmaciones, escapado y sin
 truncar, con cuatro regresiones nuevas. Los intentos fallidos no se cuentan como
-aceptaciones; el resultado válido es el run final identificado arriba.
+aceptaciones; el resultado válido es el run identificado en la tabla.
 
 ## Publicación y límites
 
-La aceptación del navegador integrado aislado ya está completada. Sigue pendiente
-la publicación coordinada y su verificación autenticada en el entorno desplegado.
+La aceptación del navegador integrado aislado está completada. Sigue pendiente
+la publicación coordinada y la verificación autenticada en el entorno desplegado.
 No se han promovido estos PR a producción. No hay cambios de esquema/dependencias,
 escrituras sobre encuestas de clientes, números de WhatsApp, planes o callbacks.
 
 La evidencia aislada no certifica concurrencia PostgreSQL, dispositivos físicos,
-PWA instalada, MFA ni el funcionamiento de Meta/Twilio. Los planes de las cuentas
-de prueba sólo se modificaron en SQLite desechable. No se debe reutilizar esta
-evidencia para afirmar que el dominio público ya sirve el candidato.
-
-Continuidad del trabajo entre interfaces: `CONTINUITY_CHAT_WORK_CODEX_20260922.md`.
+PWA instalada, MFA ni Meta/Twilio. Los planes de las cuentas de prueba sólo se
+modificaron en SQLite desechable. No usar esta evidencia para afirmar que el
+dominio público sirve el candidato.
+Continuidad: `CONTINUITY_CHAT_WORK_CODEX_20260922.md`.

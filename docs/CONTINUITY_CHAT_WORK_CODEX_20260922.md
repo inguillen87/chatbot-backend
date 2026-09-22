@@ -1,109 +1,103 @@
 # Chatboc: continuidad entre Chat, Work y Codex
 
-Registro de continuidad del 22 de septiembre de 2026, solicitado por Marcelo.
-Su propósito es retomar el mismo producto y las revisiones comprobadas, no crear
-otra aplicación ni depender de una supuesta sincronización de historiales.
-Actualizar los estados mediante herramientas antes de la próxima escritura.
+Registro del 22 de septiembre de 2026, solicitado por Marcelo. Retomar el mismo
+producto y sus revisiones comprobadas, sin crear otra aplicación ni depender de
+una supuesta sincronización de historiales. Consultar estados actuales antes de escribir.
 
-## Dirección de producto conservada
+## Dirección conservada
 
 Chatboc es el SaaS compartido para municipios, gobiernos, colegios, empresas y
-pymes. Tierra del Fuego / Agente Conversa se trata como white-label, mientras
-Junín conserva su propia organización e integración. La continuidad del plan es
-perfil institucional/comercial, rubro, módulos, permisos e integraciones por
-organización, con plantillas de WhatsApp trazables y estados reales del proveedor.
-Estas son instrucciones de producto, no una afirmación de que todos esos
-módulos o las integraciones institucionales ya estén terminados.
+pymes. Tierra del Fuego / Agente Conversa se trata como white-label; Junín conserva
+su organización e integración. Continuar perfil institucional/comercial, rubro,
+módulos, permisos e integraciones por organización, con plantillas WhatsApp
+trazables y estados reales del proveedor. Es dirección de producto, no una
+certificación de que todos esos módulos e integraciones estén terminados.
 
-No rehacer el stack: backend Flask/SQLAlchemy y frontend React/Vite/TypeScript.
-Conservar rutas legacy, aislamiento de tenant y autorización del servidor.
-No extender esta tarea a NexID, ObraSaaS u otros proyectos del holding.
+No rehacer Flask/SQLAlchemy ni React/Vite/TypeScript. Conservar legacy, aislamiento
+de tenant y autorización del servidor. No extender a NexID, ObraSaaS u otras verticales.
 
-## Punto de continuación comprobado
+## Implementaciones aceptadas
 
 | Repositorio | PR y rama | Implementación aceptada |
 | --- | --- | --- |
 | `inguillen87/chatbot-backend` | #2794, `fix/survey-deletion-guard-20260922` | `a6b7dd44de3862e4936008e0f0c146333fcb460b` |
 | `inguillen87/chatboc-frontend` | #1761, `fix/survey-confirmation-integrity-20260921` | `1e8b8104c79bc8a1391d0076c25167329f8f62d2` |
 
-Ambos PR estaban abiertos, no eran borradores y no estaban fusionados al retomar.
-El backend parte de `feat/module-planning-verified-20260920` / `f13cd73f...`;
-el frontend parte de `fix/whatsapp-draft-authority-20260921` / `b0c3ba03...`.
-Son PR apilados: revisar sus antecesores antes de integrarlos o publicarlos.
-No asumir que fusionar uno de estos PR equivale a publicar en `main`.
+Ambos PR estaban abiertos, listos para revisión y no fusionados al retomar.
+Backend parte de `feat/module-planning-verified-20260920` / `f13cd73f...`;
+frontend de `fix/whatsapp-draft-authority-20260921` / `b0c3ba03...`.
+Son PR apilados: revisar antecesores antes de integrar/publicar; fusionarlos no
+equivale a publicar `main`.
 
-Este registro y la corrección del documento de aceptación son cambios sólo de
-documentación sobre la implementación backend aceptada. Obtener el head actual
-de la rama antes de continuar; no usar la tabla para sobrescribir commits
-posteriores. El código frontend no se modifica en este corte de continuidad.
+El corte de continuidad modifica sólo dos documentos backend; no el frontend.
+Obtener el head actual antes de continuar: los SHA de la tabla identifican
+implementaciones aceptadas, no autorizan sobrescribir commits posteriores.
+El registro de evidencia es `SURVEY_DELETION_POLICY_ACCEPTANCE.md`: 3.313 pruebas
+frontend, 17 focales, 12 HTTP y cuatro recorridos integrados aprobados para su
+pareja exacta. Al retomar se releyeron los reportes y se verificaron los digests,
+no se ejecutaron manualmente las suites. El push documental activó CI automática
+(run `35781755684`); comprobar por SHA cualquier ejecución posterior y no confundirla
+con la evidencia histórica.
 
-La evidencia exacta y sus límites están en `SURVEY_DELETION_POLICY_ACCEPTANCE.md`:
-3.313 pruebas frontend, 17 focales backend, 12 HTTP y cuatro recorridos integrados
-aprobados. Los ZIP conservados en el contexto se volvieron a contrastar con los
-digests de CI y se leyeron sus reportes. No se volvieron a ejecutar las suites.
+## Coordinación entre agentes
 
-## Coordinación sin escrituras superpuestas
+GitHub —commits, PR, documentos, comentarios y CI— conserva el estado compartido.
+Este archivo no transfiere sesiones activas de Work/Codex, importa historiales o
+recupera cambios locales sin commit. No se comprobó ni detuvo una ejecución local de Work.
+Antes de escribir, leer instrucciones del repositorio, head/base, diff y revisiones.
+Un responsable de escritura por rama. Si otro agente movió el head, reconciliar:
+no force-push, no reemplazar su árbol por un snapshot antiguo. Agrupar por objetivo.
 
-La fuente compartida de continuidad es GitHub: ramas, commits, documentación,
-comentarios, revisiones y resultados de CI. Este archivo no transfiere una
-sesión activa de Work/Codex ni importa automáticamente su historial o cambios
-locales sin commit. No se ha comprobado ni detenido una ejecución local de Work.
+Codex está configurado para revisión en ambos PR. Los dos P2 antiguos del frontend
+figuran resueltos, pero la revisión automática visible fue sobre `ac6e642`, no
+sobre `1e8b8104`. Se solicitó revisar el head final en el comentario `5783756299`,
+sin escribir, crear ramas, fusionar ni desplegar. El bot respondió en
+`5783758332` que se alcanzó el **límite de uso para code reviews**. Por tanto,
+la solicitud está bloqueada por cuota, no corriendo ni aprobada. No se compraron
+créditos, no se ampliaron planes y no se reintenta automáticamente. Este resultado
+no demuestra que todas las modalidades de Codex estén agotadas; sólo la revisión solicitada.
 
-Antes de escribir, leer instrucciones del repositorio, head/base, cambios y
-revisiones recientes. Utilizar un único responsable de escritura por rama.
-Si otro agente movió el head, reconciliar primero; no usar force-push ni
-reemplazar su árbol con un snapshot antiguo. Agrupar cambios por objetivo.
-No inventar una sesión iniciada o un trabajo terminado por la mera aceptación
-de una solicitud de herramienta.
+El P2 backend `discussion_r4067871705` señalaba frontend viejo y navegador pendiente
+en el documento. Se corrigió en `a6d5bcd77...` con pareja, runs, artefactos y alcance
+exactos, y se respondió/cerró el hilo tras releer el archivo. La posterior precisión
+sobre CI automática no cambia runtime ni el resultado histórico de aceptación.
 
-Codex en GitHub figura configurado para revisión en ambos PR. Los dos P2 antiguos
-del frontend aparecen resueltos. La revisión automática visible del frontend se
-había realizado sobre `ac6e642`, no sobre la implementación final. Desde este
-chat se solicitó una nueva revisión del head `1e8b8104...` en el comentario
-`5783756299`, sin escritura de código, merge ni despliegue. Consultar la respuesta
-antes de atribuir un resultado a esa revisión.
+## Acceso y publicación
 
-El P2 backend `discussion_r4067871705` señaló que el documento todavía nombraba
-un frontend anterior y dejaba la aceptación del navegador como pendiente. Se
-corrige aquí con la pareja exacta, runs, artefactos y alcance realmente ejecutado.
-
-## Bloqueo de publicación observado
-
-La conexión Vercel devolvió cero equipos en `list_teams`. Al consultar los
-proyectos del scope `marcelos-projects-c26aa499`, devolvió 403 Forbidden y pidió
-reautenticarse con acceso a ese scope; identificó el equipo
+Vercel devolvió cero equipos en `list_teams` y 403 Forbidden al consultar
+`marcelos-projects-c26aa499`, solicitando reautenticación al scope. Identificó
 `team_BV1xuY6BnEzGanfok8GAyjZv`. No es evidencia de un problema de facturación.
-No cambiar planes, no reutilizar credenciales de otra vertical y no intentar
-eludir la denegación mediante otra ruta de despliegue.
+No cambiar planes, reutilizar credenciales de otra vertical ni eludir la denegación.
 
-El comentario Vercel del frontend #1761 marca el candidato `A6bEA5ggSYKZrcGtQRn871K6ZCNd`
-como `Ignored / Skipped Deployment`, no `READY`. Ningún éxito de GitHub Actions
-se presenta como publicación en `chatboc.ar`. Se requiere una conexión autorizada
-al equipo para inspeccionar el candidato y publicar/verificar de forma controlada.
+El comentario Vercel del frontend #1761 marca `A6bEA5ggSYKZrcGtQRn871K6ZCNd`
+como `Ignored / Skipped Deployment`, no `READY`. El éxito de Actions no prueba
+publicación en `chatboc.ar`. Hace falta una conexión autorizada al equipo para
+inspeccionar/publicar/verificar el candidato de forma controlada.
 
-## Próximos cierres, todavía pendientes
+## Próximos cierres pendientes
 
-1. Revisar la respuesta de Codex del frontend final y cualquier hallazgo nuevo;
-   comprobar la corrección documental backend. No repetir los P2 ya resueltos
-   sin una regresión demostrable.
-2. Auditar la cadena de PR apilados y construir un único candidato coordinado,
-   después de resolver el acceso Vercel. Comprobar revisiones servidas y entorno
-   de API antes de mover aliases. La publicación incluye prueba autenticada de
-   QA con instrumentos desechables y comprobación posterior, no sólo un build.
-3. Continuar el plan de autoservicio por organización: perfil, rubro, módulos e
-   integraciones, partiendo de lo existente. Cerrar la operación de plantillas
-   con sesión autorizada y proveedor correcto antes de afirmar aprobación Meta,
-   número conectado o entrega real de WhatsApp.
+1. Completar revisión del frontend final. La solicitud Codex está bloqueada por
+   cuota: no confundir el bloqueo con una revisión favorable ni repetir P2 ya
+   resueltos sin regresión demostrable. Revisar directamente el código mientras
+   no esté disponible una nueva revisión externa.
+2. Auditar antecesores y preparar un candidato coordinado; resolver acceso Vercel,
+   comprobar revisiones servidas y entorno de API antes de mover aliases. La
+   publicación incluye prueba autenticada de QA con instrumentos desechables y
+   comprobación posterior, no sólo build.
+3. Continuar autoservicio por organización sobre lo existente: perfil, rubro,
+   módulos e integraciones. Cerrar plantillas con sesión autorizada y proveedor
+   correcto antes de afirmar aprobación Meta, número conectado o entrega real.
 
-No cerrar ni borrar encuestas de clientes para probar. No modificar bases de
-clientes, números, callbacks, planes o contratos institucionales como efecto de
-este registro. No presentar la demo de Agente Conversa como CRM gubernamental
-productivo completo o integración WhatsApp aprobada.
+No usar encuestas de clientes como prueba destructiva. No modificar bases,
+números, callbacks, planes o contratos institucionales como efecto de este registro.
+La demo de Agente Conversa no se convierte por documentación en CRM gubernamental
+completo ni en WhatsApp aprobado.
 
-## Referencias operativas
+## Referencias
 
 - Backend: https://github.com/inguillen87/chatbot-backend/pull/2794
 - Frontend: https://github.com/inguillen87/chatboc-frontend/pull/1761
-- Revisión solicitada: https://github.com/inguillen87/chatboc-frontend/pull/1761#issuecomment-5783756299
+- Solicitud de revisión: https://github.com/inguillen87/chatboc-frontend/pull/1761#issuecomment-5783756299
+- Respuesta de cuota: https://github.com/inguillen87/chatboc-frontend/pull/1761#issuecomment-5783758332
 - Aceptación integrada: https://github.com/inguillen87/chatbot-backend/actions/runs/35676839086
 - CI frontend: https://github.com/inguillen87/chatboc-frontend/actions/runs/35676754880
