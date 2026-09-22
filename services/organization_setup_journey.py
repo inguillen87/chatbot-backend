@@ -7,6 +7,7 @@ from copy import deepcopy
 from collections import Counter
 from urllib.parse import parse_qs, unquote, urlsplit
 from services.organization_workspace import build_organization_workspace
+from services.organization_modules import ModuleSelectionError, read_selection, UI as MODULE_UI
 from services.tenant_implementation_journey import _stage, _STAGES
 
 CONTRACT_VERSION = 'tenant.implementation_journey.v2'
@@ -42,6 +43,9 @@ def build_organization_setup_journey(tenant, channels, *, workspace_appearance=N
     workspace = build_organization_workspace(tenant)
     if workspace is None: return None
     kind = workspace['organization_type']; slug = workspace['tenant']['slug']
+    try: context,offered,record=read_selection(tenant)
+    except ModuleSelectionError: return None
+    selected=set(record['selected'])
     definitions = deepcopy(_STAGES)
     for definition in definitions:
         if definition['id']=='institutional_identity':
@@ -57,6 +61,17 @@ def build_organization_setup_journey(tenant, channels, *, workspace_appearance=N
         if definition['id']=='validation_release' and kind not in ('municipio','gobierno'):
             definition['source_ids']=('crm','identity_auth','accessibility','public_intake_security')
             definition['description']='Revisá atención, acceso, accesibilidad y protección de las consultas. La aceptación productiva se valida por separado.'
+    if record['version']>0:
+        for definition in definitions:
+            if definition['id']=='channels':
+                definition['source_ids']=tuple(source for source in definition['source_ids'] if source not in ('whatsapp','templates') or 'whatsapp' in selected)
+            if definition['id']=='knowledge':
+                definition['label']='Contenidos y funciones elegidas'
+                definition['description']='Revisá los contenidos y las funciones incluidas en tu selección guardada. Los servicios que ya funcionan no se desactivan.'
+                definition['source_ids']=('knowledge_content',)+(('catalog_marketplace',) if 'catalog' in selected else ())+(('payments_checkout',) if 'payments' in selected else ())
+            if definition['id']=='validation_release':
+                base=tuple(source for source in definition['source_ids'] if source not in ('territorial_intelligence','analytics_surveys'))
+                definition['source_ids']=base+(('territorial_intelligence',) if 'territory' in selected else ())+(('analytics_surveys',) if 'surveys' in selected else ())
     channels = [item for item in channels if isinstance(item, dict)]
     counts = Counter(str(item.get('id','')) for item in channels)
     # Ambiguous source IDs cannot become a successful last-write-wins check.
@@ -76,6 +91,8 @@ def build_organization_setup_journey(tenant, channels, *, workspace_appearance=N
         'readiness_note':'El progreso refleja estos pasos de configuración. No certifica el plan Full, la aceptación productiva ni la entrega de mensajes.',
         'government_setup':kind in ('municipio','gobierno'),
         'stages':stages,
+        'module_selection_version':record['version'],'selected_modules':record['selected'],
+        'module_selector_ui':deepcopy(MODULE_UI),
         'summary':{'total':len(stages),'ready':ready,
             'blocked':sum(stage['status']=='blocked' for stage in stages),
             'published':sum(stage['published'] for stage in stages),

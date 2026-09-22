@@ -29,6 +29,7 @@ from services.encuestas_service import (
     survey_admin_write_rate_limit_key,
     survey_instrument_max_payload_bytes,
 )
+from services.survey_deletion_policy import require_admin_deletable_survey
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
@@ -135,6 +136,7 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
     @require_role("admin", "super_admin")
     def eliminar_encuesta_endpoint(current_user, encuesta_id: int):
         try:
+            require_admin_deletable_survey(encuesta_id, current_user)
             delete_encuesta(encuesta_id, current_user)
         except EncuestaError as err:
             db.session.rollback()
