@@ -15,19 +15,9 @@ process.env.VITE_API_URL = '/api';
 process.env.VITE_PROXY_TARGET = backend.origin;
 process.env.VITE_USE_LOCAL_API_PROXY = 'true';
 process.env.VITE_BACKEND_BOOTSTRAP_GATE_ENABLED = 'true';
+// Use the repository's actual routing configuration. No local /admin bypass.
 const server = await createServer({cacheDir: '.vercel/survey-workspace-cache',
-  server: {host: '127.0.0.1', port: 0, proxy: {
-    '/admin': {
-      target: backend.origin, changeOrigin: true, secure: false,
-      // The existing Vite config proxies /admin as a legacy JSON API.
-      // Serve real SPA documents for browser navigation; leave API reads and
-      // writes proxied unchanged. No response payload or permission is mocked.
-      bypass(request) {
-        if (request.headers['sec-fetch-dest'] === 'document' &&
-            request.headers.accept?.includes('text/html')) return '/index.html';
-      },
-    },
-  }}, logLevel: 'error'});
+  server: {host: '127.0.0.1', port: 0}, logLevel: 'error'});
 const evidence = 'test-evidence/survey-workspace';
 const results = [];
 let browser;
@@ -126,6 +116,7 @@ try {
     await context.close();
   }
   const report = {fullSpaRouter: true, fullFlaskApp: true, apiResponsesMocked: false,
+    testProxyOverride: false, actualFrontendViteConfig: true,
     syntheticAccountsAndSqlite: true, readBackFailureInjectedLocally: true, results};
   await writeFile(`${evidence}/results.json`, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report));
