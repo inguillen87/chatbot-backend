@@ -5,6 +5,8 @@ name: Migration runtime gate
       - bootstrap_wsgi.py
       - gunicorn.conf.py
       - scripts/verify_migration_runtime.py
+      - scripts/stage_vercel_preview.py
+      - tests/test_stage_vercel_preview.py
       - scripts/compile_neon_territorial_rehearsal.py
       - scripts/apply_neon_cutover_migrations.py
       - scripts/preflight_neon_cutover.py
@@ -43,7 +45,8 @@ jobs:
       - name: Run isolated lifecycle and readiness-contract regressions
         run: >-
           python -m unittest tests.test_bootstrap_wsgi
-          tests.test_vercel_warmup_lifecycle tests.test_verify_migration_runtime -v
+          tests.test_vercel_warmup_lifecycle tests.test_verify_migration_runtime
+          tests.test_stage_vercel_preview -v
       - name: Verify real Gunicorn warmup before first HTTP request
         run: python -m tests.run_migration_warmup_smoke
 
