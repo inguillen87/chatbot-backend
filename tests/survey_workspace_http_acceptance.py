@@ -179,7 +179,14 @@ class SurveyWorkspaceHTTPTests(unittest.TestCase):
         self.assertEqual(browser.request('POST', path)[0], 200)
         status, body = browser.request('GET', self.url(item['id']))
         self.assertEqual(status, 200)
-        self.assertFalse(body['admin_lifecycle']['capabilities']['can_close'])
+        self.assertEqual(body['estado'], 'cerrada')
+        # Lifecycle capabilities are published in the admin list contract,
+        # not the legacy detail serializer. Check the surface the panel uses.
+        status, listing = browser.request('GET', self.url())
+        self.assertEqual(status, 200)
+        matching = [row for row in listing['encuestas'] if row['id'] == item['id']]
+        self.assertEqual(len(matching), 1)
+        self.assertFalse(matching[0]['admin_lifecycle']['capabilities']['can_close'])
 
     def test_delete_empty_draft_is_persisted(self):
         item = self.runtime.create_survey()
