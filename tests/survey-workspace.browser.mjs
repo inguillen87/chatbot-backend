@@ -16,7 +16,18 @@ process.env.VITE_PROXY_TARGET = backend.origin;
 process.env.VITE_USE_LOCAL_API_PROXY = 'true';
 process.env.VITE_BACKEND_BOOTSTRAP_GATE_ENABLED = 'true';
 const server = await createServer({cacheDir: '.vercel/survey-workspace-cache',
-    server: {host: '127.0.0.1', port: 0}, logLevel: 'error'});
+  server: {host: '127.0.0.1', port: 0, proxy: {
+    '/admin': {
+      target: backend.origin, changeOrigin: true, secure: false,
+      // The existing Vite config proxies /admin as a legacy JSON API.
+      // Serve real SPA documents for browser navigation; leave API reads and
+      // writes proxied unchanged. No response payload or permission is mocked.
+      bypass(request) {
+        if (request.headers['sec-fetch-dest'] === 'document' &&
+            request.headers.accept?.includes('text/html')) return '/index.html';
+      },
+    },
+  }}, logLevel: 'error'});
 const evidence = 'test-evidence/survey-workspace';
 const results = [];
 let browser;
@@ -53,8 +64,9 @@ try {
     await page.getByRole('button', {name: 'Iniciar Sesión', exact: true}).click();
     await page.waitForURL(/\/perfil/);
     await page.getByRole('textbox', {name: 'Nombre legal o institucional'}).waitFor();
-    await page.goto(origin + '/admin/encuestas?tenant_slug=acceptance-a');
-    await expect(page.getByRole('heading', {name: 'Centro de participación ciudadana'})).toBeVisible();
+    const document = await page.goto(origin + '/admin/encuestas?tenant_slug=acceptance-a');
+    assert.ok(document?.headers()['content-type']?.includes('text/html'), 'Workspace navigation must load the original SPA document');
+    await page.getByRole('heading', {name: 'Centro de participación ciudadana'}).waitFor();
     if (width === 390) await page.evaluate(() => document.documentElement.classList.add('dark'));
     const item = cases[scenario];
     const search = page.getByRole('searchbox', {name: 'Buscar instrumentos'});
