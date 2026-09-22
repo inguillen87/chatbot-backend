@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-FRONTEND_REVISION = 'ec63a2e1e1d5d1c2b2856b54d48dfe4e5804e196'
+FRONTEND_REVISION = '1e8b8104c79bc8a1391d0076c25167329f8f62d2'
 
 
 def main():
