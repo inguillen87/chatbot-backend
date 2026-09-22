@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: inguillen87/chatboc-frontend
-          ref: affd29378260efabeaa2458b94c81a0273dea66b
+          ref: d88730d93593305c1fb26d5aa7e37f2af30054bc
           path: frontend
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
