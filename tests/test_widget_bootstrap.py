@@ -127,19 +127,19 @@ class WidgetBootstrapTest(unittest.TestCase):
 
                     self.assertEqual(response.status_code, 200)
                     self.assertEqual(response.get_json(), {"keys": []})
-                    self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+                    self.assertEqual(response.headers.get("Cache-Control"), "no-store, max-age=0")
 
     def test_widget_jwks_well_known_alias_matches_docs(self):
         response = self.client.get("/auth/.well-known/jwks.json")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"keys": []})
-        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store, max-age=0")
 
     def test_widget_jwks_api_alias_matches_frontend_proxy(self):
         response = self.client.get("/api/auth/widget/jwks.json")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"keys": []})
-        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store, max-age=0")
 
     def test_widget_bootstrap_does_not_advertise_configured_jwks_for_hmac(self):
         self.app.config["WIDGET_JWT_ALG"] = "HS512"

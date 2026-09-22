@@ -82,8 +82,7 @@ def test_webhook_uses_tenant_token_and_emits_notification(
     assert emitted
     event, payload = emitted[0]
     assert event == "payment_update"
-    assert payload["pedido_id"] == pedido.id
-    assert payload["estado"] == "pagado"
+    assert payload == {"contract_version": "collections.invalidated.v1", "resource": "payments", "reason": "collection_changed", "refetch": True}
 
 
 @pytest.mark.usefixtures("client")

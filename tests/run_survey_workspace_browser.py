@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-FRONTEND_REVISION = 'd88730d93593305c1fb26d5aa7e37f2af30054bc'
+FRONTEND_REVISION = '344528986bf280d2de8b4bbd5b22f0accba6e539'
 
 
 def main():
@@ -37,7 +37,7 @@ def main():
     try:
         result = subprocess.run(['node', str(runner)], cwd=frontend, env=environment, timeout=360)
         if result.returncode:
-            raise RuntimeError('Survey workspace browser acceptance failed')
+            raise RuntimeError(f'Survey workspace browser acceptance failed: exit={result.returncode}')
         persistence = []
         for scenario, item in runtime.cases.items():
             actual = runtime.read_storage(item['id'])

@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: inguillen87/chatboc-frontend
-          ref: d88730d93593305c1fb26d5aa7e37f2af30054bc
+          ref: 344528986bf280d2de8b4bbd5b22f0accba6e539
           path: frontend
           persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
@@ -45,6 +45,10 @@ jobs:
         run: python -m unittest tests.test_survey_deletion_policy -v
       - working-directory: backend
         run: python -m tests.survey_workspace_http_acceptance
+      - name: Verify widget bootstrap after main security reconciliation
+        working-directory: backend
+        run: >-
+          python -c 'from tests.profile_acceptance_runtime import prepare_process; prepare_process(); import unittest; suite=unittest.defaultTestLoader.loadTestsFromName("tests.test_widget_bootstrap"); result=unittest.TextTestRunner(verbosity=2).run(suite); raise SystemExit(not result.wasSuccessful())'
       - working-directory: frontend
         run: npm ci --ignore-scripts --no-audit --no-fund && npx playwright install chromium
       - working-directory: backend

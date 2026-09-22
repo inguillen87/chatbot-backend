@@ -1337,32 +1337,10 @@ WIDGET_TOKEN_CONTRACT_VERSION = "auth.widget_token.v1"
 
 
 def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
-    """Expose a minimal JWKS for widget token verification."""
+    """Publish verification keys only, never shared signing material."""
+    from utils.widget_jwks import build_public_widget_jwks
 
-    alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).strip().upper()
-    kid = current_app.config.get("WIDGET_JWT_KID", "widget-hs256")
-
-    if alg in {"RS256", "ES256"}:
-        public_key = current_app.config.get("WIDGET_JWT_PUBLIC_KEY")
-        if not public_key:
-            current_app.logger.warning("[auth] WIDGET_JWT_PUBLIC_KEY missing for %s widget JWT.", alg)
-            return {"keys": []}
-
-        try:
-            algorithm_impl = jwt_algorithms.get_default_algorithms()[alg]
-            prepared_key = algorithm_impl.prepare_key(public_key)
-            jwk_payload = json.loads(algorithm_impl.to_jwk(prepared_key))
-        except Exception:
-            current_app.logger.exception("[auth] Failed to build JWKS payload for algorithm %s", alg)
-            return {"keys": []}
-
-        jwk_payload.update({"use": "sig", "alg": alg, "kid": kid})
-        return {"keys": [jwk_payload]}
-
-    # A shared HMAC key is private signing material, not a public key. Keep
-    # HS* token issuance/verification available internally while publishing no
-    # verifier material until the widget is migrated to an asymmetric key.
-    return {"keys": []}
+    return build_public_widget_jwks(current_app.config)
 
 
 @auth_api_bp.route("/.well-known/jwks.json", methods=["GET"], strict_slashes=False)
@@ -1370,13 +1348,10 @@ def _widget_jwks_payload() -> dict[str, list[dict[str, str]]]:
 @auth_bp.route("/.well-known/jwks.json", methods=["GET"], strict_slashes=False)
 @auth_bp.route("/widget/jwks.json", methods=["GET"], strict_slashes=False)
 def widget_jwks():
-    alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).strip().upper()
     payload = _widget_jwks_payload()
     resp = jsonify(payload)
-    if alg.startswith("HS"):
-        resp.headers["Cache-Control"] = "no-store"
-    else:
-        resp.headers.setdefault("Cache-Control", "public, max-age=3600")
+    resp.headers["Cache-Control"] = "no-store, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
     return resp
 
 
