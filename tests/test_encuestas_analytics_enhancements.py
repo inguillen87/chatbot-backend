@@ -3,22 +3,31 @@ from types import SimpleNamespace
 from services import encuestas_analytics_service as svc
 
 
-def test_get_segment_suggestions_returns_dynamic_dimensions(monkeypatch):
-    encuesta = SimpleNamespace(id=9)
-    respuestas = [
-        SimpleNamespace(canal="web", genero="f", rango_etario="18-24", barrio="Centro", ciudad="Junin", provincia="BA", pais="AR"),
-        SimpleNamespace(canal="whatsapp", genero="m", rango_etario="25-34", barrio="Norte", ciudad="Junin", provincia="BA", pais="AR"),
-        SimpleNamespace(canal="web", genero="f", rango_etario="18-24", barrio="Centro", ciudad="Junin", provincia="BA", pais="AR"),
-    ]
-    monkeypatch.setattr(svc, "get_encuesta", lambda encuesta_id: encuesta)
-    monkeypatch.setattr(svc, "_collect_respuestas", lambda encuesta_obj, filtros=None: respuestas)
+def test_get_segment_suggestions_returns_dynamic_dimensions(client):
+    from database import db
+    from models import EncEncuesta, EncRespuesta
 
-    payload = svc.get_segment_suggestions(9)
+    encuesta = EncEncuesta(tenant_id=901, slug="suggestions-exact-regression", titulo="QA segmentos")
+    db.session.add(encuesta)
+    db.session.flush()
+    for index, (channel, gender, age, neighborhood) in enumerate([
+        ("web", "f", "18-24", "Centro"),
+        ("whatsapp", "m", "25-34", "Norte"),
+        ("web", "f", "18-24", "Centro"),
+    ]):
+        db.session.add(EncRespuesta(encuesta_id=encuesta.id, tenant_id=encuesta.tenant_id,
+            huella_unica=f"suggestions-{index}", response_origin="real", canal=channel,
+            genero=gender, rango_etario=age, barrio=neighborhood, ciudad="Junin", provincia="BA", pais="AR"))
+    db.session.commit()
 
-    assert payload["encuesta_id"] == 9
-    assert "canal" in payload["dimensions"]
-    assert payload["dimensions"]["canal"][0]["label"] == "web"
-    assert payload["dimensions"]["canal"][0]["coverage"] > 0
+    payload = svc.get_segment_suggestions(encuesta.id)
+
+    assert payload["encuesta_id"] == encuesta.id
+    assert payload["total_respuestas"] == 3
+    assert payload["exact_aggregates"] is True
+    assert payload["dimensions"]["canal"][0] == {
+        "label": "web", "filters": {"canal": "web"}, "count": 2, "coverage": 66.67,
+    }
 
 
 def test_get_anomaly_report_includes_top_anomalies_metadata(monkeypatch):
