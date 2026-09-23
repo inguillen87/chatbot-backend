@@ -1151,7 +1151,7 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     profile_data["planes_disponibles"] = serialize_plan_catalog()
     integration_access = integration_access_payload(tenant_profile)
     profile_data["integration_access"] = integration_access
-    profile_data["channel_activation"] = build_channel_activation_payload(tenant_profile)
+    profile_data["channel_activation"] = build_channel_activation_payload(tenant_profile, actor=user)
     profile_data["integrations_locked"] = not bool(integration_access.get("enabled"))
     profile_data["widget_embed_token"] = None
     profile_data["widget_embed_token_kind"] = "plan_required"

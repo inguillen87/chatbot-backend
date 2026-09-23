@@ -11,7 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from datetime import datetime, timezone, timedelta
 
 from cutover_writer_fence import cutover_writer_view
-from utils.auth_helpers import obtener_token, token_requerido, user_from_token
+from utils.auth_helpers import obtener_token, token_requerido, user_from_token, auth_sin_escrituras_implicitas
 from utils.permissions import require_role
 from utils.roles import is_authorized_superadmin_user
 from services.organization_profile_settings import (
@@ -56,6 +56,7 @@ from services.catalog_ingestion_assurance import (
 from services.pymes import tiene_archivo_catalogo
 from services.tenant_factory import create_tenant_from_template, assign_number_to_tenant
 from services.tenant_provisioning_readiness import build_tenant_provisioning_readiness
+from services.tenant_conversation_guide import guide_access_descriptor, guide_menu_payload
 from services.tenant_resolver import apply_tenant_alias
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_REAL,
@@ -2386,9 +2387,58 @@ def get_tenant_config_bundle(current_user, slug):
     response['organization_branding'] = build_branding(tenant,
         can_edit=can_manage_tenant_control_plane(current_user,tenant),
         entitled=tenant_allows_workspace_branding(tenant),writes_blocked=cutover_writer_fence_enabled(current_app.config))
+    response['conversation_guide'] = guide_access_descriptor(
+        tenant, can_read=can_manage_tenant_control_plane(current_user, tenant))
     result = jsonify(response)
     result.headers["Cache-Control"] = "no-store"
     return result
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/conversation-guide', methods=['GET'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def get_tenant_conversation_guide(current_user, slug):
+    """Read explicit evaluation choices in the exact authorized organization."""
+    def response(payload, status=200):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'private, no-store'
+        result.headers['Vary'] = 'Cookie, Authorization'
+        return result, status
+
+    # No legacy alias or current-user fallback may replace the requested scope.
+    tenant = TenantProfile.query.filter(
+        func.lower(TenantProfile.slug) == str(slug).strip().lower()).first()
+    if tenant is None:
+        return response({'error': 'Tenant not found'}, 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return response({'error': 'Unauthorized'}, 403)
+    descriptor = guide_access_descriptor(tenant, can_read=True)
+    if descriptor is None:
+        return response({'error': 'conversation_guide_unavailable'}, 404)
+
+    allowed = {'node', 'selection', 'tenant', 'tenant_slug', 'tenant_id'}
+    if any(key not in allowed or len(request.args.getlist(key)) != 1 for key in request.args):
+        return response({'error': 'conversation_guide_query_invalid'}, 400)
+    for key in ('tenant', 'tenant_slug'):
+        if key in request.args and request.args[key].strip().lower() != tenant.slug.lower():
+            return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    if 'tenant_id' in request.args and request.args['tenant_id'] != str(tenant.id):
+        return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    for header in ('X-Tenant', 'X-Tenant-Slug'):
+        if request.headers.get(header) and request.headers[header].strip().lower() != tenant.slug.lower():
+            return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    if request.headers.get('X-Tenant-ID') and request.headers['X-Tenant-ID'] != str(tenant.id):
+        return response({'error': 'conversation_guide_scope_mismatch'}, 400)
+    try:
+        payload = guide_menu_payload(descriptor, node=request.args.get('node', 'start'),
+                                     selection=request.args.get('selection'))
+    except ValueError as exc:
+        if str(exc) in {'evaluation_node_unknown', 'evaluation_selection_unknown'}:
+            return response({'error': str(exc)}, 400)
+        return response({'error': 'conversation_guide_unavailable'}, 503)
+    except (OSError, KeyError, TypeError):
+        return response({'error': 'conversation_guide_unavailable'}, 503)
+    return response(payload)
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/provisioning-readiness', methods=['GET'])

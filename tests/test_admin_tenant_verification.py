@@ -4,7 +4,7 @@ import jwt
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 from app import create_app, db
-from models import User, TenantProfile, Role, UserRole, TenantConfig, TwilioNumber
+from models import User, TenantProfile, Role, UserRole, TenantConfig, TwilioNumber, OrgUnit, UserOrgUnit
 from config import TestConfig
 from services.tenant_factory import create_tenant_from_template
 from utils.auth_helpers import auth_session_version
@@ -354,6 +354,201 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("plan must be one of", response.get_json()["error"])
         self.assertIsNone(TenantProfile.query.filter_by(slug="invalid-plan-verify").first())
+
+    def _unbound_factory_owner(self, key):
+        owner = User(email=f"{key}@example.test", name="Existing owner", rol="usuario")
+        owner.set_password("existing-fixture-password")
+        db.session.add(owner)
+        db.session.commit()
+        return owner
+
+    def _reuse_factory_owner(self, owner, slug, **options):
+        return create_tenant_from_template(
+            nombre="Institutional fixture", slug=slug, tipo="municipio", plan="free",
+            owner_email=owner.email, allow_existing_owner=True,
+            **options,
+        )
+
+    def test_factory_rejects_bound_owners_before_mutation(self):
+        reference = self._unbound_factory_owner("reference-owner")
+        prior_tenant = TenantProfile(slug="reference-organization", nombre="Existing organization",
+                                    tipo="municipio", municipio_id=reference.id, is_active=True)
+        db.session.add(prior_tenant)
+        db.session.commit()
+        for field, value in (("tenant_id", prior_tenant.id), ("tenant_slug", prior_tenant.slug),
+                             ("municipio_id", reference.id), ("pyme_id", reference.id),
+                             ("empresa_id", reference.id)):
+            with self.subTest(field=field):
+                owner = self._unbound_factory_owner(f"bound-{field}")
+                setattr(owner, field, value)
+                db.session.commit()
+                owner_id, password_hash = owner.id, owner.password_hash
+                original = (owner.tenant_id, owner.tenant_slug, owner.rol, owner.municipio_id, owner.pyme_id, owner.empresa_id)
+                before = (TenantProfile.query.count(), TenantConfig.query.count())
+                slug = f"attempt-{field.replace('_', '-')}"
+                with patch.object(User, "set_password") as change_password:
+                    with self.assertRaisesRegex(ValueError, "already linked"):
+                        self._reuse_factory_owner(owner, slug, reset_existing_owner_password=True)
+                    change_password.assert_not_called()
+                owner = db.session.get(User, owner_id)
+                self.assertTrue(owner.password_hash == password_hash)
+                self.assertEqual((owner.tenant_id, owner.tenant_slug, owner.rol, owner.municipio_id, owner.pyme_id, owner.empresa_id), original)
+                self.assertEqual((TenantProfile.query.count(), TenantConfig.query.count()), before)
+                self.assertIsNone(TenantProfile.query.filter_by(slug=slug).first())
+
+    def test_factory_rejects_inverse_ownership_even_with_empty_user_scope(self):
+        for field in ("municipio_id", "pyme_id"):
+            with self.subTest(field=field):
+                owner = self._unbound_factory_owner(f"inverse-{field}")
+                original = TenantProfile(slug=f"inverse-{field.replace('_', '-')}", nombre="Existing",
+                                         tipo="municipio" if field == "municipio_id" else "pyme", is_active=True)
+                setattr(original, field, owner.id)
+                db.session.add(original)
+                db.session.commit()
+                owner_id, old_hash, original_id = owner.id, owner.password_hash, original.id
+                with self.assertRaisesRegex(ValueError, "already owns"):
+                    self._reuse_factory_owner(owner, f"duplicate-{field.replace('_', '-')}")
+                owner = db.session.get(User, owner_id)
+                self.assertIsNone(owner.tenant_id)
+                self.assertTrue(owner.password_hash == old_hash)
+                self.assertEqual(getattr(db.session.get(TenantProfile, original_id), field), owner_id)
+
+    def test_factory_preserves_password_when_omitted_even_with_reset_flag(self):
+        for index, password in enumerate((None, "", "   ")):
+            with self.subTest(index=index):
+                owner = self._unbound_factory_owner(f"preserve-{index}")
+                before_hash = owner.password_hash
+                tenant = self._reuse_factory_owner(owner, f"preserve-{index}", owner_password=password,
+                                                  reset_existing_owner_password=True)
+                self.assertTrue(owner.password_hash == before_hash)
+                self.assertTrue(owner.check_password("existing-fixture-password"))
+                self.assertEqual(owner.tenant_id, tenant.id)
+                self.assertIsNone(tenant.whatsapp_sender_id)
+
+    def test_factory_rejects_scoped_memberships_with_empty_user_scope(self):
+        reference = self._unbound_factory_owner("membership-reference")
+        prior_tenant = TenantProfile(slug="membership-organization", nombre="Existing organization",
+                                    tipo="municipio", municipio_id=reference.id, is_active=True)
+        role = Role(name="factory-scoped-member")
+        db.session.add_all([prior_tenant, role])
+        db.session.flush()
+        unit = OrgUnit(tenant_id=prior_tenant.id, name="Existing team")
+        db.session.add(unit)
+        db.session.commit()
+        for kind in ("role", "org-unit"):
+            with self.subTest(kind=kind):
+                owner = self._unbound_factory_owner(f"membership-{kind}")
+                assignment = (UserRole(user_id=owner.id, role_id=role.id, tenant_id=prior_tenant.id)
+                              if kind == "role" else UserOrgUnit(user_id=owner.id, org_unit_id=unit.id,
+                                                                  tenant_id=prior_tenant.id))
+                db.session.add(assignment)
+                db.session.commit()
+                owner_id, old_hash, assignment_id = owner.id, owner.password_hash, assignment.id
+                before = (TenantProfile.query.count(), TenantConfig.query.count())
+                with patch.object(User, "set_password") as change_password:
+                    with self.assertRaisesRegex(ValueError, "already linked"):
+                        self._reuse_factory_owner(owner, f"membership-attempt-{kind}",
+                            owner_password="replacement-fixture-password", reset_existing_owner_password=True)
+                    change_password.assert_not_called()
+                owner = db.session.get(User, owner_id)
+                self.assertTrue(owner.password_hash == old_hash)
+                self.assertIsNone(owner.tenant_id)
+                self.assertIsNone(owner.tenant_slug)
+                self.assertEqual(owner.rol, "usuario")
+                preserved = db.session.get(type(assignment), assignment_id)
+                self.assertEqual((preserved.user_id, preserved.tenant_id), (owner_id, prior_tenant.id))
+                self.assertEqual((TenantProfile.query.count(), TenantConfig.query.count()), before)
+
+    def test_factory_allows_global_role_without_organization_membership(self):
+        owner = self._unbound_factory_owner("global-role-only")
+        role = Role(name="factory-global-user")
+        db.session.add(role)
+        db.session.flush()
+        assignment = UserRole(user_id=owner.id, role_id=role.id, tenant_id=None)
+        db.session.add(assignment)
+        db.session.commit()
+        old_hash, assignment_id = owner.password_hash, assignment.id
+        tenant = self._reuse_factory_owner(owner, "global-role-new-organization")
+        self.assertEqual(tenant.municipio_id, owner.id)
+        self.assertTrue(owner.password_hash == old_hash)
+        self.assertIsNone(db.session.get(UserRole, assignment_id).tenant_id)
+
+    def test_factory_explicit_password_requires_existing_reset_opt_in(self):
+        for reset in (False, True):
+            with self.subTest(reset=reset):
+                owner = self._unbound_factory_owner(f"explicit-{reset}")
+                before_hash = owner.password_hash
+                self._reuse_factory_owner(owner, f"explicit-{str(reset).lower()}",
+                                         owner_password="replacement-fixture-password",
+                                         reset_existing_owner_password=reset)
+                self.assertEqual(owner.check_password("replacement-fixture-password"), reset)
+                self.assertEqual(owner.password_hash == before_hash, not reset)
+
+    def test_factory_reuses_legacy_self_owner_only_for_the_same_organization(self):
+        for tipo, field in (("municipio", "municipio_id"), ("pyme", "pyme_id")):
+            with self.subTest(tipo=tipo):
+                owner = self._unbound_factory_owner(f"legacy-{tipo}")
+                owner.tenant_slug = f"legacy-{tipo}"
+                setattr(owner, field, owner.id)
+                db.session.commit()
+                before_hash = owner.password_hash
+                tenant = create_tenant_from_template(nombre="Legacy fixture", slug=owner.tenant_slug,
+                    tipo=tipo, plan="free", owner_email=owner.email, allow_existing_owner=True)
+                self.assertEqual(getattr(tenant, field), owner.id)
+                self.assertEqual(getattr(owner, field), owner.id)
+                self.assertTrue(owner.password_hash == before_hash)
+
+    def test_factory_does_not_convert_legacy_owner_to_another_organization_type(self):
+        owner = self._unbound_factory_owner("legacy-other-type")
+        owner.pyme_id = owner.id
+        db.session.commit()
+        with self.assertRaisesRegex(ValueError, "already linked"):
+            self._reuse_factory_owner(owner, "legacy-new-municipality")
+        self.assertEqual(owner.pyme_id, owner.id)
+        self.assertIsNone(owner.municipio_id)
+
+    def test_factory_case_insensitive_email_reuses_one_identity(self):
+        owner = self._unbound_factory_owner("case-owner")
+        owner.email = "Case-Owner@example.test"
+        db.session.commit()
+        user_count = User.query.count()
+        tenant = create_tenant_from_template(nombre="Case fixture", slug="case-owner", tipo="municipio",
+            plan="free", owner_email="case-owner@example.test", allow_existing_owner=True)
+        self.assertEqual(tenant.municipio_id, owner.id)
+        self.assertEqual(User.query.count(), user_count)
+
+    def test_factory_does_not_demote_platform_administrator(self):
+        owner = self._unbound_factory_owner("platform-owner")
+        owner.rol = "super_admin"
+        db.session.commit()
+        with self.assertRaisesRegex(ValueError, "platform administrator"):
+            self._reuse_factory_owner(owner, "platform-owned-institution")
+        self.assertEqual(owner.rol, "super_admin")
+        self.assertIsNone(owner.tenant_id)
+
+    def test_factory_failure_rolls_back_existing_owner_and_partial_tenant(self):
+        owner = self._unbound_factory_owner("rollback-owner")
+        owner_id, old_hash = owner.id, owner.password_hash
+        before = (User.query.count(), TenantProfile.query.count(), TenantConfig.query.count())
+        with patch.object(db.session, "commit", side_effect=RuntimeError("fixture persistence failure")):
+            with self.assertRaisesRegex(RuntimeError, "fixture persistence failure"):
+                self._reuse_factory_owner(owner, "rollback-institution", owner_password="replacement-fixture-password")
+        owner = db.session.get(User, owner_id)
+        self.assertTrue(owner.password_hash == old_hash)
+        self.assertIsNone(owner.tenant_id)
+        self.assertIsNone(owner.tenant_slug)
+        self.assertEqual(owner.rol, "usuario")
+        self.assertEqual((User.query.count(), TenantProfile.query.count(), TenantConfig.query.count()), before)
+        db.session.commit()
+
+    def test_factory_failure_rolls_back_new_owner_as_well(self):
+        before = (User.query.count(), TenantProfile.query.count(), TenantConfig.query.count())
+        with patch.object(db.session, "commit", side_effect=RuntimeError("fixture persistence failure")):
+            with self.assertRaisesRegex(RuntimeError, "fixture persistence failure"):
+                create_tenant_from_template(nombre="Rollback fixture", slug="rollback-new", tipo="municipio",
+                                           plan="free", owner_email="rollback-new@example.test")
+        self.assertEqual((User.query.count(), TenantProfile.query.count(), TenantConfig.query.count()), before)
+        db.session.commit()
 
     def test_create_colegio_without_owner_email_creates_synthetic_admin(self):
         response = self.client.post(

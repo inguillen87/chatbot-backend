@@ -2,10 +2,12 @@ import json
 import re
 import secrets
 from copy import deepcopy
+from functools import wraps
 from pathlib import Path
 from database import db
-from models import TenantProfile, User, TenantConfig, TwilioNumber
+from models import TenantProfile, User, TenantConfig, TwilioNumber, UserRole, UserOrgUnit
 from flask import current_app
+from sqlalchemy import func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from services.plan_access import (
     FULL_INTEGRATION_PLANS,
@@ -13,7 +15,7 @@ from services.plan_access import (
     plan_allows_full_integrations,
 )
 from services.tenant_whatsapp_onboarding import refresh_tenant_whatsapp_onboarding
-from utils.roles import normalize_tenant_type, role_for_tenant_type
+from utils.roles import is_super_admin_role, normalize_tenant_type, role_for_tenant_type
 
 
 def _slugify(value: str | None) -> str:
@@ -187,6 +189,43 @@ def assign_number_to_tenant(tenant: TenantProfile):
     db.session.add(tenant)
     return number
 
+def _rollback_failed_tenant_creation(operation):
+    @wraps(operation)
+    def wrapped(*args, **kwargs):
+        try:
+            return operation(*args, **kwargs)
+        except Exception:
+            db.session.rollback()
+            raise
+    return wrapped
+
+
+def _validate_existing_owner(owner: User, *, slug: str, tipo: str) -> None:
+    """Only an unbound identity or its own legacy organization can be reused."""
+    owner_slug = str(owner.tenant_slug or "").strip().lower()
+    if owner.tenant_id is not None or (owner_slug and owner_slug != slug):
+        raise ValueError("owner_email is already linked to another organization")
+    if is_super_admin_role(owner.rol):
+        raise ValueError("owner_email belongs to a platform administrator")
+
+    # Legacy organization owners can point to themselves without a TenantProfile.
+    # A reference to somebody else is membership, never permission to transfer it.
+    owner_field = "municipio_id" if tipo == "municipio" else "pyme_id"
+    for field in ("municipio_id", "pyme_id", "empresa_id"):
+        reference = getattr(owner, field, None)
+        if reference is not None and (field != owner_field or reference != owner.id):
+            raise ValueError("owner_email is already linked to another organization")
+    if TenantProfile.query.filter(or_(
+        TenantProfile.municipio_id == owner.id,
+        TenantProfile.pyme_id == owner.id,
+    )).first() is not None:
+        raise ValueError("owner_email already owns another organization")
+    if (UserRole.query.filter(UserRole.user_id == owner.id, UserRole.tenant_id.isnot(None)).first() is not None
+            or UserOrgUnit.query.filter_by(user_id=owner.id).first() is not None):
+        raise ValueError("owner_email is already linked to another organization")
+
+
+@_rollback_failed_tenant_creation
 def create_tenant_from_template(
     nombre: str,
     slug: str,
@@ -199,6 +238,13 @@ def create_tenant_from_template(
     allow_existing_owner: bool = False,
     reset_existing_owner_password: bool = True,
 ) -> TenantProfile:
+    """Create atomically; reuse never moves an existing organization owner.
+
+    An omitted/blank password preserves an existing owner's hash, even when
+    reset_existing_owner_password is true. An explicitly supplied password
+    changes it only when that existing opt-in flag is true. New owners retain
+    the generated-password behavior when no password is supplied.
+    """
     nombre = str(nombre or "").strip()
     slug = _slugify(slug or nombre)
     tipo = normalize_tenant_type(tipo)
@@ -226,11 +272,17 @@ def create_tenant_from_template(
     if not owner_email:
         owner_email = _owner_email_for_slug(slug)
     owner_email = str(owner_email).strip().lower()
-    owner_password_was_generated = not bool(str(owner_password or "").strip())
-    if not owner_password:
-        owner_password = secrets.token_urlsafe(12)
+    explicit_password = bool(str(owner_password or "").strip())
+    owners = (User.query.filter(func.lower(User.email) == owner_email)
+              .populate_existing().with_for_update().limit(2).all())
+    if len(owners) > 1:
+        raise ValueError("owner_email matches more than one account")
+    owner = owners[0] if owners else None
+    if owner is not None:
+        if not allow_existing_owner:
+            raise ValueError("owner_email already exists")
+        _validate_existing_owner(owner, slug=slug, tipo=tipo)
 
-    owner = User.query.filter_by(email=owner_email).first()
     if owner is None:
         owner = User(
             email=owner_email,
@@ -242,17 +294,15 @@ def create_tenant_from_template(
             plan=plan,
             acepto_terminos=True,
         )
-        owner.set_password(owner_password)
+        owner.set_password(owner_password if explicit_password else secrets.token_urlsafe(12))
         db.session.add(owner)
     else:
-        if not allow_existing_owner:
-            raise ValueError("owner_email already exists")
         owner.name = owner.name or nombre
         owner.rol = role_for_tenant_type(tipo)
         owner.tipo_chat = tipo
         owner.tenant_slug = slug
         owner.plan = plan
-        if owner_password and reset_existing_owner_password:
+        if explicit_password and reset_existing_owner_password:
             owner.set_password(owner_password)
     db.session.flush()
 

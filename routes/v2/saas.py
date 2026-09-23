@@ -1880,7 +1880,7 @@ def tenant_channel_activation_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    return _json_response(build_channel_activation_payload(tenant))
+    return _json_response(build_channel_activation_payload(tenant, actor=current_user))
 
 
 @v2_saas_bp.route("/employee-coverage", methods=["GET"])
