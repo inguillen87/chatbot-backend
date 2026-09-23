@@ -3181,21 +3181,34 @@ def get_segment_suggestions(
     filtros: Optional[Dict[str, Any]] = None,
     limit: int = 5,
 ) -> Dict[str, Any]:
-    """Return dynamic A/B segmentation suggestions from available survey data."""
+    """Exact, bounded A/B choices from the same authorized response selection."""
 
+    from services.survey_segment_compare import SEGMENT_COLUMNS, TRIM_CHARS, validate_global_filters
     encuesta = get_encuesta(encuesta_id)
-    respuestas = _collect_respuestas(encuesta, filtros)
-    total = max(len(respuestas), 1)
+    validate_global_filters(filtros, _parse_datetime, _parse_bbox_filter)
+    _base, selected_query, mode = _response_queries(encuesta, filtros)
+    selected_query = selected_query.filter(EncRespuesta.tenant_id == encuesta.tenant_id)
     effective_limit = max(2, min(int(limit or 5), 10))
-
+    total_query = selected_query.with_entities(literal("__total").label("dimension"),
+        literal("").label("label"), db.func.count(EncRespuesta.id).label("n")).order_by(None)
+    union_parts = []
+    for key, column in SEGMENT_COLUMNS.items():
+        normalized = db.func.lower(db.func.trim(cast(column, String), TRIM_CHARS))
+        top = selected_query.with_entities(normalized.label("label"), db.func.count(EncRespuesta.id).label("n")).filter(
+            column.isnot(None), db.func.length(normalized) > 0,
+        ).group_by(normalized).order_by(db.func.count(EncRespuesta.id).desc(), normalized).limit(effective_limit).subquery()
+        union_parts.append(db.session.query(literal(key), top.c.label, top.c.n))
+    snapshot_rows = total_query.union_all(*union_parts).all()
+    total = int(next(row.n for row in snapshot_rows if row.dimension == "__total"))
     suggestions: Dict[str, List[Dict[str, Any]]] = {}
-    for key in ("canal", "genero", "rango_etario", "barrio", "ciudad", "provincia", "pais"):
-        counter = Counter(str(getattr(respuesta, key) or "").strip() for respuesta in respuestas)
+    for key in SEGMENT_COLUMNS:
         options: List[Dict[str, Any]] = []
-        for label, count in counter.most_common(effective_limit):
+        for row in snapshot_rows:
+            if row.dimension != key: continue
+            label, count = row.label, int(row.n)
             if not label:
                 continue
-            coverage = round((count / total) * 100, 2)
+            coverage = round((count / total) * 100, 2) if total else None
             options.append(
                 {
                     "label": label,
@@ -3209,7 +3222,9 @@ def get_segment_suggestions(
 
     return {
         "encuesta_id": encuesta.id,
-        "total_respuestas": len(respuestas),
+        "total_respuestas": total,
+        "scope": {"survey_id": encuesta.id, "tenant_id": encuesta.tenant_id, "mode": mode},
+        "exact_aggregates": True,
         "dimensions": suggestions,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -4207,46 +4222,13 @@ def get_segment_compare(
     segment_a: Optional[Dict[str, Any]] = None,
     segment_b: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
+    from services.survey_segment_compare import exact_segment_comparison, validate_global_filters
     encuesta = get_encuesta(encuesta_id)
-    respuestas, data_provenance = _collect_respuestas_with_provenance(
-        encuesta,
-        filtros,
-    )
-
-    group_a = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_a)]
-    group_b = [respuesta for respuesta in respuestas if _matches_segment(respuesta, segment_b)]
-
-    total_base = max(len(respuestas), 1)
-
-    def _segment_meta(name: str, filters_payload: Optional[Dict[str, Any]], group: Sequence[EncRespuesta]) -> Dict[str, Any]:
-        count = len(group)
-        return {
-            "name": name,
-            "label": f"Segmento {name.upper()}",
-            "filters": filters_payload or {},
-            "count": count,
-            "coverage": round((count / total_base) * 100, 2),
-        }
-
-    return {
-        "encuesta_id": encuesta.id,
-        "data_provenance": data_provenance,
-        "segment_a": {
-            "meta": _segment_meta("a", segment_a, group_a),
-            "filters": segment_a or {},
-            "stats": _segment_distribution(group_a, encuesta),
-        },
-        "segment_b": {
-            "meta": _segment_meta("b", segment_b, group_b),
-            "filters": segment_b or {},
-            "stats": _segment_distribution(group_b, encuesta),
-        },
-        "comparison_meta": {
-            "base_total": len(respuestas),
-            "gap_respuestas": len(group_a) - len(group_b),
-        },
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    global_filters = validate_global_filters(filtros, _parse_datetime, _parse_bbox_filter)
+    base_query, selected_query, mode = _response_queries(encuesta, filtros)
+    return exact_segment_comparison(encuesta, base_query, selected_query, mode,
+        global_filters=global_filters, segment_a=segment_a, segment_b=segment_b,
+        normalize_type=_normalize_question_type)
 
 
 def get_anomaly_report(

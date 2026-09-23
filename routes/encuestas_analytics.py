@@ -575,6 +575,11 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         }
         try:
             _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+            if denied is not None:
+                return denied
+            from services.survey_segment_compare import validate_segment_request_args
+            validate_segment_request_args(request.args)
             data = get_segment_compare(
                 encuesta_id,
                 filtros=filtros,
@@ -594,6 +599,11 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         limit = request.args.get("limit", default=5, type=int) or 5
         try:
             _authorize_encuesta(current_user, encuesta_id)
+            denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
+            if denied is not None:
+                return denied
+            from services.survey_segment_compare import validate_segment_request_args
+            validate_segment_request_args(request.args, suggestions=True)
             data = get_segment_suggestions(encuesta_id, filtros=filtros, limit=limit)
         except EncuestaError as err:
             return _encuesta_error_response(err)
