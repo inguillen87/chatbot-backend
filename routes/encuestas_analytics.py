@@ -14,6 +14,7 @@ from config.feature_flags import FEATURE_ENCUESTAS
 from cutover_writer_fence import cutover_writer_view
 from database import db
 from models import AuditEvent
+from services.survey_analytics_evidence import build_analytics_evidence
 from services.encuestas_analytics_service import (
     export_csv as export_csv_stream,
     get_alerts,
@@ -339,11 +340,14 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
     def summary(current_user, encuesta_id: int):
         filtros = _parse_filtros(current_user)
         try:
-            _authorize_encuesta(current_user, encuesta_id)
+            encuesta = _authorize_encuesta(current_user, encuesta_id)
             denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
             if denied is not None:
                 return denied
             data = get_summary(encuesta_id, filtros)
+            evidence = build_analytics_evidence(encuesta, data, filtros)
+            if evidence is not None:
+                data = {**data, "analytics_evidence": evidence}
         except EncuestaError as err:
             return _encuesta_error_response(err)
         return jsonify(data)
@@ -471,11 +475,18 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
         use_envelope = str(request.args.get("envelope") or "").strip().lower() in {"1", "true", "yes", "on"}
         fast_mode = str(request.args.get("fast") or request.args.get("lite") or "").strip().lower() in {"1", "true", "yes", "on"}
         try:
-            _authorize_encuesta(current_user, encuesta_id)
+            encuesta = _authorize_encuesta(current_user, encuesta_id)
             denied = _require_survey_capabilities(current_user, SURVEY_PII_READ_CAPABILITY)
             if denied is not None:
                 return denied
             data = get_dashboard_bundle(encuesta_id, filtros, granularity=granularity, fast_mode=fast_mode)
+            modules = data.get("modules") if isinstance(data, dict) else None
+            if isinstance(modules, dict) and isinstance(modules.get("summary"), dict):
+                evidence = build_analytics_evidence(encuesta, modules["summary"], filtros)
+                if evidence is not None:
+                    data = {**data, "modules": {**modules, "summary": {
+                        **modules["summary"], "analytics_evidence": evidence}}}
+
         except EncuestaError as err:
             return _encuesta_error_response(err)
 
