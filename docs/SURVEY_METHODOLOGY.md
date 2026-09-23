@@ -51,8 +51,10 @@ anteriores siguen almacenadas y pueden consultarse por numero autorizado.
 
 ## Activacion: no ejecutar implicitamente en produccion
 
-La migracion nueva es 20260922_methodology_v1, descendiente de
-20260906_flask_sessions_v1. Es aditiva y no modifica respuestas de clientes.
+La propuesta de migracion es 20260922_methodology_v1, descendiente de
+20260906_flask_sessions_v1. Permanece en migrations/pending, FUERA del grafo activo
+de Alembic, hasta la revision explicita del siguiente rollout. Es aditiva y no
+modifica respuestas de clientes. No se ejecuta mediante el upgrade habitual.
 La prueba de migracion ejecuta upgrade/downgrade solo sobre SQLite en memoria.
 No se ejecuto una migracion sobre Render/Neon por desarrollar este modulo.
 
@@ -151,3 +153,30 @@ La ampliacion del workflow backend para metodologia no se aplico en este cierre;
 la reproduccion esta disponible en los comandos documentados. Los workflows
 existentes y la suite frontend conservan su estado independiente, por SHA.
 La activacion productiva y la migracion remota NO se realizaron.
+
+## Correccion del limite de migracion despues de la primera publicacion
+
+El head f58be794 fallo en Migration runtime gate35816943322 con
+local_migration_head_not_allowlisted: la nueva revision habia entrado en el
+grafo activo de un cutover previamente aprobado. El control no se debilito.
+La propuesta se traslado a migrations/pending/20260922_add_survey_methodology_v1.py.
+El contenido de upgrade/downgrade es el mismo y sus pruebas lo ejecutan en SQLite.
+Dos regresiones verifican que el grafo activo conserva el head revisado y que
+promover la propuesta sin revisar el cutover sigue siendo rechazado.
+
+Para activar: revisar la migracion y sus requisitos en PostgreSQL aislado;
+promover el archivo a migrations/versions en una release coordinada; actualizar
+el plan revisado, fingerprints y comprobaciones de esquema de forma conjunta;
+obtener la aprobacion operativa y aplicar en el destino verificado antes de
+habilitar SURVEY_METHODOLOGY_ENABLED. No existe un script alternativo de aplicacion
+ni un auto-upgrade para saltar esos pasos. Mantener false hasta cerrar ese rollout.
+Esta separacion conserva el historial y evita cambiar implicitamente el plan
+de Render/Neon por desarrollar un formulario administrativo.
+
+Validacion posterior a la separacion:24 pruebas de contrato/migracion (incluidas
+las dos nuevas de frontera),12 del compilador territorial,48 regresiones pytest
+de preflight/aplicacion de migraciones y23 HTTP de metodologia aprobadas. Las
+pruebas de preflight usan dobles de DB y el aislamiento de red; no ejecutan la
+migracion remota. Los48 casos son pytest; un intento con unittest descubrio cero
+casos y NO se contabiliza como validacion. El intento local anterior con salida
+cp1252 fallo antes de ejecutar pruebas; se repitio correctamente en UTF-8.

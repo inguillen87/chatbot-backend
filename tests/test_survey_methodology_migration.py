@@ -2,6 +2,10 @@
 import importlib.util
 from pathlib import Path
 import unittest
+import shutil
+import tempfile
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
 from alembic.migration import MigrationContext
@@ -17,7 +21,7 @@ class MethodologyMigrationTests(unittest.TestCase):
         self.connection.exec_driver_sql('CREATE TABLE enc_encuesta (id INTEGER PRIMARY KEY, tenant_id INTEGER NOT NULL, UNIQUE(tenant_id,id))')
         self.connection.exec_driver_sql('INSERT INTO user(id) VALUES(1)')
         self.connection.exec_driver_sql('INSERT INTO enc_encuesta(id,tenant_id) VALUES(301,7)')
-        path=Path(__file__).resolve().parents[1]/'migrations/versions/20260922_add_survey_methodology_v1.py'
+        path=Path(__file__).resolve().parents[1]/'migrations/pending/20260922_add_survey_methodology_v1.py'
         spec=importlib.util.spec_from_file_location('methodology_migration_under_test',path)
         self.migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.migration)
         self.migration.op=Operations(MigrationContext.configure(self.connection))
@@ -55,6 +59,31 @@ class MethodologyMigrationTests(unittest.TestCase):
         self.migration.downgrade()
         self.assertNotIn('survey_methodology_revision',sa.inspect(self.connection).get_table_names())
         self.assertEqual(self.connection.exec_driver_sql('SELECT COUNT(*) FROM enc_encuesta').scalar_one(),1)
+
+
+class MethodologyRolloutBoundaryTests(unittest.TestCase):
+    def test_pending_migration_does_not_advance_the_reviewed_cutover(self):
+        from scripts.preflight_neon_cutover import REVIEWED_MIGRATION_HEAD, _single_migration_head
+        root=Path(__file__).resolve().parents[1]
+        config=Config(str(root/'alembic.ini'))
+        config.set_main_option('script_location',str(root/'migrations'))
+        graph=ScriptDirectory.from_config(config)
+        self.assertEqual(_single_migration_head(graph),REVIEWED_MIGRATION_HEAD)
+        self.assertNotIn('20260922_methodology_v1',[entry.revision for entry in graph.walk_revisions()])
+        self.assertTrue((root/'migrations/pending/20260922_add_survey_methodology_v1.py').is_file())
+
+    def test_promoting_without_review_still_fails_closed(self):
+        from scripts.preflight_neon_cutover import PreflightFailure, _single_migration_head
+        root=Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix='methodology-graph-') as directory:
+            location=Path(directory)/'migrations'
+            shutil.copytree(root/'migrations',location,ignore=shutil.ignore_patterns('__pycache__'))
+            shutil.copyfile(location/'pending/20260922_add_survey_methodology_v1.py',location/'versions/20260922_add_survey_methodology_v1.py')
+            config=Config(str(root/'alembic.ini'))
+            config.set_main_option('script_location',str(location))
+            with self.assertRaises(PreflightFailure) as raised:
+                _single_migration_head(ScriptDirectory.from_config(config))
+            self.assertEqual(raised.exception.reason_code,'local_migration_head_not_allowlisted')
 
 
 if __name__=='__main__':unittest.main(verbosity=2)
