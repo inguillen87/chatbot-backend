@@ -5783,3 +5783,5 @@ from models_territorial_geocoding import (
 )
 from models_tenant_blueprints import TenantBlueprintApplication
 from models_government_launch import TenantBlueprintLaunchReceipt
+
+from models_survey_methodology import SurveyMethodologyRevision
