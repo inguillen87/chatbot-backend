@@ -1,4 +1,4 @@
-name: Survey analytics evidence
+name: Survey and organization evidence
 "on":
   pull_request:
     paths:
@@ -10,6 +10,18 @@ name: Survey analytics evidence
       - tests/survey_fieldwork_coverage_http.py
       - tests/test_survey_analytics_evidence.py
       - tests/survey_analytics_evidence_http.py
+      - services/accessible_support_guide.py
+      - services/tenant_conversation_guide.py
+      - services/tenant_factory.py
+      - services/organization_setup_journey.py
+      - services/channel_activation.py
+      - routes/admin_tenant.py
+      - routes/auth.py
+      - routes/v2/saas.py
+      - data/conversation_guides/**
+      - tests/private_conversation_guide_http.py
+      - tests/organization_access_regression.py
+      - tests/test_admin_tenant_verification.py
       - .github/workflows/survey-analytics-evidence.yml
 permissions:
   contents: read
@@ -34,3 +46,5 @@ jobs:
       - run: python -m tests.survey_analytics_evidence_http
       - run: python -m unittest tests.test_survey_fieldwork_coverage -v
       - run: python -m tests.survey_fieldwork_coverage_http
+      - run: python -m tests.organization_access_regression
+      - run: python -m tests.private_conversation_guide_http

@@ -702,7 +702,7 @@ def _territorial_status(
     )
 
 
-def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, Any]:
+def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None) -> dict[str, Any]:
     """Build a public, secret-free checklist for post-onboarding channel activation."""
 
     cfg = _cfg(tenant)
@@ -911,6 +911,10 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         if item["locked"] or item.get("reason_code") in {"plan_full_required", "needs_platform_config"}
     ]
 
+    from services.tenant_conversation_guide import guide_access_descriptor
+    from utils.tenant_admin_access import can_manage_tenant_control_plane
+    guide = guide_access_descriptor(tenant, can_read=can_manage_tenant_control_plane(actor, tenant))
+
     return {
         "contract_version": CONTRACT_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -929,7 +933,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         "counts": counts,
         "channels": channels,
         "implementation_journey": implementation_journey,
-        "organization_setup": build_organization_setup_journey(tenant, channels, workspace_appearance=build_workspace_appearance(tenant, entitled=tenant_allows_workspace_branding(tenant))),
+        "organization_setup": build_organization_setup_journey(tenant, channels, workspace_appearance=build_workspace_appearance(tenant, entitled=tenant_allows_workspace_branding(tenant)), conversation_guide=guide),
         "blockers": blockers,
         "integration_access": {
             "enabled": access.get("enabled"),
