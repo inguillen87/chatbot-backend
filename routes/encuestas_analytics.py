@@ -15,6 +15,7 @@ from cutover_writer_fence import cutover_writer_view
 from database import db
 from models import AuditEvent
 from services.survey_analytics_evidence import build_analytics_evidence
+from services.survey_fieldwork_coverage import build_fieldwork_coverage
 from services.encuestas_analytics_service import (
     export_csv as export_csv_stream,
     get_alerts,
@@ -22,6 +23,7 @@ from services.encuestas_analytics_service import (
     get_dashboard_bundle,
     get_executive_brief,
     get_forecast,
+    get_fieldwork_coverage_counts,
     get_heatmap,
     get_segment_compare,
     get_segment_suggestions,
@@ -348,6 +350,11 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
             evidence = build_analytics_evidence(encuesta, data, filtros)
             if evidence is not None:
                 data = {**data, "analytics_evidence": evidence}
+            coverage = build_fieldwork_coverage(
+                encuesta, data, get_fieldwork_coverage_counts(encuesta, filtros), filtros,
+            )
+            if coverage is not None:
+                data = {**data, "fieldwork_coverage": coverage}
         except EncuestaError as err:
             return _encuesta_error_response(err)
         return jsonify(data)
@@ -486,6 +493,13 @@ def _create_blueprint(name: str, url_prefix: str, *, spanish_aliases: bool) -> B
                 if evidence is not None:
                     data = {**data, "modules": {**modules, "summary": {
                         **modules["summary"], "analytics_evidence": evidence}}}
+                coverage = build_fieldwork_coverage(
+                    encuesta, modules["summary"],
+                    get_fieldwork_coverage_counts(encuesta, filtros), filtros,
+                )
+                if coverage is not None:
+                    data = {**data, "modules": {**data["modules"], "summary": {
+                        **data["modules"]["summary"], "fieldwork_coverage": coverage}}}
 
         except EncuestaError as err:
             return _encuesta_error_response(err)

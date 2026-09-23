@@ -3,7 +3,11 @@ name: Survey analytics evidence
   pull_request:
     paths:
       - services/survey_analytics_evidence.py
+      - services/survey_fieldwork_coverage.py
+      - services/encuestas_analytics_service.py
       - routes/encuestas_analytics.py
+      - tests/test_survey_fieldwork_coverage.py
+      - tests/survey_fieldwork_coverage_http.py
       - tests/test_survey_analytics_evidence.py
       - tests/survey_analytics_evidence_http.py
       - .github/workflows/survey-analytics-evidence.yml
@@ -28,3 +32,5 @@ jobs:
       - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
       - run: python -m unittest tests.test_survey_analytics_evidence -v
       - run: python -m tests.survey_analytics_evidence_http
+      - run: python -m unittest tests.test_survey_fieldwork_coverage -v
+      - run: python -m tests.survey_fieldwork_coverage_http

@@ -1003,6 +1003,50 @@ def _selected_response_ids_subquery(snapshot: Mapping[str, Any]):
     )
 
 
+def get_fieldwork_coverage_counts(
+    encuesta: EncEncuesta,
+    filtros: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """One bounded SQL row; never inspect the recent response detail sample.
+
+    The private route reconciles this total against its summary before exposing
+    coverage. Concurrent changes or corrupt stored tenant links cannot be
+    silently repaired into a plausible percentage.
+    """
+    _base_query, selected_query, mode = _response_queries(encuesta, filtros)
+    selected_query = selected_query.filter(EncRespuesta.tenant_id == encuesta.tenant_id)
+    expressions = {}
+    for key, column in (
+        ("channel", EncRespuesta.canal),
+        ("campaign", EncRespuesta.utm_campaign),
+        ("gender", EncRespuesta.genero),
+        ("age_range", EncRespuesta.rango_etario),
+        ("neighborhood", EncRespuesta.barrio),
+        ("city", EncRespuesta.ciudad),
+        ("province", EncRespuesta.provincia),
+        ("country", EncRespuesta.pais),
+    ):
+        expressions[key] = db.func.length(
+            db.func.trim(db.func.coalesce(cast(column, String), ""), " \t\r\n\f\v")
+        ) > 0
+    expressions["coordinates"] = (
+        EncRespuesta.lat.isnot(None)
+        & EncRespuesta.lng.isnot(None)
+        & EncRespuesta.lat.between(-90, 90)
+        & EncRespuesta.lng.between(-180, 180)
+    )
+    row = selected_query.with_entities(
+        db.func.count(EncRespuesta.id).label("selected_records"),
+        *(db.func.coalesce(db.func.sum(case((condition, 1), else_=0)), 0).label(key)
+          for key, condition in expressions.items()),
+    ).order_by(None).one()
+    return {
+        "survey_id": int(encuesta.id), "tenant_id": int(encuesta.tenant_id),
+        "mode": mode, "selected_records": int(row.selected_records),
+        "recorded": {key: int(getattr(row, key)) for key in expressions},
+    }
+
+
 def _exact_option_statistics(
     snapshot: Dict[str, Any],
 ) -> Tuple[Dict[int, Counter], Dict[int, Counter], Counter]:
