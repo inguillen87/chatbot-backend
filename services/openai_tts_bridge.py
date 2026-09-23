@@ -2,12 +2,16 @@ import os
 import openai
 import logging
 import uuid
-import httpx
 from cachetools import TTLCache
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TTS_MODEL,
     resolve_openai_model,
 )
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 
@@ -123,8 +127,22 @@ def generar_audio_openai(
         # unsupported `proxies` arguments into the OpenAI client. Some
         # environments (like CI) define `http_proxy`/`https_proxy` which would
         # otherwise cause `openai.OpenAI` to fail during initialization.
-        http_client = httpx.Client(proxy=None, trust_env=False)
-        client = openai.OpenAI(api_key=api_key, http_client=http_client)
+        configured_timeout = os.getenv("OPENAI_TTS_TIMEOUT_SECONDS", "60")
+        bounded_timeout = outbox_io_timeout_seconds(configured_timeout)
+        http_client_kwargs: dict[str, object] = {
+            "proxy": None,
+            "trust_env": False,
+        }
+        client_kwargs: dict[str, object] = {"api_key": api_key}
+        if bounded_timeout is not None:
+            http_client_kwargs["timeout"] = bounded_timeout
+            client_kwargs.update(
+                timeout=bounded_timeout,
+                max_retries=0,
+            )
+        http_client = httpx.Client(**http_client_kwargs)
+        client_kwargs["http_client"] = http_client
+        client = openai.OpenAI(**client_kwargs)
 
         logger.info(
             "Requesting OpenAI speech synthesis model=%s voice=%s input_chars=%s",

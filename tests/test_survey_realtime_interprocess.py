@@ -41,6 +41,40 @@ def test_web_without_queue_keeps_local_socketio_compatibility():
     }
 
 
+def test_serverless_cron_explicitly_requires_shared_queue_in_web_process():
+    app = _app(role="web", queue_url="")
+
+    with app.app_context(), pytest.raises(SurveyRealtimeTransportError) as exc:
+        ensure_survey_realtime_transport_ready(require_shared=True)
+
+    assert exc.value.code == "survey_realtime_shared_transport_not_configured"
+
+
+def test_serverless_cron_accepts_verified_subscribed_redis_manager():
+    from socketio.redis_manager import RedisManager
+
+    app = _app(role="web")
+    manager = RedisManager(
+        QUEUE_URL,
+        channel=QUEUE_CHANNEL,
+        write_only=False,
+    )
+    redis_client = MagicMock()
+    redis_client.ping.return_value = True
+
+    with app.app_context(), patch.object(
+        socket_service.socketio,
+        "server",
+        SimpleNamespace(manager=manager),
+    ), patch("redis.Redis.from_url", return_value=redis_client):
+        status = ensure_survey_realtime_transport_ready(require_shared=True)
+
+    assert status["transport"] == "socketio_redis_pubsub"
+    assert status["shared"] is True
+    assert status["verified"] is True
+    assert status["publisher_mode"] == "subscriber"
+
+
 def test_survey_worker_without_shared_queue_fails_closed():
     app = _app(role="survey-effect-worker", queue_url="")
 

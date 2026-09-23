@@ -55,6 +55,16 @@ from services.demo_surveys import (
     build_demo_surveys_votings_contract,
     is_demo_survey_slug,
 )
+from services.demo_survey_participation import (
+    build_demo_survey_participation_ack,
+    build_durable_demo_live_results_payload,
+    build_durable_demo_public_survey_payload,
+    durable_demo_survey_participation_enabled,
+    find_demo_survey_participation_replay,
+    get_demo_survey_participation_aggregate,
+    persist_demo_survey_participation,
+    publish_durable_demo_survey_participation_update,
+)
 from services.public_survey_intake import (
     attach_public_survey_rate_limit_headers,
     enforce_public_survey_intake,
@@ -803,7 +813,10 @@ def _resolve_tenant_profile_from_request(
     if owner_candidate is not None:
         direct_tenant_id = getattr(owner_candidate, "tenant_id", None)
         if direct_tenant_id not in (None, ""):
-            profile = TenantProfile.query.filter_by(id=direct_tenant_id).one_or_none()
+            profile = TenantProfile.query.filter_by(
+                id=direct_tenant_id,
+                is_active=True,
+            ).one_or_none()
             if profile is not None:
                 return profile
         profile = _profile_from_slug(getattr(owner_candidate, "tenant_slug", None))
@@ -1005,7 +1018,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         except EncuestaError as err:
             return _public_error_response(err)
         tenant = (
-            TenantProfile.query.filter_by(id=tenant_id).one_or_none()
+            TenantProfile.query.filter_by(id=tenant_id, is_active=True).one_or_none()
             if tenant_id is not None
             else None
         )
@@ -1069,10 +1082,20 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
     @bp.route("/v1/<slug>", methods=["GET"])
     def obtener_encuesta(slug: str):
         if is_demo_survey_slug(slug):
-            payload = build_demo_public_survey_payload(
-                slug,
-                public_base_url=_public_target_base_url(),
-            )
+            try:
+                payload = (
+                    build_durable_demo_public_survey_payload(
+                        slug,
+                        public_base_url=_public_target_base_url(),
+                    )
+                    if durable_demo_survey_participation_enabled()
+                    else build_demo_public_survey_payload(
+                        slug,
+                        public_base_url=_public_target_base_url(),
+                    )
+                )
+            except EncuestaError as err:
+                return _public_error_response(err)
             if payload:
                 payload = _attach_comment_social_config(payload)
                 request_id = _resolve_request_id()
@@ -1143,13 +1166,17 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         explicit_tenant_id = tenant_id if require_tenant_match else None
         payload = _extract_request_payload()
         request_id = _resolve_request_id()
+        demo_survey = is_demo_survey_slug(slug)
         try:
+            durable_demo = (
+                demo_survey and durable_demo_survey_participation_enabled()
+            )
             submission_id = resolve_survey_submission_id(
                 payload,
                 header_value=request.headers.get("Idempotency-Key"),
-                # Demo acknowledgements are synthetic and non-durable. All
-                # canonical writes require a stable caller-owned key.
-                required=not is_demo_survey_slug(slug),
+                # Durable Preview demo interactions and real writes require a
+                # stable caller-owned key. The fallback demo stays ephemeral.
+                required=not demo_survey or durable_demo,
             )
         except EncuestaError as err:
             return _public_error_response(err)
@@ -1162,7 +1189,27 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         }
         authenticated_user = None
         authenticated_user_resolved = False
-        if submission_id is not None and not is_demo_survey_slug(slug):
+        if submission_id is not None and durable_demo:
+            try:
+                demo_replay = find_demo_survey_participation_replay(
+                    slug,
+                    payload,
+                    submission_id=submission_id,
+                )
+                if demo_replay is not None:
+                    demo_aggregate = get_demo_survey_participation_aggregate(slug)
+                    replay_ack = build_demo_survey_participation_ack(
+                        demo_replay,
+                        aggregate=demo_aggregate,
+                    )
+                    replay_ack["request_id"] = request_id
+                    response = jsonify(replay_ack)
+                    response.headers.setdefault("X-Request-Id", request_id)
+                    return response, 200
+            except EncuestaError as err:
+                return _public_error_response(err)
+
+        if submission_id is not None and not demo_survey:
             try:
                 authenticated_user = resolve_optional_survey_bearer_user(
                     request.headers.get("Authorization"),
@@ -1204,7 +1251,7 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
             payload,
             preferred_tenant_id=explicit_tenant_id,
             request_id=request_id,
-            synthetic=is_demo_survey_slug(slug),
+            synthetic=demo_survey,
         )
         if not intake_decision.allowed:
             error_payload = intake_decision.error_payload()
@@ -1216,6 +1263,36 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
                 intake_decision.rate_limit,
             )
             return response, intake_decision.status_code or 503
+
+        if durable_demo:
+            try:
+                demo_receipt = persist_demo_survey_participation(
+                    slug,
+                    payload,
+                    submission_id=submission_id,
+                )
+                demo_aggregate = get_demo_survey_participation_aggregate(slug)
+                realtime_published = publish_durable_demo_survey_participation_update(
+                    demo_receipt,
+                    demo_aggregate,
+                )
+                durable_ack = build_demo_survey_participation_ack(
+                    demo_receipt,
+                    aggregate=demo_aggregate,
+                )
+            except EncuestaError as err:
+                return _public_error_response(err)
+            durable_ack["request_id"] = request_id
+            durable_ack["realtime"]["delivery"] = (
+                "publish_accepted" if realtime_published else "polling_fallback"
+            )
+            response = jsonify(durable_ack)
+            response.headers.setdefault("X-Request-Id", request_id)
+            attach_public_survey_rate_limit_headers(
+                response,
+                intake_decision.rate_limit,
+            )
+            return response, 200 if demo_receipt.replayed else 201
 
         demo_ack = build_demo_survey_response_ack(slug, payload)
         if demo_ack:
@@ -1282,10 +1359,21 @@ def _create_public_blueprint(name: str, url_prefix: str) -> Blueprint:
         if request.method == "OPTIONS":
             return "", 204
 
-        demo_results = build_demo_live_results_payload(
-            slug,
-            public_base_url=_public_target_base_url(),
-        )
+        try:
+            demo_results = (
+                build_durable_demo_live_results_payload(
+                    slug,
+                    public_base_url=_public_target_base_url(),
+                )
+                if is_demo_survey_slug(slug)
+                and durable_demo_survey_participation_enabled()
+                else build_demo_live_results_payload(
+                    slug,
+                    public_base_url=_public_target_base_url(),
+                )
+            )
+        except EncuestaError as err:
+            return _public_error_response(err)
         if demo_results:
             request_id = _resolve_request_id()
             demo_results.setdefault("request_id", request_id)
@@ -1521,10 +1609,20 @@ def share_redirect(slug: str):
     wants_json = accept.best == "application/json" and accept[accept.best] >= accept["text/html"]
 
     if is_demo_survey_slug(slug):
-        data = build_demo_public_survey_payload(
-            slug,
-            public_base_url=_public_target_base_url(),
-        )
+        try:
+            data = (
+                build_durable_demo_public_survey_payload(
+                    slug,
+                    public_base_url=_public_target_base_url(),
+                )
+                if durable_demo_survey_participation_enabled()
+                else build_demo_public_survey_payload(
+                    slug,
+                    public_base_url=_public_target_base_url(),
+                )
+            )
+        except EncuestaError as err:
+            return _public_error_response(err)
         if data:
             data = _attach_comment_social_config(data)
             base_url = _public_target_base_url()

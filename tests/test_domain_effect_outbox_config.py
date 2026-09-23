@@ -24,6 +24,50 @@ def test_legacy_mode_does_not_require_outbox_credentials():
     assert validate_runtime_security(_production_config()) == []
 
 
+def test_vercel_outbox_cron_defaults_inert_and_accepts_bounded_settings():
+    assert validate_runtime_security(
+        _production_config(
+            VERCEL_OUTBOX_CRON_ENABLED=False,
+            VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS="nan",
+        )
+    ) == []
+    assert validate_runtime_security(
+        _production_config(
+            VERCEL_OUTBOX_CRON_ENABLED=True,
+            CRON_SECRET="c" * 32,
+            VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS=45,
+            VERCEL_OUTBOX_CRON_MAX_CYCLES=4,
+            VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE=1,
+            VERCEL_OUTBOX_CRON_WHATSAPP_OUTBOUND_BATCH_SIZE=2,
+            VERCEL_OUTBOX_CRON_DOMAIN_EFFECT_BATCH_SIZE=10,
+            VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE=25,
+        )
+    ) == []
+
+
+def test_vercel_outbox_cron_rejects_nonfinite_or_out_of_range_bounds():
+    for invalid in (float("nan"), float("inf"), 56):
+        errors = validate_runtime_security(
+            _production_config(
+                VERCEL_OUTBOX_CRON_ENABLED=True,
+                VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS=invalid,
+            )
+        )
+
+        assert any(
+            "VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS" in error
+            for error in errors
+        )
+
+    fractional = validate_runtime_security(
+        _production_config(
+            VERCEL_OUTBOX_CRON_ENABLED=True,
+            VERCEL_OUTBOX_CRON_MAX_CYCLES=1.5,
+        )
+    )
+    assert any("VERCEL_OUTBOX_CRON_MAX_CYCLES" in error for error in fractional)
+
+
 def test_placeholder_sigem_transport_cannot_be_marked_live_in_production():
     errors = validate_runtime_security(
         _production_config(SIGEM_LIVE_ENABLED=True)

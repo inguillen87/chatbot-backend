@@ -1,10 +1,13 @@
 from typing import List, Dict
 
-from .municipio_responder import get_tramites_info
-
 
 def buscar_tramites(query: str | None = None) -> List[Dict]:
     """Devuelve los trámites ordenados y opcionalmente filtrados."""
+    # ``municipio_responder`` contains the full conversational stack. Import it
+    # only when this endpoint is actually used so application startup and
+    # unrelated HTTP routes stay lightweight.
+    from .municipio_responder import get_tramites_info
+
     q = (query or "").strip().lower()
     tramites = get_tramites_info()
     resultados = []

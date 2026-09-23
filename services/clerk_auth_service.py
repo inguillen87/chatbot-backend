@@ -19,12 +19,17 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from database import db
 from models import TenantFollower, TenantProfile, User, generate_token
+from services.auth_assurance_service import (
+    AUTH_ASSURANCE_CLAIM,
+    build_clerk_auth_assurance_snapshot,
+    mark_verified_clerk_claims,
+)
 from services.auth_notification_service import (
     send_onboarding_whatsapp,
     send_verification_email,
 )
 from services.channel_activation import build_channel_activation_payload
-from services.logic import es_rubro_publico
+from services.rubro_classification import es_rubro_publico
 from services.tenant_factory import create_tenant_from_template
 from services.user_service import get_user_profile_identity, set_user_profile_avatar
 from utils.auth_helpers import (
@@ -617,7 +622,7 @@ def verify_clerk_session_token(token: str) -> dict:
     if str(claims.get("sts") or "").strip().lower() == "pending":
         raise ClerkAuthError("Clerk session is not active")
     verify_active_clerk_session(claims)
-    return claims
+    return mark_verified_clerk_claims(claims)
 
 
 def _clerk_session_lookup_required() -> bool:
@@ -1150,6 +1155,7 @@ def _issue_clerk_chatboc_token(
             "empresa_id": None if portal_session else user.empresa_id,
             "auth_intent": intent,
             "audience": intent,
+            AUTH_ASSURANCE_CLAIM: build_clerk_auth_assurance_snapshot(claims),
         },
     )
 

@@ -9,6 +9,7 @@ from flask import Blueprint, abort, g, jsonify, request, session
 from flask_cors import cross_origin
 from sqlalchemy import func
 
+from cutover_writer_fence import cutover_writer_view
 from models import CatalogoItem, CatalogoModalidad, MunicipioPost, TenantProfile, User, WidgetConfig, WidgetSettings, MarketCartItem, PymePedido
 from middleware import require_tenant
 from services.encuestas_service import (
@@ -109,6 +110,11 @@ RESERVED_PUBLIC_SLUGS = {
     "empresas",
     "pymes",
 }
+
+# One legacy widget build used ``perfil`` as a non-tenant path placeholder and
+# sent the real tenant in the query string. Keep that exact compatibility case
+# without allowing an arbitrary path slug to be overridden by another tenant.
+LEGACY_QUERY_TENANT_PLACEHOLDERS = {"perfil"}
 
 
 def _request_id() -> str:
@@ -301,10 +307,26 @@ def _require_tenant() -> TenantProfile:
         or request.headers.get("X-Tenant")
     )
 
-    # Referrer discovery helps embedded public apps, but it must never
-    # override an explicit id, slug, or widget token.
-    if not raw_tenant_id and not tenant_slug and not widget_token:
-        tenant_slug = tenant_slug_from_public_referrer()
+    # Referrer discovery helps embedded public apps. A concrete /t/<tenant>
+    # referrer may replace only legacy generic aliases left by older widget
+    # builds; it never overrides an explicit id, token, or concrete slug.
+    referrer_slug = tenant_slug_from_public_referrer()
+    generic_aliases = {
+        "default",
+        "municipio",
+        "municipal",
+        "pyme",
+        "empresa",
+        "pwa",
+        "whatsapp",
+    }
+    if (
+        not raw_tenant_id
+        and not widget_token
+        and referrer_slug
+        and (not tenant_slug or str(tenant_slug).strip().lower() in generic_aliases)
+    ):
+        tenant_slug = referrer_slug
 
     has_explicit_selector = bool(raw_tenant_id or tenant_slug or widget_token)
     tenant = None if has_explicit_selector else getattr(g, "tenant_profile", None)
@@ -314,7 +336,7 @@ def _require_tenant() -> TenantProfile:
         if raw_tenant_id:
             tenant_id = int(str(raw_tenant_id).strip())
             tenant = db.session.get(TenantProfile, tenant_id) if tenant_id > 0 else None
-            if tenant is None:
+            if tenant is None or getattr(tenant, "is_active", True) is not True:
                 raise TenantResolutionError(f"Tenant id '{raw_tenant_id}' no encontrado")
         elif tenant_slug:
             # Explicit slug is authoritative; do not bind a caller-supplied
@@ -487,6 +509,7 @@ def _coerce_item_id(value: object) -> int | None:
 
 
 @pwa_public_bp.get("/catalog")
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_catalog():
     tenant = _require_tenant()
@@ -532,6 +555,9 @@ def public_catalog():
         prod["catalog_item_id"] = item.id
         prod["tenant_id"] = tenant.id
         prod["tenant_slug"] = tenant.slug
+        metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+        prod["data_origin"] = metadata.get("data_origin") or "tenant_catalog"
+        prod["synthetic_demo"] = metadata.get("synthetic_demo") is True
         productos.append(prod)
 
     if search_text:
@@ -580,6 +606,7 @@ def public_cart_url():
 @pwa_public_bp.get("/cart")
 @pwa_public_bp.get("/cart/summary")
 @pwa_public_bp.get("/cart/items")
+@cutover_writer_view
 @cross_origin(**_cors_kwargs(["GET"]))
 def public_cart_summary():
     tenant = _require_tenant()
@@ -1027,8 +1054,15 @@ def public_tenant_widget_config(tenant_slug: str):
     from services.plan_access import integration_access_payload
     from routes.public_resolver import _build_widget_embed_payload
 
+    requested_slug = tenant_slug
+    if _canonical_public_slug(tenant_slug) in LEGACY_QUERY_TENANT_PLACEHOLDERS:
+        query_slug = request.args.get("tenant_slug") or request.args.get("tenant")
+        normalized_query_slug = _canonical_public_slug(query_slug)
+        if query_slug and normalized_query_slug not in LEGACY_QUERY_TENANT_PLACEHOLDERS:
+            requested_slug = query_slug
+
     try:
-        tenant = resolve_tenant_only(tenant_slug=tenant_slug, require_explicit_slug=False)
+        tenant = resolve_tenant_only(tenant_slug=requested_slug, require_explicit_slug=True)
     except TenantResolutionError:
         if (
             _is_reserved_public_slug(tenant_slug)
@@ -1193,13 +1227,36 @@ def public_tenant_widget_config(tenant_slug: str):
         "tipo": tenant.tipo,
         "tipo_chat": tenant.tipo,
         "endpoint": tenant.tipo or "municipio",
-        "logo_url": tenant.logo_url or (widget_cfg.logo_url if widget_cfg else "") or "",
+        "logo_url": (
+            (getattr(widget_settings, "avatar_url", None) if widget_settings else None)
+            or tenant.logo_url
+            or (widget_cfg.logo_url if widget_cfg else "")
+            or ""
+        ),
+        "primary_color": (
+            getattr(widget_settings, "primary_color", None) if widget_settings else None
+        ) or (theme_config.get("light") or {}).get("primary"),
+        "secondary_color": (
+            getattr(widget_settings, "secondary_color", None) if widget_settings else None
+        ) or (theme_config.get("light") or {}).get("secondary"),
+        "welcome_title": interaction.get("welcome_title"),
+        "welcome_subtitle": interaction.get("welcome_subtitle"),
+        "font_family": getattr(widget_settings, "font_family", None) if widget_settings else None,
+        "position": (getattr(widget_settings, "position", None) if widget_settings else None) or "right",
+        "bottom": (getattr(widget_settings, "bottom", None) if widget_settings else None) or "20px",
+        "side_offset": (getattr(widget_settings, "side_offset", None) if widget_settings else None) or "20px",
+        "border_radius": (theme_config.get("border_radius") if isinstance(theme_config, dict) else None),
         "theme": theme,
         "theme_config": theme_config,
         "features": {**features, "integrations": integration_enabled, "widget_embed": integration_enabled},
         "contact": contact,
         "interaction": interaction,
         "cta_messages": cta_messages,
+        "cta_message": (
+            cta_messages[0].get("text")
+            if cta_messages and isinstance(cta_messages[0], dict)
+            else ""
+        ),
         "default_open": default_open,
         "quick_menu": quick_menu,
         "suppress_global_widget": False,

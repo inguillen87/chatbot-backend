@@ -4,7 +4,10 @@ from typing import Any, Mapping
 from urllib.parse import quote_plus
 
 from services.demo_pillar_catalog import catalog_resources_for_rubro, curated_demo_rubros, normalize_demo_sector
-from services.demo_surveys import build_demo_surveys_votings_contract
+from services.demo_surveys import (
+    DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN,
+    build_demo_surveys_votings_contract,
+)
 
 
 DEFAULT_SANDBOX_MESSAGE_LIMIT = 10
@@ -203,6 +206,7 @@ def build_demo_whatsapp_sandbox_contract(
     provider: str = "twilio_sandbox",
     whatsapp_playbook: Mapping[str, Any] | None = None,
     education: Mapping[str, Any] | None = None,
+    public_base_url: str | None = None,
 ) -> dict[str, Any]:
     normalized_sector = normalize_demo_sector(sector)
     rubro_slug = str(rubro or tenant_slug or "").strip().lower()
@@ -219,6 +223,7 @@ def build_demo_whatsapp_sandbox_contract(
         sector=normalized_sector,
         tenant_slug=tenant_slug,
         rubro=rubro_slug,
+        public_base_url=public_base_url or DEFAULT_DEMO_PUBLIC_FRONTEND_ORIGIN,
     )
 
     contract = {

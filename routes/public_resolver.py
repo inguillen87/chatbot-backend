@@ -7,6 +7,7 @@ from urllib import request as urllib_request
 from urllib.parse import quote_plus, urlparse
 from flask import Blueprint, jsonify, request, g, current_app
 from flask_cors import cross_origin
+from cutover_writer_fence import cutover_writer_view
 from sqlalchemy import desc
 
 from models import AnalyticsEventV2, ChatSessionContext, Conversacion, TenantProfile, TenantTicket, User, WidgetSettings, Rubro, db
@@ -733,12 +734,35 @@ def _platform_widget_config_payload() -> dict:
 
 def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
     owner = tenant.pyme or tenant.municipio
-    whatsapp_number = (
-        cfg.get("support_whatsapp")
-        or cfg.get("whatsapp_phone")
-        or getattr(tenant, "whatsapp_sender_id", None)
-        or getattr(owner, "telefono", None)
+    support_whatsapp = str(cfg.get("support_whatsapp") or "").strip() or None
+    whatsapp_phone = str(cfg.get("whatsapp_phone") or "").strip() or None
+    configured_sender_id = str(cfg.get("whatsapp_sender_id") or "").strip() or None
+    tenant_sender_id = str(getattr(tenant, "whatsapp_sender_id", None) or "").strip() or None
+    owner_contact_number = str(getattr(owner, "telefono", None) or "").strip() or None
+
+    whatsapp_number = support_whatsapp or whatsapp_phone or configured_sender_id or tenant_sender_id
+    whatsapp_number_source = (
+        "support_whatsapp"
+        if support_whatsapp
+        else "whatsapp_phone"
+        if whatsapp_phone
+        else "config_sender_id"
+        if configured_sender_id
+        else "tenant_sender_id"
+        if tenant_sender_id
+        else None
     )
+    sender_bound = bool(configured_sender_id or tenant_sender_id)
+    whatsapp_digits = "".join(character for character in str(whatsapp_number or "") if character.isdigit())
+    whatsapp_url = f"https://wa.me/{whatsapp_digits}" if whatsapp_digits else None
+    if sender_bound:
+        whatsapp_reason_code = "whatsapp_sender_bound_delivery_unverified"
+    elif whatsapp_number:
+        whatsapp_reason_code = "whatsapp_contact_only"
+    elif owner_contact_number:
+        whatsapp_reason_code = "whatsapp_not_configured_owner_contact_only"
+    else:
+        whatsapp_reason_code = "whatsapp_not_configured"
     voice_enabled = _config_flag(cfg, "realtime_voice_enabled", default=True)
     realtime_voice = build_realtime_voice_capabilities(tenant, cfg, current_app.config)
     realtime_voice["enabled"] = bool(voice_enabled)
@@ -772,8 +796,16 @@ def _support_channels_payload(tenant: TenantProfile, cfg: dict) -> dict:
         "whatsapp": {
             "enabled": bool(whatsapp_number),
             "number": whatsapp_number,
+            "operational_number": whatsapp_number if sender_bound else None,
+            "contact_number": owner_contact_number,
+            "number_source": whatsapp_number_source,
+            "configured": bool(whatsapp_number),
+            "sender_bound": sender_bound,
+            "delivery_verified": False,
+            "reason_code": whatsapp_reason_code,
+            "url": whatsapp_url,
             "channel": "whatsapp",
-            "realtime_bridge": True,
+            "realtime_bridge": sender_bound,
             "trial_policy": _whatsapp_trial_policy(cfg),
             "media": {"text": True, "image": True, "audio": True, "file": True},
         },
@@ -1730,8 +1762,11 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
     welcome_title = cfg.get("widget_welcome_title") or cfg.get("welcome_title") or tenant.nombre
     welcome_subtitle = cfg.get("widget_welcome_subtitle") or cfg.get("welcome_subtitle") or "Asistente Virtual"
 
-    position = cfg.get("widget_position") or cfg.get("position")
-    border_radius = cfg.get("widget_border_radius") or cfg.get("border_radius")
+    theme_config = cfg.get("theme_config") if isinstance(cfg.get("theme_config"), dict) else {}
+    behavior_config = theme_config.get("behavior") if isinstance(theme_config.get("behavior"), dict) else {}
+    advanced_config = theme_config.get("advanced") if isinstance(theme_config.get("advanced"), dict) else {}
+    position = cfg.get("widget_position") or cfg.get("position") or behavior_config.get("position")
+    border_radius = cfg.get("widget_border_radius") or cfg.get("border_radius") or theme_config.get("border_radius")
     launcher_text = cfg.get("widget_launcher_text") or cfg.get("launcher_text")
     header_title = cfg.get("widget_header_title") or cfg.get("header_title")
     header_subtitle = cfg.get("widget_header_subtitle") or cfg.get("header_subtitle")
@@ -1747,7 +1782,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         or "https://www.chatboc.ar/iframe"
     )
 
-    right_offset = cfg.get("widget_right", "20px")
+    right_offset = cfg.get("widget_right") or cfg.get("side_offset") or behavior_config.get("side_offset") or "20px"
     left_offset = cfg.get("widget_left", right_offset)
 
     ux = cfg.get("ux") if isinstance(cfg.get("ux"), dict) else {}
@@ -1777,8 +1812,8 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-height": height,
         "data-closed-width": closed_size,
         "data-closed-height": closed_size,
-        "data-bottom": cfg.get("widget_bottom", "20px"),
-        "data-z-index": cfg.get("widget_z_index", "100000"),
+        "data-bottom": cfg.get("widget_bottom") or cfg.get("bottom") or behavior_config.get("bottom_offset") or "20px",
+        "data-z-index": cfg.get("widget_z_index") or advanced_config.get("z_index") or "100000",
         "data-endpoint": cfg.get("widget_endpoint") or tenant.tipo or "municipio",
         "data-theme": cfg.get("widget_theme") or cfg.get("tema") or "light",
         "data-primary-color": cfg.get("primary_color") or theme.get("primary"),
@@ -1788,7 +1823,7 @@ def _build_widget_embed_payload(tenant: TenantProfile, provided_token: str | Non
         "data-surface-color": theme.get("surface"),
         "data-launcher-color": theme.get("launcher"),
         "data-logo-url": cfg.get("avatar_url") or theme.get("logo"),
-        "data-logo-animation": cfg.get("widget_logo_animation") or theme.get("animation"),
+        "data-logo-animation": cfg.get("widget_logo_animation") or theme_config.get("animation") or theme.get("animation"),
         "data-widget-preset": widget_preset,
         "data-motion-level": motion_level,
         "data-glassmorphism": str(glassmorphism).lower(),
@@ -2564,6 +2599,7 @@ def landing_experience():
 @public_resolver_bp.route(
     "/widget-config", methods=["GET", "OPTIONS"], provide_automatic_options=False
 )
+@cutover_writer_view
 @cross_origin(origins="*", automatic_options=False)
 def widget_config():
     """Expose a SaaS-style embed configuration for builder/preview UIs.

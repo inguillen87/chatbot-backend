@@ -9,6 +9,10 @@ import click
 from flask import current_app
 from flask.cli import with_appcontext
 
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
 from extensions import db
 
 # Logger para este módulo
@@ -212,6 +216,20 @@ def register_commands(app):
         2 invalid arguments/scope, and 3 dead effects with --fail-on-dead.
         """
 
+        if cutover_writer_fence_enabled(current_app.config):
+            _echo_survey_effect_json(
+                {
+                    **background_writer_fence_report(
+                        "survey_response_effect_cli"
+                    ),
+                    "batches": 0,
+                    "totals": {
+                        field: 0 for field in _SURVEY_EFFECT_COUNTER_FIELDS
+                    },
+                }
+            )
+            return
+
         payload = _survey_effect_cli_payload(
             tenant_id=tenant_id,
             batch_size=batch_size,
@@ -236,8 +254,22 @@ def register_commands(app):
         try:
             from services.survey_response_effects import (
                 dispatch_survey_response_effects,
+                survey_response_effect_dispatch_guard_report,
                 summarize_survey_response_effects,
             )
+
+            authority_report = survey_response_effect_dispatch_guard_report(
+                current_app.config
+            )
+            if authority_report is not None:
+                _echo_survey_effect_json(
+                    {
+                        **authority_report,
+                        "batches": 0,
+                        "totals": _empty_survey_effect_totals(),
+                    }
+                )
+                return
 
             if tenant_id is not None and not _survey_effect_tenant_exists(tenant_id):
                 payload.update(
@@ -704,52 +736,28 @@ def register_commands(app):
 
     @app.cli.command("generate-weekly-reports")
     def generate_weekly_reports():
-        """Generates cached AI reports for all active tenants."""
-        from models import TenantProfile
-        from services.analytics_service import analytics_service
-        from services.openai_bridge import generate_analytics_report
-        from datetime import datetime, timedelta
+        """Drain bounded, at-most-once batches in a long-lived cron process."""
+        if cutover_writer_fence_enabled(app.config):
+            click.echo(
+                json.dumps(
+                    {
+                        **background_writer_fence_report(
+                            "weekly_analytics_report"
+                        ),
+                        "batches": 0,
+                        "selected": 0,
+                        "provider_attempts": 0,
+                        "reports_generated": 0,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+        from services.weekly_analytics_reports import run_weekly_analytics_drain
 
-        cli_logger.info("Starting weekly report generation...")
-
-        with app.app_context():
-            tenants = TenantProfile.query.filter_by(is_active=True).all()
-            now = datetime.utcnow()
-            start_date = now - timedelta(days=7)
-
-            for tenant in tenants:
-                try:
-                    cli_logger.info(f"Processing tenant {tenant.slug}...")
-
-                    # 1. Check if recently generated
-                    cached = analytics_service.get_cached_report(tenant.id, f"consultant_{tenant.tipo}", max_age_hours=24)
-                    if cached:
-                        cli_logger.info(f"Report already fresh for {tenant.slug}.")
-                        continue
-
-                    # 2. Aggregate stats
-                    summary = analytics_service.get_summary(
-                        tenant_id=tenant.id,
-                        start_date=start_date,
-                        end_date=now,
-                        context=tenant.tipo
-                    )
-
-                    if tenant.tipo == 'pyme':
-                        commerce = analytics_service.get_commerce_analytics(
-                            tenant_id=tenant.id,
-                            start_date=start_date,
-                            end_date=now
-                        )
-                        summary.update(commerce)
-
-                    # 3. Generate & Cache
-                    report = generate_analytics_report(summary, tenant_type=tenant.tipo)
-                    analytics_service.cache_report(tenant.id, f"consultant_{tenant.tipo}", report)
-
-                    cli_logger.info(f"Generated report for {tenant.slug}.")
-
-                except Exception as e:
-                    cli_logger.error(f"Error processing {tenant.slug}: {e}")
-
-        cli_logger.info("Weekly report generation complete.")
+        report = run_weekly_analytics_drain(app)
+        click.echo(json.dumps(report, sort_keys=True))
+        if report.get("ok") is not True:
+            raise click.ClickException(
+                f"weekly analytics incomplete: status={report.get('status', 'failed')}"
+            )

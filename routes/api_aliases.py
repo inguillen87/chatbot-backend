@@ -15,6 +15,7 @@ import uuid
 from flask import Blueprint, abort, current_app, g, jsonify, make_response, request
 from flask_cors import cross_origin
 
+from cutover_writer_fence import cutover_writer_view
 from routes.admin_ai import get_bot_settings, update_bot_settings
 from routes.analytics import analytics_event_ingest, analytics_identity_coverage
 from routes.analytics_routes import get_latest_report, trigger_generate_report
@@ -175,6 +176,7 @@ def admin_login_alias():
 
 
 @api_aliases_bp.route("/productos", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 def productos_alias():
     return obtener_productos()
 
@@ -182,6 +184,7 @@ def productos_alias():
 @api_aliases_bp.route(
     "/<tenant_slug>/productos", methods=["GET", "OPTIONS"], strict_slashes=False
 )
+@cutover_writer_view
 def productos_alias_with_slug(tenant_slug: str):
     """Alias that allows /api/<slug>/productos to hit the catalog endpoint."""
 
@@ -200,6 +203,7 @@ def _bind_tenant_slug_for_alias(tenant_slug: str) -> None:
 
 
 @api_aliases_bp.route("/carrito", methods=["GET", "POST", "DELETE", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 def carrito_alias_root():
     return carrito_root()
 
@@ -207,6 +211,7 @@ def carrito_alias_root():
 @api_aliases_bp.route(
     "/<tenant_slug>/carrito", methods=["GET", "POST", "DELETE", "OPTIONS"], strict_slashes=False
 )
+@cutover_writer_view
 def carrito_alias_with_slug(tenant_slug: str):
     """Alias that allows /api/<slug>/carrito to reach the cart endpoint."""
 
@@ -345,6 +350,7 @@ def analytics_event_alias():
 
 
 @api_aliases_bp.route("/analytics/identity/coverage", methods=["GET", "OPTIONS"], strict_slashes=False)
+@cutover_writer_view
 def analytics_identity_coverage_alias():
     if request.method == "OPTIONS":
         return _options_ok()
@@ -1075,6 +1081,7 @@ def root_public_tenant_widget_config(slug: str):
 @public_aliases_bp.route(
     "/public/tenants/<slug>/catalog", methods=["GET", "OPTIONS"], strict_slashes=False
 )
+@cutover_writer_view
 def root_public_tenant_catalog(slug: str):
     if request.method == "OPTIONS":
         return _options_ok()
@@ -1194,6 +1201,7 @@ def root_pwa_tenant_info_alias():
 @public_aliases_bp.route(
     "/<tenant_slug>/productos", methods=["GET", "OPTIONS"], strict_slashes=False
 )
+@cutover_writer_view
 def root_productos_alias_with_slug(tenant_slug: str):
     """Public alias to serve /<slug>/productos via the catalog endpoint."""
 
@@ -1203,6 +1211,7 @@ def root_productos_alias_with_slug(tenant_slug: str):
 @public_aliases_bp.route(
     "/<tenant_slug>/carrito", methods=["GET", "POST", "DELETE", "OPTIONS"], strict_slashes=False
 )
+@cutover_writer_view
 def root_carrito_alias_with_slug(tenant_slug: str):
     """Public alias to serve /<slug>/carrito via the cart endpoint."""
 

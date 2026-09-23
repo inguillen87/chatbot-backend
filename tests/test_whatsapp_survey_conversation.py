@@ -5,6 +5,8 @@ import hashlib
 import secrets
 import unittest
 from unittest.mock import patch
+
+import jwt
 from sqlalchemy import event
 
 from app import create_app, db
@@ -38,9 +40,11 @@ from services.whatsapp_survey_conversation import (
     WHATSAPP_SURVEY_FLOW_STATE_KEY,
     _live_results,
     _load_instrument,
+    _shared_location_from_context,
     handle_whatsapp_survey_flow_turn,
     start_whatsapp_survey_flow,
 )
+from tests.junin_product_flow_support import mark_junin_jurisdiction_verified
 
 
 class WhatsAppSurveyConversationTestConfig(Config):
@@ -61,6 +65,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         self.app_context = self.app.app_context()
         self.app_context.push()
         db.create_all()
+        self.client = self.app.test_client()
 
         rubro = Rubro(clave="municipio", nombre="Municipio")
         db.session.add(rubro)
@@ -76,14 +81,14 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         self.viewer = User(
             name="Ciudadana de prueba",
             email="citizen-whatsapp-survey@example.test",
-            telefono="+5492901123456",
+            telefono="+5492634123456",
         )
         self.viewer.set_password(secrets.token_urlsafe(24))
         db.session.add_all([self.owner, self.viewer])
         db.session.flush()
         self.tenant = TenantProfile(
-            slug="tierra-del-fuego-wa-qa",
-            nombre="Tierra del Fuego",
+            slug="junin",
+            nombre="Municipalidad de Junín QA",
             tipo="municipio",
             municipio_id=self.owner.id,
             is_active=True,
@@ -94,6 +99,22 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         self.owner.tenant_id = self.tenant.id
         self.owner.tenant_slug = self.tenant.slug
         db.session.commit()
+
+    def _admin_headers(self) -> dict[str, str]:
+        token = jwt.encode(
+            {
+                "user_id": self.owner.id,
+                "rol": self.owner.rol,
+                "tenant_slug": self.tenant.slug,
+                "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+            },
+            self.app.config["SECRET_KEY"],
+            algorithm="HS256",
+        )
+        return {
+            "Authorization": f"Bearer {token}",
+            "X-Tenant-Slug": self.tenant.slug,
+        }
 
     def tearDown(self):
         MUNICIPIO_RESPONSE_CACHE.clear()
@@ -110,7 +131,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         )
         return {
             "eligibility_policy": {
-                "policy_version": "eligibility-tdf-2026.1",
+                "policy_version": "eligibility-junin-wa-2026.1",
                 "mode": mode,
                 "declarations": (
                     ["resident_attested"] if mode == "self_attested" else []
@@ -119,7 +140,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
                 "automated_decision": False,
             },
             "consent_policy": {
-                "policy_version": "consent-tdf-2026.1",
+                "policy_version": "consent-junin-wa-2026.1",
                 "public_text": public_text,
                 "text_sha256": hashlib.sha256(public_text.encode("utf-8")).hexdigest(),
                 "required": True,
@@ -141,7 +162,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         self,
         *,
         tenant: TenantProfile | None = None,
-        slug: str = "gestion-melella-si-no",
+        slug: str = "gestion-junin-si-no",
         eligibility_mode: str = "open",
         incompatible: bool = False,
         vote_option_count: int = 2,
@@ -160,7 +181,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             titulo="Votación ciudadana sobre transparencia de gestión",
             descripcion=(
                 "Consulta no vinculante sobre un tablero mensual de la gestión "
-                "del gobernador Gustavo Melella."
+                "de la Municipalidad de Junín, Mendoza."
             ),
             tipo="votacion",
             estado="borrador",
@@ -224,16 +245,21 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
                 orden=2,
                 logical_ref="demographic:city",
                 tipo="opcion_unica",
-                texto="¿En qué ciudad vivís?",
+                texto="¿En qué distrito vivís?",
                 obligatoria=True,
             )
             city.opciones = [
-                EncOpcion(orden=1, texto="Ushuaia", valor="ushuaia"),
-                EncOpcion(orden=2, texto="Río Grande", valor="rio_grande"),
+                EncOpcion(orden=1, texto="Junín", valor="junin"),
+                EncOpcion(orden=2, texto="La Colonia", valor="la_colonia"),
             ]
             survey.preguntas = [vote, city]
         db.session.add(survey)
         db.session.commit()
+
+        self._review_junin_survey_for_publication(
+            survey,
+            tenant=scoped_tenant,
+        )
 
         if eligibility_mode in {"institution_attested", "manual_review"}:
             self.app.config["ENABLE_SURVEY_ELIGIBILITY_GRANTS_V1"] = True
@@ -264,11 +290,86 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         db.session.refresh(survey)
         return survey
 
+    def _review_junin_survey_for_publication(
+        self,
+        survey: EncEncuesta,
+        *,
+        tenant: TenantProfile,
+    ) -> None:
+        """Bind and approve the exact survey content against Junín's reviewed boundary."""
+
+        mark_junin_jurisdiction_verified(
+            tenant,
+            reviewer_user_id=self.owner.id,
+        )
+        headers = self._admin_headers()
+        initial = self.client.get(
+            f"/api/v2/surveys/{survey.id}/content-review",
+            headers=headers,
+        )
+        self.assertEqual(initial.status_code, 200, initial.get_json())
+        initial_payload = initial.get_json()
+        initial_hash = initial_payload["jurisdiction"]["content_sha256"]
+        self.assertIsNone(
+            initial_payload["jurisdiction"].get("survey_jurisdiction_ref")
+        )
+
+        bound = self.client.post(
+            f"/api/v2/surveys/{survey.id}/content-review",
+            json={
+                "decision": "bind",
+                "expected_content_sha256": initial_hash,
+                "evidence_ref": f"qa-review:whatsapp-survey-{survey.id}",
+            },
+            headers={
+                **headers,
+                "Idempotency-Key": f"whatsapp-survey-{survey.id}:bind:0001",
+            },
+        )
+        self.assertEqual(bound.status_code, 201, bound.get_json())
+        bound_payload = bound.get_json()
+        self.assertEqual(
+            bound_payload.get("action_hint"),
+            "reload_jurisdiction_readiness_then_review",
+        )
+        self.assertNotEqual(
+            bound_payload["jurisdiction"]["content_sha256"],
+            initial_hash,
+        )
+
+        reloaded = self.client.get(
+            f"/api/v2/surveys/{survey.id}/content-review",
+            headers=headers,
+        )
+        self.assertEqual(reloaded.status_code, 200, reloaded.get_json())
+        reloaded_hash = reloaded.get_json()["jurisdiction"]["content_sha256"]
+        self.assertEqual(
+            reloaded_hash,
+            bound_payload["jurisdiction"]["content_sha256"],
+        )
+
+        approved = self.client.post(
+            f"/api/v2/surveys/{survey.id}/content-review",
+            json={
+                "decision": "approve",
+                "expected_content_sha256": reloaded_hash,
+                "evidence_ref": f"qa-review:whatsapp-survey-{survey.id}",
+            },
+            headers={
+                **headers,
+                "Idempotency-Key": f"whatsapp-survey-{survey.id}:approve:0001",
+            },
+        )
+        self.assertEqual(approved.status_code, 201, approved.get_json())
+        approved_payload = approved.get_json()
+        self.assertTrue(approved_payload.get("review_completed"))
+        self.assertTrue(approved_payload["jurisdiction"].get("ready"))
+
     def _context(
         self,
         *,
         tenant: TenantProfile | None = None,
-        phone: str = "+5492901123456",
+        phone: str = "+5492634123456",
     ) -> dict:
         scoped_tenant = tenant or self.tenant
         return {
@@ -292,7 +393,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
     def test_municipal_menu_offers_native_response_and_preserves_share(self):
         survey = self._create_governed_survey()
         for index in range(10):
-            self._create_governed_survey(slug=f"gestion-melella-ciudad-{index}")
+            self._create_governed_survey(slug=f"gestion-junin-distrito-{index}")
         context = self._context()
 
         menu = _get_encuestas_menu(context)
@@ -303,7 +404,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         self.assertTrue(respond_action.startswith("encuesta_responder::"))
         self.assertTrue(share_action.endswith(survey_metadata["slug"]))
         self.assertIn("https://wa.me/?text=", menu["message_body"])
-        self.assertIn("tenant_slug=tierra-del-fuego-wa-qa", menu["message_body"])
+        self.assertIn("tenant_slug=junin", menu["message_body"])
         self.assertLessEqual(len(menu["options_list"]), 10)
         self.assertTrue(
             all(
@@ -364,7 +465,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             chat_session_id="wa-survey-conversation-real-responder",
             user_id=self.owner.id,
             tenant_id=self.tenant.id,
-            anon_id="+5492901123456",
+            anon_id="+5492634123456",
             context_data=self._context()["chat_db_context_data"],
         )
         db.session.add(chat_context)
@@ -381,7 +482,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
                 rubro_obj=self.owner.rubro,
                 viewer_user=self.viewer,
                 chat_db_context=chat_context,
-                anon_id="+5492901123456",
+                anon_id="+5492634123456",
                 channel="whatsapp",
                 tenant_profile=self.tenant,
                 tenant_id=self.tenant.id,
@@ -431,13 +532,13 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         case_slug: str,
     ) -> tuple[EncEncuesta, ChatSessionContext]:
         survey = self._create_governed_survey(
-            slug=f"gestion-melella-prioridad-{case_slug}"
+            slug=f"gestion-junin-prioridad-{case_slug}"
         )
         chat_context = ChatSessionContext(
             chat_session_id=f"wa-survey-priority-{case_slug}",
             user_id=self.owner.id,
             tenant_id=self.tenant.id,
-            anon_id="+5492901123456",
+            anon_id="+5492634123456",
             context_data=self._context()["chat_db_context_data"],
         )
         db.session.add(chat_context)
@@ -467,7 +568,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             rubro_obj=self.owner.rubro,
             viewer_user=self.viewer,
             chat_db_context=chat_context,
-            anon_id="+5492901123456",
+            anon_id="+5492634123456",
             channel="whatsapp",
             tenant_profile=self.tenant,
             tenant_id=self.tenant.id,
@@ -587,9 +688,9 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             case_slug="ubicacion"
         )
         location = {
-            "latitude": -54.8019,
-            "longitude": -68.303,
-            "address": "Ushuaia, Tierra del Fuego",
+            "latitude": -33.136,
+            "longitude": -68.49,
+            "address": "Ubicación sintética QA, Junín, Mendoza",
         }
         inbound_content = {
             "contract_version": "whatsapp.inbound_content.v1",
@@ -627,7 +728,111 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             survey_context["whatsapp_inbound_content"],
             inbound_content,
         )
+        state = chat_context.context_data[CONTEXTO_MUNICIPIO][
+            WHATSAPP_SURVEY_FLOW_STATE_KEY
+        ]
+        self.assertEqual(
+            state["shared_location"],
+            {"lat": -33.136, "lng": -68.49},
+        )
         self._assert_active_survey_state_preserved(chat_context, survey)
+
+        vote_question = self._respond_active_survey(
+            chat_context,
+            {
+                "pregunta": "",
+                "action": self._action(
+                    response,
+                    "encuesta_wa::consent_accept::",
+                ),
+            },
+        )
+        city_question = self._respond_active_survey(
+            chat_context,
+            {
+                "pregunta": "",
+                "action": self._action(
+                    vote_question,
+                    "encuesta_wa::answer::",
+                ),
+            },
+        )
+        receipt = self._respond_active_survey(
+            chat_context,
+            {
+                "pregunta": "",
+                "action": self._action(
+                    city_question,
+                    "encuesta_wa::answer::",
+                ),
+            },
+        )
+
+        self.assertEqual(receipt["fuente"], "encuesta_whatsapp_confirmada_v1")
+        persisted = EncRespuesta.query.filter_by(encuesta_id=survey.id).one()
+        self.assertAlmostEqual(persisted.lat, -33.136)
+        self.assertAlmostEqual(persisted.lng, -68.49)
+
+    def test_shared_survey_location_rejects_partial_or_invalid_coordinates(self):
+        self.assertEqual(
+            _shared_location_from_context(
+                {
+                    "es_ubicacion": True,
+                    "ubicacion_usuario": {"latitude": -33.136},
+                }
+            ),
+            {},
+        )
+        self.assertEqual(
+            _shared_location_from_context(
+                {
+                    "es_ubicacion": True,
+                    "ubicacion_usuario": {
+                        "latitude": 91,
+                        "longitude": -68.49,
+                    },
+                }
+            ),
+            {},
+        )
+        self.assertEqual(
+            _shared_location_from_context(
+                {
+                    "es_ubicacion": True,
+                    "ubicacion_usuario": {"lat": 0, "lng": 0},
+                }
+            ),
+            {"lat": 0.0, "lng": 0.0},
+        )
+
+    def test_source_anonymous_survey_does_not_retain_shared_coordinates(self):
+        survey = self._create_governed_survey(
+            slug="gestion-junin-anonima-ubicacion",
+            privacy_mode="source_anonymous",
+        )
+        context = self._context()
+        start = start_whatsapp_survey_flow(context, survey.slug)
+
+        response = handle_whatsapp_survey_flow_turn(
+            {
+                **context,
+                "es_ubicacion": True,
+                "ubicacion_usuario": {
+                    "latitude": -33.136,
+                    "longitude": -68.49,
+                },
+            },
+            text="",
+        )
+
+        self.assertEqual(response["fuente"], "encuesta_whatsapp_respuesta_ambigua_v1")
+        state = context["chat_db_context_data"][CONTEXTO_MUNICIPIO][
+            WHATSAPP_SURVEY_FLOW_STATE_KEY
+        ]
+        self.assertNotIn("shared_location", state)
+        self.assertTrue(
+            self._action(start, "encuesta_wa::consent_accept::")
+        )
 
     @staticmethod
     def _action(payload: dict, prefix: str) -> str:
@@ -830,7 +1035,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             slug="gestion-source-anonymous-replay",
             privacy_mode="source_anonymous",
         )
-        replay_context = self._context(phone="+5492901123499")
+        replay_context = self._context(phone="+5492634123499")
         start = start_whatsapp_survey_flow(replay_context, replay_survey.slug)
         consent_action = self._action(start, "encuesta_wa::consent_accept::")
         handle_whatsapp_survey_flow_turn(
@@ -871,8 +1076,8 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
         self._assert_source_anonymous_small_cohort_hidden(replay["results"])
         for payload in (completion, duplicate, replay):
             rendered = repr(payload)
-            self.assertNotIn("+5492901123456", rendered)
-            self.assertNotIn("+5492901123499", rendered)
+            self.assertNotIn("+5492634123456", rendered)
+            self.assertNotIn("+5492634123499", rendered)
             self.assertNotIn(self.viewer.email, rendered)
 
     def test_governed_yes_no_and_city_vote_pins_release_and_emits_realtime(self):
@@ -913,7 +1118,7 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             ],
             1,
         )
-        self.assertIn("tenant_slug=tierra-del-fuego-wa-qa", receipt["share_url"])
+        self.assertIn("tenant_slug=junin", receipt["share_url"])
         self.assertNotIn(
             WHATSAPP_SURVEY_FLOW_STATE_KEY,
             context["chat_db_context_data"][CONTEXTO_MUNICIPIO],
@@ -925,17 +1130,17 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
             if not is_trusted_demo_seed_response(row)
         )
         self.assertEqual(saved.tenant_id, self.tenant.id)
-        self.assertEqual(saved.phone, "+5492901123456")
-        self.assertEqual(saved.ciudad, "ushuaia")
+        self.assertEqual(saved.phone, "+5492634123456")
+        self.assertEqual(saved.ciudad, "junin")
         self.assertEqual(saved.canal, "whatsapp_chat")
         self.assertIsNotNone(saved.governance_release_id)
         self.assertEqual(
             saved.governance_eligibility_policy_version,
-            "eligibility-tdf-2026.1",
+            "eligibility-junin-wa-2026.1",
         )
         self.assertEqual(
             saved.governance_consent_policy_version,
-            "consent-tdf-2026.1",
+            "consent-junin-wa-2026.1",
         )
         self.assertTrue(receipt["idempotency"]["persisted"])
         emit_update.assert_called_once()
@@ -1117,15 +1322,15 @@ class WhatsAppSurveyConversationTest(unittest.TestCase):
 
     def test_incompatible_question_and_restricted_eligibility_use_honest_web_fallback(self):
         incompatible = self._create_governed_survey(
-            slug="gestion-melella-comentario-abierto",
+            slug="gestion-junin-comentario-abierto",
             incompatible=True,
         )
         restricted = self._create_governed_survey(
-            slug="gestion-melella-restringida",
+            slug="gestion-junin-restringida",
             eligibility_mode="manual_review",
         )
         too_many_options = self._create_governed_survey(
-            slug="gestion-melella-muchas-opciones",
+            slug="gestion-junin-muchas-opciones",
             vote_option_count=9,
         )
 

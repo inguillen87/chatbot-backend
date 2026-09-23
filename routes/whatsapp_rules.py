@@ -13,9 +13,11 @@ from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy.exc import IntegrityError
 from twilio.rest import Client
 
+from cutover_writer_fence import cutover_writer_view
 from models import (
     AuditEvent,
     MessageTemplateRegistry,
+    TenantProfile,
     MessagingEventLedger,
     NotificationTemplate,
     ProviderConnection,
@@ -23,6 +25,10 @@ from models import (
     User,
     WhatsAppFlowInteraction,
     db,
+)
+from services.whatsapp_pack_transactions import (
+    TemplatePackTransactionError, find_draft_receipt, key_digest,
+    local_draft_transaction,
 )
 from services.provider_platform import is_sender_ready_status
 from services.llm_provider_network_policy import (
@@ -78,6 +84,102 @@ META_FLOW_PUBLICATION_ATTESTATION_TTL_SECONDS = 60 * 60
 WHATSAPP_TEMPLATE_PACKS_READ = "whatsapp.templates.read"
 WHATSAPP_TEMPLATE_PACKS_MANAGE = "whatsapp.templates.manage"
 WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER = "chatboc"
+WHATSAPP_RULES_CONTRACT_VERSION = "whatsapp.enterprise_rules.v1"
+_WHATSAPP_RULE_FIELDS = {
+    "enforce_template_outside_24h",
+    "max_outbound_per_hour",
+    "quiet_hours_start",
+    "quiet_hours_end",
+    "blocked_keywords",
+}
+
+
+class WhatsAppRuleValidationError(ValueError):
+    def __init__(self, code: str, *, field: str | None = None) -> None:
+        self.code = str(code)
+        self.field = field
+        super().__init__(self.code)
+
+
+def _bounded_rule_integer(
+    value,
+    *,
+    field: str,
+    minimum: int,
+    maximum: int,
+    nullable: bool = True,
+) -> int | None:
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_integer_required",
+            field=field,
+        )
+    if value < minimum or value > maximum:
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_integer_out_of_range",
+            field=field,
+        )
+    return int(value)
+
+
+def _normalize_blocked_keywords(value) -> list[str]:
+    if not isinstance(value, list):
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_keywords_list_required",
+            field="blocked_keywords",
+        )
+    if len(value) > 50:
+        raise WhatsAppRuleValidationError(
+            "whatsapp_rules_keywords_limit_exceeded",
+            field="blocked_keywords",
+        )
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            raise WhatsAppRuleValidationError(
+                "whatsapp_rules_keyword_invalid",
+                field="blocked_keywords",
+            )
+        keyword = item.strip()
+        if (
+            not keyword
+            or len(keyword) > 80
+            or any(ord(character) < 32 for character in keyword)
+        ):
+            raise WhatsAppRuleValidationError(
+                "whatsapp_rules_keyword_invalid",
+                field="blocked_keywords",
+            )
+        identity = keyword.casefold()
+        if identity not in seen:
+            normalized.append(keyword)
+            seen.add(identity)
+    return normalized
+
+
+def _rule_audit_snapshot(rule) -> dict:
+    keywords = rule.blocked_keywords if isinstance(rule.blocked_keywords, list) else []
+    keyword_digest = hashlib.sha256(
+        json.dumps(
+            keywords,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "enforce_template_outside_24h": bool(
+            rule.enforce_template_outside_24h
+        ),
+        "max_outbound_per_hour": rule.max_outbound_per_hour,
+        "quiet_hours_start": rule.quiet_hours_start,
+        "quiet_hours_end": rule.quiet_hours_end,
+        "quiet_hours_timezone": "UTC",
+        "blocked_keywords_count": len(keywords),
+        "blocked_keywords_sha256": keyword_digest,
+    }
 
 
 class TwilioContentApiError(RuntimeError):
@@ -341,20 +443,9 @@ def _template_pack_request_fingerprint(tenant_id: int, vertical: str, pack: dict
 
 
 def _find_template_pack_idempotency_receipt(tenant_id: int, idempotency_key: str) -> dict | None:
-    rows = MessageTemplateRegistry.query.filter_by(
-        tenant_id=tenant_id,
-        provider=WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER,
-        channel="whatsapp",
-    ).all()
-    for row in rows:
-        metadata = row.metadata_json if isinstance(row.metadata_json, dict) else {}
-        receipts = metadata.get("materialization_receipts")
-        if not isinstance(receipts, list):
-            continue
-        for receipt in receipts:
-            if isinstance(receipt, dict) and receipt.get("idempotency_key") == idempotency_key:
-                return dict(receipt)
-    return None
+    return find_draft_receipt(
+        db.session, AuditEvent, MessageTemplateRegistry, tenant_id, idempotency_key
+    )
 
 
 def _find_twilio_manifest_item(tenant, template_id: str) -> dict | None:
@@ -1144,6 +1235,7 @@ def _twilio_access_lock_response(tenant, *, action: str):
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/rules", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_tenant
 def get_rules(user: User):
@@ -1152,11 +1244,13 @@ def get_rules(user: User):
     rule = WhatsAppEnterpriseRulesService(tenant.id).get_or_create()
     return jsonify(
         {
+            "contract_version": WHATSAPP_RULES_CONTRACT_VERSION,
             "tenant_id": tenant.id,
             "enforce_template_outside_24h": rule.enforce_template_outside_24h,
             "max_outbound_per_hour": rule.max_outbound_per_hour,
             "quiet_hours_start": rule.quiet_hours_start,
             "quiet_hours_end": rule.quiet_hours_end,
+            "quiet_hours_timezone": "UTC",
             "blocked_keywords": rule.blocked_keywords or [],
         }
     )
@@ -1169,20 +1263,109 @@ def update_rules(user: User):
     tenant = g.tenant_profile
     _guard(user, tenant)
 
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": "whatsapp_rules_object_required",
+            }
+        ), 400
+    unknown_fields = sorted(set(payload) - _WHATSAPP_RULE_FIELDS)
+    if unknown_fields:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": "whatsapp_rules_unknown_fields",
+                "fields": unknown_fields,
+            }
+        ), 400
+    if not payload:
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": "whatsapp_rules_update_required",
+            }
+        ), 400
     svc = WhatsAppEnterpriseRulesService(tenant.id)
     rule = svc.get_or_create()
+    before = _rule_audit_snapshot(rule)
 
-    if "enforce_template_outside_24h" in payload:
-        rule.enforce_template_outside_24h = bool(payload.get("enforce_template_outside_24h"))
-    if "max_outbound_per_hour" in payload:
-        rule.max_outbound_per_hour = payload.get("max_outbound_per_hour")
-    if "quiet_hours_start" in payload:
-        rule.quiet_hours_start = payload.get("quiet_hours_start")
-    if "quiet_hours_end" in payload:
-        rule.quiet_hours_end = payload.get("quiet_hours_end")
-    if isinstance(payload.get("blocked_keywords"), list):
-        rule.blocked_keywords = payload.get("blocked_keywords")
+    try:
+        if "enforce_template_outside_24h" in payload:
+            enforce_template = payload.get("enforce_template_outside_24h")
+            if not isinstance(enforce_template, bool):
+                raise WhatsAppRuleValidationError(
+                    "whatsapp_rules_boolean_required",
+                    field="enforce_template_outside_24h",
+                )
+            rule.enforce_template_outside_24h = enforce_template
+        if "max_outbound_per_hour" in payload:
+            rule.max_outbound_per_hour = _bounded_rule_integer(
+                payload.get("max_outbound_per_hour"),
+                field="max_outbound_per_hour",
+                minimum=1,
+                maximum=100000,
+            )
+        proposed_quiet_start = (
+            payload.get("quiet_hours_start")
+            if "quiet_hours_start" in payload
+            else rule.quiet_hours_start
+        )
+        proposed_quiet_end = (
+            payload.get("quiet_hours_end")
+            if "quiet_hours_end" in payload
+            else rule.quiet_hours_end
+        )
+        if "quiet_hours_start" in payload or "quiet_hours_end" in payload:
+            proposed_quiet_start = _bounded_rule_integer(
+                proposed_quiet_start,
+                field="quiet_hours_start",
+                minimum=0,
+                maximum=23,
+            )
+            proposed_quiet_end = _bounded_rule_integer(
+                proposed_quiet_end,
+                field="quiet_hours_end",
+                minimum=0,
+                maximum=23,
+            )
+            if (proposed_quiet_start is None) != (proposed_quiet_end is None):
+                raise WhatsAppRuleValidationError(
+                    "whatsapp_rules_quiet_hours_pair_required",
+                    field="quiet_hours",
+                )
+            if (
+                proposed_quiet_start is not None
+                and proposed_quiet_start == proposed_quiet_end
+            ):
+                raise WhatsAppRuleValidationError(
+                    "whatsapp_rules_quiet_hours_empty_window",
+                    field="quiet_hours",
+                )
+            rule.quiet_hours_start = proposed_quiet_start
+            rule.quiet_hours_end = proposed_quiet_end
+        if "blocked_keywords" in payload:
+            rule.blocked_keywords = _normalize_blocked_keywords(
+                payload.get("blocked_keywords")
+            )
+    except WhatsAppRuleValidationError as exc:
+        db.session.rollback()
+        return jsonify(
+            {
+                "ok": False,
+                "error": "validation_error",
+                "reason": exc.code,
+                "field": exc.field,
+            }
+        ), 400
+
+    db.session.add(rule)
+    db.session.flush()
+    after = _rule_audit_snapshot(rule)
 
     db.session.add(
         AuditEvent(
@@ -1191,13 +1374,33 @@ def update_rules(user: User):
             event_type="whatsapp_rules.updated",
             resource_type="whatsapp_enterprise_rule",
             resource_id=str(rule.id),
-            details=payload,
+            details={
+                "contract_version": WHATSAPP_RULES_CONTRACT_VERSION,
+                "changed_fields": sorted(payload),
+                "before": before,
+                "after": after,
+            },
             ip_address=request.remote_addr,
         )
     )
     db.session.commit()
 
-    return jsonify({"updated": True})
+    return jsonify(
+        {
+            "updated": True,
+            "contract_version": WHATSAPP_RULES_CONTRACT_VERSION,
+            "rules": {
+                "enforce_template_outside_24h": (
+                    rule.enforce_template_outside_24h
+                ),
+                "max_outbound_per_hour": rule.max_outbound_per_hour,
+                "quiet_hours_start": rule.quiet_hours_start,
+                "quiet_hours_end": rule.quiet_hours_end,
+                "quiet_hours_timezone": "UTC",
+                "blocked_keywords": rule.blocked_keywords or [],
+            },
+        }
+    )
 
 
 @whatsapp_rules_bp.route("/api/admin/whatsapp/template-packs", methods=["GET"])
@@ -1218,16 +1421,38 @@ def list_whatsapp_template_packs(user: User):
 @token_requerido
 @require_tenant
 def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
-    """Persist immutable local drafts only; this endpoint never contacts Twilio/Meta."""
-
+    """Persist local drafts and one durable audit receipt atomically."""
     tenant = _readiness_tenant_for_user(user)
     _require_template_pack_capability(user, tenant, WHATSAPP_TEMPLATE_PACKS_MANAGE)
     payload = request.get_json(silent=True)
-    if payload is None:
-        payload = {}
-    if not isinstance(payload, dict):
-        abort(400, description="El body debe ser un objeto JSON")
+    if not isinstance(payload, dict) or set(payload) - {"pack_version", "idempotency_key"}:
+        abort(400, description="Envia un objeto JSON con pack_version y una identidad de operacion valida")
+    for field in ("pack_version", "idempotency_key"):
+        if field in payload and (not isinstance(payload[field], str) or not payload[field].strip()):
+            abort(400, description=f"{field} debe ser texto no vacio")
+    try:
+        with local_draft_transaction(db.session, TenantProfile, tenant.id) as locked_tenant:
+            _require_template_pack_capability(user, locked_tenant, WHATSAPP_TEMPLATE_PACKS_MANAGE)
+            return _materialize_template_pack_drafts_locked(user, locked_tenant, vertical, payload)
+    except TemplatePackTransactionError as exc:
+        messages = {
+            "template_pack_invalid_tenant": "No pudimos validar la organización.",
+            "template_pack_tenant_unavailable": "La organización no está disponible para esta operación.",
+            "template_pack_receipt_conflict": "La operación tiene registros incompatibles. Revisá su estado antes de continuar.",
+            "template_pack_write_conflict": "Otra operación está modificando estos borradores. Actualizá su estado antes de reintentar.",
+            "template_pack_retry_same_operation": "No pudimos confirmar el resultado. Actualizá el estado y reintentá conservando la misma operación.",
+        }
+        response = jsonify({
+            "contract_version": "whatsapp.template_pack.error.v1",
+            "reason_code": exc.reason_code, "retryable": exc.status_code >= 500,
+            "next_action": "refresh_authorized_catalog",
+            "error": {"code": exc.status_code, "message": messages.get(exc.reason_code, "No se pudo completar la operación.")},
+        })
+        response.headers["Cache-Control"] = "no-store"
+        return response, exc.status_code
 
+
+def _materialize_template_pack_drafts_locked(user: User, tenant, vertical: str, payload: dict):
     normalized_vertical = normalize_whatsapp_template_vertical(vertical)
     pack = whatsapp_template_pack(normalized_vertical)
     if not normalized_vertical or not pack:
@@ -1254,6 +1479,16 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
     if existing_receipt:
         if existing_receipt.get("request_fingerprint") != request_fingerprint:
             abort(409, description="Idempotency-Key ya pertenece a otra operacion")
+        # A receipt is not evidence that its local drafts still exist unchanged.
+        for template in pack["templates"]:
+            row = MessageTemplateRegistry.query.filter_by(
+                tenant_id=tenant.id, provider=WHATSAPP_TEMPLATE_PACK_LOCAL_PROVIDER,
+                channel="whatsapp", name=template["name"], language=template["language"],
+            ).first()
+            metadata = row.metadata_json if row and isinstance(row.metadata_json, dict) else {}
+            stored_pack = metadata.get("template_pack")
+            if not isinstance(stored_pack, dict) or stored_pack.get("definition_hash") != whatsapp_template_definition_hash(template):
+                abort(409, description="template_pack_receipt_drafts_changed")
         catalog = _template_pack_catalog_payload(tenant, user)
         selected_pack = next(
             item for item in catalog["packs"] if item["vertical"] == normalized_vertical
@@ -1275,7 +1510,7 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
 
     now = datetime.now(timezone.utc)
     receipt = {
-        "idempotency_key": idempotency_key,
+        "idempotency_key_hash": key_digest(idempotency_key),
         "request_fingerprint": request_fingerprint,
         "recorded_at": now.isoformat(),
         "actor_user_id": user.id,
@@ -1359,7 +1594,7 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
                 "vertical": normalized_vertical,
                 "created_count": created_count,
                 "reused_count": reused_count,
-                "idempotency_key": idempotency_key,
+                "idempotency_key_hash": key_digest(idempotency_key),
                 "request_fingerprint": request_fingerprint,
                 "provider_calls_performed": False,
                 "resulting_state": "local_draft",
@@ -1367,11 +1602,6 @@ def materialize_whatsapp_template_pack_drafts(user: User, vertical: str):
             ip_address=request.remote_addr,
         )
     )
-    try:
-        db.session.commit()
-    except IntegrityError:
-        db.session.rollback()
-        abort(409, description="El pack fue materializado por otra operacion concurrente")
 
     catalog = _template_pack_catalog_payload(tenant, user)
     selected_pack = next(

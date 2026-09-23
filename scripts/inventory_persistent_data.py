@@ -471,7 +471,12 @@ def decrypt_relative_path(keys: ManifestKeys, token: str) -> str:
 
 def _hash_open_file(descriptor: int, before: os.stat_result) -> str:
     opened = os.fstat(descriptor)
-    if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(before):
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or _identity(opened) != _identity(before)
+        or before.st_nlink != 1
+        or opened.st_nlink != 1
+    ):
         raise InventoryError("file_changed_before_hash")
     digest = hashlib.sha256()
     with os.fdopen(os.dup(descriptor), "rb") as handle:
@@ -481,7 +486,7 @@ def _hash_open_file(descriptor: int, before: os.stat_result) -> str:
                 break
             digest.update(chunk)
     after = os.fstat(descriptor)
-    if _stable_metadata(after) != _stable_metadata(opened):
+    if after.st_nlink != 1 or _stable_metadata(after) != _stable_metadata(opened):
         raise InventoryError("file_changed_during_hash")
     return digest.hexdigest()
 
@@ -492,9 +497,11 @@ def _hash_file_at(parent_fd: int, name: str, before: os.stat_result) -> str:
     try:
         digest = _hash_open_file(descriptor, before)
         after_path = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-        if not stat.S_ISREG(after_path.st_mode) or _stable_metadata(
-            after_path
-        ) != _stable_metadata(before):
+        if (
+            not stat.S_ISREG(after_path.st_mode)
+            or after_path.st_nlink != 1
+            or _stable_metadata(after_path) != _stable_metadata(before)
+        ):
             raise InventoryError("file_changed_after_hash")
         return digest
     finally:
@@ -588,6 +595,9 @@ def _scan_posix(
             if not stat.S_ISREG(metadata.st_mode):
                 _increment(issues, "special_file_skipped")
                 continue
+            if metadata.st_nlink != 1:
+                _increment(issues, "hardlinked_file_skipped")
+                continue
             category = classify_relative_path(relative_path)
             sha256: str | None = None
             hash_status = (
@@ -610,9 +620,11 @@ def _scan_posix(
                     after_file = os.stat(
                         name, dir_fd=directory_fd, follow_symlinks=False
                     )
-                    if not stat.S_ISREG(after_file.st_mode) or _stable_metadata(
-                        after_file
-                    ) != _stable_metadata(metadata):
+                    if (
+                        not stat.S_ISREG(after_file.st_mode)
+                        or after_file.st_nlink != 1
+                        or _stable_metadata(after_file) != _stable_metadata(metadata)
+                    ):
                         raise InventoryError("file_changed_without_hash")
                 except (InventoryError, OSError) as exc:
                     code = (

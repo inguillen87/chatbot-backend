@@ -3,15 +3,17 @@ import json
 import logging
 from typing import Iterable, Mapping
 
-import httpx
-import openai
-
 from services.openai_model_defaults import (
     DEFAULT_OPENAI_TERRA_MODEL,
     chat_completion_compatibility_options,
     resolve_openai_model,
 )
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+from utils.lazy_module import LazyModule
+
+openai = LazyModule("openai")
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +66,20 @@ def _solicitar_json_a_openai(
     client_ctor = getattr(openai, "OpenAI", None)
     if client_ctor is not None:
         try:
-            with httpx.Client(proxy=None, trust_env=False) as http_client:
-                client = client_ctor(api_key=api_key, http_client=http_client)
+            bounded_timeout = outbox_io_timeout_seconds()
+            httpx_kwargs = {"proxy": None, "trust_env": False}
+            client_kwargs = {"api_key": api_key}
+            if bounded_timeout is not None:
+                httpx_kwargs["timeout"] = bounded_timeout
+                client_kwargs.update(
+                    timeout=bounded_timeout,
+                    max_retries=0,
+                )
+            with httpx.Client(**httpx_kwargs) as http_client:
+                client = client_ctor(
+                    http_client=http_client,
+                    **client_kwargs,
+                )
 
                 responses_api = getattr(client, "responses", None)
                 if responses_api is not None and hasattr(responses_api, "create"):

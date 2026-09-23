@@ -1,7 +1,8 @@
 import json
-import os
 import re
 import secrets
+from copy import deepcopy
+from pathlib import Path
 from database import db
 from models import TenantProfile, User, TenantConfig, TwilioNumber
 from flask import current_app
@@ -11,7 +12,7 @@ from services.plan_access import (
     normalize_plan,
     plan_allows_full_integrations,
 )
-from services.tenant_whatsapp_onboarding import bootstrap_tenant_whatsapp_onboarding
+from services.tenant_whatsapp_onboarding import refresh_tenant_whatsapp_onboarding
 from utils.roles import normalize_tenant_type, role_for_tenant_type
 
 
@@ -32,34 +33,141 @@ def _default_template_key(tipo: str) -> str:
 def _owner_email_for_slug(slug: str) -> str:
     return f"admin@{slug}.chatboc.local"
 
+
+REQUIRED_TEMPLATE_CONFIGS = ("menu", "contacts", "links", "widget")
+TEMPLATE_BUNDLE_CONTRACT = "tenant.template_bundle.v1"
+PROVISIONING_READINESS_CONTRACT = "tenant.provisioning_readiness.v1"
+
+
+def _template_roots() -> tuple[Path, ...]:
+    project_root = Path(__file__).resolve().parents[1]
+    candidates = (
+        project_root / "data" / "templates",
+        Path.cwd() / "data" / "templates",
+        Path("/app/data/templates"),
+    )
+    unique: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve(strict=False)
+        if resolved not in unique:
+            unique.append(resolved)
+    return tuple(unique)
+
+
+def _validated_template_key(template_key: str) -> str:
+    normalized = str(template_key or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", normalized):
+        raise ValueError("template_key is invalid")
+    return normalized
+
+
+def _load_template_bundle(
+    template_key: str,
+    *,
+    expected_tenant_type: str | None = None,
+) -> dict:
+    template_key = _validated_template_key(template_key)
+    for base in _template_roots():
+        filepath = base / f"{template_key}.bundle.json"
+        if not filepath.is_file():
+            continue
+        try:
+            payload = json.loads(filepath.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            current_app.logger.error("Invalid tenant template bundle: %s", filepath.name)
+            raise ValueError(f"template bundle '{template_key}' is invalid") from exc
+
+        if not isinstance(payload, dict):
+            raise ValueError(f"template bundle '{template_key}' is invalid")
+
+        configs = payload.get("configs")
+        if (
+            payload.get("contract_version") != TEMPLATE_BUNDLE_CONTRACT
+            or payload.get("template_key") != template_key
+            or not isinstance(configs, dict)
+        ):
+            raise ValueError(f"template bundle '{template_key}' is invalid")
+
+        bundle_tenant_type = normalize_tenant_type(payload.get("tenant_type"), default="")
+        if expected_tenant_type and bundle_tenant_type != expected_tenant_type:
+            raise ValueError(
+                f"template bundle '{template_key}' does not support tenant type '{expected_tenant_type}'"
+            )
+
+        missing = [
+            key
+            for key in REQUIRED_TEMPLATE_CONFIGS
+            if not isinstance(configs.get(key), dict) or not configs[key]
+        ]
+        if missing:
+            raise ValueError(
+                f"template bundle '{template_key}' is incomplete: {', '.join(missing)}"
+            )
+        return {key: deepcopy(configs[key]) for key in REQUIRED_TEMPLATE_CONFIGS}
+
+    raise ValueError(f"template bundle '{template_key}' was not found")
+
+
 def load_template(template_key, config_type):
     """
     Loads a JSON template file.
     config_type: 'menu', 'contacts', 'links', 'widget'
     """
-    paths_to_try = [
-        os.path.join(os.getcwd(), 'data', 'templates'),
-        os.path.join(os.getcwd(), '..', 'data', 'templates'), # If in subfolder
-        '/app/data/templates'
-    ]
+    template_key = _validated_template_key(template_key)
+    if config_type not in REQUIRED_TEMPLATE_CONFIGS:
+        raise ValueError("config_type is invalid")
+
+    try:
+        return _load_template_bundle(template_key)[config_type]
+    except ValueError as bundle_error:
+        if "was not found" not in str(bundle_error):
+            raise
+
+    paths_to_try = _template_roots()
 
     filepath = None
     for base in paths_to_try:
-        p = os.path.join(base, f"{template_key}.{config_type}.json")
-        if os.path.exists(p):
+        p = base / f"{template_key}.{config_type}.json"
+        if p.is_file():
             filepath = p
             break
 
     if not filepath:
-        current_app.logger.warning(f"Template not found: {template_key}.{config_type}.json")
-        return {}
+        raise ValueError(f"template '{template_key}.{config_type}' was not found")
 
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        current_app.logger.error(f"Error loading template {filepath}: {e}")
-        return {}
+        data = json.loads(filepath.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        current_app.logger.error("Invalid tenant template: %s", filepath.name)
+        raise ValueError(f"template '{template_key}.{config_type}' is invalid") from exc
+    if not isinstance(data, dict) or not data:
+        raise ValueError(f"template '{template_key}.{config_type}' is empty")
+    return data
+
+
+def _provisioning_readiness(template_key: str, configured_keys: list[str]) -> dict:
+    complete = set(configured_keys) == set(REQUIRED_TEMPLATE_CONFIGS)
+    return {
+        "contract_version": PROVISIONING_READINESS_CONTRACT,
+        "evaluated_stage": "tenant_created",
+        "requires_revalidation": True,
+        "status": "configuration_required" if complete else "blocked",
+        "ready": False,
+        "template_key": template_key,
+        "checks": {
+            "base_configuration_valid": complete,
+            "operator_configuration_complete": False,
+            "provider_activation_performed": False,
+        },
+        "configured_keys": sorted(configured_keys),
+        "missing": [
+            "branding",
+            "operator_team",
+            "service_content",
+            "channel_verification",
+        ],
+        "next_action": "complete_tenant_configuration",
+    }
 
 def assign_number_to_tenant(tenant: TenantProfile):
     number = (
@@ -106,6 +214,13 @@ def create_tenant_from_template(
     if auto_assign_whatsapp_number and normalize_plan(plan) not in FULL_INTEGRATION_PLANS:
         raise ValueError("auto_assign_whatsapp_number requires a productive integration plan")
 
+    # Resolve and validate the whole bundle before creating any owner or tenant.
+    # A missing or partial package must never produce a half-configured account.
+    template_configs = _load_template_bundle(
+        template_key,
+        expected_tenant_type=tipo,
+    )
+
     # 1. Create Owner User
     owner_email_was_generated = not bool(str(owner_email or "").strip())
     if not owner_email:
@@ -145,6 +260,15 @@ def create_tenant_from_template(
     configuracion = {
         "tenant_type": tipo,
         "owner_email_generated": owner_email_was_generated,
+        "template": {
+            "contract_version": TEMPLATE_BUNDLE_CONTRACT,
+            "key": template_key,
+            "configured_keys": sorted(template_configs),
+        },
+        "provisioning_readiness": _provisioning_readiness(
+            template_key,
+            list(template_configs),
+        ),
         "provisioning": {
             "status": "created",
             "channel_strategy": "tenant_scoped_sender",
@@ -183,37 +307,34 @@ def create_tenant_from_template(
     owner.tenant_slug = tenant.slug
 
     # 3. Create Configs from Template
-    configs_to_load = ['menu', 'contacts', 'links', 'widget']
-    for cfg_key in configs_to_load:
-        data = load_template(template_key, cfg_key)
-        if data:
-            tenant_config = TenantConfig(
-                tenant_id=tenant.id,
-                key=cfg_key,
-                channel=None,
-                json_value=data
-            )
-            db.session.add(tenant_config)
+    for cfg_key, data in template_configs.items():
+        tenant_config = TenantConfig(
+            tenant_id=tenant.id,
+            key=cfg_key,
+            channel=None,
+            json_value=deepcopy(data),
+        )
+        db.session.add(tenant_config)
 
     # 4. Assign WhatsApp Number
     if auto_assign_whatsapp_number:
         assign_number_to_tenant(tenant)
 
-    # 5. Prepare provider onboarding so every tenant starts with an API-first
-    # WhatsApp/Twilio path. This is fail-soft: missing Meta/Twilio/Render env
-    # should not block tenant creation.
+    # 5. Publish a secret-free provider activation plan. Tenant creation never
+    # calls provider provisioning APIs; activation remains an explicit admin
+    # operation after readiness review.
     if plan_allows_full_integrations(tenant):
         try:
-            bootstrap_tenant_whatsapp_onboarding(
+            onboarding_config = dict(current_app.config)
+            onboarding_config["TWILIO_TENANT_AUTO_PROVISION_ENABLED"] = False
+            refresh_tenant_whatsapp_onboarding(
                 tenant,
-                app_config=current_app.config,
-                payload={"display_name": nombre},
-                actor_user=owner,
-                source="tenant_factory",
+                app_config=onboarding_config,
+                source="tenant_factory_plan",
             )
         except Exception as exc:  # pragma: no cover - defensive guard for public signup
             current_app.logger.warning(
-                "Tenant WhatsApp onboarding bootstrap failed for %s: %s",
+                "Tenant WhatsApp onboarding plan failed for %s: %s",
                 slug,
                 exc,
                 exc_info=True,

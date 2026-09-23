@@ -4,10 +4,23 @@ from datetime import datetime, timezone
 import os
 from typing import Any, Mapping
 
-from models import CatalogoItem, EncEncuesta, MessageTemplateRegistry, PublicSurvey, TenantProfile, User
+from models import (
+    CatalogoItem,
+    CatalogUpload,
+    CategoriaTicket,
+    EncEncuesta,
+    MessageTemplateRegistry,
+    PublicSurvey,
+    TenantProfile,
+    User,
+)
 from services.commerce_contracts import payment_capabilities
 from services.live_chat_schedule import build_live_chat_status
 from services.plan_access import integration_access_payload
+from services.tenant_implementation_journey import build_implementation_journey
+from services.organization_setup_journey import build_organization_setup_journey
+from services.organization_branding import build_workspace_appearance
+from services.plan_access import tenant_allows_workspace_branding
 from services.twilio_tech_provider import STATE_KEY
 from utils.roles import superadmin_email_allowlist_configured
 
@@ -431,16 +444,262 @@ def _public_intake_security_status() -> tuple[str, list[str], str | None, str | 
 
 def _counts(tenant: TenantProfile | None) -> dict[str, int]:
     if tenant is None or not getattr(tenant, "id", None):
-        return {"catalog_items": 0, "approved_templates": 0, "surveys": 0, "team_members": 0}
+        return {
+            "catalog_items": 0,
+            "catalog_imports_committed": 0,
+            "approved_templates": 0,
+            "surveys": 0,
+            "team_members": 0,
+            "ticket_categories": 0,
+            "routed_team_members": 0,
+        }
     return {
         "catalog_items": _safe_count(CatalogoItem.query.filter_by(tenant_id=tenant.id)),
+        "catalog_imports_committed": _safe_count(
+            CatalogUpload.query.filter_by(tenant_id=tenant.id, status="committed")
+        ),
         "approved_templates": _safe_count(
             MessageTemplateRegistry.query.filter_by(tenant_id=tenant.id, channel="whatsapp", status="approved")
         ),
         "surveys": _safe_count(EncEncuesta.query.filter_by(tenant_id=tenant.id))
         + _safe_count(PublicSurvey.query.filter_by(tenant_id=tenant.id)),
         "team_members": _safe_count(User.query.filter_by(tenant_id=tenant.id, es_empleado=True)),
+        "ticket_categories": _safe_count(
+            CategoriaTicket.query.filter_by(tenant_id=tenant.id, tipo="ticket")
+        ),
+        "routed_team_members": _safe_count(
+            User.query.join(User.categorias_ticket)
+            .filter(
+                User.tenant_id == tenant.id,
+                User.es_empleado.is_(True),
+                CategoriaTicket.tenant_id == tenant.id,
+                CategoriaTicket.tipo == "ticket",
+            )
+            .distinct()
+        ),
     }
+
+
+def _mesa_unica_status(
+    counts: Mapping[str, int],
+) -> tuple[str, list[str], str | None, str]:
+    category_count = max(0, int(counts.get("ticket_categories") or 0))
+    routed_count = max(0, int(counts.get("routed_team_members") or 0))
+    evidence: list[str] = []
+    if category_count:
+        evidence.append(f"{category_count} categorias operativas")
+    if routed_count:
+        evidence.append(f"{routed_count} responsables con enrutamiento")
+
+    if not category_count:
+        return (
+            "action_required",
+            evidence,
+            "mesa_unica_categories_required",
+            "Preparar las categorias institucionales antes de habilitar la Mesa Unica.",
+        )
+    if not routed_count:
+        return (
+            "pending",
+            evidence,
+            "mesa_unica_routing_required",
+            "Las categorias estan preparadas; falta asignar responsables para operar casos reales.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Mesa Unica preparada con categorias y responsables enrutados.",
+    )
+
+
+def _team_routing_status(
+    counts: Mapping[str, int],
+) -> tuple[str, list[str], str | None, str]:
+    member_count = max(0, int(counts.get("team_members") or 0))
+    routed_count = max(0, int(counts.get("routed_team_members") or 0))
+    evidence: list[str] = []
+    if member_count:
+        evidence.append(f"{member_count} operadores")
+    if routed_count:
+        evidence.append(f"{routed_count} con categorias asignadas")
+
+    if not member_count:
+        return (
+            "action_required",
+            evidence,
+            "team_required",
+            "Agregar operadores y responsables antes de recibir casos reales.",
+        )
+    if not routed_count:
+        return (
+            "pending",
+            evidence,
+            "team_category_routing_required",
+            "El equipo existe, pero falta asignar categorias operativas a sus responsables.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Equipo operativo con categorias y responsables asignados.",
+    )
+
+
+def _knowledge_content_status(counts: Mapping[str, int]) -> tuple[str, list[str], str, str]:
+    """Keep content presence separate from verified retrieval readiness."""
+
+    item_count = max(0, int(counts.get("catalog_items") or 0))
+    committed_imports = max(0, int(counts.get("catalog_imports_committed") or 0))
+    evidence: list[str] = []
+    if item_count:
+        evidence.append(f"{item_count} contenidos estructurados")
+    if committed_imports:
+        evidence.append(f"{committed_imports} importaciones confirmadas")
+
+    if not item_count:
+        return (
+            "action_required",
+            evidence,
+            "knowledge_content_required",
+            "Cargar tramites, servicios o documentos institucionales y revisar su procedencia.",
+        )
+    return (
+        "pending",
+        evidence,
+        "knowledge_retrieval_verification_required",
+        "El contenido existe, pero falta un recibo verificable de indexacion y una prueba de recuperacion antes de declararlo listo.",
+    )
+
+
+def _institutional_branding_status(
+    tenant: TenantProfile | None,
+) -> tuple[str, list[str], str | None, str]:
+    """Report explicit tenant branding without treating platform defaults as setup."""
+
+    if tenant is None:
+        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su identidad visual."
+
+    logo_configured = bool(str(getattr(tenant, "logo_url", None) or "").strip())
+    palette_configured = bool(
+        isinstance(getattr(tenant, "tema", None), Mapping)
+        and getattr(tenant, "tema", None)
+    ) or bool(
+        isinstance(getattr(tenant, "theme_json", None), Mapping)
+        and getattr(tenant, "theme_json", None)
+    )
+    domain_configured = bool(str(getattr(tenant, "dominio", None) or "").strip())
+
+    evidence: list[str] = []
+    if logo_configured:
+        evidence.append("logo institucional configurado")
+    if palette_configured:
+        evidence.append("paleta institucional configurada")
+    if domain_configured:
+        evidence.append("dominio institucional registrado")
+
+    missing: list[str] = []
+    if not logo_configured:
+        missing.append("logo")
+    if not palette_configured:
+        missing.append("paleta")
+    if missing:
+        return (
+            "action_required",
+            evidence,
+            "institutional_branding_incomplete",
+            f"Completar identidad institucional: {', '.join(missing)}. El dominio propio puede incorporarse en una etapa posterior.",
+        )
+    return (
+        "ready",
+        evidence,
+        None,
+        "Identidad institucional lista; el dominio propio es opcional para operar sobre Chatboc.ar.",
+    )
+
+
+def _accessibility_status(
+    cfg: Mapping[str, Any],
+) -> tuple[str, list[str], str | None, str]:
+    """Require an explicit tenant policy instead of inferring readiness globally."""
+
+    accessibility = _as_mapping(cfg.get("accessibility"))
+    if not accessibility:
+        return (
+            "action_required",
+            ["componentes accesibles disponibles en plataforma"],
+            "accessibility_policy_required",
+            "Definir la politica del tenant: lectura, contraste, navegacion por teclado, lenguaje claro y derivacion humana.",
+        )
+
+    if accessibility.get("enabled") is False:
+        return (
+            "blocked",
+            ["politica del tenant deshabilitada"],
+            "accessibility_disabled",
+            "Habilitar la politica de accesibilidad antes de publicar los canales ciudadanos.",
+        )
+
+    configured_features = accessibility.get("features")
+    feature_count = len(configured_features) if isinstance(configured_features, list) else 0
+    evidence = ["politica del tenant configurada"]
+    if feature_count:
+        evidence.append(f"{feature_count} apoyos declarados")
+    if accessibility.get("human_handoff") is True:
+        evidence.append("derivacion humana declarada")
+
+    if accessibility.get("enabled") is True and feature_count > 0:
+        return (
+            "ready",
+            evidence,
+            None,
+            "Politica accesible declarada. La validacion con usuarios y dispositivos sigue siendo un gate de publicacion.",
+        )
+    return (
+        "pending",
+        evidence,
+        "accessibility_validation_pending",
+        "Completar apoyos accesibles y validar la experiencia con usuarios y dispositivos antes de publicar.",
+    )
+
+
+def _territorial_status(
+    tenant: TenantProfile | None,
+) -> tuple[str, list[str], str | None, str]:
+    """Only accept the server-owned jurisdiction attestation as territorial readiness."""
+
+    if tenant is None:
+        return "blocked", [], "tenant_missing", "Crear el tenant antes de configurar su jurisdiccion."
+
+    status = str(getattr(tenant, "jurisdiction_status", None) or "unverified").strip().lower()
+    if status == "not_applicable":
+        return (
+            "ready",
+            ["jurisdiccion no requerida para este tenant"],
+            None,
+            "El tenant declaro que no necesita agregacion territorial oficial.",
+        )
+
+    verified = bool(
+        status == "verified"
+        and str(getattr(tenant, "jurisdiction_ref", None) or "").strip()
+        and str(getattr(tenant, "jurisdiction_evidence_ref", None) or "").strip()
+        and getattr(tenant, "jurisdiction_verified_by_user_id", None)
+        and getattr(tenant, "jurisdiction_verified_at", None)
+    )
+    if verified:
+        return (
+            "ready",
+            ["jurisdiccion oficial verificada", "evidencia institucional registrada"],
+            None,
+            "La delimitacion oficial esta lista para validar puntos, zonas y agregaciones.",
+        )
+    return (
+        "action_required",
+        [f"estado:{status}"],
+        "official_jurisdiction_required",
+        "Registrar y aprobar limites oficiales antes de publicar rankings, tasas o comparaciones por zona.",
+    )
 
 
 def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, Any]:
@@ -460,6 +719,12 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     public_security_status, public_security_evidence, public_security_reason, public_security_hint = (
         _public_intake_security_status()
     )
+    branding_status, branding_evidence, branding_reason, branding_hint = _institutional_branding_status(tenant)
+    accessibility_status, accessibility_evidence, accessibility_reason, accessibility_hint = _accessibility_status(cfg)
+    territory_status, territory_evidence, territory_reason, territory_hint = _territorial_status(tenant)
+    knowledge_status, knowledge_evidence, knowledge_reason, knowledge_hint = _knowledge_content_status(counts)
+    crm_status, crm_evidence, crm_reason, crm_hint = _mesa_unica_status(counts)
+    team_status, team_evidence, team_reason, team_hint = _team_routing_status(counts)
 
     widget_configured = bool(
         getattr(tenant, "widget_settings", None)
@@ -473,12 +738,51 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
 
     channels = [
         _channel(
+            "institutional_branding",
+            "Identidad institucional",
+            branding_status,
+            "Logo, paleta y dominio opcional para una experiencia white-label gobernada por tenant.",
+            actions=[_action("open_branding", "Configurar identidad", _profile_path("perfil"), primary=True)],
+            evidence=branding_evidence,
+            reason_code=branding_reason,
+            progress_hint=branding_hint,
+        ),
+        _channel(
+            "accessibility",
+            "Accesibilidad e inclusion",
+            accessibility_status,
+            "Politica accesible para web, WhatsApp, formularios y derivacion humana.",
+            actions=[_action("open_accessibility", "Configurar accesibilidad", _profile_path("perfil"), primary=True)],
+            evidence=accessibility_evidence,
+            reason_code=accessibility_reason,
+            progress_hint=accessibility_hint,
+        ),
+        _channel(
+            "territorial_intelligence",
+            "Territorio y mapas",
+            territory_status,
+            "Jurisdiccion oficial para validar direcciones, zonas, categorias y mapas de calor.",
+            actions=[_action("open_territory", "Configurar territorio", _profile_path("mapas"), primary=True)],
+            evidence=territory_evidence,
+            reason_code=territory_reason,
+            progress_hint=territory_hint,
+        ),
+        _channel(
             "crm",
-            "CRM operativo",
-            "ready" if tenant else "blocked",
-            "Bandeja de reclamos, pedidos y conversaciones para operar desde el primer dia.",
-            actions=[_action("open_crm", "Abrir reclamos/tickets", _profile_path("tickets"), primary=True)],
-            evidence=["tenant creado"] if tenant else [],
+            "Mesa Unica y CRM operativo",
+            crm_status,
+            "Bandeja de reclamos, pedidos y conversaciones con categorias y responsables verificables.",
+            actions=[
+                _action(
+                    "prepare_service_desk" if crm_reason == "mesa_unica_categories_required" else "open_crm",
+                    "Preparar Mesa Unica" if crm_reason == "mesa_unica_categories_required" else "Abrir reclamos/tickets",
+                    _profile_path("categorias") if crm_reason == "mesa_unica_categories_required" else _profile_path("tickets"),
+                    primary=True,
+                )
+            ],
+            evidence=crm_evidence,
+            reason_code=crm_reason,
+            progress_hint=crm_hint,
         ),
         _channel(
             "identity_auth",
@@ -542,6 +846,16 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             evidence=[f"{counts['catalog_items']} items"] if counts["catalog_items"] else [],
         ),
         _channel(
+            "knowledge_content",
+            "Conocimiento institucional",
+            knowledge_status,
+            "Tramites, servicios y documentos con procedencia, indexacion y recuperacion verificables.",
+            actions=[_action("open_knowledge", "Gestionar contenidos", _profile_path("catalogo"), primary=True)],
+            evidence=knowledge_evidence,
+            reason_code=knowledge_reason,
+            progress_hint=knowledge_hint,
+        ),
+        _channel(
             "payments_checkout",
             "Cobros y checkout",
             payment_status,
@@ -554,11 +868,12 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         _channel(
             "team_routing",
             "Equipo y responsables",
-            "ready" if counts["team_members"] > 0 else "action_required",
+            team_status,
             "Operadores, permisos y categorias para que reclamos, pedidos y chats no queden sin responsable.",
             actions=[_action("open_team", "Configurar equipo", _profile_path("empleados"), primary=True)],
-            evidence=[f"{counts['team_members']} operadores"] if counts["team_members"] else [],
-            reason_code=None if counts["team_members"] > 0 else "team_required",
+            evidence=team_evidence,
+            reason_code=team_reason,
+            progress_hint=team_hint,
         ),
         _channel(
             "live_chat",
@@ -584,6 +899,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
     attention_count = len(channels) - ready_count - locked_count
     progress = round((ready_count / max(1, len(channels))) * 100)
     first_actionable = next((item for item in channels if not item["ready"] and item["actions"]), None)
+    implementation_journey = build_implementation_journey(channels)
     blockers = [
         {
             "id": item["id"],
@@ -612,6 +928,8 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
         "preferred_channels": preferred_channels,
         "counts": counts,
         "channels": channels,
+        "implementation_journey": implementation_journey,
+        "organization_setup": build_organization_setup_journey(tenant, channels, workspace_appearance=build_workspace_appearance(tenant, entitled=tenant_allows_workspace_branding(tenant))),
         "blockers": blockers,
         "integration_access": {
             "enabled": access.get("enabled"),
@@ -632,6 +950,8 @@ def build_channel_activation_payload(tenant: TenantProfile | None) -> dict[str, 
             "bootstrap": "/auth/session/bootstrap",
             "whatsapp_status": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/integrations/whatsapp/status",
             "live_chat_schedule": f"/api/admin/tenants/{getattr(tenant, 'slug', '')}/live-chat/schedule",
+            "mesa_unica_preview": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/blueprints/government-core/launch/mesa-unica/preview",
+            "mesa_unica_apply": f"/api/v2/tenants/{getattr(tenant, 'slug', '')}/blueprints/government-core/launch/mesa-unica/apply",
         },
         "security": {
             "secret_free": True,

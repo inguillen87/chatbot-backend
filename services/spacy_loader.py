@@ -1,14 +1,17 @@
+import importlib
 import logging
 import os
 from functools import lru_cache
 
 _SPACY_IMPORT_ERROR: Exception | None = None
+_SPACY_MODULE: object | None = None
 
 
 class _BlankToken:
     def __init__(self, text: str) -> None:
         self.text = text
         self.lemma_ = text
+        self.is_space = False
 
 
 class _BlankDoc(list):
@@ -68,15 +71,36 @@ class _UnavailableSpacyModule:
         return _BlankSpanishPipeline()
 
 
+def _load_spacy_module():
+    """Import spaCy only when an NLP feature is used for the first time."""
+    global _SPACY_IMPORT_ERROR, _SPACY_MODULE
+
+    if _SPACY_MODULE is not None:
+        return _SPACY_MODULE
+
+    try:
+        _SPACY_MODULE = importlib.import_module("spacy")
+    except Exception as exc:  # pragma: no cover - depends on local binary deps
+        _SPACY_IMPORT_ERROR = exc
+        _SPACY_MODULE = _UnavailableSpacyModule(exc)
+    return _SPACY_MODULE
+
+
+class _LazySpacyModule:
+    """Compatibility proxy that preserves ``spacy.load``/``blank`` callers."""
+
+    def load(self, model_name: str):
+        return _load_spacy_module().load(model_name)
+
+    def blank(self, language: str):
+        return _load_spacy_module().blank(language)
+
+
 if os.getenv("TESTING") == "1" or os.getenv("CHATBOC_DISABLE_SPACY") == "1":
     _SPACY_IMPORT_ERROR = RuntimeError("spaCy disabled for this process")
     spacy = _UnavailableSpacyModule(_SPACY_IMPORT_ERROR)  # type: ignore[assignment]
 else:
-    try:
-        import spacy  # type: ignore[import-not-found]
-    except Exception as exc:  # pragma: no cover - depends on local binary deps
-        _SPACY_IMPORT_ERROR = exc
-        spacy = _UnavailableSpacyModule(exc)  # type: ignore[assignment]
+    spacy = _LazySpacyModule()  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 

@@ -8,16 +8,25 @@ import logging
 import os
 import signal
 import threading
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 from flask import current_app, has_app_context
 
 from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+    log_background_writer_fence,
+)
 from models import db
 from services.domain_effect_gate import (
     DomainEffectOutboxConfigurationError,
     resolve_domain_effect_outbox_canaries,
     resolve_domain_effect_outbox_policy,
+)
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
 )
 from services.domain_effect_outbox import (
     compose_domain_effect_registries,
@@ -79,11 +88,48 @@ def dispatch_domain_effect_batch(
     *,
     tenant_id: Optional[int] = None,
     limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Dispatch only tenants included in the explicit canary allowlist."""
 
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": "domain.effect_worker_batch.v1",
+            "status": "fenced",
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "unknown": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "recovered_unknown": 0,
+            "recovered_retry_wait": 0,
+            "recovered_dead": 0,
+            "tenants": [],
+        }
     if not has_app_context():
         raise DomainEffectOutboxConfigurationError("domain_effect_app_context_required")
+    authority_report = background_global_writer_authority_report(
+        "domain_effect_worker",
+        current_app.config,
+    )
+    if authority_report is not None:
+        return {
+            **authority_report,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "unknown": 0,
+            "retry_wait": 0,
+            "dead": 0,
+            "recovered_unknown": 0,
+            "recovered_retry_wait": 0,
+            "recovered_dead": 0,
+            "tenants": [],
+        }
     canaries = resolve_domain_effect_outbox_canaries(current_app.config)
     if not canaries:
         if tenant_id is not None:
@@ -137,6 +183,8 @@ def dispatch_domain_effect_batch(
     for tenant_index, current_tenant_id in enumerate(tenant_ids):
         if remaining <= 0:
             break
+        if deadline_monotonic is not None and clock() >= deadline_monotonic:
+            break
         tenants_remaining = len(tenant_ids) - tenant_index
         # Reserve a deterministic fair share for every remaining canary.  A
         # tenant with a permanently full backlog must not consume the complete
@@ -150,19 +198,32 @@ def dispatch_domain_effect_batch(
             raise DomainEffectOutboxConfigurationError(
                 "domain_effect_worker_policy_mismatch"
             )
+        dispatch_kwargs: dict[str, Any] = {}
+        if deadline_monotonic is not None:
+            dispatch_kwargs["should_continue"] = (
+                lambda: clock() < deadline_monotonic
+            )
         summary = dispatch_domain_effects(
             registry=DOMAIN_EFFECT_WORKER_REGISTRY,
             intent_secret=policy.secret,
             tenant_id=current_tenant_id,
             limit=tenant_limit,
             lease_seconds=_configured_lease_seconds(),
+            **dispatch_kwargs,
         )
         report = summary.to_dict()
         report["tenant_id"] = current_tenant_id
         per_tenant.append(report)
         for key in totals:
             totals[key] += int(getattr(summary, key))
-        remaining -= int(summary.processed)
+        remaining -= int(summary.processed) + sum(
+            int(getattr(summary, key))
+            for key in (
+                "recovered_unknown",
+                "recovered_retry_wait",
+                "recovered_dead",
+            )
+        )
 
     return {
         "contract_version": "domain.effect_worker_batch.v1",
@@ -176,6 +237,7 @@ def enqueue_domain_effect_dispatch(*, tenant_id: int) -> bool:
 
     if (
         not has_app_context()
+        or cutover_writer_fence_enabled(current_app.config)
         or current_app.testing
         or not bool(
             current_app.config.get(
@@ -206,12 +268,42 @@ def run_domain_effect_worker(
     *,
     once: bool = False,
     stop_event: Optional[threading.Event] = None,
+    batch_limit: Optional[int] = None,
+    deadline_monotonic: Optional[float] = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Run the database poller used by a dedicated background process."""
 
     shutdown = stop_event or threading.Event()
-    totals = {"cycles": 0, "processed": 0, "unknown": 0, "dead": 0}
+    totals = {
+        "cycles": 0,
+        "processed": 0,
+        "succeeded": 0,
+        "skipped": 0,
+        "retry_wait": 0,
+        "unknown": 0,
+        "dead": 0,
+        "recovered_unknown": 0,
+        "recovered_retry_wait": 0,
+        "recovered_dead": 0,
+        "cycle_failures": 0,
+    }
+    if cutover_writer_fence_enabled(app.config):
+        report = {
+            **background_writer_fence_report("domain_effect_worker"),
+            **totals,
+        }
+        log_background_writer_fence(logger, report)
+        if not once and not shutdown.is_set():
+            shutdown.wait()
+        return report
     with app.app_context():
+        authority_report = background_global_writer_authority_report(
+            "domain_effect_worker",
+            current_app.config,
+        )
+        if authority_report is not None:
+            return {**authority_report, **totals}
         resolve_domain_effect_outbox_canaries(current_app.config)
         _configured_batch_size()
         _configured_lease_seconds()
@@ -227,17 +319,46 @@ def run_domain_effect_worker(
             raise DomainEffectOutboxConfigurationError("domain_effect_worker_poll_invalid")
 
         while not shutdown.is_set():
+            authority_report = background_global_writer_authority_report(
+                "domain_effect_worker",
+                current_app.config,
+            )
+            if authority_report is not None:
+                return {**authority_report, **totals}
             totals["cycles"] += 1
             try:
-                report = dispatch_domain_effect_batch()
-                totals["processed"] += int(report["processed"])
-                totals["unknown"] += int(report["unknown"])
-                totals["dead"] += int(report["dead"])
-                did_work = bool(report["processed"])
+                dispatch_kwargs: dict[str, Any] = {}
+                if batch_limit is not None:
+                    dispatch_kwargs["limit"] = batch_limit
+                if deadline_monotonic is not None:
+                    dispatch_kwargs.update(
+                        deadline_monotonic=deadline_monotonic,
+                        clock=clock,
+                    )
+                report = dispatch_domain_effect_batch(**dispatch_kwargs)
+                for key in (
+                    "processed",
+                    "succeeded",
+                    "skipped",
+                    "retry_wait",
+                    "unknown",
+                    "dead",
+                    "recovered_unknown",
+                    "recovered_retry_wait",
+                    "recovered_dead",
+                ):
+                    totals[key] += int(report.get(key) or 0)
+                did_work = bool(
+                    int(report["processed"])
+                    + int(report.get("recovered_unknown") or 0)
+                    + int(report.get("recovered_retry_wait") or 0)
+                    + int(report.get("recovered_dead") or 0)
+                )
                 db.session.remove()
             except Exception:
                 db.session.rollback()
                 db.session.remove()
+                totals["cycle_failures"] += 1
                 logger.exception("[DOMAIN_EFFECT_WORKER] poll_cycle_failed")
                 did_work = False
             if once:
@@ -256,16 +377,6 @@ def main() -> int:
 
     os.environ.setdefault("CHATBOC_PROCESS_ROLE", "domain-effect-worker")
     os.environ.setdefault("FLASK_SKIP_GLOBAL_APP", "1")
-    from app import create_app
-    from config import Config
-
-    app = create_app(Config)
-    if args.health:
-        with app.app_context():
-            report = summarize_domain_effect_outbox(tenant_id=args.tenant_id)
-            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
-        return 0
-
     shutdown = threading.Event()
 
     def _stop(*_args: Any) -> None:
@@ -276,6 +387,37 @@ def main() -> int:
             signal.signal(signal_name, _stop)
         except (AttributeError, ValueError):
             pass
+    if cutover_writer_fence_enabled():
+        report = {
+            **background_writer_fence_report("domain_effect_worker"),
+            "cycles": 0,
+            "processed": 0,
+            "succeeded": 0,
+            "skipped": 0,
+            "retry_wait": 0,
+            "unknown": 0,
+            "dead": 0,
+            "recovered_unknown": 0,
+            "recovered_retry_wait": 0,
+            "recovered_dead": 0,
+            "cycle_failures": 0,
+        }
+        log_background_writer_fence(logger, report)
+        if args.once or args.health or args.tenant_id is not None:
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        elif not shutdown.is_set():
+            shutdown.wait()
+        return 0
+
+    from app import create_app
+    from config import Config
+
+    app = create_app(Config)
+    if args.health:
+        with app.app_context():
+            report = summarize_domain_effect_outbox(tenant_id=args.tenant_id)
+            print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+        return 0
     if args.tenant_id is not None:
         with app.app_context():
             dispatch_domain_effect_batch(tenant_id=args.tenant_id)

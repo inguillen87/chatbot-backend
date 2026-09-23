@@ -15,6 +15,7 @@ from twilio.rest import Client
 from services.config_loader import cargar_configuracion_municipio
 from services.llm_provider_network_policy import require_provider_network
 from services.map_preview import generate_static_map
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from services.ticket_utils import build_claim_tracking_url
 
 from models import ArchivoAdjunto, TicketComentario, User
@@ -542,7 +543,20 @@ def _connect_smtp_server(
             + ", ".join(missing_parts)
         )
 
-    server = smtplib.SMTP_SSL(host, port) if use_ssl else smtplib.SMTP(host, port)
+    # SMTP delivery performs several commands (EHLO/TLS/login/send/QUIT) on
+    # the same socket, so give each command a smaller slice than a one-shot
+    # HTTP provider call.
+    outbox_timeout = outbox_io_timeout_seconds(2)
+    timeout_kwargs = (
+        {"timeout": outbox_timeout}
+        if outbox_timeout is not None
+        else {}
+    )
+    server = (
+        smtplib.SMTP_SSL(host, port, **timeout_kwargs)
+        if use_ssl
+        else smtplib.SMTP(host, port, **timeout_kwargs)
+    )
     try:
         server.ehlo()
         if use_tls and not use_ssl:

@@ -56,7 +56,6 @@ _suppress_sensitive_third_party_info_logs()
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from flask_cors import CORS
-from flask_session import Session
 from sqlalchemy import event as sa_event
 
 from config import (
@@ -68,7 +67,7 @@ from config import (
 )
 from config.feature_flags import FEATURE_ENCUESTAS
 from extensions import db, migrate, login_manager, sock, limiter  # livianos + limiter
-from middleware import tenant_middleware
+from middleware import register_cutover_writer_fence, tenant_middleware
 from utils.errors import ApiError
 from utils.contact_identity import (
     request_path_allows_contact_identity_body,
@@ -76,6 +75,7 @@ from utils.contact_identity import (
 )
 from utils.safe_logging import describe_database_uri
 from utils.runtime_environment import is_production_runtime, is_render_runtime
+from utils.migration_managed_session import init_migration_managed_session
 
 
 def _truthy_env(name: str) -> bool:
@@ -216,6 +216,10 @@ def create_app(config_class=Config):
     def health():
         return jsonify({"status": "ok"})
 
+    # Opt-in cutover control. Register it before auth, tenant resolution and
+    # route handlers so no HTTP mutation reaches application or provider code.
+    register_cutover_writer_fence(app)
+
     # Error handling unificado JSON
     def _request_id() -> str:
         incoming = (
@@ -315,7 +319,6 @@ def create_app(config_class=Config):
 
     # --- Diagnóstico de sesión (solo en runtime normal) ---
     if not MIGRATIONS_ONLY:
-        session_ext = Session()
         secret_key = app.config.get("SECRET_KEY")
         app.logger.info(
             "Session config: secret_key=%s secure=%s samesite=%s type=%s domain=%s",
@@ -465,13 +468,12 @@ def create_app(config_class=Config):
     # Sesiones en servidor (solo runtime normal)
     if not MIGRATIONS_ONLY:
         app.config['SESSION_SQLALCHEMY'] = db
-        session_ext = Session()
         if app.config.get("TESTING"):
             from cachelib.simple import SimpleCache
 
             app.config['SESSION_TYPE'] = 'cachelib'
             app.config['SESSION_CACHELIB'] = SimpleCache(default_timeout=300)
-        session_ext.init_app(app)
+        init_migration_managed_session(app, db)
 
     # Logging de app
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
@@ -639,7 +641,9 @@ def create_app(config_class=Config):
             "Content-Type, Authorization, X-Request-Id, X-Correlation-Id, "
             "X-Anon-Id, Anon-Id, X-Contact-Key, X-Conversation-Id, "
             "X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Window, "
-            "X-RateLimit-Reset-After, Retry-After"
+            "X-RateLimit-Reset-After, Retry-After, "
+            "X-Chat-Idempotency-Contract, X-Idempotency-Status, "
+            "Idempotency-Replayed"
         )
 
         @app.after_request
@@ -698,6 +702,9 @@ def create_app(config_class=Config):
                 "X-RateLimit-Window",
                 "X-RateLimit-Reset-After",
                 "Retry-After",
+                "X-Chat-Idempotency-Contract",
+                "X-Idempotency-Status",
+                "Idempotency-Replayed",
             ],
         )
 
@@ -777,6 +784,8 @@ def create_app(config_class=Config):
     from routes.pyme_catalog_fixes import pyme_catalog_fix_bp
     from routes.pyme_api import pyme_api_bp
     from routes.health import health_bp, runtime_readiness_bp
+    from routes.internal_cron import internal_cron_bp
+    from routes.internal_cutover import internal_cutover_bp
     from routes.voice_routes import voice_bp
     from routes.catalog_routes import catalog_bp as catalog_v2_bp
     from routes.orders import orders_bp
@@ -958,6 +967,8 @@ def create_app(config_class=Config):
     app.register_blueprint(pyme_api_bp)
     app.register_blueprint(health_bp)
     app.register_blueprint(runtime_readiness_bp)
+    app.register_blueprint(internal_cron_bp)
+    app.register_blueprint(internal_cutover_bp)
     app.register_blueprint(voice_bp)
     app.register_blueprint(catalog_v2_bp)
     app.register_blueprint(orders_bp)

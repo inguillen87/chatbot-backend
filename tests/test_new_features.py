@@ -24,7 +24,7 @@ from services.common_utils import parse_cantidad_flexible
 from services.constants import CONTEXTO_MUNICIPIO, ConversationState
 from config import TestConfig
 from app import create_app
-from models import db, User, ArchivoAdjunto, PymePedido, PedidoConversacional, TenantProfile
+from models import CatalogoItem, db, User, ArchivoAdjunto, PymePedido, PedidoConversacional, TenantProfile
 
 
 def _unexpected_deterministic_provider_call(*_args, **_kwargs):
@@ -385,14 +385,42 @@ class TestNewFeatures(unittest.TestCase):
             def __init__(self, payload):
                 self.payload = payload
 
+        owner = User(
+            email="catalog-disambiguation@test.com",
+            name="Catalog disambiguation",
+            rol="admin",
+            tipo_chat="pyme",
+        )
+        owner.set_password("test")
+        db.session.add(owner)
+        db.session.flush()
+        reserva = CatalogoItem(
+            user_id=owner.id,
+            nombre="Malbec Reserva 2022",
+            precio="$ 43.200",
+            sku="MALB-RES-22",
+            modalidad="venta",
+            disponible=True,
+        )
+        clasico = CatalogoItem(
+            user_id=owner.id,
+            nombre="Malbec Clásico",
+            precio="$ 21.000",
+            sku="MALB-CLA",
+            modalidad="venta",
+            disponible=True,
+        )
+        db.session.add_all([reserva, clasico])
+        db.session.commit()
+
         mock_qdrant.return_value = [
-            _Hit({"nombre": "Malbec Reserva 2022", "precio_str": "43200", "sku": "MALB-RES-22"}),
-            _Hit({"nombre": "Malbec Clásico", "precio_str": "21000", "sku": "MALB-CLA"}),
+            _Hit({"db_id": reserva.id, "nombre": "Dato vectorial obsoleto", "precio_str": "1", "sku": reserva.sku}),
+            _Hit({"db_id": clasico.id, "nombre": "Dato vectorial obsoleto", "precio_str": "1", "sku": clasico.sku}),
         ]
 
         handler = AgregarItemCarritoAction(
             {
-                "user_id": 99,
+                "user_id": owner.id,
                 "pregunta_actual_usuario": "quiero comprar malbec que tenes?",
                 "chat_db_context_data": {},
             }

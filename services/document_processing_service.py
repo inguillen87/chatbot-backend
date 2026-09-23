@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import io
 import json
 import logging
@@ -5,13 +7,15 @@ import os
 import re
 from typing import Any, Dict, List, Tuple
 
-import pandas as pd
 import pdfplumber
 import requests
 from docx import Document
 
 from models import ArchivoAdjunto, db
 from services.llm_utils import llamar_llm_para_json_estructurado
+from utils.lazy_module import LazyModule
+
+pd = LazyModule("pandas")
 
 logger = logging.getLogger(__name__)
 

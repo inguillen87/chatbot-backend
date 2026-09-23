@@ -41,6 +41,7 @@ from socket_service import (
     on_location,
     on_new_chat,
     on_subscribe_ticket_updates,
+    send_welcome_message,
     socketio,
 )
 from utils.auth_helpers import bump_auth_session_version
@@ -120,6 +121,41 @@ class LiveChatRoomAccessTest(unittest.TestCase):
 
         self.assertFalse(result)
         join_room.assert_not_called()
+
+    def test_anonymous_web_connect_passes_concrete_app_to_background_task(self):
+        with patch(
+            "socket_service.request", SimpleNamespace(sid="anonymous-web-connect")
+        ), patch("socket_service.socketio.start_background_task") as start_task:
+            result = on_connect({"channel": "web"})
+
+        self.assertIsNone(result)
+        start_task.assert_called_once_with(
+            send_welcome_message,
+            self.app,
+            "anonymous-web-connect",
+            {"channel": "web"},
+        )
+
+    def test_background_welcome_uses_app_context_and_server_emitter(self):
+        rubro = Rubro(clave="socket-welcome", nombre="Socket welcome", es_publico=True)
+        db.session.add(rubro)
+        db.session.flush()
+        self.admin.rubro_id = rubro.id
+        db.session.commit()
+
+        self.app_context.pop()
+        try:
+            with patch(
+                "services.municipio_responder.responder_municipio",
+                return_value={"message_body": "Bienvenido", "options_list": []},
+            ), patch("socket_service.socketio.emit") as socket_emit:
+                send_welcome_message(self.app, "anonymous-background", {"channel": "web"})
+        finally:
+            self.app_context.push()
+
+        socket_emit.assert_called_once()
+        self.assertEqual(socket_emit.call_args.args[0], "message")
+        self.assertEqual(socket_emit.call_args.kwargs["room"], "anonymous-background")
 
     def test_revoked_clerk_session_cannot_subscribe_socket(self):
         token = self._revoked_clerk_token()
@@ -521,7 +557,72 @@ class LiveChatRoomAccessTest(unittest.TestCase):
             on_join({"room": "encuesta:junin:consulta-barrial"})
 
         join_room.assert_called_once_with("encuesta:junin:consulta-barrial")
-        emit.assert_not_called()
+        emit.assert_called_once_with(
+            "join_ack",
+            {
+                "room": "encuesta:junin:consulta-barrial",
+                "access_mode": "public_survey_room",
+            },
+        )
+
+    def test_enabled_durable_demo_room_joins_only_registry_derived_tenant_and_acks(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        room = f"encuesta:junin:{slug}"
+
+        with patch(
+            "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+            return_value=True,
+        ), patch("socket_service.join_room") as join_room, patch(
+            "socket_service.emit"
+        ) as emit:
+            on_join({"room": room, "tenant_slug": "ushuaia"})
+
+        join_room.assert_called_once_with(room)
+        emit.assert_called_once_with(
+            "join_ack",
+            {"room": room, "access_mode": "public_survey_room"},
+        )
+
+    def test_durable_demo_room_rejects_cross_tenant_and_legacy_alias(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        rejected_rooms = [
+            f"encuesta:ushuaia:{slug}",
+            f"encuesta_{slug}",
+            "encuesta:ju/nin:demo-gobierno-ju/nin-prioridades-barriales",
+        ]
+
+        for room in rejected_rooms:
+            with self.subTest(room=room), patch(
+                "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+                return_value=True,
+            ), patch("socket_service.join_room") as join_room, patch(
+                "socket_service.emit"
+            ) as emit:
+                on_join({"room": room, "tenant_slug": "junin"})
+
+            join_room.assert_not_called()
+            emit.assert_called_once_with(
+                "join_error",
+                {"error": "room_not_joinable", "room": room},
+            )
+
+    def test_default_off_demo_room_remains_polling_only(self):
+        slug = "demo-gobierno-junin-prioridades-barriales"
+        room = f"encuesta:junin:{slug}"
+
+        with patch(
+            "services.demo_survey_participation.durable_demo_survey_participation_enabled",
+            return_value=False,
+        ), patch("socket_service.join_room") as join_room, patch(
+            "socket_service.emit"
+        ) as emit:
+            on_join({"room": room})
+
+        join_room.assert_not_called()
+        emit.assert_called_once_with(
+            "join_error",
+            {"error": "room_not_joinable", "room": room},
+        )
 
     def test_legacy_unscoped_survey_room_is_rejected(self):
         with patch("socket_service.join_room") as join_room, patch("socket_service.emit") as emit:

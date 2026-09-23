@@ -13,6 +13,10 @@ from services.survey_governance import create_release
 from services.survey_response_provenance import (
     SURVEY_DEMO_SEEDING_CONTRACT_VERSION,
 )
+from tests.junin_product_flow_support import (
+    JUNIN_JURISDICTION_EVIDENCE_REF,
+    JUNIN_JURISDICTION_REF,
+)
 from utils.auth_helpers import generar_token
 
 
@@ -37,6 +41,14 @@ def _tenant(slug: str) -> tuple[User, TenantProfile]:
     db.session.add(tenant)
     db.session.flush()
     owner.tenant_id = tenant.id
+    db.session.commit()
+    return owner, tenant
+
+
+def _government_tenant(slug: str) -> tuple[User, TenantProfile]:
+    owner, tenant = _tenant(slug)
+    tenant.tipo = "municipio"
+    owner.tipo_chat = "municipio"
     db.session.commit()
     return owner, tenant
 
@@ -92,6 +104,40 @@ def _survey(
         db.session.add(EncLink(encuesta_id=survey.id, slug_publico=slug, canal="web"))
     db.session.commit()
     return survey
+
+
+def test_government_draft_lifecycle_requires_evidence_gate(client):
+    owner, tenant = _government_tenant("government-evidence-lifecycle")
+    survey = _survey(
+        tenant,
+        slug="government-evidence-lifecycle",
+        state="borrador",
+    )
+
+    response = client.get(
+        "/api/admin/encuestas",
+        headers=_headers(owner, tenant),
+    )
+
+    assert response.status_code == 200, response.get_json()
+    item = next(
+        row for row in response.get_json()["encuestas"] if row["id"] == survey.id
+    )
+    lifecycle = item["admin_lifecycle"]
+    assert lifecycle["capabilities"]["can_publish"] is False
+    assert lifecycle["government_survey_evidence_gate"] == {
+        "contract_version": "surveys.government_evidence_gate.v1",
+        "required": True,
+        "ready": False,
+        "reason_code": "survey_tenant_jurisdiction_unverified",
+        "next_action": "configure_verified_tenant_jurisdiction",
+    }
+    assert lifecycle["actions"]["publish"]["disabled_reason_code"] == (
+        "survey_tenant_jurisdiction_unverified"
+    )
+    assert lifecycle["actions"]["publish"]["next_action"] == (
+        "configure_verified_tenant_jurisdiction"
+    )
 
 
 def _response(survey: EncEncuesta, key: str) -> None:
@@ -200,6 +246,141 @@ def test_admin_list_v2_reconciles_only_explicit_tenant_metrics(client, monkeypat
     assert payload["data_provenance"]["synthetic_responses_excluded"] == 1
     assert payload["encuestas"][0]["data_provenance"]["mode"] == "real"
     assert payload["encuestas"][0]["geo"]["points"] == []
+    assert payload["executive_summary"]["aggregation_scope"] == {
+        "mode": "returned_page",
+        "returned_items": 1,
+        "query_total_items": 1,
+        "complete_for_query": True,
+    }
+    assert payload["executive_summary"]["instruments"]["votings"] == 1
+    assert payload["executive_summary"]["participation"]["real_responses"] == 1
+    assert payload["executive_summary"]["assurance"] == {
+        "regulated_election_certified": False,
+        "result_certified": False,
+        "external_verification": "not_performed",
+    }
+    assert payload["data_quality"]["geolocation_coverage"] == {
+        "available": True,
+        "numerator": 0,
+        "denominator": 1,
+        "percentage": 0.0,
+        "reason_code": None,
+    }
+
+
+def test_admin_list_separates_persisted_jurisdiction_conflict_from_operational_kpis(
+    client,
+    monkeypatch,
+):
+    import config.feature_flags as feature_flags
+    import routes.encuestas_admin as admin_routes
+
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(admin_routes, "FEATURE_ENCUESTAS", True)
+    owner, tenant = _tenant("survey-jurisdiction-scope")
+    owner_id = owner.id
+    tenant.jurisdiction_ref = JUNIN_JURISDICTION_REF
+    tenant.jurisdiction_evidence_ref = JUNIN_JURISDICTION_EVIDENCE_REF
+    tenant.jurisdiction_verified_by_user_id = owner_id
+    tenant.jurisdiction_verified_at = datetime.now(timezone.utc)
+    tenant.jurisdiction_status = "verified"
+    db.session.add(tenant)
+    db.session.commit()
+
+    compatible = _survey(tenant, slug="generic-instrument-a", state="publicada")
+    conflict = _survey(tenant, slug="generic-instrument-b", state="publicada")
+    compatible.jurisdiction_ref = tenant.jurisdiction_ref
+    conflict.jurisdiction_ref = "ar:tf:ushuaia"
+    db.session.add_all(
+        [
+            EncRespuesta(
+                encuesta_id=compatible.id,
+                tenant_id=tenant.id,
+                huella_unica="compatible-response",
+                canal="web",
+                lat=-34.585,
+                lng=-60.958,
+                submitted_at=datetime.now(timezone.utc),
+            ),
+            EncRespuesta(
+                encuesta_id=conflict.id,
+                tenant_id=tenant.id,
+                huella_unica="conflict-response",
+                canal="web",
+                lat=-54.802,
+                lng=-68.303,
+                submitted_at=datetime.now(timezone.utc),
+            ),
+        ]
+    )
+    db.session.commit()
+
+    response = client.get(
+        "/api/admin/encuestas",
+        headers=_headers(owner, tenant),
+    )
+
+    assert response.status_code == 200, response.get_json()
+    payload = response.get_json()
+    by_id = {item["id"]: item for item in payload["encuestas"]}
+    compatible_item = by_id[compatible.id]
+    conflict_item = by_id[conflict.id]
+
+    assert compatible_item["admin_scope"]["jurisdiction"] == {
+        "contract_version": "surveys.admin_jurisdiction_scope.v1",
+        "status": "compatible",
+        "compatible": True,
+        "reason_code": "survey_jurisdiction_compatible",
+        "action_hint": None,
+        "tenant_verified_ref": JUNIN_JURISDICTION_REF,
+        "survey_ref": JUNIN_JURISDICTION_REF,
+        "authoritative_source": "server_owned_persisted_refs",
+        "content_review_included": False,
+    }
+    assert compatible_item["admin_scope"]["separation"]["required"] is False
+    assert compatible_item["admin_lifecycle"]["accepts_responses"] is True
+    assert compatible_item["admin_lifecycle"]["capabilities"]["can_share"] is True
+
+    assert conflict_item["admin_scope"]["jurisdiction"]["status"] == "conflict"
+    assert conflict_item["admin_scope"]["jurisdiction"]["reason_code"] == (
+        "survey_jurisdiction_binding_conflict"
+    )
+    assert conflict_item["admin_scope"]["separation"] == {
+        "required": True,
+        "reason_code": "survey_jurisdiction_binding_conflict",
+    }
+    assert conflict_item["jurisdiction"]["scope_status"] == "conflict"
+    lifecycle = conflict_item["admin_lifecycle"]
+    assert lifecycle["accepts_responses"] is False
+    assert lifecycle["capabilities"]["can_share"] is False
+    assert lifecycle["capabilities"]["can_close"] is True
+    assert lifecycle["actions"]["publish"]["disabled_reason_code"] == (
+        "survey_jurisdiction_binding_conflict"
+    )
+    assert lifecycle["operational_block"]["reason_code"] == (
+        "survey_jurisdiction_binding_conflict"
+    )
+
+    jurisdiction = payload["executive_summary"]["jurisdiction"]
+    assert jurisdiction["compatible"] == 1
+    assert jurisdiction["conflict"] == 1
+    assert jurisdiction["unverified"] == 0
+    assert jurisdiction["separation_required"] == 1
+    assert jurisdiction["title_inference_used"] is False
+    assert payload["resumen"]["total_respuestas"] == 2
+    assert payload["executive_summary"]["participation"]["real_responses"] == 2
+
+    operational = payload["executive_summary"]["operational_scope"]
+    assert operational["selection"] == {
+        "included_jurisdiction_statuses": ["compatible", "unverified"],
+        "excluded_jurisdiction_statuses": ["conflict"],
+        "unverified_is_compatible": False,
+    }
+    assert operational["instruments"]["included"] == 1
+    assert operational["instruments"]["excluded_conflict"] == 1
+    assert operational["participation"]["real_responses"] == 1
+    assert operational["territorial"]["responses_with_coordinates"] == 1
+    assert operational["territorial"]["geolocation_coverage"]["percentage"] == 100.0
 
 
 def test_recent_geo_points_streams_and_enforces_per_survey_limit(client):
@@ -270,6 +451,50 @@ def test_close_requires_published_state_and_retry_is_idempotent(client, monkeypa
     assert closed["admin_lifecycle"]["accepts_responses"] is False
     assert closed["admin_lifecycle"]["capabilities"]["can_publish"] is False
     assert closed["admin_lifecycle"]["capabilities"]["can_close"] is False
+
+
+def test_employee_requires_explicit_close_capability(client, monkeypatch):
+    import config.feature_flags as feature_flags
+    import routes.encuestas_admin as admin_routes
+
+    monkeypatch.setattr(feature_flags, "FEATURE_ENCUESTAS", True)
+    monkeypatch.setattr(admin_routes, "FEATURE_ENCUESTAS", True)
+    _owner, tenant = _tenant("survey-close-capability")
+    employee = User(
+        name="Operador de encuestas",
+        email="survey-close-employee@example.test",
+        rol="empleado",
+        tipo_chat="pyme",
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        es_empleado=True,
+        accesibilidad={"employee_scope": {"capabilities": []}},
+    )
+    employee.set_password("secret123")
+    db.session.add(employee)
+    db.session.commit()
+    survey = _survey(tenant, slug="published-close-capability", state="publicada")
+
+    denied = client.post(
+        f"/api/v2/surveys/{survey.id}/close",
+        headers=_headers(employee, tenant),
+    )
+    assert denied.status_code == 403, denied.get_json()
+    assert denied.get_json()["reason_code"] == "survey_close_capability_required"
+    assert denied.get_json()["missing_capabilities"] == ["survey.close"]
+    assert db.session.get(EncEncuesta, survey.id).estado == "publicada"
+
+    employee.accesibilidad = {
+        "employee_scope": {"capabilities": ["survey.close"]}
+    }
+    db.session.add(employee)
+    db.session.commit()
+    allowed = client.post(
+        f"/api/v2/surveys/{survey.id}/close",
+        headers=_headers(employee, tenant),
+    )
+    assert allowed.status_code == 200, allowed.get_json()
+    assert allowed.get_json()["estado"] == "cerrada"
 
 
 def test_governed_draft_disables_legacy_publish_and_close_actions(client, monkeypatch):

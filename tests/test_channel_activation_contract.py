@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import jwt
 
 from database import db
-from models import CatalogoItem, MessageTemplateRegistry, TenantProfile, User
+from models import CatalogoItem, CategoriaTicket, MessageTemplateRegistry, TenantProfile, User
 from services.channel_activation import build_channel_activation_payload
 
 
@@ -61,7 +61,11 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert "secret-widget-token" not in str(payload)
     assert payload["integration_access"]["enabled"] is False
     by_id = {item["id"]: item for item in payload["channels"]}
-    assert by_id["crm"]["status"] == "ready"
+    assert by_id["crm"]["status"] == "action_required"
+    assert by_id["crm"]["reason_code"] == "mesa_unica_categories_required"
+    assert by_id["institutional_branding"]["status"] == "action_required"
+    assert by_id["accessibility"]["status"] == "action_required"
+    assert by_id["territorial_intelligence"]["status"] == "action_required"
     assert by_id["whatsapp"]["status"] == "locked"
     assert by_id["widget"]["status"] == "locked"
     assert by_id["templates"]["status"] == "locked"
@@ -70,6 +74,20 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert by_id["team_routing"]["status"] == "action_required"
     assert by_id["team_routing"]["reason_code"] == "team_required"
     assert payload["preferred_channels"] == ["whatsapp", "webchat"]
+    journey = payload["implementation_journey"]
+    assert journey["contract_version"] == "tenant.implementation_journey.v1"
+    assert journey["summary"]["current_stage_id"] == "institutional_identity"
+    assert journey["summary"]["next_action"]["id"] == "open_branding"
+    assert [item["id"] for item in journey["stages"]] == [
+        "institutional_identity",
+        "channels",
+        "knowledge",
+        "team",
+        "validation_release",
+    ]
+    knowledge = next(item for item in payload["channels"] if item["id"] == "knowledge_content")
+    assert knowledge["status"] == "action_required"
+    assert knowledge["reason_code"] == "knowledge_content_required"
 
     response = client.get(
         f"/api/v2/tenants/{tenant.slug}/activation/channels",
@@ -80,6 +98,40 @@ def test_channel_activation_contract_blocks_productive_channels_without_secrets(
     assert route_payload["contract_version"] == "tenant.channel_activation.v1"
     assert route_payload["tenant"]["slug"] == tenant.slug
     assert "secret-widget-token" not in str(route_payload)
+
+
+def test_channel_activation_contract_requires_explicit_government_setup_evidence(client):
+    owner, tenant = _create_owner_and_tenant(
+        slug="government-implementation",
+        plan="full",
+        configuracion={
+            "accessibility": {
+                "enabled": True,
+                "features": ["keyboard_navigation", "plain_language", "screen_reader"],
+                "human_handoff": True,
+            }
+        },
+    )
+    owner_id = owner.id
+    tenant.logo_url = "https://assets.example.test/tenant-logo.svg"
+    tenant.tema = {"primaryColor": "#075985", "secondaryColor": "#e0f2fe"}
+    tenant.dominio = "gobierno.example.test"
+    tenant.jurisdiction_status = "verified"
+    tenant.jurisdiction_ref = "official:government-implementation:v1"
+    tenant.jurisdiction_evidence_ref = "evidence:government-implementation:v1"
+    tenant.jurisdiction_verified_by_user_id = owner_id
+    tenant.jurisdiction_verified_at = datetime.now().astimezone()
+    db.session.commit()
+
+    payload = build_channel_activation_payload(tenant)
+
+    by_id = {item["id"]: item for item in payload["channels"]}
+    assert by_id["institutional_branding"]["status"] == "ready"
+    assert by_id["accessibility"]["status"] == "ready"
+    assert by_id["territorial_intelligence"]["status"] == "ready"
+    assert "tenant-logo.svg" not in str(by_id["institutional_branding"])
+    assert "official:government-implementation:v1" not in str(by_id["territorial_intelligence"])
+    assert "evidence:government-implementation:v1" not in str(by_id["territorial_intelligence"])
 
 
 def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
@@ -110,6 +162,14 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     )
     operator.set_password("secret123")
     db.session.add(operator)
+    category = CategoriaTicket(
+        tenant_id=tenant.id,
+        nombre="Alumbrado publico",
+        tipo="ticket",
+    )
+    db.session.add(category)
+    db.session.flush()
+    operator.categorias_ticket = [category]
     db.session.add(
         CatalogoItem(
             user_id=owner.id,
@@ -140,12 +200,52 @@ def test_channel_activation_contract_marks_ready_full_tenant_channels(client):
     assert by_id["templates"]["status"] == "ready"
     assert by_id["catalog_marketplace"]["status"] == "ready"
     assert by_id["payments_checkout"]["status"] == "ready"
+    assert by_id["crm"]["status"] == "ready"
     assert by_id["team_routing"]["status"] == "ready"
     assert by_id["live_chat"]["status"] == "ready"
     assert payload["counts"]["approved_templates"] == 1
     assert payload["counts"]["catalog_items"] == 1
     assert payload["counts"]["team_members"] == 1
+    assert payload["counts"]["ticket_categories"] == 1
+    assert payload["counts"]["routed_team_members"] == 1
     assert "APP_USR-secret-token" not in str(payload)
+
+
+def test_channel_activation_marks_mesa_unica_prepared_but_not_ready_without_routing(client):
+    _, tenant = _create_owner_and_tenant(
+        slug="prepared-service-desk",
+        plan="full",
+    )
+    operator = User(
+        name="Operador sin ruta",
+        email="operador-sin-ruta@chatboc.test",
+        rol="empleado",
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+        es_empleado=True,
+    )
+    operator.set_password("secret123")
+    db.session.add_all(
+        [
+            operator,
+            CategoriaTicket(
+                tenant_id=tenant.id,
+                nombre="Baches y calzada",
+                tipo="ticket",
+            ),
+        ]
+    )
+    db.session.commit()
+
+    payload = build_channel_activation_payload(tenant)
+    by_id = {item["id"]: item for item in payload["channels"]}
+
+    assert by_id["crm"]["status"] == "pending"
+    assert by_id["crm"]["reason_code"] == "mesa_unica_routing_required"
+    assert by_id["team_routing"]["status"] == "pending"
+    assert by_id["team_routing"]["reason_code"] == "team_category_routing_required"
+    assert payload["counts"]["ticket_categories"] == 1
+    assert payload["counts"]["routed_team_members"] == 0
 
 
 def test_channel_activation_contract_keeps_registered_sender_pending_until_twilio_approves(client):

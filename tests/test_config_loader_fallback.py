@@ -24,5 +24,13 @@ class ConfigLoaderFallbackTest(unittest.TestCase):
         data = config_loader.cargar_configuracion_municipio('999', 'config.json')
         self.assertTrue(data.get('fallback'))
 
+    def test_can_fail_closed_without_shared_default(self):
+        data = config_loader.cargar_configuracion_municipio(
+            '999',
+            'config.json',
+            fallback_to_default=False,
+        )
+        self.assertEqual(data, {})
+
 if __name__ == '__main__':
     unittest.main()

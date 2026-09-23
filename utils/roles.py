@@ -7,6 +7,8 @@ import unicodedata
 ROLE_SUPERADMIN = "super_admin"
 ROLE_TENANT_ADMIN = "admin"  # Maps to legacy 'admin' which is per-tenant
 ROLE_EMPLEADO = "empleado"
+ROLE_CATALOG_MANAGER = "catalog_manager"
+ROLE_ANALYTICS_VIEWER = "analytics_viewer"
 ROLE_CLIENTE = "usuario"     # Maps to legacy 'usuario' (end user)
 ROLE_LEAD = "lead"
 
@@ -29,6 +31,8 @@ ROLE_ALIASES = {
     "empleado_pyme": ROLE_EMPLEADO,
     "empleado_municipio": ROLE_EMPLEADO,
     "empleado_colegio": ROLE_EMPLEADO,
+    "catalog_manager": ROLE_CATALOG_MANAGER,
+    "analytics_viewer": ROLE_ANALYTICS_VIEWER,
     "usuario": ROLE_CLIENTE,
     "cliente": ROLE_CLIENTE,
     "lead": ROLE_LEAD,
@@ -92,6 +96,12 @@ ROLE_PERMISSIONS = {
     ROLE_EMPLEADO: {
         PERM_HANDLE_TICKETS,
         PERM_VIEW_STATS, # Limited view usually
+    },
+    ROLE_CATALOG_MANAGER: {
+        PERM_MANAGE_CATALOG,
+    },
+    ROLE_ANALYTICS_VIEWER: {
+        PERM_VIEW_STATS,
     },
     ROLE_CLIENTE: {
         PERM_CREATE_TICKET,

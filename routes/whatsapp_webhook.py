@@ -46,7 +46,6 @@ from services.attachment_service import create_attachment_with_thumbnail
 from services.llm_utils import extract_multiple_contact_details_llm
 from services.contact_intake import missing_contact_fields, resolve_contact_snapshot
 from services.categorias_municipio import normalizar_texto
-from services.logic import responder_chatboc
 from services.user_service import update_user_profile
 from services.media_classifier import clasificar_adjunto_whatsapp
 from services.whatsapp_assisted_intake import (
@@ -65,7 +64,7 @@ from services.whatsapp_inbound_durability import (
 )
 from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
-from services.municipio_responder import CONTEXTO_MUNICIPIO
+from services.constants import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
 from services.response_formatter import repair_common_mojibake, render_audio_text
 from services.tts_orchestrator import generar_audio
@@ -86,7 +85,10 @@ from services.reclamo_turn_semantics import (
 )
 from services.whatsapp_receipts import CLAIM_FOLLOWUP_WINDOW_SECONDS
 from services.crm_intelligence import record_contact_interaction, resolve_or_create_contact
-from services.demo_surveys import build_demo_survey_chat_menu
+from services.demo_surveys import (
+    build_demo_survey_chat_menu,
+    resolve_demo_public_frontend_base_url,
+)
 from services.whatsapp_enterprise_rules import WhatsAppEnterpriseRulesService
 from services.whatsapp_flow_submissions import (
     FlowSubmissionValidationError,
@@ -122,6 +124,7 @@ from services.llm_provider_network_policy import (
     provider_network_allowed,
     require_provider_network,
 )
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from services.education_contracts import (
     build_education_case_ack_payload,
     build_education_pending_case,
@@ -141,6 +144,14 @@ from services.education_case_service import (
 # Define the blueprint for WhatsApp webhooks
 webhook_bp = Blueprint('whatsapp_webhook', __name__)
 logger = logging.getLogger(__name__)
+
+
+def responder_chatboc(*args, **kwargs):
+    """Load the conversational stack only when an inbound turn needs it."""
+
+    from services.logic import responder_chatboc as _responder_chatboc
+
+    return _responder_chatboc(*args, **kwargs)
 
 # Twilio accepts at most 1,600 GSM characters per API request, while WhatsApp
 # applies the stricter 1,024-character limit to non-template messages.  We use
@@ -1232,9 +1243,10 @@ def _remember_chatboc_demo_sector(session_context: ChatSessionContext, sector: s
 
 def _chatboc_demo_survey_url(slug: str, *, source: str = "whatsapp_demo") -> str:
     clean_slug = str(slug or "").strip().strip("/")
+    public_base = resolve_demo_public_frontend_base_url(current_app.config)
     if not clean_slug:
-        return "https://www.chatboc.ar/encuestas"
-    return f"https://www.chatboc.ar/e/{clean_slug}?source={source}&demo_participation=1"
+        return f"{public_base}/encuestas"
+    return f"{public_base}/e/{clean_slug}?source={source}&demo_participation=1"
 
 
 def _chatboc_demo_survey_share_url(slug: str) -> str:
@@ -1455,6 +1467,7 @@ def _build_chatboc_surveys_payload(action_id: str, session_context: ChatSessionC
         tenant_slug=CHATBOC_DEMO_TENANT_SLUG,
         rubro=sector,
         channel="whatsapp",
+        public_base_url=resolve_demo_public_frontend_base_url(current_app.config),
         page=page,
         page_size=3,
     )
@@ -2053,11 +2066,15 @@ def _download_twilio_media(
     """Download bounded provider media after the shared test-network gate."""
 
     require_provider_network("twilio")
+    bounded_timeout = outbox_io_timeout_seconds(timeout)
+    effective_timeout = (
+        bounded_timeout if bounded_timeout is not None else timeout
+    )
     response = requests.get(
         media_url,
         auth=auth,
         stream=True,
-        timeout=timeout,
+        timeout=effective_timeout,
     )
     try:
         response.raise_for_status()
@@ -4972,12 +4989,18 @@ def _allowed_native_flow_ids_for_tenant(tenant: Optional[TenantProfile]) -> set[
     return allowed
 
 
-def _register_whatsapp_inbound_activity(tenant_id: Optional[int], from_number: Optional[str]) -> None:
-    if not tenant_id or not from_number:
+def _register_whatsapp_inbound_activity(
+    tenant_id: Optional[int],
+    from_number: Optional[str],
+    *,
+    provider_sender_id: Optional[int],
+) -> None:
+    if not tenant_id or not from_number or not provider_sender_id:
         return
     try:
         WhatsAppEnterpriseRulesService(int(tenant_id)).register_inbound_activity(
             recipient=from_number,
+            provider_sender_id=int(provider_sender_id),
         )
     except Exception as exc:
         _log(
@@ -6793,7 +6816,11 @@ def whatsapp_webhook():
         session_context_db_entry.context_data["last_whatsapp_flow_submission"] = deepcopy(
             safe_flow_submission
         )
-    _register_whatsapp_inbound_activity(tenant_id, from_number_cleaned)
+    _register_whatsapp_inbound_activity(
+        tenant_id,
+        from_number_cleaned,
+        provider_sender_id=getattr(provider_sender, "id", None),
+    )
     safe_flag_modified(session_context_db_entry, "context_data")
     db.session.add(session_context_db_entry)
     db.session.commit()
@@ -9383,5 +9410,155 @@ def twilio_whatsapp_status():
             # retries using Twilio connection overrides. Returning 200 here
             # would permanently discard the only automatic reconciliation of
             # a send whose API outcome may be unknown.
+            return "RETRY", 503
+
+    tenant_ticket_reply_event_id = str(
+        request.args.get("tenant_ticket_reply_event_id") or ""
+    ).strip()
+    municipio_ticket_reply_event_id = str(
+        request.args.get("municipio_ticket_reply_event_id") or ""
+    ).strip()
+    if tenant_ticket_reply_event_id and municipio_ticket_reply_event_id:
+        current_app.logger.warning(
+            "[TWILIO_WHATSAPP_STATUS] Reply callback has conflicting aggregate scopes"
+        )
+        return "Forbidden", 403
+    if tenant_ticket_reply_event_id:
+        if (
+            not tenant
+            or not getattr(tenant, "id", None)
+            or not provider_sender
+            or not getattr(provider_sender, "id", None)
+            or not persisted_status_event
+            or not getattr(persisted_status_event, "id", None)
+        ):
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply callback lacks signed scope"
+            )
+            return "Forbidden", 403
+        try:
+            from services.tenant_ticket_reply_delivery import (
+                TenantTicketReplyProviderMessageCollision,
+                emit_delivery_invalidation,
+                reconcile_provider_callback,
+            )
+
+            reconciled_reply = reconcile_provider_callback(
+                tenant_id=int(tenant.id),
+                reply_event_record_id=tenant_ticket_reply_event_id,
+                provider_message_id=message_sid,
+                provider_status=message_status,
+                provider_sender_id=int(provider_sender.id),
+                delivery_event_id=int(persisted_status_event.id),
+                error_code=error_code,
+            )
+            if reconciled_reply is None:
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] TenantTicket reply callback scope mismatch "
+                    "tenant_id=%s sender_id=%s",
+                    tenant.id,
+                    provider_sender.id,
+                )
+                return "Forbidden", 403
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception as exc:  # HTTP polling remains authoritative.
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] TenantTicket reply realtime invalidation failed "
+                    "tenant_id=%s error_type=%s",
+                    tenant.id,
+                    type(exc).__name__,
+                )
+        except TenantTicketReplyProviderMessageCollision:
+            current_app.logger.error(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply provider message "
+                "collision quarantined tenant_id=%s sender_id=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+            )
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception:  # HTTP polling remains authoritative.
+                pass
+            # The callback is valid and has been quarantined durably.  A 5xx
+            # would make Twilio retry the same collision without adding truth.
+            return "OK", 200
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] TenantTicket reply reconciliation failed "
+                "tenant_id=%s sender_id=%s error_type=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+                type(exc).__name__,
+            )
+            return "RETRY", 503
+    if municipio_ticket_reply_event_id:
+        if (
+            not tenant
+            or not getattr(tenant, "id", None)
+            or not provider_sender
+            or not getattr(provider_sender, "id", None)
+            or not persisted_status_event
+            or not getattr(persisted_status_event, "id", None)
+        ):
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply callback lacks signed scope"
+            )
+            return "Forbidden", 403
+        try:
+            from services.municipio_ticket_reply_delivery import (
+                MunicipioTicketReplyProviderMessageCollision,
+                emit_delivery_invalidation,
+                reconcile_provider_callback,
+            )
+
+            reconciled_reply = reconcile_provider_callback(
+                tenant_id=int(tenant.id),
+                reply_event_record_id=municipio_ticket_reply_event_id,
+                provider_message_id=message_sid,
+                provider_status=message_status,
+                provider_sender_id=int(provider_sender.id),
+                delivery_event_id=int(persisted_status_event.id),
+                error_code=error_code,
+            )
+            if reconciled_reply is None:
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply callback scope mismatch "
+                    "tenant_id=%s sender_id=%s",
+                    tenant.id,
+                    provider_sender.id,
+                )
+                return "Forbidden", 403
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception as exc:  # HTTP polling remains authoritative.
+                current_app.logger.warning(
+                    "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply realtime invalidation failed "
+                    "tenant_id=%s error_type=%s",
+                    tenant.id,
+                    type(exc).__name__,
+                )
+        except MunicipioTicketReplyProviderMessageCollision:
+            current_app.logger.error(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply provider message "
+                "collision quarantined tenant_id=%s sender_id=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+            )
+            try:
+                emit_delivery_invalidation(tenant_id=int(tenant.id))
+            except Exception:  # HTTP polling remains authoritative.
+                pass
+            return "OK", 200
+        except Exception as exc:
+            db.session.rollback()
+            current_app.logger.warning(
+                "[TWILIO_WHATSAPP_STATUS] MunicipioTicket reply reconciliation failed "
+                "tenant_id=%s sender_id=%s error_type=%s",
+                getattr(tenant, "id", None),
+                getattr(provider_sender, "id", None),
+                type(exc).__name__,
+            )
             return "RETRY", 503
     return "OK", 200

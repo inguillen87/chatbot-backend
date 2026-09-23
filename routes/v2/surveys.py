@@ -10,6 +10,7 @@ from urllib.parse import quote_plus, urlencode
 import uuid
 
 from flask import Blueprint, current_app, g, jsonify, request
+from cutover_writer_fence import cutover_writer_view
 from sqlalchemy.exc import IntegrityError
 
 from extensions import db, limiter
@@ -47,6 +48,16 @@ from services.demo_surveys import (
     build_demo_survey_response_ack,
     is_demo_survey_slug,
 )
+from services.demo_survey_participation import (
+    build_demo_survey_participation_ack,
+    build_durable_demo_live_results_payload,
+    build_durable_demo_public_survey_payload,
+    durable_demo_survey_participation_enabled,
+    find_demo_survey_participation_replay,
+    get_demo_survey_participation_aggregate,
+    persist_demo_survey_participation,
+    publish_durable_demo_survey_participation_update,
+)
 from services.plan_access import (
     integration_access_payload,
     integration_plan_required_payload,
@@ -75,6 +86,7 @@ from services.survey_tenant_scope import (
     resolve_survey_storage_tenant_profile,
 )
 from services.survey_access_policy import (
+    SURVEY_CLOSE_CAPABILITY,
     SURVEY_CONTENT_REVIEW_CAPABILITY,
     SURVEY_ELIGIBILITY_MANAGE_CAPABILITY,
     SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
@@ -1447,7 +1459,10 @@ def _attach_demo_response_contract(
     security: dict[str, Any],
 ) -> dict[str, Any]:
     links = _build_survey_links(token)
-    payload["legacy_contract_version"] = payload.get("contract_version")
+    payload["legacy_contract_version"] = (
+        payload.get("participation_contract_version")
+        or payload.get("contract_version")
+    )
     payload["contract_version"] = "surveys.public_response.v2"
     payload["demo_mode"] = True
     payload["links"] = {**(payload.get("links") or {}), **links}
@@ -1469,6 +1484,7 @@ def _attach_demo_response_contract(
         can_retry=False,
         reset_turnstile=False,
     )
+    payload["frontend_contract"]["persistence"] = payload.get("persistence")
     return payload
 
 
@@ -1914,6 +1930,13 @@ def list_surveys_v2(current_user):
     return jsonify(
         {
             "contract_version": "surveys.list.v2",
+            "tenant": admin_payload["tenant"],
+            "freshness": admin_payload["freshness"],
+            "data_provenance": admin_payload["data_provenance"],
+            "data_quality": admin_payload["data_quality"],
+            "executive_summary": admin_payload["executive_summary"],
+            "summary": admin_payload["resumen"],
+            "resumen": admin_payload["resumen"],
             "items": admin_payload["encuestas"],
             "total": pagination["total_items"],
             "limit": pagination["limit"],
@@ -2619,10 +2642,20 @@ def close_survey_governance_release_v2(
     if not allowed:
         return denied
     missing = missing_survey_capabilities(
-        current_user, SURVEY_GOVERNANCE_MANAGE_CAPABILITY
+        current_user,
+        SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+        SURVEY_CLOSE_CAPABILITY,
     )
     if missing:
-        return _survey_governance_capability_error(missing)
+        return _survey_mutation_capability_error(
+            required=[
+                SURVEY_GOVERNANCE_MANAGE_CAPABILITY,
+                SURVEY_CLOSE_CAPABILITY,
+            ],
+            missing=missing,
+            reason_code="survey_close_capability_required",
+            message="No tenes permisos para cerrar releases de gobernanza.",
+        )
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict) or set(payload) - {"human_review_reference"}:
         return _error_response(
@@ -2943,6 +2976,14 @@ def close_survey_v2(current_user, survey_id: int):
         return denied
     if not _survey_writes_allowed(tenant):
         return _survey_plan_required_response(tenant)
+    missing = missing_survey_capabilities(current_user, SURVEY_CLOSE_CAPABILITY)
+    if missing:
+        return _survey_mutation_capability_error(
+            required=[SURVEY_CLOSE_CAPABILITY],
+            missing=missing,
+            reason_code="survey_close_capability_required",
+            message="No tenes permisos para cerrar encuestas.",
+        )
 
     g.tenant_profile = tenant
     try:
@@ -2955,6 +2996,7 @@ def close_survey_v2(current_user, survey_id: int):
 
 
 @v2_surveys_bp.route("/surveys/<int:survey_id>/analytics", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def survey_analytics_v2(current_user, survey_id: int):
@@ -2983,10 +3025,21 @@ def survey_public_by_token_v2(token: str):
     if error:
         return error
 
-    demo_payload = build_demo_public_survey_payload(
-        token,
-        public_base_url=_public_frontend_base_url(),
-    )
+    try:
+        demo_payload = (
+            build_durable_demo_public_survey_payload(
+                token,
+                public_base_url=_public_frontend_base_url(),
+            )
+            if is_demo_survey_slug(token)
+            and durable_demo_survey_participation_enabled()
+            else build_demo_public_survey_payload(
+                token,
+                public_base_url=_public_frontend_base_url(),
+            )
+        )
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
     if demo_payload:
         return _json_response(_attach_demo_public_contract(demo_payload, token))
 
@@ -3182,14 +3235,18 @@ def respond_public_survey_v2(token: str):
         return error
 
     payload = request.get_json(silent=True) or {}
+    demo_survey = is_demo_survey_slug(token)
     try:
+        durable_demo = (
+            demo_survey and durable_demo_survey_participation_enabled()
+        )
         submission_id = resolve_survey_submission_id(
             payload,
             header_value=request.headers.get("Idempotency-Key"),
-            # Synthetic demo surveys never write to the database. Every
-            # canonical HTTP submission must carry caller-owned replay
-            # identity before rate limiting, Turnstile, or persistence.
-            required=not is_demo_survey_slug(token),
+            # Durable Preview demo interactions and real survey writes both
+            # require caller-owned replay identity. The immutable fallback demo
+            # remains intentionally non-persistent.
+            required=not demo_survey or durable_demo,
         )
     except EncuestaError as exc:
         return _encuesta_error_response(exc)
@@ -3204,7 +3261,38 @@ def respond_public_survey_v2(token: str):
     preferred_tenant_id = tenant.id if tenant is not None else None
     authenticated_user = None
     authenticated_user_resolved = False
-    if submission_id is not None and not is_demo_survey_slug(token):
+    if submission_id is not None and durable_demo:
+        try:
+            demo_replay = find_demo_survey_participation_replay(
+                token,
+                payload,
+                submission_id=submission_id,
+            )
+            if demo_replay is not None:
+                demo_aggregate = get_demo_survey_participation_aggregate(token)
+                replay_security = _survey_security_contract(
+                    status="receipt_replay",
+                    reason="durable_submission_receipt",
+                    retryable=False,
+                    reset_required=False,
+                )
+                replay_ack = build_demo_survey_participation_ack(
+                    demo_replay,
+                    aggregate=demo_aggregate,
+                )
+                return _json_response(
+                    _attach_demo_response_contract(
+                        replay_ack,
+                        token,
+                        security=replay_security,
+                    ),
+                    200,
+                )
+        except EncuestaError as exc:
+            db.session.rollback()
+            return _encuesta_error_response(exc)
+
+    if submission_id is not None and not demo_survey:
         try:
             authenticated_user = resolve_optional_survey_bearer_user(
                 request.headers.get("Authorization")
@@ -3252,7 +3340,7 @@ def respond_public_survey_v2(token: str):
         payload,
         preferred_tenant_id=preferred_tenant_id,
         request_id=_request_id(),
-        synthetic=is_demo_survey_slug(token),
+        synthetic=demo_survey,
         verifier=verify_turnstile,
     )
     rate_limit = intake_decision.rate_limit
@@ -3268,6 +3356,38 @@ def respond_public_survey_v2(token: str):
         retryable=False,
         reset_required=False,
     )
+
+    if durable_demo:
+        try:
+            demo_receipt = persist_demo_survey_participation(
+                token,
+                payload,
+                submission_id=submission_id,
+            )
+            demo_aggregate = get_demo_survey_participation_aggregate(token)
+            realtime_published = publish_durable_demo_survey_participation_update(
+                demo_receipt,
+                demo_aggregate,
+            )
+            durable_ack = build_demo_survey_participation_ack(
+                demo_receipt,
+                aggregate=demo_aggregate,
+            )
+        except EncuestaError as exc:
+            db.session.rollback()
+            return _encuesta_error_response(exc)
+        durable_ack["realtime"]["delivery"] = (
+            "publish_accepted" if realtime_published else "polling_fallback"
+        )
+        response = _json_response(
+            _attach_demo_response_contract(
+                durable_ack,
+                token,
+                security=security,
+            ),
+            200 if demo_receipt.replayed else 201,
+        )
+        return _attach_rate_limit_headers(response, rate_limit)
 
     demo_ack = build_demo_survey_response_ack(
         token,
@@ -3351,10 +3471,21 @@ def survey_live_results_v2(token: str):
     }
     preferred_tenant_id = tenant.id if tenant is not None else None
 
-    demo_results = build_demo_live_results_payload(
-        token,
-        public_base_url=_public_frontend_base_url(),
-    )
+    try:
+        demo_results = (
+            build_durable_demo_live_results_payload(
+                token,
+                public_base_url=_public_frontend_base_url(),
+            )
+            if is_demo_survey_slug(token)
+            and durable_demo_survey_participation_enabled()
+            else build_demo_live_results_payload(
+                token,
+                public_base_url=_public_frontend_base_url(),
+            )
+        )
+    except EncuestaError as exc:
+        return _encuesta_error_response(exc)
     if demo_results:
         demo_payload = _attach_demo_live_results_contract(demo_results, token)
         etag = live_results_http_etag(demo_payload)

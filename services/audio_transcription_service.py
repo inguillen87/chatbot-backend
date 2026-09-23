@@ -1,5 +1,7 @@
 """Utility functions for transcribing audio clips."""
 
+from __future__ import annotations
+
 import hashlib
 import io
 import logging
@@ -9,13 +11,17 @@ from threading import Lock
 
 import re
 import requests
-import httpx
-from openai import OpenAI
+from typing import Any
 
 from collections import OrderedDict
 
 from services.bounded_media import MediaDownloadTooLarge, read_bounded_response_body
 from services.llm_provider_network_policy import llm_provider_network_allowed
+from services.outbox_execution_budget import outbox_io_timeout_seconds
+from utils.lazy_module import LazyModule
+
+
+httpx = LazyModule("httpx")
 
 logger = logging.getLogger(__name__)
 
@@ -23,8 +29,16 @@ logger = logging.getLogger(__name__)
 # the real client only when STT is first used. This is important because app.py may
 # load dotenv after this module has been imported by another entrypoint.
 http_client: httpx.Client | None = None
-openai_client: OpenAI | None = None
+openai_client: Any | None = None
 _OPENAI_CLIENT_LOCK = Lock()
+
+
+def OpenAI(*args: Any, **kwargs: Any) -> Any:
+    """Compatibility constructor that defers importing the provider SDK."""
+
+    from openai import OpenAI as OpenAIClient
+
+    return OpenAIClient(*args, **kwargs)
 
 # Current OpenAI guidance recommends gpt-4o-transcribe for completed recordings.
 # Keep OPENAI_STT_MODEL as an explicit rollout/rollback boundary per deployment.
@@ -92,7 +106,7 @@ def _openai_api_key() -> str | None:
     return normalized or None
 
 
-def _get_openai_client() -> OpenAI | None:
+def _get_openai_client() -> Any | None:
     """Return the shared OpenAI client, creating it only on first real use."""
 
     global http_client, openai_client
@@ -342,6 +356,12 @@ def _transcribe_with_openai(audio_bytes: bytes, filename: str) -> str | None:
     client = _get_openai_client()
     if client is None:
         return None
+    bounded_timeout = outbox_io_timeout_seconds()
+    if bounded_timeout is not None:
+        client = client.with_options(
+            timeout=bounded_timeout,
+            max_retries=0,
+        )
 
     with io.BytesIO(audio_bytes) as audio_file:
         audio_file.name = filename

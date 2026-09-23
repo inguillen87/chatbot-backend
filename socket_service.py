@@ -1,8 +1,7 @@
 from flask_socketio import SocketIO, join_room, emit
 from flask import current_app, request
-from config import ALLOWED_ORIGINS
+from config import SOCKET_CORS_ALLOWED_ORIGINS
 from models import ChatSessionContext, EncEncuesta, EncLink, User, TenantProfile, db, TicketComentario, MunicipioTicket, PymeTicket
-from services.ticket_service import servicio_tickets # Reutilizamos el servicio de tickets
 from services.tts_orchestrator import generar_audio
 from services.live_chat_access import LiveChatAccessError, build_ticket_room, verify_ticket_room_token
 from services.employee_ticket_access import employee_ticket_category_access_allows
@@ -10,23 +9,25 @@ from services.omnichannel_message_policy import (
     OmnichannelMessagePolicyError,
     normalize_omnichannel_reply_body,
 )
+from services.outbox_execution_budget import outbox_io_timeout_seconds
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
 )
-from utils.auth_helpers import user_from_token
 from utils.response_utils import ensure_buttons_compatibility
 from utils.roles import canonical_role, is_authorized_superadmin_user
 from typing import Any, Optional, Set
 from urllib.parse import urlparse
 from uuid import UUID
 import jwt
+import contextlib
 import os
 import re
 
-SOCKET_CORS_ORIGINS = list(
-    dict.fromkeys(list(ALLOWED_ORIGINS) + ["https://chatboc.ar", "https://www.chatboc.ar"])
-)
+# ``config`` is the single validation boundary for Socket.IO origins.  Keeping
+# the runtime list derived exclusively from it prevents a later hard-coded
+# origin from bypassing the exact-origin / HTTPS checks used in production.
+SOCKET_CORS_ORIGINS = list(dict.fromkeys(SOCKET_CORS_ALLOWED_ORIGINS))
 
 TICKET_OPERATOR_ROLES = {"admin", "empleado", "manager", "supervisor"}
 PUBLIC_TICKET_COMMENT_ORIGINS = {
@@ -49,9 +50,32 @@ PUBLIC_TICKET_COMMENT_ORIGINS = {
     "widget",
 }
 TENANT_TICKET_INVALIDATION_CONTRACT_VERSION = "tickets.collection.invalidated.v1"
+TENANT_TICKET_REPLY_DELIVERY_REALTIME_CONTRACT_VERSION = (
+    "tenant_ticket.reply_delivery.realtime.v1"
+)
 
 SURVEY_EFFECT_WORKER_ROLE = "survey-effect-worker"
 _SOCKET_QUEUE_CHANNEL_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+class _LazyTicketServiceProxy:
+    """Load the ticket domain only when a socket handler actually needs it."""
+
+    def __getattr__(self, name: str):
+        from services.ticket_service import servicio_tickets as ticket_service
+
+        return getattr(ticket_service, name)
+
+
+servicio_tickets = _LazyTicketServiceProxy()
+
+
+def _user_from_token(token: str):
+    """Avoid importing demo/chat intelligence during the process cold start."""
+
+    from utils.auth_helpers import user_from_token
+
+    return user_from_token(token)
 
 
 class SurveyRealtimeTransportError(RuntimeError):
@@ -101,6 +125,48 @@ def build_fail_closed_socketio_redis_manager(
     )
 
 
+def _emit_with_outbox_budget(
+    event_name: str,
+    payload: Any,
+    *,
+    room: str | None = None,
+) -> None:
+    """Use a short-lived bounded Redis publisher only inside the cron drain."""
+
+    # python-socketio's Redis manager performs up to two publish attempts.
+    # Divide the available slice so the retry pair remains inside the current
+    # cron runway instead of granting the full remainder to each attempt.
+    timeout_seconds = outbox_io_timeout_seconds(minimum_seconds=0.2)
+    if timeout_seconds is None:
+        socketio.emit(event_name, payload, room=room)
+        return
+
+    queue_url, channel, configured_timeout = _survey_realtime_queue_config()
+    if not queue_url:
+        # No network boundary exists for the in-process manager.
+        socketio.emit(event_name, payload, room=room)
+        return
+
+    bounded_timeout = max(
+        0.1,
+        min(timeout_seconds, configured_timeout) / 2,
+    )
+    manager = build_fail_closed_socketio_redis_manager(
+        queue_url,
+        channel=channel,
+        timeout_seconds=bounded_timeout,
+    )
+    try:
+        manager.emit(event_name, payload, room=room)
+    finally:
+        for resource_name in ("pubsub", "redis"):
+            resource = getattr(manager, resource_name, None)
+            close = getattr(resource, "close", None)
+            if callable(close):
+                with contextlib.suppress(Exception):
+                    close()
+
+
 def _survey_realtime_process_role() -> str:
     configured = ""
     try:
@@ -141,7 +207,10 @@ def _survey_realtime_queue_config() -> tuple[str, str, float]:
     return queue_url, channel, timeout
 
 
-def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
+def ensure_survey_realtime_transport_ready(
+    *,
+    require_shared: bool = False,
+) -> dict[str, Any]:
     """Verify the delivery boundary used by a durable realtime effect.
 
     The web process may use its in-process Socket.IO manager when no shared
@@ -156,7 +225,8 @@ def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
 
     process_role = _survey_realtime_process_role()
     queue_url, channel, timeout = _survey_realtime_queue_config()
-    shared_required = process_role == SURVEY_EFFECT_WORKER_ROLE
+    worker_role = process_role == SURVEY_EFFECT_WORKER_ROLE
+    shared_required = worker_role or require_shared
     if not queue_url:
         if shared_required:
             raise SurveyRealtimeTransportError(
@@ -198,11 +268,11 @@ def ensure_survey_realtime_transport_ready() -> dict[str, Any]:
             "survey_realtime_shared_manager_channel_mismatch"
         )
     manager_write_only = bool(getattr(manager, "write_only", False))
-    if shared_required and not manager_write_only:
+    if worker_role and not manager_write_only:
         raise SurveyRealtimeTransportError(
             "survey_realtime_worker_manager_not_write_only"
         )
-    if not shared_required and manager_write_only:
+    if not worker_role and not require_shared and manager_write_only:
         raise SurveyRealtimeTransportError(
             "survey_realtime_web_manager_not_subscribed"
         )
@@ -553,6 +623,26 @@ def emit_ticket_update(data: Any) -> None:
     _emit_tenant_ticket_invalidation(data)
 
 
+def emit_ticket_reply_delivery_updated(data: Any) -> None:
+    """Invalidate delivery receipts without exposing case or provider data."""
+
+    room = _resolve_tenant_ticket_room(data)
+    if not room:
+        current_app.logger.warning("Dropped unscoped ticket reply delivery invalidation")
+        return
+    _emit_with_outbox_budget(
+        "ticket.reply.delivery.updated",
+        {
+            "contract_version": TENANT_TICKET_REPLY_DELIVERY_REALTIME_CONTRACT_VERSION,
+            "resource": "reply_deliveries",
+            "reason": "delivery_status_changed",
+            "refetch": True,
+        },
+        room=room,
+    )
+    _emit_tenant_ticket_invalidation(data)
+
+
 def _emit_public_ticket_state_event(event_name: str, data: Any) -> bool:
     """Emit only citizen-safe ticket state to the signed ticket room."""
 
@@ -767,7 +857,11 @@ def _emit_tenant_ticket_invalidation(data: Any) -> bool:
     if not room:
         current_app.logger.warning("Dropped unscoped tenant ticket invalidation")
         return False
-    socketio.emit("ticket_update", _build_tenant_ticket_invalidation(), room=room)
+    _emit_with_outbox_budget(
+        "ticket_update",
+        _build_tenant_ticket_invalidation(),
+        room=room,
+    )
     return True
 
 
@@ -792,7 +886,11 @@ def emit_new_chat_message(data: Any) -> None:
     if public_room:
         public_payload = _build_public_ticket_comment_event(data, public_room)
         if public_payload:
-            socketio.emit("new_chat_message", public_payload, room=public_room)
+            _emit_with_outbox_budget(
+                "new_chat_message",
+                public_payload,
+                room=public_room,
+            )
 
     if not _emit_tenant_ticket_invalidation(data):
         current_app.logger.warning(
@@ -883,11 +981,60 @@ def _survey_candidates_for_slug(slug_publico: str) -> list[EncEncuesta]:
     ]
 
 
+def _durable_demo_survey_tenant_slug(slug_publico: str) -> str:
+    """Resolve the tenant owned by an enabled durable Preview demo fixture.
+
+    Demo instruments intentionally do not exist in ``enc_encuesta``.  Their
+    room scope must therefore come from the immutable demo registry, never
+    from a client supplied tenant hint.  Static/default-off demos remain
+    polling-only and cannot open a Socket.IO room.
+    """
+
+    normalized_slug = str(slug_publico or "").strip()
+    if (
+        not normalized_slug.startswith("demo-")
+        or normalized_slug != normalized_slug.lower()
+        or not _is_valid_survey_room_segment(normalized_slug)
+    ):
+        return ""
+
+    try:
+        from services.demo_survey_participation import (
+            durable_demo_survey_participation_enabled,
+        )
+        from services.demo_surveys import build_demo_public_survey_payload
+
+        if not durable_demo_survey_participation_enabled():
+            return ""
+        public_payload = build_demo_public_survey_payload(normalized_slug)
+    except Exception:
+        # A misconfigured opt-in gate already fails the HTTP demo flow closed.
+        # Socket authorization must likewise reject without trusting hints.
+        current_app.logger.warning(
+            "Durable demo survey socket authorization unavailable slug=%s",
+            normalized_slug,
+        )
+        return ""
+
+    if not isinstance(public_payload, dict):
+        return ""
+    if str(public_payload.get("slug") or "").strip().lower() != normalized_slug:
+        return ""
+    normalized_tenant = str(public_payload.get("tenant_slug") or "").strip().lower()
+    if not _is_valid_survey_room_segment(normalized_tenant):
+        return ""
+    return normalized_tenant
+
+
 def _resolve_survey_tenant_slug(slug_publico: str, data: Any, tenant_slug: str | None) -> str:
     slug = str(slug_publico or "").strip()
     if not _is_valid_survey_room_segment(slug):
         return ""
     try:
+        demo_tenant_slug = _durable_demo_survey_tenant_slug(slug)
+        if demo_tenant_slug:
+            return demo_tenant_slug
+
         candidates = _survey_candidates_for_slug(slug)
         if len(candidates) == 1:
             return _tenant_slug_for_survey_tenant_id(candidates[0].tenant_id)
@@ -958,22 +1105,25 @@ def _is_authorized_survey_room(room: str) -> bool:
     return bool(_authorized_survey_room(room))
 
 
-def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
+def emit_survey_update(slug_publico: str, data: Any, tenant_slug: str | None = None) -> bool:
     """Emit a live update for a specific survey/poll."""
     rooms = _survey_realtime_rooms(slug_publico, data, tenant_slug=tenant_slug)
     if not rooms:
-        return
+        return False
     if isinstance(data, dict) and data.get("contract_version") == "surveys.live_results.v2":
         legacy_payload = data.get("legacy_results")
         modern_payload = {key: value for key, value in data.items() if key != "legacy_results"}
         for room in rooms:
-            socketio.emit('survey_update', legacy_payload or modern_payload, room=room)
-            socketio.emit('survey_update_v2', modern_payload, room=room)
-            socketio.emit('survey.vote.created', modern_payload, room=room)
-        return
+            _emit_with_outbox_budget(
+                'survey_update', legacy_payload or modern_payload, room=room
+            )
+            _emit_with_outbox_budget('survey_update_v2', modern_payload, room=room)
+            _emit_with_outbox_budget('survey.vote.created', modern_payload, room=room)
+        return True
     for room in rooms:
-        socketio.emit('survey_update', data, room=room)
-        socketio.emit('survey.vote.created', data, room=room)
+        _emit_with_outbox_budget('survey_update', data, room=room)
+        _emit_with_outbox_budget('survey.vote.created', data, room=room)
+    return True
 
 
 def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = None) -> None:
@@ -984,23 +1134,23 @@ def emit_survey_comment(slug_publico: str, data: Any, tenant_slug: str | None = 
 
 
 
-def send_welcome_message(sid, auth):
+def send_welcome_message(app, sid, auth):
     """Sends a welcome message to a newly connected anonymous client."""
     from services.municipio_responder import responder_municipio
     from models import User, ChatSessionContext, Rubro, db
     from uuid import uuid4
     from flask import g
 
-    current_app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
-    with current_app.app_context():
+    with app.app_context():
+        app.logger.info(f"Anonymous connection on web channel detected for sid: {sid}. Sending welcome message.")
         owner_user = User.query.filter_by(tipo_chat='municipio', rol='admin').first()
         if not owner_user:
-            current_app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
+            app.logger.error("Default municipality user with role 'admin' and tipo_chat 'municipio' not found.")
             return
 
         rubro = owner_user.rubro
         if not rubro:
-            current_app.logger.error(f"Rubro not found for user {owner_user.id}")
+            app.logger.error(f"Rubro not found for user {owner_user.id}")
             return
 
         chat_session_uuid = str(uuid4())
@@ -1035,10 +1185,10 @@ def send_welcome_message(sid, auth):
                 if audio_url:
                     respuesta["audio_url"] = audio_url
             except Exception as e:
-                current_app.logger.error(f"Error generating welcome audio: {e}")
+                app.logger.error(f"Error generating welcome audio: {e}")
 
-        emit('message', respuesta, room=sid)
-        current_app.logger.info(f"Welcome message sent to sid: {sid}")
+        socketio.emit('message', respuesta, room=sid)
+        app.logger.info(f"Welcome message sent to sid: {sid}")
 
 @socketio.on('connect')
 def on_connect(auth):
@@ -1054,7 +1204,7 @@ def on_connect(auth):
 
     if token:
         try:
-            user = user_from_token(str(token))
+            user = _user_from_token(str(token))
             if not user:
                 current_app.logger.warning(
                     "Socket.IO connection rejected for sid %s due to invalid or revoked token.",
@@ -1080,7 +1230,12 @@ def on_connect(auth):
             return False
     elif channel == 'web':
         # Defer the welcome message to a separate thread to not block the connection
-        socketio.start_background_task(send_welcome_message, request.sid, auth)
+        socketio.start_background_task(
+            send_welcome_message,
+            current_app._get_current_object(),
+            request.sid,
+            auth,
+        )
 
 
 @socketio.on('subscribe_ticket_updates')
@@ -1092,7 +1247,7 @@ def on_subscribe_ticket_updates(data):
         emit('subscription_error', {'error': 'missing_token'})
         return
 
-    user = user_from_token(str(token))
+    user = _user_from_token(str(token))
     if not user:
         current_app.logger.warning("Socket subscribe rejected for sid %s: invalid or revoked token", request.sid)
         emit('subscription_error', {'error': 'invalid_token'})
@@ -1124,6 +1279,13 @@ def on_join(data):
     if authorized_survey_room:
         join_room(authorized_survey_room)
         current_app.logger.debug("Client joined public survey room: %s", authorized_survey_room)
+        emit(
+            'join_ack',
+            {
+                'room': authorized_survey_room,
+                'access_mode': 'public_survey_room',
+            },
+        )
         return
 
     if room.startswith('ticket_'):
@@ -1191,7 +1353,7 @@ def handle_send_chat_message(data):
         current_app.logger.error("Socket 'send_chat_message' recibio datos incompletos")
         return
 
-    current_user = user_from_token(str(token))
+    current_user = _user_from_token(str(token))
     if not current_user:
         current_app.logger.warning("Token invalido o revocado en 'send_chat_message'")
         emit('chat_error', {'error': 'invalid_token'})

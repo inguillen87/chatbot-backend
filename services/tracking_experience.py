@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qsl, quote_plus, urlencode, urlsplit, urlunsplit
 
 from flask import current_app, has_app_context
+from sqlalchemy import func, or_
 
 from models import ArchivoAdjunto, MarketOrder, MunicipioTicket, OrderEvent, PedidoConversacional, PymePedido, TenantProfile, TenantTicket, TicketComentario
 from services.attachment_delivery import serialize_attachment_for_delivery
@@ -212,6 +213,12 @@ def _tracking_map(location: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_internal_ticket_comment(comment: TicketComentario | None) -> bool:
+    """Fail closed for whitespace/case variants of private operator notes."""
+
+    return str(getattr(comment, "origen", None) or "").strip().casefold() == "internal"
+
+
 def _comment_timeline(
     comments_rel: Any,
     *,
@@ -220,7 +227,15 @@ def _comment_timeline(
     if not hasattr(comments_rel, "order_by"):
         return []
     try:
-        comments = comments_rel.order_by(
+        query = comments_rel
+        if hasattr(query, "filter"):
+            query = query.filter(
+                or_(
+                    TicketComentario.origen.is_(None),
+                    func.lower(func.trim(TicketComentario.origen)) != "internal",
+                )
+            )
+        comments = query.order_by(
             TicketComentario.fecha.asc(),
             TicketComentario.id.asc(),
         ).limit(20).all()
@@ -232,6 +247,8 @@ def _comment_timeline(
 
     items = []
     for comment in comments:
+        if _is_internal_ticket_comment(comment):
+            continue
         attachments: list[dict[str, Any]] = []
         attachment = getattr(comment, "archivo_adjunto", None)
         if attachment is not None:
@@ -343,13 +360,15 @@ def _claim_attachments(
         .order_by(ArchivoAdjunto.fecha.asc(), ArchivoAdjunto.id.asc())
         .all()
     )
-    attachments.extend(
-        _claim_attachment_payload(
-            attachment,
-            evidence=evidence_index.get(attachment.id),
+    for attachment in rows:
+        if _is_internal_ticket_comment(getattr(attachment, "comentario_asociado", None)):
+            continue
+        attachments.append(
+            _claim_attachment_payload(
+                attachment,
+                evidence=evidence_index.get(attachment.id),
+            )
         )
-        for attachment in rows
-    )
     return attachments
 
 

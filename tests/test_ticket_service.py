@@ -169,6 +169,72 @@ class TicketServiceTests(unittest.TestCase):
         self.assertTrue(found_loc1, "Location (10.0, 20.0) with weight 2 not found")
         self.assertTrue(found_loc2, "Location (11.0, 21.0) with weight 1 not found")
 
+    def test_admin_heatmap_keeps_legacy_grouping_when_category_ids_differ(self):
+        from datetime import datetime, timezone
+
+        class DummyQuery(list):
+            def filter_by(self, **kwargs):
+                return DummyQuery(
+                    [
+                        ticket
+                        for ticket in self
+                        if all(
+                            getattr(ticket, key, None) == value
+                            for key, value in kwargs.items()
+                        )
+                    ]
+                )
+
+            def filter(self, *criterion):
+                return self
+
+            def all(self):
+                return list(self)
+
+        class DummyModel:
+            latitud = MagicMock()
+            latitud.isnot.return_value = True
+            longitud = MagicMock()
+            longitud.isnot.return_value = True
+
+        DummyModel.query = DummyQuery(
+            [
+                SimpleNamespace(
+                    id=1,
+                    estado='nuevo',
+                    latitud=10.12345,
+                    longitud=20.12345,
+                    municipio_id=5,
+                    fecha=datetime.now(timezone.utc),
+                    categoria='Luminarias',
+                    categoria_id=17,
+                    asunto=None,
+                ),
+                SimpleNamespace(
+                    id=2,
+                    estado='nuevo',
+                    latitud=10.12345,
+                    longitud=20.12345,
+                    municipio_id=5,
+                    fecha=datetime.now(timezone.utc),
+                    categoria='Luminarias',
+                    categoria_id=18,
+                    asunto=None,
+                ),
+            ]
+        )
+
+        with patch.object(ts, 'MunicipioTicket', DummyModel):
+            result = ServicioTickets().obtener_tickets_con_ubicacion_para_mapa(
+                tipo_ticket='municipio',
+                municipio_id=5,
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['weight'], 2)
+        self.assertEqual(result[0]['location'], {'lat': 10.1235, 'lng': 20.1234})
+        self.assertNotIn('categoria_id', result[0])
+
     def test_mapa_filtra_varias_categorias(self):
         from datetime import datetime
 

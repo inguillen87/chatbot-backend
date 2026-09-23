@@ -4,12 +4,19 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from urllib.parse import urlparse
 
+from cutover_writer_fence import cutover_writer_fence_enabled
+from global_writer_authority import (
+    configured_writer_authority_database_url,
+    configured_writer_runtime,
+    global_writer_authority_enabled,
+)
 from utils.runtime_environment import (
     is_production_runtime,
     is_render_runtime,
+    is_vercel_runtime,
     resolved_runtime_environment,
 )
 
@@ -108,6 +115,38 @@ def _coalesce_version(*candidates: Optional[str], fallback: str = "dev") -> str:
     return fallback
 
 
+def _resolve_backend_version(
+    environ: Optional[Mapping[str, str]] = None,
+) -> str:
+    """Resolve the deployed backend revision before manual fallbacks.
+
+    ``CHATBOC_DEPLOYMENT_REVISION`` is an immutable, deployment-scoped value
+    supplied by release automation. It is required for CLI/container releases,
+    where Vercel may expose the Git integration SHA instead of the local
+    worktree revision that produced the image. Platform-provided Git revisions
+    remain the next-best source, while ``BACKEND_VERSION`` is only a manual
+    fallback because copied project variables can become stale.
+    """
+
+    runtime_env = os.environ if environ is None else environ
+    platform_revisions: List[Optional[str]] = []
+    if is_vercel_runtime(runtime_env):
+        platform_revisions.append(runtime_env.get("VERCEL_GIT_COMMIT_SHA"))
+    if is_render_runtime(runtime_env):
+        platform_revisions.append(runtime_env.get("RENDER_GIT_COMMIT"))
+
+    return _coalesce_version(
+        runtime_env.get("CHATBOC_DEPLOYMENT_REVISION"),
+        *platform_revisions,
+        runtime_env.get("BACKEND_VERSION"),
+        runtime_env.get("SOURCE_VERSION"),  # Heroku style
+        runtime_env.get("GIT_COMMIT"),
+        runtime_env.get("GITHUB_SHA"),
+        runtime_env.get("VERCEL_GIT_COMMIT_SHA"),
+        runtime_env.get("RENDER_GIT_COMMIT"),
+    )
+
+
 def _env_first(*names: str, default: Optional[str] = None) -> Optional[str]:
     """Return the first defined/non-empty environment variable from *names."""
 
@@ -171,11 +210,29 @@ def _bounded_timeout_seconds(
     return min(max(timeout, minimum), maximum)
 
 
+def _bounded_pool_count(
+    value: object,
+    *,
+    default: int,
+    minimum: int = 0,
+    maximum: int = 50,
+) -> int:
+    """Parse a connection-pool count without allowing runaway autoscaling."""
+
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(count, minimum), maximum)
+
+
 def build_database_engine_options(
     database_uri: object,
     *,
     connect_timeout_seconds: object = 2.0,
     pool_timeout_seconds: object = 2.0,
+    pool_size: object = 10,
+    max_overflow: object = 20,
 ) -> dict[str, Any]:
     """Build bounded SQLAlchemy options for SQLite or network databases."""
 
@@ -192,9 +249,18 @@ def build_database_engine_options(
         pool_timeout_seconds,
         default=2.0,
     )
+    bounded_pool_size = _bounded_pool_count(
+        pool_size,
+        default=10,
+        minimum=1,
+    )
+    bounded_max_overflow = _bounded_pool_count(
+        max_overflow,
+        default=20,
+    )
     return {
-        "pool_size": 10,
-        "max_overflow": 20,
+        "pool_size": bounded_pool_size,
+        "max_overflow": bounded_max_overflow,
         "pool_pre_ping": True,
         "pool_recycle": 1800,
         # DBAPI/libpq requires an integer connect_timeout. Round upward so an
@@ -202,6 +268,72 @@ def build_database_engine_options(
         "connect_args": {"connect_timeout": int(math.ceil(connect_timeout))},
         "pool_timeout": pool_timeout,
     }
+
+
+def resolve_database_uri(
+    *,
+    environ: Optional[Dict[str, str]] = None,
+    base_dir: Optional[str] = None,
+) -> str:
+    """Resolve the database URI and fail closed on stateless Vercel runtimes."""
+
+    runtime_env = os.environ if environ is None else environ
+    configured = str(runtime_env.get("DATABASE_URL") or "").strip()
+    render_standby_required = (
+        is_render_runtime(runtime_env)
+        and render_standby_mode_enabled(runtime_env)
+    )
+    if configured:
+        if render_standby_required:
+            _validate_render_standby_database_uri(configured)
+        return configured
+    if is_vercel_runtime(runtime_env):
+        raise RuntimeError(
+            "DATABASE_URL es obligatoria en Vercel; SQLite efimero no es un almacenamiento valido."
+        )
+    if is_render_runtime(runtime_env):
+        if render_standby_required:
+            raise RuntimeError(
+                "DATABASE_URL PostgreSQL de Neon es obligatoria en el standby de Render."
+            )
+        return "sqlite:////data/database.db?check_same_thread=False"
+
+    resolved_base = base_dir or basedir
+    local_db_path = os.path.join(resolved_base, "instance", "database.db")
+    os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
+    return f"sqlite:///{local_db_path}?check_same_thread=False"
+
+
+def render_standby_mode_enabled(
+    environ: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Return whether Render must behave as a recoverable Neon standby.
+
+    Missing or explicitly false preserves the legacy Render configuration while
+    the cutover is being prepared. A present malformed value fails closed so a
+    typo cannot silently reactivate the obsolete SQLite fallback.
+    """
+
+    runtime_env = os.environ if environ is None else environ
+    raw_value = runtime_env.get("CHATBOC_RENDER_STANDBY_MODE")
+    if raw_value is None:
+        return False
+    normalized = str(raw_value).strip().lower()
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _validate_render_standby_database_uri(uri: str) -> None:
+    """Require a PostgreSQL Neon runtime database without leaking credentials."""
+
+    parsed = urlparse(str(uri or "").strip())
+    scheme = str(parsed.scheme or "").lower()
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    if not scheme.startswith("postgres") or not host.endswith(".neon.tech"):
+        raise RuntimeError(
+            "DATABASE_URL del standby de Render debe apuntar a PostgreSQL en Neon."
+        )
 
 
 def _env_fail_closed_hold(default: bool, name: str) -> bool:
@@ -228,14 +360,7 @@ DEFAULT_FRONTEND_VERSION = _coalesce_version(
     os.getenv("NEXT_PUBLIC_APP_VERSION"),
 )
 
-DEFAULT_BACKEND_VERSION = _coalesce_version(
-    os.getenv("BACKEND_VERSION"),
-    os.getenv("SOURCE_VERSION"),  # Heroku style
-    os.getenv("RENDER_GIT_COMMIT"),
-    os.getenv("GIT_COMMIT"),
-    os.getenv("GITHUB_SHA"),
-    os.getenv("VERCEL_GIT_COMMIT_SHA"),
-)
+DEFAULT_BACKEND_VERSION = _resolve_backend_version()
 
 # --- Variables de Entorno para Despliegue ---
 # Resolve all production signals together.  A missing/stale ``ENV=dev`` must
@@ -248,13 +373,26 @@ def _is_render_runtime() -> bool:
     return is_render_runtime()
 
 
+def _is_vercel_runtime() -> bool:
+    return is_vercel_runtime()
+
+
 IS_PRODUCTION_RUNTIME = is_production_runtime(config_env=_CONFIGURED_ENV)
 
 # Render provides the public URL of the service through RENDER_EXTERNAL_URL.
 # If BACKEND_URL is not explicitly set we fall back to that value so the
 # frontend can discover the correct origin via /api/config.
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-BACKEND_URL = os.getenv("BACKEND_URL", RENDER_EXTERNAL_URL or "http://localhost:5000")
+_VERCEL_HOST = (
+    os.getenv("VERCEL_PROJECT_PRODUCTION_URL")
+    or os.getenv("VERCEL_BRANCH_URL")
+    or os.getenv("VERCEL_URL")
+)
+VERCEL_EXTERNAL_URL = f"https://{_VERCEL_HOST.strip()}" if _VERCEL_HOST else None
+BACKEND_URL = os.getenv(
+    "BACKEND_URL",
+    RENDER_EXTERNAL_URL or VERCEL_EXTERNAL_URL or "http://localhost:5000",
+)
 
 # Public participation surveys share image (also used for WhatsApp thumbnails)
 ENCUESTAS_DEFAULT_SHARE_IMAGE_PATH = (
@@ -419,6 +557,34 @@ if IS_PRODUCTION_RUNTIME:
 CREDENTIALS_ALLOWED_ORIGINS = list(allowed_urls)
 # Backwards-compatible export. It no longer contains wildcard Vercel previews.
 ALLOWED_ORIGINS = CREDENTIALS_ALLOWED_ORIGINS
+
+
+def _resolve_socket_cors_origins() -> List[str]:
+    """Build an exact allowlist for Socket.IO browser handshakes.
+
+    Socket.IO may be hosted on a different Vercel project than the frontend.
+    Those cross-project origins must be configured explicitly and are kept
+    separate from the credentialed HTTP CORS policy. Wildcards, paths and
+    insecure production origins fail closed.
+    """
+
+    resolved = [origin for origin in CREDENTIALS_ALLOWED_ORIGINS if isinstance(origin, str)]
+    configured = str(os.getenv("SOCKET_CORS_ALLOWED_ORIGINS") or "")
+    for candidate in configured.split(","):
+        normalized = _normalize_cors_origin(candidate)
+        if not normalized:
+            continue
+        parsed_origin = urlparse(normalized)
+        if "*" in str(parsed_origin.hostname or ""):
+            continue
+        if IS_PRODUCTION_RUNTIME and parsed_origin.scheme.lower() != "https":
+            continue
+        if normalized not in resolved:
+            resolved.append(normalized)
+    return resolved
+
+
+SOCKET_CORS_ALLOWED_ORIGINS = _resolve_socket_cors_origins()
 
 # --- Demo Rubros Loader ----------------------------------------------------
 
@@ -601,6 +767,18 @@ class Config:
 
     # Maps provider configuration
     MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+    TERRITORIAL_GEOCODING_PROVIDER_ENABLED = os.getenv(
+        "TERRITORIAL_GEOCODING_PROVIDER_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    TERRITORIAL_GEOCODING_WRITES_ENABLED = os.getenv(
+        "TERRITORIAL_GEOCODING_WRITES_ENABLED", "false"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    TERRITORIAL_GEOCODING_PROVIDER_TIMEOUT_SECONDS = _bounded_timeout_seconds(
+        os.getenv("TERRITORIAL_GEOCODING_PROVIDER_TIMEOUT_SECONDS", "5"),
+        default=5.0,
+        minimum=1.0,
+        maximum=10.0,
+    )
     MAPS_DEFAULT_PROVIDER = os.getenv("MAPS_DEFAULT_PROVIDER", "google")
 
     # LLM provider configuration. Gemini is server-side only; do not expose this
@@ -636,6 +814,99 @@ class Config:
 
     # 1. LLAVE SECRETA
     SECRET_KEY = os.getenv("SECRET_KEY", "una-llave-secreta-muy-segura-para-desarrollo-local")
+    # Vercel sends this value as ``Authorization: Bearer ...`` to scheduled
+    # endpoints. An empty value must never authorize an internal invocation.
+    CRON_SECRET = os.getenv("CRON_SECRET", "")
+    # Shared maintenance-window fence for HTTP writers, internal mutating
+    # crons, durable workers and declared retention/analytics jobs. It stays
+    # disabled until an operator deliberately freezes source writes for a
+    # database cutover; direct SQL/migration writers remain operator-owned.
+    CUTOVER_WRITER_FENCE_ENABLED = cutover_writer_fence_enabled()
+    # Optional database-backed ownership gate shared by Render and Vercel.
+    # It is intentionally off unless explicitly enabled. Once enabled, an
+    # absent/invalid runtime identity or authority row blocks every writer.
+    CUTOVER_GLOBAL_WRITER_AUTHORITY_ENABLED = global_writer_authority_enabled()
+    CUTOVER_RUNTIME_IDENTITY = configured_writer_runtime()
+    # This must be the same explicit PostgreSQL control DSN on Render and
+    # Vercel. It never falls back to the runtime's application DATABASE_URL.
+    CUTOVER_GLOBAL_WRITER_AUTHORITY_DATABASE_URL = (
+        configured_writer_authority_database_url()
+    )
+    # Historical marketplace OAuth/webhook routes trusted request-supplied
+    # tenant selectors.  Keep their migration marker false by default on every
+    # runtime (including Vercel and Render).  The routes remain fail-closed even
+    # if this is mistakenly enabled until signed, expiring, one-time OAuth
+    # state and tenant-bound provider credentials are implemented.
+    LEGACY_INTEGRATIONS_TRANSPORT_ENABLED = _env_flag(
+        False,
+        "LEGACY_INTEGRATIONS_TRANSPORT_ENABLED",
+    )
+    # A Vercel Production deployment can become the active cron target before
+    # DNS or database cutover. Keep reconciliation inert until the operator
+    # explicitly confirms that the deployment owns the production workload.
+    VERCEL_OUTBOX_CRON_ENABLED = _env_flag(
+        False,
+        "VERCEL_OUTBOX_CRON_ENABLED",
+    )
+    # The scheduled drain is intentionally smaller than the platform request
+    # limit.  Batches are effect-level leased/fenced and the coordinator holds
+    # a PostgreSQL transaction advisory lock so duplicate cron deliveries do
+    # not run overlapping consumers.
+    # Keep raw values here: a typo must make only the gated cron unavailable,
+    # not crash the web application while importing Config.
+    VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS = os.getenv(
+        "VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS",
+        "45",
+    )
+    VERCEL_OUTBOX_CRON_MAX_CYCLES = os.getenv(
+        "VERCEL_OUTBOX_CRON_MAX_CYCLES",
+        "4",
+    )
+    VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE",
+        "1",
+    )
+    VERCEL_OUTBOX_CRON_WHATSAPP_OUTBOUND_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_WHATSAPP_OUTBOUND_BATCH_SIZE",
+        "2",
+    )
+    VERCEL_OUTBOX_CRON_DOMAIN_EFFECT_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_DOMAIN_EFFECT_BATCH_SIZE",
+        "10",
+    )
+    VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE = os.getenv(
+        "VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE",
+        "25",
+    )
+    # Destructive retention jobs need an independent production cutover.  A
+    # scheduled deployment must remain inert until the operator explicitly
+    # transfers ownership of maintenance work away from Render.
+    VERCEL_MAINTENANCE_CRONS_ENABLED = _env_flag(
+        False,
+        "VERCEL_MAINTENANCE_CRONS_ENABLED",
+    )
+    # Paid weekly AI reports are fenced independently from both outbox and
+    # destructive maintenance ownership.
+    VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED = _env_flag(
+        False,
+        "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED",
+    )
+    WEEKLY_ANALYTICS_RESERVATION_REDIS_URL = os.getenv(
+        "WEEKLY_ANALYTICS_RESERVATION_REDIS_URL",
+        "",
+    ).strip()
+    WEEKLY_ANALYTICS_MAX_TENANTS_PER_RUN = os.getenv(
+        "WEEKLY_ANALYTICS_MAX_TENANTS_PER_RUN",
+        "5",
+    )
+    WEEKLY_ANALYTICS_MAX_BATCHES_PER_DRAIN = os.getenv(
+        "WEEKLY_ANALYTICS_MAX_BATCHES_PER_DRAIN",
+        "12",
+    )
+    WEEKLY_ANALYTICS_RESERVATION_TTL_SECONDS = os.getenv(
+        "WEEKLY_ANALYTICS_RESERVATION_TTL_SECONDS",
+        "900",
+    )
     # Dedicated/versioned HMAC boundary for TenantTicket intake receipts.  It
     # intentionally has no SECRET_KEY fallback: creation and tracking fail
     # closed when it is absent or shorter than 32 UTF-8 bytes.
@@ -661,16 +932,7 @@ class Config:
     )
 
     # 2. CONFIGURACIÓN DE LA BASE DE DATOS
-    db_url = os.getenv("DATABASE_URL")
-    if db_url:
-        SQLALCHEMY_DATABASE_URI = db_url
-    elif os.getenv("RENDER") == "true":
-        db_path_render = "/data/database.db"
-        SQLALCHEMY_DATABASE_URI = f"sqlite:///{db_path_render}?check_same_thread=False"
-    else:
-        local_db_path = os.path.join(basedir, 'instance', 'database.db')
-        os.makedirs(os.path.dirname(local_db_path), exist_ok=True)
-        SQLALCHEMY_DATABASE_URI = f"sqlite:///{local_db_path}?check_same_thread=False"
+    SQLALCHEMY_DATABASE_URI = resolve_database_uri()
 
     # Directory for persistent data such as uploaded media.
     DATA_DIR = os.getenv("DATA_DIR", "/data")
@@ -684,12 +946,53 @@ class Config:
         os.getenv("DATABASE_POOL_TIMEOUT_SECONDS", "2"),
         default=2.0,
     )
+    DATABASE_POOL_SIZE = _bounded_pool_count(
+        os.getenv("DATABASE_POOL_SIZE", "10"),
+        default=10,
+        minimum=1,
+    )
+    DATABASE_MAX_OVERFLOW = _bounded_pool_count(
+        os.getenv("DATABASE_MAX_OVERFLOW", "20"),
+        default=20,
+    )
     SQLALCHEMY_ENGINE_OPTIONS = build_database_engine_options(
         SQLALCHEMY_DATABASE_URI,
         connect_timeout_seconds=DATABASE_CONNECT_TIMEOUT_SECONDS,
         pool_timeout_seconds=DATABASE_POOL_TIMEOUT_SECONDS,
+        pool_size=DATABASE_POOL_SIZE,
+        max_overflow=DATABASE_MAX_OVERFLOW,
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    MUNICIPIO_CHAT_IDEMPOTENCY_LOCK_TIMEOUT_SECONDS = _bounded_timeout_seconds(
+        os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_LOCK_TIMEOUT_SECONDS", "20"),
+        default=20.0,
+        minimum=0.1,
+        maximum=60.0,
+    )
+    MUNICIPIO_CHAT_IDEMPOTENCY_RESPONSE_RETENTION_DAYS = int(
+        _bounded_timeout_seconds(
+            os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_RESPONSE_RETENTION_DAYS", "30"),
+            default=30.0,
+            minimum=1.0,
+            maximum=90.0,
+        )
+    )
+    MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_BATCH_SIZE = int(
+        _bounded_timeout_seconds(
+            os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_BATCH_SIZE", "100"),
+            default=100.0,
+            minimum=1.0,
+            maximum=500.0,
+        )
+    )
+    MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_SWEEP_SECONDS = int(
+        _bounded_timeout_seconds(
+            os.getenv("MUNICIPIO_CHAT_IDEMPOTENCY_RETENTION_SWEEP_SECONDS", "300"),
+            default=300.0,
+            minimum=60.0,
+            maximum=3600.0,
+        )
+    )
 
     # 3. CONFIGURACIÓN DE COOKIES DE SESIÓN (MODO DEV/PROD)
     SESSION_COOKIE_DOMAIN = (None if ENV == "dev" else COOKIE_DOMAIN)
@@ -764,7 +1067,11 @@ class Config:
 
     # Runtime bootstrap guards: in production, schema sync and tenant init must be explicit
     # via migrations/CLI. Local dev keeps convenience defaults enabled.
-    _runtime_bootstrap_default = ENV == "dev" and not _is_render_runtime()
+    _runtime_bootstrap_default = (
+        ENV == "dev"
+        and not _is_render_runtime()
+        and not _is_vercel_runtime()
+    )
     ENABLE_RUNTIME_SCHEMA_SYNC = _env_flag(
         _runtime_bootstrap_default,
         "ENABLE_RUNTIME_SCHEMA_SYNC",
@@ -791,6 +1098,20 @@ class Config:
     # legacy flag above remains limited to safe QA/test runtimes.
     ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 = _env_strict_opt_in(
         "ENABLE_SURVEY_SYNTHETIC_SEEDING_V1"
+    )
+    # Stores only isolated, non-municipal demo interactions. Runtime guards in
+    # the participation service additionally require Vercel Preview + Neon and
+    # reject both Production and Render even if this flag is misconfigured.
+    ENABLE_PREVIEW_DURABLE_DEMO_SURVEY_VOTES_V1 = _env_strict_opt_in(
+        "ENABLE_PREVIEW_DURABLE_DEMO_SURVEY_VOTES_V1"
+    )
+    PREVIEW_DURABLE_DEMO_NEON_BRANCH_ID = os.getenv(
+        "PREVIEW_DURABLE_DEMO_NEON_BRANCH_ID",
+        "",
+    ).strip()
+    PREVIEW_DURABLE_DEMO_SURVEY_MAX_INTERACTIONS = os.getenv(
+        "PREVIEW_DURABLE_DEMO_SURVEY_MAX_INTERACTIONS",
+        "50",
     )
     SURVEY_SYNTHETIC_SEED_TENANT_IDS = os.getenv(
         "SURVEY_SYNTHETIC_SEED_TENANT_IDS",
@@ -1401,6 +1722,22 @@ INSECURE_SECRET_MARKERS = {
     "una-llave-secreta-muy-segura-para-desarrollo-local",
 }
 
+VERCEL_CRON_SECRET_SECURITY_ERROR = (
+    "CRON_SECRET debe tener al menos 32 bytes cuando un cron de Vercel "
+    "esta habilitado en produccion."
+)
+
+
+def _has_minimum_utf8_secret_bytes(value: object, *, minimum: int) -> bool:
+    """Return whether a text secret has the required encoded byte length."""
+
+    if not isinstance(value, str):
+        return False
+    try:
+        return len(value.encode("utf-8")) >= minimum
+    except UnicodeEncodeError:
+        return False
+
 
 def validate_runtime_security(config: Any) -> list[str]:
     """Return runtime security errors for production-like environments."""
@@ -1428,6 +1765,70 @@ def validate_runtime_security(config: Any) -> list[str]:
         errors.append(
             "RATELIMIT_STORAGE_URI debe usar Redis compartido en el servicio web de Render."
         )
+
+    vercel_cron_flags = (
+        "VERCEL_OUTBOX_CRON_ENABLED",
+        "VERCEL_MAINTENANCE_CRONS_ENABLED",
+        "VERCEL_WEEKLY_ANALYTICS_CRON_ENABLED",
+    )
+    if any(
+        getattr(config, "get", lambda *_: None)(flag, False) is True
+        for flag in vercel_cron_flags
+    ) and not _has_minimum_utf8_secret_bytes(
+        getattr(config, "get", lambda *_: None)("CRON_SECRET", ""),
+        minimum=32,
+    ):
+        errors.append(VERCEL_CRON_SECRET_SECURITY_ERROR)
+
+    if getattr(config, "get", lambda *_: None)(
+        "VERCEL_OUTBOX_CRON_ENABLED",
+        False,
+    ) is True:
+        vercel_outbox_bounds = (
+            ("VERCEL_OUTBOX_CRON_TIME_BUDGET_SECONDS", 5.0, 55.0, float, 45.0),
+            ("VERCEL_OUTBOX_CRON_MAX_CYCLES", 1, 20, int, 4),
+            (
+                "VERCEL_OUTBOX_CRON_WHATSAPP_INBOUND_BATCH_SIZE",
+                1,
+                10,
+                int,
+                1,
+            ),
+            (
+                "VERCEL_OUTBOX_CRON_WHATSAPP_OUTBOUND_BATCH_SIZE",
+                1,
+                10,
+                int,
+                2,
+            ),
+            ("VERCEL_OUTBOX_CRON_DOMAIN_EFFECT_BATCH_SIZE", 1, 50, int, 10),
+            ("VERCEL_OUTBOX_CRON_SURVEY_EFFECT_BATCH_SIZE", 1, 100, int, 25),
+        )
+        for key, minimum, maximum, cast, default_value in vercel_outbox_bounds:
+            raw_value = getattr(config, "get", lambda *_: None)(key, default_value)
+            try:
+                if isinstance(raw_value, bool):
+                    raise ValueError(key)
+                if cast is int:
+                    if isinstance(raw_value, int):
+                        value = raw_value
+                    elif (
+                        isinstance(raw_value, str)
+                        and raw_value.strip().lstrip("+-").isdigit()
+                    ):
+                        value = int(raw_value.strip())
+                    else:
+                        raise ValueError(key)
+                else:
+                    value = cast(raw_value)
+            except (TypeError, ValueError, OverflowError):
+                errors.append(f"{key} invalido para reconciliacion Vercel.")
+                continue
+            if (
+                isinstance(value, float)
+                and not math.isfinite(value)
+            ) or value < minimum or value > maximum:
+                errors.append(f"{key} fuera de rango para reconciliacion Vercel.")
 
     raw_demo_seed_flag = getattr(config, "get", lambda *_: None)(
         "ALLOW_SURVEY_DEMO_SEEDING",
@@ -2097,6 +2498,9 @@ class TestConfig(Config):
     CORS_ALLOW_LOCAL_DEV = True
     ALLOW_SURVEY_DEMO_SEEDING = True
     ENABLE_SURVEY_SYNTHETIC_SEEDING_V1 = False
+    ENABLE_PREVIEW_DURABLE_DEMO_SURVEY_VOTES_V1 = False
+    PREVIEW_DURABLE_DEMO_NEON_BRANCH_ID = ""
+    PREVIEW_DURABLE_DEMO_SURVEY_MAX_INTERACTIONS = "50"
     SURVEY_SYNTHETIC_SEED_TENANT_IDS = ""
     SURVEY_JURISDICTION_GATE_MODE = "observe"
     SURVEY_JURISDICTION_GATE_TENANT_IDS = ""

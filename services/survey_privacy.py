@@ -14,8 +14,14 @@ import argparse
 import json
 import uuid
 
+from flask import current_app, has_app_context
 from sqlalchemy import exists
 
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
+from global_writer_authority import global_writer_authority_enabled
 from database import db
 from models import (
     AnalyticsEventV2,
@@ -25,11 +31,31 @@ from models import (
     SurveyResponseEffect,
     SurveyResponseReceipt,
 )
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 
 
 PRIVACY_MODE_SOURCE_ANONYMOUS = "source_anonymous"
 RETENTION_PURGE_CONTRACT_VERSION = "surveys.privacy_retention_purge.v1"
 _TERMINAL_EFFECT_STATUSES = frozenset({"succeeded", "skipped", "dead"})
+
+
+def _global_authority_report() -> dict[str, Any] | None:
+    if not has_app_context():
+        if global_writer_authority_enabled():
+            return {
+                "contract_version": "cutover.global_writer_authority.v1",
+                "component": "survey_privacy_retention",
+                "executed": False,
+                "reason_code": "global_writer_authority_context_unavailable",
+                "status": "fenced",
+            }
+        return None
+    return background_global_writer_authority_report(
+        "survey_privacy_retention",
+        current_app.config,
+    )
 
 
 def _utc(value: Optional[datetime]) -> datetime:
@@ -52,6 +78,46 @@ def _bounded_limit(value: Any) -> int:
     return parsed
 
 
+def _retention_candidate_query(
+    *,
+    operation_now: datetime,
+    tenant_id: Optional[int],
+    limit: int,
+    lock_for_purge: bool,
+):
+    """Build the deterministic retention batch claim.
+
+    PostgreSQL keeps the selected response rows locked through the evidence
+    deletes, audit insert and commit below. ``SKIP LOCKED`` lets overlapping
+    Vercel cron invocations divide the backlog instead of purging and auditing
+    the same response twice. SQLAlchemy intentionally omits the clause for
+    SQLite, preserving the sequential single-writer test/runtime path.
+
+    Dry runs do not claim work because they return without a commit and must
+    not leave transaction-scoped row locks behind in a long-lived process.
+    """
+
+    non_terminal_effect_exists = exists().where(
+        SurveyResponseEffect.response_id == EncRespuesta.id,
+        SurveyResponseEffect.status.notin_(_TERMINAL_EFFECT_STATUSES),
+    )
+    query = EncRespuesta.query.filter(
+        EncRespuesta.privacy_mode == PRIVACY_MODE_SOURCE_ANONYMOUS,
+        EncRespuesta.retention_expires_at.isnot(None),
+        EncRespuesta.retention_expires_at <= operation_now,
+        ~non_terminal_effect_exists,
+    )
+    if tenant_id is not None:
+        query = query.filter(EncRespuesta.tenant_id == tenant_id)
+    query = query.order_by(
+        EncRespuesta.retention_expires_at.asc(),
+        EncRespuesta.id.asc(),
+    ).limit(limit)
+    if lock_for_purge:
+        query = query.with_for_update(skip_locked=True)
+    return query
+
+
 def purge_expired_source_anonymous_responses(
     *,
     now: Optional[datetime] = None,
@@ -70,6 +136,28 @@ def purge_expired_source_anonymous_responses(
     """
 
     operation_now = _utc(now)
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": RETENTION_PURGE_CONTRACT_VERSION,
+            "status": "fenced",
+            "dry_run": bool(dry_run),
+            "eligible": 0,
+            "deleted": 0,
+            "tenant_count": 0,
+            "cutoff_at": operation_now.isoformat(),
+        }
+    authority_report = _global_authority_report()
+    if authority_report is not None:
+        return {
+            **authority_report,
+            "dry_run": bool(dry_run),
+            "eligible": 0,
+            "deleted": 0,
+            "tenant_count": 0,
+            "cutoff_at": operation_now.isoformat(),
+        }
     bounded_limit = _bounded_limit(limit)
     parsed_tenant_id: Optional[int] = None
     if tenant_id is not None:
@@ -80,23 +168,12 @@ def purge_expired_source_anonymous_responses(
         if parsed_tenant_id <= 0:
             raise ValueError("tenant_id must be a positive integer")
 
-    non_terminal_effect_exists = exists().where(
-        SurveyResponseEffect.response_id == EncRespuesta.id,
-        SurveyResponseEffect.status.notin_(_TERMINAL_EFFECT_STATUSES),
-    )
-    query = EncRespuesta.query.filter(
-        EncRespuesta.privacy_mode == PRIVACY_MODE_SOURCE_ANONYMOUS,
-        EncRespuesta.retention_expires_at.isnot(None),
-        EncRespuesta.retention_expires_at <= operation_now,
-        ~non_terminal_effect_exists,
-    )
-    if parsed_tenant_id is not None:
-        query = query.filter(EncRespuesta.tenant_id == parsed_tenant_id)
-
-    rows = query.order_by(
-        EncRespuesta.retention_expires_at.asc(),
-        EncRespuesta.id.asc(),
-    ).limit(bounded_limit).all()
+    rows = _retention_candidate_query(
+        operation_now=operation_now,
+        tenant_id=parsed_tenant_id,
+        limit=bounded_limit,
+        lock_for_purge=not dry_run,
+    ).all()
     response_ids = [int(row.id) for row in rows]
     tenant_ids = sorted({int(row.tenant_id) for row in rows})
     survey_ids_by_tenant: dict[int, set[int]] = {}
@@ -180,6 +257,31 @@ def run_retention_purge_batches(
     max_batches: int = 20,
     dry_run: bool = False,
 ) -> dict[str, Any]:
+    operation_now = _utc(now)
+    if cutover_writer_fence_enabled(
+        current_app.config if has_app_context() else None
+    ):
+        return {
+            "contract_version": RETENTION_PURGE_CONTRACT_VERSION,
+            "status": "fenced",
+            "dry_run": bool(dry_run),
+            "batches": 0,
+            "eligible": 0,
+            "deleted": 0,
+            "cutoff_at": operation_now.isoformat(),
+            "exhausted_batch_budget": False,
+        }
+    authority_report = _global_authority_report()
+    if authority_report is not None:
+        return {
+            **authority_report,
+            "dry_run": bool(dry_run),
+            "batches": 0,
+            "eligible": 0,
+            "deleted": 0,
+            "cutoff_at": operation_now.isoformat(),
+            "exhausted_batch_budget": False,
+        }
     bounded_batch_size = _bounded_limit(batch_size)
     if isinstance(max_batches, bool):
         raise ValueError("max_batches must be an integer between 1 and 100")
@@ -193,7 +295,6 @@ def run_retention_purge_batches(
     total_eligible = 0
     total_deleted = 0
     batches = 0
-    operation_now = _utc(now)
     for _ in range(bounded_max_batches):
         batch = purge_expired_source_anonymous_responses(
             now=operation_now,
@@ -232,6 +333,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--max-batches", type=int, default=20)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+
+    if cutover_writer_fence_enabled():
+        print(
+            json.dumps(
+                {
+                    **background_writer_fence_report("survey_privacy_retention"),
+                    "batches": 0,
+                    "eligible": 0,
+                    "deleted": 0,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
 
     from app import create_app
 

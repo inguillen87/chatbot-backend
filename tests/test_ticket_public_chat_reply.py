@@ -3,7 +3,8 @@ from unittest.mock import patch
 
 from app import create_app, db
 from config import TestConfig
-from models import MunicipioTicket, PymeTicket, TicketComentario, User
+from models import MunicipioTicket, PymeTicket, TenantProfile, TicketComentario, User
+from utils.auth_helpers import generar_token
 
 
 class TicketPublicChatReplyTest(unittest.TestCase):
@@ -17,8 +18,19 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         admin = User(name="Admin", email="admin-chat@example.com", rol="admin", tipo_chat="municipio")
         admin.set_password("pass")
         db.session.add(admin)
+        db.session.flush()
+        tenant = TenantProfile(
+            slug="municipio-chat-publico",
+            nombre="Municipio chat publico",
+            tipo="municipio",
+            municipio_id=admin.id,
+        )
+        db.session.add(tenant)
+        db.session.flush()
+        admin.tenant_id = tenant.id
         db.session.commit()
         self.admin = admin
+        self.tenant = tenant
 
     def tearDown(self):
         db.session.remove()
@@ -189,6 +201,119 @@ class TicketPublicChatReplyTest(unittest.TestCase):
         self.assertIn("id", payload["unified_conversation_stream"][0])
         self.assertIn("actor_type", payload["unified_conversation_stream"][0])
         self.assertIn("preview_text", payload["unified_conversation_stream"][0])
+
+    def test_pin_and_anon_reads_hide_internal_notes_while_agent_reads_keep_them(self):
+        ticket = MunicipioTicket(
+            municipio_id=self.admin.id,
+            tenant_id=self.tenant.id,
+            pregunta="luminaria apagada",
+            estado="nuevo",
+            nro_ticket="123462",
+            consulta_pin="654321",
+            anon_id="anon-public-ticket",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        internal = TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario="Telefono interno de la cuadrilla: 555-0199",
+            es_admin=True,
+            origen="  InTeRnAl  ",
+        )
+        public = TicketComentario(
+            municipio_ticket_id=ticket.id,
+            comentario="La cuadrilla fue notificada",
+            es_admin=True,
+            origen="admin_panel",
+        )
+        db.session.add_all([internal, public])
+        db.session.commit()
+
+        pin_messages = self.client.get(
+            f"/tickets/chat/{ticket.id}/mensajes?pin=654321"
+        )
+        self.assertEqual(pin_messages.status_code, 200)
+        pin_serialized = pin_messages.get_data(as_text=True)
+        self.assertNotIn("555-0199", pin_serialized)
+        self.assertIn("La cuadrilla fue notificada", pin_serialized)
+
+        anon_messages = self.client.get(
+            f"/tickets/chat/{ticket.id}/mensajes",
+            headers={"X-Anon-Id": "anon-public-ticket"},
+        )
+        self.assertEqual(anon_messages.status_code, 200)
+        anon_serialized = anon_messages.get_data(as_text=True)
+        self.assertNotIn("555-0199", anon_serialized)
+        self.assertIn("La cuadrilla fue notificada", anon_serialized)
+
+        public_timeline = self.client.get(
+            f"/tickets/municipio/{ticket.id}/timeline?pin=654321"
+        )
+        self.assertEqual(public_timeline.status_code, 200)
+        timeline_serialized = public_timeline.get_data(as_text=True)
+        self.assertNotIn("555-0199", timeline_serialized)
+        self.assertIn("La cuadrilla fue notificada", timeline_serialized)
+
+        token = generar_token(
+            self.admin.id,
+            self.admin.rol,
+            self.admin.tipo_chat,
+            self.admin.municipio_id,
+            self.admin.pyme_id,
+        )
+        agent_headers = {"Authorization": f"Bearer {token}"}
+        agent_messages = self.client.get(
+            f"/tickets/chat/{ticket.id}/mensajes",
+            headers=agent_headers,
+        )
+        self.assertEqual(agent_messages.status_code, 200)
+        self.assertIn("555-0199", agent_messages.get_data(as_text=True))
+
+        agent_timeline = self.client.get(
+            f"/tickets/municipio/{ticket.id}/timeline",
+            headers=agent_headers,
+        )
+        self.assertEqual(agent_timeline.status_code, 200)
+        self.assertIn("555-0199", agent_timeline.get_data(as_text=True))
+
+    def test_pyme_pin_message_read_hides_internal_notes(self):
+        ticket = PymeTicket(
+            rubro_id=77,
+            pregunta="consulta de pedido",
+            asunto="Pedido marketplace",
+            categoria="Pedidos",
+            estado="nuevo",
+            nro_ticket=445567,
+            consulta_pin="112233",
+        )
+        db.session.add(ticket)
+        db.session.flush()
+        db.session.add_all(
+            [
+                TicketComentario(
+                    pyme_ticket_id=ticket.id,
+                    comentario="Margen interno reservado",
+                    es_admin=True,
+                    origen=" INTERNAL ",
+                ),
+                TicketComentario(
+                    pyme_ticket_id=ticket.id,
+                    comentario="Tu pedido esta en preparacion",
+                    es_admin=True,
+                    origen="admin_panel",
+                ),
+            ]
+        )
+        db.session.commit()
+
+        response = self.client.get(
+            f"/tickets/chat/pyme/{ticket.id}/mensajes?pin=112233"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        serialized = response.get_data(as_text=True)
+        self.assertNotIn("Margen interno reservado", serialized)
+        self.assertIn("Tu pedido esta en preparacion", serialized)
 
     def test_public_chat_messages_degrade_when_comment_serializer_fails(self):
         ticket = MunicipioTicket(

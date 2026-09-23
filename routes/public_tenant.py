@@ -1,11 +1,14 @@
 from datetime import datetime, timezone
 from io import BytesIO
+import copy
+import json
 import re
 import uuid
 
 from flask import Blueprint, request, jsonify, g, current_app, send_file
 from sqlalchemy import false, func, or_
 
+from cutover_writer_fence import cutover_writer_view
 from models import (
     CatalogoItem,
     ChatSessionContext,
@@ -32,6 +35,7 @@ from services.encuestas_service import list_public_encuestas_for_tenant
 from services.commerce_contracts import build_checkout_experience_payload
 from services.marketplace_analytics import track_marketplace_event
 from utils.roles import is_authorized_superadmin_user
+from utils.tenant_admin_access import can_manage_tenant_control_plane
 from services.public_market_catalog import (
     build_public_market_catalog_contract,
     public_market_api_contract,
@@ -42,7 +46,12 @@ from services.plan_access import (
     integration_plan_required_payload,
     plan_allows_full_integrations,
 )
-from services.tenant_resolver import tenant_slug_from_public_referrer, tenant_slug_lookup_candidates
+from services.tenant_resolver import (
+    TenantResolutionError,
+    resolve_tenant_only,
+    tenant_slug_from_public_referrer,
+    tenant_slug_lookup_candidates,
+)
 from services.user_merge import merge_anon_into_user
 
 public_tenant_bp = Blueprint('public_tenant_bp', __name__)
@@ -67,6 +76,127 @@ RESERVED_PUBLIC_SLUGS = {
     "precios",
     "opinar",
 }
+
+GENERIC_WIDGET_TENANT_ALIASES = {
+    "default",
+    "municipio",
+    "municipal",
+    "pyme",
+    "empresa",
+    "pwa",
+    "whatsapp",
+    "market",
+    "marketplace",
+    "estadisticas",
+}
+
+
+def _deep_merge_widget_theme(base: object, update: object) -> dict:
+    merged = copy.deepcopy(base) if isinstance(base, dict) else {}
+    if not isinstance(update, dict):
+        return merged
+    for key, value in update.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_widget_theme(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _validated_widget_update(data: object, current_theme: object) -> tuple[dict, list[str]]:
+    """Validate the canonical appearance payload before mutating WidgetSettings."""
+
+    if not isinstance(data, dict):
+        return {}, ["body"]
+    cleaned: dict = {}
+    invalid: list[str] = []
+
+    if "theme_json" in data:
+        if not isinstance(data["theme_json"], dict):
+            invalid.append("theme_json")
+        else:
+            merged_theme = _deep_merge_widget_theme(current_theme, data["theme_json"])
+            try:
+                encoded_theme = json.dumps(merged_theme, ensure_ascii=False)
+            except (TypeError, ValueError):
+                encoded_theme = ""
+            if not encoded_theme or len(encoded_theme.encode("utf-8")) > 65536:
+                invalid.append("theme_json")
+            else:
+                cleaned["theme_json"] = merged_theme
+
+    string_limits = {
+        "welcome_message": 255,
+        "welcome_subtitle": 255,
+        "font_family": 120,
+        "bubble_shape": 50,
+    }
+    for field, limit in string_limits.items():
+        if field not in data:
+            continue
+        value = data[field]
+        if not isinstance(value, str) or len(value.strip()) > limit:
+            invalid.append(field)
+        else:
+            cleaned[field] = value.strip()
+
+    if "avatar_url" in data:
+        avatar_url = data["avatar_url"]
+        if not isinstance(avatar_url, str) or len(avatar_url) > 512:
+            invalid.append("avatar_url")
+        elif avatar_url and not (avatar_url.startswith("https://") or avatar_url.startswith("/")):
+            invalid.append("avatar_url")
+        else:
+            cleaned["avatar_url"] = avatar_url
+
+    for field in ("primary_color", "secondary_color"):
+        if field not in data:
+            continue
+        value = data[field]
+        if not isinstance(value, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", value.strip()):
+            invalid.append(field)
+        else:
+            cleaned[field] = value.strip().lower()
+
+    for field in ("bottom", "side_offset"):
+        if field not in data:
+            continue
+        value = str(data[field] or "").strip().lower()
+        match = re.fullmatch(r"(\d{1,3})(?:px)?", value)
+        if not match or not 0 <= int(match.group(1)) <= 240:
+            invalid.append(field)
+        else:
+            cleaned[field] = f"{int(match.group(1))}px"
+
+    if "position" in data:
+        position = str(data["position"] or "").strip().lower()
+        if position not in {"left", "right"}:
+            invalid.append("position")
+        else:
+            cleaned["position"] = position
+
+    if "default_open" in data:
+        if not isinstance(data["default_open"], bool):
+            invalid.append("default_open")
+        else:
+            cleaned["default_open"] = data["default_open"]
+
+    if "cta_messages" in data:
+        raw_messages = data["cta_messages"]
+        normalized_messages = []
+        if not isinstance(raw_messages, list) or len(raw_messages) > 3:
+            invalid.append("cta_messages")
+        else:
+            for item in raw_messages:
+                text = item.get("text") if isinstance(item, dict) else item
+                if not isinstance(text, str) or not text.strip() or len(text.strip()) > 160:
+                    invalid.append("cta_messages")
+                    break
+                normalized_messages.append({"text": text.strip()})
+            else:
+                cleaned["cta_messages"] = normalized_messages
+
+    return cleaned, sorted(set(invalid))
 
 
 def _normalize_public_slug(value: object) -> str:
@@ -290,7 +420,10 @@ def _get_tenant_from_request(slug: str):
 
     slug_candidates = tenant_slug_lookup_candidates(slug) or (_normalize_public_slug(slug),)
     for candidate in slug_candidates:
-        tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == candidate.lower()).first()
+        tenant = TenantProfile.query.filter(
+            func.lower(TenantProfile.slug) == candidate.lower(),
+            TenantProfile.is_active.is_(True),
+        ).first()
         if tenant:
             return tenant
 
@@ -300,7 +433,10 @@ def _get_tenant_from_request(slug: str):
     fallback_slug = request.args.get("tenant") or request.args.get("tenant_slug")
     if fallback_slug and fallback_slug != slug:
         for candidate in tenant_slug_lookup_candidates(fallback_slug):
-            tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == candidate.lower()).first()
+            tenant = TenantProfile.query.filter(
+                func.lower(TenantProfile.slug) == candidate.lower(),
+                TenantProfile.is_active.is_(True),
+            ).first()
             if tenant:
                 return tenant
     if _is_reserved_public_slug(fallback_slug):
@@ -313,7 +449,10 @@ def _get_tenant_from_request(slug: str):
     if alias_slug == "default":
         configured_default = current_app.config.get("PUBLIC_CATALOG_DEFAULT_TENANT")
         if configured_default:
-            tenant = TenantProfile.query.filter_by(slug=str(configured_default).strip()).first()
+            tenant = TenantProfile.query.filter_by(
+                slug=str(configured_default).strip(),
+                is_active=True,
+            ).first()
             if tenant:
                 return tenant
         tenant = _first_active_tenant_with_owner()
@@ -363,41 +502,97 @@ def _resolve_catalog_owner(tenant: TenantProfile):
 def _resolve_public_widget_tenant() -> TenantProfile | None:
     """Resolve the tenant for embedded widget/commerce endpoints."""
 
-    widget_token = (
-        request.args.get("widget_token")
-        or request.args.get("entityToken")
-        or request.headers.get("X-Widget-Token")
-        or request.headers.get("X-Entity-Token")
+    def _present_values(values: list[object]) -> list[str]:
+        return [str(value).strip() for value in values if str(value or "").strip()]
+
+    # Every supplied selector is an identity claim. Do not use an ``or`` chain:
+    # it would silently discard a conflicting query/header value.
+    slug_selectors = _present_values(
+        [
+            *request.args.getlist("tenant_slug"),
+            *request.args.getlist("tenant"),
+            *request.args.getlist("slug"),
+            request.headers.get("X-Tenant-Slug"),
+            request.headers.get("X-Tenant"),
+        ]
     )
-    tenant_slug = (
-        request.args.get("tenant_slug")
-        or request.args.get("tenant")
-        or request.args.get("slug")
-        or request.headers.get("X-Tenant-Slug")
-        or request.headers.get("X-Tenant")
+    token_selectors = _present_values(
+        [
+            *request.args.getlist("widget_token"),
+            *request.args.getlist("entityToken"),
+            request.headers.get("X-Widget-Token"),
+            request.headers.get("X-Entity-Token"),
+        ]
     )
     referrer_slug = tenant_slug_from_public_referrer()
-    if referrer_slug and (
-        not tenant_slug or _canonical_public_slug(referrer_slug) != _canonical_public_slug(tenant_slug)
-    ):
-        tenant_slug = referrer_slug
-    if tenant_slug:
-        tenant = _get_tenant_from_request(str(tenant_slug))
-        if tenant:
-            return tenant
 
-    if widget_token:
+    def _resolve_slug_identity(value: object) -> TenantProfile | None:
+        if not value:
+            return None
         try:
-            from services.tenant_resolver import resolve_tenant_only
-
             return resolve_tenant_only(
-                widget_token=widget_token,
-                tenant_slug=tenant_slug,
+                tenant_slug=str(value),
                 host=request.headers.get("X-Forwarded-Host") or request.host,
-                require_explicit_slug=False,
+                require_explicit_slug=True,
+                allow_fallback=False,
+                allow_lazy_demo_creation=False,
+                allow_context_fallback=False,
+                register_widget_token=False,
             )
-        except Exception:
-            current_app.logger.info("[public_widget] widget token did not resolve tenant", exc_info=True)
+        except TenantResolutionError:
+            return None
+
+    resolved_identities: list[TenantProfile] = []
+
+    # Concrete caller selectors and concrete referrers are independent strong
+    # identities. Weak compatibility aliases cannot hide conflicts between them.
+    weak_slug_selectors: list[str] = []
+    for explicit_slug in slug_selectors:
+        normalized = _canonical_public_slug(explicit_slug)
+        if normalized in GENERIC_WIDGET_TENANT_ALIASES or _is_reserved_public_slug(normalized):
+            weak_slug_selectors.append(explicit_slug)
+            continue
+        resolved_explicit = _resolve_slug_identity(explicit_slug)
+        if resolved_explicit is None:
+            return None
+        resolved_identities.append(resolved_explicit)
+
+    if referrer_slug:
+        resolved_referrer = _resolve_slug_identity(referrer_slug)
+        if resolved_referrer is None:
+            return None
+        resolved_identities.append(resolved_referrer)
+
+    for widget_token in token_selectors:
+        try:
+            resolved_token = resolve_tenant_only(
+                widget_token=widget_token,
+                host=request.headers.get("X-Forwarded-Host") or request.host,
+                allow_fallback=False,
+                allow_lazy_demo_creation=False,
+                allow_context_fallback=False,
+                register_widget_token=False,
+            )
+        except TenantResolutionError:
+            return None
+        if resolved_token is None:
+            return None
+        resolved_identities.append(resolved_token)
+
+    identity_ids = {int(tenant.id) for tenant in resolved_identities}
+    if len(identity_ids) > 1:
+        current_app.logger.warning(
+            "[public_widget] rejected conflicting tenant identities ids=%s",
+            sorted(identity_ids),
+        )
+        return None
+    if resolved_identities:
+        return resolved_identities[0]
+
+    # Generic legacy aliases are compatibility hints, not strong identities.
+    # Without a concrete referrer/token they retain their prior fallback.
+    if weak_slug_selectors:
+        return _get_tenant_from_request(weak_slug_selectors[0])
 
     return None
 
@@ -952,6 +1147,7 @@ def get_widget_config(slug):
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
 @public_tenant_bp.route('/public/tenants/<slug>/catalog/download', methods=['GET', 'OPTIONS'])
+@cutover_writer_view
 def download_catalog(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True, "contract_version": "public.catalog_download.v1"}))
@@ -1037,6 +1233,7 @@ def download_catalog(slug):
 
 @public_tenant_bp.route('/api/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
 @public_tenant_bp.route('/public/tenants/<slug>/catalog', methods=['GET', 'OPTIONS'])
+@cutover_writer_view
 def get_catalog(slug):
     if request.method == 'OPTIONS':
         return _add_cors_headers(jsonify({"ok": True}))
@@ -1096,6 +1293,9 @@ def get_catalog(slug):
         prod["catalog_item_id"] = item.id
         prod["tenant_id"] = tenant.id
         prod["tenant_slug"] = tenant.slug
+        metadata = item.extra_metadata if isinstance(item.extra_metadata, dict) else {}
+        prod["data_origin"] = metadata.get("data_origin") or "tenant_catalog"
+        prod["synthetic_demo"] = metadata.get("synthetic_demo") is True
         productos.append(prod)
 
     if search_text:
@@ -1811,15 +2011,36 @@ def tenant_config_api(current_user):
                 "bottom": settings.bottom,
                 "side_offset": settings.side_offset,
                 "bubble_shape": settings.bubble_shape,
+                "position": settings.position,
+                "cta_messages": settings.cta_messages or [],
                 "font_family": settings.font_family,
                 "default_open": settings.default_open
             })
         return _add_cors_headers(response)
 
     elif request.method == 'PUT':
-        data = request.json or {}
+        if not can_manage_tenant_control_plane(current_user, tenant):
+            reason_code = "tenant_inactive" if getattr(tenant, "is_active", True) is not True else "tenant_admin_required"
+            response = jsonify({"error": "Unauthorized", "reason_code": reason_code})
+            return _add_cors_headers(response), 403
+
+        data = request.get_json(silent=True)
 
         settings = WidgetSettings.query.filter_by(tenant_id=tenant.id).first()
+        current_theme = (
+            settings.theme_config
+            if settings and isinstance(settings.theme_config, dict)
+            else tenant.theme_json
+        )
+        data, invalid_fields = _validated_widget_update(data, current_theme)
+        if invalid_fields:
+            response = jsonify({
+                "error": "Invalid widget configuration",
+                "reason_code": "invalid_widget_config",
+                "fields": invalid_fields,
+            })
+            return _add_cors_headers(response), 422
+
         if not settings:
             settings = WidgetSettings(tenant_id=tenant.id)
             db.session.add(settings)
@@ -1841,8 +2062,10 @@ def tenant_config_api(current_user):
         if 'bottom' in data: settings.bottom = data['bottom']
         if 'side_offset' in data: settings.side_offset = data['side_offset']
         if 'bubble_shape' in data: settings.bubble_shape = data['bubble_shape']
+        if 'position' in data: settings.position = data['position']
+        if 'cta_messages' in data: settings.cta_messages = data['cta_messages']
         if 'font_family' in data: settings.font_family = data['font_family']
-        if 'default_open' in data: settings.default_open = bool(data['default_open'])
+        if 'default_open' in data: settings.default_open = data['default_open']
 
         db.session.commit()
         return _add_cors_headers(jsonify({"status": "updated"}))

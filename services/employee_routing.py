@@ -3,13 +3,19 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from models import CatalogoItem, CategoriaTicket, MunicipioTicket, PymeTicket, TenantProfile, TenantTicket, User
 from services.categorias_municipio import CATEGORIAS_RECLAMO
 from services.education_contracts import education_case_taxonomy, is_education_tenant
-from services.employee_ticket_access import ticket_assignee_category_values_are_compatible
+from services.employee_ticket_access import (
+    employee_ticket_category_scope,
+    employee_ticket_category_values_allow,
+    ticket_assignee_category_values_are_compatible,
+)
 from services.tenant_ticket_scope import scoped_municipio_ticket_query
+from services.territorial_evidence import canonicalize_territorial_category
+from utils.roles import ROLE_EMPLEADO, canonical_role
 
 
 EMPLOYEE_ROUTING_CONTRACT_VERSION = "employee.routing.v1"
@@ -153,8 +159,25 @@ def normalize_scope_list(values: Any, *, limit: int = 30) -> list[str]:
 def employee_scope(emp: User) -> dict[str, list[str]]:
     data = emp.accesibilidad if isinstance(emp.accesibilidad, dict) else {}
     scope = data.get("employee_scope") if isinstance(data.get("employee_scope"), dict) else {}
+    persisted_category_names = [
+        getattr(category, "nombre", None)
+        for category in (getattr(emp, "categorias_ticket", None) or [])
+    ]
+    legacy_category_names = normalize_scope_list(
+        getattr(emp, "ticket_categorias", None)
+    )
+    categories = normalize_scope_list(
+        [
+            *normalize_scope_list(scope.get("categorias")),
+            *persisted_category_names,
+            *legacy_category_names,
+        ]
+    )
+    canonical_categories = normalize_scope_list(
+        [canonicalize_territorial_category(value)["category"] for value in categories]
+    )
     return {
-        "categorias": normalize_scope_list(scope.get("categorias")),
+        "categorias": normalize_scope_list([*categories, *canonical_categories]),
         "zonas": normalize_scope_list(scope.get("zonas")),
         "permisos": normalize_scope_list(scope.get("permisos")),
         "channels": normalize_scope_list(scope.get("channels")),
@@ -317,16 +340,28 @@ def _norm(value: Any, fallback: str) -> str:
     return normalized or fallback
 
 
-def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
+def _ticket_snapshot(
+    ticket: Any,
+    *,
+    category_names_by_id: dict[int, str] | None = None,
+) -> dict[str, Any]:
+    category_names_by_id = category_names_by_id or {}
     if isinstance(ticket, TenantTicket):
         extra = _ticket_extra(ticket)
+        category = canonicalize_territorial_category(ticket.categoria)["category"]
         return {
             "source_model": "TenantTicket",
             "id": ticket.id,
             "ticket_id": ticket.id,
             "title": extra.get("title") or ticket.categoria or f"Ticket {ticket.id}",
             "status": ticket.estado,
+            # Preserve the persisted label in the public routing contract.
+            # Eligibility consumes the exact-alias canonical category below,
+            # so ``alumbrado`` and ``luminarias`` match without rewriting the
+            # label shown by existing consumers.
             "category": _norm(ticket.categoria, "sin_categoria"),
+            "authoritative_category": _norm(category, "sin_categoria"),
+            "category_id": getattr(ticket, "categoria_id", None),
             "zone": _norm(extra.get("zone") or extra.get("zona"), "sin_zona"),
             "channel": _norm(extra.get("channel") or ticket.origen, "web"),
             "priority": _norm(extra.get("priority"), "medium"),
@@ -335,6 +370,10 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
             "updated_at": ticket.updated_at.isoformat() if ticket.updated_at else None,
         }
     if isinstance(ticket, MunicipioTicket):
+        persisted_category = category_names_by_id.get(getattr(ticket, "categoria_id", None))
+        category = canonicalize_territorial_category(
+            persisted_category or ticket.categoria
+        )["category"]
         return {
             "source_model": "MunicipioTicket",
             "id": ticket.id,
@@ -342,6 +381,8 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
             "title": ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket}",
             "status": ticket.estado,
             "category": _norm(ticket.categoria, "sin_categoria"),
+            "authoritative_category": _norm(category, "sin_categoria"),
+            "category_id": getattr(ticket, "categoria_id", None),
             "zone": _norm(ticket.distrito, "sin_zona"),
             "channel": _norm(ticket.canal_ingreso, "whatsapp"),
             "priority": "medium",
@@ -349,6 +390,10 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
             "created_at": ticket.fecha.isoformat() if ticket.fecha else None,
             "updated_at": (ticket.ultima_actividad or ticket.fecha).isoformat() if (ticket.ultima_actividad or ticket.fecha) else None,
         }
+    persisted_category = category_names_by_id.get(getattr(ticket, "categoria_id", None))
+    category = canonicalize_territorial_category(
+        persisted_category or ticket.categoria
+    )["category"]
     return {
         "source_model": "PymeTicket",
         "id": ticket.id,
@@ -356,6 +401,8 @@ def _ticket_snapshot(ticket: Any) -> dict[str, Any]:
         "title": ticket.asunto or ticket.categoria or f"Ticket {ticket.nro_ticket}",
         "status": ticket.estado,
         "category": _norm(ticket.categoria, "sin_categoria"),
+        "authoritative_category": _norm(category, "sin_categoria"),
+        "category_id": getattr(ticket, "categoria_id", None),
         "zone": "sin_zona",
         "channel": "whatsapp",
         "priority": "medium",
@@ -376,7 +423,9 @@ def pyme_ticket_query_for_tenant(tenant: TenantProfile):
     owner = User.query.get(getattr(tenant, "pyme_id", None)) if getattr(tenant, "pyme_id", None) else None
     rubro_id = getattr(owner, "rubro_id", None)
     if rubro_id:
-        conditions.append(PymeTicket.rubro_id == rubro_id)
+        conditions.append(
+            and_(PymeTicket.tenant_id.is_(None), PymeTicket.rubro_id == rubro_id)
+        )
     if not conditions:
         return PymeTicket.query.filter(False)
     return PymeTicket.query.filter(or_(*conditions))
@@ -402,13 +451,33 @@ def _tenant_tickets(tenant: TenantProfile) -> list[Any]:
 
 
 def tenant_open_ticket_snapshots(tenant: TenantProfile) -> list[dict[str, Any]]:
-    return [_ticket_snapshot(ticket) for ticket in _tenant_tickets(tenant)]
+    tickets = _tenant_tickets(tenant)
+    category_ids = {
+        int(ticket.categoria_id)
+        for ticket in tickets
+        if getattr(ticket, "categoria_id", None)
+    }
+    category_names_by_id = {
+        int(category.id): str(category.nombre or "").strip().lower()
+        for category in (
+            CategoriaTicket.query.filter(CategoriaTicket.id.in_(category_ids)).all()
+            if category_ids
+            else []
+        )
+    }
+    return [
+        _ticket_snapshot(ticket, category_names_by_id=category_names_by_id)
+        for ticket in tickets
+    ]
 
 
 def workload_by_employee(tenant: TenantProfile) -> dict[int, int]:
+    return workload_from_snapshots(tenant_open_ticket_snapshots(tenant))
+
+
+def workload_from_snapshots(snapshots: list[dict[str, Any]]) -> dict[int, int]:
     workload: dict[int, int] = {}
-    for ticket in _tenant_tickets(tenant):
-        snapshot = _ticket_snapshot(ticket)
+    for snapshot in snapshots:
         assignee_id = snapshot.get("assignee_id")
         if assignee_id:
             try:
@@ -421,13 +490,19 @@ def workload_by_employee(tenant: TenantProfile) -> dict[int, int]:
 
 def score_employee_for_ticket(emp: User, ticket: dict[str, Any], workload: int = 0) -> tuple[float, list[str]]:
     scope = employee_scope(emp)
+    authoritative_category = ticket.get("authoritative_category") or ticket["category"]
     reasons: list[str] = []
     score = 0.0
 
     if not any(scope[key] for key in ("categorias", "zonas", "channels")):
         score += 10
         reasons.append("generalist")
-    if ticket["category"] in scope["categorias"]:
+    category_id = ticket.get("category_id")
+    persisted_scope = employee_ticket_category_scope(emp)
+    if isinstance(category_id, int) and category_id in persisted_scope.ids:
+        score += 45
+        reasons.append("category_id_match")
+    elif authoritative_category in scope["categorias"]:
         score += 45
         reasons.append("category_match")
     if ticket["zone"] in scope["zonas"]:
@@ -436,7 +511,10 @@ def score_employee_for_ticket(emp: User, ticket: dict[str, Any], workload: int =
     if ticket["channel"] in scope["channels"]:
         score += 20
         reasons.append("channel_match")
-    if "tickets_assign" in scope["permisos"] or "orders_assign" in scope["permisos"]:
+    if any(
+        permission in scope["permisos"]
+        for permission in {"tickets.assign", "tickets_assign", "orders.assign", "orders_assign"}
+    ):
         score += 5
         reasons.append("assignment_permission")
 
@@ -447,12 +525,19 @@ def score_employee_for_ticket(emp: User, ticket: dict[str, Any], workload: int =
     return round(score, 2), reasons
 
 
-def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], workloads: dict[int, int]) -> dict[str, Any] | None:
+def eligible_employees_for_ticket(
+    ticket: dict[str, Any],
+    employees: list[User],
+    workloads: dict[int, int],
+) -> list[dict[str, Any]]:
+    """Return the authoritative, ranked candidate set for one exact ticket."""
+
     candidates = []
     for emp in employees:
+        authoritative_category = ticket.get("authoritative_category") or ticket.get("category")
         if not ticket_assignee_category_values_are_compatible(
             emp,
-            category=ticket.get("category"),
+            category=authoritative_category,
             category_id=ticket.get("category_id"),
         ):
             continue
@@ -467,13 +552,49 @@ def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], work
             }
         )
     candidates.sort(key=lambda item: (item["score"], -item["workload_open"]), reverse=True)
+    return candidates
+
+
+def best_employee_for_ticket(ticket: dict[str, Any], employees: list[User], workloads: dict[int, int]) -> dict[str, Any] | None:
+    candidates = eligible_employees_for_ticket(ticket, employees, workloads)
     return candidates[0] if candidates else None
 
 
-def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
+def build_employee_routing_payload(
+    tenant: TenantProfile,
+    *,
+    viewer: User | None = None,
+) -> dict[str, Any]:
     employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).order_by(User.id.asc()).all()
-    workloads = workload_by_employee(tenant)
-    tickets = tenant_open_ticket_snapshots(tenant)
+    all_tickets = tenant_open_ticket_snapshots(tenant)
+    tickets = all_tickets
+
+    # A regular employee receives only their own routing identity and tickets
+    # covered by their authoritative category scope.  This keeps the GET
+    # contract aligned with the claim endpoint, which applies the same policy
+    # again under a row lock before mutating anything.  Tenant administrators
+    # retain the complete dispatch matrix.
+    viewer_role = canonical_role(getattr(viewer, "rol", None)) if viewer is not None else None
+    viewer_is_limited_employee = viewer is not None and viewer_role == ROLE_EMPLEADO
+    if viewer_is_limited_employee:
+        viewer_is_operational = bool(
+            getattr(viewer, "es_empleado", False)
+            and getattr(viewer, "tenant_id", None) == tenant.id
+        )
+        employees = [viewer] if viewer_is_operational else []
+        tickets = [
+            ticket
+            for ticket in tickets
+            if viewer_is_operational
+            and employee_ticket_category_values_allow(
+                viewer,
+                category=ticket.get("authoritative_category") or ticket.get("category"),
+                category_id=ticket.get("category_id"),
+            )
+        ]
+    # Workload is tenant-wide even when the viewer may only inspect and receive
+    # recommendations for their authorized category slice.
+    workloads = workload_from_snapshots(all_tickets)
     unassigned = [ticket for ticket in tickets if not ticket.get("assignee_id")]
     supported_dimensions = tenant_operational_dimensions(tenant, tickets)
 
@@ -495,13 +616,16 @@ def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
 
     recommendations = []
     for ticket in unassigned[:50]:
-        best = best_employee_for_ticket(ticket, employees, workloads)
+        eligible = eligible_employees_for_ticket(ticket, employees, workloads)
+        best = eligible[0] if eligible else None
         recommendations.append(
             {
                 "ticket": ticket,
                 "suggested_assignee": best["employee"] if best else None,
                 "score": best["score"] if best else 0,
                 "reasons": best["reasons"] if best else ["no_employee_available"],
+                "candidate_ids": [item["employee"]["id"] for item in eligible],
+                "eligible_assignees": eligible,
             }
         )
 
@@ -514,6 +638,7 @@ def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
             "dimensions": ["categorias", "zonas", "channels", "permisos"],
             "assignment_targets": ["TenantTicket", "MunicipioTicket", "PymeTicket"],
             "scoring": ["category_match", "zone_match", "channel_match", "assignment_permission", "workload_penalty"],
+            "viewer_scope": "employee_categories" if viewer_is_limited_employee else "tenant_dispatch",
         },
         "dimensions": {
             "categorias": categories,
@@ -541,12 +666,24 @@ def build_employee_routing_payload(tenant: TenantProfile) -> dict[str, Any]:
     }
 
 
-def find_ticket_for_assignment(tenant: TenantProfile, source_model: str, ticket_id: int) -> Any | None:
+def find_ticket_for_assignment(
+    tenant: TenantProfile,
+    source_model: str,
+    ticket_id: int,
+    *,
+    for_update: bool = False,
+) -> Any | None:
     source = str(source_model or "").strip()
     if source == "TenantTicket":
-        return TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id).first()
-    if source == "MunicipioTicket":
-        return municipio_ticket_query_for_tenant(tenant).filter(MunicipioTicket.id == ticket_id).first()
-    if source == "PymeTicket":
-        return pyme_ticket_query_for_tenant(tenant).filter(PymeTicket.id == ticket_id).first()
-    return None
+        query = TenantTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id)
+    elif source == "MunicipioTicket":
+        query = municipio_ticket_query_for_tenant(tenant).filter(MunicipioTicket.id == ticket_id)
+    elif source == "PymeTicket":
+        # Assignment is a write boundary: legacy rubro ownership is not strong
+        # enough to mutate a row without an explicit tenant identity.
+        query = PymeTicket.query.filter_by(id=ticket_id, tenant_id=tenant.id)
+    else:
+        return None
+    if for_update:
+        query = query.with_for_update()
+    return query.first()

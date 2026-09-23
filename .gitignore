@@ -6,16 +6,22 @@ instance/*
 .env
 /data/*.json
 *.json
+!vercel.json
 !data/tramites.json
 !data/respuestas_municipio.json
 !data/demo_rubros.json
 !data/demo_scripts/*.json
 !data/product_synonyms.json
 !data/product_catalog.json
+!data/tenant_blueprints/
+!data/tenant_blueprints/*.json
+!data/templates/
+!data/templates/*.bundle.json
 !data/subastas.json
 !data/vocabulary/ticket_vocabulary.json
 !data/encuestas_bootstrap/
 !data/encuestas_bootstrap/templates.json
+!data/encuestas_bootstrap/qa_preview_institutional_surveys.v1.json
 !data/estacionamiento/camaras.json
 !data/estacionamiento/parking_spots.json
 !data/municipios/**
@@ -29,8 +35,17 @@ venv/
 test_venv/
 sandbox_venv/
 .codex-venv/
+.codex-temp/
+
+# Nunca versionar artefactos de ejecucion local: pueden contener secretos.
+.codex-run-logs/
+*.log
 
 # Pero permite que la estructura instance/ exista
 node_modules
 !data/estacionamiento/camaras.json
 flask_session/
+.vercel
+.env.local
+.env.*.local
+.env*

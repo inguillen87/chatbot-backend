@@ -51,8 +51,8 @@ class TenantUtilsFallbackTest(unittest.TestCase):
         db.drop_all()
         self.app_context.pop()
 
-    def test_get_current_tenant_falls_back_to_first_when_resolver_fails(self):
-        """Debe devolver algún tenant aun si el resolver principal falla."""
+    def test_get_current_tenant_does_not_bypass_resolver_failure(self):
+        """Un fallo del resolver no debe seleccionar la primera fila global."""
 
         self.app.config["PUBLIC_CATALOG_DEFAULT_TENANT"] = None
         with patch(
@@ -63,7 +63,7 @@ class TenantUtilsFallbackTest(unittest.TestCase):
                 tenant = tenant_utils.get_current_tenant_profile()
 
         mock_resolver.assert_called_once()
-        self.assertIsNotNone(tenant)
+        self.assertIsNone(tenant)
 
     def test_get_current_tenant_can_disable_global_fallback(self):
         """Los modulos operativos pueden rechazar tenants ambiguos."""

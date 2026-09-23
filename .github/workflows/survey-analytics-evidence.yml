@@ -1,0 +1,30 @@
+name: Survey analytics evidence
+"on":
+  pull_request:
+    paths:
+      - services/survey_analytics_evidence.py
+      - routes/encuestas_analytics.py
+      - tests/test_survey_analytics_evidence.py
+      - tests/survey_analytics_evidence_http.py
+      - .github/workflows/survey-analytics-evidence.yml
+permissions:
+  contents: read
+concurrency:
+  group: analytics-evidence-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - run: python -m unittest tests.test_survey_analytics_evidence -v
+      - run: python -m tests.survey_analytics_evidence_http

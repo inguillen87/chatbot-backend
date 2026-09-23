@@ -1,9 +1,10 @@
+from cutover_writer_fence import cutover_writer_fence_enabled
 # Contenido COMPLETO para: routes/auth.py
 
 from flask import Blueprint, current_app, g, jsonify, make_response, request, url_for
 from flask_cors import cross_origin
 from werkzeug.exceptions import RequestEntityTooLarge
-from services.logic import es_rubro_publico, normalizar_rubro
+from services.rubro_classification import es_rubro_publico, normalizar_rubro
 import os
 import re
 import unicodedata
@@ -29,13 +30,13 @@ from datetime import datetime, timedelta, timezone
 import time
 import jwt
 from jwt import algorithms as jwt_algorithms
-import base64
+from cutover_writer_fence import cutover_writer_view
 from services.google_auth import login_o_crear_usuario
-from services.pymes import get_or_create_pyme_user_by_token
 from services.tenant_resolver import resolve_tenant_only
 from services.tenant_ticket_scope import resolve_unique_tenant_for_owner
 from services.demo_registry import load_demo_rubros
 from services.demo_experience_contract import build_demo_experience_contract
+from services.catalog_seed import provision_demo_catalog
 from services.auth_notification_service import send_verification_email
 from services.channel_activation import build_channel_activation_payload
 from services.clerk_auth_service import (
@@ -573,7 +574,15 @@ def _clerk_error_response(
 def clerk_config():
     """Frontend contract for Clerk-based auth and tenant onboarding."""
 
-    return jsonify(build_clerk_frontend_contract())
+    response = jsonify(build_clerk_frontend_contract())
+    # This payload contains only public configuration and changes with a new
+    # deployment, not per user. A short shared cache keeps auth bootstrap from
+    # waking a cold backend instance on every public navigation.
+    response.headers["Cache-Control"] = (
+        "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+    )
+    response.headers["Vary"] = "Origin"
+    return response
 
 
 @auth_api_bp.route("/clerk/session", methods=["POST"])
@@ -1017,6 +1026,13 @@ def public_plan_catalog():
     return jsonify({"planes": serialize_plan_catalog()})
 
 
+from services.organization_workspace import build_organization_workspace
+from services.organization_profile_settings import build_profile_settings
+from services.organization_branding import build_workspace_appearance
+from services.plan_access import tenant_allows_workspace_branding
+from utils.tenant_admin_access import can_manage_tenant_control_plane
+
+
 def build_profile_payload(user: User) -> Dict[str, Any]:
     """Assemble the profile payload shared by the legacy and new endpoints."""
 
@@ -1120,6 +1136,15 @@ def build_profile_payload(user: User) -> Dict[str, Any]:
     }
 
     profile_data["map_config"] = get_map_config()
+    profile_data["organization_workspace"] = build_organization_workspace(tenant_profile)
+    profile_data['workspace_appearance'] = build_workspace_appearance(tenant_profile,
+        entitled=tenant_allows_workspace_branding(tenant_profile))
+    profile_owner = None
+    if tenant_profile is not None:
+        profile_owner = tenant_profile.municipio if tenant_profile.municipio_id else tenant_profile.pyme
+    profile_data["organization_profile"] = build_profile_settings(
+        tenant_profile, profile_owner, can_edit=can_manage_tenant_control_plane(user, tenant_profile), writes_blocked=cutover_writer_fence_enabled(current_app.config)
+    )
 
     plan_metadata = get_plan_metadata(profile_data.get("plan"))
     profile_data["plan_detalle"] = serialize_plan_for_response(plan_metadata)
@@ -1361,12 +1386,15 @@ def widget_bootstrap():
     market_payload.setdefault("public_path", path)
     market_payload.setdefault("public_market_url", full_url)
 
-    jwks_url = current_app.config.get("WIDGET_JWKS_URL")
-    if not jwks_url:
-        try:
-            jwks_url = url_for("auth.widget_jwks", _external=True)
-        except Exception:
-            jwks_url = None
+    widget_alg = str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).strip().upper()
+    jwks_url = None
+    if not widget_alg.startswith("HS"):
+        jwks_url = current_app.config.get("WIDGET_JWKS_URL")
+        if not jwks_url:
+            try:
+                jwks_url = url_for("auth.widget_jwks", _external=True)
+            except Exception:
+                jwks_url = None
 
     response_payload = {
         "contract_version": WIDGET_BOOTSTRAP_CONTRACT_VERSION,
@@ -1375,7 +1403,7 @@ def widget_bootstrap():
         "features": _widget_features_for_tenant(tenant),
         "jwks": {
             "url": jwks_url,
-            "alg": str(current_app.config.get("WIDGET_JWT_ALG", "HS256")).upper(),
+            "alg": widget_alg,
             "kid": current_app.config.get("WIDGET_JWT_KID", "widget-hs256"),
         },
         "widget": {
@@ -2098,6 +2126,13 @@ def login_demo():
 
     if not tenant_obj:
         return jsonify({"error": f"Rubro demo '{candidate or demo_slug or ''}' no válido"}), 404
+
+    # Synthetic catalog rows are provisioned only inside this explicit POST
+    # demo journey and only when the tenant opted in. Public catalog reads are
+    # deliberately side-effect free.
+    demo_catalog_owner = tenant_obj.municipio or tenant_obj.pyme
+    if demo_catalog_owner is not None:
+        provision_demo_catalog(demo_catalog_owner, tenant_obj)
 
     demo_user = _get_or_create_demo_user_for_tenant(tenant_obj)
     _attach_user_to_tenant(demo_user, tenant_obj)
@@ -2988,6 +3023,7 @@ def register():
 
 
 @auth_bp.route('/verify-email', methods=['GET'])
+@cutover_writer_view
 def verify_email():
     token = request.args.get('token')
     if not token:
@@ -3248,6 +3284,9 @@ def chatuser_register_panel():
     if not empresa_token:
         current_app.logger.warning("[chatuser_register_panel] Registration attempt failed: Falta empresa_token")
         return jsonify({"error": "Falta empresa_token"}), 400
+
+    # Keep the large commerce/chat stack off authentication startup imports.
+    from services.pymes import get_or_create_pyme_user_by_token
 
     owner_user = get_or_create_pyme_user_by_token(empresa_token.strip())
     if not owner_user:

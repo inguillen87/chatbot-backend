@@ -13,7 +13,7 @@ import logging
 import math
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -28,6 +28,43 @@ _DEFAULT_DATABASE_TIMEOUT_SECONDS = 1.5
 _DEFAULT_REDIS_TIMEOUT_SECONDS = 1.0
 _MIN_TIMEOUT_SECONDS = 0.1
 _MAX_TIMEOUT_SECONDS = 5.0
+# Keep this contract deliberately small.  This table backs an unconditionally
+# registered request path, so a production-like runtime cannot serve its
+# advertised contract without it.  Extra columns and indexes are allowed for
+# forward compatibility; optional feature tables do not belong here unless
+# guarded by their corresponding runtime flag.
+_REQUIRED_POSTGRESQL_TABLE = "municipio_chat_idempotency_receipt"
+_REQUIRED_POSTGRESQL_COLUMNS = (
+    ("id", "int4", True),
+    ("tenant_id", "int4", True),
+    ("endpoint", "varchar", True),
+    ("actor_scope_hash", "varchar", True),
+    ("idempotency_key_hash", "varchar", True),
+    ("request_hash", "varchar", True),
+    ("status", "varchar", True),
+    ("response_status", "int4", False),
+    ("response_json", "jsonb", False),
+    ("response_request_id", "varchar", False),
+    ("contract_version", "varchar", True),
+    ("created_at", "timestamptz", True),
+    ("updated_at", "timestamptz", True),
+    ("completed_at", "timestamptz", False),
+    ("expired_at", "timestamptz", False),
+)
+_REQUIRED_POSTGRESQL_UNIQUE_COLUMNS = (
+    "tenant_id",
+    "endpoint",
+    "actor_scope_hash",
+    "idempotency_key_hash",
+)
+_SCHEMA_PRIVILEGE_STATE_KEYS = (
+    "schema_usage_privilege",
+    "select_privilege",
+    "insert_privilege",
+    "update_privilege",
+    "delete_privilege",
+    "identity_sequence_privilege",
+)
 
 
 class _CacheEntry:
@@ -133,13 +170,203 @@ def _bounded_timeout(value: object, *, default: float) -> float:
     return min(max(timeout, _MIN_TIMEOUT_SECONDS), _MAX_TIMEOUT_SECONDS)
 
 
+def _postgresql_schema_probe(
+    *,
+    timeout_seconds: float,
+) -> tuple[Any, dict[str, Any]]:
+    # PostgreSQL treats comma-separated privilege names as "any of".  Emit
+    # one boolean per operation so _schema_contract_failure_reason can require
+    # every permission used by the receipt lifecycle.
+    statement = text(
+        """
+        SELECT
+            relation.oid IS NOT NULL AS relation_present,
+            COALESCE(
+                relation.relkind IN ('r', 'p'),
+                FALSE
+            ) AS table_kind_valid,
+            COALESCE(
+                (
+                    SELECT pg_catalog.jsonb_object_agg(
+                        CAST(attribute.attname AS text),
+                        pg_catalog.jsonb_build_array(
+                            CAST(data_type.typname AS text),
+                            attribute.attnotnull
+                        )
+                    )
+                    FROM pg_catalog.pg_attribute AS attribute
+                    JOIN pg_catalog.pg_type AS data_type
+                      ON data_type.oid = attribute.atttypid
+                    WHERE attribute.attrelid = relation.oid
+                      AND attribute.attnum > 0
+                      AND NOT attribute.attisdropped
+                ),
+                CAST('{}' AS jsonb)
+            ) AS columns,
+            COALESCE(
+                (
+                    SELECT pg_catalog.jsonb_agg(
+                        indexed_columns.column_names
+                    )
+                    FROM pg_catalog.pg_index AS index_definition
+                    CROSS JOIN LATERAL (
+                        SELECT pg_catalog.jsonb_agg(
+                            CAST(attribute.attname AS text)
+                            ORDER BY key_column.ordinality
+                        ) AS column_names
+                        FROM pg_catalog.unnest(index_definition.indkey)
+                            WITH ORDINALITY AS key_column(attnum, ordinality)
+                        JOIN pg_catalog.pg_attribute AS attribute
+                          ON attribute.attrelid = index_definition.indrelid
+                         AND attribute.attnum = key_column.attnum
+                        WHERE key_column.ordinality
+                            <= index_definition.indnkeyatts
+                    ) AS indexed_columns
+                    WHERE index_definition.indrelid = relation.oid
+                      AND index_definition.indisunique
+                      AND index_definition.indisvalid
+                      AND index_definition.indisready
+                      AND index_definition.indislive
+                      AND index_definition.indpred IS NULL
+                      AND index_definition.indexprs IS NULL
+                ),
+                CAST('[]' AS jsonb)
+            ) AS unique_indexes,
+            identity_sequence.name IS NOT NULL
+                AS identity_sequence_present,
+            COALESCE(
+                pg_catalog.has_schema_privilege(
+                    relation.relnamespace,
+                    'USAGE'
+                ),
+                FALSE
+            ) AS schema_usage_privilege,
+            COALESCE(
+                pg_catalog.has_table_privilege(relation.oid, 'SELECT'),
+                FALSE
+            ) AS select_privilege,
+            COALESCE(
+                pg_catalog.has_table_privilege(relation.oid, 'INSERT'),
+                FALSE
+            ) AS insert_privilege,
+            COALESCE(
+                pg_catalog.has_table_privilege(relation.oid, 'UPDATE'),
+                FALSE
+            ) AS update_privilege,
+            COALESCE(
+                pg_catalog.has_table_privilege(relation.oid, 'DELETE'),
+                FALSE
+            ) AS delete_privilege,
+            COALESCE(
+                pg_catalog.has_sequence_privilege(
+                    identity_sequence.name,
+                    'USAGE'
+                )
+                OR pg_catalog.has_sequence_privilege(
+                    identity_sequence.name,
+                    'UPDATE'
+                ),
+                FALSE
+            ) AS identity_sequence_privilege
+        FROM (
+            SELECT
+                resolved.oid,
+                resolved.relnamespace,
+                resolved.relkind
+            FROM (
+                SELECT pg_catalog.to_regclass(:required_table) AS oid
+            ) AS lookup
+            LEFT JOIN pg_catalog.pg_class AS resolved
+              ON resolved.oid = lookup.oid
+        ) AS relation
+        LEFT JOIN LATERAL (
+            SELECT CASE
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM pg_catalog.pg_attribute AS identity_attribute
+                    WHERE identity_attribute.attrelid = relation.oid
+                      AND CAST(identity_attribute.attname AS text) =
+                          :identity_column
+                      AND identity_attribute.attnum > 0
+                      AND NOT identity_attribute.attisdropped
+                )
+                THEN pg_catalog.pg_get_serial_sequence(
+                    CAST(CAST(relation.oid AS regclass) AS text),
+                    :identity_column
+                )
+                ELSE NULL
+            END AS name
+        ) AS identity_sequence ON TRUE
+        """
+    ).execution_options(timeout=timeout_seconds)
+    bind_params: dict[str, Any] = {
+        "required_table": _REQUIRED_POSTGRESQL_TABLE,
+        "identity_column": "id",
+    }
+    return statement, bind_params
+
+
+def _schema_contract_failure_reason(
+    state: Mapping[str, Any],
+) -> str | None:
+    if state.get("relation_present") is not True:
+        return "required_schema_missing"
+    if (
+        state.get("table_kind_valid") is not True
+        or state.get("identity_sequence_present") is not True
+    ):
+        return "required_schema_incompatible"
+
+    observed_columns = state.get("columns")
+    if not isinstance(observed_columns, Mapping):
+        return "required_schema_incompatible"
+    for column_name, type_name, not_null in _REQUIRED_POSTGRESQL_COLUMNS:
+        observed_contract = observed_columns.get(column_name)
+        if (
+            not isinstance(observed_contract, (list, tuple))
+            or len(observed_contract) != 2
+            or observed_contract[0] != type_name
+            or not isinstance(observed_contract[1], bool)
+            or observed_contract[1] != not_null
+        ):
+            return "required_schema_incompatible"
+
+    observed_unique_indexes = state.get("unique_indexes")
+    required_unique_columns = list(_REQUIRED_POSTGRESQL_UNIQUE_COLUMNS)
+    if not isinstance(observed_unique_indexes, (list, tuple)):
+        return "required_schema_incompatible"
+    normalized_unique_indexes = [
+        list(index_columns)
+        for index_columns in observed_unique_indexes
+        if isinstance(index_columns, (list, tuple))
+    ]
+
+    def has_equivalent_unique_index(required_columns: list[str]) -> bool:
+        return any(
+            len(index_columns) == len(required_columns)
+            and set(index_columns) == set(required_columns)
+            for index_columns in normalized_unique_indexes
+        )
+
+    if not has_equivalent_unique_index(["id"]):
+        return "required_schema_incompatible"
+    if not has_equivalent_unique_index(required_unique_columns):
+        return "required_idempotency_uniqueness_missing"
+    if any(
+        state.get(key) is not True
+        for key in _SCHEMA_PRIVILEGE_STATE_KEYS
+    ):
+        return "required_database_privilege_missing"
+    return None
+
+
 def _database_status(
     engine: Engine,
     *,
     timeout_seconds: float,
     require_postgresql: bool,
 ) -> dict[str, Any]:
-    """Run a side-effect-free database probe with a short statement timeout."""
+    """Run bounded connectivity and critical-schema probes without row reads."""
 
     timeout_ms = max(1, int(timeout_seconds * 1000))
     dialect_name = ""
@@ -152,11 +379,36 @@ def _database_status(
                 connection.exec_driver_sql(
                     f"SET LOCAL statement_timeout = {timeout_ms}"
                 )
-            result = connection.execute(
-                text("SELECT 1").execution_options(timeout=timeout_seconds)
-            )
-            if result.scalar_one() != 1:
-                raise RuntimeError("unexpected database readiness result")
+            if require_postgresql and dialect_name == "postgresql":
+                schema_statement, bind_params = _postgresql_schema_probe(
+                    timeout_seconds=timeout_seconds
+                )
+                schema_state = connection.execute(
+                    schema_statement,
+                    bind_params,
+                ).mappings().one()
+                failure_reason = _schema_contract_failure_reason(schema_state)
+                if failure_reason is not None:
+                    logger.warning(
+                        "Runtime readiness database schema probe failed "
+                        "reason_code=%s",
+                        failure_reason,
+                    )
+                    return {
+                        "status": "error",
+                        "required": True,
+                        "reason_code": failure_reason,
+                    }
+            else:
+                result = connection.execute(
+                    text("SELECT 1").execution_options(
+                        timeout=timeout_seconds
+                    )
+                )
+                if result.scalar_one() != 1:
+                    raise RuntimeError(
+                        "unexpected database readiness result"
+                    )
     except Exception as exc:
         logger.warning(
             "Runtime readiness database probe failed error_type=%s",

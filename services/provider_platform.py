@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from sqlalchemy import text
+
 from extensions import db
 from models import (
     ConsentLedger,
@@ -12,14 +14,39 @@ from models import (
     ProviderSender,
     TenantProfile,
 )
+from services.provider_connection_cutover_contract import (
+    MANAGED_CONNECTION_CONTRACT_VERSION,
+    MANAGED_CONNECTION_MARKER,
+    advisory_lock_keys,
+)
 
 
 CONTRACT_VERSION = "provider.platform_status.v1"
 READY_SENDER_STATUSES = frozenset({"online", "approved", "connected", "active"})
 
 
+class ManagedProviderConnectionStateError(RuntimeError):
+    """A legacy sync attempted to weaken a cutover-managed connection."""
+
+    def __init__(self, code: str):
+        self.code = str(code or "managed_provider_connection_state_invalid")
+        super().__init__(self.code)
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _is_sha256(value: Any) -> bool:
+    cleaned = _clean(value).lower()
+    return len(cleaned) == 64 and all(ch in "0123456789abcdef" for ch in cleaned)
+
+
+def _is_deployment_revision(value: Any) -> bool:
+    cleaned = _clean(value).lower()
+    return 7 <= len(cleaned) <= 64 and all(
+        ch in "0123456789abcdef" for ch in cleaned
+    )
 
 
 def is_sender_ready_status(value: Any) -> bool:
@@ -98,6 +125,77 @@ def _status_callback_urls(config: Mapping[str, Any]) -> dict[str, str]:
 
 def _get_or_create_connection(tenant: TenantProfile, config: Mapping[str, Any]) -> ProviderConnection:
     live_enabled = _bool_config(config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")
+    tenant_connections = ProviderConnection.query.filter_by(
+        tenant_id=tenant.id,
+        provider="twilio",
+        channel="whatsapp",
+    ).all()
+    managed_connections = [
+        candidate
+        for candidate in tenant_connections
+        if isinstance(candidate.config, dict)
+        and isinstance(candidate.config.get(MANAGED_CONNECTION_MARKER), dict)
+        and candidate.config[MANAGED_CONNECTION_MARKER].get("enabled") is True
+    ]
+    if managed_connections:
+        if len(managed_connections) != 1:
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_ambiguous"
+            )
+        connection = managed_connections[0]
+        if not live_enabled:
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_live_runtime_disabled"
+            )
+        if _clean(connection.environment).lower() != "production":
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_environment_mismatch"
+            )
+        database_identity = _clean(
+            config.get("CUTOVER_DATABASE_IDENTITY_SHA256")
+        ).lower()
+        if len(database_identity) != 64 or any(
+            ch not in "0123456789abcdef" for ch in database_identity
+        ):
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_database_identity_required"
+            )
+        bind = db.session.get_bind()
+        if getattr(getattr(bind, "dialect", None), "name", None) != "postgresql":
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_postgresql_required"
+            )
+        isolation = db.session.execute(
+            text("SELECT current_setting('transaction_isolation')")
+        ).scalar_one()
+        if _clean(isolation).lower() != "serializable":
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_serializable_required"
+            )
+        for lock_key in advisory_lock_keys(
+            database_identity_sha256=database_identity,
+            tenant_slug=_clean(tenant.slug).lower(),
+            external_account_id=_clean(connection.external_account_id),
+        ):
+            acquired = db.session.execute(
+                text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+                {"lock_key": lock_key},
+            ).scalar_one()
+            if acquired is not True:
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_connection_lock_contended_retry_required"
+                )
+        db.session.refresh(connection)
+        refreshed_marker = (
+            connection.config.get(MANAGED_CONNECTION_MARKER)
+            if isinstance(connection.config, dict)
+            else None
+        )
+        if not isinstance(refreshed_marker, dict) or refreshed_marker.get("enabled") is not True:
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_marker_changed_after_lock"
+            )
+        return connection
     environment = "production" if live_enabled else "sandbox"
     connection = ProviderConnection.query.filter_by(
         tenant_id=tenant.id,
@@ -147,14 +245,112 @@ def sync_twilio_provider_records(
     connection = _get_or_create_connection(tenant, app_config)
     callbacks = _status_callback_urls(app_config)
 
-    connection.status = _connection_status(state)
+    management = (
+        connection.config.get(MANAGED_CONNECTION_MARKER)
+        if isinstance(connection.config, dict)
+        else None
+    )
+    is_managed = isinstance(management, dict) and management.get("enabled") is True
+    derived_connection_status = _connection_status(state)
+    managed_online = is_managed and is_sender_ready_status(connection.status)
+    managed_sender = None
+    if is_managed:
+        if managed_online and not (
+            management.get("contract_version")
+            == MANAGED_CONNECTION_CONTRACT_VERSION
+            and
+            management.get("promotion_required") is False
+            and _is_sha256(management.get("provider_snapshot_sha256"))
+            and _is_sha256(management.get("credential_attestation_sha256"))
+            and _is_deployment_revision(
+                management.get("destination_deployment_revision")
+            )
+        ):
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_promotion_evidence_incomplete"
+            )
+        state_account = _clean(state.get("twilio_account_sid"))
+        state_token_ref = _clean(state.get("twilio_subaccount_token_ref"))
+        expected_account = _clean(connection.external_account_id)
+        expected_credentials_ref = _clean(connection.credentials_ref)
+        if not state_account or state_account != expected_account:
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_account_drift"
+            )
+        if (
+            not state_token_ref
+            or f"env:{state_token_ref}" != expected_credentials_ref
+        ):
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_credentials_ref_drift"
+            )
+        if is_sender_ready_status(connection.status) and not is_sender_ready_status(
+            derived_connection_status
+        ):
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_connection_status_downgrade_blocked"
+            )
+        if managed_online:
+            state_phone = _normalize_phone(
+                state.get("requested_phone_number")
+                or state.get("phone_number")
+                or state.get("sender_id")
+            )
+            managed_sender = _sender_query(tenant, state, state_phone)
+            if managed_sender is None:
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_sender_missing"
+                )
+            authoritative_pairs = (
+                (state_phone, managed_sender.phone_number, "phone"),
+                (_clean(state.get("sender_id")), _clean(managed_sender.sender_id), "sender_id"),
+                (_clean(state.get("sender_sid")), _clean(managed_sender.sender_sid), "sender_sid"),
+                (
+                    _clean(state.get("messaging_service_sid")),
+                    _clean(managed_sender.messaging_service_sid),
+                    "messaging_service_sid",
+                ),
+            )
+            for observed, expected, field in authoritative_pairs:
+                if not observed or observed != expected:
+                    raise ManagedProviderConnectionStateError(
+                        f"managed_provider_sender_{field}_drift"
+                    )
+            if _clean(managed_sender.status).lower() != "online":
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_sender_database_status_invalid"
+                )
+            if managed_sender.webhook_url != callbacks["webhook_url"]:
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_sender_webhook_drift"
+                )
+            if managed_sender.status_callback_url != callbacks["status_callback_url"]:
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_sender_status_callback_drift"
+                )
+
+    connection.status = (
+        connection.status if is_managed else derived_connection_status
+    )
     connection.display_name = state.get("display_name") or getattr(tenant, "nombre", None)
-    connection.external_account_id = state.get("twilio_account_sid")
+    connection.external_account_id = (
+        connection.external_account_id
+        if is_managed
+        else state.get("twilio_account_sid")
+    )
     connection.external_business_id = state.get("waba_id")
     connection.external_app_id = _clean(app_config.get("TWILIO_META_APP_ID")) or None
     connection.configuration_id = _clean(app_config.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID")) or None
     connection.partner_solution_id = _clean(app_config.get("TWILIO_PARTNER_SOLUTION_ID")) or None
-    connection.credentials_ref = "env:twilio_parent" if _clean(app_config.get("TWILIO_ACCOUNT_SID")) else None
+    connection.credentials_ref = (
+        connection.credentials_ref
+        if is_managed
+        else (
+            "env:twilio_parent"
+            if _clean(app_config.get("TWILIO_ACCOUNT_SID"))
+            else None
+        )
+    )
     connection.capabilities = {
         "embedded_signup": bool(_clean(app_config.get("TWILIO_META_APP_ID")) and _clean(app_config.get("TWILIO_META_EMBEDDED_SIGNUP_CONFIG_ID"))),
         "sender_registration": True,
@@ -162,11 +358,12 @@ def sync_twilio_provider_records(
         "subaccounts": True,
         "templates": True,
     }
-    connection.config = {
+    next_connection_config = {
         "webhook_url": callbacks["webhook_url"],
         "status_callback_url": callbacks["status_callback_url"],
         "live_enabled": _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED"),
     }
+    connection.config = connection.config if is_managed else next_connection_config
     connection.health = {
         "last_step": state.get("last_step"),
         "updated_at": state.get("updated_at"),
@@ -178,8 +375,21 @@ def sync_twilio_provider_records(
 
     phone = _normalize_phone(state.get("requested_phone_number") or state.get("phone_number") or state.get("sender_id"))
     sender = None
+    if managed_online and not (
+        phone
+        or state.get("sender_sid")
+        or state.get("sender_id")
+        or state.get("phone_number_id")
+    ):
+        raise ManagedProviderConnectionStateError(
+            "managed_provider_sender_state_missing"
+        )
     if phone or state.get("sender_sid") or state.get("sender_id") or state.get("phone_number_id"):
-        sender = _sender_query(tenant, state, phone)
+        sender = managed_sender or _sender_query(tenant, state, phone)
+        if managed_online and not sender:
+            raise ManagedProviderConnectionStateError(
+                "managed_provider_sender_missing"
+            )
         if not sender:
             sender = ProviderSender(
                 tenant_id=tenant.id,
@@ -191,16 +401,39 @@ def sync_twilio_provider_records(
             db.session.add(sender)
             db.session.flush()
         sender.provider_connection_id = connection.id
-        sender.phone_number = phone or sender.phone_number
-        sender.sender_id = state.get("sender_id") or _sender_id_from_phone(phone) or sender.sender_id
-        sender.sender_sid = state.get("sender_sid") or sender.sender_sid
-        sender.messaging_service_sid = state.get("messaging_service_sid") or sender.messaging_service_sid
-        sender.waba_id = state.get("waba_id") or sender.waba_id
-        sender.phone_number_id = state.get("phone_number_id") or sender.phone_number_id
+        if not managed_online:
+            sender.phone_number = phone or sender.phone_number
+            sender.sender_id = state.get("sender_id") or _sender_id_from_phone(phone) or sender.sender_id
+            sender.sender_sid = state.get("sender_sid") or sender.sender_sid
+            sender.messaging_service_sid = state.get("messaging_service_sid") or sender.messaging_service_sid
+        if not managed_online:
+            sender.waba_id = state.get("waba_id") or sender.waba_id
+            sender.phone_number_id = state.get("phone_number_id") or sender.phone_number_id
         sender.display_name = state.get("display_name") or getattr(tenant, "nombre", None)
-        sender.status = _sender_status(state)
-        sender.webhook_url = callbacks["webhook_url"]
-        sender.status_callback_url = callbacks["status_callback_url"]
+        derived_sender_status = _sender_status(state)
+        if managed_online:
+            if str(derived_sender_status or "").strip().lower() != "online":
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_sender_status_downgrade_blocked"
+                )
+            if sender.webhook_url and sender.webhook_url != callbacks["webhook_url"]:
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_sender_webhook_drift"
+                )
+            if (
+                sender.status_callback_url
+                and sender.status_callback_url != callbacks["status_callback_url"]
+            ):
+                raise ManagedProviderConnectionStateError(
+                    "managed_provider_sender_status_callback_drift"
+                )
+        sender.status = sender.status if managed_online else derived_sender_status
+        sender.webhook_url = sender.webhook_url if managed_online else callbacks["webhook_url"]
+        sender.status_callback_url = (
+            sender.status_callback_url
+            if managed_online
+            else callbacks["status_callback_url"]
+        )
         sender.metadata_json = {
             "embedded_signup_session_id": state.get("embedded_signup_session_id"),
             "last_step": state.get("last_step"),

@@ -115,6 +115,10 @@ def test_clerk_config_contract(client, monkeypatch):
     resp = client.get("/auth/clerk/config")
 
     assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == (
+        "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+    )
+    assert "Origin" in resp.headers["Vary"]
     payload = resp.get_json()
     assert payload["contract_version"] == "auth.clerk.v1"
     assert payload["enabled"] is True
@@ -172,6 +176,10 @@ def test_clerk_config_contract_api_alias(client, monkeypatch):
     resp = client.get("/api/auth/clerk/config")
 
     assert resp.status_code == 200
+    assert resp.headers["Cache-Control"] == (
+        "public, max-age=60, s-maxage=300, stale-while-revalidate=600"
+    )
+    assert "Origin" in resp.headers["Vary"]
     payload = resp.get_json()
     assert payload["contract_version"] == "auth.clerk.v1"
     assert payload["enabled"] is True

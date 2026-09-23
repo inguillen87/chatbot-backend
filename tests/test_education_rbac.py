@@ -1,5 +1,6 @@
 import time
 import unittest
+import uuid
 
 from app import create_app, db
 from config import TestingConfig
@@ -105,7 +106,10 @@ class TestEducationRbac(unittest.TestCase):
 
     def _employee(self, tenant, owner, capabilities):
         employee = User(
-            email=f"edu-rbac-employee-{tenant.id}-{len(capabilities)}-{time.time_ns()}@chatboc.ar",
+            email=(
+                f"edu-rbac-employee-{tenant.id}-{len(capabilities)}-"
+                f"{time.time_ns()}-{uuid.uuid4().hex}@chatboc.ar"
+            ),
             password_hash="hash",
             name="Education staff",
             rol="empleado",
@@ -353,7 +357,7 @@ class TestEducationRbac(unittest.TestCase):
         assignment = self.client.post(
             f"/api/v1/education/cases/{case['school_case_id']}/assign",
             headers=self.owner_headers,
-            json={"assignee_id": foreign_staff.id},
+            json={"assignee_id": foreign_staff.id, "expected_assignee_id": None},
         )
         self.assertEqual(assignment.status_code, 400)
         self.assertEqual(
@@ -387,7 +391,7 @@ class TestEducationRbac(unittest.TestCase):
         assignment = self.client.post(
             f"/api/v1/education/cases/{case['school_case_id']}/assign",
             headers=self.owner_headers,
-            json={"assignee_id": employee.id},
+            json={"assignee_id": employee.id, "expected_assignee_id": None},
         )
         self.assertEqual(assignment.status_code, 200, assignment.get_json())
 
@@ -407,6 +411,63 @@ class TestEducationRbac(unittest.TestCase):
         ).one()
         self.assertTrue(comment.es_admin)
         self.assertEqual(comment.origen, "education")
+
+    def test_school_case_assignment_requires_cas_and_rejects_alias_conflicts(self):
+        first = self._employee(
+            self.tenant_a,
+            self.owner_a,
+            {EDUCATION_CASES_WRITE},
+        )
+        second = self._employee(
+            self.tenant_a,
+            self.owner_a,
+            {EDUCATION_CASES_WRITE},
+        )
+        case = self._create_case()
+        endpoint = f"/api/v1/education/cases/{case['school_case_id']}/assign"
+
+        initial = self.client.post(
+            endpoint,
+            headers=self.owner_headers,
+            json={"assignee_id": first.id, "expected_assignee_id": None},
+        )
+        self.assertEqual(initial.status_code, 200, initial.get_json())
+
+        stale = self.client.post(
+            endpoint,
+            headers=self.owner_headers,
+            json={"assignee_id": second.id, "expected_assignee_id": None},
+        )
+        self.assertEqual(stale.status_code, 409, stale.get_json())
+        self.assertEqual(stale.get_json()["reason_code"], "assignment_state_conflict")
+
+        conflict = self.client.post(
+            endpoint,
+            headers=self.owner_headers,
+            json={
+                "assignee_id": second.id,
+                "asignado_a_id": first.id,
+                "expected_assignee_id": first.id,
+            },
+        )
+        self.assertEqual(conflict.status_code, 409, conflict.get_json())
+        self.assertEqual(conflict.get_json()["reason_code"], "education_assignee_identity_conflict")
+
+        reassigned = self.client.post(
+            endpoint,
+            headers=self.owner_headers,
+            json={"assignee_id": second.id, "expected_assignee_id": first.id},
+        )
+        self.assertEqual(reassigned.status_code, 200, reassigned.get_json())
+        self.assertEqual(reassigned.get_json()["ticket"]["asignado_a_id"], second.id)
+
+        replay = self.client.post(
+            endpoint,
+            headers=self.owner_headers,
+            json={"assignee_id": second.id, "expected_assignee_id": first.id},
+        )
+        self.assertEqual(replay.status_code, 200, replay.get_json())
+        self.assertTrue(replay.get_json()["assignment"]["replayed"])
 
     def test_cross_tenant_ticket_alias_is_rejected_omitted_and_durably_audited(self):
         foreign_ticket = PymeTicket(

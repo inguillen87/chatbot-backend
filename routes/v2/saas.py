@@ -4,18 +4,21 @@ import ast
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
+import math
 from html import escape
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import quote_plus
 import uuid
 
-from flask import Blueprint, current_app, g, jsonify, request
-from sqlalchemy import func, or_
-from sqlalchemy.exc import SQLAlchemyError
+from flask import Blueprint, current_app, g, has_request_context, jsonify, request
+from sqlalchemy import and_, func, or_
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.exceptions import RequestEntityTooLarge
 
+from cutover_writer_fence import cutover_writer_view
 from extensions import db
 from models import (
     ArchivoAdjunto,
@@ -23,8 +26,12 @@ from models import (
     DomainEffectOutbox,
     EncEncuesta,
     EncRespuesta,
+    InboxTicketArtifact,
     MarketOrder,
+    MessageTemplateRegistry,
     MunicipioTicket,
+    MunicipioTicketHandoffEvent,
+    MunicipioTicketReplyEvent,
     Notification,
     NotificationTemplate,
     PublicSurvey,
@@ -43,15 +50,22 @@ from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     employee_ticket_category_access_allows,
     ticket_assignee_is_compatible,
+    ticket_assignee_is_operational,
 )
 from services.employee_routing import (
     build_employee_routing_payload,
     employee_ref,
+    eligible_employees_for_ticket,
     find_ticket_for_assignment,
     normalize_scope_list,
     tenant_open_ticket_snapshots,
     tenant_operational_dimensions,
     workload_by_employee,
+)
+from services.ticket_assignment_policy import (
+    TicketAssignmentPolicyError,
+    actor_can_assign_tickets,
+    assignment_transition,
 )
 from services.catalog_quality import build_catalog_quality_fallback_payload, build_catalog_quality_payload
 from services.channel_activation import build_channel_activation_payload
@@ -67,6 +81,7 @@ from services.crm_operational_queue_guard import (
     enforce_operational_queue_rate_limit,
 )
 from services.demo_sandbox_contract import build_demo_whatsapp_sandbox_contract, sandbox_context_from_contract
+from services.demo_surveys import resolve_demo_public_frontend_base_url
 from services.live_chat_schedule import build_tenant_live_chat_status
 from services.omnichannel_message_policy import (
     OMNICHANNEL_REPLY_MAX_BODY_BYTES,
@@ -94,7 +109,14 @@ from services.twilio_tech_provider import (
     register_whatsapp_sender,
     verify_meta_embedded_signup_completion,
 )
-from services.v2.sla_service import is_ticket_overdue
+from services.v2.sla_service import (
+    apply_priority_change_sla,
+    apply_reopen_sla,
+    apply_resolution_sla,
+    evaluate_ticket_sla,
+    get_policies_for_tenant,
+    is_ticket_overdue,
+)
 from services.whatsapp_experience import _template_creation_manifest_payload, build_whatsapp_experience
 from services.whatsapp_workflow_studio import (
     MAX_DRAFT_BYTES,
@@ -116,7 +138,7 @@ from services.whatsapp_workflow_versioning import (
 )
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
-from utils.roles import first_specific_tenant_slug, is_authorized_superadmin_user
+from utils.roles import ROLE_EMPLEADO, canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user
 
 v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
@@ -130,6 +152,14 @@ _LIVE_CHAT_QUEUE_STATES = {
     "pending_admin_response",
     "offline_waiting_admin_response",
 }
+
+
+def _ticket_transition_status(action: str, raw_status: Any, *, default: str) -> str | None:
+    """Normalize an action status without allowing a contradictory transition."""
+
+    status = default if raw_status is None else (str(raw_status).strip().lower() or default)
+    allowed = _CLOSED_TICKET_STATES if action == "close" else _ACTIVE_TICKET_STATES
+    return status if status in allowed else None
 _INBOX_TEAM_ORIGINS = {"admin_panel", "agent", "team", "operator", "internal", "municipio", "pyme"}
 _HANDOFF_QUEUED_STATES = {
     "pending",
@@ -139,6 +169,17 @@ _HANDOFF_QUEUED_STATES = {
 }
 _HANDOFF_TERMINAL_STATES = {"resolved", "cancelled", "canceled", "expired", "rejected"}
 _HANDOFF_SUPPORTED_CHANNELS = {"operator", "live_chat", "phone"}
+_OPERATIONAL_OWNERSHIP_ACTIONS = {
+    "reply",
+    "attach_file",
+    "share_location",
+    "send_form",
+    "handoff",
+    "resume_ai",
+    "close",
+    "reopen",
+    "set_priority",
+}
 # Administrative replies can target WhatsApp, email, or web. Keep the JSON
 # envelope bounded while leaving room for routing/idempotency metadata, and
 # align the durable normalized body with the repository's 8 KiB omnichannel
@@ -1862,7 +1903,7 @@ def employee_routing_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
         return error
-    return _json_response(build_employee_routing_payload(tenant))
+    return _json_response(build_employee_routing_payload(tenant, viewer=current_user))
 
 
 @v2_saas_bp.route("/employees/<int:employee_id>/routing-scope", methods=["PATCH", "POST"])
@@ -1930,7 +1971,7 @@ def _apply_employee_assignment(ticket: Any, assignee: User, actor: User) -> dict
 @v2_saas_bp.route("/employee-routing/auto-assign", methods=["POST"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/employee-routing/auto-assign", methods=["POST"])
 @token_requerido
-@require_role("admin", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None):
     tenant, error = _resolve_tenant_or_error(current_user, tenant_slug)
     if error:
@@ -1938,24 +1979,142 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
 
     payload = request.get_json(silent=True) or {}
     dry_run = payload.get("dry_run", True) is not False
+    if not dry_run and canonical_role(getattr(current_user, "rol", None)) == ROLE_EMPLEADO:
+        return _assignment_policy_error(
+            TicketAssignmentPolicyError(
+                403,
+                "ticket_assignment_forbidden",
+                "La autoasignacion aplicada requiere supervision; el empleado solo puede simularla",
+                "request_supervisor_assignment",
+            )
+        )
+    if not dry_run and not actor_can_assign_tickets(current_user):
+        return _assignment_policy_error(
+            TicketAssignmentPolicyError(
+                403,
+                "ticket_assignment_forbidden",
+                "La asignacion a otro operador requiere supervision o la capacidad tickets.assign",
+                "request_supervisor_assignment",
+            )
+        )
     limit = max(1, min(int(payload.get("limit", 25) or 25), 100))
-    routing = build_employee_routing_payload(tenant)
+    routing = build_employee_routing_payload(tenant, viewer=current_user)
     recommendations = routing.get("recommendations") or []
     explicit_tickets = payload.get("tickets") if isinstance(payload.get("tickets"), list) else []
+    expected_by_identity: dict[tuple[str, int], Any] = {}
+    if not dry_run and not explicit_tickets:
+        return _error_response(
+            "tickets con source_model, ticket_id y expected_assignee_id son obligatorios para aplicar autoasignacion",
+            400,
+            "assignment_cas_batch_identity_required",
+            "send_explicit_ticket_cas_items",
+        )
     if explicit_tickets:
-        wanted = {
-            (str(item.get("source_model") or ""), int(item.get("id") or item.get("ticket_id") or 0))
-            for item in explicit_tickets
-            if str(item.get("source_model") or "") and str(item.get("id") or item.get("ticket_id") or "").isdigit()
-        }
-        recommendations = [
-            item
-            for item in recommendations
+        wanted: set[tuple[str, int]] = set()
+        wanted_order: list[tuple[str, int]] = []
+        for item in explicit_tickets:
+            if not isinstance(item, Mapping):
+                return _error_response(
+                    "Cada ticket debe declarar una identidad source_model + ticket_id valida",
+                    400,
+                    "ticket_identity_invalid",
+                    "send_exact_ticket_identity",
+                )
+            source = str(item.get("source_model") or "").strip()
+            raw_ids = [item.get(key) for key in ("id", "ticket_id") if item.get(key) not in (None, "")]
+            parsed_ids = [int(value) for value in raw_ids if str(value).isdigit() and int(value) > 0]
             if (
+                source not in {"TenantTicket", "MunicipioTicket", "PymeTicket"}
+                or len(parsed_ids) != len(raw_ids)
+                or not parsed_ids
+            ):
+                return _error_response(
+                    "Cada ticket debe declarar una identidad source_model + ticket_id valida",
+                    400,
+                    "ticket_identity_invalid",
+                    "send_exact_ticket_identity",
+                )
+            if len(set(parsed_ids)) > 1:
+                return _error_response(
+                    "id y ticket_id deben identificar el mismo caso",
+                    409,
+                    "ticket_identity_conflict",
+                    "refresh_ticket_identity",
+                )
+            identity = (source, parsed_ids[0])
+            if identity in wanted:
+                return _error_response(
+                    "La identidad del ticket esta repetida",
+                    409,
+                    "ticket_identity_conflict",
+                    "deduplicate_ticket_identity",
+                )
+            wanted.add(identity)
+            wanted_order.append(identity)
+            if not dry_run:
+                if "expected_assignee_id" not in item:
+                    return _error_response(
+                        "expected_assignee_id es obligatorio por ticket",
+                        400,
+                        "expected_assignee_id_required",
+                        "send_expected_assignee_id_per_ticket",
+                    )
+                expected_by_identity[identity] = item.get("expected_assignee_id")
+        recommendations_by_identity = {
+            (
                 str((item.get("ticket") or {}).get("source_model") or ""),
                 int((item.get("ticket") or {}).get("id") or 0),
-            )
-            in wanted
+            ): item
+            for item in recommendations
+        }
+
+        # ``recommendations`` normally contains only unassigned cases.  An
+        # explicit CAS retry must still resolve an already-assigned case so a
+        # same-target replay is observable and a different stale transition
+        # reaches the locked compare-and-set boundary.
+        if not dry_run:
+            snapshots_by_identity = {
+                (str(item.get("source_model") or ""), int(item.get("id") or 0)): item
+                for item in ((routing.get("queues") or {}).get("open") or [])
+            }
+            employees = User.query.filter_by(tenant_id=tenant.id, es_empleado=True).all()
+            workloads = workload_by_employee(tenant)
+            for identity in wanted_order:
+                if identity in recommendations_by_identity:
+                    continue
+                snapshot = snapshots_by_identity.get(identity)
+                if snapshot is None:
+                    db.session.rollback()
+                    return _error_response(
+                        "Ticket no encontrado para esta identidad exacta",
+                        404,
+                        "ticket_not_found",
+                        "refresh_ticket_identity",
+                    )
+                eligible = eligible_employees_for_ticket(snapshot, employees, workloads)
+                current_assignee_id = snapshot.get("assignee_id")
+                best = next(
+                    (
+                        item
+                        for item in eligible
+                        if str(item["employee"].get("id") or "")
+                        == str(current_assignee_id or "")
+                    ),
+                    eligible[0] if eligible else None,
+                )
+                recommendations_by_identity[identity] = {
+                    "ticket": snapshot,
+                    "suggested_assignee": best["employee"] if best else None,
+                    "score": best["score"] if best else 0,
+                    "reasons": best["reasons"] if best else ["no_employee_available"],
+                    "candidate_ids": [item["employee"]["id"] for item in eligible],
+                    "eligible_assignees": eligible,
+                }
+
+        recommendations = [
+            recommendations_by_identity[identity]
+            for identity in wanted_order
+            if identity in recommendations_by_identity
         ]
 
     results = []
@@ -1970,16 +2129,61 @@ def employee_routing_auto_assign_v2(current_user, tenant_slug: str | None = None
         assignment_reason = None
         if assignee_id and ticket_id and not dry_run:
             assignee = User.query.filter_by(id=int(assignee_id), tenant_id=tenant.id, es_empleado=True).first()
-            ticket = find_ticket_for_assignment(tenant, source_model, int(ticket_id))
+            ticket = find_ticket_for_assignment(
+                tenant,
+                source_model,
+                int(ticket_id),
+                for_update=True,
+            )
             if assignee and ticket and ticket_assignee_is_compatible(assignee, ticket):
-                assignment = _apply_employee_assignment(ticket, assignee, current_user)
-                applied = True
+                current_assignee_id = (
+                    (_ticket_extra(ticket) or {}).get("assignee_id")
+                    if isinstance(ticket, TenantTicket)
+                    else getattr(ticket, "asignado_a_id", None)
+                )
+                identity = (source_model, int(ticket_id))
+                try:
+                    transition = assignment_transition(
+                        actor=current_user,
+                        payload={"expected_assignee_id": expected_by_identity.get(identity)},
+                        current_assignee_id=current_assignee_id,
+                        target_assignee_id=assignee.id,
+                    )
+                except TicketAssignmentPolicyError as exc:
+                    db.session.rollback()
+                    return _assignment_policy_error(exc)
+                if transition.replayed:
+                    assignment = {
+                        "assignee_id": assignee.id,
+                        "assignee_name": assignee.name,
+                        "assigned_at": None,
+                        "replayed": True,
+                    }
+                    assignment_reason = "assignment_idempotent_same_target"
+                else:
+                    assignment = {
+                        **_apply_employee_assignment(ticket, assignee, current_user),
+                        "replayed": False,
+                    }
+                    applied = True
             elif assignee and ticket:
                 assignment_reason = "assignee_category_scope_mismatch"
             elif not assignee:
-                assignment_reason = "assignee_not_found"
+                db.session.rollback()
+                return _error_response(
+                    "Empleado no encontrado para este tenant",
+                    404,
+                    "assignee_not_found",
+                    "refresh_employee_routing",
+                )
             else:
-                assignment_reason = "ticket_not_found"
+                db.session.rollback()
+                return _error_response(
+                    "Ticket no encontrado para esta identidad exacta",
+                    404,
+                    "ticket_not_found",
+                    "refresh_ticket_identity",
+                )
         elif not assignee_id:
             assignment_reason = "no_compatible_assignee"
         results.append(
@@ -2717,6 +2921,7 @@ def whatsapp_flow_runtime_v2(current_user, tenant_slug: str | None = None):
 
 @v2_saas_bp.route("/integrations/whatsapp/status", methods=["GET"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/integrations/whatsapp/status", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "empleado", "super_admin")
 def whatsapp_provider_status_v2(current_user, tenant_slug: str | None = None):
@@ -3335,6 +3540,7 @@ def whatsapp_tech_provider_register_sender_v2(current_user, tenant_slug: str | N
 
 @v2_saas_bp.route("/whatsapp/tech-provider/sender-status", methods=["GET", "POST"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/whatsapp/tech-provider/sender-status", methods=["GET", "POST"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "super_admin")
 def whatsapp_tech_provider_sender_status_v2(current_user, tenant_slug: str | None = None):
@@ -3429,6 +3635,7 @@ def _sandbox_demo_context(tenant: TenantProfile, payload: Mapping[str, Any] | No
         sandbox_number=_twilio_sandbox_number(),
         join_phrase=_twilio_sandbox_join_phrase(payload),
         source=str(payload.get("source") or "tenant_integrations_panel"),
+        public_base_url=resolve_demo_public_frontend_base_url(current_app.config),
     )
     context = sandbox_context_from_contract(contract)
     context.update(
@@ -4151,6 +4358,7 @@ def _resolve_smoke_tenant(current_user: User, tenant_slug: str | None = None) ->
 @v2_saas_bp.route("/production-smoke", methods=["GET"])
 @v2_saas_bp.route("/platform/production-smoke", methods=["GET"])
 @v2_saas_bp.route("/tenants/<string:tenant_slug>/production-smoke", methods=["GET"])
+@cutover_writer_view
 @token_requerido
 @require_role("admin", "super_admin")
 def production_smoke_v2(current_user, tenant_slug: str | None = None):
@@ -4249,7 +4457,11 @@ def production_smoke_v2(current_user, tenant_slug: str | None = None):
         freshness = (admin_payload.get("operations") or {}).get("freshness") or {}
         first_ticket = TenantTicket.query.filter_by(tenant_id=tenant.id).order_by(TenantTicket.updated_at.desc()).first()
         live_chat_status = _tenant_inbox_live_chat_status(tenant)
-        inbox_item = _inbox_ticket_payload(first_ticket, live_chat_status=live_chat_status) if first_ticket else None
+        inbox_item = (
+            _inbox_ticket_payload(first_ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
+            if first_ticket
+            else None
+        )
         checks.extend(
             [
                 _smoke_check(
@@ -4522,7 +4734,7 @@ def operational_queue_v2(current_user):
 
 @v2_saas_bp.route("/inbox/omnichannel", methods=["GET"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def omnichannel_inbox_v2(current_user):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -4547,8 +4759,27 @@ def omnichannel_inbox_v2(current_user):
     )
     legacy_claims = legacy_claim_query.order_by(MunicipioTicket.ultima_actividad.desc()).limit(limit).all()
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    items = [_inbox_ticket_payload(ticket, live_chat_status=live_chat_status) for ticket in tenant_tickets]
-    items.extend(_legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status) for ticket in legacy_claims)
+    artifact_map = _inbox_artifact_event_map(
+        tenant_id=tenant.id,
+        identities=(
+            [("TenantTicket", ticket.id) for ticket in tenant_tickets]
+            + [("MunicipioTicket", ticket.id) for ticket in legacy_claims]
+        ),
+    )
+    items = [
+        _inbox_ticket_payload(
+            ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user,
+            artifact_events=artifact_map.get(("TenantTicket", ticket.id), []),
+        )
+        for ticket in tenant_tickets
+    ]
+    items.extend(
+        _legacy_claim_inbox_payload(
+            ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user,
+            artifact_events=artifact_map.get(("MunicipioTicket", ticket.id), []),
+        )
+        for ticket in legacy_claims
+    )
     items.sort(key=_inbox_sort_key, reverse=True)
     items = items[:limit]
 
@@ -4658,6 +4889,7 @@ def _timeline_items(extra: Mapping[str, Any], *, limit: int = 30) -> list[dict[s
                 "type": comment.get("type") or "message",
                 "origin": origin,
                 "body": comment.get("body") or "",
+                "content_source": comment.get("content_source") or "operator_free_form",
                 "visibility": comment.get("visibility") or "public",
                 "created_at": comment.get("created_at"),
                 "actor": comment.get("actor") if isinstance(comment.get("actor"), dict) else None,
@@ -4705,16 +4937,23 @@ def _ticket_live_chat_queue_signals(
 
 def _ticket_sla_payload(ticket: TenantTicket, extra: Mapping[str, Any]) -> dict[str, Any]:
     sla = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
-    overdue = is_ticket_overdue(ticket)
-    status = "breached" if overdue else str(extra.get("sla_status") or extra.get("sla_state") or "ok")
+    evaluation = evaluate_ticket_sla(ticket, sla_override=sla)
     return {
-        "status": status,
-        "overdue": overdue,
+        "contract_version": evaluation["contract_version"],
+        "status": evaluation["state"],
+        "state": evaluation["state"],
+        "known": evaluation["known"],
+        "unknown": evaluation["unknown"],
+        "overdue": evaluation["overdue"],
         "priority": extra.get("priority") or "medium",
         "first_response_due_at": sla.get("first_response_due_at"),
         "resolution_due_at": sla.get("resolution_due_at"),
         "next_update_due_at": sla.get("next_update_due_at"),
         "paused": bool(sla.get("paused")),
+        "breached_clocks": evaluation["breached_clocks"],
+        "warning_clocks": evaluation["warning_clocks"],
+        "unknown_clocks": evaluation["unknown_clocks"],
+        "clocks": evaluation["clocks"],
     }
 
 
@@ -4742,6 +4981,8 @@ def _handoff_action_contracts(
     endpoint: str,
     handoff: Mapping[str, Any] | None,
     payload_defaults: Mapping[str, Any] | None = None,
+    actor: User | None = None,
+    assignee_id: Any = None,
 ) -> list[dict[str, Any]]:
     state = _handoff_lifecycle_state(handoff)
     defaults = dict(payload_defaults or {})
@@ -4754,7 +4995,7 @@ def _handoff_action_contracts(
     if not spec:  # Unknown persisted states expose no lifecycle mutation.
         return []
     action_id, label, action_defaults = spec
-    return [{
+    action = {
         "id": action_id,
         "label": label,
         "method": "POST",
@@ -4763,7 +5004,50 @@ def _handoff_action_contracts(
         "payload_defaults": action_defaults,
         "delivery_mode": "internal_event",
         "external_dispatch": False,
-    }]
+    }
+    is_municipio_claim = defaults.get("source_model") == "MunicipioTicket"
+    if is_municipio_claim and action_id == "handoff":
+        action["requires"] = ["channel", "reason", "idempotency_key_header"]
+        action["idempotency"] = {
+            "contract_version": "municipio_ticket.handoff_idempotency.v1",
+            "required_header": "Idempotency-Key",
+            "body_fallback": False,
+            "same_key_same_payload": "replay",
+            "same_key_different_payload": "conflict_409",
+            "raw_value_persisted": False,
+        }
+        action["ledger"] = {
+            "contract_version": MunicipioTicketHandoffEvent.CONTRACT_VERSION,
+            "normalized_event": True,
+            "projection_contract_version": (
+                MunicipioTicketHandoffEvent.PROJECTION_CONTRACT_VERSION
+            ),
+            "external_dispatch": False,
+        }
+    elif is_municipio_claim and action_id in {"accept_handoff", "resume_ai"}:
+        # These pre-existing lifecycle mutations still use the historical
+        # datos_extra/comment projection.  Do not advertise normalized or
+        # idempotent persistence until a dedicated follow-up event exists.
+        action["ledger"] = {
+            "contract_version": "municipio_ticket.handoff_follow_up.v1",
+            "normalized_event": False,
+            "mode": "legacy_projection_only",
+            "idempotency_supported": False,
+            "external_dispatch": False,
+        }
+    if action_id == "accept_handoff":
+        action["authorization"] = {
+            "mode": "handoff_recipient",
+            "requires_category_scope": True,
+        }
+        action["ownership_transfer"] = {
+            "contract_version": "inbox.handoff_assignment.v1",
+            "allowed_states": ["requested", "queued"],
+            "atomic": True,
+        }
+    if action_id in _OPERATIONAL_OWNERSHIP_ACTIONS:
+        _apply_operational_ownership_contract(action, actor, assignee_id)
+    return [action]
 
 
 def _validate_handoff_transition(action: str, state: str):
@@ -4802,6 +5086,7 @@ def _apply_handoff_transition(
     occurred_at: str,
     channel: str | None = None,
     reason: Any = None,
+    transferred_from: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     handoff = deepcopy(dict(extra.get("handoff") or {}))
     actor_ref = _handoff_actor(actor)
@@ -4821,6 +5106,8 @@ def _apply_handoff_transition(
             accepted_at=occurred_at,
             accepted_by=actor_ref,
         )
+        if transferred_from:
+            handoff["transferred_from"] = dict(transferred_from)
     elif action == "resume_ai":
         handoff.update(
             contract_version="inbox.handoff.v1",
@@ -4835,48 +5122,561 @@ def _apply_handoff_transition(
     return handoff
 
 
-def _allowed_inbox_actions(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _assignment_action_contract(
+    *,
+    endpoint: str,
+    payload_defaults: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    action = {
+        "id": "assign",
+        "label": "Asignar",
+        "method": "POST",
+        "endpoint": endpoint,
+        "requires": ["assignee_id", "expected_assignee_id"],
+        "authorization": {
+            "mode": "supervised_or_capability",
+            "roles": ["supervisor", "admin", "super_admin"],
+            "capability": "tickets.assign",
+        },
+        "concurrency": {
+            "contract_version": "inbox.assignment_cas.v1",
+            "expected_field": "expected_assignee_id",
+            "unassigned_value": None,
+            "same_target_replay": "idempotent",
+            "stale_state": "assignment_state_conflict",
+        },
+    }
+    if payload_defaults:
+        action["payload_defaults"] = dict(payload_defaults)
+    return action
+
+
+def _assignment_policy_error(error: TicketAssignmentPolicyError):
+    return _error_response(
+        error.message,
+        error.status_code,
+        error.reason_code,
+        error.action_hint,
+    )
+
+
+def _operational_ownership_block(
+    actor: User | None,
+    assignee_id: Any,
+) -> tuple[str, str, str] | None:
+    """Require the ticket owner (or a narrow supervisor override) to mutate it.
+
+    Only supervised roles may override operational ownership.  The
+    ``tickets.assign`` capability authorizes the separate CAS assignment
+    transition; it never authorizes replies or lifecycle mutations.
+    """
+
+    actor_role = canonical_role(getattr(actor, "rol", None)) if actor is not None else None
+    if actor_role in {"supervisor", "admin", "super_admin"}:
+        return None
+    normalized_assignee_id = _coerce_inbox_ticket_id(assignee_id)
+    if normalized_assignee_id is None:
+        return (
+            "ticket_claim_required",
+            "Toma el ticket antes de continuar",
+            "claim_ticket",
+        )
+    if actor is None or normalized_assignee_id != getattr(actor, "id", None):
+        return (
+            "ticket_assigned_to_other",
+            "El ticket esta asignado a otro operador",
+            "refresh_inbox",
+        )
+    return None
+
+
+def _validate_handoff_recipient(
+    extra: Mapping[str, Any],
+    *,
+    actor: User,
+    current_assignee_id: Any,
+):
+    """Require a real A-to-B transfer when accepting a handoff.
+
+    A handoff is not an acknowledgement button for its requester.  The current
+    owner and the recorded requester must both be different from the recipient;
+    otherwise the audit trail could say ``accepted`` without transferring
+    ownership at all.
+    """
+
+    actor_id = _coerce_inbox_ticket_id(getattr(actor, "id", None))
+    assignee_id = _coerce_inbox_ticket_id(current_assignee_id)
+    handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else {}
+    requested_by = handoff.get("requested_by") if isinstance(handoff.get("requested_by"), Mapping) else {}
+    requester_id = _coerce_inbox_ticket_id(requested_by.get("id"))
+    if actor_id is not None and actor_id in {assignee_id, requester_id}:
+        return _error_response(
+            "El handoff debe ser aceptado por otro operador compatible",
+            409,
+            "handoff_self_accept_forbidden",
+            "choose_different_handoff_recipient",
+        )
+    return None
+
+
+def _operational_ownership_error(actor: User | None, assignee_id: Any):
+    block = _operational_ownership_block(actor, assignee_id)
+    if block is None:
+        return None
+    reason_code, message, action_hint = block
+    return _error_response(message, 409, reason_code, action_hint)
+
+
+def _apply_operational_ownership_contract(
+    action: dict[str, Any],
+    actor: User | None,
+    assignee_id: Any,
+) -> dict[str, Any]:
+    block = _operational_ownership_block(actor, assignee_id)
+    if block is not None:
+        reason_code, message, action_hint = block
+        action.update(
+            disabled=True,
+            disabled_reason=message,
+            reason_code=reason_code,
+            action_hint=action_hint,
+        )
+    return action
+
+
+def _reply_action_contract(
+    *,
+    endpoint: str,
+    actor: User | None,
+    assignee_id: Any,
+    payload_defaults: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    action = {
+        "id": "reply",
+        "label": "Responder",
+        "method": "POST",
+        "endpoint": endpoint,
+        "requires": ["body", "client_message_id_or_idempotency_key"],
+        "idempotency": {
+            "contract_version": "inbox.reply_idempotency.v1",
+            "preferred_header": "Idempotency-Key",
+            "body_field": "client_message_id",
+            "retry_rule": "reuse_same_value",
+            "request_id_compatibility": True,
+        },
+        "delivery_contract_version": "inbox.action_delivery.v2",
+    }
+    if payload_defaults:
+        action["payload_defaults"] = dict(payload_defaults)
+    return _apply_operational_ownership_contract(action, actor, assignee_id)
+
+
+def _unsupported_reply_action(*, action_id: str, label: str, reason_code: str) -> dict[str, Any]:
+    return {
+        "id": action_id,
+        "label": label,
+        "method": "POST",
+        "enabled": False,
+        "disabled": True,
+        "reason_code": reason_code,
+        "disabled_reason": "Esta accion todavia no tiene un contrato durable de envio para este inbox.",
+        "action_hint": "use_text_reply_or_handoff",
+        "external_dispatch": False,
+    }
+
+
+def _verified_tenant_form_options(tenant: TenantProfile) -> list[dict[str, Any]]:
+    cache_key = f"tenant:{tenant.id}"
+    request_cache: dict[str, list[dict[str, Any]]] | None = None
+    if has_request_context():
+        request_cache = request.environ.setdefault("chatboc.inbox_form_options", {})
+        cached = request_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    rows = MessageTemplateRegistry.query.filter(
+        MessageTemplateRegistry.tenant_id == tenant.id,
+        func.lower(MessageTemplateRegistry.status).in_(("approved", "active", "ready", "published")),
+    ).order_by(
+        MessageTemplateRegistry.updated_at.desc(),
+        MessageTemplateRegistry.id.desc(),
+    ).limit(50).all()
+    options: list[dict[str, Any]] = []
+    for form in rows:
+        metadata = form.metadata_json if isinstance(form.metadata_json, Mapping) else {}
+        flow_id = str(metadata.get("flow_id") or "").strip()
+        if not flow_id or not str(form.external_template_id or "").strip() or not str(form.content_sid or "").strip():
+            continue
+        options.append(
+            {
+                "id": form.id,
+                "label": form.name,
+                "name": form.name,
+                "language": form.language,
+                "flow_id": flow_id,
+                "revision": _iso(form.updated_at),
+                "tenant_owned": True,
+                "approved": True,
+                "tenant_verified": True,
+                "evidence": {
+                    "tenant_owned": True,
+                    "approved": True,
+                    "flow_contract_verified": True,
+                },
+            }
+        )
+    if request_cache is not None:
+        request_cache[cache_key] = options
+    return options
+
+
+def _crm_artifact_action(
+    *, action_id: str, label: str, source_model: str, tenant: TenantProfile,
+    actor: User | None, assignee_id: Any, payload_defaults: Mapping[str, Any],
+    endpoint: str, closed: bool = False,
+) -> dict[str, Any]:
+    binding_unavailable = action_id == "attach_file" and source_model == "TenantTicket"
+    form_options = _verified_tenant_form_options(tenant) if action_id == "send_form" else []
+    form_unavailable = action_id == "send_form" and not form_options
+    disabled = binding_unavailable or closed or form_unavailable
+    reason_code = None
+    disabled_reason = None
+    action_hint = None
+    if closed:
+        reason_code = "ticket_closed"
+        disabled_reason = "El ticket debe reabrirse antes de agregar recursos."
+        action_hint = "reopen_ticket"
+    elif binding_unavailable:
+        reason_code = "tenant_ticket_attachment_binding_unavailable"
+        disabled_reason = "Este tipo de ticket todavia no tiene adjuntos vinculados de forma verificable."
+        action_hint = "upload_and_bind_attachment_first"
+    elif form_unavailable:
+        reason_code = "artifact_form_options_unavailable"
+        disabled_reason = "No hay formularios tenant-owned aprobados y verificables para este caso."
+        action_hint = "configure_approved_tenant_flow_form"
+
+    action = {
+        "id": action_id,
+        "label": label,
+        "method": "POST",
+        "endpoint": endpoint,
+        "enabled": not disabled,
+        "disabled": disabled,
+        "reason_code": reason_code,
+        "disabled_reason": disabled_reason,
+        "action_hint": action_hint,
+        "requires": {
+            "attach_file": ["attachment_id", "Idempotency-Key"],
+            "share_location": ["lat", "lng", "Idempotency-Key"],
+            "send_form": ["form_id", "Idempotency-Key"],
+        }[action_id],
+        "accepted_fields": {
+            "attach_file": ["attachment_id"],
+            "share_location": ["lat", "lng", "label", "address", "capture_source"],
+            "send_form": ["form_id"],
+        }[action_id],
+        "payload_defaults": dict(payload_defaults),
+        "options": form_options,
+        "delivery_mode": "crm_only",
+        "external_dispatch": False,
+        "delivery_contract_version": "inbox.action_delivery.v2",
+    }
+    _apply_operational_ownership_contract(action, actor, assignee_id)
+    action["enabled"] = not bool(action.get("disabled"))
+    return action
+
+
+def _reply_delivery_evidence(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    evidence = value if isinstance(value, Mapping) else {}
+    status = str(evidence.get("status") or "").strip().lower()
+    reason = str(evidence.get("reason") or "").strip().lower()
+    final = evidence.get("final_delivery") if isinstance(evidence.get("final_delivery"), Mapping) else {}
+    final_status = str(final.get("status") or "").strip().lower()
+    external_dispatch = bool(evidence.get("external_dispatch"))
+    return {
+        "saved_in_crm": bool(evidence),
+        "dispatch_attempted": external_dispatch or status in {"dispatch_attempted", "provider_accepted", "external_dispatch_failed", "failed"} or reason in {"acceptance_unverified", "external_dispatch_failed", "notification_dispatch_failed"},
+        "provider_accepted": status == "provider_accepted" and bool(evidence.get("provider_message_id")),
+        "delivered": final_status == "delivered",
+        "failed": status in {"external_dispatch_failed", "failed"} or reason in {"external_dispatch_failed", "notification_dispatch_failed"} or final_status in {"failed", "undelivered"},
+        "authoritative_delivery_source": final.get("authoritative_source") or "not_available",
+        "provider_message_id_present": bool(evidence.get("provider_message_id")),
+    }
+
+
+def _ticket_reply_contract(
+    *, source_model: str, ticket_id: int, channel: str | None, actor: User | None,
+    assignee_id: Any, closed: bool, contact: Mapping[str, Any] | None,
+    tenant: TenantProfile, latest_delivery: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_channel = str(channel or "web").strip().lower() or "web"
+    contact = contact if isinstance(contact, Mapping) else {}
+    ownership_block = _operational_ownership_block(actor, assignee_id)
+    reason_code = None
+    disabled_reason = None
+    if closed:
+        reason_code, disabled_reason = "ticket_closed", "El ticket debe reabrirse antes de responder."
+    elif ownership_block is not None:
+        reason_code, disabled_reason, _ = ownership_block
+
+    whatsapp_source = normalized_channel in {"whatsapp", "wa", "twilio", "whatsapp_business"}
+    email_source = normalized_channel in {"email", "mail", "correo"}
+    raw_phone = str(contact.get("phone") or contact.get("telefono") or "").strip()
+    from utils.validators import normalize_phone
+
+    normalized_phone = normalize_phone(raw_phone) if raw_phone else None
+    phone_present = bool(normalized_phone)
+    email_present = bool(str(contact.get("email") or "").strip())
+    sender_reason_code = None
+    if source_model in {"TenantTicket", "MunicipioTicket"}:
+        from services.tenant_twilio_messaging import (
+            resolve_tenant_twilio_sender_snapshot,
+        )
+
+        sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+            tenant_id=int(tenant.id),
+            channel="whatsapp",
+            session=db.session,
+        )
+        sender_present = bool(
+            sender_snapshot.sender is not None and not sender_snapshot.reason_code
+        )
+        sender_reason_code = sender_snapshot.reason_code
+    else:
+        sender_present = False
+    tenant_outbox_enabled = True
+    if source_model in {"TenantTicket", "MunicipioTicket"}:
+        from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+
+        tenant_outbox_enabled = resolve_domain_effect_outbox_policy(
+            current_app.config, tenant_id=int(tenant.id)
+        ).enabled
+    whatsapp_enabled = (
+        whatsapp_source
+        and phone_present
+        and sender_present
+        and tenant_outbox_enabled
+        and source_model in {"TenantTicket", "MunicipioTicket"}
+    )
+    whatsapp_reason_code = None
+    if not whatsapp_enabled:
+        if not whatsapp_source:
+            whatsapp_reason_code = "ticket_channel_not_whatsapp"
+        elif not phone_present:
+            whatsapp_reason_code = (
+                "contact_phone_invalid" if raw_phone else "contact_phone_missing"
+            )
+        elif source_model == "MunicipioTicket":
+            # Preserve the stable legacy surface code.  The nested municipal
+            # WhatsApp contract exposes the precise readiness failure.
+            whatsapp_reason_code = "legacy_whatsapp_enterprise_cutover_required"
+        elif not sender_present:
+            whatsapp_reason_code = (
+                sender_reason_code or "tenant_whatsapp_sender_missing"
+            )
+        else:
+            whatsapp_reason_code = "whatsapp_outbox_cutover_required"
+    email_enabled = email_source and email_present
+    return {
+        "contract_version": "inbox.reply_contract.v1",
+        "source_model": source_model,
+        "ticket_id": ticket_id,
+        "channel": normalized_channel,
+        "endpoint": "/api/v2/inbox/omnichannel/actions",
+        "method": "POST",
+        "enabled": reason_code is None,
+        "disabled_reason": disabled_reason,
+        "reason_code": reason_code,
+        "idempotency": {
+            "contract_version": "inbox.reply_idempotency.v1", "required": True,
+            "preferred_header": "Idempotency-Key", "body_field": "client_message_id",
+            "retry_rule": "reuse_same_value",
+        },
+        "supported_message_types": {
+            "text": {"enabled": reason_code is None},
+            "attachment": {
+                "enabled": source_model == "MunicipioTicket" and reason_code is None,
+                "reason_code": (
+                    reason_code if source_model == "MunicipioTicket"
+                    else "tenant_ticket_attachment_binding_unavailable"
+                ),
+                "delivery_mode": "crm_only",
+            },
+            "location": {"enabled": reason_code is None, "reason_code": reason_code, "delivery_mode": "crm_only"},
+            "form": {"enabled": reason_code is None, "reason_code": reason_code, "delivery_mode": "crm_only"},
+        },
+        "handoff": {"enabled": reason_code is None, "supported_channels": sorted(_HANDOFF_SUPPORTED_CHANNELS)},
+        "delivery_channels": [
+            {"id": "crm", "enabled": reason_code is None, "evidence": "durable_timeline"},
+            {"id": "whatsapp", "enabled": reason_code is None and whatsapp_enabled,
+             "reason_code": whatsapp_reason_code,
+             "acceptance_semantics": "provider_accepted_is_not_delivered"},
+            {"id": "email", "enabled": reason_code is None and email_enabled,
+             "reason_code": None if email_enabled else ("ticket_channel_not_email" if not email_source else "contact_email_missing"),
+             "acceptance_semantics": "provider_accepted_is_not_delivered"},
+        ],
+        "delivery_state_machine": {
+            "contract_version": "inbox.reply_delivery_evidence.v1",
+            "states": ["saved_in_crm", "dispatch_attempted", "provider_accepted", "delivered", "failed"],
+            "delivered_requires": "provider_status_callback",
+            "latest_evidence": _reply_delivery_evidence(latest_delivery),
+        },
+    }
+
+
+def _allowed_inbox_actions(
+    ticket: TenantTicket,
+    extra: Mapping[str, Any],
+    *,
+    tenant: TenantProfile,
+    actor: User | None = None,
+) -> list[dict[str, Any]]:
     status = str(ticket.estado or "").lower()
     base_endpoint = f"/api/v2/inbox/omnichannel/{ticket.id}/actions"
-    actions = [
-        {
-            "id": "reply",
-            "label": "Responder",
-            "method": "POST",
-            "endpoint": base_endpoint,
-            "requires": ["body", "client_message_id_or_idempotency_key"],
-            "idempotency": {
-                "contract_version": "inbox.reply_idempotency.v1",
-                "preferred_header": "Idempotency-Key",
-                "body_field": "client_message_id",
-                "retry_rule": "reuse_same_value",
-                "request_id_compatibility": True,
-            },
-            "delivery_contract_version": "inbox.action_delivery.v2",
-            "delivery_mode": "durable_queue_or_provider_acceptance",
-            "fallback": "http_polling",
-            "external_dispatch": True,
-            "operator_message": (
-                "La respuesta se guarda primero y usa el canal del ticket. "
+    defaults = {"source_model": "TenantTicket", "ticket_id": ticket.id}
+    reply_action = _reply_action_contract(
+        endpoint=base_endpoint,
+        actor=actor,
+        assignee_id=extra.get("assignee_id"),
+        payload_defaults=defaults,
+    )
+    from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+
+    outbox_enabled = resolve_domain_effect_outbox_policy(
+        current_app.config, tenant_id=int(tenant.id)
+    ).enabled
+    whatsapp_source = _ticket_channel(ticket) in {
+        "whatsapp",
+        "wa",
+        "twilio",
+        "whatsapp_business",
+    }
+    external_dispatch_enabled = bool(outbox_enabled or not whatsapp_source)
+    reply_action.update(
+        delivery_mode=(
+            "durable_queue"
+            if outbox_enabled
+            else ("crm_only" if whatsapp_source else "provider_acceptance")
+        ),
+        fallback="http_polling",
+        external_dispatch=external_dispatch_enabled,
+        operator_message=(
+            (
+                "La respuesta se guarda primero y se entrega mediante la cola durable. "
                 "Los reintentos conservan la misma identidad sin duplicar el envio."
-            ),
-        },
-        {"id": "assign", "label": "Asignar", "method": "POST", "endpoint": base_endpoint, "requires": ["assignee_id"]},
-        {"id": "set_priority", "label": "Cambiar prioridad", "method": "POST", "endpoint": base_endpoint, "requires": ["priority"]},
-    ]
+            )
+            if outbox_enabled
+            else (
+                "La respuesta se guarda en el CRM sin despacho externo. "
+                "WhatsApp requiere activar el cutover durable del tenant."
+                if whatsapp_source
+                else "La respuesta se guarda primero y usa el canal del ticket."
+            )
+        ),
+    )
+    actions = [reply_action]
+    if not extra.get("assignee_id"):
+        actions.append(
+            {
+                "id": "claim",
+                "label": "Tomar ticket",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": [],
+                "payload_defaults": defaults,
+                "delivery_mode": "internal_event",
+                "external_dispatch": False,
+            }
+        )
+    if actor_can_assign_tickets(actor):
+        actions.append(
+            _assignment_action_contract(
+                endpoint=base_endpoint,
+                payload_defaults=defaults,
+            )
+        )
+    actions.append(
+        _apply_operational_ownership_contract(
+            {
+                "id": "set_priority",
+                "label": "Cambiar prioridad",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": ["priority"],
+                "payload_defaults": defaults,
+            },
+            actor,
+            extra.get("assignee_id"),
+        )
+    )
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
-    actions.extend(_handoff_action_contracts(endpoint=base_endpoint, handoff=handoff))
+    actions.extend(
+        _handoff_action_contracts(
+            endpoint=base_endpoint,
+            handoff=handoff,
+            payload_defaults=defaults,
+            actor=actor,
+            assignee_id=extra.get("assignee_id"),
+        )
+    )
     if status in _CLOSED_TICKET_STATES:
-        actions.append({"id": "reopen", "label": "Reabrir", "method": "POST", "endpoint": base_endpoint, "requires": []})
+        actions.append(
+            _apply_operational_ownership_contract(
+                {
+                    "id": "reopen",
+                    "label": "Reabrir",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                },
+                actor,
+                extra.get("assignee_id"),
+            )
+        )
     else:
-        actions.append({"id": "close", "label": "Cerrar", "method": "POST", "endpoint": base_endpoint, "requires": [], "destructive": True})
+        actions.append(
+            _apply_operational_ownership_contract(
+                {
+                    "id": "close",
+                    "label": "Cerrar",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                    "destructive": True,
+                },
+                actor,
+                extra.get("assignee_id"),
+            )
+        )
+    actions.extend([
+        _crm_artifact_action(
+            action_id="attach_file", label="Adjuntar archivo", source_model="TenantTicket",
+            tenant=tenant, actor=actor, assignee_id=extra.get("assignee_id"),
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=status in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="share_location", label="Compartir ubicacion", source_model="TenantTicket",
+            tenant=tenant, actor=actor, assignee_id=extra.get("assignee_id"),
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=status in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="send_form", label="Agregar formulario al caso", source_model="TenantTicket",
+            tenant=tenant, actor=actor, assignee_id=extra.get("assignee_id"),
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=status in _CLOSED_TICKET_STATES,
+        ),
+    ])
     return actions
 
 
 def _next_steps(ticket: TenantTicket, extra: Mapping[str, Any]) -> list[dict[str, Any]]:
     steps = []
     if not extra.get("assignee_id"):
-        steps.append({"id": "assign_owner", "label": "Asignar responsable", "action": "assign", "priority": "high"})
+        steps.append({"id": "claim_ticket", "label": "Tomar ticket", "action": "claim", "priority": "high"})
     if str(ticket.estado or "").lower() not in _CLOSED_TICKET_STATES:
         steps.append({"id": "reply_customer", "label": "Responder al contacto", "action": "reply", "priority": "medium"})
     if ticket.latitud is None and ticket.longitud is None and not extra.get("address"):
@@ -5075,67 +5875,120 @@ def _legacy_claim_tracking_links(ticket: MunicipioTicket) -> dict[str, str]:
     }
 
 
-def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any]]:
+def _legacy_claim_allowed_actions(
+    ticket: MunicipioTicket,
+    *,
+    tenant: TenantProfile,
+    actor: User | None = None,
+) -> list[dict[str, Any]]:
     base_endpoint = "/api/v2/inbox/omnichannel/actions"
     defaults = {"source_model": "MunicipioTicket", "legacy_id": ticket.id, "ticket_id": ticket.id}
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     tracking_links = _legacy_claim_tracking_links(ticket)
-    actions = [
+    reply_action = _reply_action_contract(
+        endpoint=base_endpoint,
+        actor=actor,
+        assignee_id=ticket.asignado_a_id,
+        payload_defaults=defaults,
+    )
+    reply_readiness = _ticket_reply_contract(
+        source_model="MunicipioTicket",
+        ticket_id=int(ticket.id),
+        channel=ticket.canal_ingreso,
+        actor=actor,
+        assignee_id=ticket.asignado_a_id,
+        closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        contact={"phone": ticket.telefono_vecino, "email": ticket.email_vecino},
+        tenant=tenant,
+    )
+    whatsapp_readiness = next(
+        (
+            item
+            for item in reply_readiness.get("delivery_channels", [])
+            if item.get("id") == "whatsapp"
+        ),
+        {},
+    )
+    whatsapp_ready = bool(whatsapp_readiness.get("enabled"))
+    reply_action.update(
         {
-            "id": "reply",
-            "label": "Responder",
-            "method": "POST",
-            "endpoint": base_endpoint,
-            "requires": ["body", "client_message_id_or_idempotency_key"],
-            "idempotency": {
-                "contract_version": "inbox.reply_idempotency.v1",
-                "preferred_header": "Idempotency-Key",
-                "body_field": "client_message_id",
-                "retry_rule": "reuse_same_value",
-                "request_id_compatibility": True,
-            },
-            "delivery_contract_version": "inbox.action_delivery.v2",
-            "payload_defaults": defaults,
-        },
-        {
-            "id": "assign",
-            "label": "Asignar",
-            "method": "POST",
-            "endpoint": base_endpoint,
-            "requires": ["assignee_id"],
-            "payload_defaults": defaults,
-        },
-    ]
+            "delivery_mode": "durable_queue" if whatsapp_ready else "timeline_only",
+            "external_dispatch": whatsapp_ready,
+            # Keep the legacy action contract stable for older frontends; the
+            # precise readiness failure remains available in reply_contract.
+            "external_channel_reason_code": (
+                None
+                if whatsapp_ready
+                else "legacy_whatsapp_enterprise_cutover_required"
+            ),
+            "operator_message": (
+                "La respuesta se registra y se entrega por la cola WhatsApp auditable."
+                if whatsapp_ready
+                else "La respuesta puede registrarse en CRM; revisá la habilitación de WhatsApp."
+            ),
+        }
+    )
+    actions = [reply_action]
+    if not ticket.asignado_a_id:
+        actions.append(
+            {
+                "id": "claim",
+                "label": "Tomar ticket",
+                "method": "POST",
+                "endpoint": base_endpoint,
+                "requires": [],
+                "payload_defaults": defaults,
+                "delivery_mode": "internal_event",
+                "external_dispatch": False,
+            }
+        )
+    if actor_can_assign_tickets(actor):
+        actions.append(
+            _assignment_action_contract(
+                endpoint=base_endpoint,
+                payload_defaults=defaults,
+            )
+        )
     actions.extend(
         _handoff_action_contracts(
             endpoint=base_endpoint,
             handoff=handoff,
             payload_defaults=defaults,
+            actor=actor,
+            assignee_id=ticket.asignado_a_id,
         )
     )
     if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
         actions.append(
-            {
-                "id": "reopen",
-                "label": "Reabrir",
-                "method": "POST",
-                "endpoint": base_endpoint,
-                "requires": [],
-                "payload_defaults": defaults,
-            }
+            _apply_operational_ownership_contract(
+                {
+                    "id": "reopen",
+                    "label": "Reabrir",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                },
+                actor,
+                ticket.asignado_a_id,
+            )
         )
     else:
         actions.append(
-            {
-                "id": "close",
-                "label": "Cerrar",
-                "method": "POST",
-                "endpoint": base_endpoint,
-                "requires": [],
-                "payload_defaults": defaults,
-                "destructive": True,
-            }
+            _apply_operational_ownership_contract(
+                {
+                    "id": "close",
+                    "label": "Cerrar",
+                    "method": "POST",
+                    "endpoint": base_endpoint,
+                    "requires": [],
+                    "payload_defaults": defaults,
+                    "destructive": True,
+                },
+                actor,
+                ticket.asignado_a_id,
+            )
         )
     actions.append(
         {
@@ -5149,13 +6002,33 @@ def _legacy_claim_allowed_actions(ticket: MunicipioTicket) -> list[dict[str, Any
             "requires": [],
         }
     )
+    actions.extend([
+        _crm_artifact_action(
+            action_id="attach_file", label="Adjuntar archivo", source_model="MunicipioTicket",
+            tenant=tenant, actor=actor, assignee_id=ticket.asignado_a_id,
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="share_location", label="Compartir ubicacion", source_model="MunicipioTicket",
+            tenant=tenant, actor=actor, assignee_id=ticket.asignado_a_id,
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        ),
+        _crm_artifact_action(
+            action_id="send_form", label="Agregar formulario al caso", source_model="MunicipioTicket",
+            tenant=tenant, actor=actor, assignee_id=ticket.asignado_a_id,
+            payload_defaults=defaults, endpoint=base_endpoint,
+            closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        ),
+    ])
     return actions
 
 
 def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     if not ticket.asignado_a_id:
-        steps.append({"id": "assign_owner", "label": "Asignar responsable municipal", "action": "assign", "priority": "high"})
+        steps.append({"id": "claim_ticket", "label": "Tomar ticket", "action": "claim", "priority": "high"})
     if str(ticket.estado or "").lower() not in _CLOSED_TICKET_STATES:
         steps.append({"id": "reply_citizen", "label": "Responder al vecino", "action": "reply", "priority": "high"})
     if ticket.latitud is None and ticket.longitud is None and not ticket.direccion:
@@ -5163,15 +6036,24 @@ def _legacy_claim_next_steps(ticket: MunicipioTicket) -> list[dict[str, Any]]:
     return steps[:4]
 
 
-def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _legacy_claim_inbox_payload(
+    ticket: MunicipioTicket,
+    tenant: TenantProfile,
+    live_chat_status: Mapping[str, Any] | None = None,
+    *,
+    actor: User | None = None,
+    artifact_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     extra = ticket.datos_extra if isinstance(ticket.datos_extra, Mapping) else {}
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), Mapping) else None
     comments = _legacy_claim_comments(ticket)
     timeline = _legacy_claim_timeline(ticket, comments)
+    timeline.extend(artifact_events if artifact_events is not None else _inbox_artifact_events(tenant_id=tenant.id, source_model="MunicipioTicket", ticket_id=ticket.id))
+    timeline.sort(key=lambda item: str(item.get("created_at") or ""))
     latest_comment = comments[-1].comentario if comments else None
     updated_at = _legacy_claim_updated_at(ticket, comments)
     assignee = _legacy_claim_assignee(ticket)
-    actions = _legacy_claim_allowed_actions(ticket)
+    actions = _legacy_claim_allowed_actions(ticket, tenant=tenant, actor=actor)
     tracking_links = _legacy_claim_tracking_links(ticket)
     channel = str(ticket.canal_ingreso or "whatsapp").strip().lower()
     title = ticket.asunto or ticket.categoria or f"Reclamo {ticket.nro_ticket or ticket.id}"
@@ -5191,6 +6073,35 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
         source_model="MunicipioTicket",
     )
 
+    delivery_history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
+    latest_delivery = extra.get("reply_delivery_latest_evidence") if isinstance(extra.get("reply_delivery_latest_evidence"), Mapping) else None
+    from services.municipio_ticket_reply_delivery import (
+        list_ticket_reply_deliveries as list_municipio_ticket_reply_deliveries,
+    )
+
+    reply_deliveries = list_municipio_ticket_reply_deliveries(
+        tenant_id=int(tenant.id),
+        ticket_id=int(ticket.id),
+        session=db.session,
+    )
+    durable_latest_delivery = reply_deliveries[-1] if reply_deliveries else None
+    from services.municipio_ticket_handoff import list_handoff_events
+
+    handoff_events = list_handoff_events(
+        tenant_id=int(tenant.id),
+        ticket_id=int(ticket.id),
+    )
+    reply_contract = _ticket_reply_contract(
+        source_model="MunicipioTicket", ticket_id=ticket.id, channel=channel,
+        actor=actor, assignee_id=ticket.asignado_a_id,
+        closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        contact={"phone": ticket.telefono_vecino, "email": ticket.email_vecino},
+        tenant=tenant, latest_delivery=durable_latest_delivery or latest_delivery or (delivery_history[-1] if delivery_history else None),
+    )
+    reply_contract["whatsapp"] = _municipio_ticket_whatsapp_reply_contract(
+        ticket,
+        tenant,
+    )
     return {
         "id": f"municipio:{ticket.id}",
         "legacy_id": ticket.id,
@@ -5226,19 +6137,25 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
             "fallback_when_no_coordinates": "timeline_only",
         },
         "attachments": _legacy_claim_attachments(ticket),
-        "sla": {
-            "status": "unassigned" if not assignee else "active",
-            "overdue": False,
-            "priority": "medium",
-            "first_response_due_at": None,
-            "resolution_due_at": None,
-            "next_update_due_at": None,
-            "paused": False,
-        },
+        # Legacy claims do not have certified SLA timestamps by default.  Reuse
+        # the fail-closed contract so missing evidence is never painted healthy.
+        "sla": _ticket_sla_payload(ticket, extra),
         "timeline": timeline,
         "presence": {"viewers": [], "locked_by": None},
         "actions": [item["id"] for item in actions],
         "allowed_actions": actions,
+        "reply_contract": reply_contract,
+        "reply_deliveries": reply_deliveries,
+        "handoff_events": handoff_events,
+        "handoff_contract": {
+            "contract_version": MunicipioTicketHandoffEvent.CONTRACT_VERSION,
+            "normalized_actions": ["handoff"],
+            "legacy_projection_only_actions": ["accept_handoff", "resume_ai"],
+            "projection_contract_version": (
+                MunicipioTicketHandoffEvent.PROJECTION_CONTRACT_VERSION
+            ),
+            "external_dispatch": False,
+        },
         "next_steps": _legacy_claim_next_steps(ticket),
         "source_metadata": {
             "origin": "municipio_ticket",
@@ -5270,9 +6187,185 @@ def _legacy_claim_inbox_payload(ticket: MunicipioTicket, live_chat_status: Mappi
     }
 
 
-def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def _municipio_ticket_whatsapp_reply_contract(
+    ticket: MunicipioTicket,
+    tenant: TenantProfile,
+) -> dict[str, Any]:
+    from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+    from services.tenant_ticket_reply_delivery import (
+        approved_whatsapp_templates,
+        whatsapp_service_window,
+    )
+    from services.tenant_twilio_messaging import (
+        resolve_tenant_twilio_sender_snapshot,
+    )
+    from utils.validators import normalize_phone
+
+    raw_recipient = str(ticket.telefono_vecino or "").strip()
+    recipient = normalize_phone(raw_recipient)
+    sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+        tenant_id=int(tenant.id),
+        channel="whatsapp",
+        session=db.session,
+    )
+    sender_ready = bool(
+        sender_snapshot.sender is not None and not sender_snapshot.reason_code
+    )
+    if sender_ready:
+        service_window = whatsapp_service_window(
+            tenant_id=int(tenant.id),
+            provider_sender_id=int(sender_snapshot.sender.id),
+            recipient=recipient,
+            session=db.session,
+        )
+    else:
+        service_window = {
+            "contract_version": "whatsapp.service_window.v1",
+            "status": "unknown",
+            "last_inbound_at": None,
+            "expires_at": None,
+            "free_form_allowed": False,
+            "template_required": True,
+            "sender_bound": True,
+            "authoritative_source": "provider_sender_unavailable",
+        }
+    outbox_enabled = resolve_domain_effect_outbox_policy(
+        current_app.config,
+        tenant_id=int(tenant.id),
+    ).enabled
+    external_dispatch_enabled = bool(outbox_enabled and sender_ready and recipient)
+    disabled_reason = None
+    if not recipient:
+        disabled_reason = (
+            "contact_phone_invalid" if raw_recipient else "contact_phone_missing"
+        )
+    elif not sender_ready:
+        disabled_reason = (
+            sender_snapshot.reason_code
+            or "whatsapp_tenant_sender_resolution_invalid"
+        )
+    elif not outbox_enabled:
+        disabled_reason = "whatsapp_outbox_cutover_required"
+    return {
+        "contract_version": "inbox.municipio_ticket_reply.v1",
+        "source_model": "MunicipioTicket",
+        "channel": "whatsapp",
+        "recipient_available": bool(recipient),
+        "sender_available": sender_ready,
+        "service_window": service_window,
+        "free_form_allowed": bool(
+            external_dispatch_enabled and service_window["free_form_allowed"]
+        ),
+        "template_required": bool(service_window["template_required"]),
+        "approved_templates": approved_whatsapp_templates(
+            tenant_id=int(tenant.id),
+            session=db.session,
+        ),
+        "request_fields": {
+            "template_registry_id": "positive_integer_or_null",
+            "template_variables": "numbered_string_map_or_null",
+        },
+        "dispatch_mode": "durable_outbox" if outbox_enabled else "crm_only",
+        "external_dispatch_enabled": external_dispatch_enabled,
+        "disabled_reason": disabled_reason,
+        "final_delivery_evidence": "signed_provider_status_callback",
+    }
+
+
+def _tenant_ticket_whatsapp_reply_contract(
+    ticket: TenantTicket,
+    tenant: TenantProfile,
+) -> dict[str, Any]:
+    from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+    from services.tenant_ticket_reply_delivery import (
+        approved_whatsapp_templates,
+        whatsapp_service_window,
+    )
+    from services.tenant_twilio_messaging import (
+        resolve_tenant_twilio_sender_snapshot,
+    )
+    from utils.validators import normalize_phone
+
+    contact = _tenant_ticket_reply_contact(ticket)
+    raw_recipient = str(contact.get("phone") or "").strip()
+    recipient = normalize_phone(raw_recipient)
+    sender_snapshot = resolve_tenant_twilio_sender_snapshot(
+        tenant_id=int(tenant.id),
+        channel="whatsapp",
+        session=db.session,
+    )
+    sender_ready = bool(
+        sender_snapshot.sender is not None and not sender_snapshot.reason_code
+    )
+    if sender_ready:
+        service_window = whatsapp_service_window(
+            tenant_id=int(tenant.id),
+            provider_sender_id=int(sender_snapshot.sender.id),
+            recipient=recipient,
+            session=db.session,
+        )
+    else:
+        service_window = {
+            "contract_version": "whatsapp.service_window.v1",
+            "status": "unknown",
+            "last_inbound_at": None,
+            "expires_at": None,
+            "free_form_allowed": False,
+            "template_required": True,
+            "sender_bound": True,
+            "authoritative_source": "provider_sender_unavailable",
+        }
+    outbox_enabled = resolve_domain_effect_outbox_policy(
+        current_app.config, tenant_id=int(tenant.id)
+    ).enabled
+    external_dispatch_enabled = bool(outbox_enabled and sender_ready and recipient)
+    disabled_reason = None
+    if not recipient:
+        disabled_reason = (
+            "contact_phone_invalid" if raw_recipient else "contact_phone_missing"
+        )
+    elif not sender_ready:
+        disabled_reason = (
+            sender_snapshot.reason_code or "whatsapp_tenant_sender_resolution_invalid"
+        )
+    elif not outbox_enabled:
+        disabled_reason = "whatsapp_outbox_cutover_required"
+    return {
+        "contract_version": "inbox.tenant_ticket_reply.v1",
+        "channel": "whatsapp",
+        "recipient_available": bool(recipient),
+        "sender_available": sender_ready,
+        "service_window": service_window,
+        "free_form_allowed": bool(
+            external_dispatch_enabled and service_window["free_form_allowed"]
+        ),
+        "template_required": bool(service_window["template_required"]),
+        "approved_templates": approved_whatsapp_templates(
+            tenant_id=int(tenant.id), session=db.session
+        ),
+        "request_fields": {
+            "template_registry_id": "positive_integer_or_null",
+            "template_variables": "numbered_string_map_or_null",
+        },
+        "dispatch_mode": "durable_outbox" if outbox_enabled else "crm_only",
+        "external_dispatch_enabled": external_dispatch_enabled,
+        "disabled_reason": disabled_reason,
+        "final_delivery_evidence": "signed_provider_status_callback",
+    }
+
+
+def _inbox_ticket_payload(
+    ticket: TenantTicket,
+    tenant: TenantProfile,
+    live_chat_status: Mapping[str, Any] | None = None,
+    *,
+    actor: User | None = None,
+    artifact_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     extra = _ticket_extra(ticket)
     timeline = _timeline_items(extra)
+    timeline.extend(artifact_events if artifact_events is not None else _inbox_artifact_events(tenant_id=tenant.id, source_model="TenantTicket", ticket_id=ticket.id))
+    timeline.sort(key=lambda item: str(item.get("created_at") or ""))
     handoff = extra.get("handoff") if isinstance(extra.get("handoff"), dict) else None
     queued, pending_count, pending_since = _ticket_live_chat_queue_signals(
         status=ticket.estado,
@@ -5296,6 +6389,24 @@ def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, A
             "email": extra.get("assignee_email"),
         }
 
+    actions = _allowed_inbox_actions(ticket, extra, tenant=tenant, actor=actor)
+    delivery_history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
+    latest_delivery = extra.get("reply_delivery_latest_evidence") if isinstance(extra.get("reply_delivery_latest_evidence"), Mapping) else None
+    reply_contract = _ticket_reply_contract(
+        source_model="TenantTicket", ticket_id=ticket.id, channel=_ticket_channel(ticket),
+        actor=actor, assignee_id=extra.get("assignee_id"),
+        closed=str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES,
+        contact=extra.get("contact") if isinstance(extra.get("contact"), Mapping) else {},
+        tenant=tenant, latest_delivery=latest_delivery or (delivery_history[-1] if delivery_history else None),
+    )
+    from services.tenant_ticket_reply_delivery import list_ticket_reply_deliveries
+
+    reply_contract["whatsapp"] = _tenant_ticket_whatsapp_reply_contract(
+        ticket, tenant
+    )
+    reply_deliveries = list_ticket_reply_deliveries(
+        tenant_id=int(tenant.id), ticket_id=int(ticket.id), session=db.session
+    )
     return {
         "id": ticket.id,
         "ticket_id": ticket.id,
@@ -5321,8 +6432,10 @@ def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, A
         "sla": _ticket_sla_payload(ticket, extra),
         "timeline": timeline,
         "presence": extra.get("presence") if isinstance(extra.get("presence"), dict) else {"viewers": [], "locked_by": None},
-        "actions": [item["id"] for item in _allowed_inbox_actions(ticket, extra)],
-        "allowed_actions": _allowed_inbox_actions(ticket, extra),
+        "actions": [item["id"] for item in actions],
+        "allowed_actions": actions,
+        "reply_contract": reply_contract,
+        "reply_deliveries": reply_deliveries,
         "next_steps": _next_steps(ticket, extra),
         "source_metadata": _source_metadata(ticket, extra),
         "handoff": handoff,
@@ -5339,7 +6452,7 @@ def _inbox_ticket_payload(ticket: TenantTicket, live_chat_status: Mapping[str, A
 
 @v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>", methods=["GET"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
@@ -5350,7 +6463,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if not legacy_ticket or not employee_ticket_category_access_allows(current_user, legacy_ticket):
             return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
-        item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
+        item = _legacy_claim_inbox_payload(legacy_ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
         return _json_response(
             {
                 "contract_version": "inbox.omnichannel.detail.v1",
@@ -5365,7 +6478,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
     if not ticket:
         legacy_ticket = _legacy_claim_for_tenant(tenant, ticket_id)
         if legacy_ticket and employee_ticket_category_access_allows(current_user, legacy_ticket):
-            item = _legacy_claim_inbox_payload(legacy_ticket, live_chat_status=live_chat_status)
+            item = _legacy_claim_inbox_payload(legacy_ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
             return _json_response(
                 {
                     "contract_version": "inbox.omnichannel.detail.v1",
@@ -5378,7 +6491,7 @@ def omnichannel_inbox_detail_v2(current_user, ticket_id: int):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
     if not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
-    item = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
+    item = _inbox_ticket_payload(ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
     return _json_response(
         {
             "contract_version": "inbox.omnichannel.detail.v1",
@@ -5411,12 +6524,56 @@ def _is_legacy_claim_source(value: Any) -> bool:
 
 
 def _coerce_inbox_ticket_id(raw_value: Any) -> int | None:
-    if isinstance(raw_value, str) and raw_value.startswith("municipio:"):
-        raw_value = raw_value.split(":", 1)[1]
-    try:
-        return int(raw_value)
-    except (TypeError, ValueError):
+    """Return an exact positive integer identity without lossy coercion."""
+
+    if isinstance(raw_value, bool):
         return None
+    if isinstance(raw_value, int):
+        return raw_value if raw_value > 0 else None
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value.strip()
+    # Display IDs such as ``municipio:42`` are deliberately not accepted by
+    # mutation endpoints. The source model is a separate required field; if a
+    # typed display ID were stripped here, ``municipio:42`` paired with
+    # ``TenantTicket`` could mutate a colliding tenant ticket.
+    if not value or not value.isascii() or not value.isdecimal():
+        return None
+    parsed = int(value, 10)
+    return parsed if parsed > 0 else None
+
+
+def _resolve_aliased_inbox_id(
+    payload: Mapping[str, Any],
+    *,
+    keys: tuple[str, ...],
+    required_message: str,
+    required_reason: str,
+    conflict_message: str,
+    conflict_reason: str,
+):
+    """Resolve one numeric identifier without silently preferring an alias.
+
+    Assignment clients have historically sent more than one field name.  If
+    two aliases disagree, selecting the first one can mutate the wrong record
+    or operator, so writes fail closed instead.
+    """
+
+    parsed_values: list[int] = []
+    for key in keys:
+        raw_value = payload.get(key)
+        if raw_value in (None, ""):
+            continue
+        parsed_value = _coerce_inbox_ticket_id(raw_value)
+        if parsed_value is None or parsed_value <= 0:
+            return None, _error_response(required_message, 400, required_reason, f"send_{keys[0]}")
+        parsed_values.append(parsed_value)
+
+    if len(set(parsed_values)) > 1:
+        return None, _error_response(conflict_message, 409, conflict_reason, "refresh_assignment_identity")
+    if not parsed_values:
+        return None, _error_response(required_message, 400, required_reason, f"send_{keys[0]}")
+    return parsed_values[0], None
 
 
 def _omnichannel_reply_idempotency_identity(
@@ -5489,6 +6646,284 @@ def _omnichannel_reply_idempotency_identity(
     return f"crm-reply:{digest}", source, None
 
 
+_CRM_ARTIFACT_ACTIONS = {"attach_file", "share_location", "send_form"}
+
+
+def _inbox_artifact_idempotency(
+    payload: Mapping[str, Any], *, tenant_id: int, source_model: str, ticket_id: int, action: str
+) -> tuple[str | None, Any | None]:
+    raw_key = str(request.headers.get("Idempotency-Key") or "").strip()
+    body_key = str(payload.get("idempotency_key") or "").strip()
+    if not raw_key:
+        return None, _error_response(
+            "Idempotency-Key es obligatorio", 400, "artifact_idempotency_key_required", "send_idempotency_key"
+        )
+    if body_key and body_key != raw_key:
+        return None, _error_response(
+            "El Idempotency-Key del header y body debe coincidir", 400,
+            "artifact_idempotency_key_mismatch", "reuse_same_idempotency_key",
+        )
+    if len(raw_key) < 8 or len(raw_key) > 128 or any(ord(char) < 32 for char in raw_key):
+        return None, _error_response(
+            "Idempotency-Key debe tener entre 8 y 128 caracteres validos", 400,
+            "artifact_idempotency_key_invalid", "send_valid_idempotency_key",
+        )
+    digest = hashlib.sha256(
+        f"inbox.artifact.v1:{tenant_id}:{source_model}:{ticket_id}:{raw_key}".encode("utf-8")
+    ).hexdigest()
+    return digest, None
+
+
+def _validated_artifact_payload(
+    *, action: str, payload: Mapping[str, Any], tenant: TenantProfile,
+    source_model: str, ticket_id: int,
+) -> tuple[dict[str, Any] | None, Any | None]:
+    if action == "share_location":
+        try:
+            lat = float(payload.get("lat"))
+            lng = float(payload.get("lng"))
+        except (TypeError, ValueError):
+            return None, _error_response("lat y lng son obligatorios", 400, "artifact_location_invalid", "send_wgs84_coordinates")
+        if not math.isfinite(lat) or not math.isfinite(lng) or not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+            return None, _error_response("Las coordenadas WGS84 no son validas", 400, "artifact_location_invalid", "send_wgs84_coordinates")
+        capture_source = str(payload.get("capture_source") or "manual").strip().lower()
+        if capture_source not in {"manual", "operator_browser_geolocation"}:
+            return None, _error_response(
+                "capture_source debe identificar una captura manual o el GPS opt-in del operador",
+                400,
+                "artifact_location_capture_source_invalid",
+                "send_supported_capture_source",
+            )
+        label = str(payload.get("label") or "Ubicacion compartida").strip()[:160]
+        address = str(payload.get("address") or "").strip()[:255] or None
+        return {
+            "contract_version": "inbox.artifact.location.v1", "kind": "location",
+            "lat": lat, "lng": lng, "label": label, "address": address,
+            "capture_source": capture_source,
+            "evidence_scope": (
+                "operator_device_location"
+                if capture_source == "operator_browser_geolocation"
+                else "operator_entered_reference"
+            ),
+            "location_role": "crm_reference",
+            "claim_location_modified": False,
+        }, None
+
+    if action == "attach_file":
+        attachment_id = _coerce_inbox_ticket_id(payload.get("attachment_id"))
+        if attachment_id is None:
+            return None, _error_response("attachment_id es obligatorio", 400, "artifact_attachment_id_invalid", "send_attachment_id")
+        if source_model != "MunicipioTicket":
+            return None, _error_response(
+                "TenantTicket no tiene una vinculacion tenant-safe para adjuntos", 409,
+                "tenant_ticket_attachment_binding_unavailable", "upload_and_bind_attachment_first",
+            )
+        attachment = ArchivoAdjunto.query.filter_by(id=attachment_id, municipio_ticket_id=ticket_id).one_or_none()
+        if attachment is None:
+            return None, _error_response("Adjunto no encontrado", 404, "artifact_attachment_not_found", "choose_ticket_attachment")
+        serialized = serialize_attachment_for_delivery(attachment)
+        return {
+            "contract_version": "inbox.artifact.attachment.v1", "kind": "attachment",
+            "attachment_id": attachment.id,
+            "name": serialized.get("name"), "mime_type": serialized.get("mimeType"),
+            "size": serialized.get("size"), "server_verified": True,
+        }, None
+
+    form_id = _coerce_inbox_ticket_id(payload.get("form_id") or payload.get("template_registry_id"))
+    if form_id is None:
+        return None, _error_response("form_id es obligatorio", 400, "artifact_form_id_invalid", "send_form_id")
+    form = MessageTemplateRegistry.query.filter_by(id=form_id, tenant_id=tenant.id).one_or_none()
+    if form is None:
+        return None, _error_response("Formulario no encontrado", 404, "artifact_form_not_found", "choose_tenant_form")
+    if str(form.status or "").strip().lower() not in {"approved", "active", "ready", "published"}:
+        return None, _error_response("El formulario no esta aprobado", 409, "artifact_form_not_approved", "choose_approved_form")
+    form_metadata = form.metadata_json if isinstance(form.metadata_json, Mapping) else {}
+    flow_id = str(form_metadata.get("flow_id") or "").strip()
+    if not flow_id or not str(form.external_template_id or "").strip() or not str(form.content_sid or "").strip():
+        return None, _error_response(
+            "El recurso aprobado no es un formulario nativo verificable", 409,
+            "artifact_form_contract_unverified", "choose_verified_flow_form",
+        )
+    return {
+        "contract_version": "inbox.artifact.form.v1", "kind": "form",
+        "form_id": form.id, "name": form.name, "language": form.language,
+        "flow_id": flow_id, "revision": _iso(form.updated_at), "tenant_verified": True,
+    }, None
+
+
+def _persist_inbox_artifact(
+    *, payload: Mapping[str, Any], tenant: TenantProfile, actor: User,
+    source_model: str, ticket_id: int, action: str,
+) -> tuple[InboxTicketArtifact | None, bool, Any | None]:
+    key_hash, error = _inbox_artifact_idempotency(
+        payload, tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id, action=action
+    )
+    if error is not None:
+        return None, False, error
+    artifact_payload, error = _validated_artifact_payload(
+        action=action, payload=payload, tenant=tenant, source_model=source_model, ticket_id=ticket_id
+    )
+    if error is not None:
+        return None, False, error
+    request_digest = hashlib.sha256(
+        json.dumps(artifact_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    existing = InboxTicketArtifact.query.filter_by(
+        tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id,
+        idempotency_key_hash=key_hash,
+    ).one_or_none()
+    if existing is not None:
+        if existing.request_digest != request_digest or existing.action != action:
+            return None, False, _error_response(
+                "El Idempotency-Key ya fue usado con otro artefacto", 409,
+                "artifact_idempotency_payload_conflict", "reuse_key_only_for_identical_payload",
+            )
+        return existing, True, None
+    artifact = InboxTicketArtifact(
+        tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id,
+        action=action, payload_json=artifact_payload, actor_user_id=actor.id,
+        idempotency_key_hash=key_hash, request_digest=request_digest,
+    )
+    db.session.add(artifact)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        existing = InboxTicketArtifact.query.filter_by(
+            tenant_id=tenant.id, source_model=source_model, ticket_id=ticket_id,
+            idempotency_key_hash=key_hash,
+        ).one_or_none()
+        if existing is not None and existing.request_digest == request_digest and existing.action == action:
+            return existing, True, None
+        return None, False, _error_response(
+            "Conflicto al registrar el artefacto", 409,
+            "artifact_idempotency_payload_conflict", "reuse_key_only_for_identical_payload",
+        )
+    except SQLAlchemyError:
+        db.session.rollback()
+        return None, False, _error_response(
+            "No se pudo guardar el artefacto en el CRM", 500,
+            "artifact_persistence_failed", "retry_with_same_idempotency_key",
+        )
+    return artifact, False, None
+
+
+_INBOX_ARTIFACT_DETAIL_LIMIT = 100
+_INBOX_ARTIFACT_LIST_LIMIT_PER_TICKET = 20
+
+
+def _inbox_artifact_events(*, tenant_id: int, source_model: str, ticket_id: int) -> list[dict[str, Any]]:
+    rows = InboxTicketArtifact.query.filter_by(
+        tenant_id=tenant_id, source_model=source_model, ticket_id=ticket_id,
+    ).order_by(
+        InboxTicketArtifact.created_at.desc(), InboxTicketArtifact.id.desc()
+    ).limit(_INBOX_ARTIFACT_DETAIL_LIMIT).all()
+    rows.reverse()
+    return [row.to_event_dict() for row in rows]
+
+
+def _inbox_artifact_event_map(
+    *, tenant_id: int, identities: list[tuple[str, int]],
+) -> dict[tuple[str, int], list[dict[str, Any]]]:
+    if not identities:
+        return {}
+
+    normalized_identities = list(dict.fromkeys(
+        (str(source_model), int(ticket_id))
+        for source_model, ticket_id in identities
+    ))
+    identity_filter = or_(*(
+        and_(
+            InboxTicketArtifact.source_model == source_model,
+            InboxTicketArtifact.ticket_id == ticket_id,
+        )
+        for source_model, ticket_id in normalized_identities
+    ))
+    artifact_rank = func.row_number().over(
+        partition_by=(
+            InboxTicketArtifact.source_model,
+            InboxTicketArtifact.ticket_id,
+        ),
+        order_by=(
+            InboxTicketArtifact.created_at.desc(),
+            InboxTicketArtifact.id.desc(),
+        ),
+    ).label("artifact_rank")
+    ranked = db.session.query(
+        InboxTicketArtifact.id.label("artifact_id"),
+        artifact_rank,
+    ).filter(
+        InboxTicketArtifact.tenant_id == tenant_id,
+        identity_filter,
+    ).subquery()
+    rows = InboxTicketArtifact.query.join(
+        ranked,
+        InboxTicketArtifact.id == ranked.c.artifact_id,
+    ).filter(
+        ranked.c.artifact_rank <= _INBOX_ARTIFACT_LIST_LIMIT_PER_TICKET,
+    ).order_by(
+        InboxTicketArtifact.source_model.asc(),
+        InboxTicketArtifact.ticket_id.asc(),
+        InboxTicketArtifact.created_at.asc(),
+        InboxTicketArtifact.id.asc(),
+    ).all()
+
+    result: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for row in rows:
+        identity = (row.source_model, row.ticket_id)
+        result.setdefault(identity, []).append(row.to_event_dict())
+    return result
+
+
+def _crm_artifact_action_response(
+    *, payload: Mapping[str, Any], tenant: TenantProfile, actor: User,
+    source_model: str, ticket: TenantTicket | MunicipioTicket, action: str,
+):
+    artifact, replayed, error = _persist_inbox_artifact(
+        payload=payload, tenant=tenant, actor=actor, source_model=source_model,
+        ticket_id=ticket.id, action=action,
+    )
+    if error is not None:
+        return error
+    if artifact is None:  # defensive: never claim persistence without the row
+        return _error_response(
+            "No se pudo verificar la persistencia del artefacto", 500,
+            "artifact_persistence_unverified", "retry_with_same_idempotency_key",
+        )
+    if source_model == "MunicipioTicket":
+        refreshed = _legacy_claim_for_tenant(tenant, ticket.id)
+        if refreshed is None:
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+        ticket_payload = _legacy_claim_inbox_payload(
+            refreshed, tenant=tenant, live_chat_status=_tenant_inbox_live_chat_status(tenant), actor=actor
+        )
+    else:
+        refreshed = TenantTicket.query.filter_by(id=ticket.id, tenant_id=tenant.id).one_or_none()
+        if refreshed is None:
+            return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
+        ticket_payload = _inbox_ticket_payload(
+            refreshed, tenant=tenant, live_chat_status=_tenant_inbox_live_chat_status(tenant), actor=actor
+        )
+    return _json_response({
+        "ok": True,
+        "contract_version": "inbox.omnichannel.action.v1",
+        "tenant": _tenant_ref(tenant),
+        "action": action,
+        "artifact": artifact.to_event_dict(),
+        "delivery": {
+            "contract_version": "inbox.action_delivery.v2",
+            "mode": "crm_only", "status": "already_recorded" if replayed else "saved_to_crm",
+            "reason": "idempotent_replay_no_duplicate" if replayed else "artifact_saved_to_crm",
+            "saved_in_crm": True, "timeline_updated": not replayed,
+            "external_dispatch": False, "dispatch_attempted": False,
+            "provider_accepted": False, "delivered": False, "failed": False,
+            "receipt_persisted": True, "idempotent_replay": replayed,
+            "operator_message": "Guardado en el CRM. No se envio por un canal externo.",
+        },
+        "ticket": ticket_payload,
+    })
+
+
 def _inbox_action_delivery_payload(
     *,
     action: str,
@@ -5503,6 +6938,7 @@ def _inbox_action_delivery_payload(
     delivery_skipped: Mapping[str, Any] | None = None,
     durably_staged: bool = False,
     idempotent_replay: bool = False,
+    provider_message_id: str | None = None,
 ) -> dict[str, Any]:
     normalized_action = str(action or "").strip().lower()
     normalized_channel = str(channel or "crm").strip().lower() or "crm"
@@ -5515,7 +6951,7 @@ def _inbox_action_delivery_payload(
         reply_status = "queued_for_delivery"
         evidence_stage = "durably_staged"
         operator_message = "Respuesta guardada y encolada de forma durable. La entrega final queda pendiente del callback del proveedor."
-    elif is_reply and external_dispatch:
+    elif is_reply and external_dispatch and provider_message_id:
         mode = "real_message"
         resolved_status = status or "provider_accepted"
         resolved_reason = reason or "provider_accepted"
@@ -5523,6 +6959,14 @@ def _inbox_action_delivery_payload(
         reply_status = "provider_accepted"
         evidence_stage = "provider_accepted"
         operator_message = "El proveedor acepto el envio y la respuesta quedo registrada en el CRM. La entrega final queda pendiente de callback."
+    elif is_reply and external_dispatch:
+        mode = "real_message"
+        resolved_status = status or "dispatch_attempted"
+        resolved_reason = reason or "acceptance_unverified"
+        fallback = "provider_receipt_pending"
+        reply_status = "dispatch_attempted"
+        evidence_stage = "acceptance_unverified"
+        operator_message = "Se intento el envio y la respuesta quedo registrada en el CRM. El proveedor no devolvio un identificador correlacionable; aceptacion y entrega siguen sin verificar."
     elif is_reply and idempotent_replay:
         mode = "idempotent_replay"
         resolved_status = status or "already_recorded"
@@ -5578,19 +7022,78 @@ def _inbox_action_delivery_payload(
         "admin_surface": "tenant_claims_inbox" if source_model == "MunicipioTicket" else "omnichannel_inbox",
         "source_model": source_model,
         "operator_message": operator_message,
+        "evidence": {
+            "contract_version": "inbox.reply_delivery_evidence.v1",
+            "saved_in_crm": bool(is_reply and timeline_updated) or bool(is_reply and idempotent_replay),
+            "dispatch_attempted": bool(
+                is_reply
+                and (
+                    external_dispatch
+                    or resolved_reason in {"external_dispatch_failed", "notification_dispatch_failed"}
+                )
+            ),
+            "provider_accepted": bool(is_reply and external_dispatch and provider_message_id),
+            "delivered": False,
+            "failed": bool(
+                is_reply
+                and resolved_reason in {"external_dispatch_failed", "notification_dispatch_failed"}
+            ),
+            "delivered_requires": "provider_status_callback",
+        },
     }
+    if provider_message_id:
+        payload["provider_message_id"] = provider_message_id
     if delivery_results is not None:
         payload["delivery_results"] = {
             "email": bool(delivery_results.get("email")),
             "sms": bool(delivery_results.get("sms")),
             "whatsapp": bool(delivery_results.get("whatsapp")),
         }
-        payload["delivery_results_semantics"] = "provider_acceptance"
+        payload["delivery_results_semantics"] = "dispatch_attempt_boolean_not_provider_receipt"
     if requested_channels is not None:
         payload["requested_channels"] = list(requested_channels)
     if delivery_skipped:
         payload["delivery_skipped"] = dict(delivery_skipped)
     return payload
+
+
+def _claim_action_evidence(*, source_model: str, replayed: bool) -> dict[str, Any]:
+    """Describe self-claim idempotency and audit behavior without case PII.
+
+    Claims are serialized by the locked ticket row and use the persisted
+    assignee as their replay identity.  The audit event is written in the same
+    transaction as the first assignment; a same-operator replay deliberately
+    creates neither another assignment nor another audit entry.
+    """
+
+    normalized_source = str(source_model or "").strip()
+    audit_storage = (
+        "ticket_comment"
+        if normalized_source == "MunicipioTicket"
+        else "ticket_metadata_timeline"
+    )
+    is_replay = bool(replayed)
+    return {
+        "idempotent_replay": is_replay,
+        "idempotency": {
+            "contract_version": "inbox.claim_idempotency.v1",
+            "strategy": "locked_current_assignee",
+            "replayed": is_replay,
+            "same_operator_replay_only": True,
+            "idempotency_key_required": False,
+            "raw_idempotency_key_persisted": False,
+        },
+        "audit": {
+            "contract_version": "inbox.claim_audit.v1",
+            "event_type": "ticket_claimed",
+            "storage": audit_storage,
+            "assignment_event_transactionally_coupled": True,
+            "event_recorded": not is_replay,
+            "replay_deduplicated": is_replay,
+            "duplicate_event_created": False,
+            "response_includes_contact_data": False,
+        },
+    }
 
 
 def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | None) -> str:
@@ -5599,6 +7102,74 @@ def _ticket_delivery_channel(results: Mapping[str, Any] | None, fallback: str | 
         if normalized_results.get(channel):
             return channel
     return str(fallback or "crm").strip().lower() or "crm"
+
+
+def _legacy_claim_delivery_channels(
+    ticket: MunicipioTicket,
+    payload: Mapping[str, Any],
+    *,
+    visibility: str,
+) -> tuple[list[str], str | None]:
+    """Select one explicit legacy reply channel without cross-channel blasts."""
+
+    if visibility not in {"public", "internal"}:
+        return [], "reply_visibility_invalid"
+    has_send_external = "send_external" in payload
+    send_external = payload.get("send_external")
+    if has_send_external and not isinstance(send_external, bool):
+        return [], "reply_send_external_boolean_required"
+    if visibility == "internal" or send_external is False:
+        return [], None
+
+    aliases = {
+        "wa": "whatsapp",
+        "twilio": "whatsapp",
+        "whatsapp_business": "whatsapp",
+        "mail": "email",
+        "correo": "email",
+        "text": "sms",
+        "texto": "sms",
+    }
+    has_delivery_channels = "delivery_channels" in payload
+    has_channels_alias = "channels" in payload
+    if has_delivery_channels and has_channels_alias:
+        return [], "reply_channel_alias_conflict"
+    explicit = has_delivery_channels or has_channels_alias
+    raw_channels = (
+        payload.get("delivery_channels")
+        if has_delivery_channels
+        else payload.get("channels")
+    )
+    if explicit:
+        if raw_channels is None:
+            return [], "reply_channel_invalid"
+        values = (
+            raw_channels
+            if isinstance(raw_channels, (list, tuple, set))
+            else [raw_channels]
+        )
+        requested: list[str] = []
+        for value in values:
+            channel = aliases.get(
+                str(value or "").strip().lower(),
+                str(value or "").strip().lower(),
+            )
+            if channel not in {"whatsapp", "email", "sms"}:
+                return [], "reply_channel_invalid"
+            if channel not in requested:
+                requested.append(channel)
+        if not requested:
+            return [], "reply_channel_invalid"
+    else:
+        source = str(getattr(ticket, "canal_ingreso", None) or "web").strip().lower()
+        source = aliases.get(source, source)
+        requested = [source] if source in {"whatsapp", "email", "sms"} else []
+
+    source = str(getattr(ticket, "canal_ingreso", None) or "web").strip().lower()
+    source = aliases.get(source, source)
+    if requested and (source not in {"whatsapp", "email", "sms"} or requested != [source]):
+        return [], "reply_channel_source_mismatch"
+    return requested, None
 
 
 def _tenant_ticket_reply_contact(ticket: TenantTicket) -> dict[str, str]:
@@ -5612,14 +7183,31 @@ def _tenant_ticket_delivery_channels(
     payload: Mapping[str, Any],
     *,
     visibility: str,
-) -> list[str]:
-    if visibility != "public" or payload.get("send_external") is False:
-        return []
+) -> tuple[list[str], str | None]:
+    """Validate the exact external channel contract before persisting a reply."""
 
-    raw_channels = payload.get("delivery_channels")
-    if raw_channels is None and "channels" in payload:
-        raw_channels = payload.get("channels")
-    if raw_channels is not None:
+    if visibility not in {"public", "internal"}:
+        return [], "reply_visibility_invalid"
+    has_send_external = "send_external" in payload
+    send_external = payload.get("send_external")
+    if has_send_external and not isinstance(send_external, bool):
+        return [], "reply_send_external_boolean_required"
+    if visibility == "internal" or send_external is False:
+        return [], None
+
+    has_delivery_channels = "delivery_channels" in payload
+    has_channels_alias = "channels" in payload
+    if has_delivery_channels and has_channels_alias:
+        return [], "reply_channel_alias_conflict"
+    explicit_channels = has_delivery_channels or has_channels_alias
+    raw_channels = (
+        payload.get("delivery_channels")
+        if has_delivery_channels
+        else payload.get("channels")
+    )
+    if explicit_channels:
+        if raw_channels is None:
+            return [], "reply_channel_invalid"
         values = raw_channels if isinstance(raw_channels, (list, tuple, set)) else [raw_channels]
         normalized = []
         for value in values:
@@ -5628,16 +7216,20 @@ def _tenant_ticket_delivery_channels(
                 channel = "whatsapp"
             elif channel in {"mail", "correo"}:
                 channel = "email"
-            if channel in {"whatsapp", "email"} and channel not in normalized:
+            if channel not in {"whatsapp", "email"}:
+                return [], "reply_channel_invalid"
+            if channel not in normalized:
                 normalized.append(channel)
-        return normalized
+        if not normalized:
+            return [], "reply_channel_invalid"
+        return normalized, None
 
     source_channel = _ticket_channel(ticket)
     if source_channel in {"whatsapp", "wa", "twilio", "whatsapp_business"}:
-        return ["whatsapp"]
+        return ["whatsapp"], None
     if source_channel in {"email", "mail", "correo"}:
-        return ["email"]
-    return []
+        return ["email"], None
+    return [], None
 
 
 def _tenant_whatsapp_sender(tenant: TenantProfile) -> str | None:
@@ -5675,32 +7267,9 @@ def _dispatch_tenant_ticket_reply(
     attempted = False
 
     if "whatsapp" in requested_channels:
-        phone = contact.get("phone")
-        sender = _tenant_whatsapp_sender(tenant)
-        if not phone:
-            skipped["whatsapp"] = "contact_phone_missing"
-        elif not sender:
-            skipped["whatsapp"] = "tenant_whatsapp_sender_missing"
-        else:
-            attempted = True
-            try:
-                from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
-
-                results["whatsapp"] = bool(
-                    enviar_mensaje_whatsapp_con_fallback(
-                        phone,
-                        body,
-                        from_number=sender,
-                    )
-                )
-            except Exception as exc:  # pragma: no cover - defensive production logging
-                current_app.logger.exception(
-                    "Error dispatching TenantTicket WhatsApp reply ticket=%s tenant=%s: %s",
-                    ticket.id,
-                    tenant.slug,
-                    exc,
-                )
-                skipped["whatsapp"] = "provider_error"
+        # TenantTicket WhatsApp is outbox-only. The historical global helper
+        # can select credentials outside this tenant-bound aggregate.
+        skipped["whatsapp"] = "whatsapp_outbox_cutover_required"
 
     if "email" in requested_channels:
         email = contact.get("email")
@@ -5735,41 +7304,59 @@ def _dispatch_tenant_ticket_reply(
         return results, None, skipped
     if attempted:
         return results, "external_dispatch_failed", skipped
+    if skipped.get("whatsapp") == "whatsapp_outbox_cutover_required":
+        return results, "whatsapp_outbox_cutover_required", skipped
     return results, "external_dispatch_contact_or_sender_missing", skipped
 
 
-def _record_tenant_ticket_delivery(
-    ticket: TenantTicket,
+def _record_ticket_reply_delivery(
+    ticket: TenantTicket | MunicipioTicket,
     *,
+    tenant: TenantProfile,
+    source_model: str,
     delivery: Mapping[str, Any],
     actor: User,
-) -> TenantTicket:
-    persisted_ticket = (
-        TenantTicket.query.filter_by(id=ticket.id, tenant_id=ticket.tenant_id)
-        .with_for_update()
-        .populate_existing()
-        .one()
-    )
+) -> TenantTicket | MunicipioTicket:
+    if source_model == "TenantTicket" and isinstance(ticket, TenantTicket):
+        persisted_ticket = (
+            TenantTicket.query.filter_by(id=ticket.id, tenant_id=tenant.id)
+            .with_for_update().populate_existing().one()
+        )
+    elif source_model == "MunicipioTicket" and isinstance(ticket, MunicipioTicket):
+        persisted_ticket = (
+            _legacy_claim_query_for_tenant(tenant)
+            .filter(MunicipioTicket.id == ticket.id)
+            .with_for_update().populate_existing().one()
+        )
+    else:
+        raise ValueError("reply delivery source_model does not match ticket")
     extra = deepcopy(_ticket_extra(persisted_ticket))
     history = extra.get("reply_delivery_history") if isinstance(extra.get("reply_delivery_history"), list) else []
-    history.append(
-        {
-            "contract_version": delivery.get("contract_version"),
-            "mode": delivery.get("mode"),
-            "status": delivery.get("status"),
-            "reason": delivery.get("reason"),
-            "channel": delivery.get("channel"),
-            "evidence_stage": delivery.get("evidence_stage"),
-            "final_delivery": delivery.get("final_delivery") or {},
-            "external_dispatch": bool(delivery.get("external_dispatch")),
-            "delivery_results": delivery.get("delivery_results") or {},
-            "requested_channels": delivery.get("requested_channels") or [],
-            "delivery_skipped": delivery.get("delivery_skipped") or {},
-            "actor_user_id": actor.id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-    )
+    entry = {
+        "contract_version": delivery.get("contract_version"),
+        "source_model": source_model,
+        "mode": delivery.get("mode"),
+        "status": delivery.get("status"),
+        "reason": delivery.get("reason"),
+        "channel": delivery.get("channel"),
+        "evidence_stage": delivery.get("evidence_stage"),
+        "evidence": deepcopy(delivery.get("evidence") or {}),
+        "final_delivery": deepcopy(delivery.get("final_delivery") or {}),
+        "provider_message_id": delivery.get("provider_message_id"),
+        "external_dispatch": bool(delivery.get("external_dispatch")),
+        "delivery_results": deepcopy(delivery.get("delivery_results") or {}),
+        "requested_channels": list(delivery.get("requested_channels") or []),
+        "delivery_skipped": deepcopy(delivery.get("delivery_skipped") or {}),
+        # Reaching this durable entry means the receipt is being written in the
+        # same transaction. If the later commit fails the entry is rolled back
+        # and the response reports receipt_persisted=false instead.
+        "receipt_persisted": True,
+        "actor_user_id": actor.id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    history.append(entry)
     extra["reply_delivery_history"] = history[-100:]
+    extra["reply_delivery_latest_evidence"] = entry
     persisted_ticket.datos_extra = extra
     flag_modified(persisted_ticket, "datos_extra")
     db.session.add(persisted_ticket)
@@ -5801,6 +7388,8 @@ def _dispatch_legacy_claim_reply(
     ticket: MunicipioTicket,
     body: str,
     recent_comment: TicketComentario | None,
+    *,
+    requested_channels: list[str],
 ) -> tuple[dict[str, bool], str | None]:
     try:
         from services.notification_dispatcher import dispatch_ticket_update
@@ -5810,15 +7399,16 @@ def _dispatch_legacy_claim_reply(
             "municipio",
             body,
             comentario_reciente=recent_comment,
-            enable_whatsapp=True,
+            enable_whatsapp="whatsapp" in requested_channels,
+            enabled_channels=requested_channels,
             archivos_adjuntos=[],
         )
         if not isinstance(raw_results, Mapping):
             return {"email": False, "sms": False, "whatsapp": False}, "notification_dispatch_invalid_result"
         return {
-            "email": bool(raw_results.get("email")),
-            "sms": bool(raw_results.get("sms")),
-            "whatsapp": bool(raw_results.get("whatsapp")),
+            "email": "email" in requested_channels and bool(raw_results.get("email")),
+            "sms": "sms" in requested_channels and bool(raw_results.get("sms")),
+            "whatsapp": "whatsapp" in requested_channels and bool(raw_results.get("whatsapp")),
         }, None
     except Exception as exc:  # pragma: no cover - defensive production logging
         current_app.logger.exception(
@@ -5833,10 +7423,28 @@ def _emit_legacy_claim_realtime_reply(
     ticket: MunicipioTicket,
     comment: TicketComentario,
     actor: User,
+    *,
+    visibility: str = "public",
 ) -> bool:
-    """Emit a durable public CRM reply to the ticket's signed citizen room."""
+    """Emit public replies to the case room and internal notes as opaque refetches."""
 
     try:
+        if visibility == "internal":
+            from socket_service import emit_new_chat_message
+
+            # Omitting case identifiers deliberately prevents a message body
+            # from reaching the signed citizen room.  The socket boundary uses
+            # the tenant id only to emit an opaque collection invalidation.
+            emit_new_chat_message(
+                {
+                    "tenant_type": "municipio",
+                    "tipo": "municipio",
+                    "tenant_profile_id": getattr(ticket, "tenant_id", None),
+                    "municipio_id": getattr(ticket, "municipio_id", None),
+                }
+            )
+            return True
+
         from socket_service import emit_ticket_comment
 
         emit_ticket_comment(
@@ -5899,7 +7507,7 @@ def _emit_legacy_claim_realtime_state(
         if str(previous_status or "") != str(ticket.estado or ""):
             emit_ticket_status_changed(event_payload)
             emitted.append("ticket.status.changed")
-        if action == "assign":
+        if action in {"assign", "claim"}:
             emit_ticket_assignment_changed({**event_payload, "assignment_state": "assigned"})
             emitted.append("ticket.assignment.changed")
     except Exception as exc:  # pragma: no cover - polling remains authoritative
@@ -5910,6 +7518,120 @@ def _emit_legacy_claim_realtime_state(
             exc,
         )
     return emitted
+
+
+def _municipio_handoff_action_response(
+    *,
+    current_user: User,
+    tenant: TenantProfile,
+    ticket: MunicipioTicket,
+    payload: Mapping[str, Any],
+):
+    """Persist or replay one normalized municipal handoff request."""
+
+    from services.municipio_ticket_handoff import (
+        MunicipioTicketHandoffError,
+        request_human_handoff,
+    )
+
+    if "channel" in payload and "target_channel" in payload:
+        return _error_response(
+            "Usa un solo campo para el canal de handoff.",
+            400,
+            "handoff_channel_alias_conflict",
+            "send_channel_only",
+        )
+    raw_channel = (
+        payload.get("channel")
+        if "channel" in payload
+        else payload.get("target_channel")
+    )
+    try:
+        result = request_human_handoff(
+            ticket=ticket,
+            actor=current_user,
+            tenant_id=int(tenant.id),
+            raw_idempotency_key=request.headers.get("Idempotency-Key"),
+            raw_channel=raw_channel,
+            raw_reason=payload.get("reason"),
+        )
+    except MunicipioTicketHandoffError as exc:
+        db.session.rollback()
+        return _error_response(
+            exc.message,
+            exc.status_code,
+            exc.reason_code,
+            exc.action_hint,
+        )
+    except Exception as exc:
+        db.session.rollback()
+        current_app.logger.exception(
+            "MunicipioTicket durable handoff failed ticket=%s tenant=%s: %s",
+            ticket.id,
+            tenant.id,
+            exc,
+        )
+        return _error_response(
+            "No se pudo guardar el handoff de forma durable",
+            503,
+            "handoff_durability_unavailable",
+            "retry_with_same_idempotency_key",
+        )
+
+    refreshed = result.ticket
+    live_chat_status = _tenant_inbox_live_chat_status(tenant)
+    ticket_payload = _legacy_claim_inbox_payload(
+        refreshed,
+        tenant=tenant,
+        live_chat_status=live_chat_status,
+        actor=current_user,
+    )
+    delivery = _inbox_action_delivery_payload(
+        action="handoff",
+        channel="crm",
+        timeline_updated=not result.replayed,
+        source_model="MunicipioTicket",
+        status="already_recorded" if result.replayed else "requested",
+        reason=(
+            "idempotent_replay_no_duplicate"
+            if result.replayed
+            else "human_handoff_durably_recorded"
+        ),
+        external_dispatch=False,
+    )
+    delivery["receipt_persisted"] = True
+    delivery["idempotency"] = {
+        "contract_version": "municipio_ticket.handoff_idempotency.v1",
+        "replayed": result.replayed,
+        "source": "Idempotency-Key",
+        "raw_value_persisted": False,
+    }
+    delivery["ledger"] = {
+        "contract_version": MunicipioTicketHandoffEvent.CONTRACT_VERSION,
+        "event_id": result.event.event_id,
+        "normalized_event": True,
+        "projection_updated": not result.replayed,
+        "external_dispatch": False,
+    }
+    delivery["realtime"] = {
+        "emitted": False,
+        "event": None,
+        "events": [],
+        "room": f"tenant_{tenant.id}",
+        "fallback": "http_polling",
+    }
+    return _json_response(
+        {
+            "ok": True,
+            "contract_version": "inbox.omnichannel.action.v1",
+            "tenant": _tenant_ref(tenant),
+            "action": "handoff",
+            "handoff_event": result.event.to_event_dict(),
+            "delivery": delivery,
+            "live_chat": ticket_payload.get("live_chat"),
+            "ticket": ticket_payload,
+        }
+    )
 
 
 def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfile, ticket_id: int, payload: Mapping[str, Any]):
@@ -5923,8 +7645,22 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
     action = str(payload.get("action") or payload.get("type") or "").strip().lower()
-    if action not in {"assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen"}:
+    if action not in {"claim", "assign", "reply", "handoff", "accept_handoff", "resume_ai", "close", "reopen", "attach_file", "share_location", "send_form"}:
         return _error_response("Accion de inbox no soportada para reclamos municipales", 400, "unsupported_legacy_inbox_action", "send_supported_action")
+
+    if action == "handoff":
+        ownership_error = _operational_ownership_error(
+            current_user,
+            ticket.asignado_a_id,
+        )
+        if ownership_error is not None:
+            return ownership_error
+        return _municipio_handoff_action_response(
+            current_user=current_user,
+            tenant=tenant,
+            ticket=ticket,
+            payload=payload,
+        )
 
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -5946,13 +7682,92 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     handoff_event_body: str | None = None
     reply_outbox_enabled = False
     reply_outbox_effect_count = 0
+    reply_outbox_external_effect_count = 0
     reply_replayed = False
     reply_idempotency_source: str | None = None
+    reply_event: dict[str, Any] | None = None
+    reply_record: MunicipioTicketReplyEvent | None = None
+    claim_idempotent = False
+    assignment_idempotent = False
+    assignment_expected_id: int | None = None
+    assignment_target_id: int | None = None
+    requested_channels: list[str] | None = None
+    reply_visibility = "public"
+    legacy_whatsapp_cutover_blocked = False
 
-    if action == "assign":
-        assignee_id = _coerce_inbox_ticket_id(payload.get("assignee_id") or payload.get("user_id"))
-        if not assignee_id:
-            return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+    if action in _OPERATIONAL_OWNERSHIP_ACTIONS:
+        ownership_error = _operational_ownership_error(current_user, ticket.asignado_a_id)
+        if ownership_error is not None:
+            return ownership_error
+
+    if action in _CRM_ARTIFACT_ACTIONS:
+        if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response(
+                "El reclamo esta cerrado. Reabrilo antes de agregar recursos.", 403,
+                "ticket_closed", "reopen_ticket",
+            )
+        return _crm_artifact_action_response(
+            payload=payload, tenant=tenant, actor=current_user,
+            source_model="MunicipioTicket", ticket=ticket, action=action,
+        )
+
+    if action == "claim":
+        current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
+        if current_assignee_id is not None:
+            if current_assignee_id != current_user.id:
+                return _error_response(
+                    "El ticket ya fue tomado por otro operador",
+                    409,
+                    "already_claimed",
+                    "refresh_inbox",
+                )
+            claim_idempotent = True
+        else:
+            if not ticket_assignee_is_compatible(current_user, ticket):
+                return _error_response(
+                    "El operador no tiene acceso a la categoria del ticket",
+                    404,
+                    "ticket_not_found",
+                    "refresh_inbox",
+                )
+            ticket.asignado_a_id = current_user.id
+            ticket.asignado_en = now
+            if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            db.session.add(
+                TicketComentario(
+                    municipio_ticket_id=ticket.id,
+                    comentario=f"Ticket tomado por {current_user.name}",
+                    user_id=current_user.id,
+                    es_admin=True,
+                    origen="admin_panel",
+                    estado_ticket=ticket.estado,
+                )
+            )
+            timeline_updated = True
+
+    elif action == "assign":
+        assignee_id, assignee_error = _resolve_aliased_inbox_id(
+            payload,
+            keys=("assignee_id", "user_id"),
+            required_message="assignee_id es obligatorio",
+            required_reason="assignee_required",
+            conflict_message="assignee_id y user_id deben identificar el mismo empleado",
+            conflict_reason="assignee_identity_conflict",
+        )
+        if assignee_error is not None:
+            return assignee_error
+        assignment_target_id = assignee_id
+        try:
+            transition = assignment_transition(
+                actor=current_user,
+                payload=payload,
+                current_assignee_id=ticket.asignado_a_id,
+                target_assignee_id=assignee_id,
+            )
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_policy_error(exc)
+        assignment_expected_id = transition.expected_assignee_id
         owner_ids = [
             owner_id
             for owner_id in (getattr(tenant, "municipio_id", None), getattr(tenant, "pyme_id", None))
@@ -5961,7 +7776,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         assignee_query = User.query.filter(User.id == assignee_id)
         assignee_query = assignee_query.filter(or_(User.tenant_id == tenant.id, User.id.in_(owner_ids)))
         assignee = assignee_query.first()
-        if not assignee:
+        if not ticket_assignee_is_operational(assignee):
             return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
         if not ticket_assignee_is_compatible(assignee, ticket):
             return _error_response(
@@ -5970,45 +7785,57 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 "assignee_category_scope_mismatch",
                 "choose_compatible_assignee",
             )
-        ticket.asignado_a_id = assignee.id
-        ticket.asignado_en = now
-        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
-            ticket.estado = "en_proceso"
-        db.session.add(
-            TicketComentario(
-                municipio_ticket_id=ticket.id,
-                comentario=f"Asignado a {assignee.name}",
-                user_id=current_user.id,
-                es_admin=True,
-                origen="admin_panel",
-                estado_ticket=ticket.estado,
+        if transition.replayed:
+            assignment_idempotent = True
+        else:
+            ticket.asignado_a_id = assignee.id
+            ticket.asignado_en = now
+            if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            db.session.add(
+                TicketComentario(
+                    municipio_ticket_id=ticket.id,
+                    comentario=f"Asignado a {assignee.name}",
+                    user_id=current_user.id,
+                    es_admin=True,
+                    origen="admin_panel",
+                    estado_ticket=ticket.estado,
+                )
             )
-        )
-        timeline_updated = True
-
-    elif action == "handoff":
-        channel = _normalize_handoff_channel(payload.get("channel") or payload.get("target_channel"))
-        if channel is None:
-            return _error_response(
-                "El canal de handoff no es valido",
-                400,
-                "invalid_handoff_channel",
-                "choose_supported_handoff_channel",
-            )
-        _apply_handoff_transition(
-            extra,
-            action="handoff",
-            actor=current_user,
-            occurred_at=now_iso,
-            channel=channel,
-            reason=payload.get("reason"),
-        )
-        if str(ticket.estado or "").lower() in {"nuevo", "open"}:
-            ticket.estado = "en_proceso"
-        handoff_event_body = f"Handoff solicitado al equipo ({channel})"
+            timeline_updated = True
 
     elif action == "accept_handoff":
-        _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
+        current_assignee_id = _coerce_inbox_ticket_id(ticket.asignado_a_id)
+        if not ticket_assignee_is_compatible(current_user, ticket):
+            return _error_response(
+                "El operador no tiene acceso a la categoria del ticket",
+                404,
+                "ticket_not_found",
+                "refresh_inbox",
+            )
+        recipient_error = _validate_handoff_recipient(
+            extra,
+            actor=current_user,
+            current_assignee_id=current_assignee_id,
+        )
+        if recipient_error is not None:
+            return recipient_error
+        previous_assignee = getattr(ticket, "asignado_a", None)
+        transferred_from = (
+            {
+                "id": current_assignee_id,
+                "name": getattr(previous_assignee, "name", None),
+            }
+            if current_assignee_id is not None and current_assignee_id != current_user.id
+            else None
+        )
+        _apply_handoff_transition(
+            extra,
+            action="accept_handoff",
+            actor=current_user,
+            occurred_at=now_iso,
+            transferred_from=transferred_from,
+        )
         ticket.asignado_a_id = current_user.id
         ticket.asignado_en = now
         if str(ticket.estado or "").lower() in {"nuevo", "open"}:
@@ -6022,9 +7849,46 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
     elif action == "reply":
         if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
             return _error_response("El reclamo esta cerrado. Reabrilo antes de responder.", 403, "ticket_closed", "reopen_ticket")
-        body = str(payload.get("body") or payload.get("message") or payload.get("comentario") or "").strip()
-        if not body:
-            return _error_response("El mensaje no puede estar vacio", 400, "reply_body_required", "send_reply_body")
+        body, body_error = _omnichannel_reply_body(payload)
+        if body_error is not None:
+            return body_error
+        raw_visibility = payload["visibility"] if "visibility" in payload else "public"
+        if not isinstance(raw_visibility, str):
+            return _error_response(
+                "La visibilidad de la respuesta no es valida.",
+                400,
+                "reply_visibility_invalid",
+                "choose_public_or_internal_visibility",
+            )
+        reply_visibility = raw_visibility.strip().lower()
+        requested_channels, channel_error = _legacy_claim_delivery_channels(
+            ticket,
+            payload,
+            visibility=reply_visibility,
+        )
+        if channel_error is not None:
+            is_source_mismatch = channel_error == "reply_channel_source_mismatch"
+            return _error_response(
+                (
+                    "El canal solicitado no coincide con el canal de origen del reclamo."
+                    if is_source_mismatch
+                    else "La configuración de entrega de la respuesta no es válida."
+                ),
+                409 if is_source_mismatch else 400,
+                channel_error,
+                (
+                    "use_original_channel_or_internal_note"
+                    if is_source_mismatch
+                    else "review_reply_delivery_fields"
+                ),
+            )
+        if "template_variables" in payload and "content_variables" in payload:
+            return _error_response(
+                "Usá un solo campo para las variables de la plantilla.",
+                400,
+                "whatsapp_template_variable_alias_conflict",
+                "send_template_variables_only",
+            )
         reply_idempotency_key, reply_idempotency_source, idempotency_error = (
             _omnichannel_reply_idempotency_identity(payload, tenant_id=tenant.id)
         )
@@ -6037,6 +7901,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             TicketIdempotencyConflict,
             TicketIdempotencyReplayUnavailable,
             TicketIdempotencyValidationError,
+            TicketReplyOwnershipError,
         )
 
         outbox_policy = resolve_domain_effect_outbox_policy(
@@ -6044,50 +7909,162 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             tenant_id=tenant.id,
         )
         reply_outbox_enabled = outbox_policy.enabled
-        existing_receipt = TicketDomainEffectReceipt.query.filter_by(
-            tenant_id=tenant.id,
-            idempotency_key=reply_idempotency_key,
-        ).one_or_none()
-        existing_comment = None
-        if (
-            existing_receipt is not None
-            and existing_receipt.effect_kind == "ticket.comment.municipio"
-            and existing_receipt.resource_type == "ticket_comentario"
-        ):
-            existing_comment = db.session.get(
-                TicketComentario,
-                existing_receipt.resource_id,
-            )
-
-        target_status = (
-            "en_proceso"
-            if str(ticket.estado or "").lower() in {"nuevo", "open"}
-            else str(ticket.estado or "")
+        # Preserve the historical compatibility contract for callers that do
+        # not declare a delivery target.  The secure provider path is opt-in
+        # through an explicit channel (or ``send_external: true``), which lets
+        # the v2 CRM adopt the durable municipal reply contract without
+        # silently changing older timeline-only clients.
+        explicit_delivery_target = bool(
+            "delivery_channels" in payload
+            or "channels" in payload
+            or payload.get("send_external") is True
         )
-        comment_status = (
-            str(existing_comment.estado_ticket or target_status)
-            if existing_comment is not None
-            else target_status
+        if not explicit_delivery_target and requested_channels == ["whatsapp"]:
+            # Preserve the historical timeline-only behaviour for older
+            # clients that inferred WhatsApp from the ticket source without
+            # explicitly requesting external delivery.  New CRM clients opt
+            # into the enterprise outbox contract by declaring the channel.
+            legacy_whatsapp_cutover_blocked = True
+            requested_channels = []
+        enterprise_whatsapp_reply = bool(
+            explicit_delivery_target and requested_channels == ["whatsapp"]
         )
-        if existing_receipt is None:
-            ticket.estado = target_status
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyDeliveryError,
+        )
 
         try:
-            recent_comment = ServicioTickets().crear_comentario(
-                ticket.id,
-                "municipio",
-                {
-                    "comentario": body,
-                    "user_id": current_user.id,
-                    "es_admin": True,
-                    "origen": "admin_panel",
-                    "estado_ticket": comment_status,
-                    "emit_notifications": True,
-                    "emit_socket": True,
-                },
-                idempotency_key=reply_idempotency_key,
-                idempotency_tenant_id=tenant.id,
-                legacy_effects_owned_by_caller=True,
+            if enterprise_whatsapp_reply:
+                reply_result = ServicioTickets().crear_respuesta_municipio(
+                    ticket,
+                    {
+                        "body": body,
+                        "visibility": reply_visibility,
+                        "actor_user_id": current_user.id,
+                        "actor_name": current_user.name,
+                        "actor_role": current_user.rol,
+                        "requested_channels": requested_channels,
+                        "template_registry_id": payload.get(
+                            "template_registry_id"
+                        ),
+                        "template_variables": (
+                            payload.get("template_variables")
+                            if "template_variables" in payload
+                            else payload.get("content_variables")
+                        ),
+                        "emit_socket": True,
+                    },
+                    idempotency_key=reply_idempotency_key,
+                    idempotency_tenant_id=tenant.id,
+                    reply_actor=current_user,
+                )
+                ticket = reply_result["ticket"]
+                recent_comment = reply_result["comment"]
+                reply_event = dict(reply_result["event"])
+                reply_record = reply_result.get("reply_record")
+                reply_replayed = bool(reply_result.get("replayed"))
+                timeline_updated = not reply_replayed
+                aggregate_ref = str(reply_result.get("aggregate_ref") or "")
+                if aggregate_ref:
+                    reply_outbox_effects = DomainEffectOutbox.query.filter_by(
+                        tenant_id=tenant.id,
+                        aggregate_type="municipio_ticket_reply",
+                        aggregate_ref=aggregate_ref,
+                    ).all()
+                    reply_outbox_effect_count = len(reply_outbox_effects)
+                    reply_outbox_external_effect_count = sum(
+                        1
+                        for effect in reply_outbox_effects
+                        if effect.channel != "realtime"
+                    )
+            else:
+                existing_receipt = TicketDomainEffectReceipt.query.filter_by(
+                    tenant_id=tenant.id,
+                    idempotency_key=reply_idempotency_key,
+                ).one_or_none()
+                existing_comment = None
+                if (
+                    existing_receipt is not None
+                    and existing_receipt.effect_kind == "ticket.comment.municipio"
+                    and existing_receipt.resource_type == "ticket_comentario"
+                ):
+                    existing_comment = db.session.get(
+                        TicketComentario,
+                        existing_receipt.resource_id,
+                    )
+
+                current_status = str(ticket.estado or "")
+                target_status = (
+                    current_status
+                    if reply_visibility == "internal"
+                    else (
+                        "en_proceso"
+                        if current_status.lower() in {"nuevo", "open"}
+                        else current_status
+                    )
+                )
+                comment_status = (
+                    str(existing_comment.estado_ticket or target_status)
+                    if existing_comment is not None
+                    else target_status
+                )
+                if existing_receipt is None:
+                    ticket.estado = target_status
+                recent_comment = ServicioTickets().crear_comentario(
+                    ticket.id,
+                    "municipio",
+                    {
+                        "comentario": body,
+                        "user_id": current_user.id,
+                        "es_admin": True,
+                        "origen": (
+                            "internal"
+                            if reply_visibility == "internal"
+                            else "admin_panel"
+                        ),
+                        "estado_ticket": comment_status,
+                        "emit_notifications": bool(requested_channels),
+                        "emit_socket": True,
+                        "requested_channels": requested_channels,
+                    },
+                    idempotency_key=reply_idempotency_key,
+                    idempotency_tenant_id=tenant.id,
+                    legacy_effects_owned_by_caller=True,
+                    reply_actor=current_user,
+                )
+                if recent_comment is None:
+                    db.session.rollback()
+                    return _error_response(
+                        "No se pudo guardar la respuesta",
+                        500,
+                        "reply_persistence_failed",
+                        "retry_with_same_idempotency_key",
+                    )
+                reply_replayed = existing_receipt is not None
+                timeline_updated = not reply_replayed
+                if reply_outbox_enabled:
+                    reply_outbox_effects = DomainEffectOutbox.query.filter_by(
+                        tenant_id=tenant.id,
+                        aggregate_type="municipio_ticket_comment",
+                        aggregate_ref=str(recent_comment.id),
+                    ).all()
+                    reply_outbox_effect_count = len(reply_outbox_effects)
+                    reply_outbox_external_effect_count = sum(
+                        1
+                        for effect in reply_outbox_effects
+                        if effect.channel != "realtime"
+                    )
+        except TicketReplyOwnershipError as exc:
+            db.session.rollback()
+            return _error_response(
+                "Toma el ticket antes de responder"
+                if exc.reason_code == "ticket_claim_required"
+                else "El ticket esta asignado a otro operador",
+                409,
+                exc.reason_code,
+                "claim_ticket"
+                if exc.reason_code == "ticket_claim_required"
+                else "refresh_inbox",
             )
         except TicketIdempotencyConflict:
             db.session.rollback()
@@ -6113,25 +8090,59 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
                 "reply_idempotency_replay_unavailable",
                 "refresh_inbox",
             )
-        if recent_comment is None:
+        except TenantTicketReplyDeliveryError as exc:
             db.session.rollback()
+            is_window_error = exc.code == "whatsapp_template_required_outside_24h"
+            is_template_body_mismatch = exc.code == "whatsapp_template_body_mismatch"
             return _error_response(
-                "No se pudo guardar la respuesta",
-                500,
-                "reply_persistence_failed",
+                (
+                    "La ventana de atención de 24 horas está cerrada. "
+                    "Seleccioná una plantilla aprobada para responder por WhatsApp."
+                    if is_window_error
+                    else (
+                        "El texto visible no coincide con la plantilla aprobada. "
+                        "Volvé a generar la vista previa antes de enviarla."
+                        if is_template_body_mismatch
+                        else "La configuración de WhatsApp, la plantilla o sus variables no son válidas."
+                    )
+                ),
+                409 if is_window_error or is_template_body_mismatch else 400,
+                exc.code,
+                "choose_approved_template"
+                if is_window_error
+                else (
+                    "refresh_approved_template_preview"
+                    if is_template_body_mismatch
+                    else "review_whatsapp_delivery_fields"
+                ),
+            )
+        except Exception as exc:
+            db.session.rollback()
+            if not enterprise_whatsapp_reply:
+                raise
+            current_app.logger.exception(
+                "MunicipioTicket durable reply failed ticket=%s tenant=%s: %s",
+                ticket.id,
+                tenant.id,
+                exc,
+            )
+            return _error_response(
+                "No se pudo guardar la respuesta de forma durable",
+                503,
+                "reply_durability_unavailable",
                 "retry_with_same_idempotency_key",
             )
-        reply_replayed = existing_receipt is not None
-        timeline_updated = not reply_replayed
-        if reply_outbox_enabled:
-            reply_outbox_effect_count = DomainEffectOutbox.query.filter_by(
-                tenant_id=tenant.id,
-                aggregate_type="municipio_ticket_comment",
-                aggregate_ref=str(recent_comment.id),
-            ).count()
 
     elif action == "close":
-        ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
+        target_status = _ticket_transition_status("close", payload.get("status"), default="cerrado")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion close",
+                400,
+                "ticket_action_status_conflict",
+                "send_closed_status",
+            )
+        ticket.estado = target_status
         body = str(payload.get("body") or "Reclamo cerrado desde la bandeja operativa").strip()
         db.session.add(
             TicketComentario(
@@ -6146,7 +8157,15 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         timeline_updated = True
 
     elif action == "reopen":
-        ticket.estado = str(payload.get("status") or "en_proceso").strip().lower() or "en_proceso"
+        target_status = _ticket_transition_status("reopen", payload.get("status"), default="en_proceso")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion reopen",
+                400,
+                "ticket_action_status_conflict",
+                "send_active_status",
+            )
+        ticket.estado = target_status
         body = str(payload.get("body") or "Reclamo reabierto desde la bandeja operativa").strip()
         db.session.add(
             TicketComentario(
@@ -6176,12 +8195,18 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         timeline_updated = True
 
     if action != "reply":
-        ticket.ultima_actividad = now
-        db.session.add(ticket)
+        if not (
+            (action == "claim" and claim_idempotent)
+            or (action == "assign" and assignment_idempotent)
+        ):
+            ticket.ultima_actividad = now
+            db.session.add(ticket)
         db.session.commit()
 
     if action not in {"handoff", "accept_handoff", "resume_ai"} and not (
         action == "reply" and (reply_outbox_enabled or reply_replayed)
+    ) and not (action == "claim" and claim_idempotent) and not (
+        action == "assign" and assignment_idempotent
     ):
         realtime_state_events = _emit_legacy_claim_realtime_state(
             ticket,
@@ -6195,13 +8220,33 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         and not reply_outbox_enabled
         and not reply_replayed
     ):
-        delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(ticket, body, recent_comment)
-        realtime_emitted = _emit_legacy_claim_realtime_reply(ticket, recent_comment, current_user)
+        if requested_channels:
+            delivery_results, dispatch_error_reason = _dispatch_legacy_claim_reply(
+                ticket,
+                body,
+                recent_comment,
+                requested_channels=requested_channels,
+            )
+        else:
+            delivery_results = {"email": False, "sms": False, "whatsapp": False}
+            dispatch_error_reason = (
+                "legacy_whatsapp_enterprise_cutover_required"
+                if legacy_whatsapp_cutover_blocked
+                else "external_dispatch_no_channel_requested"
+            )
+        realtime_emitted = _emit_legacy_claim_realtime_reply(
+            ticket,
+            recent_comment,
+            current_user,
+            visibility=reply_visibility,
+        )
 
     external_dispatch = bool(delivery_results and any(delivery_results.values()))
     delivery_reason = None
     if action == "reply":
-        if reply_outbox_enabled:
+        if legacy_whatsapp_cutover_blocked:
+            delivery_reason = "legacy_whatsapp_enterprise_cutover_required"
+        elif reply_outbox_enabled:
             delivery_reason = (
                 "idempotent_replay_domain_effects_preserved"
                 if reply_replayed and reply_outbox_effect_count
@@ -6215,7 +8260,7 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
             delivery_reason = "idempotent_replay_no_redispatch"
         else:
             delivery_reason = (
-                "provider_accepted"
+                "acceptance_unverified"
                 if external_dispatch
                 else (dispatch_error_reason or "external_dispatch_no_channel_confirmed")
             )
@@ -6223,32 +8268,145 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         action=action,
         channel=(
             "crm"
-            if action in {"handoff", "accept_handoff", "resume_ai"}
+            if action in {"claim", "handoff", "accept_handoff", "resume_ai"}
+            or (action == "reply" and not requested_channels)
             else _ticket_delivery_channel(delivery_results, ticket.canal_ingreso or "whatsapp")
         ),
         timeline_updated=timeline_updated,
         source_model="MunicipioTicket",
-        reason=delivery_reason,
+        status=(
+            "already_owned"
+            if action == "claim" and claim_idempotent
+            else (
+                "claimed"
+                if action == "claim"
+                else (
+                    "already_assigned"
+                    if action == "assign" and assignment_idempotent
+                    else ("assigned" if action == "assign" else None)
+                )
+            )
+        ),
+        reason=(
+            "claim_idempotent_same_operator"
+            if action == "claim" and claim_idempotent
+            else (
+                "claim_acquired"
+                if action == "claim"
+                else (
+                    "assignment_idempotent_same_target"
+                    if action == "assign" and assignment_idempotent
+                    else ("assignment_applied" if action == "assign" else delivery_reason)
+                )
+            )
+        ),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
         requested_channels=(
-            ["email", "sms", "whatsapp", "realtime"]
+            [*(requested_channels or []), "realtime"]
             if action == "reply" and reply_outbox_effect_count
-            else None
+            else (requested_channels if action == "reply" else None)
         ),
         durably_staged=(
-            action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
+            action == "reply"
+            and bool(reply_outbox_external_effect_count)
+            and not reply_replayed
         ),
-        idempotent_replay=action == "reply" and reply_replayed,
+        idempotent_replay=(
+            (action == "reply" and reply_replayed)
+            or (action == "assign" and assignment_idempotent)
+        ),
+        delivery_skipped=(
+            {"whatsapp": "legacy_whatsapp_enterprise_cutover_required"}
+            if action == "reply" and legacy_whatsapp_cutover_blocked
+            else None
+        ),
+    )
+    if action == "claim":
+        delivery.update(
+            _claim_action_evidence(
+                source_model="MunicipioTicket",
+                replayed=claim_idempotent,
+            )
+        )
+    if action == "assign":
+        delivery["assignment"] = {
+            "contract_version": "inbox.assignment_cas.v1",
+            "source_model": "MunicipioTicket",
+            "ticket_id": ticket.id,
+            "expected_assignee_id": assignment_expected_id,
+            "assignee_id": assignment_target_id,
+            "replayed": assignment_idempotent,
+        }
+    if action in {"accept_handoff", "resume_ai"}:
+        delivery["ledger"] = {
+            "contract_version": "municipio_ticket.handoff_follow_up.v1",
+            "normalized_event": False,
+            "mode": "legacy_projection_only",
+            "idempotency_supported": False,
+            "external_dispatch": False,
+        }
+    reply_realtime_event = (
+        "ticket_update"
+        if action == "reply" and reply_visibility == "internal"
+        else "new_chat_message"
     )
     delivery["realtime"] = {
         "emitted": bool(realtime_emitted or realtime_state_events),
-        "event": "new_chat_message" if realtime_emitted else (realtime_state_events[0] if realtime_state_events else None),
-        "events": (["new_chat_message"] if realtime_emitted else []) + realtime_state_events,
-        "room": f"ticket_municipio_{ticket.id}",
+        "event": reply_realtime_event if realtime_emitted else (realtime_state_events[0] if realtime_state_events else None),
+        "events": ([reply_realtime_event] if realtime_emitted else []) + realtime_state_events,
+        "room": (
+            f"tenant_{tenant.id}"
+            if action == "reply" and reply_visibility == "internal"
+            else f"ticket_municipio_{ticket.id}"
+        ),
         "fallback": "http_polling",
     }
     if action == "reply":
+        if reply_record is not None and "whatsapp" in (requested_channels or []):
+            from services.municipio_ticket_reply_delivery import (
+                serialize_reply_delivery as serialize_municipio_reply_delivery,
+            )
+
+            delivery["final_delivery"] = serialize_municipio_reply_delivery(
+                reply_record,
+                session=db.session,
+            )
+            delivery["reply_event_id"] = reply_record.event_id
+            delivery["evidence_stage"] = delivery["final_delivery"]["status"]
+            delivery["realtime"] = {
+                "contract_version": "municipio_ticket.reply.realtime.v1",
+                "emitted": False,
+                "queued": bool(reply_outbox_effect_count and not reply_replayed),
+                "event": "ticket_update" if reply_outbox_effect_count else None,
+                "events": (
+                    [
+                        "ticket_update",
+                        *(
+                            ["ticket.reply.delivery.updated"]
+                            if reply_outbox_external_effect_count
+                            else []
+                        ),
+                    ]
+                    if reply_outbox_effect_count
+                    else []
+                ),
+                "delivery_status_event": (
+                    "ticket.reply.delivery.updated"
+                    if reply_outbox_external_effect_count
+                    else None
+                ),
+                "room": f"tenant_{tenant.id}",
+                "scope": "authenticated_tenant_operators",
+                "fallback": "http_polling",
+                "polling": {
+                    "method": "GET",
+                    "href": (
+                        f"/api/v2/inbox/omnichannel/{ticket.id}"
+                        "?source_model=MunicipioTicket"
+                    ),
+                },
+            }
         delivery["idempotency"] = {
             "contract_version": "inbox.reply_idempotency.v1",
             "replayed": reply_replayed,
@@ -6257,13 +8415,43 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
         }
     if action == "reply" and reply_outbox_enabled:
         delivery["outbox"] = {
-            "durably_staged": bool(reply_outbox_effect_count),
+            "durably_staged": bool(reply_outbox_external_effect_count),
             "effect_count": reply_outbox_effect_count,
+            "external_effect_count": reply_outbox_external_effect_count,
             "worker_authoritative": bool(reply_outbox_effect_count),
             "direct_dispatch_performed": False,
         }
+    if action == "reply" and reply_replayed:
+        durable_extra = _ticket_extra(ticket)
+        delivery["receipt_persisted"] = bool(
+            reply_record is not None
+            or durable_extra.get("reply_delivery_latest_evidence")
+            or durable_extra.get("reply_delivery_history")
+        )
+        if not delivery["receipt_persisted"]:
+            delivery["receipt_persistence_reason"] = "original_delivery_receipt_unavailable"
+    if action == "reply" and not reply_replayed:
+        try:
+            delivery["receipt_persisted"] = True
+            ticket = _record_ticket_reply_delivery(
+                ticket,
+                tenant=tenant,
+                source_model="MunicipioTicket",
+                delivery=delivery,
+                actor=current_user,
+            )
+            db.session.commit()
+        except Exception as exc:  # pragma: no cover - reply timeline remains durable
+            db.session.rollback()
+            delivery["receipt_persisted"] = False
+            delivery["receipt_persistence_reason"] = "delivery_receipt_persistence_failed"
+            current_app.logger.exception(
+                "Error recording MunicipioTicket reply delivery audit ticket=%s: %s",
+                ticket.id,
+                exc,
+            )
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    ticket_payload = _legacy_claim_inbox_payload(ticket, live_chat_status=live_chat_status)
+    ticket_payload = _legacy_claim_inbox_payload(ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
 
     return _json_response(
         {
@@ -6281,21 +8469,80 @@ def _omnichannel_legacy_claim_action_v2(current_user: User, tenant: TenantProfil
 @v2_saas_bp.route("/inbox/omnichannel/<int:ticket_id>/actions", methods=["POST"])
 @v2_saas_bp.route("/inbox/omnichannel/actions", methods=["POST"])
 @token_requerido
-@require_role("admin", "empleado", "super_admin")
+@require_role("admin", "empleado", "supervisor", "manager", "super_admin")
 def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     payload = _omnichannel_action_json_payload()
+    requested_action = str(payload.get("action") or payload.get("type") or "").strip().lower()
 
     tenant, error = _resolve_tenant_or_error(current_user)
     if error:
         return error
 
-    source_model = payload.get("source_model") or payload.get("legacy_model")
-    raw_ticket_id = ticket_id or payload.get("legacy_id") or payload.get("ticket_id") or payload.get("id")
+    raw_source_model = payload.get("source_model")
+    if raw_source_model in (None, ""):
+        return _error_response(
+            "source_model es obligatorio para mutar un caso",
+            400,
+            "source_model_required",
+            "send_exact_ticket_identity",
+        )
+    raw_source_models = [raw_source_model]
+    if payload.get("legacy_model") not in (None, ""):
+        raw_source_models.append(payload.get("legacy_model"))
+    normalized_sources: list[str] = []
+    for raw_source_model in raw_source_models:
+        if not isinstance(raw_source_model, str) or not raw_source_model.strip():
+            return _error_response(
+                "source_model no es compatible con este inbox",
+                400,
+                "unsupported_inbox_source_model",
+                "send_tenantticket_or_municipioticket",
+            )
+        normalized_source_model = str(raw_source_model).strip().lower()
+        if normalized_source_model in {"tenantticket", "tenant_ticket", "tenant"}:
+            normalized_sources.append("TenantTicket")
+        elif normalized_source_model in {"municipioticket", "municipio_ticket", "municipio"}:
+            normalized_sources.append("MunicipioTicket")
+        else:
+            return _error_response(
+                "source_model no es compatible con este inbox",
+                400,
+                "unsupported_inbox_source_model",
+                "send_tenantticket_or_municipioticket",
+            )
+    if len(set(normalized_sources)) > 1:
+        return _error_response(
+            "source_model y legacy_model deben identificar el mismo origen",
+            409,
+            "ticket_identity_conflict",
+            "refresh_ticket_identity",
+        )
+    source_model = normalized_sources[0]
+
+    body_ids: list[int] = []
+    for key in ("legacy_id", "ticket_id", "id"):
+        if payload.get(key) in (None, ""):
+            continue
+        parsed_id = _coerce_inbox_ticket_id(payload.get(key))
+        if parsed_id is None:
+            return _error_response("ticket_id no es valido", 400, "ticket_id_invalid", "send_ticket_id")
+        body_ids.append(parsed_id)
+    if len(set(body_ids)) > 1 or (ticket_id is not None and body_ids and any(item != ticket_id for item in body_ids)):
+        return _error_response(
+            "source_model y ticket_id deben identificar el mismo caso",
+            409,
+            "ticket_identity_conflict",
+            "refresh_ticket_identity",
+        )
+
+    raw_ticket_id = ticket_id if ticket_id is not None else (body_ids[0] if body_ids else None)
     resolved_ticket_id = _coerce_inbox_ticket_id(raw_ticket_id)
     if resolved_ticket_id is None:
+        if raw_ticket_id is not None:
+            return _error_response("ticket_id no es valido", 400, "ticket_id_invalid", "send_ticket_id")
         return _error_response("ticket_id es obligatorio", 400, "ticket_id_required", "send_ticket_id")
 
-    if _is_legacy_claim_source(source_model) or (isinstance(raw_ticket_id, str) and raw_ticket_id.startswith("municipio:")):
+    if source_model == "MunicipioTicket":
         return _omnichannel_legacy_claim_action_v2(current_user, tenant, resolved_ticket_id, payload)
 
     ticket = (
@@ -6306,8 +8553,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     if not ticket or not employee_ticket_category_access_allows(current_user, ticket):
         return _error_response("Ticket no encontrado", 404, "ticket_not_found", "refresh_inbox")
 
-    action = str(payload.get("action") or payload.get("type") or "").strip().lower()
+    action = requested_action
     if action not in {
+        "claim",
         "assign",
         "reply",
         "handoff",
@@ -6316,6 +8564,9 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         "close",
         "reopen",
         "set_priority",
+        "attach_file",
+        "share_location",
+        "send_form",
     }:
         return _error_response("Accion de inbox no soportada", 400, "unsupported_inbox_action", "send_supported_action")
 
@@ -6338,16 +8589,81 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
     reply_replayed = False
     reply_idempotency_source: str | None = None
     reply_outbox_effect_count = 0
+    reply_outbox_external_effect_count = 0
     realtime_emitted = False
+    claim_idempotent = False
+    assignment_idempotent = False
+    assignment_expected_id: int | None = None
+    assignment_target_id: int | None = None
 
-    if action == "assign":
-        assignee_id = payload.get("assignee_id") or payload.get("user_id")
+    if action in _OPERATIONAL_OWNERSHIP_ACTIONS:
+        ownership_error = _operational_ownership_error(current_user, extra.get("assignee_id"))
+        if ownership_error is not None:
+            return ownership_error
+
+    if action in _CRM_ARTIFACT_ACTIONS:
+        if str(ticket.estado or "").lower() in _CLOSED_TICKET_STATES:
+            return _error_response(
+                "El ticket esta cerrado. Reabrilo antes de agregar recursos.", 403,
+                "ticket_closed", "reopen_ticket",
+            )
+        return _crm_artifact_action_response(
+            payload=payload, tenant=tenant, actor=current_user,
+            source_model="TenantTicket", ticket=ticket, action=action,
+        )
+
+    if action == "claim":
+        raw_current_assignee_id = extra.get("assignee_id")
+        current_assignee_id = _coerce_inbox_ticket_id(raw_current_assignee_id)
+        if raw_current_assignee_id is not None and raw_current_assignee_id != "":
+            if current_assignee_id != current_user.id:
+                return _error_response(
+                    "El ticket ya fue tomado por otro operador",
+                    409,
+                    "already_claimed",
+                    "refresh_inbox",
+                )
+            claim_idempotent = True
+            event_body = f"Ticket ya estaba tomado por {current_user.name}"
+        else:
+            if not ticket_assignee_is_compatible(current_user, ticket):
+                return _error_response(
+                    "El operador no tiene acceso a la categoria del ticket",
+                    404,
+                    "ticket_not_found",
+                    "refresh_inbox",
+                )
+            extra["assignee_id"] = current_user.id
+            extra["assignee_name"] = current_user.name
+            extra["assignee_email"] = current_user.email
+            if str(ticket.estado or "").lower() in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            event_body = f"Ticket tomado por {current_user.name}"
+
+    elif action == "assign":
+        assignee_id, assignee_error = _resolve_aliased_inbox_id(
+            payload,
+            keys=("assignee_id", "user_id"),
+            required_message="assignee_id es obligatorio",
+            required_reason="assignee_required",
+            conflict_message="assignee_id y user_id deben identificar el mismo empleado",
+            conflict_reason="assignee_identity_conflict",
+        )
+        if assignee_error is not None:
+            return assignee_error
+        assignment_target_id = assignee_id
         try:
-            assignee_id = int(assignee_id)
-        except (TypeError, ValueError):
-            return _error_response("assignee_id es obligatorio", 400, "assignee_required", "send_assignee_id")
+            transition = assignment_transition(
+                actor=current_user,
+                payload=payload,
+                current_assignee_id=extra.get("assignee_id"),
+                target_assignee_id=assignee_id,
+            )
+        except TicketAssignmentPolicyError as exc:
+            return _assignment_policy_error(exc)
+        assignment_expected_id = transition.expected_assignee_id
         assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
-        if not assignee:
+        if not ticket_assignee_is_operational(assignee):
             return _error_response("Empleado no encontrado para este tenant", 404, "assignee_not_found", "choose_valid_assignee")
         if not ticket_assignee_is_compatible(assignee, ticket):
             return _error_response(
@@ -6356,12 +8672,16 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 "assignee_category_scope_mismatch",
                 "choose_compatible_assignee",
             )
-        extra["assignee_id"] = assignee.id
-        extra["assignee_name"] = assignee.name
-        extra["assignee_email"] = assignee.email
-        if ticket.estado in {"nuevo", "open"}:
-            ticket.estado = "en_proceso"
-        event_body = f"Asignado a {assignee.name}"
+        if transition.replayed:
+            assignment_idempotent = True
+            event_body = f"El ticket ya estaba asignado a {assignee.name}"
+        else:
+            extra["assignee_id"] = assignee.id
+            extra["assignee_name"] = assignee.name
+            extra["assignee_email"] = assignee.email
+            if ticket.estado in {"nuevo", "open"}:
+                ticket.estado = "en_proceso"
+            event_body = f"Asignado a {assignee.name}"
 
     elif action == "handoff":
         channel = _normalize_handoff_channel(payload.get("channel") or payload.get("target_channel"))
@@ -6385,7 +8705,37 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         event_body = f"Handoff solicitado al equipo ({channel})"
 
     elif action == "accept_handoff":
-        _apply_handoff_transition(extra, action="accept_handoff", actor=current_user, occurred_at=now_iso)
+        current_assignee_id = _coerce_inbox_ticket_id(extra.get("assignee_id"))
+        if not ticket_assignee_is_compatible(current_user, ticket):
+            return _error_response(
+                "El operador no tiene acceso a la categoria del ticket",
+                404,
+                "ticket_not_found",
+                "refresh_inbox",
+            )
+        recipient_error = _validate_handoff_recipient(
+            extra,
+            actor=current_user,
+            current_assignee_id=current_assignee_id,
+        )
+        if recipient_error is not None:
+            return recipient_error
+        transferred_from = (
+            {
+                "id": current_assignee_id,
+                "name": extra.get("assignee_name"),
+                "email": extra.get("assignee_email"),
+            }
+            if current_assignee_id is not None and current_assignee_id != current_user.id
+            else None
+        )
+        _apply_handoff_transition(
+            extra,
+            action="accept_handoff",
+            actor=current_user,
+            occurred_at=now_iso,
+            transferred_from=transferred_from,
+        )
         extra["assignee_id"] = current_user.id
         extra["assignee_name"] = current_user.name
         extra["assignee_email"] = current_user.email
@@ -6408,25 +8758,87 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         body, body_error = _omnichannel_reply_body(payload)
         if body_error is not None:
             return body_error
-        visibility = str(payload.get("visibility") or "public").strip().lower()
-        reply_visibility = "internal" if visibility == "internal" else "public"
+        raw_visibility = payload["visibility"] if "visibility" in payload else "public"
+        if not isinstance(raw_visibility, str):
+            return _error_response(
+                "La visibilidad de la respuesta no es válida.",
+                400,
+                "reply_visibility_invalid",
+                "choose_public_or_internal_visibility",
+            )
+        visibility = raw_visibility.strip().lower()
+        if visibility not in {"public", "internal"}:
+            return _error_response(
+                "La visibilidad de la respuesta no es válida.",
+                400,
+                "reply_visibility_invalid",
+                "choose_public_or_internal_visibility",
+            )
+        reply_visibility = visibility
         event_body = body
         reply_idempotency_key, reply_idempotency_source, idempotency_error = (
             _omnichannel_reply_idempotency_identity(payload, tenant_id=tenant.id)
         )
         if idempotency_error is not None:
             return idempotency_error
-        requested_channels = _tenant_ticket_delivery_channels(
+        requested_channels, channel_contract_error = _tenant_ticket_delivery_channels(
             ticket,
             payload,
             visibility=reply_visibility,
         )
+        if channel_contract_error is not None:
+            return _error_response(
+                "La configuración de entrega de la respuesta no es válida.",
+                400,
+                channel_contract_error,
+                "review_reply_delivery_fields",
+            )
+        source_channel = _ticket_channel(ticket)
+        source_is_whatsapp = source_channel in {
+            "whatsapp", "wa", "twilio", "whatsapp_business"
+        }
+        source_is_email = source_channel in {"email", "mail", "correo"}
+        if "whatsapp" in requested_channels and not source_is_whatsapp:
+            return _error_response(
+                "Este expediente no se originó en WhatsApp; no se habilitó una salida externa por ese canal.",
+                409,
+                "reply_channel_source_mismatch",
+                "use_original_channel_or_internal_note",
+            )
+        if "email" in requested_channels and not source_is_email:
+            return _error_response(
+                "Este expediente no se originó por email; no se habilitó una salida externa por ese canal.",
+                409,
+                "reply_channel_source_mismatch",
+                "use_original_channel_or_internal_note",
+            )
+        if "template_variables" in payload and "content_variables" in payload:
+            return _error_response(
+                "Usá un solo campo para las variables de la plantilla.",
+                400,
+                "whatsapp_template_variable_alias_conflict",
+                "send_template_variables_only",
+            )
+        from services.domain_effect_gate import resolve_domain_effect_outbox_policy
+
+        tenant_outbox_enabled = resolve_domain_effect_outbox_policy(
+            current_app.config, tenant_id=int(tenant.id)
+        ).enabled
+        persisted_delivery_channels = [
+            channel
+            for channel in requested_channels
+            if channel != "whatsapp" or tenant_outbox_enabled
+        ]
 
         from services.ticket_service import (
             ServicioTickets,
             TicketIdempotencyConflict,
             TicketIdempotencyReplayUnavailable,
             TicketIdempotencyValidationError,
+            TicketReplyOwnershipError,
+        )
+        from services.tenant_ticket_reply_delivery import (
+            TenantTicketReplyDeliveryError,
         )
 
         try:
@@ -6438,11 +8850,38 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                     "actor_user_id": current_user.id,
                     "actor_name": current_user.name,
                     "actor_role": current_user.rol,
-                    "requested_channels": requested_channels,
+                    "requested_channels": persisted_delivery_channels,
+                    "template_registry_id": (
+                        payload.get("template_registry_id")
+                        if "whatsapp" in persisted_delivery_channels
+                        else None
+                    ),
+                    "template_variables": (
+                        (
+                            payload.get("template_variables")
+                            if "template_variables" in payload
+                            else payload.get("content_variables")
+                        )
+                        if "whatsapp" in persisted_delivery_channels
+                        else None
+                    ),
                     "emit_socket": True,
                 },
                 idempotency_key=reply_idempotency_key,
                 idempotency_tenant_id=tenant.id,
+                reply_actor=current_user,
+            )
+        except TicketReplyOwnershipError as exc:
+            db.session.rollback()
+            return _error_response(
+                "Toma el ticket antes de responder"
+                if exc.reason_code == "ticket_claim_required"
+                else "El ticket esta asignado a otro operador",
+                409,
+                exc.reason_code,
+                "claim_ticket"
+                if exc.reason_code == "ticket_claim_required"
+                else "refresh_inbox",
             )
         except TicketIdempotencyConflict:
             db.session.rollback()
@@ -6468,6 +8907,32 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 "reply_idempotency_replay_unavailable",
                 "refresh_inbox",
             )
+        except TenantTicketReplyDeliveryError as exc:
+            db.session.rollback()
+            is_window_error = exc.code == "whatsapp_template_required_outside_24h"
+            is_template_body_mismatch = exc.code == "whatsapp_template_body_mismatch"
+            return _error_response(
+                (
+                    "La ventana de atención de 24 horas está cerrada. "
+                    "Seleccioná una plantilla aprobada para responder por WhatsApp."
+                    if is_window_error
+                    else (
+                        "El texto visible no coincide con la plantilla aprobada. "
+                        "Volvé a generar la vista previa antes de enviarla."
+                        if is_template_body_mismatch
+                        else "La configuración de WhatsApp, la plantilla o sus variables no son válidas."
+                    )
+                ),
+                409 if is_window_error or is_template_body_mismatch else 400,
+                exc.code,
+                "choose_approved_template"
+                if is_window_error
+                else (
+                    "refresh_approved_template_preview"
+                    if is_template_body_mismatch
+                    else "review_whatsapp_delivery_fields"
+                ),
+            )
         except Exception as exc:
             db.session.rollback()
             current_app.logger.exception(
@@ -6490,40 +8955,84 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         timeline_updated = not reply_replayed
         aggregate_ref = str(reply_result.get("aggregate_ref") or "")
         if aggregate_ref:
-            reply_outbox_effect_count = DomainEffectOutbox.query.filter_by(
+            reply_outbox_effects = DomainEffectOutbox.query.filter_by(
                 tenant_id=tenant.id,
                 aggregate_type="tenant_ticket_reply",
                 aggregate_ref=aggregate_ref,
-            ).count()
+            ).all()
+            reply_outbox_effect_count = len(reply_outbox_effects)
+            reply_outbox_external_effect_count = sum(
+                1 for effect in reply_outbox_effects if effect.channel != "realtime"
+            )
 
     elif action == "close":
-        ticket.estado = str(payload.get("status") or "cerrado").strip().lower() or "cerrado"
+        target_status = _ticket_transition_status("close", payload.get("status"), default="cerrado")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion close",
+                400,
+                "ticket_action_status_conflict",
+                "send_closed_status",
+            )
+        ticket.estado = target_status
         extra["closed_at"] = now_iso
         extra["closed_by"] = {"id": current_user.id, "name": current_user.name}
         event_body = payload.get("body") or "Ticket cerrado"
 
     elif action == "reopen":
-        ticket.estado = str(payload.get("status") or "nuevo").strip().lower() or "nuevo"
+        target_status = _ticket_transition_status("reopen", payload.get("status"), default="nuevo")
+        if target_status is None:
+            return _error_response(
+                "status no es compatible con la accion reopen",
+                400,
+                "ticket_action_status_conflict",
+                "send_active_status",
+            )
+        ticket.estado = target_status
         extra["reopened_at"] = now_iso
         extra["reopened_by"] = {"id": current_user.id, "name": current_user.name}
         event_body = payload.get("body") or "Ticket reabierto"
 
     elif action == "set_priority":
         priority = str(payload.get("priority") or "").strip().lower()
-        if not priority:
-            return _error_response("priority es obligatorio", 400, "priority_required", "send_priority")
+        if priority not in {"low", "medium", "high", "urgent"}:
+            return _error_response(
+                "priority debe ser low, medium, high o urgent",
+                400,
+                "priority_invalid",
+                "send_supported_priority",
+            )
         extra["priority"] = priority
         event_body = f"Prioridad actualizada: {priority}"
 
-    if action != "reply":
+    if action != "reply" and not (
+        (action == "claim" and claim_idempotent)
+        or (action == "assign" and assignment_idempotent)
+    ):
         _append_ticket_event(extra, action=action, actor=current_user, body=str(event_body or action), visibility="internal")
         timeline_updated = True
 
-    if action != "reply":
+    if action in {"close", "reopen", "set_priority"}:
         ticket.datos_extra = extra
-        flag_modified(ticket, "datos_extra")
-        ticket.updated_at = now
-        db.session.add(ticket)
+        if action == "close":
+            apply_resolution_sla(ticket, occurred_at=now)
+        else:
+            policies = get_policies_for_tenant(tenant)
+            if action == "reopen":
+                apply_reopen_sla(ticket, policies, occurred_at=now)
+            else:
+                apply_priority_change_sla(ticket, policies, occurred_at=now)
+        extra = deepcopy(_ticket_extra(ticket))
+
+    if action != "reply":
+        if not (
+            (action == "claim" and claim_idempotent)
+            or (action == "assign" and assignment_idempotent)
+        ):
+            ticket.datos_extra = extra
+            flag_modified(ticket, "datos_extra")
+            ticket.updated_at = now
+            db.session.add(ticket)
         db.session.commit()
 
     delivery_results: dict[str, bool] | None = None
@@ -6535,13 +9044,39 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         and not reply_replayed
         and not reply_outbox_effect_count
     ):
-        delivery_results, dispatch_reason, delivery_skipped = _dispatch_tenant_ticket_reply(
-            tenant=tenant,
-            ticket=ticket,
-            body=event_body,
-            requested_channels=requested_channels or [],
-            reply_record=reply_record,
-        )
+        legacy_dispatch_channels = [
+            channel
+            for channel in (requested_channels or [])
+            if channel != "whatsapp"
+        ]
+        if legacy_dispatch_channels:
+            delivery_results, dispatch_reason, delivery_skipped = (
+                _dispatch_tenant_ticket_reply(
+                    tenant=tenant,
+                    ticket=ticket,
+                    body=event_body,
+                    requested_channels=legacy_dispatch_channels,
+                    reply_record=reply_record,
+                )
+            )
+            if "whatsapp" in (requested_channels or []):
+                delivery_skipped["whatsapp"] = "whatsapp_outbox_cutover_required"
+        elif "whatsapp" in (requested_channels or []):
+            delivery_results = {"email": False, "sms": False, "whatsapp": False}
+            dispatch_reason = "whatsapp_outbox_cutover_required"
+            delivery_skipped = {
+                "whatsapp": "whatsapp_outbox_cutover_required"
+            }
+        else:
+            delivery_results, dispatch_reason, delivery_skipped = (
+                _dispatch_tenant_ticket_reply(
+                    tenant=tenant,
+                    ticket=ticket,
+                    body=event_body,
+                    requested_channels=[],
+                    reply_record=reply_record,
+                )
+            )
         external_dispatch = any(delivery_results.values())
         if reply_event is not None:
             realtime_emitted = _emit_tenant_ticket_realtime_reply(ticket, reply_event)
@@ -6551,13 +9086,13 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         if reply_replayed:
             delivery_reason = (
                 "idempotent_replay_domain_effects_preserved"
-                if reply_outbox_effect_count
+                if reply_outbox_external_effect_count
                 else "idempotent_replay_no_redispatch"
             )
-        elif reply_outbox_effect_count:
+        elif reply_outbox_external_effect_count:
             delivery_reason = "domain_effects_durably_staged"
         elif external_dispatch:
-            delivery_reason = "provider_accepted"
+            delivery_reason = "acceptance_unverified"
 
     delivery = _inbox_action_delivery_payload(
         action=action,
@@ -6568,24 +9103,78 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
                 if requested_channels
                 else (
                     "crm"
-                    if action in {"handoff", "accept_handoff", "resume_ai"}
+                    if action in {"claim", "handoff", "accept_handoff", "resume_ai"}
                     else _ticket_channel(ticket)
                 )
             ),
         ),
         timeline_updated=timeline_updated,
         source_model="TenantTicket",
-        reason=delivery_reason,
+        status=(
+            "already_owned"
+            if action == "claim" and claim_idempotent
+            else (
+                "claimed"
+                if action == "claim"
+                else (
+                    "already_assigned"
+                    if action == "assign" and assignment_idempotent
+                    else ("assigned" if action == "assign" else None)
+                )
+            )
+        ),
+        reason=(
+            "claim_idempotent_same_operator"
+            if action == "claim" and claim_idempotent
+            else (
+                "claim_acquired"
+                if action == "claim"
+                else (
+                    "assignment_idempotent_same_target"
+                    if action == "assign" and assignment_idempotent
+                    else ("assignment_applied" if action == "assign" else delivery_reason)
+                )
+            )
+        ),
         external_dispatch=external_dispatch,
         delivery_results=delivery_results,
         requested_channels=requested_channels,
         delivery_skipped=delivery_skipped,
         durably_staged=(
-            action == "reply" and bool(reply_outbox_effect_count) and not reply_replayed
+            action == "reply"
+            and bool(reply_outbox_external_effect_count)
+            and not reply_replayed
         ),
-        idempotent_replay=action == "reply" and reply_replayed,
+        idempotent_replay=(
+            (action == "reply" and reply_replayed)
+            or (action == "assign" and assignment_idempotent)
+        ),
     )
+    if action == "claim":
+        delivery.update(
+            _claim_action_evidence(
+                source_model="TenantTicket",
+                replayed=claim_idempotent,
+            )
+        )
+    if action == "assign":
+        delivery["assignment"] = {
+            "contract_version": "inbox.assignment_cas.v1",
+            "source_model": "TenantTicket",
+            "ticket_id": ticket.id,
+            "expected_assignee_id": assignment_expected_id,
+            "assignee_id": assignment_target_id,
+            "replayed": assignment_idempotent,
+        }
     if action == "reply":
+        if reply_record is not None and "whatsapp" in (requested_channels or []):
+            from services.tenant_ticket_reply_delivery import serialize_reply_delivery
+
+            delivery["final_delivery"] = serialize_reply_delivery(
+                reply_record, session=db.session
+            )
+            delivery["reply_event_id"] = reply_record.event_id
+            delivery["evidence_stage"] = delivery["final_delivery"]["status"]
         delivery["idempotency"] = {
             "contract_version": "inbox.reply_idempotency.v1",
             "replayed": reply_replayed,
@@ -6597,7 +9186,23 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
             "emitted": realtime_emitted,
             "queued": bool(reply_outbox_effect_count and not reply_replayed),
             "event": "ticket_update" if (realtime_emitted or reply_outbox_effect_count) else None,
-            "events": ["ticket_update"] if (realtime_emitted or reply_outbox_effect_count) else [],
+            "events": (
+                [
+                    "ticket_update",
+                    *(
+                        ["ticket.reply.delivery.updated"]
+                        if reply_outbox_external_effect_count
+                        else []
+                    ),
+                ]
+                if (realtime_emitted or reply_outbox_effect_count)
+                else []
+            ),
+            "delivery_status_event": (
+                "ticket.reply.delivery.updated"
+                if reply_outbox_external_effect_count
+                else None
+            ),
             "room": f"tenant_{tenant.id}",
             "scope": "authenticated_tenant_operators",
             "fallback": "http_polling",
@@ -6608,28 +9213,42 @@ def omnichannel_inbox_action_v2(current_user, ticket_id: int | None = None):
         }
         if reply_outbox_effect_count:
             delivery["outbox"] = {
-                "durably_staged": True,
+                "durably_staged": bool(reply_outbox_external_effect_count),
                 "effect_count": reply_outbox_effect_count,
+                "external_effect_count": reply_outbox_external_effect_count,
                 "worker_authoritative": True,
                 "direct_dispatch_performed": False,
             }
+        if reply_replayed:
+            durable_extra = _ticket_extra(ticket)
+            delivery["receipt_persisted"] = bool(
+                durable_extra.get("reply_delivery_latest_evidence")
+                or durable_extra.get("reply_delivery_history")
+            )
+            if not delivery["receipt_persisted"]:
+                delivery["receipt_persistence_reason"] = "original_delivery_receipt_unavailable"
         if not reply_replayed:
             try:
-                ticket = _record_tenant_ticket_delivery(
+                delivery["receipt_persisted"] = True
+                ticket = _record_ticket_reply_delivery(
                     ticket,
+                    tenant=tenant,
+                    source_model="TenantTicket",
                     delivery=delivery,
                     actor=current_user,
                 )
                 db.session.commit()
             except Exception as exc:  # pragma: no cover - reply is already durable in the timeline
                 db.session.rollback()
+                delivery["receipt_persisted"] = False
+                delivery["receipt_persistence_reason"] = "delivery_receipt_persistence_failed"
                 current_app.logger.exception(
                     "Error recording TenantTicket reply delivery audit ticket=%s: %s",
                     ticket.id,
                     exc,
                 )
     live_chat_status = _tenant_inbox_live_chat_status(tenant)
-    ticket_payload = _inbox_ticket_payload(ticket, live_chat_status=live_chat_status)
+    ticket_payload = _inbox_ticket_payload(ticket, tenant=tenant, live_chat_status=live_chat_status, actor=current_user)
 
     return _json_response(
         {

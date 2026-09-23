@@ -91,6 +91,10 @@ SURVEY_PUBLIC_MINIMUM_CELL_SIZE = 5
 SURVEY_ADMIN_CHANNEL_TOP_LIMIT = 20
 SURVEY_ADMIN_LIST_DEFAULT_LIMIT = 50
 SURVEY_ADMIN_LIST_MAX_LIMIT = 100
+SURVEY_ADMIN_SCOPE_CONTRACT_VERSION = "surveys.admin_scope.v1"
+SURVEY_ADMIN_JURISDICTION_SCOPE_CONTRACT_VERSION = (
+    "surveys.admin_jurisdiction_scope.v1"
+)
 SURVEY_INSTRUMENT_DEFAULT_MAX_QUESTIONS = 100
 SURVEY_INSTRUMENT_DEFAULT_MAX_OPTIONS_PER_QUESTION = 100
 SURVEY_INSTRUMENT_DEFAULT_MAX_TOTAL_OPTIONS = 2_000
@@ -8802,11 +8806,85 @@ def _admin_schedule_datetime(
     return value.astimezone(reference.tzinfo)
 
 
+def _build_admin_jurisdiction_scope(
+    encuesta: EncEncuesta,
+    tenant: Optional[TenantProfile],
+) -> Dict[str, Any]:
+    """Compare only persisted, server-owned jurisdiction references.
+
+    This intentionally avoids the full content-review readiness contract used
+    by publication.  Admin lists need a bounded classification that can be
+    computed from the survey row plus one bulk-loaded tenant row, without
+    inferring geography from titles, descriptions, slugs or question copy.
+    """
+
+    from services.survey_jurisdiction import tenant_verified_jurisdiction
+
+    tenant_verified_ref = (
+        tenant_verified_jurisdiction(tenant) if tenant is not None else None
+    )
+    survey_ref = str(getattr(encuesta, "jurisdiction_ref", None) or "").strip()
+    survey_ref = survey_ref or None
+
+    if tenant is None:
+        status = "unverified"
+        compatible: Optional[bool] = None
+        reason_code = "survey_tenant_not_found"
+        action_hint = "resolve_survey_tenant"
+    elif tenant_verified_ref is None:
+        status = "unverified"
+        compatible = None
+        reason_code = "survey_tenant_jurisdiction_unverified"
+        action_hint = "configure_verified_tenant_jurisdiction"
+    elif survey_ref is None:
+        status = "unverified"
+        compatible = None
+        reason_code = "survey_jurisdiction_unbound"
+        action_hint = "bind_verified_tenant_jurisdiction_then_review"
+    elif survey_ref != tenant_verified_ref:
+        status = "conflict"
+        compatible = False
+        reason_code = "survey_jurisdiction_binding_conflict"
+        action_hint = "duplicate_and_review_for_verified_jurisdiction"
+    else:
+        status = "compatible"
+        compatible = True
+        reason_code = "survey_jurisdiction_compatible"
+        action_hint = None
+
+    return {
+        "contract_version": SURVEY_ADMIN_SCOPE_CONTRACT_VERSION,
+        "jurisdiction": {
+            "contract_version": (
+                SURVEY_ADMIN_JURISDICTION_SCOPE_CONTRACT_VERSION
+            ),
+            "status": status,
+            "compatible": compatible,
+            "reason_code": reason_code,
+            "action_hint": action_hint,
+            "tenant_verified_ref": tenant_verified_ref,
+            "survey_ref": survey_ref,
+            "authoritative_source": "server_owned_persisted_refs",
+            "content_review_included": False,
+        },
+        "separation": {
+            "required": status == "conflict",
+            "reason_code": (
+                "survey_jurisdiction_binding_conflict"
+                if status == "conflict"
+                else None
+            ),
+        },
+    }
+
+
 def _build_admin_lifecycle_contract(
     encuesta: EncEncuesta,
     metricas: Mapping[str, Any],
     *,
     governed_release: bool,
+    jurisdiction_scope: Optional[Mapping[str, Any]] = None,
+    survey_evidence_gate: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Describe the persisted lifecycle without deriving unavailable KPIs."""
 
@@ -8840,14 +8918,64 @@ def _build_admin_lifecycle_contract(
 
     has_questions = bool(encuesta.preguntas)
     response_count = int(metricas.get("total_respuestas") or 0)
-    can_publish = persisted_state == "borrador" and has_questions and not governed_release
+    jurisdiction = (
+        jurisdiction_scope.get("jurisdiction")
+        if isinstance(jurisdiction_scope, Mapping)
+        else None
+    )
+    jurisdiction_status = (
+        str(jurisdiction.get("status") or "unverified").strip().lower()
+        if isinstance(jurisdiction, Mapping)
+        else "unverified"
+    )
+    jurisdiction_reason = (
+        str(jurisdiction.get("reason_code") or "").strip() or None
+        if isinstance(jurisdiction, Mapping)
+        else None
+    )
+    jurisdiction_conflict = jurisdiction_status == "conflict"
+    evidence_required = bool(
+        isinstance(survey_evidence_gate, Mapping)
+        and survey_evidence_gate.get("required") is True
+    )
+    evidence_ready = bool(
+        not evidence_required
+        or (
+            isinstance(survey_evidence_gate, Mapping)
+            and survey_evidence_gate.get("ready") is True
+        )
+    )
+    evidence_reason = (
+        str(survey_evidence_gate.get("reason_code") or "").strip() or None
+        if isinstance(survey_evidence_gate, Mapping)
+        else None
+    )
+    evidence_next_action = (
+        str(survey_evidence_gate.get("next_action") or "").strip() or None
+        if isinstance(survey_evidence_gate, Mapping)
+        else None
+    )
+    can_publish = (
+        persisted_state == "borrador"
+        and has_questions
+        and not governed_release
+        and not jurisdiction_conflict
+        and evidence_ready
+    )
     can_close = persisted_state == "publicada" and not governed_release
     can_delete = persisted_state == "borrador" and response_count == 0 and not governed_release
-    accepts_responses = phase in {"collecting", "live_voting"}
+    accepts_responses = (
+        phase in {"collecting", "live_voting"}
+        and not jurisdiction_conflict
+    )
 
     publish_reason = None
     close_reason = None
-    if governed_release:
+    if evidence_required and not evidence_ready:
+        publish_reason = evidence_reason or "survey_jurisdiction_guard_blocked"
+    elif jurisdiction_conflict:
+        publish_reason = "survey_jurisdiction_binding_conflict"
+    elif governed_release:
         publish_reason = "survey_governance_release_required"
         close_reason = "survey_governance_release_required"
     elif not has_questions:
@@ -8863,10 +8991,30 @@ def _build_admin_lifecycle_contract(
         "phase": phase,
         "persisted_state": persisted_state,
         "accepts_responses": accepts_responses,
+        "operational_block": (
+            {
+                "reason_code": "survey_jurisdiction_binding_conflict",
+                "action_hint": "separate_and_review_foreign_jurisdiction_instrument",
+            }
+            if jurisdiction_conflict
+            else None
+        ),
         "schedule": {
             "opens_at": opens_at.isoformat() if opens_at else None,
             "closes_at": closes_at.isoformat() if closes_at else None,
             "evaluated_at": reference.isoformat(),
+        },
+        "jurisdiction": {
+            "status": jurisdiction_status,
+            "reason_code": jurisdiction_reason,
+            "content_review_included": False,
+        },
+        "government_survey_evidence_gate": {
+            "contract_version": "surveys.government_evidence_gate.v1",
+            "required": evidence_required,
+            "ready": evidence_ready,
+            "reason_code": evidence_reason,
+            "next_action": evidence_next_action,
         },
         "participation": {
             "responses": response_count,
@@ -8885,7 +9033,11 @@ def _build_admin_lifecycle_contract(
             "can_publish": can_publish,
             "can_close": can_close,
             "can_delete": can_delete,
-            "can_share": persisted_state == "publicada" and bool(_resolve_public_slug(encuesta)),
+            "can_share": (
+                persisted_state == "publicada"
+                and not jurisdiction_conflict
+                and bool(_resolve_public_slug(encuesta))
+            ),
             "can_view_results": response_count > 0,
         },
         "actions": {
@@ -8894,6 +9046,11 @@ def _build_admin_lifecycle_contract(
                 "endpoint": f"/api/v2/surveys/{encuesta.id}/publish",
                 "enabled": can_publish,
                 "disabled_reason_code": None if can_publish else publish_reason,
+                "next_action": (
+                    evidence_next_action
+                    if evidence_required and not evidence_ready
+                    else None
+                ),
             },
             "close": {
                 "method": "POST",
@@ -8901,6 +9058,7 @@ def _build_admin_lifecycle_contract(
                 "enabled": can_close,
                 "confirmation_required": True,
                 "irreversible": True,
+                "required_capabilities": ["survey.close"],
                 "disabled_reason_code": None if can_close else close_reason,
             },
         },
@@ -8928,6 +9086,17 @@ def build_admin_list_payload(
     con_respuestas = 0
     accepting_responses = 0
     instrument_kinds = Counter()
+    governed_instruments = 0
+    jurisdiction_statuses = Counter()
+    operational_instruments = 0
+    operational_responses = 0
+    operational_geo = 0
+    operational_24h = 0
+    operational_active = 0
+    operational_with_responses = 0
+    operational_accepting_responses = 0
+    operational_instrument_kinds = Counter()
+    operational_governed_instruments = 0
 
     seed_profiles_map = _geo_catalog()
     tenant_ids = {
@@ -8935,6 +9104,16 @@ def build_admin_list_payload(
         for encuesta in encuestas
         if encuesta.tenant_id is not None
     }
+    tenant_profiles_by_id = (
+        {
+            int(tenant.id): tenant
+            for tenant in TenantProfile.query.filter(
+                TenantProfile.id.in_(tenant_ids)
+            ).all()
+        }
+        if tenant_ids
+        else {}
+    )
     geo_metadata_by_tenant = {
         resolved_tenant_id: _resolve_geo_metadata_for_tenant(resolved_tenant_id)
         for resolved_tenant_id in tenant_ids
@@ -8947,6 +9126,11 @@ def build_admin_list_payload(
         )
         for resolved_tenant_id in tenant_ids
     }
+    from services.survey_jurisdiction import (
+        jurisdiction_contract,
+        tenant_requires_government_survey_evidence,
+    )
+
     for encuesta in encuestas:
         metricas = stats_map.get(encuesta.id or -1, _empty_panel_metrics())
         governance = governance_map.get(
@@ -8977,6 +9161,30 @@ def build_admin_list_payload(
         )
         data["esta_activa"] = _is_encuesta_activa(encuesta)
         data["slug_publico"] = _resolve_public_slug(encuesta)
+        admin_scope = _build_admin_jurisdiction_scope(
+            encuesta,
+            tenant_profiles_by_id.get(int(encuesta.tenant_id)),
+        )
+        data["admin_scope"] = admin_scope
+        jurisdiction_scope = admin_scope["jurisdiction"]
+        jurisdiction_summary = dict(data.get("jurisdiction") or {})
+        jurisdiction_summary.update(
+            {
+                "scope_status": jurisdiction_scope["status"],
+                "scope_reason_code": jurisdiction_scope["reason_code"],
+                "tenant_verified_ref": jurisdiction_scope[
+                    "tenant_verified_ref"
+                ],
+                "content_review_included": False,
+            }
+        )
+        data["jurisdiction"] = jurisdiction_summary
+        tenant_profile = tenant_profiles_by_id.get(int(encuesta.tenant_id))
+        survey_evidence_gate = None
+        if tenant_requires_government_survey_evidence(tenant_profile):
+            survey_evidence_gate = jurisdiction_contract(encuesta).get(
+                "government_evidence_gate"
+            )
         lifecycle = _build_admin_lifecycle_contract(
             encuesta,
             metricas,
@@ -8984,8 +9192,15 @@ def build_admin_list_payload(
                 isinstance(data.get("governance"), Mapping)
                 and data["governance"].get("release_required") is True
             ),
+            jurisdiction_scope=admin_scope,
+            survey_evidence_gate=survey_evidence_gate,
         )
         data["admin_lifecycle"] = lifecycle
+        if bool(
+            isinstance(data.get("governance"), Mapping)
+            and data["governance"].get("release_required") is True
+        ):
+            governed_instruments += 1
         geo_metadata = geo_metadata_by_tenant.get(int(encuesta.tenant_id))
         data["geo"] = {
             "points": geo_points.get(encuesta.id or -1, []),
@@ -9031,6 +9246,24 @@ def build_admin_list_payload(
         if lifecycle["accepts_responses"]:
             accepting_responses += 1
         instrument_kinds[lifecycle["instrument_kind"]] += 1
+        jurisdiction_statuses[jurisdiction_scope["status"]] += 1
+        if jurisdiction_scope["status"] != "conflict":
+            operational_instruments += 1
+            operational_responses += int(metricas["total_respuestas"] or 0)
+            operational_geo += int(metricas["respuestas_con_coordenadas"] or 0)
+            operational_24h += int(metricas["respuestas_ultimas_24h"] or 0)
+            if data["esta_activa"]:
+                operational_active += 1
+            if int(metricas["total_respuestas"] or 0) > 0:
+                operational_with_responses += 1
+            if lifecycle["accepts_responses"]:
+                operational_accepting_responses += 1
+            operational_instrument_kinds[lifecycle["instrument_kind"]] += 1
+            if bool(
+                isinstance(data.get("governance"), Mapping)
+                and data["governance"].get("release_required") is True
+            ):
+                operational_governed_instruments += 1
 
     resumen = {
         "total": len(encuestas_payload),
@@ -9101,6 +9334,194 @@ def build_admin_list_payload(
         }
     )
 
+    returned_items = int(
+        resolved_pagination.get("returned", len(encuestas_payload))
+        or 0
+    )
+    query_total_items = int(
+        resolved_pagination.get("total_items", returned_items)
+        or 0
+    )
+    first_page = (
+        resolved_pagination.get("cursor") in (None, "")
+        and resolved_pagination.get("page") in (None, 1)
+    )
+    complete_for_query = bool(
+        first_page
+        and not resolved_pagination.get("has_more")
+        and returned_items == query_total_items
+    )
+    geo_coverage_available = total_respuestas > 0
+    geolocation_coverage = {
+        "available": geo_coverage_available,
+        "numerator": total_geo,
+        "denominator": total_respuestas if geo_coverage_available else None,
+        "percentage": (
+            round((total_geo / total_respuestas) * 100, 2)
+            if geo_coverage_available
+            else None
+        ),
+        "reason_code": (
+            None
+            if geo_coverage_available
+            else "survey_response_denominator_empty"
+        ),
+    }
+    operational_geo_coverage_available = operational_responses > 0
+    operational_geolocation_coverage = {
+        "available": operational_geo_coverage_available,
+        "numerator": operational_geo,
+        "denominator": (
+            operational_responses
+            if operational_geo_coverage_available
+            else None
+        ),
+        "percentage": (
+            round((operational_geo / operational_responses) * 100, 2)
+            if operational_geo_coverage_available
+            else None
+        ),
+        "reason_code": (
+            None
+            if operational_geo_coverage_available
+            else "survey_response_denominator_empty"
+        ),
+    }
+    aggregation_scope = {
+        "mode": "returned_page",
+        "returned_items": returned_items,
+        "query_total_items": query_total_items,
+        "complete_for_query": complete_for_query,
+    }
+    jurisdiction_aggregate = {
+        "contract_version": "surveys.admin_jurisdiction_aggregate.v1",
+        "aggregation_scope": aggregation_scope,
+        "compatible": int(jurisdiction_statuses.get("compatible", 0)),
+        "conflict": int(jurisdiction_statuses.get("conflict", 0)),
+        "unverified": int(jurisdiction_statuses.get("unverified", 0)),
+        "separation_required": int(jurisdiction_statuses.get("conflict", 0)),
+        "review_required": int(
+            jurisdiction_statuses.get("conflict", 0)
+            + jurisdiction_statuses.get("unverified", 0)
+        ),
+        "authoritative_source": "server_owned_persisted_refs",
+        "title_inference_used": False,
+        "content_review_included": False,
+    }
+    aggregate_policy = {
+        "contract_version": "surveys.admin_aggregate_policy.v1",
+        "general_scope": {
+            "included_jurisdiction_statuses": [
+                "compatible",
+                "conflict",
+                "unverified",
+            ],
+            "conflict_instruments_included": jurisdiction_aggregate[
+                "conflict"
+            ],
+        },
+        "operational_scope": {
+            "included_jurisdiction_statuses": ["compatible", "unverified"],
+            "excluded_jurisdiction_statuses": ["conflict"],
+            "unverified_is_compatible": False,
+        },
+    }
+    operational_scope = {
+        "contract_version": "surveys.admin_operational_scope.v1",
+        "aggregation_scope": aggregation_scope,
+        "selection": aggregate_policy["operational_scope"],
+        "instruments": {
+            "included": operational_instruments,
+            "excluded_conflict": jurisdiction_aggregate["conflict"],
+            "active": operational_active,
+            "accepting_responses": operational_accepting_responses,
+            "with_responses": operational_with_responses,
+            "surveys": int(operational_instrument_kinds.get("survey", 0)),
+            "votings": int(operational_instrument_kinds.get("voting", 0)),
+            "governed": operational_governed_instruments,
+        },
+        "participation": {
+            "real_responses": operational_responses,
+            "responses_last_24h": operational_24h,
+            "eligible_population": None,
+            "participation_rate": None,
+        },
+        "territorial": {
+            "responses_with_coordinates": operational_geo,
+            "geolocation_coverage": operational_geolocation_coverage,
+        },
+    }
+    resumen["jurisdiccion"] = jurisdiction_aggregate
+    resumen["politica_agregacion"] = aggregate_policy
+    resumen["alcance_operativo"] = operational_scope
+    limitations = [
+        {
+            "reason_code": "survey_eligible_population_not_configured",
+            "impact": "participation_rate_and_abstentions_unavailable",
+        }
+    ]
+    if not complete_for_query:
+        limitations.append(
+            {
+                "reason_code": "survey_admin_aggregate_page_scoped",
+                "impact": "aggregate_counts_cover_returned_page_only",
+            }
+        )
+    if jurisdiction_aggregate["conflict"]:
+        limitations.append(
+            {
+                "reason_code": "survey_jurisdiction_binding_conflict",
+                "impact": "foreign_jurisdiction_instruments_require_separation",
+            }
+        )
+    if jurisdiction_aggregate["unverified"]:
+        limitations.append(
+            {
+                "reason_code": "survey_jurisdiction_scope_unverified",
+                "impact": "instruments_require_authoritative_jurisdiction_review",
+            }
+        )
+    executive_summary = {
+        "contract_version": "surveys.admin_executive_overview.v1",
+        "aggregation_scope": aggregation_scope,
+        "instruments": {
+            "returned": len(encuestas_payload),
+            "active": activas,
+            "accepting_responses": accepting_responses,
+            "with_responses": con_respuestas,
+            "surveys": int(instrument_kinds.get("survey", 0)),
+            "votings": int(instrument_kinds.get("voting", 0)),
+            "governed": governed_instruments,
+        },
+        "jurisdiction": jurisdiction_aggregate,
+        "aggregate_policy": aggregate_policy,
+        "operational_scope": operational_scope,
+        "participation": {
+            "real_responses": total_respuestas,
+            "responses_last_24h": total_24h,
+            "eligible_population": None,
+            "participation_rate": None,
+        },
+        "territorial": {
+            "responses_with_coordinates": total_geo,
+            "geolocation_coverage": geolocation_coverage,
+        },
+        "assurance": {
+            "regulated_election_certified": False,
+            "result_certified": False,
+            "external_verification": "not_performed",
+        },
+        "limitations": limitations,
+    }
+    data_quality = {
+        "contract_version": "surveys.admin_data_quality.v1",
+        "aggregation_scope": aggregation_scope,
+        "geolocation_coverage": geolocation_coverage,
+        "jurisdiction": jurisdiction_aggregate,
+        "response_provenance": data_provenance,
+        "limitations": limitations,
+    }
+
     return {
         "contract_version": "surveys.admin_list.v2",
         "tenant": {"id": tenant_id, "slug": tenant_slug},
@@ -9110,6 +9531,8 @@ def build_admin_list_payload(
             "synthetic": False,
         },
         "data_provenance": data_provenance,
+        "data_quality": data_quality,
+        "executive_summary": executive_summary,
         "encuestas": encuestas_payload,
         "resumen": resumen,
         "pagination": resolved_pagination,

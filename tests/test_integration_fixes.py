@@ -49,20 +49,38 @@ def _create_admin_tenant(email="admin@test.com", plan="full"):
     return user, tenant, {"Authorization": f"Bearer {token}", "X-Tenant": tenant.slug}
 
 
-def test_integration_missing_config_returns_frontend_safe_error(client, app):
+def test_marketplace_legacy_oauth_connect_is_fail_closed(client, app):
     # Setup auth and tenant
     with app.app_context():
         _user, _tenant, headers = _create_admin_tenant()
 
-    # Test MercadoLibre
-    resp = client.get('/api/admin/tenants/test-tenant/integrations/mercadolibre/connect', headers=headers)
-    assert resp.status_code == 200
-    assert resp.json['error'] == 'platform_not_configured'
+    for provider in ("mercadolibre", "tiendanube"):
+        resp = client.get(
+            f'/api/admin/tenants/test-tenant/integrations/{provider}/connect',
+            headers=headers,
+        )
+        assert resp.status_code == 404
+        assert resp.json['reason_code'] == 'legacy_oauth_connect_disabled'
+        assert resp.json['retryable'] is False
+        assert 'redirect_url' not in resp.json
+        assert resp.headers['Cache-Control'] == 'no-store'
 
-    # Test TiendaNube
-    resp = client.get('/api/admin/tenants/test-tenant/integrations/tiendanube/connect', headers=headers)
-    assert resp.status_code == 200
-    assert resp.json['error'] == 'platform_not_configured'
+
+def test_marketplace_legacy_oauth_connect_flag_cannot_restore_plain_state(client, app):
+    with app.app_context():
+        _user, _tenant, headers = _create_admin_tenant()
+        app.config['LEGACY_INTEGRATIONS_TRANSPORT_ENABLED'] = True
+
+    resp = client.get(
+        '/api/admin/tenants/test-tenant/integrations/mercadolibre/connect',
+        headers=headers,
+    )
+
+    assert resp.status_code == 503
+    assert resp.json['reason_code'] == 'legacy_integration_secure_transport_unavailable'
+    assert resp.json['retryable'] is False
+    assert 'redirect_url' not in resp.json
+    assert resp.headers['Cache-Control'] == 'no-store'
 
 def test_whatsapp_integration_returns_tech_provider_config_error(client, app):
     # Setup auth and tenant

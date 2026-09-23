@@ -1524,7 +1524,18 @@ def get_or_create_anon_id() -> str:
 
     g.anon_id = anon_id
     return anon_id
+def auth_sin_escrituras_implicitas(f):
+    """Mark a sensitive view whose authentication phase must stay read-only."""
+
+    setattr(f, "_chatboc_skip_implicit_entity_token_write", True)
+    return f
+
+
 def token_requerido(f):
+    skip_implicit_entity_token_write = bool(
+        getattr(f, "_chatboc_skip_implicit_entity_token_write", False)
+    )
+
     @wraps(f)
     def decorated(*args, **kwargs):
         anon_id = get_or_create_anon_id()
@@ -1660,7 +1671,8 @@ def token_requerido(f):
             g.auth_token = raw_token
             g.current_user = current_user
             g.owner_user = _resolve_owner_user(current_user)
-            _ensure_entity_token(g.owner_user)
+            if not skip_implicit_entity_token_write:
+                _ensure_entity_token(g.owner_user)
             if raw_token:
                 g.token_payload = _decode_token_payload(raw_token) or {}
             return f(current_user, *args, **kwargs)

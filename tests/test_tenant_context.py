@@ -11,6 +11,7 @@ from app import create_app
 from config import TestingConfig
 from middleware import require_tenant
 from models import TenantProfile, User, db
+from utils.errors import ApiError
 
 
 @unittest.skipIf(create_app is None, "Flask not available")
@@ -46,6 +47,19 @@ class TenantContextResolutionTests(unittest.TestCase):
         db.drop_all()
         cls.ctx.pop()
 
+    def setUp(self):
+        # The class intentionally reuses one app context; clear request-local
+        # tenant state so one resolution assertion cannot satisfy the next.
+        for key in (
+            "tenant_profile",
+            "tenant_profile_slug",
+            "current_tenant",
+            "current_tenant_slug",
+            "tenant_slug",
+            "tenant",
+        ):
+            g.pop(key, None)
+
     def test_resolves_tenant_from_header_slug(self):
         with self.app.test_request_context(
             "/api/pwa/public/catalogo", headers={"X-Tenant": "demo"}
@@ -78,11 +92,15 @@ class TenantContextResolutionTests(unittest.TestCase):
 
         self.assertEqual(tenant.slug, "demo")
 
-    def test_unknown_tenant_slug_falls_back_to_first_available(self):
+    def test_unknown_tenant_slug_fails_closed(self):
         with self.app.test_request_context("/api/pwa/public/unknown/encuestas"):
-            tenant = require_tenant()
+            with self.assertRaises(ApiError):
+                require_tenant()
 
-        self.assertEqual(tenant.slug, self.tenant.slug)
+    def test_unknown_custom_host_does_not_fall_back_to_first_available(self):
+        with self.app.test_request_context("https://unknown.customer.example/"):
+            with self.assertRaises(ApiError):
+                require_tenant()
 
     def test_fallback_to_first_tenant_when_no_hints(self):
         with self.app.test_request_context("/"):

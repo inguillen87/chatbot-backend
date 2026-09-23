@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 import copy
 
@@ -14,8 +14,19 @@ from services.attachment_delivery import serialize_attachment_for_delivery
 from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     ticket_assignee_category_values_are_compatible,
+    ticket_assignee_is_operational,
 )
-from services.v2.sla_service import apply_sla_to_ticket, get_policies_for_tenant, is_ticket_overdue
+from services.v2.sla_service import (
+    apply_operator_response_sla,
+    apply_priority_change_sla,
+    apply_reopen_sla,
+    apply_resolution_sla,
+    apply_sla_to_ticket,
+    evaluate_ticket_sla,
+    get_policies_for_tenant,
+    is_sla_operator_role,
+    is_ticket_overdue,
+)
 from services.v2.ticket_event_service import record_ticket_event
 
 _ALLOWED_STATUSES = {
@@ -79,18 +90,11 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _sla_status(ticket: TenantTicket) -> str:
-    if is_ticket_overdue(ticket):
-        return "breached"
-
-    extra = ticket.datos_extra if isinstance(ticket.datos_extra, dict) else {}
-    sla = extra.get("sla") if isinstance(extra.get("sla"), dict) else {}
-    due = _parse_iso(sla.get("resolution_due_at") or sla.get("next_update_due_at"))
-    if due is None:
-        return "ok"
-    if due.tzinfo is None:
-        due = due.replace(tzinfo=timezone.utc)
-    if due <= datetime.now(timezone.utc) + timedelta(hours=12):
-        return "warning"
+    state = evaluate_ticket_sla(ticket)["state"]
+    if state in {"breached", "warning", "unknown"}:
+        return state
+    # Preserve the existing public status vocabulary for inactive tickets;
+    # the richer lifecycle remains available in ``sla_evaluation.state``.
     return "ok"
 
 
@@ -325,7 +329,23 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
         comments = [c for c in comments if (c.get("visibility") or "public") == "public"]
     assignee_id = extra.get("assignee_id")
     assignee = _assignee_payload(assignee_id)
+    sla_evaluation = evaluate_ticket_sla(ticket)
     sla_status = _sla_status(ticket)
+    sla_payload = copy.deepcopy(extra.get("sla")) if isinstance(extra.get("sla"), dict) else {}
+    sla_payload.update(
+        {
+            "contract_version": sla_evaluation["contract_version"],
+            "status": sla_evaluation["state"],
+            "state": sla_evaluation["state"],
+            "known": sla_evaluation["known"],
+            "unknown": sla_evaluation["unknown"],
+            "overdue": sla_evaluation["overdue"],
+            "breached_clocks": sla_evaluation["breached_clocks"],
+            "warning_clocks": sla_evaluation["warning_clocks"],
+            "unknown_clocks": sla_evaluation["unknown_clocks"],
+            "clocks": sla_evaluation["clocks"],
+        }
+    )
 
     attachments = ticket_attachment_payloads(ticket)
     assisted_fields = _assisted_marketplace_fields(extra, attachments)
@@ -352,7 +372,8 @@ def serialize_ticket(ticket: TenantTicket, *, viewer: User | None = None) -> dic
             "lat": ticket.latitud,
             "lng": ticket.longitud,
         },
-        "sla": extra.get("sla") or {},
+        "sla": sla_payload,
+        "sla_evaluation": sla_evaluation,
         "overdue": is_ticket_overdue(ticket),
         "comments": [serialize_comment(c) for c in comments],
         "attachmentInfo": attachments[0] if attachments else None,
@@ -391,9 +412,7 @@ def create_ticket(*, tenant, actor_user: User | None, payload: dict[str, Any]) -
         except (TypeError, ValueError) as exc:
             raise ValueError("assignee_id invalido") from exc
         assignee = User.query.filter_by(id=assignee_id, tenant_id=tenant.id).first()
-        assignee_role = str(getattr(assignee, "rol", "") or "").lower() if assignee else ""
-        is_assignable = bool(getattr(assignee, "es_empleado", False)) or assignee_role in {"empleado", "employee", "admin", "tenant_admin"}
-        if not assignee or not is_assignable:
+        if not ticket_assignee_is_operational(assignee):
             raise ValueError("assignee_not_found")
         if not ticket_assignee_category_values_are_compatible(
             assignee,
@@ -555,18 +574,7 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
                 id=final_assignee_id,
                 tenant_id=tenant.id,
             ).first()
-            assignee_role = (
-                str(getattr(validated_assignee, "rol", "") or "").lower()
-                if validated_assignee
-                else ""
-            )
-            is_assignable = bool(getattr(validated_assignee, "es_empleado", False)) or assignee_role in {
-                "empleado",
-                "employee",
-                "admin",
-                "tenant_admin",
-            }
-            if not validated_assignee or not is_assignable:
+            if not ticket_assignee_is_operational(validated_assignee):
                 raise LookupError("assignee_not_found")
             if not ticket_assignee_category_values_are_compatible(
                 validated_assignee,
@@ -574,11 +582,18 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
             ):
                 raise ValueError("assignee_category_scope_mismatch")
 
+    resolution_completed = False
+    resolution_reopened = False
     if "status" in payload:
         new_status = str(payload.get("status") or "").strip().lower()
         if new_status and new_status in _ALLOWED_STATUSES and new_status != ticket.estado:
             previous = ticket.estado
             ticket.estado = new_status
+            resolution_completed = new_status in {"resuelto", "cerrado", "closed"}
+            resolution_reopened = (
+                str(previous or "").strip().lower() in {"resuelto", "cerrado", "closed"}
+                and not resolution_completed
+            )
             record_ticket_event(
                 tenant_id=tenant.id,
                 event_type="ticket.status_changed",
@@ -587,11 +602,13 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
                 details={"from": previous, "to": new_status},
             )
 
+    priority_changed = False
     if "priority" in payload:
         new_priority = str(payload.get("priority") or "").strip().lower()
         if new_priority in _ALLOWED_PRIORITIES and new_priority != str(extra.get("priority") or "").lower():
             previous = extra.get("priority")
             extra["priority"] = new_priority
+            priority_changed = True
             record_ticket_event(
                 tenant_id=tenant.id,
                 event_type="ticket.priority_changed",
@@ -646,8 +663,16 @@ def patch_ticket(*, tenant, actor_user: User | None, ticket: TenantTicket, paylo
             )
 
     ticket.datos_extra = extra
+    transition_at = datetime.now(timezone.utc)
+    if resolution_completed:
+        apply_resolution_sla(ticket, occurred_at=transition_at)
     policies = get_policies_for_tenant(tenant)
-    apply_sla_to_ticket(ticket, policies, force_recalculate=True)
+    if resolution_reopened:
+        apply_reopen_sla(ticket, policies, occurred_at=transition_at)
+    elif priority_changed:
+        apply_priority_change_sla(ticket, policies, occurred_at=transition_at)
+    else:
+        apply_sla_to_ticket(ticket, policies)
     flag_modified(ticket, "datos_extra")
     db.session.add(ticket)
     return ticket
@@ -667,7 +692,8 @@ def add_comment(*, tenant, actor_user: User | None, ticket: TenantTicket, body: 
 
     extra = _ensure_extra(ticket)
     comments = extra.get("comments") if isinstance(extra.get("comments"), list) else []
-    now_iso = datetime.utcnow().isoformat()
+    occurred_at = datetime.now(timezone.utc)
+    now_iso = occurred_at.isoformat()
     comment = {
         "id": len(comments) + 1,
         "body": body,
@@ -678,6 +704,10 @@ def add_comment(*, tenant, actor_user: User | None, ticket: TenantTicket, body: 
     comments.append(comment)
     extra["comments"] = comments
     ticket.datos_extra = extra
+
+    if visibility == "public" and is_sla_operator_role(_role_of(actor_user)):
+        policies = get_policies_for_tenant(tenant)
+        apply_operator_response_sla(ticket, policies, occurred_at=occurred_at)
     db.session.add(ticket)
 
     record_ticket_event(

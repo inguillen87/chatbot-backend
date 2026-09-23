@@ -2,6 +2,7 @@ import unittest
 import json
 import jwt
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 from app import create_app, db
 from models import User, TenantProfile, Role, UserRole, TenantConfig, TwilioNumber
 from config import TestConfig
@@ -62,6 +63,73 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertEqual(tenant.plan, "free")
         self.assertNotIn("whatsapp_onboarding", tenant.configuracion or {})
         self.assertEqual((tenant.configuracion or {})["provisioning"]["status"], "plan_required")
+        readiness = data["provisioning_readiness"]
+        self.assertEqual(readiness["contract_version"], "tenant.provisioning_readiness.v1")
+        self.assertFalse(readiness["ready"])
+        self.assertTrue(readiness["checks"]["base_configuration_valid"])
+        self.assertFalse(readiness["checks"]["provider_activation_performed"])
+        self.assertEqual(
+            {config.key for config in TenantConfig.query.filter_by(tenant_id=tenant.id).all()},
+            {"menu", "contacts", "links", "widget"},
+        )
+        self.assertTrue(
+            all(
+                isinstance(config.json_value, dict) and config.json_value
+                for config in TenantConfig.query.filter_by(tenant_id=tenant.id).all()
+            )
+        )
+
+    def test_tenant_factory_fails_closed_before_writes_when_template_is_missing(self):
+        response = self.client.post(
+            "/api/admin/tenants",
+            json={
+                "slug": "missing-template-tenant",
+                "nombre": "Missing Template Tenant",
+                "tipo": "municipio",
+                "template_key": "missing-template",
+                "owner_email": "owner@missing-template.test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertIn("was not found", response.get_json()["error"])
+        self.assertIsNone(TenantProfile.query.filter_by(slug="missing-template-tenant").first())
+        self.assertIsNone(User.query.filter_by(email="owner@missing-template.test").first())
+        self.assertEqual(TenantConfig.query.count(), 0)
+
+    def test_tenant_factory_rejects_template_path_traversal_without_writes(self):
+        response = self.client.post(
+            "/api/admin/tenants",
+            json={
+                "slug": "unsafe-template-tenant",
+                "nombre": "Unsafe Template Tenant",
+                "tipo": "pyme",
+                "template_key": "../municipio_default",
+                "owner_email": "owner@unsafe-template.test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertEqual(response.get_json()["error"], "template_key is invalid")
+        self.assertIsNone(TenantProfile.query.filter_by(slug="unsafe-template-tenant").first())
+        self.assertIsNone(User.query.filter_by(email="owner@unsafe-template.test").first())
+
+    def test_tenant_factory_rejects_template_for_another_vertical(self):
+        response = self.client.post(
+            "/api/admin/tenants",
+            json={
+                "slug": "mismatched-template-tenant",
+                "nombre": "Mismatched Template Tenant",
+                "tipo": "pyme",
+                "template_key": "municipio_default",
+                "owner_email": "owner@mismatched-template.test",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400, response.get_json())
+        self.assertIn("does not support tenant type", response.get_json()["error"])
+        self.assertIsNone(TenantProfile.query.filter_by(slug="mismatched-template-tenant").first())
+        self.assertIsNone(User.query.filter_by(email="owner@mismatched-template.test").first())
 
     def test_public_create_tenant_rejects_productive_plan(self):
         response = self.client.post(
@@ -177,6 +245,42 @@ class TestAdminTenantVerification(unittest.TestCase):
         self.assertIsNotNone(owner)
         self.assertEqual(owner.plan, "full")
         self.assertEqual(owner.tenant_slug, tenant.slug)
+
+    def test_full_plan_factory_never_calls_provider_provisioning(self):
+        self.app.config.update(
+            TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED=True,
+            TWILIO_TENANT_AUTO_PROVISION_ENABLED=True,
+            TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
+        )
+        super_admin = User(email="guillen.marce@gmail.com", name="Platform", rol="super_admin")
+        super_admin.set_password("pass")
+        db.session.add(super_admin)
+        db.session.commit()
+
+        with patch(
+            "services.tenant_whatsapp_onboarding.provision_twilio_subaccount"
+        ) as provision_subaccount, patch(
+            "services.tenant_whatsapp_onboarding.provision_twilio_voice_application"
+        ) as provision_voice:
+            response = self.client.post(
+                "/api/admin/tenants",
+                json={
+                    "slug": "provider-plan-only",
+                    "nombre": "Provider Plan Only",
+                    "tipo": "municipio",
+                    "plan": "full",
+                    "owner_email": "owner@provider-plan-only.test",
+                },
+                headers={"Authorization": f"Bearer {self.generate_token(super_admin)}"},
+            )
+
+        self.assertEqual(response.status_code, 201, response.get_json())
+        provision_subaccount.assert_not_called()
+        provision_voice.assert_not_called()
+        onboarding = response.get_json()["whatsapp_onboarding"]
+        self.assertFalse(onboarding["auto_provision_enabled"])
+        self.assertEqual(onboarding["source"], "tenant_factory_plan")
+        self.assertNotEqual(onboarding["status"], "online")
 
     def test_super_admin_full_plan_can_assign_whatsapp_number(self):
         number = TwilioNumber(

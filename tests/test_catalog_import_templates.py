@@ -26,6 +26,16 @@ def app(monkeypatch):
         "resolve_tenant_and_user",
         lambda tenant_slug=None, current_user=None: (tenant, owner, None),
     )
+    monkeypatch.setattr(
+        catalog_import,
+        "_legacy_catalog_current_user",
+        lambda: Obj(id=2, rol="admin"),
+    )
+    monkeypatch.setattr(
+        catalog_import,
+        "can_manage_tenant_catalog",
+        lambda user, tenant: True,
+    )
     monkeypatch.setattr(catalog_import, "_persist_rows", lambda *args, **kwargs: 1)
     monkeypatch.setattr(catalog_import, "extract_table_from_file", lambda *args, **kwargs: [])
     monkeypatch.setattr(

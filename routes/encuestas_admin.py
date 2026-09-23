@@ -29,6 +29,12 @@ from services.encuestas_service import (
     survey_admin_write_rate_limit_key,
     survey_instrument_max_payload_bytes,
 )
+from services.survey_deletion_policy import require_admin_deletable_survey
+from services.survey_methodology import get_methodology, save_methodology
+from services.survey_methodology_contract import CONTRACT as METHODOLOGY_CONTRACT, MAX_BODY_BYTES
+from sqlalchemy.exc import SQLAlchemyError, IntegrityError
+import json
+
 from services.survey_tenant_scope import (
     SurveyTenantScopeError,
     resolve_survey_storage_tenant_profile,
@@ -135,11 +141,69 @@ def _create_admin_blueprint(name: str, url_prefix: str) -> Blueprint:
     @require_role("admin", "super_admin")
     def eliminar_encuesta_endpoint(current_user, encuesta_id: int):
         try:
+            require_admin_deletable_survey(encuesta_id, current_user)
             delete_encuesta(encuesta_id, current_user)
         except EncuestaError as err:
             db.session.rollback()
             return jsonify(err.to_dict()), err.status_code
+        except IntegrityError:
+            db.session.rollback()
+            return jsonify({"error":"El borrador tiene registros vinculados que deben conservarse.",
+                            "reason_code":"survey_delete_linked_history"}),409
         return jsonify({"ok": True, "encuesta_id": encuesta_id}), 200
+
+    def _methodology_response(payload, status=200):
+        response=jsonify(payload)
+        response.status_code=status
+        response.headers['Cache-Control']='private, no-store'
+        return response
+
+    @bp.route('/<int:encuesta_id>/methodology', methods=['GET'])
+    @token_requerido
+    @require_role('admin','super_admin')
+    def methodology_get(current_user,encuesta_id):
+        try:
+            raw=request.args.get('revision')
+            if raw is not None and (not raw.isascii() or not raw.isdigit() or len(raw)>10):
+                raise EncuestaError('La versi\u00f3n solicitada no es v\u00e1lida.',status_code=400,
+                    payload={'reason_code':'methodology_revision_invalid'})
+            payload=get_methodology(encuesta_id,current_user,int(raw) if raw is not None else None)
+            return _methodology_response(payload)
+        except EncuestaError as err:
+            db.session.rollback()
+            return _methodology_response(err.to_dict(),err.status_code)
+        except SQLAlchemyError:
+            db.session.rollback()
+            return _methodology_response({'contract_version':METHODOLOGY_CONTRACT,
+                'reason_code':'methodology_storage_unavailable','error':'La ficha requiere almacenamiento verificado en este entorno.'},503)
+
+    @bp.route('/<int:encuesta_id>/methodology', methods=['PUT'])
+    @limiter.shared_limit('60 per minute',scope='survey-methodology-write',key_func=survey_admin_write_rate_limit_key)
+    @token_requerido
+    @require_role('admin','super_admin')
+    def methodology_put(current_user,encuesta_id):
+        try:
+            # Authorize before reading a body or accessing methodology storage.
+            get_encuesta(encuesta_id,user=current_user)
+            if request.content_length is not None and request.content_length>MAX_BODY_BYTES:
+                raise EncuestaError('La ficha supera el tama\u00f1o permitido.',status_code=413)
+            if not request.is_json:
+                raise EncuestaError('La ficha debe enviarse como JSON.',status_code=415)
+            raw=request.stream.read(MAX_BODY_BYTES+1)
+            if len(raw)>MAX_BODY_BYTES:
+                raise EncuestaError('La ficha supera el tama\u00f1o permitido.',status_code=413)
+            try: data=json.loads(raw.decode('utf-8'))
+            except (UnicodeError,ValueError):
+                raise EncuestaError('El documento JSON no es v\u00e1lido.',status_code=400) from None
+            return _methodology_response(save_methodology(encuesta_id,current_user,data))
+        except EncuestaError as err:
+            db.session.rollback()
+            return _methodology_response(err.to_dict(),err.status_code)
+        except SQLAlchemyError:
+            db.session.rollback()
+            return _methodology_response({'contract_version':METHODOLOGY_CONTRACT,
+                'reason_code':'methodology_write_unconfirmed',
+                'error':'No pudimos confirmar el guardado. Actualiz\u00e1 la ficha antes de reintentar.'},503)
 
     @bp.route("/<int:encuesta_id>/publicar", methods=["POST"])
     @token_requerido

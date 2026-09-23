@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, request, g, current_app
+from cutover_writer_fence import cutover_writer_view
 from models import (
     TenantProfile,
     User,
@@ -1127,6 +1128,7 @@ def _purge_users(user_ids: list[int]) -> dict:
     return deleted
 
 @super_admin_bp.route('/tenants', methods=['GET'])
+@cutover_writer_view
 @token_requerido
 @super_admin_required
 def list_tenants(current_user):

@@ -2,15 +2,42 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-from models import db, AnalisisArchivo
+from celery_utils import celery_app
+from cutover_writer_fence import (
+    background_writer_fence_report,
+    cutover_writer_fence_enabled,
+)
+from global_writer_authority import global_writer_authority_enabled
+from services.global_writer_authority import (
+    background_global_writer_authority_report,
+)
 
 logger = logging.getLogger(__name__)
 
+
+def _analysis_writer_fence_enabled() -> bool:
+    try:
+        from flask import current_app
+
+        if cutover_writer_fence_enabled(current_app.config):
+            return True
+        return (
+            background_global_writer_authority_report(
+                "file_content_analysis",
+                current_app.config,
+            )
+            is not None
+        )
+    except RuntimeError:
+        return cutover_writer_fence_enabled() or global_writer_authority_enabled()
+
 class AnalisisArchivoService:
-    def crear_analisis_inicial(self, archivo_adjunto_id: int) -> AnalisisArchivo:
+    def crear_analisis_inicial(self, archivo_adjunto_id: int) -> Any:
         """
         Creates an initial analysis record for a given file.
         """
+        from models import AnalisisArchivo, db
+
         logger.info(f"Creating initial analysis record for file ID: {archivo_adjunto_id}")
         analisis = AnalisisArchivo(
             archivo_adjunto_id=archivo_adjunto_id,
@@ -30,6 +57,8 @@ class AnalisisArchivoService:
         """
         Updates an analysis record to 'completed' and saves the extracted data.
         """
+        from models import AnalisisArchivo, db
+
         analisis = db.session.get(AnalisisArchivo, analisis_id)
         if not analisis:
             logger.error(f"Could not find AnalisisArchivo with ID: {analisis_id} to update.")
@@ -47,6 +76,8 @@ class AnalisisArchivoService:
         """
         Updates an analysis record to 'error' and saves the error message.
         """
+        from models import AnalisisArchivo, db
+
         analisis = db.session.get(AnalisisArchivo, analisis_id)
         if not analisis:
             logger.error(f"Could not find AnalisisArchivo with ID: {analisis_id} to update with error.")
@@ -58,15 +89,21 @@ class AnalisisArchivoService:
         analisis.fecha_analisis = datetime.utcnow()
         db.session.commit()
 
-from celery_utils import celery_app
-from models import ArchivoAdjunto
-from services.interpretacion_service import interpretacion_service
-
 @celery_app.task(name="analisis_archivo.tarea_analizar_contenido_archivo")
 def tarea_analizar_contenido_archivo(archivo_adjunto_id: int):
     """
     Celery task to analyze the content of a file asynchronously.
     """
+    if _analysis_writer_fence_enabled():
+        return {
+            **background_writer_fence_report("file_content_analysis"),
+            "processed": 0,
+            "provider_attempts": 0,
+        }
+
+    from models import ArchivoAdjunto, db
+    from services.interpretacion_service import interpretacion_service
+
     logger.info(f"Iniciando tarea de análisis para ArchivoAdjunto ID: {archivo_adjunto_id}")
     service = AnalisisArchivoService()
     analisis = None
@@ -98,3 +135,11 @@ def tarea_analizar_contenido_archivo(archivo_adjunto_id: int):
             service.actualizar_analisis_con_error(analisis.id, error_message)
         # If analisis object was not even created, there's nothing to update.
         # The error is logged, which is the best we can do.
+
+
+def enqueue_file_content_analysis(archivo_adjunto_id: int):
+    """Queue file analysis only while this process owns background writes."""
+
+    if _analysis_writer_fence_enabled():
+        return False
+    return tarea_analizar_contenido_archivo.delay(archivo_adjunto_id)

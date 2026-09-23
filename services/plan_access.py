@@ -24,6 +24,11 @@ FULL_INTEGRATION_CAPABILITIES = {
     "widget.embed",
 }
 
+PUBLIC_DEMO_UPLOAD_CAPABILITIES = {
+    "demo.public_uploads",
+    "uploads.public_demo",
+}
+
 SELF_SERVICE_INTEGRATION_FEATURES = {
     "catalog_management",
     "education_management",
@@ -183,6 +188,19 @@ def tenant_is_demo_context(tenant: TenantProfile | None) -> bool:
         or cfg.get("chatboc_demo_hub")
         or cfg.get("is_demo_tenant")
     )
+
+
+def tenant_allows_public_demo_uploads(tenant: TenantProfile | None) -> bool:
+    """Allow anonymous demo attachments only through an explicit server-side grant."""
+
+    if tenant is None or not bool(getattr(tenant, "is_active", True)):
+        return False
+    if tenant_is_demo_context(tenant):
+        return True
+    cfg = getattr(tenant, "configuracion", None)
+    if isinstance(cfg, Mapping) and cfg.get("public_demo_uploads_enabled") is True:
+        return True
+    return tenant_has_any_capability(tenant, PUBLIC_DEMO_UPLOAD_CAPABILITIES)
 
 
 def plan_allows_full_integrations(tenant: TenantProfile | None) -> bool:
@@ -439,3 +457,15 @@ def integration_plan_required_payload(
     if extra:
         payload.update(dict(extra))
     return payload
+
+
+def tenant_allows_workspace_branding(tenant: TenantProfile | None) -> bool:
+    """Explicit server plan only; unrelated configurable capabilities do not grant branding."""
+    return bool(tenant is not None and getattr(tenant,'is_active',False) is True
+        and not tenant_is_demo_context(tenant)
+        and normalize_plan(getattr(tenant,'plan',None)) in FULL_INTEGRATION_PLANS)
+
+
+def tenant_allows_module_selection(tenant: TenantProfile | None) -> bool:
+    """Same explicit Full policy as workspace customization; never a client-editable feature flag."""
+    return tenant_allows_workspace_branding(tenant)

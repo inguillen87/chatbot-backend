@@ -1,5 +1,6 @@
 import jwt
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from flask import current_app
 from sqlalchemy import event
@@ -15,6 +16,14 @@ from models import (
     TenantProfile,
     TicketComentario,
     User,
+)
+from utils.roles import (
+    PERM_MANAGE_CATALOG,
+    PERM_VIEW_STATS,
+    ROLE_ANALYTICS_VIEWER,
+    ROLE_CATALOG_MANAGER,
+    canonical_role,
+    has_permission,
 )
 
 
@@ -66,12 +75,186 @@ def test_backoffice_navigation_exposes_role_based_modules(client):
     assert payload["tenant_slug"] == tenant.slug
     assert payload["role"] == "admin"
     module_ids = [item["id"] for item in payload["modules"] if item["enabled"]]
-    assert {"operations", "reports", "surveys", "people", "maps", "advanced_analytics"}.issubset(set(module_ids))
+    assert {"operations", "reports", "surveys", "people", "maps", "advanced_analytics", "implementation"}.issubset(set(module_ids))
+    implementation = next(item for item in payload["modules"] if item["id"] == "implementation")
+    assert implementation["route"] == "/implementacion"
     assert payload["analytics_modes"]["statistics"]["enabled"] is True
     assert payload["analytics_modes"]["advanced_analytics"]["enabled"] is True
     assert payload["surveys_overview"]["route"] == "/admin/encuestas"
     action_ids = {item["id"] for item in payload["actions"]}
     assert {"export_backoffice", "executive_summary"}.issubset(action_ids)
+
+
+def test_backoffice_navigation_limits_analytics_viewer_to_analytics_modules(
+    client,
+    monkeypatch,
+):
+    viewer = User(
+        email="backoffice-analytics-viewer@test.com",
+        name="Analytics Viewer",
+        rol="analytics_viewer",
+        tipo_chat="municipio",
+        tenant_slug="analytics-viewer-tenant",
+    )
+    viewer.set_password("pw")
+    db.session.add(viewer)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="analytics-viewer-tenant",
+        nombre="Analytics Viewer Tenant",
+        tipo="municipio",
+        municipio_id=viewer.id,
+        plan="enterprise",
+        capabilities_json={"statistics": True, "advanced_analytics": True},
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    def unexpected_operational_query(*_args, **_kwargs):
+        raise AssertionError("navigation-only roles must not query operational data")
+
+    monkeypatch.setattr("routes.backoffice._operations_counts", unexpected_operational_query)
+    monkeypatch.setattr("routes.backoffice._surveys_overview", unexpected_operational_query)
+
+    response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(viewer),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert canonical_role(viewer.rol) == ROLE_ANALYTICS_VIEWER
+    assert has_permission(viewer.rol, PERM_VIEW_STATS) is True
+    assert payload["role"] == ROLE_ANALYTICS_VIEWER
+    modules = {item["id"]: item for item in payload["modules"]}
+    assert set(modules) == {"reports", "advanced_analytics"}
+    assert modules["reports"]["enabled"] is True
+    assert modules["advanced_analytics"]["enabled"] is True
+    assert payload["actions"] == []
+    assert "surveys_overview" not in payload
+
+    summary = client.get(
+        "/api/app/backoffice/summary",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(viewer),
+    )
+    assert summary.status_code == 403
+    assert summary.get_json()["reason_code"] == "backoffice_operator_required"
+
+
+def test_backoffice_navigation_limits_catalog_manager_to_catalog_without_operations(
+    client,
+    monkeypatch,
+):
+    manager = User(
+        email="backoffice-catalog-manager@test.com",
+        name="Catalog Manager",
+        rol="catalog_manager",
+        tipo_chat="pyme",
+        tenant_slug="catalog-manager-tenant",
+    )
+    manager.set_password("pw")
+    db.session.add(manager)
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="catalog-manager-tenant",
+        nombre="Catalog Manager Tenant",
+        tipo="pyme",
+        pyme_id=manager.id,
+        plan="pro",
+        capabilities_json={"catalog": True},
+    )
+    db.session.add(tenant)
+    db.session.commit()
+
+    def unexpected_operational_query(*_args, **_kwargs):
+        raise AssertionError("catalog navigation must not query operational data")
+
+    monkeypatch.setattr("routes.backoffice._operations_counts", unexpected_operational_query)
+    monkeypatch.setattr("routes.backoffice._surveys_overview", unexpected_operational_query)
+
+    response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(manager),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert canonical_role(manager.rol) == ROLE_CATALOG_MANAGER
+    assert has_permission(manager.rol, PERM_MANAGE_CATALOG) is True
+    assert has_permission(manager.rol, PERM_VIEW_STATS) is False
+    assert payload["role"] == ROLE_CATALOG_MANAGER
+    assert payload["actions"] == []
+    assert "analytics_modes" not in payload
+    assert "surveys_overview" not in payload
+    assert [item["id"] for item in payload["modules"]] == ["catalog"]
+    catalog = payload["modules"][0]
+    assert catalog["enabled"] is True
+    assert catalog["route"] == "/perfil?tab=catalogo"
+
+
+def test_backoffice_navigation_special_roles_respect_tenant_capabilities(client):
+    analytics_viewer = User(
+        email="backoffice-analytics-locked@test.com",
+        name="Analytics Locked",
+        rol="analytics_viewer",
+        tipo_chat="municipio",
+        tenant_slug="special-roles-locked",
+    )
+    analytics_viewer.set_password("pw")
+    catalog_manager = User(
+        email="backoffice-catalog-locked@test.com",
+        name="Catalog Locked",
+        rol="catalog_manager",
+        tipo_chat="municipio",
+        tenant_slug="special-roles-locked",
+    )
+    catalog_manager.set_password("pw")
+    db.session.add_all([analytics_viewer, catalog_manager])
+    db.session.flush()
+
+    tenant = TenantProfile(
+        slug="special-roles-locked",
+        nombre="Special Roles Locked",
+        tipo="municipio",
+        municipio_id=analytics_viewer.id,
+        plan="free",
+        capabilities_json={
+            "statistics": False,
+            "advanced_analytics": False,
+            "catalog": False,
+        },
+    )
+    db.session.add(tenant)
+    db.session.flush()
+    analytics_viewer.tenant_id = tenant.id
+    catalog_manager.tenant_id = tenant.id
+    db.session.commit()
+
+    analytics_response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(analytics_viewer),
+    )
+    assert analytics_response.status_code == 200
+    analytics_modules = {
+        item["id"]: item for item in analytics_response.get_json()["modules"]
+    }
+    assert set(analytics_modules) == {"reports", "advanced_analytics"}
+    assert all(module["enabled"] is False for module in analytics_modules.values())
+
+    catalog_response = client.get(
+        "/api/app/backoffice/navigation",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(catalog_manager),
+    )
+    assert catalog_response.status_code == 200
+    assert catalog_response.get_json()["modules"][0]["id"] == "catalog"
+    assert catalog_response.get_json()["modules"][0]["enabled"] is False
 
 
 def test_backoffice_summary_counts_real_operations_and_surveys(client):
@@ -175,11 +358,25 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
     )
     db.session.commit()
 
-    response = client.get(
-        "/api/app/backoffice/summary",
-        query_string={"tenant_slug": tenant.slug, "window": "7d"},
-        headers=_auth_headers(owner),
-    )
+    operational_queries: list[str] = []
+
+    def capture_operational_query(_conn, _cursor, statement, _parameters, _context, _many):
+        normalized = statement.lower()
+        if "municipio_ticket" in normalized or any(
+            table in normalized
+            for table in ("enc_encuesta", "enc_respuesta", "enc_comentario")
+        ):
+            operational_queries.append(normalized)
+
+    event.listen(db.engine, "before_cursor_execute", capture_operational_query)
+    try:
+        response = client.get(
+            "/api/app/backoffice/summary",
+            query_string={"tenant_slug": tenant.slug, "window": "7d"},
+            headers=_auth_headers(owner),
+        )
+    finally:
+        event.remove(db.engine, "before_cursor_execute", capture_operational_query)
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -204,6 +401,17 @@ def test_backoffice_summary_counts_real_operations_and_surveys(client):
     assert payload["surveys_overview"]["heatmap_available"] is True
     assert payload["ai_summary_available"] is True
     assert any(item["id"] == "top_pending_category" for item in payload["priorities"])
+    survey_queries = [
+        statement
+        for statement in operational_queries
+        if any(table in statement for table in ("enc_encuesta", "enc_respuesta", "enc_comentario"))
+    ]
+    ticket_queries = [statement for statement in operational_queries if "municipio_ticket" in statement]
+    assert len(survey_queries) == 1
+    assert all(table in survey_queries[0] for table in ("enc_encuesta", "enc_respuesta", "enc_comentario"))
+    # One aggregate powers all counters; a second query obtains the top pending
+    # category. The old implementation performed four counter queries here.
+    assert len(ticket_queries) == 2
 
 
 def test_backoffice_navigation_disables_unavailable_enterprise_modules(client):
@@ -356,6 +564,10 @@ def test_backoffice_employee_requires_explicit_operational_scope(client):
             headers=_auth_headers(scoped_employee),
         )
         assert allowed.status_code == 200
+        if endpoint.endswith("/navigation"):
+            assert "implementation" not in {
+                item["id"] for item in allowed.get_json()["modules"]
+            }
 
 
 def test_backoffice_survey_overview_uses_one_bounded_aggregate_and_excludes_nonreal_geo(client):
@@ -603,6 +815,72 @@ def test_backoffice_v2_orders_summary_uses_validated_order_amounts(client):
     assert payload["summary"]["unassigned"] is None
     assert "confirm_payment" in payload["actions_by_status"]["pendiente"]
     assert payload["data_quality_notes"]
+
+
+def test_backoffice_v2_orders_summary_does_not_mix_tenants_for_shared_owner(client):
+    from routes.backoffice import _orders_for_tenant
+
+    owner = User(email="shared-orders-owner@test.com", name="Shared owner", rol="admin", tipo_chat="pyme")
+    owner.set_password("pw")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(
+        slug="shared-orders-a",
+        nombre="Shared orders A",
+        tipo="pyme",
+        pyme_id=owner.id,
+        plan="pro",
+    )
+    other_tenant = TenantProfile(
+        slug="shared-orders-b",
+        nombre="Shared orders B",
+        tipo="pyme",
+        pyme_id=owner.id,
+        plan="pro",
+    )
+    db.session.add_all([tenant, other_tenant])
+    db.session.flush()
+    owner.tenant_id = tenant.id
+    local_order = PymePedido(
+        pyme_id=owner.id,
+        tenant_id=tenant.id,
+        asunto="Pedido tenant A",
+        detalles="[]",
+        monto_total=Decimal("10.25"),
+    )
+    foreign_order = PymePedido(
+        pyme_id=owner.id,
+        tenant_id=other_tenant.id,
+        asunto="Pedido tenant B",
+        detalles="[]",
+        monto_total=Decimal("999.99"),
+    )
+    legacy_order = PymePedido(
+        pyme_id=owner.id,
+        tenant_id=None,
+        asunto="Pedido legacy sin tenant",
+        detalles="[]",
+        monto_total=Decimal("5.00"),
+    )
+    db.session.add_all([local_order, foreign_order, legacy_order])
+    db.session.commit()
+
+    response = client.get(
+        "/api/v2/backoffice/orders/summary",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(owner),
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["summary"]["total"] == 1
+    assert {item["number"] for item in payload["active_orders"]} == {local_order.nro_pedido}
+    assert {order.id for order in _orders_for_tenant(other_tenant)} == {foreign_order.id}
+    assert legacy_order.id not in {
+        order.id
+        for profile in (tenant, other_tenant)
+        for order in _orders_for_tenant(profile)
+    }
 
 
 def test_backoffice_v2_contacts_summary_publishes_segments_without_frontend_rules(client):

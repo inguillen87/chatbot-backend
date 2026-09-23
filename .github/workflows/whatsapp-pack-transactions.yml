@@ -1,0 +1,88 @@
+name: WhatsApp draft transactions
+"on":
+  pull_request:
+    paths:
+      - routes/whatsapp_rules.py
+      - routes/auth.py
+      - services/organization_profile_settings.py
+      - tests/test_organization_profile_settings.py
+      - services/organization_setup_journey.py
+      - services/organization_modules.py
+      - tests/test_organization_modules.py
+      - tests/test_module_selection_assistance.py
+      - tests/module_assistance_http_acceptance.py
+      - services/organization_branding.py
+      - services/organization_branding_ui.py
+      - tests/test_organization_branding_ui.py
+      - services/plan_access.py
+      - services/public_tenant_config.py
+      - tests/test_organization_branding.py
+      - services/channel_activation.py
+      - tests/test_organization_setup_journey.py
+      - tests/profile_acceptance_runtime.py
+      - tests/profile_http_acceptance.py
+      - tests/run_profile_browser.py
+      - routes/admin_tenant.py
+      - services/organization_workspace.py
+      - tests/test_organization_workspace.py
+      - services/whatsapp_pack_transactions.py
+      - services/whatsapp_self_service.py
+      - services/twilio_tech_provider.py
+      - tests/test_whatsapp_self_service.py
+      - services/message_templates.py
+      - models.py
+      - tests/test_whatsapp_pack_transactions.py
+      - .github/workflows/whatsapp-pack-transactions.yml
+permissions:
+  contents: read
+concurrency:
+  group: whatsapp-draft-transactions-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  postgres-transactions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    services:
+      postgres:
+        image: postgres:18@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280
+        env:
+          POSTGRES_DB: chatboc_draft_regression
+          POSTGRES_PASSWORD: local_only_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d chatboc_draft_regression"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+      - name: Install focal transaction dependencies
+        run: >-
+          python -m pip install --disable-pip-version-check --no-input
+          Flask==3.1.1 SQLAlchemy==2.0.41 psycopg[binary]==3.1.19
+          Werkzeug==3.1.3 Jinja2==3.1.6 MarkupSafe==3.0.2 click==8.2.1
+          itsdangerous==2.2.0 blinker==1.9.0 greenlet==3.2.3 typing_extensions==4.14.0
+      - name: Exercise real PostgreSQL commits, rollback and concurrent writers
+        env:
+          CHATBOC_DRAFT_TEST_POSTGRES: '1'
+        run: python -m unittest tests.test_whatsapp_pack_transactions tests.test_whatsapp_self_service tests.test_organization_workspace tests.test_organization_profile_settings tests.test_organization_setup_journey tests.test_organization_branding tests.test_organization_branding_ui tests.test_organization_modules tests.test_module_selection_assistance -v
+
+  full-app-http:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+      - name: Install the application's existing runtime dependencies
+        run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Verify original HTTP suite and assisted-selection contract
+        run: python -m tests.module_assistance_http_acceptance

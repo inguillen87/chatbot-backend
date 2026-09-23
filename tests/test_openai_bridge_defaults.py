@@ -233,8 +233,194 @@ def test_lazy_client_prefers_app_config_and_disables_sdk_retries(monkeypatch):
     assert captured["api_key"] == "app-config-key"
     assert captured["max_retries"] == 0
     assert captured["timeout"] == 17.0
+    assert "base_url" not in captured
+    assert "default_headers" not in captured
     # Modules that imported ``client`` before configuration retain a live proxy.
     assert imported_client_proxy.responses is sdk_client.responses
+
+
+def _configure_cloudflare_gateway(monkeypatch, *, gateway_id="default"):
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ENABLED", "true")
+    monkeypatch.setenv(
+        "CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID",
+        "a" * 32,
+    )
+    monkeypatch.setenv(
+        "CLOUDFLARE_AI_GATEWAY_API_TOKEN",
+        "cloudflare-test-token-never-sent",
+    )
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", gateway_id)
+
+
+def test_cloudflare_gateway_builds_private_zero_retry_responses_client(monkeypatch):
+    captured = {}
+    sdk_client = _FakeClient()
+    monkeypatch.setenv("OPENAI_ALLOW_NETWORK_IN_TESTS", "1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _configure_cloudflare_gateway(monkeypatch)
+
+    def _fake_openai(**kwargs):
+        captured.update(kwargs)
+        return sdk_client
+
+    monkeypatch.setattr(openai_bridge, "OpenAI", _fake_openai)
+
+    assert openai_bridge._get_openai_responses_client(None) is sdk_client
+    assert captured["api_key"] == "cloudflare-test-token-never-sent"
+    assert captured["base_url"] == (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        f"{'a' * 32}/ai/v1"
+    )
+    assert captured["max_retries"] == 0
+    assert captured["default_headers"] == {
+        "cf-aig-gateway-id": "default",
+        "cf-aig-skip-cache": "true",
+        "cf-aig-collect-log-payload": "false",
+    }
+    assert all(
+        "cloudflare-test-token-never-sent" not in value
+        for value in captured["default_headers"].values()
+    )
+
+
+def test_cloudflare_gateway_does_not_change_shared_direct_openai_client(monkeypatch):
+    captured = {}
+    sdk_client = _FakeClient()
+    monkeypatch.setenv("OPENAI_ALLOW_NETWORK_IN_TESTS", "1")
+    monkeypatch.setenv("OPENAI_API_KEY", "direct-openai-test-key")
+    _configure_cloudflare_gateway(monkeypatch)
+
+    def _fake_openai(**kwargs):
+        captured.update(kwargs)
+        return sdk_client
+
+    monkeypatch.setattr(openai_bridge, "OpenAI", _fake_openai)
+
+    assert openai_bridge._get_openai_client(None) is sdk_client
+    assert captured["api_key"] == "direct-openai-test-key"
+    assert "base_url" not in captured
+    assert "default_headers" not in captured
+
+
+def test_cloudflare_gateway_prefixes_model_and_preserves_reasoning(monkeypatch):
+    fake_client = _inject_client(monkeypatch)
+    _configure_cloudflare_gateway(monkeypatch)
+    monkeypatch.setenv("OPENAI_CHAT_MODEL_WHATSAPP", "gpt-5.6-terra")
+
+    _, meta = openai_bridge.llamar_openai(
+        app=None,
+        mensaje_usuario="hola",
+        usuario={"tipo_entidad": "municipio", "channel": "whatsapp"},
+        historial=[],
+        chat_session_id="gateway-session",
+    )
+
+    request = fake_client.responses.last_kwargs
+    assert request["model"] == "openai/gpt-5.6-sol"
+    assert request["reasoning"] == {"effort": "none"}
+    assert request["store"] is False
+    assert meta["model_used"] == "openai/gpt-5.6-sol"
+    assert (
+        openai_bridge._model_for_openai_transport("openai/gpt-5.6-sol")
+        == "openai/gpt-5.6-sol"
+    )
+
+
+def test_cloudflare_gateway_accepts_header_safe_existing_id(monkeypatch):
+    _configure_cloudflare_gateway(monkeypatch, gateway_id="Team_Gateway.v2")
+
+    config = openai_bridge._cloudflare_ai_gateway_config()
+
+    assert config is not None
+    assert config.gateway_id == "Team_Gateway.v2"
+
+
+def test_cloudflare_gateway_configuration_changes_client_fingerprint(monkeypatch):
+    constructed_clients = []
+    monkeypatch.setenv("OPENAI_ALLOW_NETWORK_IN_TESTS", "1")
+    _configure_cloudflare_gateway(monkeypatch, gateway_id="default")
+
+    def _fake_openai(**_kwargs):
+        sdk_client = _FakeClient()
+        constructed_clients.append(sdk_client)
+        return sdk_client
+
+    monkeypatch.setattr(openai_bridge, "OpenAI", _fake_openai)
+
+    first = openai_bridge._get_openai_responses_client(None)
+    same = openai_bridge._get_openai_responses_client(None)
+    first_fingerprint = openai_bridge._RESPONSES_CLIENT_KEY_DIGEST
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ID", "secondary-gateway")
+    changed = openai_bridge._get_openai_responses_client(None)
+
+    assert first is same
+    assert changed is not first
+    assert len(constructed_clients) == 2
+    assert openai_bridge._RESPONSES_CLIENT_KEY_DIGEST != first_fingerprint
+
+
+@pytest.mark.parametrize(
+    ("env_name", "env_value", "error_code"),
+    [
+        (
+            "CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID",
+            "not-an-account",
+            "cloudflare_ai_gateway_account_id_invalid",
+        ),
+        (
+            "CLOUDFLARE_AI_GATEWAY_ID",
+            "invalid\r\ngateway",
+            "cloudflare_ai_gateway_id_invalid",
+        ),
+        (
+            "CLOUDFLARE_AI_GATEWAY_API_TOKEN",
+            "short",
+            "cloudflare_ai_gateway_api_token_invalid",
+        ),
+    ],
+)
+def test_cloudflare_gateway_rejects_invalid_configuration_before_client(
+    monkeypatch,
+    env_name,
+    env_value,
+    error_code,
+):
+    _configure_cloudflare_gateway(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "direct-key-must-not-be-used")
+    monkeypatch.setenv(env_name, env_value)
+
+    def _unexpected_openai(**_kwargs):
+        pytest.fail("provider client must not be constructed")
+
+    monkeypatch.setattr(openai_bridge, "OpenAI", _unexpected_openai)
+
+    with pytest.raises(openai_bridge.LLMProviderPreRequestError, match=error_code):
+        openai_bridge._get_openai_responses_client(None)
+
+
+def test_cloudflare_gateway_missing_configuration_does_not_fallback_to_openai(
+    monkeypatch,
+):
+    _configure_cloudflare_gateway(monkeypatch)
+    monkeypatch.delenv("CLOUDFLARE_AI_GATEWAY_ACCOUNT_ID", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "direct-key-must-not-be-used")
+
+    with pytest.raises(
+        openai_bridge.LLMProviderPreRequestError,
+        match="cloudflare_ai_gateway_account_id_missing",
+    ):
+        openai_bridge._get_openai_responses_client(None)
+
+
+def test_cloudflare_gateway_invalid_flag_fails_closed(monkeypatch):
+    monkeypatch.setenv("CLOUDFLARE_AI_GATEWAY_ENABLED", "tru")
+    monkeypatch.setenv("OPENAI_API_KEY", "direct-key-must-not-be-used")
+
+    with pytest.raises(
+        openai_bridge.LLMProviderPreRequestError,
+        match="cloudflare_ai_gateway_enabled_invalid",
+    ):
+        openai_bridge._get_openai_responses_client(None)
 
 
 def test_lazy_client_mock_introspection_does_not_initialize_provider(monkeypatch):

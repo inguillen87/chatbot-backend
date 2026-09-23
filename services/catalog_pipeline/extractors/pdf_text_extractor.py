@@ -34,12 +34,12 @@ class PDFTextExtractor(BaseExtractor):
             full_df = pd.concat(tables, ignore_index=True)
             return self.normalize_dataframe(full_df)
 
-        except Exception as e:
+        except Exception:
             return {
                 "columns": [],
                 "rows": [],
                 "confidence": 0.0,
-                "warnings": [f"Error parsing PDF: {str(e)}"],
+                "warnings": ["No se pudo confirmar la extraccion del PDF."],
                 "metadata": {},
-                "error": str(e)
+                "error_code": "pdf_extraction_failed",
             }

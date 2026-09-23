@@ -691,14 +691,19 @@ class TenantProfile(db.Model, TimestampMixin):
             # that breaks dark mode contrast (e.g. white or light gray).
             # We stick to the safe default dark secondary (#1f2937) unless explicitly overridden.
 
-        # Merge explicit theme_config
+        def _deep_merge(base: dict, update: dict) -> dict:
+            for key, value in update.items():
+                if isinstance(value, dict) and isinstance(base.get(key), dict):
+                    _deep_merge(base[key], value)
+                else:
+                    base[key] = copy.deepcopy(value)
+            return base
+
+        # Merge the complete explicit contract. Public consumers need behavior,
+        # content and advanced keys as well as the light/dark palette.
         if self.widget_settings and isinstance(self.widget_settings.theme_config, dict):
             stored = self.widget_settings.theme_config
-            config["mode"] = stored.get("mode", config["mode"])
-            if isinstance(stored.get("light"), dict):
-                config["light"].update(stored["light"])
-            if isinstance(stored.get("dark"), dict):
-                config["dark"].update(stored["dark"])
+            _deep_merge(config, stored)
 
         return config
 
@@ -777,6 +782,16 @@ class TenantTicketReplyEvent(db.Model):
     __tablename__ = "tenant_ticket_reply_event"
 
     CONTRACT_VERSION = "tenant_ticket.reply_event.v1"
+    DELIVERY_CONTRACT_VERSION = "tenant_ticket.reply_delivery.v1"
+    WHATSAPP_DELIVERY_STATUSES = (
+        "saved",
+        "queued",
+        "uncertain",
+        "provider_accepted",
+        "delivered",
+        "read",
+        "failed",
+    )
 
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(
@@ -802,6 +817,34 @@ class TenantTicketReplyEvent(db.Model):
     actor_role = db.Column(db.String(32), nullable=True)
     recipient_email = db.Column(db.String(320), nullable=True)
     recipient_phone = db.Column(db.String(64), nullable=True)
+    whatsapp_template_registry_id = db.Column(
+        db.Integer,
+        db.ForeignKey("message_template_registry.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_template_variables = db.Column(JSONType, nullable=True)
+    whatsapp_policy_snapshot = db.Column(JSONType, nullable=True)
+    whatsapp_delivery_status = db.Column(
+        db.String(24), nullable=False, default="saved", server_default="saved"
+    )
+    whatsapp_provider_message_id = db.Column(db.String(180), nullable=True)
+    whatsapp_provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_provider_status = db.Column(db.String(80), nullable=True)
+    whatsapp_error_code = db.Column(db.String(80), nullable=True)
+    whatsapp_status_event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("messaging_event_ledger.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_status_updated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_provider_accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_delivered_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_read_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_failed_at = db.Column(db.DateTime(timezone=True), nullable=True)
     contract_version = db.Column(
         db.String(48),
         nullable=False,
@@ -833,11 +876,22 @@ class TenantTicketReplyEvent(db.Model):
             "length(trim(event_id)) > 0",
             name="ck_tenant_ticket_reply_event_id_nonempty",
         ),
+        db.CheckConstraint(
+            "whatsapp_delivery_status IN ('saved', 'queued', "
+            "'uncertain', 'provider_accepted', 'delivered', 'read', 'failed')",
+            name="ck_tenant_ticket_reply_event_wa_delivery_status",
+        ),
         db.Index(
             "ix_tenant_ticket_reply_event_ticket",
             "tenant_id",
             "ticket_id",
             "created_at",
+        ),
+        db.Index(
+            "ix_tenant_ticket_reply_event_wa_provider_message",
+            "tenant_id",
+            "whatsapp_provider_message_id",
+            unique=True,
         ),
     )
 
@@ -847,6 +901,11 @@ class TenantTicketReplyEvent(db.Model):
             "origin": "admin_panel",
             "action": "reply",
             "body": self.body,
+            "content_source": (
+                "approved_whatsapp_template"
+                if self.whatsapp_template_registry_id
+                else "operator_free_form"
+            ),
             "visibility": self.visibility,
             "created_at": (
                 datetime_to_iso_utc(self.created_at) if self.created_at else None
@@ -856,6 +915,403 @@ class TenantTicketReplyEvent(db.Model):
                 "name": self.actor_name,
                 "role": self.actor_role,
             },
+        }
+
+
+class MunicipioTicketReplyEvent(db.Model):
+    """Immutable WhatsApp delivery source for one municipal operator reply.
+
+    Municipal claims keep their visible conversation in ``TicketComentario``.
+    This row pins the exact tenant, legacy model, ticket, comment, operator,
+    recipient, sender and policy snapshot used by the durable outbox worker so
+    delayed delivery cannot be redirected by mutable ticket/profile data.
+    """
+
+    __tablename__ = "municipio_ticket_reply_event"
+
+    CONTRACT_VERSION = "municipio_ticket.reply_event.v1"
+    DELIVERY_CONTRACT_VERSION = "municipio_ticket.reply_delivery.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_model = db.Column(
+        db.String(32),
+        nullable=False,
+        default="MunicipioTicket",
+        server_default="MunicipioTicket",
+    )
+    ticket_id = db.Column(
+        db.Integer,
+        db.ForeignKey("municipio_ticket.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    comment_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ticket_comentario.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    event_id = db.Column(db.String(64), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    visibility = db.Column(
+        db.String(16),
+        nullable=False,
+        default="public",
+        server_default="public",
+    )
+    actor_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    actor_name = db.Column(db.String(255), nullable=False)
+    actor_role = db.Column(db.String(32), nullable=False)
+    recipient_phone = db.Column(db.String(64), nullable=False)
+    whatsapp_template_registry_id = db.Column(
+        db.Integer,
+        db.ForeignKey("message_template_registry.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_template_variables = db.Column(JSONType, nullable=True)
+    whatsapp_policy_snapshot = db.Column(JSONType, nullable=False)
+    whatsapp_delivery_status = db.Column(
+        db.String(24), nullable=False, default="saved", server_default="saved"
+    )
+    whatsapp_provider_message_id = db.Column(db.String(180), nullable=True)
+    whatsapp_provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    whatsapp_provider_status = db.Column(db.String(80), nullable=True)
+    whatsapp_error_code = db.Column(db.String(80), nullable=True)
+    whatsapp_status_event_id = db.Column(
+        db.Integer,
+        db.ForeignKey("messaging_event_ledger.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    whatsapp_status_updated_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_provider_accepted_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_delivered_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_read_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    whatsapp_failed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "event_id",
+            name="uq_municipio_reply_tenant_event",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "comment_id",
+            name="uq_municipio_reply_tenant_comment",
+        ),
+        db.CheckConstraint(
+            "source_model = 'MunicipioTicket'",
+            name="ck_municipio_reply_source_model",
+        ),
+        db.CheckConstraint(
+            "visibility = 'public'",
+            name="ck_municipio_reply_public_visibility",
+        ),
+        db.CheckConstraint(
+            "length(trim(body)) > 0",
+            name="ck_municipio_reply_body_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(trim(event_id)) > 0",
+            name="ck_municipio_reply_event_id_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(trim(recipient_phone)) > 0",
+            name="ck_municipio_reply_recipient_nonempty",
+        ),
+        db.CheckConstraint(
+            "whatsapp_delivery_status IN ('saved', 'queued', "
+            "'uncertain', 'provider_accepted', 'delivered', 'read', 'failed')",
+            name="ck_municipio_reply_wa_delivery_status",
+        ),
+        db.Index(
+            "ix_municipio_reply_ticket",
+            "tenant_id",
+            "ticket_id",
+            "created_at",
+        ),
+        db.Index(
+            "ix_municipio_reply_wa_provider_message",
+            "tenant_id",
+            "whatsapp_provider_message_id",
+            unique=True,
+        ),
+    )
+
+    def to_event_dict(self) -> dict:
+        return {
+            "id": self.event_id,
+            "origin": "admin_panel",
+            "action": "reply",
+            "body": self.body,
+            "content_source": (
+                "approved_whatsapp_template"
+                if self.whatsapp_template_registry_id
+                else "operator_free_form"
+            ),
+            "visibility": self.visibility,
+            "created_at": (
+                datetime_to_iso_utc(self.created_at) if self.created_at else None
+            ),
+            "actor": {
+                "id": self.actor_user_id,
+                "name": self.actor_name,
+                "role": self.actor_role,
+            },
+        }
+
+
+class MunicipioTicketHandoffEvent(db.Model):
+    """Immutable receipt for a human handoff requested on a municipal claim.
+
+    ``MunicipioTicket.datos_extra.handoff`` remains the backwards-compatible
+    read projection.  This normalized row is the authoritative, tenant-scoped
+    idempotency and audit boundary for the request itself.  Raw idempotency
+    keys are never persisted.  Deletion follows the aggregate's authorized
+    tenant/ticket retention lifecycle.
+    """
+
+    __tablename__ = "municipio_ticket_handoff_event"
+
+    CONTRACT_VERSION = "municipio_ticket.handoff_event.v1"
+    PROJECTION_CONTRACT_VERSION = "inbox.handoff.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_model = db.Column(
+        db.String(32),
+        nullable=False,
+        default="MunicipioTicket",
+        server_default="MunicipioTicket",
+    )
+    ticket_id = db.Column(
+        db.Integer,
+        db.ForeignKey("municipio_ticket.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    comment_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ticket_comentario.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_id = db.Column(db.String(64), nullable=False)
+    action = db.Column(
+        db.String(24), nullable=False, default="handoff", server_default="handoff"
+    )
+    status = db.Column(
+        db.String(24), nullable=False, default="requested", server_default="requested"
+    )
+    channel = db.Column(db.String(32), nullable=False)
+    reason = db.Column(db.Text, nullable=False)
+    actor_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    previous_assignee_user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_digest = db.Column(db.String(64), nullable=False)
+    projection_contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=PROJECTION_CONTRACT_VERSION,
+        server_default=PROJECTION_CONTRACT_VERSION,
+    )
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "event_id",
+            name="uq_municipio_handoff_tenant_event",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "idempotency_key_hash",
+            name="uq_municipio_handoff_tenant_idempotency",
+        ),
+        db.UniqueConstraint(
+            "tenant_id",
+            "comment_id",
+            name="uq_municipio_handoff_tenant_comment",
+        ),
+        db.CheckConstraint(
+            "source_model = 'MunicipioTicket'",
+            name="ck_municipio_handoff_source_model",
+        ),
+        db.CheckConstraint(
+            "action = 'handoff' AND status = 'requested'",
+            name="ck_municipio_handoff_action_status",
+        ),
+        db.CheckConstraint(
+            "channel IN ('operator', 'live_chat', 'phone')",
+            name="ck_municipio_handoff_channel",
+        ),
+        db.CheckConstraint(
+            "length(trim(reason)) > 0",
+            name="ck_municipio_handoff_reason_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(reason) <= 500",
+            name="ck_municipio_handoff_reason_bounded",
+        ),
+        db.CheckConstraint(
+            "length(trim(event_id)) > 0",
+            name="ck_municipio_handoff_event_id_nonempty",
+        ),
+        db.CheckConstraint(
+            "length(idempotency_key_hash) = 64 AND length(request_digest) = 64",
+            name="ck_municipio_handoff_digests",
+        ),
+        db.CheckConstraint(
+            "projection_contract_version = 'inbox.handoff.v1' AND "
+            "contract_version = 'municipio_ticket.handoff_event.v1'",
+            name="ck_municipio_handoff_contract_versions",
+        ),
+        db.Index(
+            "ix_municipio_handoff_ticket",
+            "tenant_id",
+            "ticket_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    def to_event_dict(self) -> dict:
+        return {
+            "id": self.event_id,
+            "type": "human_handoff",
+            "origin": "admin_panel",
+            "source_model": self.source_model,
+            "ticket_id": self.ticket_id,
+            "action": self.action,
+            "status": self.status,
+            "channel": self.channel,
+            "reason": self.reason,
+            "created_at": (
+                datetime_to_iso_utc(self.created_at) if self.created_at else None
+            ),
+            "actor": {"id": self.actor_user_id, "type": "operator"},
+            "receipt": {
+                "persisted": True,
+                "raw_idempotency_key_persisted": False,
+            },
+            "contract_version": self.contract_version,
+            "projection_contract_version": self.projection_contract_version,
+        }
+
+
+class InboxTicketArtifact(db.Model):
+    """Tenant-scoped CRM artifact attached to an exact inbox ticket identity.
+
+    These rows are deliberately not provider messages.  They make an operator's
+    attachment, location or form selection durable and auditable before any
+    future channel-specific delivery adapter is introduced.
+    """
+
+    __tablename__ = "inbox_ticket_artifact"
+
+    CONTRACT_VERSION = "inbox.ticket_artifact.v1"
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_model = db.Column(db.String(32), nullable=False)
+    ticket_id = db.Column(db.Integer, nullable=False)
+    action = db.Column(db.String(32), nullable=False)
+    payload_json = db.Column(JSONType, nullable=False)
+    actor_user_id = db.Column(db.Integer, db.ForeignKey("user.id", ondelete="RESTRICT"), nullable=False)
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_digest = db.Column(db.String(64), nullable=False)
+    contract_version = db.Column(
+        db.String(48), nullable=False, default=CONTRACT_VERSION, server_default=CONTRACT_VERSION
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), server_default=db.func.now(),
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id", "source_model", "ticket_id", "idempotency_key_hash",
+            name="uq_inbox_ticket_artifact_idempotency",
+        ),
+        db.CheckConstraint(
+            "source_model IN ('TenantTicket', 'MunicipioTicket')",
+            name="ck_inbox_ticket_artifact_source_model",
+        ),
+        db.CheckConstraint(
+            "action IN ('attach_file', 'share_location', 'send_form')",
+            name="ck_inbox_ticket_artifact_action",
+        ),
+        db.Index(
+            "ix_inbox_ticket_artifact_ticket",
+            "tenant_id", "source_model", "ticket_id", "created_at", "id",
+        ),
+    )
+
+    def to_event_dict(self) -> dict:
+        return {
+            "id": f"artifact-{self.id}",
+            "type": "crm_artifact",
+            "origin": "admin_panel",
+            "action": self.action,
+            "visibility": "internal",
+            "body": "",
+            "artifact": dict(self.payload_json or {}),
+            "delivery": {
+                "saved_in_crm": True,
+                "external_dispatch": False,
+                "provider_accepted": False,
+                "delivered": False,
+            },
+            "created_at": datetime_to_iso_utc(self.created_at) if self.created_at else None,
+            "actor": {"id": self.actor_user_id, "type": "agent"},
         }
 
 
@@ -2511,6 +2967,103 @@ class ChatSessionContext(db.Model):
     def __repr__(self):
         return f"<ChatSessionContext id={self.chat_session_id} user_id={self.user_id} anon_id={self.anon_id}>"
 
+
+class MunicipioChatIdempotencyReceipt(db.Model):
+    """Durable, tenant-scoped replay receipt for municipal web chat turns.
+
+    Raw idempotency keys, actor/session identifiers and request bodies are not
+    retained.  Their SHA-256 digests provide the uniqueness and conflict
+    boundary.  ``response_json`` is the minimal unavoidable snapshot required
+    to return the exact successful HTTP body without running the LLM or any
+    domain/CRM side effect again.
+    """
+
+    __tablename__ = "municipio_chat_idempotency_receipt"
+
+    CONTRACT_VERSION = "chat.municipio.idempotency.v1"
+    STATUS_PROCESSING = "processing"
+    STATUS_COMPLETED = "completed"
+    STATUS_EXPIRED = "expired"
+    STATUSES = (STATUS_PROCESSING, STATUS_COMPLETED, STATUS_EXPIRED)
+
+    id = db.Column(db.Integer, primary_key=True)
+    tenant_id = db.Column(
+        db.Integer,
+        db.ForeignKey("tenant_profile.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    endpoint = db.Column(db.String(80), nullable=False)
+    actor_scope_hash = db.Column(db.String(64), nullable=False)
+    idempotency_key_hash = db.Column(db.String(64), nullable=False)
+    request_hash = db.Column(db.String(64), nullable=False)
+    status = db.Column(
+        db.String(16),
+        nullable=False,
+        default=STATUS_PROCESSING,
+        server_default=STATUS_PROCESSING,
+    )
+    response_status = db.Column(db.Integer, nullable=True)
+    response_json = db.Column(JSONType, nullable=True)
+    response_request_id = db.Column(db.String(128), nullable=True)
+    contract_version = db.Column(
+        db.String(48),
+        nullable=False,
+        default=CONTRACT_VERSION,
+        server_default=CONTRACT_VERSION,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    updated_at = db.Column(
+        db.DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        server_default=db.func.now(),
+    )
+    completed_at = db.Column(db.DateTime(timezone=True), nullable=True)
+    expired_at = db.Column(db.DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "tenant_id",
+            "endpoint",
+            "actor_scope_hash",
+            "idempotency_key_hash",
+            name="uq_municipio_chat_idempotency_scope",
+        ),
+        db.CheckConstraint(
+            "status IN ('processing', 'completed', 'expired')",
+            name="ck_municipio_chat_idempotency_status",
+        ),
+        db.CheckConstraint(
+            "length(actor_scope_hash) = 64 AND "
+            "length(idempotency_key_hash) = 64 AND "
+            "length(request_hash) = 64",
+            name="ck_municipio_chat_idempotency_hashes",
+        ),
+        db.CheckConstraint(
+            "(status = 'processing' AND response_status IS NULL "
+            "AND response_json IS NULL AND completed_at IS NULL "
+            "AND expired_at IS NULL) OR "
+            "(status = 'completed' AND response_status BETWEEN 100 AND 599 "
+            "AND response_json IS NOT NULL AND completed_at IS NOT NULL "
+            "AND expired_at IS NULL) OR "
+            "(status = 'expired' AND response_status IS NULL "
+            "AND response_json IS NULL AND response_request_id IS NULL "
+            "AND completed_at IS NOT NULL AND expired_at IS NOT NULL)",
+            name="ck_municipio_chat_idempotency_completion",
+        ),
+        db.Index(
+            "ix_municipio_chat_idempotency_tenant_created",
+            "tenant_id",
+            "created_at",
+        ),
+    )
+
 class TicketRealtimeState(db.Model):
     __tablename__ = "ticket_realtime_state"
 
@@ -3426,6 +3979,85 @@ class SurveyResponseReceipt(db.Model):
     )
 
 
+class DemoSurveyParticipation(db.Model):
+    """Append-only receipt for an interactive synthetic-demo participation.
+
+    Demo instruments are deterministic presentation fixtures rather than
+    ``EncEncuesta`` records.  Keeping their interactions in a dedicated table
+    prevents a Preview/demo click from being promoted to municipal response
+    truth while still providing an exactly-once durable acknowledgement.
+
+    The raw submission id, request metadata, IP address and Turnstile token are
+    deliberately not persisted.  One row is both the minimized response and
+    its receipt, so the unique constraint commits both facts atomically.
+    """
+
+    __tablename__ = "demo_survey_participation"
+
+    RESPONSE_ORIGIN = "interactive_demo"
+
+    id = db.Column(db.Integer, primary_key=True)
+    survey_slug = db.Column(db.String(160), nullable=False)
+    tenant_slug = db.Column(db.String(160), nullable=False)
+    sector = db.Column(db.String(32), nullable=False)
+    question_id = db.Column(db.String(96), nullable=False)
+    option_id = db.Column(db.String(96), nullable=False)
+    submission_id_hash = db.Column(db.String(64), nullable=False)
+    payload_hash = db.Column(db.String(64), nullable=False)
+    instrument_sha256 = db.Column(db.String(64), nullable=False)
+    instrument_revision = db.Column(
+        db.Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
+    response_origin = db.Column(
+        db.String(32),
+        nullable=False,
+        default=RESPONSE_ORIGIN,
+        server_default=RESPONSE_ORIGIN,
+    )
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "survey_slug",
+            "submission_id_hash",
+            name="uq_demo_survey_participation_slug_submission",
+        ),
+        db.CheckConstraint(
+            "instrument_revision >= 1",
+            name="ck_demo_survey_participation_revision_positive",
+        ),
+        db.CheckConstraint(
+            "response_origin = 'interactive_demo'",
+            name="ck_demo_survey_participation_origin",
+        ),
+        db.CheckConstraint(
+            "length(submission_id_hash) = 64 AND "
+            "length(payload_hash) = 64 AND "
+            "length(instrument_sha256) = 64",
+            name="ck_demo_survey_participation_hashes",
+        ),
+        db.Index(
+            "ix_demo_survey_participation_slug_option",
+            "survey_slug",
+            "instrument_sha256",
+            "option_id",
+        ),
+        db.Index(
+            "ix_demo_survey_participation_slug_order",
+            "survey_slug",
+            "instrument_sha256",
+            "id",
+        ),
+    )
+
+
 class SurveyResponseEffect(db.Model, TimestampMixin):
     """Durable, independently retryable side effect for one survey response."""
 
@@ -3755,13 +4387,24 @@ class WhatsAppContactState(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     tenant_id = db.Column(db.Integer, db.ForeignKey("tenant_profile.id"), nullable=False, index=True)
+    provider_sender_id = db.Column(
+        db.Integer,
+        db.ForeignKey("provider_sender.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     recipient = db.Column(db.String(255), nullable=False, index=True)
     last_inbound_at = db.Column(db.DateTime(timezone=True), nullable=True, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=get_local_now, nullable=False)
     updated_at = db.Column(db.DateTime(timezone=True), default=get_local_now, onupdate=get_local_now, nullable=False)
 
     __table_args__ = (
-        db.UniqueConstraint("tenant_id", "recipient", name="uq_whatsapp_contact_state_tenant_recipient"),
+        db.UniqueConstraint(
+            "tenant_id",
+            "provider_sender_id",
+            "recipient",
+            name="uq_whatsapp_contact_state_tenant_sender_recipient",
+        ),
     )
 
 
@@ -4182,6 +4825,7 @@ class WhatsAppInboundTurn(db.Model):
             "ix_whatsapp_inbound_turn_stream_fifo",
             "tenant_id",
             "stream_key",
+            "received_at",
             "id",
         ),
         db.Index(
@@ -5131,3 +5775,13 @@ from models_whatsapp_workflows import (
     WhatsAppWorkflowReview,
     WhatsAppWorkflowVersion,
 )
+from models_territorial_geocoding import (
+    TerritorialGeocodingAttempt,
+    TerritorialGeocodingJob,
+    TerritorialGeocodingReview,
+    TerritorialGeocodingSyncReceipt,
+)
+from models_tenant_blueprints import TenantBlueprintApplication
+from models_government_launch import TenantBlueprintLaunchReceipt
+
+from models_survey_methodology import SurveyMethodologyRevision
