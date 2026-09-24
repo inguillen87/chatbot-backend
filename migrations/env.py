@@ -28,6 +28,7 @@ import models_interviews  # Ensure assessment/interview models are imported
 import models_survey_governance  # Ensure survey release models are imported
 import models_survey_eligibility  # Ensure opaque survey eligibility models are imported
 import models_voice_lifecycle  # Ensure voice consent/lifecycle models are imported
+import models_crm_tasks  # Explicit task ledger metadata; activation remains gated
 import models_whatsapp_workflows  # Ensure immutable Workflow Studio ledgers are imported
 
 target_metadata = db.metadata
