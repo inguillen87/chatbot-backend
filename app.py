@@ -716,6 +716,7 @@ def create_app(config_class=Config):
     from routes.chat import chat_bp
     from routes.ticket import ticket_bp
     from routes.crm.routes import crm_bp
+    from routes.crm.tasks import crm_tasks_bp
     from routes.analytics import analytics_bp
     from routes.admin_analytics import admin_analytics_bp
     from routes.admin_ai import admin_ai_bp
@@ -863,6 +864,7 @@ def create_app(config_class=Config):
     # Core APIs
     app.register_blueprint(ticket_bp)
     app.register_blueprint(crm_bp)
+    app.register_blueprint(crm_tasks_bp)
     app.register_blueprint(analytics_bp)
     app.register_blueprint(admin_analytics_bp)
     app.register_blueprint(admin_ai_bp)
