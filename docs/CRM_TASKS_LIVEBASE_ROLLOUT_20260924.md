@@ -44,3 +44,5 @@ Referencias técnicas consultadas: catálogos oficiales PostgreSQL 16 `pg_trigge
 3. Verificar el backend y frontend compatibles; seleccionar por ID una organización piloto autorizada, habilitar esa selección y comprobar alta/cierre/replay. No habilitar a todas las organizaciones por un flag global.
 4. Ante problemas, retirar la selección o apagar el módulo sin borrar el historial. Su retención condiciona operaciones de purga y no admite downgrade destructivo automático.
 No se modificaron cuentas, roles, números, canales, callbacks, dominios, credenciales o bases de clientes. No se enviaron mensajes ni se cambió el proveedor de la API.
+
+La primera CI no disponía del historial Git necesario para verificar la base productiva. Se corrigió el checkout para disponer de la ascendencia y sólo las carpetas de prueba necesarias, sin relajar la comprobación ni las aserciones. Los archivos locales de despliegue, entornos y evidencia quedan excluidos de Git.
