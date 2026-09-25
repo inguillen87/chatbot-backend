@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        postgres-version: ['16', '18']
+        postgres-version: ['16.15', '18.3']
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     services:
@@ -41,6 +41,7 @@ jobs:
           --health-cmd "pg_isready -U task_qa -d chatboc_tasks_qa"
           --health-interval 5s --health-timeout 5s --health-retries 12
     env:
+      EXPECTED_POSTGRES_VERSION: ${{ matrix.postgres-version }}
       CHATBOC_TASKS_QA_DSN: postgresql+psycopg2://task_qa:task_qa_disposable_only@127.0.0.1:5432/chatboc_tasks_qa
       TASK_QA_EVIDENCE: task-postgres-evidence
     steps:

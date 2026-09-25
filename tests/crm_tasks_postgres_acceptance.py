@@ -67,6 +67,9 @@ class TaskPostgresTests(PostgresReadinessTests,unittest.TestCase):
         with cls.app.app_context():
             with db.engine.connect() as connection:
                 cls.actual_pg_version=connection.execute(text('SHOW server_version')).scalar()
+                expected=os.environ.get('EXPECTED_POSTGRES_VERSION')
+                if expected and cls.actual_pg_version.split(' ',1)[0]!=expected:
+                    raise RuntimeError('PostgreSQL test version mismatch')
             db.metadata.create_all(db.engine,tables=[ParentTenant.__table__,ParentUser.__table__,ParentContact.__table__])
             with db.engine.begin() as connection:
                 migration.op=Operations(MigrationContext.configure(connection));migration.upgrade()
