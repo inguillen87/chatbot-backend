@@ -156,6 +156,9 @@ def inspect_listing(text: str, dump: Path, source_database: str, major: int) -> 
 
 
 def _native_listing(tool: Path, dump: Path, major: int) -> str:
+    # System PostgreSQL launchers may be symlinks; resolve only the explicit tool.
+    # Archive and staging paths retain their no-link checks.
+    tool = tool.resolve(strict=True)
     _plain_path(tool, require_file=True)
     environment = _tool_environment()
     version = subprocess.run([str(tool), '--version'], capture_output=True, text=True,
