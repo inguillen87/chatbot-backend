@@ -1,0 +1,51 @@
+name: Render to Neon recovery archive
+"on":
+  pull_request:
+    paths:
+      - scripts/recovery_archive.py
+      - scripts/recovery_payload.py
+      - scripts/inspect_recovery_export.py
+      - tests/test_recovery_archive.py
+      - tests/recovery_archive_postgres.py
+      - .github/workflows/recovery-export-gate.yml
+permissions:
+  contents: read
+concurrency:
+  group: recovery-export-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  archive-and-restore:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    container: postgres:18.3
+    services:
+      postgres:
+        image: postgres:18.3
+        env:
+          POSTGRES_USER: recovery_qa
+          POSTGRES_PASSWORD: recovery_qa_disposable_only
+          POSTGRES_DB: postgres
+        options: >-
+          --health-cmd "pg_isready -U recovery_qa -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      RECOVERY_QA_PGHOST: postgres
+      RECOVERY_QA_EVIDENCE: recovery-evidence
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Isolated Python tools
+        run: apt-get update -qq && apt-get install -y --no-install-recommends python3 python3-psycopg2
+      - name: Archive validation regression
+        run: python3 -m unittest tests.test_recovery_archive -v
+      - name: Native PostgreSQL backup and transactional restore
+        run: python3 -m tests.recovery_archive_postgres
+      - name: Recovery evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: recovery-export-evidence
+          path: recovery-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
