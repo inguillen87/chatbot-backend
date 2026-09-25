@@ -22,11 +22,15 @@ concurrency:
   cancel-in-progress: true
 jobs:
   postgres:
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres-version: ['16', '18']
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.postgres-version }}
         env:
           POSTGRES_USER: task_qa
           POSTGRES_PASSWORD: task_qa_disposable_only
@@ -64,7 +68,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: crm-task-postgres-evidence
+          name: crm-task-postgres-evidence-${{ matrix.postgres-version }}
           path: task-postgres-evidence/
           if-no-files-found: ignore
           retention-days: 7

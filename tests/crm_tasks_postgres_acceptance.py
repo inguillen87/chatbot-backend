@@ -65,6 +65,8 @@ class TaskPostgresTests(PostgresReadinessTests,unittest.TestCase):
         migration=load('task_pg_migration','migrations/pending/20260924_crm_tasks_v1.py')
         cls.contact=str(uuid4());cls.tenant=SimpleNamespace(id=1,slug='task-pg-qa',municipio_id=None,pyme_id=None)
         with cls.app.app_context():
+            with db.engine.connect() as connection:
+                cls.actual_pg_version=connection.execute(text('SHOW server_version')).scalar()
             db.metadata.create_all(db.engine,tables=[ParentTenant.__table__,ParentUser.__table__,ParentContact.__table__])
             with db.engine.begin() as connection:
                 migration.op=Operations(MigrationContext.configure(connection));migration.upgrade()
@@ -142,6 +144,6 @@ if __name__=='__main__':
     folder=Path(os.environ.get('TASK_QA_EVIDENCE','task-postgres-evidence'));folder.mkdir(parents=True,exist_ok=True)
     with (folder/'postgres-tests.log').open('w',encoding='utf-8') as stream:
         result=unittest.TextTestRunner(stream=stream,verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(TaskPostgresTests))
-    report={'tests':result.testsRun,'errors':len(result.errors),'failures':len(result.failures),'success':result.wasSuccessful(),'database':'disposable PostgreSQL','original_task_service':True,'original_task_models':True,'original_migration':True,'parent_models':'minimal fixtures','http_authentication_tested':False}
+    report={'tests':result.testsRun,'errors':len(result.errors),'failures':len(result.failures),'success':result.wasSuccessful(),'database':'disposable PostgreSQL','server_version':getattr(TaskPostgresTests,'actual_pg_version',None),'original_task_service':True,'original_task_models':True,'original_migration':True,'parent_models':'minimal fixtures','http_authentication_tested':False}
     (folder/'postgres-results.json').write_text(json.dumps(report),encoding='utf-8');print(json.dumps(report))
     raise SystemExit(0 if result.wasSuccessful() else 1)
