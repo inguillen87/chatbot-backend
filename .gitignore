@@ -34,3 +34,7 @@ sandbox_venv/
 node_modules
 !data/estacionamiento/camaras.json
 flask_session/
+
+# Local deployment state, credentials and disposable rollout evidence
+.vercel/
+.env.*.local
