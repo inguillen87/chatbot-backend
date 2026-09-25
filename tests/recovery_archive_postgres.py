@@ -27,7 +27,9 @@ class RecoveryPostgresTests(unittest.TestCase):
                                'password':'recovery_qa_disposable_only','dbname':'postgres','connect_timeout':5}
         cls.environment = {key:value for key,value in os.environ.items() if not key.startswith('PG')}
         cls.environment.update(PGHOST=host,PGPORT='5432',PGUSER='recovery_qa',PGPASSWORD='recovery_qa_disposable_only',PGCONNECT_TIMEOUT='5')
-        cls.tool = Path(shutil.which('pg_restore') or '/missing-pg_restore')
+        native = Path('/usr/lib/postgresql/18/bin/pg_restore')
+        cls.tool = native if native.is_file() else Path(shutil.which('pg_restore') or '/missing-pg_restore')
+        cls.dump_tool = cls.tool.with_name('pg_dump')
         cls.directory = tempfile.TemporaryDirectory(prefix='chatboc-archive-qa-')
         cls.root = Path(cls.directory.name)
         cls.source = 'recovery_source_' + uuid4().hex[:12]
@@ -63,7 +65,7 @@ class RecoveryPostgresTests(unittest.TestCase):
             finally:
                 large_object.close()
         cls.raw = cls.root / 'native-dump'
-        dump = subprocess.run([shutil.which('pg_dump'), '--format=directory', '--no-owner', '--no-privileges',
+        dump = subprocess.run([str(cls.dump_tool), '--format=directory', '--no-owner', '--no-privileges',
                                '--dbname=' + cls.source, '--file=' + str(cls.raw)], env=cls.environment, capture_output=True)
         if dump.returncode:
             raise RuntimeError('Synthetic pg_dump failed')
