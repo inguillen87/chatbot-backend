@@ -57,8 +57,11 @@ class RecoveryPostgresTests(unittest.TestCase):
                 INSERT INTO case_record(contact_id,status) VALUES(1,'new'),(2,'closed');
                 SELECT setval('contact_id_seq',41,true);''')
         with cls.connect(cls.source) as connection:
-            with connection.lobject(0, 'wb') as large_object:
+            large_object = connection.lobject(0, 'wb')
+            try:
                 large_object.write(b'QA binary payload\x00\x01')
+            finally:
+                large_object.close()
         cls.raw = cls.root / 'native-dump'
         dump = subprocess.run([shutil.which('pg_dump'), '--format=directory', '--no-owner', '--no-privileges',
                                '--dbname=' + cls.source, '--file=' + str(cls.raw)], env=cls.environment, capture_output=True)
