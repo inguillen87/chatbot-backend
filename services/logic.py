@@ -140,6 +140,14 @@ def responder_chatboc(
     if not effective_owner_user:
         logger.warning(f"[responder_chatboc] 'effective_owner_user' could not be determined. This is critical for context-specific logic (e.g., for /ask/municipio). Check if a valid entity token is being passed for the bot instance.")
 
+    # The published knowledge version uses the same channel-neutral response path.
+    # Operational attachments and explicit non-knowledge commands keep their handlers.
+    if not kwargs.get('uploaded_file_info') and not kwargs.get('datos_interpretados_archivo'):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        knowledge_response = maybe_handle_institutional_question(pregunta, effective_owner_user, chat_db_context)
+        if knowledge_response is not None:
+            return knowledge_response
+
     catalog_share_response = maybe_handle_catalog_share(
         pregunta=pregunta,
         owner_user=effective_owner_user,
