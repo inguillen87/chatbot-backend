@@ -35,6 +35,11 @@ try{
   const owner=await browser.newContext({viewport:{width,height},reducedMotion:'reduce'});
   const foreign=await browser.newContext();const errors=[],uiWrites=[],blocked=[];
   for(const context of [operator,owner,foreign]){
+   if(dark)await context.addInitScript(()=>{
+    const apply=()=>document.documentElement.classList.add('dark');
+    if(document.documentElement)apply();
+    document.addEventListener('DOMContentLoaded',apply,{once:true});
+   });
    await context.route('**/*',route=>{
     if(!Object.values(origins).includes(new URL(route.request().url()).origin)){blocked.push('external');return route.abort();}
     return route.continue();
@@ -64,6 +69,7 @@ try{
    await control.getByRole('checkbox',{name:ui.acknowledgement,exact:true}).check();
    const axe=await new AxeBuilder({page}).include('[data-testid="private-guide-control"]').withTags(['wcag2a','wcag2aa']).analyze();
    const severe=axe.violations.filter(issue=>['serious','critical'].includes(issue.impact));assert.deepEqual(severe.map(issue=>issue.id),[]);
+   if(dark)await expect(page.locator('html')).toHaveClass(/\bdark\b/);
    await page.screenshot({path:`${folder}/review-${width}.png`,fullPage:true});
    await control.getByRole('button',{name:ui.confirm,exact:true}).evaluate(button=>{
     button.dispatchEvent(new MouseEvent('click',{bubbles:true}));button.dispatchEvent(new MouseEvent('click',{bubbles:true}));
@@ -98,6 +104,7 @@ try{
     assert.equal(current.menu.id,target);visited.add(target);
    }
    if(width===1440)assert.equal(visited.size,29);
+   if(dark)await expect(reader.locator('html')).toHaveClass(/\bdark\b/);
    const dimensions=await reader.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth}));
    assert.ok(dimensions.scroll<=dimensions.width+1);await reader.screenshot({path:`${folder}/reader-${width}.png`,fullPage:true});
    const stored=await reader.evaluate(()=>JSON.stringify([Object.values(localStorage),Object.values(sessionStorage)]));
@@ -122,7 +129,7 @@ try{
    results.push({width,height,dark,passed:true,realFlask:true,realApiFetch:true,
     guideNodesVisited:visited.size,sourceHashVerified:true,uiPuts:2,
     replayRejected:true,foreignTenantDenied:true,tenantAdminWriteDenied:true,
-    untrustedOriginDenied:true,existingSessionRevoked:true,fullPageReloadVerified:true,
+    untrustedOriginDenied:true,existingSessionRevoked:true,fullPageReloadVerified:true,darkModeVerifiedAfterReload:dark,
     seriousAccessibilityViolations:severe.length,externalRequestsBlocked:blocked.length});
   }catch(error){
    results.push({width,height,dark,passed:false,reason:error.message,errors,uiPutCount:uiWrites.length});

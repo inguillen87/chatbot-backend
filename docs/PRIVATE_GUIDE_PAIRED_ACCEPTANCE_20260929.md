@@ -33,3 +33,7 @@ No se publica código ni se habilita Tierra del Fuego. Continúan pendientes el 
 El primer CI no se aceptó. Llegó al final del recorrido de los 29 nodos y al cambio de revocación, pero el selector del ensayo confundió el botón de la barra con la opción del menú de igual nombre «Volver al menú». Al cerrar por ese fallo quedó además un waiter de respuesta sin manejar, por lo que no se generó el JSON final. Se conservaron logs y capturas como diagnóstico.
 
 Se delimitó el selector a la barra/opciones reales y se agruparon la acción y su espera mediante Promise.all. No se cambió la interfaz, los permisos, las respuestas HTTP ni los timeouts para hacer pasar la prueba. Los fallos se escriben antes de cerrar los contextos. Se exige una nueva ejecución completa y su comprobación de persistencia.
+
+## Verificación visual del modo oscuro
+
+La primera ejecución funcional completa aprobó habilitación/revocación y persistencia, pero su captura móvil reveló que una recarga había perdido la clase de tema del fixture. El indicador dark del escenario no demostraba el tema efectivamente renderizado. Se corrigió sólo el entorno de prueba para reaplicar el tema en cada documento y se añadió una aserción explícita de la clase antes de las capturas. La certificación final debe corresponder a esta revisión y a capturas inspeccionadas; no se atribuye cobertura oscura al ensayo anterior por su etiqueta.
