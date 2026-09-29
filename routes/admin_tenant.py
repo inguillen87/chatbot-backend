@@ -2389,6 +2389,9 @@ def get_tenant_config_bundle(current_user, slug):
         entitled=tenant_allows_workspace_branding(tenant),writes_blocked=cutover_writer_fence_enabled(current_app.config))
     response['conversation_guide'] = guide_access_descriptor(
         tenant, can_read=can_manage_tenant_control_plane(current_user, tenant))
+    from services.tenant_conversation_guide_control import control_descriptor
+    response['conversation_guide_control'] = control_descriptor(tenant, can_edit=
+        is_authorized_superadmin_user(current_user) and can_manage_tenant_control_plane(current_user, tenant))
     result = jsonify(response)
     result.headers["Cache-Control"] = "no-store"
     return result
@@ -2439,6 +2442,66 @@ def get_tenant_conversation_guide(current_user, slug):
     except (OSError, KeyError, TypeError):
         return response({'error': 'conversation_guide_unavailable'}, 503)
     return response(payload)
+
+
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/conversation-guide-control', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def tenant_conversation_guide_control(current_user, slug):
+    """Control evaluation access, without approving content or invoking providers."""
+    from services.tenant_conversation_guide_control import (
+        GuideControlError, build_control, decode_command, save_control,
+    )
+    def reply(payload, status=200):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'private, no-store'
+        result.headers['Vary'] = 'Cookie, Authorization'
+        return result, status
+    # This management route must not inherit a permissive wildcard CORS policy.
+    import os
+    origin = request.headers.get('Origin')
+    allowed_origins = {value.strip() for value in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+                       if value.strip() and value.strip() != '*'}
+    allowed_origins.add(request.host_url.rstrip('/'))
+    if origin is not None and origin not in allowed_origins:
+        return reply({'error': 'guide_control_origin_forbidden'}, 403)
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None: return reply({'error': 'guide_control_not_found'}, 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return reply({'error': 'guide_control_forbidden'}, 403)
+    can_edit = is_authorized_superadmin_user(current_user)
+    if request.method == 'PUT' and not can_edit:
+        return reply({'error': 'guide_control_platform_admin_required'}, 403)
+    allowed = {'tenant', 'tenant_slug', 'tenant_id'}
+    for key in request.args:
+        expected = str(tenant.id) if key == 'tenant_id' else tenant.slug
+        if key not in allowed or request.args.getlist(key) != [expected]:
+            return reply({'error': 'guide_control_scope_mismatch'}, 400)
+    for header in ('X-Tenant', 'X-Tenant-Slug', 'X-Tenant-ID'):
+        expected = str(tenant.id) if header == 'X-Tenant-ID' else tenant.slug
+        if header in request.headers and request.headers[header] != expected:
+            return reply({'error': 'guide_control_scope_mismatch'}, 400)
+    blocked = lambda: cutover_writer_fence_enabled(current_app.config)
+    try:
+        if request.method == 'GET':
+            result = build_control(tenant, can_edit=can_edit, writes_blocked=blocked())
+            result['required_headers'] = {'X-Chatboc-Guide-Control': '1'}
+            return reply(result)
+        if blocked(): raise GuideControlError('guide_control_maintenance', 503)
+        if not request.is_json or request.headers.get('X-Chatboc-Guide-Control') != '1':
+            raise GuideControlError('guide_control_json_request_required', 415)
+        if request.content_length is None or request.content_length > 8192:
+            raise GuideControlError('guide_control_request_too_large', 413)
+        data = decode_command(request.get_data(cache=False))
+        result = save_control(db.session, TenantProfile, User, AuditEvent,
+            tenant_id=tenant.id, tenant_slug=tenant.slug, actor_id=current_user.id,
+            data=data, authorize=lambda actor, current: is_authorized_superadmin_user(actor)
+                and can_manage_tenant_control_plane(actor, current), writes_blocked=blocked)
+        return reply(result)
+    except GuideControlError as error:
+        return reply({'contract_version': 'tenant.conversation_guide_control_error.v1',
+                      'reason_code': error.code}, error.status)
 
 
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/provisioning-readiness', methods=['GET'])
@@ -5320,3 +5383,11 @@ def tenant_lead_timeline(current_user, slug, ticket_type: str, ticket_id: int):
         ticket.ultima_actividad = datetime.now(timezone.utc)
     db.session.commit()
     return jsonify({'ok': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type, 'timeline': details['lead_timeline']})
+
+
+@admin_tenant_bp.after_request
+def preserve_guide_control_cache_policy(response):
+    if request.endpoint == f'{admin_tenant_bp.name}.tenant_conversation_guide_control':
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.vary.update(('Cookie', 'Authorization', 'Origin'))
+    return response

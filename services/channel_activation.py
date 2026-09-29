@@ -912,8 +912,11 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
     ]
 
     from services.tenant_conversation_guide import guide_access_descriptor
+    from services.tenant_conversation_guide_control import control_descriptor
+    from utils.roles import is_authorized_superadmin_user
     from utils.tenant_admin_access import can_manage_tenant_control_plane
     guide = guide_access_descriptor(tenant, can_read=can_manage_tenant_control_plane(actor, tenant))
+    guide_control = control_descriptor(tenant, can_edit=is_authorized_superadmin_user(actor) and can_manage_tenant_control_plane(actor, tenant))
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -933,6 +936,7 @@ def build_channel_activation_payload(tenant: TenantProfile | None, *, actor=None
         "counts": counts,
         "channels": channels,
         "implementation_journey": implementation_journey,
+        "conversation_guide_control": guide_control,
         "organization_setup": build_organization_setup_journey(tenant, channels, workspace_appearance=build_workspace_appearance(tenant, entitled=tenant_allows_workspace_branding(tenant)), conversation_guide=guide),
         "blockers": blockers,
         "integration_access": {
