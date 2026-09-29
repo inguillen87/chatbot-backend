@@ -46,6 +46,21 @@ class GuideControlHTTPTests(unittest.TestCase):
 
     def login(self, name='root'):
         client = self.app.test_client()
+        if name == 'root':
+            # Simulate only the external Clerk exchange; retain real application
+            # token validation, session version and all authorization decorators.
+            from database import db
+            from models import User
+            from utils.auth_helpers import generar_token, auth_session_version
+            with self.app.app_context():
+                root = db.session.get(User, self.accounts['root']['id'])
+                token = generar_token(root.id, root.rol, root.tipo_chat, root.municipio_id, root.pyme_id,
+                    extra_claims={'auth_provider': 'clerk', 'session_kind': 'clerk',
+                        'clerk_sid': 'session-guide-control-qa', 'clerk_user_id': 'user-guide-control-qa',
+                        'sid': 'session-guide-control-qa', 'jti': 'jti-guide-control-qa',
+                        'sv': auth_session_version(root)})
+            client.environ_base['HTTP_AUTHORIZATION'] = 'Bearer ' + token
+            return client
         result = client.post('/auth/login', json={'email': self.accounts[name]['email'], 'password': self.password})
         self.assertEqual(result.status_code, 200, result.get_json())
         return client
@@ -269,5 +284,11 @@ class GuideControlHTTPTests(unittest.TestCase):
                     self.assertEqual(descriptor['endpoint'], self.url())
                     self.assertEqual(descriptor['tenant']['id'], self.accounts['acceptance-a']['tenant_id'])
                     self.assertTrue(descriptor['evaluation_only'])
+
+    def test_platform_admin_cannot_use_local_password_instead_of_clerk(self):
+        result = self.app.test_client().post('/auth/login', json={
+            'email': self.accounts['root']['email'], 'password': self.password})
+        self.assertEqual(result.status_code, 403)
+        self.assertEqual(result.get_json()['reason_code'], 'clerk_required')
 
 if __name__ == '__main__': unittest.main()

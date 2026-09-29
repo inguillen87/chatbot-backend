@@ -58,10 +58,13 @@ jobs:
           cache-dependency-path: requirements.txt
       - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
       - name: Private guide control HTTP acceptance
+        shell: bash
         run: |
+          set -o pipefail
           mkdir -p .qa-artifacts/private-guide-control
           python -m tests.private_conversation_guide_control_http -v 2>&1 | tee .qa-artifacts/private-guide-control/http.log
       - name: PostgreSQL locking and preservation
+        shell: bash
         run: python -m tests.private_guide_control_postgres -v 2>&1 | tee .qa-artifacts/private-guide-control/postgres.log
       - run: python -m unittest tests.test_survey_analytics_evidence -v
       - run: python -m tests.survey_analytics_evidence_http

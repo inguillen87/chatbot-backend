@@ -42,3 +42,10 @@ La inspecci?n del autenticador compartido encontr? una pol?tica CORS que puede r
 Ante un error de comunicaci?n durante commit, el resultado es no confirmado: debe consultarse de nuevo el estado antes de otra edici?n. La transacci?n y auditor?a permanecen juntas, pero no se afirma que un rollback pueda deshacer un commit que el servidor ya complet? y cuya respuesta se perdi?.
 
 El descriptor de administraci?n se publica como conversation_guide_control en el bundle de configuraci?n y el contrato de activaci?n, s?lo para el SuperAdmin autorizado. No lee el archivo de gu?a al descubrirlo. El panel debe usar esta publicaci?n; no construir una URL ni habilitar acciones por correo o plan.
+
+
+## Evidencia de CI antes del cierre
+
+La inspecci?n de los archivos del primer artifact detect? que el indicador verde no era una certificaci?n v?lida: el pipe a tee ocultaba el c?digo de fallo de unittest. El ensayo HTTP adem?s intentaba autenticar al SuperAdmin con contrase?a local, una v?a que la aplicaci?n correctamente rechaza porque requiere Clerk. Se corrigi? el pipeline con shell bash y pipefail. La identidad externa del SuperAdmin se simula mediante el mismo formato de sesi?n firmada que usa la bater?a existente, s?lo dentro de la aplicaci?n descartable y con su clave de prueba; validaci?n de tokens, versi?n de sesi?n y autorizaci?n permanecen reales. Se agreg? una regresi?n que exige que la contrase?a local siga siendo rechazada para ese rol. Los administradores institucionales siguen pasando por el login HTTP real de prueba. No se valida aqu? el proveedor Clerk externo ni una cuenta real.
+
+El archivo inicial mostr? 18 casos HTTP con 17 fallos y dos casos PostgreSQL aprobados. Se conserva como diagn?stico, no como aceptaci?n. La revisi?n corregida debe certificar todos los pasos con el c?digo de salida propagado y los archivos de resultados inspeccionados.
