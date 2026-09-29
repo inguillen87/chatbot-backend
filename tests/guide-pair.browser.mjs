@@ -13,6 +13,7 @@ delete process.env.GUIDE_PAIR_ACTORS;
 const servers=[],origins={};let browser;const results=[];
 const controlPath='/api/admin/tenants/acceptance-a/conversation-guide-control';
 const guidePath='/api/admin/tenants/acceptance-a/conversation-guide';
+const activationPath='/api/v2/tenants/acceptance-a/activation/channels';
 const entry='/.vercel/guide-pair-runtime/index.html';
 const read=async(context,origin,route)=>{
  const response=await context.request.get(origin+route,{maxRedirects:0});
@@ -50,6 +51,9 @@ try{
    await expect(page.getByTestId('paired-identity')).toHaveAttribute('data-user-id',String(actors.operator.id));
    await expect(reader.getByTestId('paired-identity')).toHaveAttribute('data-user-id',String(actors.owner.id));
    const control=page.getByTestId('private-guide-control');await expect(control).toBeVisible();
+   const ownerActivation=await read(owner,origins.owner,activationPath);
+   assert.equal(ownerActivation.organization_setup.conversation_guide_control,null);
+   assert.equal(ownerActivation.organization_setup.conversation_guide,null);
    await expect(reader.getByTestId('private-guide-control')).toHaveCount(0);
    await expect(reader.locator('.private-guide>summary')).toHaveCount(0);
    await control.getByRole('button',{name:ui.open,exact:true}).click();
@@ -110,7 +114,9 @@ try{
     reader.locator('.private-guide-toolbar').getByRole('button',{name:current.ui.back_to_menu,exact:true}).click()]);
    assert.equal(denied.status(),404);await expect(reader.getByTestId('private-guide-node')).toHaveCount(0);
    await expect(reader.getByRole('alert')).toHaveText(current.ui.error);
-   await reader.reload();await expect(reader.getByTestId('paired-identity')).toBeVisible();
+   const [reloaded]=await Promise.all([reader.waitForResponse(r=>new URL(r.url()).pathname===activationPath),reader.reload()]);
+   assert.equal(reloaded.status(),200);assert.equal((await reloaded.json()).organization_setup.conversation_guide,null);
+   await expect(reader.getByTestId('paired-identity')).toBeVisible();
    await expect(reader.locator('.private-guide>summary')).toHaveCount(0);
    assert.equal(uiWrites.length,2);assert.deepEqual(errors,[]);
    results.push({width,height,dark,passed:true,realFlask:true,realApiFetch:true,
