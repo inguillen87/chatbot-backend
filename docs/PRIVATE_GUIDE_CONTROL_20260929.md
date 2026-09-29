@@ -33,3 +33,10 @@ Referencias técnicas consultadas: SQLAlchemy 2.0 `populate_existing` / `with_fo
 ## Cierre operativo pendiente
 
 El frontend #1797 continúa siendo el lector; este endpoint aporta el control soportado que faltaba, no una activación remota. Para entregar TDF faltan su exposición en la administración, publicación coordinada, activación explícita de la guía instalada y prueba nominal de Analía. No se ha repetido el paso de credenciales bloqueado, creado otra organización, escrito directamente la base ni modificado MuniControl. Los resultados finales, commits y estado de despliegue se registran en el PR.
+
+
+## Control del origen web
+
+La inspecci?n del autenticador compartido encontr? una pol?tica CORS que puede reflejar or?genes cuando la instalaci?n usa comod?n. Esta ruta administrativa no conf?a en ese comod?n: con Origin exige el origen de la petici?n o una coincidencia expl?cita en CORS_ALLOWED_ORIGINS. Conserva Vary: Cookie, Authorization, Origin despu?s de la envoltura de autenticaci?n. Dos pruebas ejercitan origen desconocido, null y origen expl?cito autorizado; la cabecera de comando y JSON siguen siendo obligatorios. No se modific? la pol?tica global de CORS.
+
+Ante un error de comunicaci?n durante commit, el resultado es no confirmado: debe consultarse de nuevo el estado antes de otra edici?n. La transacci?n y auditor?a permanecen juntas, pero no se afirma que un rollback pueda deshacer un commit que el servidor ya complet? y cuya respuesta se perdi?.

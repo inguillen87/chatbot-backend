@@ -2455,6 +2455,14 @@ def tenant_conversation_guide_control(current_user, slug):
         result.headers['Cache-Control'] = 'private, no-store'
         result.headers['Vary'] = 'Cookie, Authorization'
         return result, status
+    # This management route must not inherit a permissive wildcard CORS policy.
+    import os
+    origin = request.headers.get('Origin')
+    allowed_origins = {value.strip() for value in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+                       if value.strip() and value.strip() != '*'}
+    allowed_origins.add(request.host_url.rstrip('/'))
+    if origin is not None and origin not in allowed_origins:
+        return reply({'error': 'guide_control_origin_forbidden'}, 403)
     tenant = TenantProfile.query.filter_by(slug=slug).first()
     if tenant is None: return reply({'error': 'guide_control_not_found'}, 404)
     if not can_manage_tenant_control_plane(current_user, tenant):
@@ -5372,3 +5380,11 @@ def tenant_lead_timeline(current_user, slug, ticket_type: str, ticket_id: int):
         ticket.ultima_actividad = datetime.now(timezone.utc)
     db.session.commit()
     return jsonify({'ok': True, 'ticket_id': ticket.id, 'ticket_type': ticket_type, 'timeline': details['lead_timeline']})
+
+
+@admin_tenant_bp.after_request
+def preserve_guide_control_cache_policy(response):
+    if request.endpoint == f'{admin_tenant_bp.name}.tenant_conversation_guide_control':
+        response.headers['Cache-Control'] = 'private, no-store'
+        response.vary.update(('Cookie', 'Authorization', 'Origin'))
+    return response

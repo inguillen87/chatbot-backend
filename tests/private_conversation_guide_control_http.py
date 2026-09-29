@@ -236,4 +236,24 @@ class GuideControlHTTPTests(unittest.TestCase):
             self.assertEqual(client.open(self.url(), method=method, json={}).status_code, 405)
         self.assertEqual(self.snapshot(), before)
 
+    def test_unknown_browser_origin_cannot_read_or_write_even_with_global_wildcard(self):
+        client = self.login(); body = self.command(self.read(client)); before = self.snapshot()
+        with patch.dict(os.environ, {'CORS_ALLOWED_ORIGINS': '*'}):
+            for origin in ('https://other.example.invalid', 'null'):
+                self.assertEqual(client.get(self.url(), headers={'Origin': origin}).status_code, 403)
+                self.assertEqual(client.put(self.url(), json=body, headers={
+                    'Origin': origin, 'X-Chatboc-Guide-Control': '1'}).status_code, 403)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_explicit_browser_origin_retains_private_cache_and_validates_request(self):
+        client = self.login(); origin = 'https://authorized.example.invalid'
+        with patch.dict(os.environ, {'CORS_ALLOWED_ORIGINS': origin}):
+            response = client.get(self.url(), headers={'Origin': origin})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['Cache-Control'], 'private, no-store')
+            for field in ('Cookie', 'Authorization', 'Origin'): self.assertIn(field, response.vary)
+            body = self.command(response.get_json())
+            result = client.put(self.url(), json=body, headers={'Origin': origin, 'X-Chatboc-Guide-Control': '1'})
+            self.assertEqual(result.status_code, 200, result.get_json())
+
 if __name__ == '__main__': unittest.main()
