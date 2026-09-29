@@ -1,0 +1,7 @@
+{
+  "repository": "inguillen87/chatboc-frontend",
+  "revision": "60fdccd825b4279698d85d54519ce8790aba15bf",
+  "reader_pr": 1797,
+  "administration_pr": 1798,
+  "test_scope": "real guide components and apiFetch against disposable full Flask application"
+}

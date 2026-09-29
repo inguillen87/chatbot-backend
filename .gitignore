@@ -49,3 +49,6 @@ flask_session/
 .env.local
 .env.*.local
 .env*
+
+# Public source pin for the isolated frontend/backend acceptance runner.
+!tests/guide_pair_frontend.json
