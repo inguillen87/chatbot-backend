@@ -27,3 +27,9 @@ Se añade un job al workflow existente de evidencias, conservando sin cambios la
 Comando: `python -m tests.run_private_guide_pair --frontend <checkout-del-SHA-fijado>` después de instalar las dependencias bloqueadas y Chromium. Las dependencias no se reinstalan en el equipo Windows con poco espacio; la ejecución completa se certifica en CI y la sintaxis se comprueba localmente. Los resultados efectivos, incidentes y revisiones se documentan en el PR.
 
 No se publica código ni se habilita Tierra del Fuego. Continúan pendientes el acceso autorizado de despliegue, la publicación emparejada, la activación explícita productiva y el primer ingreso nominal. No se repite la operación de credenciales bloqueada ni se toca MuniControl.
+
+## Primer ensayo integrado
+
+El primer CI no se aceptó. Llegó al final del recorrido de los 29 nodos y al cambio de revocación, pero el selector del ensayo confundió el botón de la barra con la opción del menú de igual nombre «Volver al menú». Al cerrar por ese fallo quedó además un waiter de respuesta sin manejar, por lo que no se generó el JSON final. Se conservaron logs y capturas como diagnóstico.
+
+Se delimitó el selector a la barra/opciones reales y se agruparon la acción y su espera mediante Promise.all. No se cambió la interfaz, los permisos, las respuestas HTTP ni los timeouts para hacer pasar la prueba. Los fallos se escriben antes de cerrar los contextos. Se exige una nueva ejecución completa y su comprobación de persistencia.

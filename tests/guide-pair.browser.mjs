@@ -76,8 +76,8 @@ try{
    await reader.reload();
    const summary=reader.locator('.private-guide>summary');await expect(summary).toBeVisible();
    const traverse=async action=>{
-    const waiting=reader.waitForResponse(r=>new URL(r.url()).pathname===guidePath&&r.request().method()==='GET');
-    await action();const response=await waiting;assert.equal(response.status(),200);
+    const [response]=await Promise.all([reader.waitForResponse(r=>new URL(r.url()).pathname===guidePath&&r.request().method()==='GET'),action()]);
+    assert.equal(response.status(),200);
     assert.match(response.headers()['cache-control'],/no-store/);const node=await response.json();
     assert.equal(node.tenant.id,initial.tenant.id);assert.equal(node.guide_sha256,initial.installed_guide.guide_sha256);
     assert.equal(node.source.sha256,initial.installed_guide.source.sha256);
@@ -86,10 +86,10 @@ try{
    let current=await traverse(()=>summary.click());const visited=new Set([current.menu.id]);
    const targets=width===1440?Object.keys(paths):['start','main','documentation'];
    for(const target of targets){
-    current=await traverse(()=>reader.getByRole('button',{name:current.ui.start,exact:true}).click());
+    current=await traverse(()=>reader.locator('.private-guide-toolbar').getByRole('button',{name:current.ui.start,exact:true}).click());
     for(const code of paths[target]){
      const choice=current.menu.actions.find(item=>item.code===code);assert.ok(choice,'Published option missing');
-     current=await traverse(()=>reader.getByRole('button',{name:choice.label,exact:true}).click());
+     current=await traverse(()=>reader.locator('.private-guide-options').getByRole('button',{name:choice.label,exact:true}).click());
     }
     assert.equal(current.menu.id,target);visited.add(target);
    }
@@ -106,9 +106,9 @@ try{
    await expect(page.locator('.private-guide>summary')).toHaveCount(0);
    const disabled=await read(operator,origins.operator,controlPath);
    assert.equal(disabled.state.enabled,false);assert.equal(disabled.state.version,initial.state.version+2);
-   const denied=reader.waitForResponse(r=>new URL(r.url()).pathname===guidePath);
-   await reader.getByRole('button',{name:current.ui.back_to_menu,exact:true}).click();
-   assert.equal((await denied).status(),404);await expect(reader.getByTestId('private-guide-node')).toHaveCount(0);
+   const [denied]=await Promise.all([reader.waitForResponse(r=>new URL(r.url()).pathname===guidePath),
+    reader.locator('.private-guide-toolbar').getByRole('button',{name:current.ui.back_to_menu,exact:true}).click()]);
+   assert.equal(denied.status(),404);await expect(reader.getByTestId('private-guide-node')).toHaveCount(0);
    await expect(reader.getByRole('alert')).toHaveText(current.ui.error);
    await reader.reload();await expect(reader.getByTestId('paired-identity')).toBeVisible();
    await expect(reader.locator('.private-guide>summary')).toHaveCount(0);
@@ -120,6 +120,7 @@ try{
     seriousAccessibilityViolations:severe.length,externalRequestsBlocked:blocked.length});
   }catch(error){
    results.push({width,height,dark,passed:false,reason:error.message,errors,uiPutCount:uiWrites.length});
+   await writeFile(`${folder}/failure.json`,JSON.stringify(results.at(-1),null,2));
    await page.screenshot({path:`${folder}/failure-operator-${width}.png`,fullPage:true}).catch(()=>{});
    await reader.screenshot({path:`${folder}/failure-owner-${width}.png`,fullPage:true}).catch(()=>{});
   }finally{await operator.close();await owner.close();await foreign.close();}
