@@ -15,6 +15,9 @@ name: Survey and organization evidence
       - services/tenant_conversation_guide_control.py
       - tests/private_conversation_guide_control_http.py
       - tests/private_guide_control_postgres.py
+      - tests/run_private_guide_pair.py
+      - tests/guide_pair_frontend.json
+      - tests/guide-pair*
       - services/tenant_factory.py
       - services/organization_setup_journey.py
       - services/channel_activation.py
@@ -78,6 +81,50 @@ jobs:
         with:
           name: private-guide-control-evidence
           path: .qa-artifacts/private-guide-control/
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+  paired-guide:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: inguillen87/chatboc-frontend
+          ref: 60fdccd825b4279698d85d54519ce8790aba15bf
+          path: .qa-artifacts/paired-frontend
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12.14'
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: .qa-artifacts/paired-frontend/package-lock.json
+      - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Install locked frontend dependencies
+        working-directory: .qa-artifacts/paired-frontend
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install browser
+        working-directory: .qa-artifacts/paired-frontend
+        run: npx playwright install --with-deps chromium
+      - name: Real guide panel and Flask persistence
+        run: python -m tests.run_private_guide_pair --frontend .qa-artifacts/paired-frontend
+      - name: Paired guide evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: private-guide-paired-evidence
+          path: |
+            .qa-artifacts/private-guide-pair/*.json
+            .qa-artifacts/private-guide-pair/*.png
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
