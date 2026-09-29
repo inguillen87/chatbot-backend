@@ -256,4 +256,18 @@ class GuideControlHTTPTests(unittest.TestCase):
             result = client.put(self.url(), json=body, headers={'Origin': origin, 'X-Chatboc-Guide-Control': '1'})
             self.assertEqual(result.status_code, 200, result.get_json())
 
+    def test_management_descriptor_is_disclosed_only_to_platform_admin(self):
+        for actor, expected in [('root', True), ('acceptance-a', False), ('second', False), ('delegated', False)]:
+            with self.subTest(actor=actor):
+                client = self.login(actor)
+                with patch('services.tenant_conversation_guide_control.load_guide', side_effect=AssertionError('discovery must not load content')):
+                    response = client.get('/api/v2/tenants/acceptance-a/activation/channels')
+                    self.assertEqual(response.status_code, 200)
+                    descriptor = response.get_json()['conversation_guide_control']
+                    self.assertEqual(descriptor is not None, expected)
+                if expected:
+                    self.assertEqual(descriptor['endpoint'], self.url())
+                    self.assertEqual(descriptor['tenant']['id'], self.accounts['acceptance-a']['tenant_id'])
+                    self.assertTrue(descriptor['evaluation_only'])
+
 if __name__ == '__main__': unittest.main()

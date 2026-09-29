@@ -2389,6 +2389,9 @@ def get_tenant_config_bundle(current_user, slug):
         entitled=tenant_allows_workspace_branding(tenant),writes_blocked=cutover_writer_fence_enabled(current_app.config))
     response['conversation_guide'] = guide_access_descriptor(
         tenant, can_read=can_manage_tenant_control_plane(current_user, tenant))
+    from services.tenant_conversation_guide_control import control_descriptor
+    response['conversation_guide_control'] = control_descriptor(tenant, can_edit=
+        is_authorized_superadmin_user(current_user) and can_manage_tenant_control_plane(current_user, tenant))
     result = jsonify(response)
     result.headers["Cache-Control"] = "no-store"
     return result

@@ -61,6 +61,7 @@ def build_control(tenant, *, can_edit=False, writes_blocked=False):
     permitted = can_edit is True and not writes_blocked and tenant.is_active is True
     return {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
             'revision': revision, 'state': state, 'evaluation_only': True, 'command_contract_version': COMMAND,
+            'required_headers': {'X-Chatboc-Guide-Control': '1'},
             'installed_guide': artifact, 'can_enable': permitted and artifact is not None,
             'can_disable': permitted, 'writes_blocked': bool(writes_blocked),
             'endpoint': f'/api/admin/tenants/{tenant.slug}/conversation-guide-control',
@@ -148,3 +149,20 @@ def save_control(session, tenant_model, user_model, audit_model, *, tenant_id, t
     except BaseException:
         session.rollback()
         raise
+
+UI.update({
+    'open': 'Administrar guía de evaluación', 'loading': 'Consultando acceso a la guía…',
+    'enabled_label': 'Guía habilitada', 'disabled_label': 'Guía deshabilitada',
+    'source_label': 'Fuente de la guía', 'pending': 'Verificando el cambio…',
+})
+
+def control_descriptor(tenant, *, can_edit=False):
+    """Discovery publishes no content and grants no authority by itself."""
+    tenant_id, slug = getattr(tenant, 'id', None), getattr(tenant, 'slug', None)
+    if (can_edit is not True or getattr(tenant, 'is_active', False) is not True
+            or type(tenant_id) is not int or tenant_id < 1 or not isinstance(slug, str)
+            or not re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,119}', slug)):
+        return None
+    return {'contract_version': 'tenant.conversation_guide_control_access.v1',
+            'tenant': {'id': tenant_id, 'slug': slug}, 'evaluation_only': True,
+            'endpoint': f'/api/admin/tenants/{slug}/conversation-guide-control', 'ui': deepcopy(UI)}
