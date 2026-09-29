@@ -116,6 +116,7 @@ def main():
             after = snapshot()
             assert before['accounts'] == after['accounts'], 'Account properties changed'
             assert before['tickets'] == after['tickets'] and before['responses'] == after['responses']
+            assert [row[0] for row in before['tenants']] == [row[0] for row in after['tenants']], 'Tenant population changed'
             for prior, current in zip(before['tenants'], after['tenants']):
                 assert prior[:2] == current[:2] and prior[3] == current[3]
                 config = deepcopy(current[2])
