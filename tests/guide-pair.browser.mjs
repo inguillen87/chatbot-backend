@@ -52,7 +52,7 @@ try{
    await expect(reader.getByTestId('paired-identity')).toHaveAttribute('data-user-id',String(actors.owner.id));
    const control=page.getByTestId('private-guide-control');await expect(control).toBeVisible();
    const ownerActivation=await read(owner,origins.owner,activationPath);
-   assert.equal(ownerActivation.organization_setup.conversation_guide_control,null);
+   assert.equal(ownerActivation.conversation_guide_control,null);
    assert.equal(ownerActivation.organization_setup.conversation_guide,null);
    await expect(reader.getByTestId('private-guide-control')).toHaveCount(0);
    await expect(reader.locator('.private-guide>summary')).toHaveCount(0);
