@@ -2441,6 +2441,58 @@ def get_tenant_conversation_guide(current_user, slug):
     return response(payload)
 
 
+
+@admin_tenant_bp.route('/api/admin/tenants/<slug>/conversation-guide-control', methods=['GET', 'PUT'])
+@token_requerido
+@auth_sin_escrituras_implicitas
+def tenant_conversation_guide_control(current_user, slug):
+    """Control evaluation access, without approving content or invoking providers."""
+    from services.tenant_conversation_guide_control import (
+        GuideControlError, build_control, decode_command, save_control,
+    )
+    def reply(payload, status=200):
+        result = jsonify(payload)
+        result.headers['Cache-Control'] = 'private, no-store'
+        result.headers['Vary'] = 'Cookie, Authorization'
+        return result, status
+    tenant = TenantProfile.query.filter_by(slug=slug).first()
+    if tenant is None: return reply({'error': 'guide_control_not_found'}, 404)
+    if not can_manage_tenant_control_plane(current_user, tenant):
+        return reply({'error': 'guide_control_forbidden'}, 403)
+    can_edit = is_authorized_superadmin_user(current_user)
+    if request.method == 'PUT' and not can_edit:
+        return reply({'error': 'guide_control_platform_admin_required'}, 403)
+    allowed = {'tenant', 'tenant_slug', 'tenant_id'}
+    for key in request.args:
+        expected = str(tenant.id) if key == 'tenant_id' else tenant.slug
+        if key not in allowed or request.args.getlist(key) != [expected]:
+            return reply({'error': 'guide_control_scope_mismatch'}, 400)
+    for header in ('X-Tenant', 'X-Tenant-Slug', 'X-Tenant-ID'):
+        expected = str(tenant.id) if header == 'X-Tenant-ID' else tenant.slug
+        if header in request.headers and request.headers[header] != expected:
+            return reply({'error': 'guide_control_scope_mismatch'}, 400)
+    blocked = lambda: cutover_writer_fence_enabled(current_app.config)
+    try:
+        if request.method == 'GET':
+            result = build_control(tenant, can_edit=can_edit, writes_blocked=blocked())
+            result['required_headers'] = {'X-Chatboc-Guide-Control': '1'}
+            return reply(result)
+        if blocked(): raise GuideControlError('guide_control_maintenance', 503)
+        if not request.is_json or request.headers.get('X-Chatboc-Guide-Control') != '1':
+            raise GuideControlError('guide_control_json_request_required', 415)
+        if request.content_length is None or request.content_length > 8192:
+            raise GuideControlError('guide_control_request_too_large', 413)
+        data = decode_command(request.get_data(cache=False))
+        result = save_control(db.session, TenantProfile, User, AuditEvent,
+            tenant_id=tenant.id, tenant_slug=tenant.slug, actor_id=current_user.id,
+            data=data, authorize=lambda actor, current: is_authorized_superadmin_user(actor)
+                and can_manage_tenant_control_plane(actor, current), writes_blocked=blocked)
+        return reply(result)
+    except GuideControlError as error:
+        return reply({'contract_version': 'tenant.conversation_guide_control_error.v1',
+                      'reason_code': error.code}, error.status)
+
+
 @admin_tenant_bp.route('/api/admin/tenants/<slug>/provisioning-readiness', methods=['GET'])
 @token_requerido
 @require_tenant
