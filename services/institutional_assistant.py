@@ -181,7 +181,7 @@ def maybe_handle_institutional_question(question, owner, session=None):
             label = source['title'] + ' · ' + ', '.join(str(p) for p in source['pages'])
             if label not in citations: citations.append(label)
         for choice in node['actions']:
-            if choice['target'] not in [a['target'] for a in choices]: choices.append(choice)
+            if not any(a['target'] == choice['target'] and a['label'] == choice['label'] for a in choices): choices.append(choice)
     return {'message_body': result['text'] + ''.join('\n\n' + l['label'] + ': ' + l['url'] for l in links)
         + ('\n\n' + UI['sources'] + ':\n' + '\n'.join(citations) if citations else ''),
         'message_type': 'text', 'buttons': [{'label': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target']} for c in choices],

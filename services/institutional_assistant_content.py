@@ -156,7 +156,10 @@ def select_nodes(bundle, question, current_node, selector):
     candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text']} for n in bundle['nodes'].values()]
     request = json.dumps({'question': question, 'current_node': current_node, 'knowledge': candidates}, ensure_ascii=False)
     _require(len(request.encode()) <= 120000, 'knowledge_context_too_large')
-    result = selector(SELECTOR_INSTRUCTIONS, request)
+    try:
+        result = selector(SELECTOR_INSTRUCTIONS, request)
+    except Exception as error:
+        raise ContentError('knowledge_interpretation_unavailable', 503) from error
     if result is None: raise ContentError('knowledge_interpretation_unavailable', 503)
     _require(isinstance(result, dict) and set(result) == {'node_ids'}, 'knowledge_selection_invalid')
     ids = result['node_ids']
