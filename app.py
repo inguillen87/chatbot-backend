@@ -531,6 +531,7 @@ def create_app(config_class=Config):
             "Authorization",
             "Origin",
             "X-Chatboc-Token",
+            "X-Chatboc-Knowledge",
             "X-Entity-Token",
             "X-Chat-Session-Id",
             "X-Anon-Id",
@@ -756,6 +757,7 @@ def create_app(config_class=Config):
     from routes.pwa_misc import pwa_misc_bp
     from routes.webauthn import webauthn_bp
     from routes.admin_tenant import admin_tenant_bp
+    from routes.institutional_assistant import institutional_assistant_bp
     from routes.public_tenant import public_tenant_bp
     from routes.public_flow_runtime import public_flow_runtime_bp
     from routes.public_finance import public_finance_bp
@@ -933,6 +935,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pwa_app_legacy_bp)
     app.register_blueprint(webauthn_bp)
     app.register_blueprint(admin_tenant_bp)
+    app.register_blueprint(institutional_assistant_bp)
     app.register_blueprint(public_tenant_bp)
     app.register_blueprint(public_flow_runtime_bp)
     app.register_blueprint(public_finance_bp)
