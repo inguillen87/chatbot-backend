@@ -75,7 +75,7 @@ def manage(actor, slug):
 @auth_sin_escrituras_implicitas
 def private_answer(actor, slug):
     _origin()
-    return _reply(answer(_tenant(slug, actor), _json()))
+    return _reply(answer(_tenant(slug, actor), _json(), actor=actor))
 
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant', methods=['GET'])
 def public_workspace(slug):

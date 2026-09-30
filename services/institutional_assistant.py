@@ -105,12 +105,15 @@ def save_state(tenant, actor, command):
         db.session.rollback()
         raise ContentError('knowledge_write_unconfirmed', 503) from error
 
-def answer(tenant, command, *, public=False, selector=None):
+def answer(tenant, command, *, public=False, selector=None, actor=None):
     if not isinstance(command, dict) or set(command) - {'revision', 'node_id', 'question'}:
         raise ContentError('knowledge_command_invalid', 400)
     state = read_state(tenant, public=public)
     if state is None or command.get('revision') != state['revision']:
         raise ContentError('knowledge_revision_conflict', 412)
+    from utils.auth_helpers import auth_session_version
+    actor_id = getattr(actor, 'id', None)
+    session_version = auth_session_version(actor) if actor_id else None
     bundle = state['bundle']
     node_id = command.get('node_id', bundle['start'])
     if not isinstance(node_id, str) or node_id not in bundle['nodes']:
@@ -126,6 +129,10 @@ def answer(tenant, command, *, public=False, selector=None):
         nodes = [deepcopy(bundle['nodes'][node_id])]
     db.session.expire_all()
     latest = read_state(tenant, public=public)
+    if actor_id:
+        refreshed_actor = db.session.get(User, actor_id, populate_existing=True)
+        if refreshed_actor is None or not can_manage_tenant_control_plane(refreshed_actor, tenant) or auth_session_version(refreshed_actor) != session_version:
+            raise ContentError('knowledge_forbidden', 403)
     if latest is None or latest['revision'] != state['revision']:
         raise ContentError('knowledge_revision_conflict', 412)
     return {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},

@@ -119,4 +119,20 @@ class KnowledgeHTTPTests(unittest.TestCase):
             response=client.post(self.url()+'/answer',json={'revision':state['revision'],'question':'consulta'})
         self.assertEqual(response.status_code,503);self.assertNotIn('nodes',response.get_json())
 
+    def test_private_answer_rechecks_actor_after_model_selection(self):
+        from database import db
+        from models import User
+        client=self.login();state=self.seed(client)
+        with self.app.app_context(): original_role=db.session.get(User,self.accounts['acceptance-a']['id']).rol
+        def lose_role(*args):
+            user=db.session.get(User,self.accounts['acceptance-a']['id']);user.rol='ciudadano';db.session.commit()
+            return {'node_ids':['requirements']}
+        try:
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=lose_role):
+                response=client.post(self.url()+'/answer',json={'revision':state['revision'],'question':'consulta'})
+            self.assertEqual(response.status_code,403,response.get_json());self.assertNotIn('nodes',response.get_json())
+        finally:
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['acceptance-a']['id']);user.rol=original_role;db.session.commit()
+
 if __name__ == '__main__': unittest.main(verbosity=2)
