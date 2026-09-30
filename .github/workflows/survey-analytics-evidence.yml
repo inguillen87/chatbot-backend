@@ -16,6 +16,12 @@ name: Survey and organization evidence
       - tests/private_conversation_guide_control_http.py
       - tests/private_guide_control_postgres.py
       - tests/run_private_guide_pair.py
+      - services/institutional_assistant*
+      - routes/institutional_assistant.py
+      - services/logic.py
+      - app.py
+      - tests/institutional_assistant*.py
+      - tests/test_institutional_assistant_content.py
       - tests/guide_pair_frontend.json
       - tests/guide-pair*
       - services/tenant_factory.py
@@ -60,6 +66,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: python -m pip install --disable-pip-version-check --no-input -r requirements.txt
+      - name: Institutional knowledge persistence and routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/institutional-assistant
+          python -m unittest tests.test_institutional_assistant_content -v 2>&1 | tee .qa-artifacts/institutional-assistant/content.log
+          python -m tests.institutional_assistant_http 2>&1 | tee .qa-artifacts/institutional-assistant/http.log
       - name: Private guide control HTTP acceptance
         shell: bash
         run: |
@@ -75,6 +88,15 @@ jobs:
       - run: python -m tests.survey_fieldwork_coverage_http
       - run: python -m tests.organization_access_regression
       - run: python -m tests.private_conversation_guide_http
+      - name: Institutional knowledge evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: institutional-knowledge-evidence
+          path: .qa-artifacts/institutional-assistant/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Guide control evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
