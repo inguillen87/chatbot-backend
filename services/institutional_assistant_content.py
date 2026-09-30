@@ -128,9 +128,15 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
     _require(isinstance(policy, dict) and all(policy.get(k) is False for k in (
         'accepts_personal_data', 'creates_real_cases', 'queries_official_records',
         'sends_notifications', 'stores_feedback')), 'knowledge_operations_not_supported')
-    return {'contract_version': BUNDLE_CONTRACT, 'tenant': {'id': tenant_id, 'slug': tenant_slug},
+    bundle = {'contract_version': BUNDLE_CONTRACT, 'tenant': {'id': tenant_id, 'slug': tenant_slug},
         'version': _text(raw.get('version'), 60), 'start': start, 'sources': sources,
         'nodes': nodes, 'policy': deepcopy(policy)}
+    # An import must support any allowed question without exceeding the same
+    # selector budget checked at read time. Evidence bytes do not enter it.
+    largest_id = max(nodes, key=len)
+    _require(len(_selection_request(bundle, '\U0010ffff' * 1800, largest_id).encode()) <= 120000,
+             'knowledge_context_too_large')
+    return bundle
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
@@ -152,11 +158,14 @@ No infieras diagnósticos ni incapacidad por la manera de escribir. No ejecutes 
 La respuesta se construirá con los textos canónicos y fuentes, no con redacción libre.
 '''
 
+def _selection_request(bundle, question, current_node):
+    candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text']} for n in bundle['nodes'].values()]
+    return json.dumps({'question': question, 'current_node': current_node, 'knowledge': candidates}, ensure_ascii=False)
+
 def select_nodes(bundle, question, current_node, selector):
     question = _text(question, 1800)
     _require(current_node in bundle['nodes'])
-    candidates = [{'id': n['id'], 'title': n['title'], 'text': n['text']} for n in bundle['nodes'].values()]
-    request = json.dumps({'question': question, 'current_node': current_node, 'knowledge': candidates}, ensure_ascii=False)
+    request = _selection_request(bundle, question, current_node)
     _require(len(request.encode()) <= 120000, 'knowledge_context_too_large')
     try:
         result = selector(SELECTOR_INSTRUCTIONS, request)

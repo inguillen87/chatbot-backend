@@ -531,6 +531,7 @@ def create_app(config_class=Config):
             "Authorization",
             "Origin",
             "X-Chatboc-Token",
+            "X-Chatboc-Knowledge",
             "X-Entity-Token",
             "X-Chat-Session-Id",
             "X-Anon-Id",

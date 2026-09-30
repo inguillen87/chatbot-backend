@@ -65,3 +65,21 @@ class InstitutionalContentTests(unittest.TestCase):
         self.assertEqual(normalized['nodes']['requirements']['sources'][0]['excerpts'][0]['page'],2)
         data['node_evidence']['requirements'][0]['pages']=[1,2]
         with self.assertRaises(ContentError):normalize_bundle(data,701,'qa-knowledge')
+
+class SelectorCapacityTests(unittest.TestCase):
+    def test_import_rejects_a_corpus_that_cannot_be_queried(self):
+        data=sample()
+        for index in range(12):
+            key='large-'+str(index)
+            data['nodes'][key]={'id':key,'title':key,'text':'x'*11000,'actions':[]}
+            data['node_evidence'][key]=[{'source_id':'a','page':1}]
+            data['nodes']['start']['actions'].append({'code':key,'label':key,'target':key})
+        with self.assertRaises(ContentError) as failure:
+            normalize_bundle(data,701,'qa-knowledge')
+        self.assertEqual(failure.exception.code,'knowledge_context_too_large')
+
+    def test_import_reserves_space_for_the_largest_allowed_question(self):
+        data=sample()
+        normalized=normalize_bundle(data,701,'qa-knowledge')
+        result=select_nodes(normalized,'\U0010ffff'*1800,'requirements',lambda *args:{'node_ids':['requirements']})
+        self.assertEqual(result[0]['id'],'requirements')

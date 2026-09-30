@@ -13,6 +13,8 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
     def setUpClass(cls):
         from tests.profile_acceptance_runtime import create_disposable_app
         cls.temp=tempfile.TemporaryDirectory(prefix='chatboc-knowledge-')
+        import os
+        os.environ['CORS_ALLOWED_ORIGINS']='https://panel.example.invalid'
         cls.app,cls.accounts,cls.password=create_disposable_app(cls.temp.name)
     @classmethod
     def tearDownClass(cls):
@@ -135,5 +137,56 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
         finally:
             with self.app.app_context():
                 user=db.session.get(User,self.accounts['acceptance-a']['id']);user.rol=original_role;db.session.commit()
+
+    def test_chat_navigation_uses_the_existing_interactive_contract(self):
+        from database import db
+        from models import TenantProfile,User
+        from services.logic import responder_chatboc
+        client=self.login();private=self.seed(client);state=self.put(client,'publish',private['revision']).get_json()
+        with self.app.app_context():
+            tenant=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id']);owner=db.session.get(User,tenant.municipio_id)
+            result=responder_chatboc('menu',owner_user=owner,tipo_chat='municipio',channel='web')
+            self.assertEqual(result['fuente'],'institutional_knowledge')
+            self.assertEqual(result['message_type'],'interactive_buttons')
+            self.assertTrue(result['options_list'])
+            self.assertEqual(result['botones'],result['options_list'])
+            self.assertTrue(all(option['action_id'].startswith('knowledge:'+state['revision'][:16]+':') for option in result['options_list']))
+
+    def test_legacy_owner_resolves_exact_institution_without_tenant_id(self):
+        from database import db
+        from models import TenantProfile,User
+        from services.institutional_assistant import maybe_handle_institutional_question
+        client=self.login();private=self.seed(client);self.put(client,'publish',private['revision'])
+        with self.app.app_context():
+            tenant=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id']);owner=db.session.get(User,tenant.municipio_id)
+            old=owner.tenant_id
+            try:
+                owner.tenant_id=None;db.session.commit()
+                self.assertEqual(maybe_handle_institutional_question('menu',owner)['fuente'],'institutional_knowledge')
+            finally:owner.tenant_id=old;db.session.commit()
+
+    def test_contradictory_owner_tenant_is_not_replaced_by_a_fallback(self):
+        from database import db
+        from models import TenantProfile,User
+        from services.institutional_assistant import maybe_handle_institutional_question
+        client=self.login();private=self.seed(client);self.put(client,'publish',private['revision'])
+        with self.app.app_context():
+            tenant=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id']);owner=db.session.get(User,tenant.municipio_id);old=owner.tenant_id
+            try:
+                owner.tenant_id=self.accounts['acceptance-b']['tenant_id'];db.session.commit()
+                self.assertIsNone(maybe_handle_institutional_question('menu',owner))
+            finally:owner.tenant_id=old;db.session.commit()
+
+    def test_knowledge_confirmation_header_is_allowed_by_preflight(self):
+        response=self.app.test_client().options(self.url(),headers={'Origin':'https://panel.example.invalid','Access-Control-Request-Method':'PUT','Access-Control-Request-Headers':'content-type,x-chatboc-knowledge'})
+        self.assertIn(response.status_code,[200,204])
+        self.assertIn('x-chatboc-knowledge',response.headers.get('Access-Control-Allow-Headers','').lower())
+        self.assertEqual(response.headers.get('Access-Control-Allow-Origin'),'https://panel.example.invalid')
+
+    def test_published_questions_do_not_require_credentialed_origin_allowlist(self):
+        client=self.login();private=self.seed(client);published=self.put(client,'publish',private['revision']).get_json()
+        response=self.app.test_client().post(self.url(True)+'/answer',json={'revision':published['revision'],'node_id':'requirements'},headers={'Origin':'https://institution.example.invalid'})
+        self.assertEqual(response.status_code,200,response.get_json())
+        self.assertNotEqual(response.headers.get('Access-Control-Allow-Credentials'),'true')
 
 if __name__ == '__main__': unittest.main(verbosity=2)

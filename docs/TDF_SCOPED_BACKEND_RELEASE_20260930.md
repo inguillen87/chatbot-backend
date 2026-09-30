@@ -21,3 +21,11 @@ Los mismos 17 casos también aprobaron con eventlet.monkey_patch() aplicado ante
 No se certifica aquí Linux, tráfico real, interpretación de un LLM externo, login de Analía o WhatsApp nativo. No se tocaron cuentas nominales, credenciales protegidas, corpus privados ni datos de producción en los ensayos. Los archivos y logs del entorno local no se publican en el repositorio.
 
 La escritura de un nuevo workflow fue bloqueada por la herramienta. No se reintentó por otra vía ni se considera CI certificado; se descartó el archivo incompleto y se ejecutó la validación local aislada. Este documento no marca un despliegue como realizado: el PR registra el resultado efectivo y el SHA que finalmente se publique.
+
+## Correcciones del recorrido real antes de habilitar contenido
+
+El primer corte se desplegó sin modificar el esquema y con cero corpus publicados. La revisión detectó cinco problemas de integración ya presentes en el módulo portado: botones bajo un nombre no normalizado, propietarios heredados sin tenant_id, confirmación ausente en CORS administrativo, límite de selección menor al de importación y uso de la allowlist autenticada para una consulta pública sin credenciales.
+
+Se corrigieron conservando las fronteras: navegación por botones/options_list normalizados, relación de propietario existente y única sólo cuando falta tenant_id (nunca ante una contradicción), cabecera de confirmación en preflight, rechazo al importar un corpus que no quepa con la pregunta máxima y CORS público no autenticado conforme al resto de /api/public. Los controles de origen y permiso de administración no se modificaron.
+
+Las regresiones reales aprobaron 14 pruebas de contenido y 22 HTTP. Los mismos 22 HTTP se repitieron con eventlet antes de cargar Flask. No se suman dos veces. No hubo un corpus productivo activo durante la corrección; publicación y aceptación se registran en el PR cuando efectivamente ocurran.
