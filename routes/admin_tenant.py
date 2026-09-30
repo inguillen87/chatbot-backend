@@ -2318,7 +2318,7 @@ def get_tenant_config_bundle(current_user, slug):
     if not _is_authorized_for_tenant(current_user, tenant):
          return jsonify({'error': 'Unauthorized'}), 403
 
-    configs = TenantConfig.query.filter_by(tenant_id=tenant.id).all()
+    configs = TenantConfig.query.filter_by(tenant_id=tenant.id).filter(TenantConfig.key != 'institutional_assistant').all()
     # Nested structure: key -> channel -> value
     config_dict = {}
     for cfg in configs:
