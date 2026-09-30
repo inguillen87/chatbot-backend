@@ -53,3 +53,15 @@ class InstitutionalContentTests(unittest.TestCase):
     def test_exact_source_ids_are_required(self):
         data=sample();data['sources']['a']['id']='b'
         with self.assertRaises(ContentError):normalize_bundle(data,701,'qa-knowledge')
+
+    def test_evidence_quote_page_must_belong_to_validated_source_pages(self):
+        for quoted_page in [999, 3, True, None, '2']:
+            data=sample();data['node_evidence']['requirements']=[{'source_id':'a','pages':[2],'page':quoted_page,'quote':'Fragmento.'}]
+            with self.subTest(page=quoted_page),self.assertRaises(ContentError):
+                normalize_bundle(data,701,'qa-knowledge')
+    def test_quote_without_page_is_only_derived_from_one_unambiguous_page(self):
+        data=sample();data['node_evidence']['requirements']=[{'source_id':'a','pages':[2],'quote':'Fragmento.'}]
+        normalized=normalize_bundle(data,701,'qa-knowledge')
+        self.assertEqual(normalized['nodes']['requirements']['sources'][0]['excerpts'][0]['page'],2)
+        data['node_evidence']['requirements'][0]['pages']=[1,2]
+        with self.assertRaises(ContentError):normalize_bundle(data,701,'qa-knowledge')

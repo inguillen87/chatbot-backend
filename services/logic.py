@@ -140,14 +140,6 @@ def responder_chatboc(
     if not effective_owner_user:
         logger.warning(f"[responder_chatboc] 'effective_owner_user' could not be determined. This is critical for context-specific logic (e.g., for /ask/municipio). Check if a valid entity token is being passed for the bot instance.")
 
-    # The published knowledge version uses the same channel-neutral response path.
-    # Operational attachments and explicit non-knowledge commands keep their handlers.
-    if not kwargs.get('uploaded_file_info') and not kwargs.get('datos_interpretados_archivo'):
-        from services.institutional_assistant import maybe_handle_institutional_question
-        knowledge_response = maybe_handle_institutional_question(pregunta, effective_owner_user, chat_db_context)
-        if knowledge_response is not None:
-            return knowledge_response
-
     catalog_share_response = maybe_handle_catalog_share(
         pregunta=pregunta,
         owner_user=effective_owner_user,
@@ -155,6 +147,13 @@ def responder_chatboc(
     )
     if catalog_share_response:
         return catalog_share_response
+
+    # Keep catalogue actions first. Matched institutional answers still traverse
+    # the existing audio/normalization path; an unmatched question falls through.
+    knowledge_response = None
+    if not kwargs.get('demo_metadata') and not kwargs.get('uploaded_file_info') and not kwargs.get('datos_interpretados_archivo'):
+        from services.institutional_assistant import maybe_handle_institutional_question
+        knowledge_response = maybe_handle_institutional_question(pregunta, effective_owner_user, chat_db_context)
 
     # 2. Detectar nombre de rubro (universal)
     rubro_nombre = ""
@@ -225,7 +224,7 @@ def responder_chatboc(
     pregunta_norm_check = normalizar_texto(pregunta_text_check)
     skip_confusion_check = any(k in pregunta_norm_check for k in ["catalogo", "catálogo", "carrito", "comprar", "pedido", "producto", "precio"])
 
-    if tipo_chat == "pyme" and not kwargs.get("demo_metadata") and not skip_confusion_check:
+    if tipo_chat == "pyme" and knowledge_response is None and not kwargs.get("demo_metadata") and not skip_confusion_check:
         # Check for municipal keywords in the user's query
         for action, keywords in MENU_KEYWORDS.items():
             if any(keyword in pregunta_norm_check for keyword in keywords):
@@ -504,7 +503,7 @@ def responder_chatboc(
 
     demo_metadata = kwargs.get("demo_metadata")
 
-    response_data = None
+    response_data = knowledge_response
     if demo_metadata:
         action_from_payload = None
         if isinstance(pregunta, dict):

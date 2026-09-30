@@ -22,3 +22,9 @@ La información se persiste como versión compuesta, no como un embedding ni un 
 Sintaxis Python y diez pruebas de normalización aprobadas localmente. La aceptación HTTP usa la aplicación Flask completa y base descartable; sus resultados deben comprobarse en CI. Incluye la integración con responder_chatboc, importación, pregunta, publicación, revocación, ámbito y recuperación. El proveedor externo se sustituye en las pruebas; no se afirma una conversación real con el modelo.
 
 No se ha ejecutado importación ni publicación en TDF. Vercel devolvió 403 en este turno para el equipo autorizado; no se elude por otra vía. La cuenta de Analía no se cambia ni se repite su prueba bloqueada. MuniControl queda fuera de alcance. Este código no sustituye la necesidad de publicar las revisiones frontend/backend compatibles y verificar el acceso nominal.
+
+## Correcciones de revisión antes de la entrega
+
+Una consulta sin nodos relevantes debe continuar al handler operativo existente, no terminar en el desconocimiento del corpus. Se corrigió esa salida y se conservó la prioridad del catálogo. El guard de contexto usa ahora la constante real del flujo municipal; las acciones explícitas y los procesos activos no llaman al selector. Las respuestas institucionales siguen el postprocesamiento original, incluida la salida de audio cuando el canal ya la solicita. Sus nuevas pruebas sustituyen el servicio externo, no afirman un audio productivo enviado.
+
+Las citas con fragmento ahora necesitan una página incluida en el rango validado. Sólo se deriva el número cuando existe una única página inequívoca; no se acepta página 999 ni una referencia ambigua. Las dos regresiones de ese fallo reprobaron sobre el código anterior. Se mantienen la validación de fuente y el alcance de la organización.

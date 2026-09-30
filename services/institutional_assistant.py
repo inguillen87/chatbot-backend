@@ -4,6 +4,7 @@ from sqlalchemy import select
 from flask import current_app
 from models import db, TenantProfile, TenantConfig, AuditEvent, User
 from cutover_writer_fence import cutover_writer_fence_enabled
+from services.constants import CONTEXTO_MUNICIPIO
 from utils.tenant_admin_access import can_manage_tenant_control_plane
 from services.institutional_assistant_content import (
     ContentError, CONTRACT, normalize_bundle, overview, digest, select_nodes, materialize_node,
@@ -155,11 +156,11 @@ def maybe_handle_institutional_question(question, owner, session=None):
     if session is not None and getattr(session, 'tenant_id', None) not in (None, tenant.id): return None
     text = question if isinstance(question, str) else question.get('pregunta', question.get('text', ''))
     if not isinstance(text, str): return None
-    if isinstance(question, dict) and question.get('action_id'):
-        text = question['action_id']
+    if isinstance(question, dict) and (question.get('action_id') or question.get('action')):
+        text = question.get('action_id') or question.get('action')
         if not isinstance(text, str) or not text.startswith('knowledge:'): return None
     context = getattr(session, 'context_data', None) or {}
-    if isinstance(context, dict) and any(context.get(key) for key in ('contexto_municipio','contexto_pyme_v2','active_ticket_id','ticket_id')) and not text.startswith('knowledge:'):
+    if isinstance(context, dict) and any(context.get(key) for key in (CONTEXTO_MUNICIPIO,'contexto_municipio','contexto_pyme_v2','active_ticket_id','ticket_id')) and not text.startswith('knowledge:'):
         return None
     command = {'revision': state['revision'], 'node_id': state['bundle']['start']}
     if text.startswith('knowledge:'):
@@ -177,6 +178,9 @@ def maybe_handle_institutional_question(question, owner, session=None):
     except ContentError:
         return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_unavailable'}
     nodes = result['nodes']
+    # No matched institutional answer means the existing operational handlers continue.
+    if not nodes and not text.startswith('knowledge:'):
+        return None
     if session is not None and nodes:
         context = deepcopy(getattr(session, 'context_data', None) or {})
         context['institutional_knowledge'] = {'revision': state['revision'], 'node_id': nodes[-1]['id']}

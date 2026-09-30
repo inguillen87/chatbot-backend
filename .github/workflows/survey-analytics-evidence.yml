@@ -20,7 +20,7 @@ name: Survey and organization evidence
       - routes/institutional_assistant.py
       - services/logic.py
       - app.py
-      - tests/institutional_assistant_http.py
+      - tests/institutional_assistant*.py
       - tests/test_institutional_assistant_content.py
       - tests/guide_pair_frontend.json
       - tests/guide-pair*

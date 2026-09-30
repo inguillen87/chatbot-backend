@@ -88,7 +88,9 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
                 citations.append(entry)
             entry['pages'] = sorted(set(entry['pages'] + page_numbers))
             if 'quote' in ref:
-                entry['excerpts'].append({'page': ref.get('page'), 'text': _text(ref['quote'], 12000)})
+                quote_page = ref.get('page') if 'page' in ref else (page_numbers[0] if len(page_numbers) == 1 else None)
+                _require(type(quote_page) is int and quote_page in page_numbers, 'knowledge_quote_page_invalid')
+                entry['excerpts'].append({'page': quote_page, 'text': _text(ref['quote'], 12000)})
         nodes[key] = {'id': key, 'title': _text(value.get('title'), 250),
             'text': _text(value.get('text'), 12000), 'actions': actions, 'sources': citations, 'links': []}
     link_registry = raw.get('reference_links')

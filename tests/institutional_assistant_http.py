@@ -6,8 +6,9 @@ import tempfile
 import unittest
 from unittest.mock import patch
 from tests.test_institutional_assistant_content import sample
+from tests.institutional_assistant_routing_cases import ExistingResponderCases
 
-class KnowledgeHTTPTests(unittest.TestCase):
+class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from tests.profile_acceptance_runtime import create_disposable_app
