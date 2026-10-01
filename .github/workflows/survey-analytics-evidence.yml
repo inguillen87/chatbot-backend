@@ -30,6 +30,10 @@ name: Survey and organization evidence
       - routes/admin_tenant.py
       - routes/auth.py
       - routes/v2/saas.py
+      - services/analytics/rbac.py
+      - services/twilio_tech_provider.py
+      - tests/v2_tenant_membership_http.py
+      - tests/twilio_provisioning_without_render_regression.py
       - data/conversation_guides/**
       - tests/private_conversation_guide_http.py
       - tests/organization_access_regression.py
@@ -87,6 +91,10 @@ jobs:
       - run: python -m unittest tests.test_survey_fieldwork_coverage -v
       - run: python -m tests.survey_fieldwork_coverage_http
       - run: python -m tests.organization_access_regression
+      - name: Consistent tenant membership on real application routes
+        run: python -m tests.v2_tenant_membership_http
+      - name: Provider provisioning requires durable credentials without Render
+        run: python -m tests.twilio_provisioning_without_render_regression
       - run: python -m tests.private_conversation_guide_http
       - name: Institutional knowledge evidence
         if: always()

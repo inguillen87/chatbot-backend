@@ -16,7 +16,6 @@ from services.llm_provider_network_policy import (
     require_provider_network,
 )
 from services.provider_platform import is_sender_ready_status
-from services.render_env_sync import sync_render_env_var
 
 
 CONTRACT_VERSION = "twilio.tech_provider.v1"
@@ -965,7 +964,7 @@ def build_twilio_tech_provider_contract(tenant, app_config: Mapping[str, Any]) -
             "live_enabled": _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED"),
             "tenant_auto_bootstrap_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_BOOTSTRAP_ENABLED", True),
             "tenant_auto_provision_enabled": _bool_config(app_config, "TWILIO_TENANT_AUTO_PROVISION_ENABLED"),
-            "render_env_sync_enabled": _bool_config(app_config, "RENDER_ENV_SYNC_ENABLED"),
+            "credential_storage": _provisioning_credential_storage_contract(),
             "manual_twilio_console_allowed": False,
             "customer_sees_twilio_console": False,
             "env": env,
@@ -1389,17 +1388,25 @@ def provision_twilio_voice_application(tenant, payload: Mapping[str, Any], app_c
     return result
 
 
+def _provisioning_credential_storage_contract() -> dict[str, Any]:
+    # A tenant-bound encrypted store and resolver do not exist yet. An env flag
+    # or a shared token cannot satisfy durable credential ownership for a new
+    # account. Existing connections use their unchanged runtime/status paths.
+    return {
+        "ready": False,
+        "status": "unavailable",
+        "reason_code": "twilio_tenant_credential_store_unavailable",
+        "blocked_operations": ["create_subaccount", "create_messaging_service"],
+    }
+
+
 def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: Mapping[str, Any]) -> dict[str, Any]:
     cfg = tenant.configuracion if isinstance(getattr(tenant, "configuracion", None), dict) else {}
     state = cfg.get(STATE_KEY) if isinstance(cfg.get(STATE_KEY), dict) else {}
     request_payload = build_provisioning_request(tenant, payload, app_config)
     live_enabled = _bool_config(app_config, "TWILIO_TECH_PROVIDER_LIVE_ENABLED")
-    parent_account_sid = _clean(app_config.get("TWILIO_ACCOUNT_SID"))
-    parent_auth_token = _clean(app_config.get("TWILIO_AUTH_TOKEN"))
     existing_subaccount_sid = _clean(state.get("twilio_account_sid"))
     existing_messaging_service_sid = _clean(state.get("messaging_service_sid"))
-    tenant_slug = getattr(tenant, "slug", None)
-    env = _env_status(app_config)
 
     result = {
         "contract_version": "twilio.tech_provider.provisioning.v1",
@@ -1407,6 +1414,9 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
         "mode": "live" if live_enabled else "dry_run",
         "request": request_payload,
         "steps": [],
+        "credential_storage": _provisioning_credential_storage_contract(),
+        "provider_calls_performed": False,
+        "provider_resources_created": False,
         "state_patch": {
             "status": "provisioning_plan_ready",
             "last_step": "plan_ready",
@@ -1417,6 +1427,8 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
     }
 
     if not live_enabled:
+        # A plan does not change the connection or certify remote readiness.
+        result["state_patch"] = {}
         result["steps"].append({"id": "create_subaccount", "status": "planned"})
         result["steps"].append({"id": "create_messaging_service", "status": "planned"})
         result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
@@ -1435,89 +1447,22 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
                 "sid": existing_messaging_service_sid,
             }
         )
-        result["state_patch"].update({"status": "provisioning_blocked", "last_step": "validate_existing_state"})
+        result["state_patch"] = {}
         return result
 
-    subaccount_sid = existing_subaccount_sid
-    subaccount_token: str | None = None
-    token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
-
-    if subaccount_sid:
+    if existing_subaccount_sid and existing_messaging_service_sid:
+        # This is a read-only replay of existing references. Do not advance
+        # onboarding or rewrite sender/account state based on a provision click.
+        result["idempotent_replay"] = True
+        result["state_patch"] = {}
         result["steps"].append(
             {
                 "id": "create_subaccount",
                 "status": "done",
                 "operation": "reuse",
-                "sid": subaccount_sid,
+                "sid": existing_subaccount_sid,
             }
         )
-        result["state_patch"].update(
-            {
-                "status": "subaccount_reused",
-                "last_step": "reuse_subaccount",
-                "twilio_account_sid": subaccount_sid,
-            }
-        )
-    else:
-        if not (parent_account_sid and parent_auth_token):
-            result["ok"] = False
-            result["mode"] = "blocked"
-            result["reason_code"] = "twilio_credentials_missing"
-            result["missing_env"] = env["missing"]
-            return result
-
-        try:
-            subaccount = _twilio_post_form(
-                url="https://api.twilio.com/2010-04-01/Accounts.json",
-                account_sid=parent_account_sid,
-                auth_token=parent_auth_token,
-                data={"FriendlyName": request_payload["friendly_name"]},
-            )
-        except Exception as exc:
-            result["ok"] = False
-            result["mode"] = "blocked"
-            result["reason_code"] = "twilio_subaccount_creation_failed"
-            result["error"] = str(exc)
-            result["state_patch"].update({"status": "provisioning_failed", "last_step": "create_subaccount"})
-            return result
-
-        subaccount_sid = _clean(subaccount.get("sid"))
-        subaccount_token = _clean(subaccount.get("auth_token"))
-        token_refs = _subaccount_token_ref_names(subaccount_sid, tenant_slug)
-        result["steps"].append({"id": "create_subaccount", "status": "done", "sid": subaccount_sid})
-        result["state_patch"].update(
-            {
-                "status": "subaccount_created" if not subaccount_token else "creating_messaging_service",
-                "last_step": "create_subaccount",
-                "twilio_account_sid": subaccount_sid,
-                "twilio_subaccount_token_present": bool(subaccount_token),
-                "twilio_subaccount_token_ref": token_refs[0],
-                "twilio_subaccount_token_ref_aliases": token_refs[1:],
-            }
-        )
-
-        if subaccount_sid and subaccount_token:
-            render_env_sync = sync_render_env_var(token_refs[0], subaccount_token, app_config)
-            result["secure_secret_required"] = {
-                "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
-                "required_env": token_refs,
-                "render_env_sync": render_env_sync,
-                "do_not_store_in_database": True,
-            }
-            result["state_patch"].update(
-                {
-                    "render_subaccount_secret_synced": bool(render_env_sync.get("secret_value_stored")),
-                    "render_subaccount_secret_sync_status": render_env_sync.get("mode"),
-                }
-            )
-
-    if existing_messaging_service_sid:
-        onboarding_already_advanced = bool(
-            state.get("waba_id")
-            or state.get("phone_number_id")
-            or state.get("sender_sid")
-        )
-        result["idempotent_replay"] = True
         result["steps"].append(
             {
                 "id": "create_messaging_service",
@@ -1526,91 +1471,26 @@ def provision_twilio_subaccount(tenant, payload: Mapping[str, Any], app_config: 
                 "sid": existing_messaging_service_sid,
             }
         )
-        result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
-        result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
-        result["state_patch"].update(
-            {
-                "status": (
-                    state.get("status")
-                    if onboarding_already_advanced and state.get("status")
-                    else "ready_for_embedded_signup"
-                ),
-                "last_step": (
-                    state.get("last_step")
-                    if onboarding_already_advanced and state.get("last_step")
-                    else "reuse_messaging_service"
-                ),
-                "twilio_account_sid": subaccount_sid,
-                "messaging_service_sid": existing_messaging_service_sid,
-            }
-        )
         return result
 
-    if subaccount_sid and not subaccount_token:
-        subaccount_token, token_refs = _resolve_subaccount_auth_token(
-            state={**state, "twilio_account_sid": subaccount_sid},
-            tenant_slug=tenant_slug,
-            app_config=app_config,
-            allow_global_fallback=False,
-        )
-        result["state_patch"].update(
-            {
-                "twilio_subaccount_token_ref": token_refs[0],
-                "twilio_subaccount_token_ref_aliases": token_refs[1:],
-            }
-        )
-
-    if not (subaccount_sid and subaccount_token):
-        result["ok"] = False
-        result["mode"] = "blocked"
-        result["reason_code"] = "twilio_subaccount_token_missing"
-        result["required_env"] = token_refs
-        result["steps"].append({"id": "create_messaging_service", "status": "blocked_subaccount_token_missing"})
-        result["state_patch"].update({"status": "messaging_service_blocked", "last_step": "resolve_subaccount_token"})
-        return result
-
-    try:
-        messaging_service = _twilio_post_form(
-            url="https://messaging.twilio.com/v1/Services",
-            account_sid=subaccount_sid,
-            auth_token=subaccount_token,
-            data={
-                "FriendlyName": request_payload["friendly_name"][:64],
-                "InboundRequestUrl": request_payload["webhook_url"],
-                "InboundMethod": "POST",
-                "StatusCallback": request_payload["status_callback_url"],
-                "UseInboundWebhookOnNumber": "false",
-                "Usecase": "notifications",
-            },
-        )
-    except Exception as exc:
-        result["ok"] = False
-        result["mode"] = "blocked"
-        result["reason_code"] = "twilio_messaging_service_creation_failed"
-        result["error"] = str(exc)
-        result["steps"].append({"id": "create_messaging_service", "status": "failed"})
-        result["state_patch"].update({"status": "messaging_service_failed", "last_step": "create_messaging_service"})
-        return result
-
-    messaging_service_sid = messaging_service.get("sid")
-    result["steps"].append({"id": "create_messaging_service", "status": "done", "sid": messaging_service_sid})
-    result["steps"].append({"id": "embedded_signup", "status": "requires_customer"})
-    result["steps"].append({"id": "register_sender", "status": "planned_after_embedded_signup"})
-    result.setdefault(
-        "secure_secret_required",
+    # No durable encrypted tenant credential store exists. Stop before creating
+    # remote resources, even when parent, global or Render credentials are set.
+    result.update(
         {
-            "reason_code": "store_subaccount_auth_token_for_later_sender_registration",
-            "required_env": token_refs,
-            "do_not_store_in_database": True,
-        },
-    )
-    result["state_patch"].update(
-        {
-            "status": "ready_for_embedded_signup",
-            "last_step": "create_messaging_service",
-            "messaging_service_sid": messaging_service_sid,
+            "ok": False,
+            "mode": "blocked",
+            "reason_code": "twilio_tenant_credential_store_unavailable",
+            "retryable": False,
+            "message": "La activación de nuevas conexiones de WhatsApp todavía no está habilitada.",
+            "next_action": "configure_tenant_provider_credential_store",
+            "state_patch": {},
         }
     )
+    result["steps"].append({"id": "credential_storage_preflight", "status": "blocked"})
+    result["steps"].append(
+        {"id": "create_subaccount", "status": "blocked" if not existing_subaccount_sid else "existing"}
+    )
+    result["steps"].append({"id": "create_messaging_service", "status": "blocked"})
     return result
 
 
