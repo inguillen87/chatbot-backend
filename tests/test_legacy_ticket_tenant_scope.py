@@ -115,8 +115,8 @@ def test_unique_legacy_owner_can_read_while_ambiguous_and_orphan_rows_are_quaran
         f"/api/v2/inbox/omnichannel/{unique_ticket.id}?source_model=MunicipioTicket",
         headers=_headers(app, owner, tenant_a),
     )
-    assert hidden_read.status_code == 404
-    assert hidden_read.get_json()["reason_code"] == "ticket_not_found"
+    assert hidden_read.status_code == 403
+    assert hidden_read.get_json()["reason_code"] == "forbidden_tenant"
 
 
 def test_explicit_tenant_is_authoritative_and_ambiguous_legacy_mutations_fail_closed(
@@ -149,18 +149,18 @@ def test_explicit_tenant_is_authoritative_and_ambiguous_legacy_mutations_fail_cl
         },
         headers=_headers(app, owner, tenant_a),
     )
-    assert response.status_code == 404
-    assert response.get_json()["reason_code"] == "ticket_not_found"
+    assert response.status_code == 403
+    assert response.get_json()["reason_code"] == "forbidden_tenant"
     db.session.refresh(legacy_ticket)
     assert legacy_ticket.estado == "nuevo"
     assert TicketComentario.query.filter_by(municipio_ticket_id=legacy_ticket.id).count() == 0
 
     legacy_response = client.put(
         f"/tickets/municipio/{legacy_ticket.id}/estado",
-        json={"estado": "en_proceso"},
+        json={"estado": "en_proceso", "expected_estado": "nuevo"},
         headers=_headers(app, owner, tenant_a),
     )
-    assert legacy_response.status_code == 404
+    assert legacy_response.status_code == 403
     db.session.refresh(legacy_ticket)
     assert legacy_ticket.estado == "nuevo"
 

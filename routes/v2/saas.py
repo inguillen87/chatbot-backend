@@ -6102,11 +6102,14 @@ def _legacy_claim_inbox_payload(
         ticket,
         tenant,
     )
+    from services.ticket_workflow_policy import build_workflow_instance
+    workflow = build_workflow_instance(ticket, "municipio", actor=actor, tenant=tenant)
     return {
         "id": f"municipio:{ticket.id}",
         "legacy_id": ticket.id,
         "ticket_id": ticket.id,
         "source_model": "MunicipioTicket",
+        "workflow": workflow,
         "legacy_kind": "claim",
         "conversation_id": f"municipio-ticket-{ticket.id}",
         "detail_endpoint": f"/api/v2/inbox/omnichannel/{ticket.id}?source_model=MunicipioTicket",

@@ -43,6 +43,11 @@ from services.ticket_category_authority import (
     build_municipio_category_authorities,
     resolve_municipio_category_authority,
 )
+from services.ticket_workflow_policy import (
+    ALLOWED_STATES, ALLOWED_TRANSITIONS, TicketWorkflowError,
+    build_workflow_context, build_workflow_instance, lock_and_validate_workflow_command,
+    resolve_private_ticket_tenant, ticket_belongs_to_workflow_tenant,
+)
 from services.operational_heatmap_access import (
     build_employee_legacy_heatmap_points,
     is_employee_heatmap_viewer,
@@ -74,7 +79,7 @@ from services.gcs_service import (
 )
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.geo.route import obtener_ruta
-from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido, _explicit_admin_request_tenant
+from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido, _explicit_admin_request_tenant, auth_sin_escrituras_implicitas
 from utils.permissions import require_role
 from collections import defaultdict
 from sqlalchemy import or_, func, exists, false, literal_column
@@ -135,22 +140,10 @@ TICKET_READ_REQUIRED_CAPABILITIES = [
 ]
 
 # Estados válidos para los tickets que pueden ser utilizados por la UI.
-TICKET_ALLOWED_STATES = [
-    "nuevo",
-    "en_proceso",
-    "en_vivo",
-    "esperando_agente_en_vivo",
-    "cerrado",
-]
+TICKET_ALLOWED_STATES = list(ALLOWED_STATES)
 TICKET_WORKFLOW_CONTRACT_VERSION = "tickets.workflow.v1"
 
-TICKET_ALLOWED_TRANSITIONS = {
-    "nuevo": ["en_proceso", "cerrado"],
-    "en_proceso": ["en_vivo", "esperando_agente_en_vivo", "cerrado"],
-    "en_vivo": ["en_proceso", "cerrado"],
-    "esperando_agente_en_vivo": ["en_vivo", "en_proceso", "cerrado"],
-    "cerrado": [],
-}
+TICKET_ALLOWED_TRANSITIONS = {state: list(destinations) for state, destinations in ALLOWED_TRANSITIONS.items()}
 
 
 def _normalize_ticket_delivery_results(results: Mapping[str, Any] | None) -> dict[str, bool]:
@@ -1590,88 +1583,22 @@ def _categorias_permitidas_para_empleado(user: User) -> tuple[list[str], list[in
 
 
 def _resolve_tenant_scope(current_user: User) -> tuple[Optional[TenantProfile], Optional[int], Optional[int]]:
-    requested_slug = next(
-        (
-            str(value).strip()
-            for value in (
-                request.headers.get("X-Tenant-Slug"),
-                request.headers.get("X-Tenant"),
-                request.args.get("tenant_slug"),
-                request.args.get("tenant"),
-            )
-            if value and str(value).strip()
-        ),
-        "",
-    )
-    tenant = None
-    if requested_slug:
-        tenant = (
-            TenantProfile.query.filter(func.lower(TenantProfile.slug) == requested_slug.lower())
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "tenant_id", None):
-        tenant = db.session.get(TenantProfile, current_user.tenant_id)
-    if not tenant and getattr(current_user, "tenant_slug", None):
-        tenant = (
-            TenantProfile.query.filter(
-                func.lower(TenantProfile.slug) == str(current_user.tenant_slug).strip().lower()
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "municipio_id", None):
-        tenant = (
-            TenantProfile.query.filter(
-                TenantProfile.municipio_id == current_user.municipio_id
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "pyme_id", None):
-        tenant = (
-            TenantProfile.query.filter(
-                TenantProfile.pyme_id == current_user.pyme_id
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant and getattr(current_user, "empresa_id", None):
-        tenant = (
-            TenantProfile.query.filter(
-                TenantProfile.pyme_id == current_user.empresa_id
-            )
-            .order_by(TenantProfile.id.asc())
-            .first()
-        )
-    if not tenant:
-        tenant = get_current_tenant_profile(allow_fallback=False)
-    if not tenant:
+    try:
+        body = request.get_json(silent=True) if request.is_json else None
+        tenant = resolve_private_ticket_tenant(current_user, body=body if isinstance(body, dict) else None)
+    except TicketWorkflowError:
         return None, None, None
     return tenant, tenant.municipio_id, tenant.pyme_id
 
 
 def _authorized_for_tenant_scope(current_user: User, tenant: Optional[TenantProfile]) -> bool:
-    user_role = getattr(current_user, "role", None) or getattr(current_user, "rol", None)
-    if not tenant or canonical_role(user_role) not in TICKET_BACKOFFICE_ROLES:
+    role = canonical_role(getattr(current_user, "rol", None))
+    if tenant is None or tenant.is_active is not True or role not in TICKET_BACKOFFICE_ROLES:
         return False
-    if current_user.tenant_id == tenant.id:
-        return True
-    if tenant.municipio_id and current_user.id == tenant.municipio_id:
-        return True
-    if tenant.municipio_id and current_user.municipio_id == tenant.municipio_id:
-        return True
-    if tenant.pyme_id and current_user.id == tenant.pyme_id:
-        return True
-    if tenant.pyme_id and current_user.pyme_id == tenant.pyme_id:
-        return True
-    if tenant.municipio_id and current_user.empresa_id == tenant.municipio_id:
-        return True
-    if getattr(current_user, "municipio_id", None) == tenant.id or current_user.id == tenant.id or getattr(current_user, "pyme_id", None) == tenant.id:
-        return True
-    if current_user.tenant_slug and tenant.slug and str(current_user.tenant_slug).strip().lower() == str(tenant.slug).strip().lower():
-        return True
-    return False
+    if role == ROLE_SUPERADMIN:
+        return is_authorized_superadmin_user(current_user)
+    membership = resolve_consistent_user_tenant(current_user)
+    return membership is not None and membership.id == tenant.id
 
 
 def _ticket_access_contract_response(
@@ -1757,19 +1684,20 @@ def _ticket_scope_access_allows(ticket_type: str, ticket_obj, current_user: Opti
     tenant, tenant_municipio_id, tenant_pyme_id = _resolve_tenant_scope(current_user)
     if not _authorized_for_tenant_scope(current_user, tenant):
         return False
-    if ticket_type == "municipio":
-        tenant_allows = municipio_ticket_belongs_to_tenant(ticket_obj, tenant)
-    else:
-        tenant_allows = _ticket_matches_tenant_scope(
-            ticket_obj,
-            tenant,
-            tenant_municipio_id if ticket_type == "municipio" else None,
-            tenant_pyme_id if ticket_type == "pyme" else None,
-        )
+    tenant_allows = ticket_belongs_to_workflow_tenant(ticket_obj, ticket_type, tenant)
     return bool(
         tenant_allows
         and employee_ticket_category_access_allows(current_user, ticket_obj)
     )
+
+
+def _private_ticket_workflow(ticket, ticket_type, *, context=None):
+    actor = getattr(g, "current_user", None)
+    payload = getattr(g, "token_payload", {}) or {}
+    if (actor is None or canonical_role(getattr(actor, "rol", None)) not in TICKET_BACKOFFICE_ROLES
+            or getattr(g, "widget_session", False) or payload.get("session_kind") in {"widget", "demo"}):
+        return None
+    return build_workflow_instance(ticket, ticket_type, actor=actor, context=context)
 
 
 def _authenticated_municipio_lookup_allows(
@@ -2115,6 +2043,8 @@ def serialize_ticket_to_json(
     contact_profile_user_override: Optional[User] = None,
     allow_profile_lookup: bool = True,
     category_authority_override: dict[str, Any] | None = None,
+    publish_workflow: bool = False,
+    workflow_context=None,
 ):
     """
     Serializa un objeto de ticket a un diccionario JSON con el formato
@@ -2385,6 +2315,11 @@ def serialize_ticket_to_json(
         "collaboration_state": collaboration_state,
         "meta": _ticket_degraded_meta(degraded_reasons),
     }
+    # Socket snapshots are shared between actors. Only the private HTTP list
+    # opts into an actor-specific workflow; broadcasts cannot carry grants.
+    workflow = _private_ticket_workflow(ticket, ticket_type, context=workflow_context) if publish_workflow else None
+    if workflow is not None:
+        serialized_data["workflow"] = workflow
     if compact:
         serialized_data.pop("identity", None)
     return serialized_data
@@ -2761,6 +2696,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             if tipo_ticket_str == "municipio"
             else {}
         )
+        workflow_context = build_workflow_context(current_user, tenant=tenant_for_query)
         serialized_tickets = [
             serialize_ticket_to_json(
                 t,
@@ -2771,6 +2707,8 @@ def get_tickets_del_usuario_logic(current_user: User):
                 contact_profile_user_override=contact_profile_users.get(t.id) if compact_view else None,
                 allow_profile_lookup=not compact_view,
                 category_authority_override=category_authorities.get(t.id),
+                publish_workflow=True,
+                workflow_context=workflow_context,
             )
             for t in tickets_for_list_page
         ]
@@ -3360,6 +3298,9 @@ def _serialize_ticket_details(ticket, ticket_type, *, include_internal: bool = T
             degraded_reasons.append("ticket_route_unavailable")
         ticket_data["ruta"] = ruta_data
         ticket_data["meta"] = _ticket_degraded_meta(degraded_reasons)
+    workflow = _private_ticket_workflow(ticket, ticket_type) if include_internal else None
+    if workflow is not None:
+        ticket_data["workflow"] = workflow
     return ticket_data
 
 
@@ -4138,38 +4079,21 @@ def responder_a_ticket(current_user: User, tipo: str, ticket_id: int):
 @ticket_bp.route('/tickets/<string:tipo>/<int:ticket_id>/estado', methods=['PUT'])
 @token_requerido
 @admin_o_empleado_requerido
+@auth_sin_escrituras_implicitas
 def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
     if tipo not in {"municipio", "pyme"}:
         return jsonify({"error": "Tipo de ticket no válido."}), 400
-    data = request.get_json()
-    nuevo_estado = data.get("estado")
-    if not nuevo_estado:
-        return jsonify({"error": "Falta el nuevo estado."}), 400
-
-    # Permitir "resuelto" como alias de "cerrado" para la UI
-    if nuevo_estado == "resuelto":
-        nuevo_estado = "cerrado"
-
-    if nuevo_estado not in TICKET_ALLOWED_STATES:
-        return (
-            jsonify({
-                "error": f"Estado '{nuevo_estado}' no es válido. Permitidos: {', '.join(TICKET_ALLOWED_STATES + ['resuelto'])}",
-            }),
-            400,
-        )
-
-    TicketModel = MunicipioTicket if tipo == "municipio" else PymeTicket
-    ticket_obj = db.session.get(TicketModel, ticket_id)
-    if not ticket_obj:
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    # Refuerzo de permisos:
-    if not _ticket_scope_access_allows(tipo, ticket_obj, current_user):
-        return jsonify({"error": "Ticket no encontrado."}), 404
-
-    error_response = _validar_asignacion_empleado(ticket_obj, current_user)
-    if error_response:
-        return error_response
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Se requiere un objeto JSON.", "reason_code": "workflow_command_invalid"}), 400
+    try:
+        tenant = resolve_private_ticket_tenant(current_user, body=data)
+        model = MunicipioTicket if tipo == "municipio" else PymeTicket
+        ticket_obj, nuevo_estado = lock_and_validate_workflow_command(
+            db.session, model, ticket_id, actor=current_user, tenant=tenant, ticket_type=tipo, data=data)
+    except TicketWorkflowError as error:
+        db.session.rollback()
+        return jsonify({"error": str(error), "reason_code": error.code, "retryable": False}), error.status
 
     log_ticket_debug(
         "cambiar_estado",
@@ -4183,14 +4107,6 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         ticket_obj.estado_cliente = nuevo_estado
     if hasattr(ticket_obj, "ultima_actividad"):
         ticket_obj.ultima_actividad = get_local_now()
-    if nuevo_estado == "cerrado":
-        encuesta = TicketSatisfaccion(
-            ticket_id=ticket_obj.id,
-            tipo=tipo,
-            puntuacion=5,
-            comentario="Cierre automático",
-        )
-        db.session.add(encuesta)
     comentario_estado = TicketComentario(
         municipio_ticket_id=ticket_obj.id if tipo == "municipio" else None,
         pyme_ticket_id=ticket_obj.id if tipo == "pyme" else None,
@@ -4201,7 +4117,11 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         estado_ticket=nuevo_estado,
     )
     db.session.add(comentario_estado)
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
     try:
         from services.notification_dispatcher import dispatch_ticket_state_change
 
@@ -4252,6 +4172,8 @@ def cambiar_estado_ticket(current_user: User, tipo: str, ticket_id: int):
         "latitud": getattr(ticket_obj, 'latitud', None),
         "longitud": getattr(ticket_obj, 'longitud', None)
     }
+    ticket_data["source_model"] = "MunicipioTicket" if tipo == "municipio" else "PymeTicket"
+    ticket_data["workflow"] = build_workflow_instance(ticket_obj, tipo, actor=current_user, tenant=tenant)
     return jsonify(ticket_data)
 
 # ---------- CHAT EN VIVO: MENSAJES (SOLO TOKEN) ----------
