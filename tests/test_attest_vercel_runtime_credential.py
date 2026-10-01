@@ -83,7 +83,7 @@ def test_runtime_attestation_is_bound_to_exact_vercel_deployment_and_db():
     assert document["vercel_deployment_id"] == DEPLOYMENT
     assert document["destination_deployment_revision"] == REVISION
     assert document["database_identity_sha256"] == DATABASE_IDENTITY
-    assert document["resolved_credential_scope"] == "subaccount"
+    assert document["resolved_credential_scope"] == "unverified"
     assert document["secret_present"] is True
     assert document["secret_value_disclosed"] is False
     assert document["provider_calls_performed"] is False
@@ -92,6 +92,27 @@ def test_runtime_attestation_is_bound_to_exact_vercel_deployment_and_db():
     assert SIGNING_SECRET not in rendered
     assert BINDING_SECRET not in rendered
     assert "secret" not in document["vercel_url"]
+
+
+@pytest.mark.parametrize("credential_env", [
+    "JUNIN_TWILIO_AUTH_TOKEN", "TWILIO_SUBACCOUNT_AUTH_TOKEN_JUNIN",
+])
+def test_tenant_named_variable_cannot_certify_an_inherited_root_credential(credential_env):
+    runtime = _environment(**{
+        "TWILIO_ACCOUNT_SID": ACCOUNT,
+        "TWILIO_AUTH_TOKEN": CREDENTIAL,
+        credential_env: CREDENTIAL,
+    })
+    envelope = attestor.build_runtime_attestation_envelope(
+        _challenge(credential_environment_variable=credential_env),
+        environ=runtime,
+        observed_at=OBSERVED,
+    )
+    document = envelope["document"]
+    assert document["credential_environment_variable"] == credential_env
+    assert document["resolved_credential_scope"] == "unverified"
+    assert document["provider_calls_performed"] is False
+    assert CREDENTIAL not in json.dumps(envelope)
 
 
 @pytest.mark.parametrize(
@@ -152,6 +173,7 @@ def test_runtime_attestation_endpoint_reuses_constant_time_bearer_pattern(monkey
     assert SIGNING_SECRET not in rendered
     assert BINDING_SECRET not in rendered
     assert BEARER not in rendered
+    assert response.get_json()["document"]["resolved_credential_scope"] == "unverified"
 
 
 def test_runtime_attestation_remains_available_behind_writer_fence(monkeypatch):
