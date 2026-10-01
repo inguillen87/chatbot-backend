@@ -85,5 +85,6 @@ def public_workspace(slug):
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/answer', methods=['POST'])
 @limiter.limit('20 per minute')
 def public_answer(slug):
-    _origin()
+    # Same non-credentialed CORS surface as the public workspace. No session or
+    # caller identity is used; only explicitly published tenant content is read.
     return _reply(answer(_tenant(slug), _json(), public=True))

@@ -145,8 +145,16 @@ def maybe_handle_institutional_question(question, owner, session=None):
     """Existing responder integration. Tenant comes from the resolved owner, not text."""
     if not isinstance(question, (str, dict)): return None
     owner_id, tenant_id = getattr(owner, 'id', None), getattr(owner, 'tenant_id', None)
-    if not owner_id or not tenant_id: return None
-    tenant = db.session.get(TenantProfile, tenant_id)
+    if not owner_id: return None
+    if tenant_id is not None:
+        tenant = db.session.get(TenantProfile, tenant_id)
+    else:
+        # Resolve only an unambiguous, existing owner relationship. Never guess
+        # a tenant from an incoming message or replace a contradictory identity.
+        candidates = TenantProfile.query.filter(
+            (TenantProfile.municipio_id == owner_id) | (TenantProfile.pyme_id == owner_id)
+        ).limit(2).all()
+        tenant = candidates[0] if len(candidates) == 1 else None
     if tenant is None or owner_id not in (tenant.municipio_id, tenant.pyme_id): return None
     try:
         state = read_state(tenant, public=True)
@@ -195,6 +203,7 @@ def maybe_handle_institutional_question(question, owner, session=None):
             if not any(a['target'] == choice['target'] and a['label'] == choice['label'] for a in choices): choices.append(choice)
     return {'message_body': result['text'] + ''.join('\n\n' + l['label'] + ': ' + l['url'] for l in links)
         + ('\n\n' + UI['sources'] + ':\n' + '\n'.join(citations) if citations else ''),
-        'message_type': 'text', 'buttons': [{'label': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target']} for c in choices],
+        'message_type': 'interactive_buttons' if choices else 'text',
+        'botones': [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target']} for c in choices],
         'knowledge_sources': [s for n in nodes for s in n['sources']],
         'fuente': 'institutional_knowledge', 'context_revision': state['revision']}
