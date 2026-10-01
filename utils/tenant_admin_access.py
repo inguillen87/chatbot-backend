@@ -18,31 +18,56 @@ from utils.roles import (
 )
 
 
-def _belongs_to_tenant(user: User, tenant: TenantProfile) -> bool:
-    if getattr(user, "tenant_id", None) == tenant.id:
-        return True
+def resolve_consistent_user_tenant(user: User | None) -> TenantProfile | None:
+    """Require one consistent organization, including legacy owner references.
 
-    user_slug = str(getattr(user, "tenant_slug", None) or "").strip().lower()
-    tenant_slug = str(getattr(tenant, "slug", None) or "").strip().lower()
-    if user_slug and tenant_slug and user_slug == tenant_slug:
-        return True
+    Matching one field cannot override a different explicit membership or
+    owner. Reuse the authentication resolver so /me and direct private routes
+    agree, without accepting public request selectors as membership.
+    """
+    from utils.auth_helpers import auth_tenant_for_user
 
-    user_id = getattr(user, "id", None)
-    owner_ids = {
-        owner_id
-        for owner_id in (
-            getattr(tenant, "municipio_id", None),
-            getattr(tenant, "pyme_id", None),
-        )
+    if user is None:
+        return None
+
+    resolved = auth_tenant_for_user(user)
+    legacy_owner_ids = {
+        owner_id for owner_id in (
+            getattr(user, "municipio_id", None), getattr(user, "pyme_id", None)
+        ) if owner_id is not None
+    }
+    if resolved is None:
+        # An unresolved explicit association is a conflict, not permission to
+        # fall back to another legacy reference. Legacy-only employees remain
+        # compatible only when their owner resolves to exactly one tenant.
+        if any(getattr(user, field, None) for field in ("tenant_id", "tenant_slug", "empresa_id")):
+            return None
+        if not legacy_owner_ids:
+            return None
+        if TenantProfile.query.filter(
+            (TenantProfile.municipio_id == user.id) | (TenantProfile.pyme_id == user.id)
+        ).first() is not None:
+            # The central resolver already rejected ambiguous ownership. An
+            # unrelated legacy owner must not resolve that ambiguity.
+            return None
+        candidates = TenantProfile.query.filter(
+            (TenantProfile.municipio_id.in_(legacy_owner_ids))
+            | (TenantProfile.pyme_id.in_(legacy_owner_ids))
+        ).order_by(TenantProfile.id.asc()).limit(2).all()
+        if len(candidates) != 1:
+            return None
+        resolved = candidates[0]
+
+    resolved_owner_ids = {
+        owner_id for owner_id in (resolved.municipio_id, resolved.pyme_id)
         if owner_id is not None
     }
-    if user_id in owner_ids:
-        return True
+    return resolved if legacy_owner_ids.issubset(resolved_owner_ids) else None
 
-    return any(
-        getattr(user, field, None) in owner_ids
-        for field in ("municipio_id", "pyme_id", "empresa_id")
-    )
+
+def _belongs_to_tenant(user: User, tenant: TenantProfile) -> bool:
+    resolved = resolve_consistent_user_tenant(user)
+    return resolved is not None and resolved.id == tenant.id
 
 
 def _has_scoped_tenant_admin_role(user: User, tenant: TenantProfile) -> bool:

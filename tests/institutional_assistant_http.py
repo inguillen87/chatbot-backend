@@ -48,6 +48,176 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
     def test_empty_workspace_is_truthful(self):
         state=self.get(self.login());self.assertIsNone(state['knowledge']);self.assertIsNone(state['revision'])
         self.assertEqual(self.app.test_client().get(self.url(True)).status_code,404)
+    def test_normal_login_profile_capabilities_match_private_knowledge_authorization(self):
+        for account in ('acceptance-a', 'acceptance-b', 'second', 'delegated'):
+            with self.subTest(account=account):
+                client=self.login(account)
+                profile=client.get('/api/me')
+                self.assertEqual(profile.status_code,200,profile.get_json())
+                data=profile.get_json()
+                slug='acceptance-b' if account=='acceptance-b' else 'acceptance-a'
+                self.assertEqual(data['tenant_slug'],slug)
+                self.assertEqual(data['organization_workspace']['tenant']['slug'],slug)
+                for key in ('capabilities','permissions','scopes'):
+                    self.assertIn('knowledge.read',data[key])
+                    self.assertIn('knowledge.write',data[key])
+                path='/api/admin/tenants/'+slug+'/institutional-assistant'
+                self.assertEqual(client.get(path).status_code,200)
+                other='acceptance-a' if slug=='acceptance-b' else 'acceptance-b'
+                self.assertEqual(client.get('/api/admin/tenants/'+other+'/institutional-assistant').status_code,403)
+                for path in ('/auth/session/bootstrap','/auth/me/dashboard'):
+                    response=client.get(path)
+                    self.assertEqual(response.status_code,200,response.get_json())
+                    payload=response.get_json()
+                    scopes=payload.get('user',payload)['capabilities']
+                    self.assertIn('knowledge.read',scopes)
+                    self.assertIn('knowledge.write',scopes)
+    def test_profile_does_not_inherit_public_or_other_tenant_selectors(self):
+        client=self.login()
+        for path,headers in [('/api/me?tenant=acceptance-b',{}),('/api/me',{'X-Tenant-Slug':'acceptance-b'}),('/api/me',{'Referer':'https://panel.example.invalid/municipio/acceptance-b'})]:
+            with self.subTest(path=path,headers=headers):
+                response=client.get(path,headers=headers)
+                self.assertEqual(response.status_code,200,response.get_json())
+                data=response.get_json()
+                self.assertEqual(data['tenant_slug'],'acceptance-a')
+                self.assertEqual(data['organization_workspace']['tenant']['slug'],'acceptance-a')
+    def test_employee_metadata_cannot_advertise_private_knowledge_access(self):
+        from database import db
+        from models import User
+        with self.app.app_context():
+            user=db.session.get(User,self.accounts['viewer']['id']);original=deepcopy(user.accesibilidad)
+            user.accesibilidad={'capabilities':['knowledge.read','knowledge.write','settings.tenant.write']};db.session.commit()
+        try:
+            client=self.login('viewer');response=client.get('/api/me')
+            self.assertEqual(response.status_code,200,response.get_json())
+            for key in ('capabilities','permissions','scopes'):
+                self.assertNotIn('knowledge.read',response.get_json()[key])
+                self.assertNotIn('knowledge.write',response.get_json()[key])
+                self.assertNotIn('settings.tenant.write',response.get_json()[key])
+            self.assertEqual(client.get(self.url()).status_code,403)
+            self.assertEqual(client.post(self.url()+'/answer',json={'revision':None,'node_id':'start'}).status_code,403)
+            self.assertEqual(self.put(client,'publish',None).status_code,403)
+        finally:
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['viewer']['id']);user.accesibilidad=original;db.session.commit()
+    def test_login_selector_cannot_rebind_existing_tenant_membership(self):
+        from database import db
+        from models import User
+        with self.app.app_context():
+            user=db.session.get(User,self.accounts['viewer']['id']);original=user.municipio_id
+            user.municipio_id=None;db.session.commit()
+        try:
+            client=self.app.test_client()
+            response=client.post('/auth/login',json={'email':self.accounts['viewer']['email'],'password':self.password,'tenant_slug':'acceptance-b'})
+            self.assertEqual(response.status_code,200,response.get_json())
+            self.assertEqual(response.get_json()['tenant_slug'],'acceptance-a')
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['viewer']['id'])
+                self.assertEqual(user.tenant_id,self.accounts['acceptance-a']['tenant_id'])
+                self.assertEqual(user.tenant_slug,'acceptance-a')
+        finally:
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['viewer']['id']);user.municipio_id=original;db.session.commit()
+    def test_global_superadmin_capabilities_require_the_email_allowlist(self):
+        from routes.auth import _profile_capabilities_for_user
+        from models import User
+        with self.app.test_request_context('/api/me'),patch.dict('os.environ',{'CLERK_SUPERADMIN_EMAILS':'allowed@example.invalid'}):
+            for email,allowed in [('allowed@example.invalid',True),('outside@example.invalid',False)]:
+                with self.subTest(email=email):
+                    user=User(id=990001,name='Platform account',email=email,rol='super_admin')
+                    capabilities=_profile_capabilities_for_user(user)
+                    for capability in ('*','knowledge.read','knowledge.write','settings.tenant.write'):
+                        self.assertEqual(capability in capabilities,allowed)
+    def test_conflicting_membership_denies_direct_private_knowledge_routes(self):
+        from database import db
+        from models import User
+        from utils.tenant_admin_access import can_manage_tenant_control_plane
+        from models import TenantProfile
+        cases=[('second',{'tenant_slug':'acceptance-b'}),
+            ('acceptance-a',{'tenant_id':self.accounts['acceptance-b']['tenant_id'],'tenant_slug':'acceptance-b'}),
+            ('second',{'municipio_id':self.accounts['acceptance-b']['id']}),
+            ('delegated',{'empresa_id':self.accounts['acceptance-b']['id']})]
+        for account,changes in cases:
+            with self.subTest(account=account,changes=changes):
+                client=self.login(account)
+                with self.app.app_context():
+                    user=db.session.get(User,self.accounts[account]['id'])
+                    original={key:getattr(user,key) for key in changes}
+                    for key,value in changes.items():setattr(user,key,value)
+                    db.session.commit()
+                try:
+                    with self.app.app_context():
+                        user=db.session.get(User,self.accounts[account]['id'])
+                        for slug in ('acceptance-a','acceptance-b'):
+                            tenant=db.session.get(TenantProfile,self.accounts[slug]['tenant_id'])
+                            self.assertFalse(can_manage_tenant_control_plane(user,tenant))
+                    for slug in ('acceptance-a','acceptance-b'):
+                        path='/api/admin/tenants/'+slug+'/institutional-assistant'
+                        self.assertEqual(client.get(path).status_code,403)
+                        self.assertEqual(client.post(path+'/answer',json={'revision':None,'node_id':'start'}).status_code,403)
+                        self.assertEqual(client.put(path,json={'operation':'publish','expected_revision':None},headers={'X-Chatboc-Knowledge':'1'}).status_code,403)
+                    profile=client.get('/api/me')
+                    self.assertEqual(profile.status_code,200,profile.get_json())
+                    self.assertNotIn('tenant_slug',profile.get_json())
+                    self.assertNotIn('organization_workspace',profile.get_json())
+                    for capability in ('knowledge.read','knowledge.write','settings.tenant.write'):
+                        self.assertNotIn(capability,profile.get_json()['capabilities'])
+                finally:
+                    with self.app.app_context():
+                        user=db.session.get(User,self.accounts[account]['id'])
+                        for key,value in original.items():setattr(user,key,value)
+                        db.session.commit()
+    def test_consistent_legacy_owner_membership_keeps_private_knowledge_access(self):
+        from database import db
+        from models import User,TenantProfile
+        from utils.tenant_admin_access import can_manage_tenant_control_plane
+        client=self.login('second')
+        with self.app.app_context():
+            user=db.session.get(User,self.accounts['second']['id'])
+            original={key:getattr(user,key) for key in ('tenant_id','tenant_slug','empresa_id','municipio_id','pyme_id')}
+        try:
+            for legacy_field in ('municipio_id','pyme_id'):
+                with self.subTest(legacy_field=legacy_field),self.app.app_context():
+                    user=db.session.get(User,self.accounts['second']['id'])
+                    for field in original:setattr(user,field,None)
+                    setattr(user,legacy_field,self.accounts['acceptance-a']['id']);db.session.commit()
+                    own=db.session.get(TenantProfile,self.accounts['acceptance-a']['tenant_id'])
+                    other=db.session.get(TenantProfile,self.accounts['acceptance-b']['tenant_id'])
+                    self.assertTrue(can_manage_tenant_control_plane(user,own))
+                    self.assertFalse(can_manage_tenant_control_plane(user,other))
+                    self.assertEqual(client.get(self.url()).status_code,200)
+        finally:
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['second']['id'])
+                for key,value in original.items():setattr(user,key,value)
+                db.session.commit()
+    def test_invalid_legacy_owner_reference_does_not_select_the_other_valid_owner(self):
+        from database import db
+        from models import User
+        client=self.login('second')
+        with self.app.app_context():
+            user=db.session.get(User,self.accounts['second']['id'])
+            original={key:getattr(user,key) for key in ('tenant_id','tenant_slug','empresa_id','municipio_id','pyme_id')}
+        try:
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['second']['id'])
+                user.tenant_id=None;user.tenant_slug=None;user.empresa_id=None
+                user.municipio_id=self.accounts['acceptance-a']['id'];user.pyme_id=99999999;db.session.commit()
+            response=client.get('/api/me')
+            self.assertEqual(response.status_code,200,response.get_json())
+            self.assertNotIn('tenant_slug',response.get_json())
+            self.assertNotIn('organization_workspace',response.get_json())
+            self.assertNotIn('knowledge.read',response.get_json()['capabilities'])
+            bootstrap=client.get('/auth/session/bootstrap')
+            self.assertEqual(bootstrap.status_code,200,bootstrap.get_json())
+            self.assertIsNone(bootstrap.get_json()['user']['tenant_slug'])
+            self.assertEqual(client.get(self.url()).status_code,403)
+            self.assertEqual(client.post(self.url()+'/answer',json={'revision':None,'node_id':'start'}).status_code,403)
+        finally:
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['second']['id'])
+                for key,value in original.items():setattr(user,key,value)
+                db.session.commit()
     def test_import_persists_and_publication_is_explicit(self):
         client=self.login();state=self.seed(client)
         self.assertEqual(state['visibility'],'private');self.assertEqual(self.get(client)['revision'],state['revision'])

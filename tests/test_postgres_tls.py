@@ -1,11 +1,12 @@
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from urllib.parse import urlsplit, parse_qs
+from urllib.parse import urlsplit, parse_qs, quote
+import secrets
 import certifi
 from utils.postgres_tls import normalize_postgres_tls_uri
 
-URI='postgresql://qa:p%40ss@db.example.invalid:5432/qa?sslrootcert=system'
+URI='postgresql://db.example.invalid:5432/qa?sslrootcert=system'
 
 class PostgresTlsTests(unittest.TestCase):
     def test_system_bundle_is_explicit_and_keeps_hostname_verification(self):
@@ -38,7 +39,9 @@ class PostgresTlsTests(unittest.TestCase):
         self.assertEqual(normalize_postgres_tls_uri(custom),custom)
 
     def test_other_options_and_percent_encoded_credentials_are_preserved(self):
-        original=URI+'&connect_timeout=8&application_name=API+candidate&options=-c%20statement_timeout%3D3000'
+        # Ephemeral synthetic userinfo exercises escaping without storing a credential.
+        userinfo='qa:'+quote(secrets.token_urlsafe(16)+'@/:',safe='')+'@'
+        original=URI.replace('postgresql://','postgresql://'+userinfo)+'&connect_timeout=8&application_name=API+candidate&options=-c%20statement_timeout%3D3000'
         output=normalize_postgres_tls_uri(original)
         self.assertEqual(urlsplit(output).netloc,urlsplit(original).netloc)
         before=parse_qs(urlsplit(original).query);after=parse_qs(urlsplit(output).query)
