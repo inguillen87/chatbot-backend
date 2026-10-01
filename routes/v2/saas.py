@@ -139,6 +139,7 @@ from services.whatsapp_workflow_versioning import (
 from utils.auth_helpers import token_requerido
 from utils.permissions import require_role
 from utils.roles import ROLE_EMPLEADO, canonical_role, first_specific_tenant_slug, is_authorized_superadmin_user
+from utils.tenant_admin_access import resolve_consistent_user_tenant
 
 v2_saas_bp = Blueprint("v2_saas", __name__, url_prefix="/api/v2")
 
@@ -382,12 +383,11 @@ def _resolve_tenant_or_error(current_user: User, path_slug: str | None = None):
 def _user_can_access_tenant(user: User, tenant: TenantProfile) -> bool:
     if is_authorized_superadmin_user(user):
         return True
-    if str(getattr(user, "tenant_id", "") or "") == str(tenant.id):
-        return True
-    if (getattr(user, "tenant_slug", "") or "").strip().lower() == (tenant.slug or "").strip().lower():
-        return True
-    owner_ids = {getattr(tenant, "pyme_id", None), getattr(tenant, "municipio_id", None)}
-    return getattr(user, "id", None) in owner_ids
+    # V2 operational reads and actions must use the same organization as /me.
+    # A matching slug or ownership field cannot override conflicting explicit
+    # membership. Valid legacy employees continue through the shared resolver.
+    resolved = resolve_consistent_user_tenant(user)
+    return resolved is not None and resolved.id == tenant.id
 
 
 def _tenant_ref(tenant: TenantProfile) -> dict[str, Any]:
