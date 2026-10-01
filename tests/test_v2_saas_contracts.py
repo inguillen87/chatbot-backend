@@ -1541,7 +1541,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(real_payload["next_action"], "confirm_real_message_required")
         self.assertTrue(real_payload["sends_real_message"])
 
-    def test_twilio_tech_provider_provision_dry_run_persists_plan_without_live_api(self):
+    def test_twilio_tech_provider_provision_dry_run_preserves_connection_state_without_live_api(self):
         self.app.config.update(
             TWILIO_ACCOUNT_SID="ACparent",
             TWILIO_AUTH_TOKEN="secret",
@@ -1550,27 +1550,37 @@ class V2SaasContractsTest(unittest.TestCase):
             TWILIO_TECH_PROVIDER_LIVE_ENABLED=False,
         )
 
-        response = self.client.post(
-            f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
-            headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-provision-1"},
-            json={"phone_number": "+5491112223333", "display_name": "Colegio SaaS"},
-        )
+        initial_state = copy.deepcopy(self.tenant.configuracion.get("twilio_tech_provider", {}))
+        with patch("services.twilio_tech_provider.requests.post") as post_request, patch(
+            "services.twilio_tech_provider.requests.put"
+        ) as put_request:
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
+                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-provision-1"},
+                json={"phone_number": "+5491112223333", "display_name": "Colegio SaaS"},
+            )
 
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
         self.assertEqual(payload["contract_version"], "twilio.tech_provider.provisioning.v1")
         self.assertEqual(payload["mode"], "dry_run")
-        self.assertEqual(payload["state"]["status"], "provisioning_plan_ready")
+        self.assertIsNone(payload["state"]["status"])
+        self.assertEqual(payload["state_patch"], {})
+        self.assertFalse(payload["credential_storage"]["ready"])
+        self.assertFalse(payload["provider_calls_performed"])
+        self.assertFalse(payload["provider_resources_created"])
+        self.assertEqual(payload["request"]["phone_number"], "+5491112223333")
+        self.assertEqual(payload["request"]["display_name"], "Colegio SaaS")
         self.assertTrue(any(step["id"] == "embedded_signup" for step in payload["steps"]))
         self.assertEqual(payload["onboarding"]["contract_version"], "tenant.whatsapp_onboarding.v1")
         self.assertEqual(payload["onboarding"]["provider"], "twilio_tech_provider")
         self.assertEqual(payload["onboarding"]["status"], "plan_ready")
         self.assertEqual(payload["channel_activation"]["contract_version"], "tenant.channel_activation.v1")
         refreshed = db.session.get(TenantProfile, self.tenant.id)
-        state = refreshed.configuracion["twilio_tech_provider"]
-        self.assertEqual(state["requested_phone_number"], "+5491112223333")
-        self.assertEqual(state["display_name"], "Colegio SaaS")
+        self.assertEqual(refreshed.configuracion.get("twilio_tech_provider", {}), initial_state)
         self.assertEqual(refreshed.configuracion["whatsapp_onboarding"]["status"], "plan_ready")
+        post_request.assert_not_called()
+        put_request.assert_not_called()
 
         signup_response = self.client.post(
             f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/embedded-signup",
@@ -1600,7 +1610,7 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(connection.external_business_id, "123456789")
         sender = ProviderSender.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").first()
         self.assertIsNotNone(sender)
-        self.assertEqual(sender.phone_number, "+5491112223333")
+        self.assertIsNone(sender.phone_number)
         self.assertEqual(sender.waba_id, "123456789")
         self.assertEqual(sender.phone_number_id, "987654321")
         self.assertGreaterEqual(MessagingEventLedger.query.filter_by(tenant_id=self.tenant.id, channel="whatsapp").count(), 2)
@@ -1624,12 +1634,12 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(status["request_id"], "provider-status-1")
         self.assertEqual(status["tenant"]["slug"], self.tenant.slug)
         self.assertEqual(status["connection"]["external_business_id"], "123456789")
-        self.assertEqual(status["sender"]["phone_number"], "+5491112223333")
+        self.assertIsNone(status["sender"]["phone_number"])
         self.assertEqual(status["frontend_contract"]["render_as"], "whatsapp_provider_status")
         self.assertTrue(any(check["id"] == "subaccount" for check in status["readiness_checks"]))
         self.assertTrue(status["recent_events"])
 
-    def test_twilio_tech_provider_live_provision_creates_subaccount_and_messaging_service_without_persisting_token(self):
+    def test_twilio_tech_provider_live_provision_blocks_before_resources_without_tenant_store(self):
         self.app.config.update(
             TWILIO_ACCOUNT_SID="ACparent",
             TWILIO_AUTH_TOKEN="parent-secret",
@@ -1638,40 +1648,35 @@ class V2SaasContractsTest(unittest.TestCase):
             TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
             PUBLIC_API_BASE_URL="https://www.chatboc.ar",
         )
-        calls = []
-
-        def fake_post(url, **kwargs):
-            calls.append((url, kwargs))
-            if url.endswith("/Accounts.json"):
-                self.assertEqual(kwargs["data"]["FriendlyName"], "Chatboc - saas-tenant")
-                return _FakeTwilioResponse({"sid": "ACchild", "auth_token": "child-secret"})
-            if url == "https://messaging.twilio.com/v1/Services":
-                self.assertEqual(kwargs["data"]["InboundRequestUrl"], "https://www.chatboc.ar/webhook/whatsapp")
-                self.assertEqual(kwargs["data"]["StatusCallback"], "https://www.chatboc.ar/twilio/whatsapp/status")
-                return _FakeTwilioResponse({"sid": "MGchild"})
-            raise AssertionError(f"unexpected Twilio URL {url}")
-
-        with patch("services.twilio_tech_provider.requests.post", side_effect=fake_post):
+        initial_state = copy.deepcopy(self.tenant.configuracion.get("twilio_tech_provider", {}))
+        with patch("services.twilio_tech_provider.requests.post") as post_request, patch(
+            "services.twilio_tech_provider.requests.put"
+        ) as put_request:
             response = self.client.post(
                 f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
                 headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-live-1"},
                 json={"phone_number": "+5491112223333", "display_name": "Colegio SaaS"},
             )
 
-        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.status_code, 400, response.get_json())
         payload = response.get_json()
-        self.assertEqual(payload["mode"], "live")
-        self.assertEqual(payload["state"]["status"], "ready_for_embedded_signup")
-        self.assertEqual(payload["state"]["twilio_account_sid"], "ACchild")
-        self.assertEqual(payload["state"]["messaging_service_sid"], "MGchild")
-        self.assertEqual(payload["secure_secret_required"]["required_env"][0], "TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD")
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["mode"], "blocked")
+        self.assertEqual(payload["reason_code"], "twilio_tenant_credential_store_unavailable")
+        self.assertFalse(payload["credential_storage"]["ready"])
+        self.assertFalse(payload["provider_calls_performed"])
+        self.assertFalse(payload["provider_resources_created"])
+        self.assertEqual(payload["state_patch"], {})
+        self.assertNotEqual(payload["state"]["status"], "ready_for_embedded_signup")
+        self.assertIsNone(payload["state"]["twilio_account_sid"])
+        self.assertIsNone(payload["state"]["messaging_service_sid"])
         refreshed = db.session.get(TenantProfile, self.tenant.id)
-        state_text = json.dumps(refreshed.configuracion, sort_keys=True)
-        self.assertIn("TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD", state_text)
-        self.assertNotIn("child-secret", state_text)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(refreshed.configuracion.get("twilio_tech_provider", {}), initial_state)
+        self.assertNotIn("parent-secret", json.dumps(payload, sort_keys=True))
+        post_request.assert_not_called()
+        put_request.assert_not_called()
 
-    def test_twilio_tech_provider_live_provision_retries_without_duplicate_resources(self):
+    def test_twilio_tech_provider_live_provision_retries_remain_blocked_without_state_mutation(self):
         self.app.config.update(
             TWILIO_ACCOUNT_SID="ACparent",
             TWILIO_AUTH_TOKEN="parent-secret",
@@ -1680,23 +1685,20 @@ class V2SaasContractsTest(unittest.TestCase):
             TWILIO_TECH_PROVIDER_LIVE_ENABLED=True,
             PUBLIC_API_BASE_URL="https://www.chatboc.ar",
         )
-        calls = []
-        messaging_service_attempts = 0
-
-        def fake_post(url, **kwargs):
-            nonlocal messaging_service_attempts
-            calls.append((url, kwargs))
-            if url.endswith("/Accounts.json"):
-                return _FakeTwilioResponse({"sid": "ACchild", "auth_token": "child-secret"})
-            if url == "https://messaging.twilio.com/v1/Services":
-                messaging_service_attempts += 1
-                if messaging_service_attempts == 1:
-                    raise RuntimeError("temporary messaging service failure")
-                return _FakeTwilioResponse({"sid": "MGchild"})
-            raise AssertionError(f"unexpected Twilio URL {url}")
+        initial_state = {
+            "twilio_account_sid": "ACchild",
+            "status": "subaccount_created",
+            "last_step": "create_subaccount",
+            "requested_phone_number": "+15555550123",
+        }
+        self.tenant.configuracion = {"twilio_tech_provider": copy.deepcopy(initial_state)}
+        db.session.add(self.tenant)
+        db.session.commit()
 
         endpoint = f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision"
-        with patch("services.twilio_tech_provider.requests.post", side_effect=fake_post):
+        with patch("services.twilio_tech_provider.requests.post") as post_request, patch(
+            "services.twilio_tech_provider.requests.put"
+        ) as put_request:
             first_response = self.client.post(
                 endpoint,
                 headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-retry-1"},
@@ -1710,43 +1712,48 @@ class V2SaasContractsTest(unittest.TestCase):
                 json={"phone_number": "+5491112223333"},
             )
 
-            refreshed_for_replay = db.session.get(TenantProfile, self.tenant.id)
-            replay_config = dict(refreshed_for_replay.configuracion)
-            replay_state = dict(replay_config["twilio_tech_provider"])
-            replay_state.update(
-                {
-                    "status": "pending_sender_registration",
-                    "last_step": "embedded_signup",
-                    "waba_id": "123456789",
-                }
+        for response in (first_response, second_response):
+            self.assertEqual(response.status_code, 400, response.get_json())
+            payload = response.get_json()
+            self.assertEqual(payload["reason_code"], "twilio_tenant_credential_store_unavailable")
+            self.assertEqual(payload["state_patch"], {})
+            self.assertEqual(payload["state"]["twilio_account_sid"], "ACchild")
+            self.assertIsNone(payload["state"]["messaging_service_sid"])
+            self.assertEqual(payload["state"]["status"], "subaccount_created")
+            self.assertFalse(payload["provider_calls_performed"])
+            self.assertFalse(payload["provider_resources_created"])
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        self.assertEqual(refreshed.configuracion["twilio_tech_provider"], initial_state)
+        self.assertNotIn("child-secret", json.dumps(refreshed.configuracion, sort_keys=True))
+        post_request.assert_not_called()
+        put_request.assert_not_called()
+
+    def test_twilio_tech_provider_live_provision_replays_complete_references_without_advancing(self):
+        self.app.config.update(TWILIO_TECH_PROVIDER_LIVE_ENABLED=True)
+        initial_state = {
+            "twilio_account_sid": "ACchild",
+            "messaging_service_sid": "MGchild",
+            "status": "pending_sender_registration",
+            "last_step": "embedded_signup",
+            "waba_id": "123456789",
+            "requested_phone_number": "+15555550123",
+            "display_name": "Existing tenant",
+        }
+        self.tenant.configuracion = {"twilio_tech_provider": copy.deepcopy(initial_state)}
+        db.session.add(self.tenant)
+        db.session.commit()
+
+        with patch("services.twilio_tech_provider.requests.post") as post_request, patch(
+            "services.twilio_tech_provider.requests.put"
+        ) as put_request:
+            response = self.client.post(
+                f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
+                headers=self._auth(self.owner),
+                json={"phone_number": "+15555550456", "display_name": "New requested name"},
             )
-            replay_config["twilio_tech_provider"] = replay_state
-            refreshed_for_replay.configuracion = replay_config
-            db.session.add(refreshed_for_replay)
-            db.session.commit()
 
-            replay_response = self.client.post(
-                endpoint,
-                headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-retry-3"},
-                json={"phone_number": "+5491112223333"},
-            )
-
-        self.assertEqual(first_response.status_code, 400, first_response.get_json())
-        first_payload = first_response.get_json()
-        self.assertEqual(first_payload["reason_code"], "twilio_messaging_service_creation_failed")
-        self.assertEqual(first_payload["state"]["twilio_account_sid"], "ACchild")
-        self.assertIsNone(first_payload["state"]["messaging_service_sid"])
-
-        self.assertEqual(second_response.status_code, 200, second_response.get_json())
-        second_payload = second_response.get_json()
-        second_steps = {step["id"]: step for step in second_payload["steps"]}
-        self.assertEqual(second_steps["create_subaccount"]["status"], "done")
-        self.assertEqual(second_steps["create_subaccount"]["operation"], "reuse")
-        self.assertEqual(second_steps["create_messaging_service"]["status"], "done")
-        self.assertEqual(second_payload["state"]["messaging_service_sid"], "MGchild")
-
-        self.assertEqual(replay_response.status_code, 200, replay_response.get_json())
-        replay_payload = replay_response.get_json()
+        self.assertEqual(response.status_code, 200, response.get_json())
+        replay_payload = response.get_json()
         replay_steps = {step["id"]: step for step in replay_payload["steps"]}
         self.assertTrue(replay_payload["idempotent_replay"])
         self.assertEqual(replay_steps["create_subaccount"]["status"], "done")
@@ -1757,11 +1764,15 @@ class V2SaasContractsTest(unittest.TestCase):
         self.assertEqual(replay_payload["state"]["messaging_service_sid"], "MGchild")
         self.assertEqual(replay_payload["state"]["status"], "pending_sender_registration")
         self.assertEqual(replay_payload["state"]["last_step"], "embedded_signup")
-
-        account_calls = [call for call in calls if call[0].endswith("/Accounts.json")]
-        messaging_service_calls = [call for call in calls if call[0] == "https://messaging.twilio.com/v1/Services"]
-        self.assertEqual(len(account_calls), 1)
-        self.assertEqual(len(messaging_service_calls), 2)
+        self.assertEqual(replay_payload["state_patch"], {})
+        self.assertFalse(replay_payload["credential_storage"]["ready"])
+        self.assertFalse(replay_payload["provider_calls_performed"])
+        self.assertFalse(replay_payload["provider_resources_created"])
+        self.assertNotIn("embedded_signup", replay_steps)
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        self.assertEqual(refreshed.configuracion["twilio_tech_provider"], initial_state)
+        post_request.assert_not_called()
+        put_request.assert_not_called()
 
     def test_twilio_provision_retry_never_uses_an_unscoped_child_token(self):
         self.app.config.update(
@@ -1782,7 +1793,10 @@ class V2SaasContractsTest(unittest.TestCase):
         db.session.add(self.tenant)
         db.session.commit()
 
-        with patch("services.twilio_tech_provider.requests.post") as post_request:
+        initial_state = copy.deepcopy(self.tenant.configuracion["twilio_tech_provider"])
+        with patch("services.twilio_tech_provider.requests.post") as post_request, patch(
+            "services.twilio_tech_provider.requests.put"
+        ) as put_request:
             response = self.client.post(
                 f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
                 headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-unscoped-secret-1"},
@@ -1791,11 +1805,17 @@ class V2SaasContractsTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400, response.get_json())
         payload = response.get_json()
-        self.assertEqual(payload["reason_code"], "twilio_subaccount_token_missing")
+        self.assertEqual(payload["reason_code"], "twilio_tenant_credential_store_unavailable")
+        self.assertEqual(payload["state_patch"], {})
+        self.assertFalse(payload["credential_storage"]["ready"])
         self.assertNotIn("TWILIO_SUBACCOUNT_AUTH_TOKEN", payload.get("required_env", []))
+        self.assertNotIn("unrelated-child-secret", json.dumps(payload, sort_keys=True))
+        refreshed = db.session.get(TenantProfile, self.tenant.id)
+        self.assertEqual(refreshed.configuracion["twilio_tech_provider"], initial_state)
         post_request.assert_not_called()
+        put_request.assert_not_called()
 
-    def test_twilio_live_provision_syncs_subaccount_secret_to_render_when_enabled(self):
+    def test_twilio_live_provision_render_flags_cannot_bypass_storage_preflight(self):
         self.app.config.update(
             TWILIO_ACCOUNT_SID="ACparent",
             TWILIO_AUTH_TOKEN="parent-secret",
@@ -1806,48 +1826,32 @@ class V2SaasContractsTest(unittest.TestCase):
             RENDER_ENV_SYNC_ENABLED=True,
             RENDER_API_KEY="render-secret",
             RENDER_SERVICE_ID="srv-backend",
-            RENDER_ENV_SYNC_TRIGGER_DEPLOY_ENABLED=False,
+            RENDER_ENV_SYNC_TRIGGER_DEPLOY_ENABLED=True,
         )
-        twilio_calls = []
-        render_calls = []
-
-        def fake_twilio_post(url, **kwargs):
-            twilio_calls.append((url, kwargs))
-            if url.endswith("/Accounts.json"):
-                return _FakeTwilioResponse({"sid": "ACchild", "auth_token": "child-secret"})
-            if url == "https://messaging.twilio.com/v1/Services":
-                return _FakeTwilioResponse({"sid": "MGchild"})
-            raise AssertionError(f"unexpected Twilio URL {url}")
-
-        def fake_render_put(url, **kwargs):
-            render_calls.append((url, kwargs))
-            self.assertEqual(url, "https://api.render.com/v1/services/srv-backend/env-vars/TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD")
-            self.assertEqual(kwargs["json"], {"value": "child-secret"})
-            self.assertIn("Bearer render-secret", kwargs["headers"]["Authorization"])
-            return _FakeTwilioResponse({"key": "TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD"}, status_code=200)
-
-        with patch("services.twilio_tech_provider.requests.post", side_effect=fake_twilio_post), patch(
-            "services.render_env_sync.requests.put",
-            side_effect=fake_render_put,
-        ):
+        initial_state = copy.deepcopy(self.tenant.configuracion.get("twilio_tech_provider", {}))
+        with patch("services.twilio_tech_provider.requests.post") as post_request, patch(
+            "services.twilio_tech_provider.requests.put"
+        ) as put_request:
             response = self.client.post(
                 f"/api/v2/tenants/{self.tenant.slug}/whatsapp/tech-provider/provision",
                 headers={**self._auth(self.owner), "X-Request-Id": "tech-provider-render-sync-1"},
                 json={"phone_number": "+5491112223333"},
             )
 
-        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.status_code, 400, response.get_json())
         payload = response.get_json()
-        render_sync = payload["secure_secret_required"]["render_env_sync"]
-        self.assertTrue(render_sync["secret_value_stored"])
-        self.assertEqual(render_sync["target"], "service")
-        self.assertTrue(payload["state"]["render_subaccount_secret_synced"])
+        self.assertEqual(payload["reason_code"], "twilio_tenant_credential_store_unavailable")
+        self.assertEqual(payload["state_patch"], {})
+        self.assertFalse(payload["credential_storage"]["ready"])
+        self.assertFalse(payload["provider_calls_performed"])
+        self.assertFalse(payload["provider_resources_created"])
+        self.assertIsNone(payload["state"]["render_subaccount_secret_synced"])
+        self.assertNotIn("render_env_sync", payload.get("secure_secret_required", {}))
         refreshed = db.session.get(TenantProfile, self.tenant.id)
-        state_text = json.dumps(refreshed.configuracion, sort_keys=True)
-        self.assertIn("TWILIO_SUBACCOUNT_AUTH_TOKEN_ACCHILD", state_text)
-        self.assertNotIn("child-secret", state_text)
-        self.assertEqual(len(twilio_calls), 2)
-        self.assertEqual(len(render_calls), 1)
+        self.assertEqual(refreshed.configuracion.get("twilio_tech_provider", {}), initial_state)
+        self.assertNotIn("render-secret", json.dumps(payload, sort_keys=True))
+        post_request.assert_not_called()
+        put_request.assert_not_called()
 
     def test_twilio_tech_provider_voice_app_dry_run_persists_tenant_urls(self):
         self.app.config.update(

@@ -736,8 +736,27 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
             f"/api/admin/tenants/{self.tenant.slug}/orders/order:{canonical.id}",
             headers=self._auth(),
         )
-        self.assertEqual(detail_response.status_code, 200)
-        self.assertEqual(detail_response.get_json().get("source_model"), "Order")
+        # This fixture deliberately makes the actor owner of two profiles.
+        # Control-plane reads must reject that ambiguous ownership even when
+        # the legacy analytics selector can isolate exact persisted rows.
+        self.assertEqual(detail_response.status_code, 403)
+
+    def test_canonical_order_detail_remains_available_with_consistent_ownership(self):
+        canonical = Order(
+            tenant_id=self.tenant.id,
+            buyer_name="Local contract customer",
+            status="created",
+            channel="web_widget",
+            total=2500,
+        )
+        db.session.add(canonical)
+        db.session.commit()
+        response = self.client.get(
+            f"/api/admin/tenants/{self.tenant.slug}/orders/order:{canonical.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json().get("source_model"), "Order")
 
     def test_operations_excludes_explicit_foreign_municipio_ticket_with_shared_owner(self):
         foreign_tenant = TenantProfile(
@@ -1273,7 +1292,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertEqual(authority.get("global_id"), "{FEA13AA1-46F3-4570-BAEE-188FF11AFF94}")
         self.assertEqual(
             authority.get("snapshot_sha256"),
-            "9ee2005d4b2afca51e4b487e3b3f31056f567c37e58027c573ea79bed8ddaa16",
+            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
         )
         self.assertIn("ide.mendoza.gov.ar", authority.get("source_ref") or "")
         self.assertEqual(jurisdiction.get("excluded_coordinate_records"), 3)
@@ -1365,7 +1384,7 @@ class V2OperationalAnalyticsTest(unittest.TestCase):
         self.assertIn("ide.mendoza.gov.ar", points[0].get("source_ref") or "")
         self.assertEqual(
             points[0].get("snapshot_sha256"),
-            "9ee2005d4b2afca51e4b487e3b3f31056f567c37e58027c573ea79bed8ddaa16",
+            "3dbfc3bb3c98601d6bf1897d737c1e739f39173f1c10c440aef35e516661a731",
         )
         self.assertEqual(
             points[0].get("jurisdiction_evidence"),
