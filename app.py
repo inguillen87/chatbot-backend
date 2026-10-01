@@ -491,6 +491,16 @@ def create_app(config_class=Config):
         describe_database_uri(app.config.get("SQLALCHEMY_DATABASE_URI")),
     )
 
+    @app.errorhandler(HTTPException)
+    def handle_http_exception(error: HTTPException):
+        """Return JSON for any uncaught HTTP exception instead of HTML."""
+
+        payload = {
+            "error": error.name.lower().replace(" ", "_"),
+            "detail": error.description,
+        }
+        return jsonify(payload), error.code
+
     # CORS y headers (solo runtime normal)
     if not MIGRATIONS_ONLY:
         env_name = str(app.config.get("ENV") or "").strip().lower()
