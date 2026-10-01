@@ -29,6 +29,10 @@ class R2ObjectStorageUnavailableError(RuntimeError):
     """Raised when R2 cannot give a definitive answer for an object operation."""
 
 
+class R2ObjectContentInvalidError(RuntimeError):
+    """Raised when a bounded private download fails its metadata checks."""
+
+
 _R2_DEFINITE_NOT_FOUND_CODES = {
     "404",
     "nosuchkey",
@@ -270,6 +274,52 @@ class R2Service:
             return "/".join((context_segments[0], tenant_segment, *context_segments[1:], filename_segment))
 
         return "/".join((*context_segments, tenant_segment, filename_segment))
+
+    def read_object_bytes(self, key, *, max_bytes, content_type):
+        """Read a bounded object without generating any public or signed URL.
+
+        None means a definitive missing object. Provider errors and invalid
+        object metadata have separate, value-free errors for private callers.
+        """
+        safe_key = normalise_r2_object_key(key)
+        if (safe_key != key or type(max_bytes) is not int or max_bytes <= 0
+            or not all((self.endpoint_url, self.access_key_id,
+                        self.secret_access_key, self.bucket_name))):
+            raise R2ObjectStorageUnavailableError("private_object_storage_unavailable")
+        client = None
+        body = None
+        try:
+            # This download has a fixed I/O budget, independent of a cached
+            # upload client's default timeouts and retries.
+            client = self._create_client(timeout_seconds=5)
+            result = client.get_object(Bucket=self.bucket_name, Key=safe_key)
+            body = result.get("Body")
+            size = result.get("ContentLength")
+            actual_type = str(result.get("ContentType") or "").split(";", 1)[0].strip().lower()
+            if (type(size) is not int or not 0 < size <= max_bytes
+                or actual_type != content_type or not callable(getattr(body, "read", None))):
+                raise R2ObjectContentInvalidError("private_object_metadata_invalid")
+            data = body.read(max_bytes + 1)
+            if not isinstance(data, bytes) or len(data) != size or len(data) > max_bytes:
+                raise R2ObjectContentInvalidError("private_object_size_invalid")
+            return data
+        except (R2ObjectContentInvalidError, R2ObjectStorageUnavailableError):
+            raise
+        except ClientError as error:
+            code, status = _client_error_code_and_status(error)
+            if status == 404 or code in _R2_DEFINITE_NOT_FOUND_CODES:
+                return None
+            raise R2ObjectStorageUnavailableError("private_object_storage_unavailable") from None
+        except Exception:
+            raise R2ObjectStorageUnavailableError("private_object_storage_unavailable") from None
+        finally:
+            for resource in (body, client):
+                close = getattr(resource, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        pass
 
     def public_url_for_key(self, key):
         if not self.public_base_url:
