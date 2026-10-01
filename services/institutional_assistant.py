@@ -6,6 +6,7 @@ from models import db, TenantProfile, TenantConfig, AuditEvent, User
 from cutover_writer_fence import cutover_writer_fence_enabled
 from services.constants import CONTEXTO_MUNICIPIO
 from utils.tenant_admin_access import can_manage_tenant_control_plane
+from utils.auth_helpers import is_user_auth_disabled
 from services.institutional_assistant_content import (
     ContentError, CONTRACT, normalize_bundle, overview, digest, select_nodes, materialize_node,
 )
@@ -50,13 +51,13 @@ def read_state(tenant, *, public=False):
         raise ContentError('knowledge_not_available', 404)
     return state
 
-def workspace(tenant, state, *, editable=False):
+def workspace(tenant, state, *, editable=False, public=False):
     data = {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug, 'name': tenant.nombre},
         'revision': state['revision'] if state else None, 'visibility': state['visibility'] if state else 'empty',
         'can_edit': editable, 'ui': deepcopy(UI), 'knowledge': None}
     if state:
         bundle = state['bundle']
-        data['knowledge'] = {**overview(bundle), 'version': bundle['version'], 'initial': materialize_node(bundle['nodes'][bundle['start']])}
+        data['knowledge'] = {**overview(bundle, public=public), 'version': bundle['version'], 'initial': materialize_node(bundle['nodes'][bundle['start']], public=public)}
     return data
 
 def save_state(tenant, actor, command):
@@ -69,7 +70,7 @@ def save_state(tenant, actor, command):
         current = db.session.execute(select(TenantProfile).where(TenantProfile.id == tenant.id)
             .with_for_update().execution_options(populate_existing=True)).scalar_one()
         fresh_actor = db.session.get(User, actor.id, populate_existing=True)
-        if not current.is_active or not can_manage_tenant_control_plane(fresh_actor, current):
+        if not current.is_active or is_user_auth_disabled(fresh_actor) or not can_manage_tenant_control_plane(fresh_actor, current):
             raise ContentError('knowledge_forbidden', 403)
         row = _record(current.id)
         if row: db.session.refresh(row)
@@ -115,6 +116,8 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     from utils.auth_helpers import auth_session_version
     actor_id = getattr(actor, 'id', None)
     session_version = auth_session_version(actor) if actor_id else None
+    if actor_id and (is_user_auth_disabled(actor) or not can_manage_tenant_control_plane(actor, tenant)):
+        raise ContentError('knowledge_forbidden', 403)
     bundle = state['bundle']
     node_id = command.get('node_id', bundle['start'])
     if not isinstance(node_id, str) or node_id not in bundle['nodes']:
@@ -132,14 +135,31 @@ def answer(tenant, command, *, public=False, selector=None, actor=None):
     latest = read_state(tenant, public=public)
     if actor_id:
         refreshed_actor = db.session.get(User, actor_id, populate_existing=True)
-        if refreshed_actor is None or not can_manage_tenant_control_plane(refreshed_actor, tenant) or auth_session_version(refreshed_actor) != session_version:
+        if refreshed_actor is None or is_user_auth_disabled(refreshed_actor) or not can_manage_tenant_control_plane(refreshed_actor, tenant) or auth_session_version(refreshed_actor) != session_version:
             raise ContentError('knowledge_forbidden', 403)
     if latest is None or latest['revision'] != state['revision']:
         raise ContentError('knowledge_revision_conflict', 412)
     return {'contract_version': CONTRACT, 'tenant': {'id': tenant.id, 'slug': tenant.slug},
-        'revision': state['revision'], 'nodes': [materialize_node(n) for n in nodes],
+        'revision': state['revision'], 'nodes': [materialize_node(n, public=public) for n in nodes],
         'text': UI['unknown'] if not nodes else '\n\n'.join(n['text'] for n in nodes),
         'selection_performed': called, 'business_writes_performed': False}
+
+def _channel_source_label(source):
+    label = source['title']
+    if source.get('format') == 'text':
+        label += ' · texto extraído'
+    elif source.get('format') == 'jpeg':
+        label += ' · imagen'
+    else:
+        label += ' · ' + ', '.join(str(p) for p in source['pages'])
+    if source.get('printed_year') is not None:
+        label += ' · edición ' + str(source['printed_year'])
+    if source.get('review_status') == 'conflict':
+        label += ' · fuentes por conciliar'
+    elif source.get('review_status') in ('unreviewed', 'needs_review'):
+        label += ' · revisión pendiente'
+    return label
+
 
 def maybe_handle_institutional_question(question, owner, session=None):
     """Existing responder integration. Tenant comes from the resolved owner, not text."""
@@ -171,15 +191,32 @@ def maybe_handle_institutional_question(question, owner, session=None):
     if isinstance(context, dict) and any(context.get(key) for key in (CONTEXTO_MUNICIPIO,'contexto_municipio','contexto_pyme_v2','active_ticket_id','ticket_id')) and not text.startswith('knowledge:'):
         return None
     command = {'revision': state['revision'], 'node_id': state['bundle']['start']}
+    previous = context.get('institutional_knowledge', {}) if isinstance(context, dict) else {}
+    if not isinstance(previous, dict): previous = {}
     if text.startswith('knowledge:'):
         parts = text.split(':')
         if len(parts) != 3 or parts[1] != state['revision'][:16] or parts[2] not in state['bundle']['nodes']:
             return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_stale'}
         command['node_id'] = parts[2]
     elif text.strip().lower() not in ('', 'menu', 'menú', 'inicio'):
-        command['question'] = text
-        previous = context.get('institutional_knowledge', {}) if isinstance(context, dict) else {}
-        if previous.get('revision') == state['revision'] and previous.get('node_id') in state['bundle']['nodes']:
+        # Text-only WhatsApp menus carry an explicit reply code. Resolve it
+        # solely against the displayed node and current persisted revision;
+        # free-form language still goes through the existing LLM selector.
+        reply_code = text.strip()
+        is_reply_code = reply_code.isascii() and reply_code.isdecimal()
+        known_context = previous.get('revision') == state['revision'] and previous.get('node_id') in state['bundle']['nodes']
+        if is_reply_code:
+            advertised = previous.get('reply_choices')
+            if not known_context or previous.get('reply_node_id') != previous['node_id'] or not isinstance(advertised, dict):
+                return {'message_body': UI['error'], 'fuente': 'institutional_knowledge_stale'}
+            actions = state['bundle']['nodes'][previous['node_id']]['actions']
+            selected = next((a for a in actions if a['code'] == reply_code and a['target'] == advertised.get(reply_code)), None)
+            if selected is None:
+                return {'message_body': UI['unknown'], 'fuente': 'institutional_knowledge_unknown_choice'}
+            command['node_id'] = selected['target']
+        else:
+            command['question'] = text
+        if known_context and not is_reply_code:
             command['node_id'] = previous['node_id']
     try:
         result = answer(tenant, command, public=True)
@@ -189,21 +226,25 @@ def maybe_handle_institutional_question(question, owner, session=None):
     # No matched institutional answer means the existing operational handlers continue.
     if not nodes and not text.startswith('knowledge:'):
         return None
-    if session is not None and nodes:
-        context = deepcopy(getattr(session, 'context_data', None) or {})
-        context['institutional_knowledge'] = {'revision': state['revision'], 'node_id': nodes[-1]['id']}
-        session.context_data = context
     citations, choices, links = [], [], []
     for node in nodes:
         links.extend(node.get('links', []))
         for source in node['sources']:
-            label = source['title'] + ' · ' + ', '.join(str(p) for p in source['pages'])
+            label = _channel_source_label(source)
             if label not in citations: citations.append(label)
         for choice in node['actions']:
             if not any(a['target'] == choice['target'] and a['label'] == choice['label'] for a in choices): choices.append(choice)
+    reply_choices = {c['code']: c['target'] for c in choices
+        if len(nodes) == 1 and len(c['code']) <= 3 and c['code'].isascii() and c['code'].isdecimal()}
+    if session is not None and nodes:
+        context = deepcopy(getattr(session, 'context_data', None) or {})
+        context['institutional_knowledge'] = {'revision': state['revision'], 'node_id': nodes[-1]['id'],
+            'reply_node_id': nodes[0]['id'] if len(nodes) == 1 else None, 'reply_choices': reply_choices}
+        session.context_data = context
     return {'message_body': result['text'] + ''.join('\n\n' + l['label'] + ': ' + l['url'] for l in links)
         + ('\n\n' + UI['sources'] + ':\n' + '\n'.join(citations) if citations else ''),
         'message_type': 'interactive_buttons' if choices else 'text',
-        'botones': [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target']} for c in choices],
+        'botones': [{'texto': c['label'], 'action_id': 'knowledge:' + state['revision'][:16] + ':' + c['target'],
+            **({'reply_code': c['code']} if c['code'] in reply_choices else {})} for c in choices],
         'knowledge_sources': [s for n in nodes for s in n['sources']],
         'fuente': 'institutional_knowledge', 'context_revision': state['revision']}

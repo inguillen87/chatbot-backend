@@ -11,6 +11,109 @@ def sample(tenant_id=701, slug='qa-knowledge'):
         'policy':{key:False for key in ['accepts_personal_data','creates_real_cases','queries_official_records','sends_notifications','stores_feedback']}}
 
 class InstitutionalContentTests(unittest.TestCase):
+    def test_editorial_metadata_survives_without_import_approval_or_drive_link(self):
+        data = sample()
+        metadata = {'source_authority': 'project', 'format': 'pdf', 'mime_type': 'application/pdf',
+                    'pagination': 'native', 'byte_size': 205, 'printed_year': 2025,
+                    'origin_url': 'https://drive.google.com/file/d/source-fixture/view',
+                    'native_revision': 'provider-revision-fixture', 'modified_at': '2025-03-28T10:00:00Z',
+                    'review_status': 'needs_review', 'current_validity': 'not_verified',
+                    'provenance': 'Documento institucional aportado; revisión pendiente',
+                    'evaluation_only': True, 'approval_status': 'pending_institutional_approval'}
+        data['sources']['a'].update(metadata)
+        data.update(evaluation_only=True, approval_status='pending_institutional_approval')
+        normalized = normalize_bundle(data, 701, 'qa-knowledge')
+        self.assertTrue(normalized['evaluation_only'])
+        self.assertEqual(normalized['approval_status'], 'pending_institutional_approval')
+        source = normalized['sources']['a']
+        for name, expected in metadata.items():
+            self.assertEqual(source[name], expected)
+        self.assertIsNone(source['url'])
+        self.assertNotIn('file_path', source)
+        self.assertNotIn('available', source['delivery'])
+        self.assertEqual(source['delivery']['format'], 'pdf')
+        for delivered in (overview(normalized)['sources'][0], materialize_node(normalized['nodes']['start'])['sources'][0]):
+            for name, expected in metadata.items():
+                self.assertEqual(delivered[name], expected)
+            self.assertEqual(delivered['delivery'], source['delivery'])
+
+    def test_text_and_image_snapshots_have_one_explicit_logical_page(self):
+        for format_name, mime, extension in [('jpeg', 'image/jpeg', 'jpg'), ('text', 'text/plain', 'txt')]:
+            data = sample()
+            data['sources']['a'].update(format=format_name, mime_type=mime, page_count=1)
+            for refs in data['node_evidence'].values():
+                for ref in refs:
+                    ref['pages'] = [1]; ref['page'] = 1
+            result = normalize_bundle(data, 701, 'qa-knowledge')['sources']['a']
+            self.assertEqual(result['pagination'], 'logical_snapshot')
+            self.assertEqual(result['delivery']['mime_type'], mime)
+            self.assertTrue(result['delivery']['filename'].endswith('.' + extension))
+            for mutation in ({'page_count': 2}, {'pagination': 'native'}, {'mime_type': 'text/html'}):
+                with self.subTest(format=format_name, mutation=mutation), self.assertRaises(ContentError):
+                    invalid_data = deepcopy(data)
+                    invalid_data['sources']['a'].update(mutation)
+                    normalize_bundle(invalid_data, 701, 'qa-knowledge')
+
+    def test_public_source_projection_hides_private_origin_without_mutating_evidence(self):
+        from services.institutional_assistant_content import digest
+        data = sample()
+        metadata = {'origin_url': 'https://drive.google.com/file/d/private-source-fixture/view',
+                    'official_url': 'https://example.org/official.pdf',
+                    'source_authority': 'operational_document', 'provenance': 'Fuente aportada',
+                    'review_status': 'needs_review', 'evaluation_only': True}
+        data['sources']['a'].update(metadata)
+        bundle = normalize_bundle(data, 701, 'qa-knowledge')
+        before = digest(bundle)
+        for private, public in (
+            (overview(bundle)['sources'][0], overview(bundle, public=True)['sources'][0]),
+            (materialize_node(bundle['nodes']['start'])['sources'][0],
+             materialize_node(bundle['nodes']['start'], public=True)['sources'][0]),
+        ):
+            self.assertEqual(private['origin_url'], metadata['origin_url'])
+            self.assertNotIn('origin_url', public)
+            self.assertEqual(public['url'], metadata['official_url'])
+            self.assertEqual({key: value for key, value in private.items() if key != 'origin_url'}, public)
+        self.assertEqual(digest(bundle), before)
+
+    def test_metadata_invalid_types_dates_enums_and_bounds_are_rejected(self):
+        for field, invalid in [('source_authority', 'approved'), ('review_status', 'approved'),
+                               ('current_validity', 'vigente'), ('printed_year', True),
+                               ('printed_year', 1800), ('byte_size', True), ('byte_size', None),
+                               ('byte_size', 8 * 1024 * 1024 + 1), ('native_revision', {}),
+                               ('provenance', 'x' * 501), ('modified_at', '2025-01-01'),
+                               ('modified_at', '2025-01-01 10:00:00+00:00'),
+                               ('modified_at', 'not-a-date'), ('format', 'html'), ('format', {})]:
+            data = sample(); data['sources']['a'][field] = invalid
+            with self.subTest(field=field, invalid=invalid), self.assertRaises(ContentError):
+                normalize_bundle(data, 701, 'qa-knowledge')
+
+    def test_drive_origin_is_never_an_official_public_source_link(self):
+        for url in ('https://drive.google.com/file/d/source-fixture/view',
+                    'https://docs.google.com/document/d/source-fixture/edit',
+                    'https://download.googleusercontent.com/private-fixture.pdf'):
+            data = sample(); data['sources']['a']['official_url'] = url
+            with self.subTest(url=url), self.assertRaises(ContentError):
+                normalize_bundle(data, 701, 'qa-knowledge')
+
+    def test_unknown_optional_metadata_is_explicit_null_not_approval(self):
+        data = sample()
+        data['sources']['a'].update(native_revision=None, modified_at=None, printed_year=None, origin_url=None)
+        source = normalize_bundle(data, 701, 'qa-knowledge')['sources']['a']
+        for field in ('native_revision', 'modified_at', 'printed_year', 'origin_url'):
+            self.assertIsNone(source[field])
+        self.assertNotIn('review_status', source)
+        self.assertNotIn('current_validity', source)
+
+    def test_stored_legacy_sources_get_declarative_delivery_without_mutation(self):
+        from services.institutional_assistant_content import digest
+        data = normalize_bundle(sample(), 701, 'qa-knowledge')
+        for source in [data['sources']['a']] + [n['sources'][0] for n in data['nodes'].values()]:
+            source.pop('delivery', None)
+        before = digest(data)
+        self.assertEqual(overview(data)['sources'][0]['delivery']['format'], 'pdf')
+        self.assertEqual(materialize_node(data['nodes']['start'])['sources'][0]['delivery']['format'], 'pdf')
+        self.assertEqual(digest(data), before)
+
     def test_canonical_text_and_pages_without_private_path(self):
         result=normalize_bundle(sample(),701,'qa-knowledge')
         self.assertEqual(result['nodes']['requirements']['text'],'Respuesta institucional de prueba.')

@@ -6,12 +6,23 @@ import ipaddress
 import json
 import re
 from urllib.parse import urlsplit
+from werkzeug.utils import secure_filename
 
 CONTRACT = 'chatboc.institutional_assistant.v1'
 BUNDLE_CONTRACT = 'chatboc.institutional_guide.composed.v1'
 MAX_BYTES = 1_000_000
 _ID = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,119}$')
 _HASH = re.compile(r'^[a-f0-9]{64}$')
+_STAMP = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$')
+MAX_SOURCE_BYTES = 8 * 1024 * 1024
+SOURCE_FORMATS = {'pdf': ('application/pdf', 'pdf', 'native'),
+                  'jpeg': ('image/jpeg', 'jpg', 'logical_snapshot'),
+                  'text': ('text/plain', 'txt', 'logical_snapshot')}
+SOURCE_ENUMS = {
+    'source_authority': {'official_norm', 'operational_document', 'project', 'user_supplied_note', 'unknown'},
+    'review_status': {'unreviewed', 'reviewed', 'needs_review', 'conflict'},
+    'current_validity': {'not_verified', 'official_text_observed', 'conflict', 'superseded'},
+}
 
 class ContentError(ValueError):
     def __init__(self, code, status=422):
@@ -43,6 +54,77 @@ def safe_public_link(value):
     except ValueError: return value
     raise ContentError('knowledge_link_invalid')
 
+def source_delivery(source):
+    """Describe supported delivery, without asserting that stored bytes exist."""
+    format_name = source.get('format', 'pdf')
+    _require(isinstance(format_name, str) and format_name in SOURCE_FORMATS,
+             'knowledge_source_format_invalid')
+    mime, extension, _ = SOURCE_FORMATS[format_name]
+    _require(source.get('mime_type', mime) == mime, 'knowledge_source_format_invalid')
+    filename = (secure_filename(source['title'])[:96].strip('._') or 'documento') + '.' + extension
+    result = {'contract_version': 'chatboc.knowledge_source_delivery.v1',
+              'format': format_name, 'mime_type': mime, 'filename': filename,
+              'sha256': source['sha256']}
+    if 'byte_size' in source:
+        result['byte_size'] = source['byte_size']
+    return result
+
+def _normalize_source(key, value):
+    pages = value.get('page_count')
+    _require(type(pages) is int and 1 <= pages <= 2000)
+    url = safe_public_link(value.get('official_url'))
+    # Drive links are provenance, never a way around this tenant's delivery ACL.
+    if url:
+        host = urlsplit(url).hostname.lower()
+        _require(host not in {'drive.google.com', 'docs.google.com'}
+                 and not host.endswith('.googleusercontent.com'), 'knowledge_link_invalid')
+    source = {'id': key, 'title': _text(value.get('title') or value.get('label'), 250),
+              'sha256': value['sha256'], 'page_count': pages, 'url': url}
+    for name, allowed in SOURCE_ENUMS.items():
+        if name in value:
+            _require(isinstance(value[name], str) and value[name] in allowed,
+                     'knowledge_source_metadata_invalid')
+            source[name] = value[name]
+    for name, limit in [('native_revision', 160), ('provenance', 500), ('approval_status', 120)]:
+        if name in value:
+            source[name] = None if value[name] is None else _text(value[name], limit)
+    if 'evaluation_only' in value:
+        _require(type(value['evaluation_only']) is bool, 'knowledge_source_metadata_invalid')
+        source['evaluation_only'] = value['evaluation_only']
+    if 'modified_at' in value and value['modified_at'] is None:
+        source['modified_at'] = None
+    elif 'modified_at' in value:
+        stamp = _text(value['modified_at'], 50)
+        _require(_STAMP.fullmatch(stamp), 'knowledge_source_metadata_invalid')
+        try:
+            parsed = datetime.fromisoformat(stamp.replace('Z', '+00:00'))
+            _require(parsed.tzinfo is not None, 'knowledge_source_metadata_invalid')
+        except ValueError as error:
+            raise ContentError('knowledge_source_metadata_invalid') from error
+        source['modified_at'] = stamp
+    if 'printed_year' in value:
+        _require(value['printed_year'] is None or
+                 (type(value['printed_year']) is int and 1900 <= value['printed_year'] <= 2100),
+                 'knowledge_source_metadata_invalid')
+        source['printed_year'] = value['printed_year']
+    if 'origin_url' in value:
+        source['origin_url'] = safe_public_link(value['origin_url'])
+    if 'byte_size' in value:
+        _require(type(value['byte_size']) is int and 1 <= value['byte_size'] <= MAX_SOURCE_BYTES,
+                 'knowledge_source_metadata_invalid')
+        source['byte_size'] = value['byte_size']
+    if any(name in value for name in ('format', 'mime_type', 'pagination')):
+        format_name = value.get('format', 'pdf')
+        _require(isinstance(format_name, str) and format_name in SOURCE_FORMATS,
+                 'knowledge_source_format_invalid')
+        mime, _, pagination = SOURCE_FORMATS[format_name]
+        _require(value.get('mime_type', mime) == mime and value.get('pagination', pagination) == pagination,
+                 'knowledge_source_format_invalid')
+        _require(format_name == 'pdf' or pages == 1, 'knowledge_source_pagination_invalid')
+        source.update(format=format_name, mime_type=mime, pagination=pagination)
+    source['delivery'] = source_delivery(source)
+    return source
+
 def normalize_bundle(raw, tenant_id, tenant_slug):
     _require(type(tenant_id) is int and tenant_id > 0 and isinstance(tenant_slug, str))
     _require(isinstance(raw, dict) and raw.get('contract_version') == BUNDLE_CONTRACT)
@@ -56,10 +138,7 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
     for key, value in source_input.items():
         _require(isinstance(key, str) and _ID.fullmatch(key) and isinstance(value, dict))
         _require(value.get('id', key) == key and _HASH.fullmatch(str(value.get('sha256', ''))))
-        pages = value.get('page_count')
-        _require(type(pages) is int and 1 <= pages <= 2000)
-        sources[key] = {'id': key, 'title': _text(value.get('title') or value.get('label'), 250),
-            'sha256': value['sha256'], 'page_count': pages, 'url': safe_public_link(value.get('official_url'))}
+        sources[key] = _normalize_source(key, value)
     nodes = {}
     for key, value in node_input.items():
         _require(isinstance(key, str) and _ID.fullmatch(key) and isinstance(value, dict))
@@ -131,6 +210,11 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
     bundle = {'contract_version': BUNDLE_CONTRACT, 'tenant': {'id': tenant_id, 'slug': tenant_slug},
         'version': _text(raw.get('version'), 60), 'start': start, 'sources': sources,
         'nodes': nodes, 'policy': deepcopy(policy)}
+    if 'evaluation_only' in raw:
+        _require(type(raw['evaluation_only']) is bool, 'knowledge_source_metadata_invalid')
+        bundle['evaluation_only'] = raw['evaluation_only']
+    if 'approval_status' in raw:
+        bundle['approval_status'] = _text(raw['approval_status'], 120)
     # An import must support any allowed question without exceeding the same
     # selector budget checked at read time. Evidence bytes do not enter it.
     largest_id = max(nodes, key=len)
@@ -141,12 +225,19 @@ def normalize_bundle(raw, tenant_id, tenant_slug):
 def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
-def overview(bundle):
+def _source_projection(source, *, public=False):
+    value = {**deepcopy(source), 'delivery': source_delivery(source)}
+    if public:
+        value.pop('origin_url', None)
+    return value
+
+def overview(bundle, *, public=False):
     root = bundle['nodes'][bundle['start']]
     targets = {a['target'] for a in root['actions']}
     topic_root = bundle['nodes'][next(iter(targets))] if len(targets) == 1 else root
     return {'start': bundle['start'], 'node_count': len(bundle['nodes']),
-        'topics': [{'id': a['target'], 'label': a['label']} for a in topic_root['actions']], 'sources': list(bundle['sources'].values())}
+        'topics': [{'id': a['target'], 'label': a['label']} for a in topic_root['actions']],
+        'sources': [_source_projection(source, public=public) for source in bundle['sources'].values()]}
 
 SELECTOR_INSTRUCTIONS = '''Sos el selector de conocimiento de un agente institucional inclusivo.
 Usá únicamente los nodos entregados para comprender la pregunta y sus negaciones.
@@ -178,8 +269,9 @@ def select_nodes(bundle, question, current_node, selector):
     _require(len(set(ids)) == len(ids) and all(k in bundle['nodes'] for k in ids), 'knowledge_selection_invalid')
     return [deepcopy(bundle['nodes'][key]) for key in ids]
 
-def materialize_node(node):
+def materialize_node(node, *, public=False):
     value = deepcopy(node)
+    value['sources'] = [_source_projection(source, public=public) for source in value['sources']]
     now = datetime.now(timezone.utc)
     value['links'] = [link for link in value.get('links', []) if datetime.fromisoformat(link['review_after'].replace('Z', '+00:00')) > now]
     return value

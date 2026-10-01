@@ -66,7 +66,7 @@ from utils.maps_utils import extraer_coordenadas_de_url_google_maps
 from services.openai_maps_service import geocodificar_inversa_llm
 from services.constants import CONTEXTO_MUNICIPIO
 from services.config_loader import cargar_configuracion_pyme
-from services.response_formatter import repair_common_mojibake, render_audio_text
+from services.response_formatter import repair_common_mojibake, render_audio_text, whatsapp_menu_context_scope
 from services.tts_orchestrator import generar_audio
 from utils.response_utils import normalize_response_payload
 from utils.whatsapp import enviar_mensaje_whatsapp_con_fallback
@@ -2152,6 +2152,40 @@ def _selected_option_text_for_bot(selected_option: Optional[dict[str, Any]]) -> 
     return cleaned or None
 
 
+def _resolve_whatsapp_menu_selection(
+    message_body: str, context_data: dict, *, expecting_free_info: bool = False,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Resolve legacy menus; institutional replies keep their original text.
+
+    Only the formatter's persisted scope selects this path. The knowledge
+    service validates its own displayed node/revision and exact reply code.
+    """
+    if context_data.get("last_options_scope") == "institutional_knowledge":
+        return None, None
+    last_options = context_data.get("last_options_sent")
+    if not last_options or expecting_free_info:
+        return None, None
+    selected_option = None
+    if message_body.isdigit():
+        idx = int(message_body) - 1
+        if 0 <= idx < len(last_options):
+            selected_option = last_options[idx]
+    else:
+        normalized_body = (message_body or "").strip().lower()
+        for option in last_options:
+            option_text = (option.get("texto") or "").strip().lower()
+            option_action = (option.get("action_id") or option.get("id") or "").strip().lower()
+            if normalized_body and normalized_body in {option_text, option_action}:
+                selected_option = option
+                break
+    if selected_option is None:
+        return None, None
+    action_id = (selected_option.get("action_id") or selected_option.get("id")
+                 or selected_option.get("id_accion") or selected_option.get("category_name")
+                 or selected_option.get("texto"))
+    return selected_option, action_id
+
+
 def _clean_contact_name(value: Optional[Any]) -> Optional[str]:
     cleaned = sanitize_profile_name(str(value).strip() if value is not None else None)
     if not cleaned:
@@ -2523,6 +2557,7 @@ def _handle_education_whatsapp_turn(
     if normalized_action in {"menu_principal", "menu_colegio"}:
         payload = build_education_whatsapp_menu_payload(tenant_profile)
         context_data["last_options_sent"] = payload.get("options_list") or []
+        context_data["last_options_scope"] = whatsapp_menu_context_scope(payload)
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
         db.session.commit()
@@ -2534,6 +2569,7 @@ def _handle_education_whatsapp_turn(
         context_data["education_pending_case"] = pending_case
         payload = _education_prompt_payload(normalized_action, tenant_profile)
         context_data["last_options_sent"] = payload.get("options_list") or []
+        context_data["last_options_scope"] = whatsapp_menu_context_scope(payload)
         safe_flag_modified(session_context, "context_data")
         db.session.add(session_context)
         db.session.commit()
@@ -5501,6 +5537,7 @@ def _reset_municipio_context_for_menu(session_context: ChatSessionContext) -> No
     municipio_ctx.pop("consulta_pendiente_ubicacion", None)
     municipio_ctx.pop("menu_opciones", None)
     session_context.context_data.pop("last_options_sent", None)
+    session_context.context_data.pop("last_options_scope", None)
     session_context.context_data.pop("pending_sensitive_action", None)
     safe_flag_modified(session_context, "context_data")
 
@@ -7442,6 +7479,7 @@ def whatsapp_webhook():
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list
+                        session_context_db_entry.context_data["last_options_scope"] = whatsapp_menu_context_scope(welcome_response_payload)
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
@@ -7596,6 +7634,7 @@ def whatsapp_webhook():
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list
+                        session_context_db_entry.context_data["last_options_scope"] = whatsapp_menu_context_scope(welcome_response_payload)
                         safe_flag_modified(session_context_db_entry, "context_data")
 
                 delay = current_app.config.get("WELCOME_MESSAGE_DELAY_SECONDS", 5)
@@ -7611,6 +7650,7 @@ def whatsapp_webhook():
                     options_list = welcome_response_payload.get("options_list")
                     if isinstance(options_list, list):
                         session_context_db_entry.context_data["last_options_sent"] = options_list
+                        session_context_db_entry.context_data["last_options_scope"] = whatsapp_menu_context_scope(welcome_response_payload)
                         safe_flag_modified(session_context_db_entry, "context_data")
                 # Persist any context updates from responder_chatboc
                 safe_flag_modified(session_context_db_entry, "context_data")
@@ -8219,7 +8259,6 @@ def whatsapp_webhook():
         return followup_result
 
     # --- Numeric Menu Handling ---
-    last_options = session_context_db_entry.context_data.get("last_options_sent")
     municipio_ctx = (
         session_context_db_entry.context_data.get(CONTEXTO_MUNICIPIO)
         or session_context_db_entry.context_data.get("contexto_municipio", {})
@@ -8231,34 +8270,10 @@ def whatsapp_webhook():
     esperando_info = _esperando_info_libre(municipio_ctx)
 
     # Solo traducir números a acciones cuando no estamos esperando información libre.
-    selected_option = None
-    selected_action_id = None
-    if message_body.isdigit() and last_options and not esperando_info:
-        idx = int(message_body) - 1
-        if 0 <= idx < len(last_options):
-            selected_option = last_options[idx]
-            selected_action_id = (
-                selected_option.get("action_id")
-                or selected_option.get("id")
-                or selected_option.get("id_accion")
-                or selected_option.get("category_name")
-                or selected_option.get("texto")
-            )
-    elif last_options and not esperando_info:
-        normalized_body = (message_body or "").strip().lower()
-        for option in last_options:
-            option_text = (option.get("texto") or "").strip().lower()
-            option_action = (option.get("action_id") or option.get("id") or "").strip().lower()
-            if normalized_body and normalized_body in {option_text, option_action}:
-                selected_option = option
-                selected_action_id = (
-                    option.get("action_id")
-                    or option.get("id")
-                    or option.get("id_accion")
-                    or option.get("category_name")
-                    or option.get("texto")
-                )
-                break
+    selected_option, selected_action_id = _resolve_whatsapp_menu_selection(
+        message_body, session_context_db_entry.context_data,
+        expecting_free_info=esperando_info,
+    )
 
     pending_sensitive_action = session_context_db_entry.context_data.get("pending_sensitive_action")
     normalized_message = (message_body or "").strip().lower()

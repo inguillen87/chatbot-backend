@@ -6,6 +6,7 @@ No tenant, account, sender, credential, module or domain is created or changed.
 from collections.abc import Mapping
 import re
 from urllib.parse import quote
+from services.message_templates import whatsapp_template_pack
 
 CONTRACT_VERSION = 'whatsapp.self_service.v1'
 LABELS = {'municipio': 'Municipio', 'gobierno': 'Gobierno', 'government': 'Gobierno',
@@ -38,7 +39,7 @@ def build_whatsapp_self_service(tenant, state):
         ('templates', 'Mensajes y plantillas', '/perfil/plantillas-respuesta',
          'Prepará las respuestas y consultá su aprobación antes de utilizarlas.'),
     ]
-    return {
+    result = {
         'contract_version': CONTRACT_VERSION,
         'tenant': {'id': getattr(tenant, 'id', None), 'slug': slug},
         'organization_label': LABELS.get(kind, 'Organización'),
@@ -54,3 +55,18 @@ def build_whatsapp_self_service(tenant, state):
         'sections': [{'id': key, 'label': label, 'href': prefix+path, 'description': detail}
                      for key, label, path, detail in sections],
     }
+    # Presentation only: permissions remain on the existing catalog endpoint,
+    # and eligibility is unrelated to a sender/WABA's actual ownership.
+    pack = whatsapp_template_pack('tdf', tenant_slug=slug)
+    if pack:
+        result['template_pack'] = {
+            'vertical': 'tdf', 'pack_id': pack['pack_id'],
+            'pack_version': pack['pack_version'], 'label': pack['label'],
+            'catalog_endpoint': '/api/admin/whatsapp/template-packs',
+            'draft_endpoint': '/api/admin/whatsapp/template-packs/tdf/drafts',
+            'definition_state': 'local_draft', 'provider_status': 'not_checked',
+            'provider_submission_performed': False,
+            'activation_performed': False, 'send_performed': False,
+            'dispatch_policy': pack['dispatch_policy'],
+        }
+    return result

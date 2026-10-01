@@ -100,7 +100,7 @@ def private_canonical_node(actor, slug, node_id):
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant', methods=['GET'])
 def public_workspace(slug):
     tenant = _tenant(slug)
-    return _reply(workspace(tenant, read_state(tenant, public=True)))
+    return _reply(workspace(tenant, read_state(tenant, public=True), public=True))
 
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/answer', methods=['POST'])
 @limiter.limit('20 per minute')
@@ -116,14 +116,15 @@ def public_canonical_node(slug, node_id):
     tenant = _tenant(slug, canonical_revision=revision)
     return _reply(answer(tenant, {'revision': revision, 'node_id': node_id}, public=True))
 
-def _pdf_reply(tenant, source_id, revision, *, public=False, actor=None):
-    from services.institutional_assistant_sources import source_pdf
-    data, filename = source_pdf(tenant, source_id, revision, public=public, actor=actor)
+def _source_reply(tenant, source_id, revision, *, public=False, actor=None):
+    from services.institutional_assistant_sources import source_document
+    data, filename, mime = source_document(tenant, source_id, revision, public=public, actor=actor)
     # The bounded buffer is completely verified before the first response byte.
     response = Response((data[offset:offset + 65536] for offset in range(0, len(data), 65536)),
-                        mimetype='application/pdf')
+                        content_type='text/plain; charset=utf-8' if mime == 'text/plain' else mime)
     response.headers['Content-Length'] = str(len(data))
-    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+    disposition = 'attachment' if mime == 'text/plain' else 'inline'
+    response.headers['Content-Disposition'] = f'{disposition}; filename="{filename}"'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
 
@@ -135,11 +136,11 @@ def private_source_pdf(actor, slug, source_id):
     _origin()
     revision = _canonical_revision()
     tenant = _tenant(slug, actor, canonical_revision=revision)
-    return _pdf_reply(tenant, source_id, revision, actor=actor)
+    return _source_reply(tenant, source_id, revision, actor=actor)
 
 @institutional_assistant_bp.route('/api/public/tenants/<slug>/institutional-assistant/sources/<source_id>', methods=['GET'])
 @limiter.limit('20 per minute')
 def public_source_pdf(slug, source_id):
     revision = _canonical_revision()
     tenant = _tenant(slug, canonical_revision=revision)
-    return _pdf_reply(tenant, source_id, revision, public=True)
+    return _source_reply(tenant, source_id, revision, public=True)

@@ -383,6 +383,34 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
             with self.app.app_context():
                 user=db.session.get(User,self.accounts['acceptance-a']['id']);user.rol=original_role;db.session.commit()
 
+    def test_private_answer_rejects_disable_during_selection_without_version_change(self):
+        from copy import deepcopy
+        from database import db
+        from models import User
+        from utils.auth_helpers import auth_session_version
+        client=self.login();state=self.seed(client)
+        with self.app.app_context():
+            user=db.session.get(User,self.accounts['acceptance-a']['id'])
+            original=deepcopy(user.accesibilidad)
+            version=auth_session_version(user)
+        def disable(*args):
+            user=db.session.get(User,self.accounts['acceptance-a']['id'])
+            metadata=deepcopy(user.accesibilidad or {})
+            metadata['auth']={**metadata.get('auth',{}),'disabled':True}
+            user.accesibilidad=metadata;db.session.commit()
+            self.assertEqual(auth_session_version(user),version)
+            return {'node_ids':['requirements']}
+        try:
+            with patch('services.llm_utils.llamar_llm_para_json_estructurado',side_effect=disable):
+                response=client.post(self.url()+'/answer',json={'revision':state['revision'],'question':'consulta'})
+            self.assertEqual(response.status_code,403,response.get_json())
+            self.assertNotIn('nodes',response.get_json())
+            self.assertNotIn('Respuesta institucional',response.get_data(as_text=True))
+        finally:
+            with self.app.app_context():
+                user=db.session.get(User,self.accounts['acceptance-a']['id'])
+                user.accesibilidad=original;db.session.commit()
+
     def test_chat_navigation_uses_the_existing_interactive_contract(self):
         from database import db
         from models import TenantProfile,User
