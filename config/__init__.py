@@ -1012,6 +1012,8 @@ class Config:
         "UPSTASH_REDIS_URL",
         default="memory://",
     )
+    # Separate environment counters when Preview and Production share Redis.
+    RATELIMIT_KEY_PREFIX = os.getenv("RATELIMIT_KEY_PREFIX", "").strip()
     # Public readiness probes stay bounded and never serialize dependency
     # details. Runtime parsing clamps probe timeouts and cache TTL to 0.1-5 s.
     READINESS_DATABASE_TIMEOUT_SECONDS = os.getenv(
