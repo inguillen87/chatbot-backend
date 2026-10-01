@@ -47,7 +47,6 @@ def test_backoffice_navigation_exposes_role_based_modules(client):
         rol="admin",
         tipo_chat="municipio",
         tenant_slug="junin-backoffice",
-        municipio_id=601,
     )
     owner.set_password("pw")
     db.session.add(owner)
@@ -1077,6 +1076,12 @@ def test_backoffice_v2_orders_summary_does_not_mix_tenants_for_shared_owner(clie
     db.session.add_all([tenant, other_tenant])
     db.session.flush()
     owner.tenant_id = tenant.id
+    administrator = User(
+        email="shared-orders-admin@example.invalid", name="Scoped administrator",
+        rol="admin", tipo_chat="pyme", tenant_id=tenant.id, tenant_slug=tenant.slug,
+    )
+    administrator.set_password("pw")
+    db.session.add(administrator)
     local_order = PymePedido(
         pyme_id=owner.id,
         tenant_id=tenant.id,
@@ -1104,7 +1109,7 @@ def test_backoffice_v2_orders_summary_does_not_mix_tenants_for_shared_owner(clie
     response = client.get(
         "/api/v2/backoffice/orders/summary",
         query_string={"tenant_slug": tenant.slug},
-        headers=_auth_headers(owner),
+        headers=_auth_headers(administrator),
     )
 
     assert response.status_code == 200
@@ -1117,6 +1122,13 @@ def test_backoffice_v2_orders_summary_does_not_mix_tenants_for_shared_owner(clie
         for profile in (tenant, other_tenant)
         for order in _orders_for_tenant(profile)
     }
+    ambiguous_owner_response = client.get(
+        "/api/v2/backoffice/orders/summary",
+        query_string={"tenant_slug": tenant.slug},
+        headers=_auth_headers(owner),
+    )
+    assert ambiguous_owner_response.status_code == 403
+    assert ambiguous_owner_response.get_json()["reason_code"] == "tenant_forbidden"
 
 
 def test_backoffice_v2_contacts_summary_publishes_segments_without_frontend_rules(client):
@@ -1187,6 +1199,7 @@ def test_backoffice_v2_team_coverage_summary_flags_uncovered_categories(client):
         rol="empleado",
         tipo_chat="municipio",
         ticket_categorias="alumbrado",
+        es_empleado=True,
     )
     employee.set_password("pw")
     db.session.add_all([owner, employee])
@@ -1226,7 +1239,8 @@ def test_backoffice_v2_team_coverage_summary_flags_uncovered_categories(client):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["contract_version"] == "backoffice.team_coverage_summary.v1"
-    assert payload["summary"]["active_employees"] >= 2
+    assert payload["summary"]["active_employees"] == 1
+    assert {item["id"] for item in payload["employees"]} == {employee.id}
     assert any(category["label"] == "alumbrado" for category in payload["categories_covered"])
     assert any(category["label"] == "baches" for category in payload["categories_without_owner"])
     assert any(item["id"].startswith("assign_category_") for item in payload["assignment_recommendations"])
@@ -1425,3 +1439,279 @@ def test_backoffice_v2_employee_sees_and_exports_only_allowed_ticket_categories(
     exported_emails = {row.get("email") for row in written_rows}
     assert "allowed-citizen@test.com" in exported_emails
     assert "restricted-citizen@test.com" not in exported_emails
+
+
+def _backoffice_test_user(**fields):
+    user = User(**fields)
+    user.set_password("pw")
+    return user
+
+
+def _backoffice_membership_fixture(kind="municipio"):
+    owner = _backoffice_test_user(email="team-owner@example.invalid", name="Owner", rol="admin", tipo_chat=kind)
+    foreign_owner = _backoffice_test_user(email="other-team-owner@example.invalid", name="Foreign owner", rol="admin", tipo_chat=kind)
+    db.session.add_all([owner, foreign_owner])
+    db.session.flush()
+    owner_field = "municipio_id" if kind == "municipio" else "pyme_id"
+    tenant = TenantProfile(
+        slug="team-membership-own", nombre="Own", tipo=kind, plan="enterprise",
+        **{owner_field: owner.id},
+    )
+    other = TenantProfile(
+        slug="team-membership-foreign", nombre="Foreign", tipo=kind, plan="enterprise",
+        **{owner_field: foreign_owner.id},
+    )
+    db.session.add_all([tenant, other])
+    db.session.flush()
+    owner.tenant_id, owner.tenant_slug = tenant.id, tenant.slug
+    foreign_owner.tenant_id, foreign_owner.tenant_slug = other.id, other.slug
+    return owner, tenant, foreign_owner, other
+
+
+@pytest.mark.parametrize("kind", ["municipio", "pyme"])
+def test_backoffice_team_counts_only_consistent_enabled_staff_and_preserves_customer_contacts(client, kind):
+    from routes.backoffice import _collect_contacts
+
+    owner, tenant, foreign_owner, other = _backoffice_membership_fixture(kind)
+
+    def add_user(label, **fields):
+        user = _backoffice_test_user(email=f"{label}@example.invalid", name=label, tipo_chat=kind, **fields)
+        db.session.add(user)
+        return user
+
+    direct_employee = add_user("direct-employee", rol="empleado", es_empleado=True, tenant_id=tenant.id)
+    role_employee = add_user("role-employee", rol="agent", tenant_id=tenant.id)
+    flagged_employee = add_user("flagged-employee", rol="usuario", es_empleado=True, tenant_id=tenant.id)
+    legacy_employee = add_user("legacy-employee", rol="empleado", empresa_id=owner.id)
+    customer = add_user("own-customer", rol="usuario", tenant_id=tenant.id)
+    administrator = add_user("own-administrator", rol="admin_municipio", tenant_id=tenant.id)
+    legacy_customer = add_user("legacy-customer", rol="usuario", **{
+        "municipio_id" if kind == "municipio" else "pyme_id": owner.id,
+    })
+    disabled = add_user("disabled-employee", rol="empleado", es_empleado=True, tenant_id=tenant.id,
+                        accesibilidad={"auth": {"disabled": True}})
+    clerk_disabled = add_user("clerk-disabled-employee", rol="empleado", es_empleado=True, tenant_id=tenant.id,
+                              accesibilidad={"auth": {"clerk": {"disabled": True}}})
+    foreign_employee = add_user("foreign-employee", rol="empleado", es_empleado=True,
+                                tenant_id=other.id, empresa_id=owner.id)
+    foreign_customer = add_user("foreign-customer", rol="usuario", tenant_id=other.id,
+                                **{"municipio_id" if kind == "municipio" else "pyme_id": owner.id})
+    conflicting_slug = add_user("conflicting-slug", rol="empleado", tenant_id=tenant.id, tenant_slug=other.slug)
+    conflicting_owner = add_user("conflicting-owner", rol="empleado", tenant_id=tenant.id, empresa_id=foreign_owner.id)
+    db.session.commit()
+
+    headers = _auth_headers(owner)
+    response = client.get("/api/v2/backoffice/team/coverage-summary",
+                          query_string={"tenant_slug": tenant.slug}, headers=headers)
+    assert response.status_code == 200
+    payload = response.get_json()
+    expected_staff = {direct_employee.id, role_employee.id, flagged_employee.id, legacy_employee.id}
+    assert payload["summary"]["active_employees"] == len(expected_staff)
+    assert {item["id"] for item in payload["employees"]} == expected_staff
+    assert {item["id"] for item in payload["workload_by_agent"]} == expected_staff
+
+    contacts_response = client.get("/api/v2/backoffice/contacts/summary",
+                                   query_string={"tenant_slug": tenant.slug}, headers=headers)
+    assert contacts_response.status_code == 200
+    expected_contacts = [owner, direct_employee, role_employee, flagged_employee, legacy_employee,
+                         customer, administrator, legacy_customer, disabled, clerk_disabled]
+    assert contacts_response.get_json()["summary"]["total"] == len(expected_contacts)
+    contacts = _collect_contacts(tenant, owner)
+    assert {item["email"] for item in contacts} == {user.email for user in expected_contacts}
+    assert all(item["sources"] == ["user"] and item["records"] == 1 for item in contacts)
+    assert {foreign_employee.email, foreign_customer.email, conflicting_slug.email, conflicting_owner.email}.isdisjoint(
+        {item["email"] for item in contacts}
+    )
+
+
+def test_backoffice_team_metric_matches_actual_admin_employee_endpoint_for_native_staff(client):
+    owner, tenant, _, _ = _backoffice_membership_fixture()
+    employee = _backoffice_test_user(email="actual-staff@example.invalid", name="Staff", rol="empleado", es_empleado=True,
+                    tipo_chat="municipio", tenant_id=tenant.id)
+    db.session.add(employee)
+    db.session.add_all([
+        _backoffice_test_user(email=f"actual-customer-{index}@example.invalid", name="Customer", rol="usuario",
+             tipo_chat="municipio", tenant_id=tenant.id)
+        for index in range(50)
+    ])
+    db.session.commit()
+    headers = {**_auth_headers(owner), "X-Tenant-Slug": tenant.slug}
+    actual = client.get("/api/admin/employees", headers=headers)
+    summary = client.get("/api/v2/backoffice/team/coverage-summary", headers=headers)
+    assert actual.status_code == summary.status_code == 200
+    assert {item["id"] for item in actual.get_json()} == {employee.id}
+    assert summary.get_json()["summary"]["active_employees"] == 1
+    assert {item["id"] for item in summary.get_json()["employees"]} == {employee.id}
+
+
+def test_backoffice_team_does_not_claim_coverage_from_disabled_or_foreign_assignees(client):
+    owner, tenant, _, other = _backoffice_membership_fixture()
+    disabled = _backoffice_test_user(email="disabled-assignee@example.invalid", name="Disabled", rol="empleado", es_empleado=True,
+                    tipo_chat="municipio", tenant_id=tenant.id, accesibilidad={"auth": {"disabled": True}})
+    foreign = _backoffice_test_user(email="foreign-assignee@example.invalid", name="Foreign", rol="empleado", es_empleado=True,
+                   tipo_chat="municipio", tenant_id=other.id, empresa_id=owner.id)
+    db.session.add_all([disabled, foreign])
+    db.session.flush()
+    db.session.add_all([
+        MunicipioTicket(tenant_id=tenant.id, municipio_id=owner.id, pregunta="Own case", estado="nuevo",
+                        categoria=category, asignado_a_id=user.id)
+        for category, user in (("disabled-category", disabled), ("foreign-category", foreign))
+    ])
+    db.session.commit()
+    response = client.get("/api/v2/backoffice/team/coverage-summary",
+                          query_string={"tenant_slug": tenant.slug}, headers=_auth_headers(owner))
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["summary"]["active_employees"] == 0
+    assert payload["summary"]["covered_categories"] == payload["summary"]["covered_channels"] == 0
+    assert {item["label"] for item in payload["categories_without_owner"]} == {"disabled-category", "foreign-category"}
+
+
+def test_backoffice_ambiguous_legacy_staff_and_contacts_remain_quarantined(client):
+    owner, tenant, _, _ = _backoffice_membership_fixture()
+    duplicate = TenantProfile(slug="same-owner-second-tenant", nombre="Duplicate owner", tipo="municipio",
+                              municipio_id=owner.id, plan="enterprise")
+    actor = _backoffice_test_user(email="explicit-team-admin@example.invalid", name="Admin", rol="admin", tipo_chat="municipio",
+                 tenant_id=tenant.id, tenant_slug=tenant.slug)
+    direct = _backoffice_test_user(email="explicit-team-staff@example.invalid", name="Direct", rol="empleado", es_empleado=True,
+                  tipo_chat="municipio", tenant_id=tenant.id)
+    legacy = _backoffice_test_user(email="ambiguous-team-staff@example.invalid", name="Legacy", rol="empleado", es_empleado=True,
+                  tipo_chat="municipio", empresa_id=owner.id)
+    db.session.add_all([duplicate, actor, direct, legacy])
+    db.session.commit()
+    headers = _auth_headers(actor)
+    team = client.get("/api/v2/backoffice/team/coverage-summary", query_string={"tenant_slug": tenant.slug}, headers=headers)
+    contacts = client.get("/api/v2/backoffice/contacts/summary", query_string={"tenant_slug": tenant.slug}, headers=headers)
+    assert team.status_code == contacts.status_code == 200
+    assert {item["id"] for item in team.get_json()["employees"]} == {direct.id}
+    assert contacts.get_json()["summary"]["total"] == 2  # Explicit admin and staff only.
+
+
+@pytest.mark.parametrize("selection,expected_status", [
+    ("implicit", 200), ("own", 200), ("own_id", 200), ("foreign", 403),
+    ("unknown", 404), ("conflicting", 404), ("blank", 404), ("repeated", 404), ("unknown_id", 404),
+    ("own_header", 200), ("foreign_header", 403), ("unknown_header", 404), ("conflicting_header", 404),
+])
+def test_backoffice_selectors_never_fall_back_after_explicit_denial(client, selection, expected_status):
+    owner, tenant, _, other = _backoffice_membership_fixture("pyme")
+    db.session.commit()
+    query = {
+        "implicit": {}, "own": {"tenant_slug": tenant.slug}, "own_id": {"tenant_id": tenant.id},
+        "foreign": {"tenant_slug": other.slug}, "unknown": {"tenant_slug": "missing-team-tenant"},
+        "conflicting": {"tenant_slug": tenant.slug, "tenant": other.slug}, "blank": {"tenant_slug": " "},
+        "repeated": [("tenant_slug", tenant.slug), ("tenant_slug", other.slug)],
+        "unknown_id": {"tenant_id": 987654321},
+        "own_header": {}, "foreign_header": {}, "unknown_header": {},
+        "conflicting_header": {"tenant_slug": tenant.slug},
+    }[selection]
+    headers = _auth_headers(owner)
+    if selection.endswith("_header"):
+        headers["X-Tenant-Slug"] = {
+            "own_header": tenant.slug, "foreign_header": other.slug,
+            "unknown_header": "missing-team-tenant", "conflicting_header": other.slug,
+        }[selection]
+    for endpoint in (
+        "/api/app/backoffice/navigation", "/api/app/backoffice/summary",
+        "/api/v2/backoffice/orders/summary", "/api/v2/backoffice/contacts/summary",
+        "/api/v2/backoffice/team/coverage-summary", "/api/v2/backoffice/operations/inbox-summary",
+    ):
+        response = client.get(endpoint, query_string=query, headers=headers)
+        assert response.status_code == expected_status, (endpoint, response.get_json())
+        if expected_status == 200:
+            assert response.get_json()["tenant_slug"] == tenant.slug
+        else:
+            assert "summary" not in response.get_json()
+
+
+@pytest.mark.parametrize("conflict", ["slug", "owner", "legacy_owner"])
+def test_backoffice_membership_conflict_cannot_be_overridden_by_selected_tenant(client, conflict):
+    _, tenant, foreign_owner, other = _backoffice_membership_fixture()
+    actor = _backoffice_test_user(email="conflicting-admin@example.invalid", name="Conflict", rol="admin", tipo_chat="municipio",
+                 tenant_id=tenant.id, tenant_slug=tenant.slug)
+    if conflict == "slug":
+        actor.tenant_slug = other.slug
+    elif conflict == "owner":
+        actor.empresa_id = foreign_owner.id
+    else:
+        actor.municipio_id = foreign_owner.id
+    db.session.add(actor)
+    db.session.commit()
+    for endpoint in ("/api/app/backoffice/navigation", "/api/v2/backoffice/team/coverage-summary",
+                     "/api/v2/backoffice/contacts/summary"):
+        response = client.get(endpoint, query_string={"tenant_slug": tenant.slug}, headers=_auth_headers(actor))
+        assert response.status_code == 403
+        assert "summary" not in response.get_json()
+
+
+@pytest.mark.parametrize("body_selector,expected_status", [
+    ("unknown", 404), ("foreign", 403), ("contradictory", 404), ("blank", 404), ("null", 404), ("list", 404),
+])
+def test_backoffice_mutation_selector_denial_precedes_export_or_summary_effects(client, monkeypatch, body_selector, expected_status):
+    owner, tenant, _, other = _backoffice_membership_fixture()
+    db.session.commit()
+    calls = []
+    monkeypatch.setattr("routes.backoffice._export_dir", lambda: calls.append("directory"))
+    monkeypatch.setattr("routes.backoffice._executive_summary_payload", lambda *args: calls.append("summary"))
+    slug = {
+        "unknown": "missing-team-tenant", "foreign": other.slug, "contradictory": other.slug,
+        "blank": " ", "null": None, "list": [tenant.slug],
+    }[body_selector]
+    query = {"tenant_slug": tenant.slug} if body_selector == "contradictory" else {}
+    for endpoint, body in (
+        ("/api/v2/backoffice/export", {"tenant_slug": slug, "resource": "contacts", "format": "csv"}),
+        ("/api/v2/backoffice/executive-summary", {"tenant_slug": slug}),
+    ):
+        response = client.post(endpoint, query_string=query, json=body, headers=_auth_headers(owner))
+        assert response.status_code == expected_status
+    assert calls == []
+
+
+@pytest.mark.parametrize("association,visible", [
+    ("foreign_explicit", False), ("foreign_slug", False), ("conflicting_legacy", False),
+    ("ambiguous_legacy", False), ("own_legacy", True), ("own_staff", True), ("own_inactive_admin", True),
+])
+def test_backoffice_inbox_assignee_badge_requires_consistent_membership_without_erasing_own_history(
+    client, association, visible,
+):
+    owner, tenant, foreign_owner, other = _backoffice_membership_fixture()
+    actor = _backoffice_test_user(email="inbox-scoped-admin@example.invalid", name="Scoped admin", rol="admin",
+                                 tipo_chat="municipio", tenant_id=tenant.id, tenant_slug=tenant.slug)
+    fields = {"rol": "empleado", "es_empleado": True, "tenant_id": tenant.id}
+    if association == "foreign_explicit":
+        fields.update(tenant_id=other.id, empresa_id=owner.id)
+    elif association == "foreign_slug":
+        fields.update(tenant_slug=other.slug)
+    elif association == "conflicting_legacy":
+        fields.update(tenant_id=None, empresa_id=owner.id, municipio_id=foreign_owner.id)
+    elif association == "ambiguous_legacy":
+        fields.update(tenant_id=None, empresa_id=owner.id)
+        db.session.add(TenantProfile(slug="inbox-duplicate-owner", nombre="Second organization", tipo="municipio",
+                                     municipio_id=owner.id, plan="enterprise"))
+    elif association == "own_legacy":
+        fields.update(tenant_id=None, empresa_id=owner.id)
+    elif association == "own_inactive_admin":
+        fields.update(rol="admin_municipio", es_empleado=False, accesibilidad={"auth": {"disabled": True}})
+    assignee = _backoffice_test_user(email="assignee-private@example.invalid", name="Private assignee name",
+                                    tipo_chat="municipio", **fields)
+    db.session.add_all([actor, assignee])
+    db.session.flush()
+    ticket = MunicipioTicket(tenant_id=tenant.id, municipio_id=owner.id, pregunta="Own case", categoria="atencion",
+                             estado="nuevo", asignado_a_id=assignee.id)
+    db.session.add(ticket)
+    db.session.commit()
+    response = client.get("/api/v2/backoffice/operations/inbox-summary",
+                          query_string={"tenant_slug": tenant.slug}, headers=_auth_headers(actor))
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert {item["id"] for item in payload["items"]} == {ticket.id}
+    badge = payload["items"][0]["assigned_agent"]
+    if visible:
+        assert badge["id"] == assignee.id
+        assert badge["email"] == assignee.email
+        assert badge["label"] == assignee.name
+    else:
+        assert badge is None
+        assert assignee.id not in {item["id"] for item in payload["filters"]["agents"]}
+        assert assignee.email not in response.get_data(as_text=True)
+        assert assignee.name not in response.get_data(as_text=True)
+    assert db.session.get(MunicipioTicket, ticket.id).asignado_a_id == assignee.id
