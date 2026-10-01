@@ -54,6 +54,64 @@ class LazyApplicationTests(unittest.TestCase):
         ):
             self.assertEqual(_safe_request_wait_seconds(), 2.0)
 
+    def test_extended_safe_read_wait_requires_preview_and_explicit_override(self) -> None:
+        for environment, override, expected in (
+            ('preview', None, 2.0), ('preview', '5', 5.0), ('preview', '99', 5.0),
+            ('preview', '-1', 0.0), ('preview', 'invalid', 2.0),
+            ('production', None, 2.0), ('production', '5', 4.0),
+            ('development', '5', 4.0), ('', '5', 4.0),
+        ):
+            variables = {'VERCEL_ENV': environment}
+            if override is not None:
+                variables['VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS'] = override
+            with self.subTest(environment=environment, override=override), patch.dict(os.environ, variables, clear=True):
+                self.assertEqual(_safe_request_wait_seconds(), expected)
+                application = LazyApplication(lambda: None, safe_request_wait_seconds=99)
+                self.assertEqual(application._safe_request_wait_seconds, 5.0 if environment == 'preview' else 4.0)
+
+    def test_preview_first_get_waits_for_real_slow_loader_while_post_is_undispatched(self) -> None:
+        loader_started = threading.Event()
+        dispatches = []
+
+        def target(environ, start_response):
+            dispatches.append(environ['REQUEST_METHOD'])
+            start_response('200 OK', [('Content-Type', 'text/plain')])
+            return [b'ready']
+
+        def loader():
+            loader_started.set()
+            # This exceeds the former constructor's four-second hard cap.
+            time.sleep(4.1)
+            return target
+
+        with patch.dict(os.environ, {'VERCEL_ENV': 'preview', 'VERCEL_WSGI_SAFE_REQUEST_WAIT_SECONDS': '5'}, clear=True):
+            application = LazyApplication(loader, background_warmup=True,
+                                          warmup_delay_seconds=0,
+                                          safe_request_wait_seconds=_safe_request_wait_seconds())
+        read_statuses = []
+        read_bodies = []
+
+        def read():
+            read_bodies.append(application({'PATH_INFO': '/api/admin/tenants/tdf/institutional-assistant', 'REQUEST_METHOD': 'GET'},
+                                           lambda status, headers: read_statuses.append(status)))
+
+        reader = threading.Thread(target=read)
+        reader.start()
+        self.assertTrue(loader_started.wait(0.5))
+        mutation_statuses = []
+        started_at = time.monotonic()
+        body = application({'PATH_INFO': '/api/auth/admin/login', 'REQUEST_METHOD': 'POST'},
+                           lambda status, headers: mutation_statuses.append(status))
+        self.assertLess(time.monotonic() - started_at, 0.2)
+        self.assertEqual(mutation_statuses, ['503 Service Unavailable'])
+        self.assertFalse(json.loads(b''.join(body))['request_dispatched'])
+        self.assertEqual(dispatches, [])
+        reader.join(timeout=6)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(read_statuses, ['200 OK'])
+        self.assertEqual(read_bodies, [[b'ready']])
+        self.assertEqual(dispatches, ['GET'])
+
     def test_loader_is_deferred_until_first_request_and_cached(self) -> None:
         loads: list[str] = []
 
