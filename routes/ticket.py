@@ -47,6 +47,7 @@ from services.operational_heatmap_access import (
     build_employee_legacy_heatmap_points,
     is_employee_heatmap_viewer,
 )
+from services.operational_intelligence import observe_legacy_ticket_sla
 from services.tenant_ticket_scope import (
     TicketTenantScopeError,
     municipio_ticket_belongs_to_tenant,
@@ -73,14 +74,15 @@ from services.gcs_service import (
 )
 from services.attachment_delivery import serialize_attachment_for_delivery
 from services.geo.route import obtener_ruta
-from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido
+from utils.auth_helpers import token_requerido, anon_o_token_requerido, admin_o_empleado_requerido, _explicit_admin_request_tenant
 from utils.permissions import require_role
 from collections import defaultdict
-from sqlalchemy import or_, func, exists
+from sqlalchemy import or_, func, exists, false, literal_column
 from utils.ticket_utils import normalize_category
 from utils.time_utils import datetime_to_iso_utc, get_local_now
 from utils.upload_limits import set_upload_request_limit
-from utils.tenant import get_current_tenant, get_current_tenant_profile
+from utils.tenant import get_current_tenant, get_current_tenant_profile, TENANT_QUERY_KEYS, TENANT_HEADER_KEYS
+from utils.tenant_admin_access import resolve_consistent_user_tenant
 from utils.errors import ApiError
 from extensions import limiter
 from routes.tracking_ui import (
@@ -308,12 +310,7 @@ def _build_agent_ticket_delivery_payload(
 
 
 def _build_ticket_operational_badges(ticket_obj) -> dict:
-    """Compute lightweight SLA/ops hints for frontend inboxes.
-
-    No reemplaza un SLA engine formal, pero da una base consistente para pintar
-    badges de priorización (`sin_asignar`, `por_vencer`, `vencido`,
-    `respuesta_pendiente`) en paneles y vistas de tracking.
-    """
+    """Keep operational age/assignment separate from evidence-backed SLA."""
 
     now = get_local_now()
     created_at = getattr(ticket_obj, "fecha", None) or now
@@ -333,10 +330,12 @@ def _build_ticket_operational_badges(ticket_obj) -> dict:
 
     age_hours = max((now - created_at).total_seconds() / 3600, 0)
     inactivity_hours = max((now - last_activity).total_seconds() / 3600, 0)
-    is_closed = estado in {"cerrado", "resuelto"}
+    is_closed = estado in {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}
 
     badges: list[str] = []
-    sla_status = "ok"
+    observation = observe_legacy_ticket_sla(ticket_obj, as_of=now)
+    sla_status = {"breached": "vencido", "at_risk": "por_vencer", "healthy": "ok"}.get(
+        observation["state"], observation["state"])
 
     if is_closed:
         return {
@@ -348,27 +347,12 @@ def _build_ticket_operational_badges(ticket_obj) -> dict:
 
     if not assigned_user_id:
         badges.append("sin_asignar")
-        if age_hours >= 24:
-            badges.append("vencido")
-            sla_status = "vencido"
-        elif age_hours >= 8:
-            badges.append("por_vencer")
-            sla_status = "por_vencer"
-        else:
-            sla_status = "sin_asignar"
-    else:
-        if inactivity_hours >= 24:
-            badges.extend(["respuesta_pendiente", "vencido"])
-            sla_status = "vencido"
-        elif inactivity_hours >= 8:
-            badges.extend(["respuesta_pendiente", "por_vencer"])
-            sla_status = "por_vencer"
-        elif inactivity_hours >= 2:
-            badges.append("respuesta_pendiente")
-            sla_status = "seguimiento"
-
-    if not badges:
-        badges.append("ok")
+    elif inactivity_hours >= 2:
+        badges.append("respuesta_pendiente")
+    if sla_status in {"vencido", "por_vencer", "ok"}:
+        badges.append(sla_status)
+    elif sla_status == "unknown":
+        badges.append("sla_unknown")
 
     return {
         "sla_status": sla_status,
@@ -516,7 +500,7 @@ def _ticket_crm_queue_payload(
     unread_viewer_count = _safe_int(collaboration_state.get("unread_viewer_count"))
     active_viewers_count = _safe_int(collaboration_state.get("active_viewers_count"))
     has_unread = bool(collaboration_state.get("has_unread") or unread_count > 0 or unread_viewer_count > 0)
-    sla_status = str(operational_hints.get("sla_status") or "ok")
+    sla_status = str(operational_hints.get("sla_status") or "unknown")
     badges = list(operational_hints.get("badges") or [])
     priority = priority_payload.get("priority")
     priority_score = priority_payload.get("priority_score")
@@ -539,6 +523,8 @@ def _ticket_crm_queue_payload(
     if is_sla_risk:
         score += 60 if sla_status == "vencido" else 40
         queue_badges.append({"id": "sla_risk", "label": "SLA en riesgo", "tone": "warning"})
+    elif sla_status == "unknown" and not is_closed:
+        queue_badges.append({"id": "sla_unknown", "label": "SLA sin verificar", "tone": "info"})
     if is_high_priority:
         score += 35
         queue_badges.append({"id": "high_priority", "label": "Prioridad alta", "tone": "danger"})
@@ -562,7 +548,7 @@ def _ticket_crm_queue_payload(
     elif is_sla_risk:
         state = "sla_attention"
         label = "Revisar SLA"
-        reason = "El caso esta vencido o por vencer segun la ultima actividad."
+        reason = "El caso esta vencido o por vencer segun evidencia SLA registrada."
         next_team_action = "review_sla_and_update"
     elif is_unassigned:
         state = "unassigned"
@@ -571,8 +557,9 @@ def _ticket_crm_queue_payload(
         next_team_action = "assign_owner"
     else:
         state = "ready"
-        label = "Mesa al dia"
-        reason = "No hay senales criticas activas para este caso."
+        label = "SLA sin verificar" if sla_status == "unknown" else "Mesa al dia"
+        reason = ("El caso no tiene evidencia SLA verificable."
+            if sla_status == "unknown" else "No hay senales criticas activas para este caso.")
         next_team_action = "monitor_ticket"
 
     return {
@@ -640,56 +627,74 @@ def _ticket_priority_filter_condition(TicketModel, requested_priority):
     return or_(*conditions) if conditions else None
 
 
-def _ticket_sla_filter_condition(TicketModel, requested_sla):
+def _ticket_sla_evidence_ids(scoped_query, TicketModel):
+    """One metadata-only pass over authorized scope, before SQL pagination.
+
+    This exact cross-dialect fallback is O(n) in scoped tickets and matching SQL
+    size; it does not claim verified performance for very large organizations.
+    Invalid legacy JSON remains unknown through the shared Reports evaluator.
+    """
+    columns = [TicketModel.id, TicketModel.estado, TicketModel.datos_extra]
+    if TicketModel is MunicipioTicket:
+        columns.append(TicketModel.detalles)
+    now = get_local_now()
+    ids_by_state = defaultdict(list)
+    for row in scoped_query.enable_eagerloads(False).with_entities(*columns).order_by(None).yield_per(500):
+        if type(row.id) is not int or row.id <= 0:
+            raise ValueError("Invalid persisted ticket identity")
+        state = observe_legacy_ticket_sla(row, as_of=now, source_model=TicketModel.__name__)["state"]
+        if _normalize_ticket_filter_token(row.estado) in {"cerrado", "closed", "resuelto", "resolved", "finalizado", "done"}:
+            state = "closed"
+        ids_by_state[state].append(row.id)
+    return ids_by_state
+
+
+def _ticket_persisted_id_condition(TicketModel, ids):
+    # Only exact positive integers already read from the scoped DB projection
+    # become literals. No caller input/JSON/string is accepted as SQL text.
+    if any(type(value) is not int or value <= 0 for value in ids):
+        raise ValueError("Invalid persisted ticket identity")
+    if not ids:
+        return false()
+    return or_(*(TicketModel.id.in_([literal_column(str(value)) for value in ids[offset:offset + 500]])
+        for offset in range(0, len(ids), 500)))
+
+
+def _ticket_sla_filter_condition(TicketModel, requested_sla, evidence_ids=None):
     normalized = _normalize_ticket_filter_token(requested_sla)
     if not _is_active_ticket_filter(normalized):
         return None
 
     now = get_local_now()
-    closed_condition = func.lower(func.coalesce(TicketModel.estado, "")).in_(["cerrado", "resuelto"])
+    closed_condition = func.lower(func.coalesce(TicketModel.estado, "")).in_(["cerrado", "closed", "resuelto", "resolved", "finalizado", "done"])
     open_condition = ~closed_condition
     assigned_column = getattr(TicketModel, "asignado_a_id", None)
     if assigned_column is None:
         return None
 
-    created_at = getattr(TicketModel, "fecha")
-    activity_at = getattr(TicketModel, "ultima_actividad", created_at)
-    activity_expr = func.coalesce(activity_at, created_at)
     assigned = assigned_column.isnot(None)
     unassigned = assigned_column.is_(None)
-    created_24h = created_at <= (now - timedelta(hours=24))
-    created_8h = created_at <= (now - timedelta(hours=8))
-    activity_24h = activity_expr <= (now - timedelta(hours=24))
-    activity_8h = activity_expr <= (now - timedelta(hours=8))
-    activity_2h = activity_expr <= (now - timedelta(hours=2))
-
-    vencido = open_condition & (
-        (unassigned & created_24h)
-        | (assigned & activity_24h)
-    )
-    por_vencer = open_condition & (
-        (unassigned & created_8h & ~created_24h)
-        | (assigned & activity_8h & ~activity_24h)
-    )
-    sin_asignar = open_condition & unassigned & ~created_8h
-    seguimiento = open_condition & assigned & activity_2h & ~activity_8h
-    ok = open_condition & assigned & ~activity_2h
-
-    if normalized in {"risk", "riesgo", "at_risk"}:
-        priority_condition = _ticket_priority_filter_condition(TicketModel, "alta")
-        return or_(vencido, por_vencer, priority_condition) if priority_condition is not None else or_(vencido, por_vencer)
-    if normalized in {"breached", "overdue", "vencido", "vencida"}:
-        return vencido
-    if normalized in {"por_vencer", "warning", "due_soon"}:
-        return por_vencer
     if normalized in {"sin_asignar", "unassigned"}:
-        return sin_asignar
+        return open_condition & unassigned
     if normalized in {"seguimiento", "follow_up"}:
-        return seguimiento
-    if normalized in {"ok", "healthy"}:
-        return ok
+        created_at = getattr(TicketModel, "fecha")
+        activity_at = getattr(TicketModel, "ultima_actividad", created_at)
+        return open_condition & assigned & (func.coalesce(activity_at, created_at) <= (now - timedelta(hours=2)))
     if normalized in {"resuelto", "cerrado", "closed", "resolved"}:
         return closed_condition
+    aliases = {
+        "risk": ("breached", "at_risk"), "riesgo": ("breached", "at_risk"),
+        "at_risk": ("at_risk",),
+        "breached": ("breached",), "overdue": ("breached",), "vencido": ("breached",), "vencida": ("breached",),
+        "por_vencer": ("at_risk",), "warning": ("at_risk",), "due_soon": ("at_risk",),
+        "ok": ("healthy",), "healthy": ("healthy",),
+        "unknown": ("unknown",), "desconocido": ("unknown",),
+        "not_eligible": ("not_eligible",), "paused": ("not_eligible",),
+    }
+    states = aliases.get(normalized)
+    if states is not None:
+        ids = [value for state in states for value in (evidence_ids or {}).get(state, [])]
+        return _ticket_persisted_id_condition(TicketModel, ids)
     return None
 
 
@@ -818,7 +823,7 @@ def _apply_ticket_category_filter(query, TicketModel, category: Any = None, cate
     return query.filter(TicketModel.categoria == category_value)
 
 
-def _apply_ticket_filter_set(query, TicketModel, ticket_type: str, filters: Mapping[str, Any], exclude=None):
+def _apply_ticket_filter_set(query, TicketModel, ticket_type: str, filters: Mapping[str, Any], exclude=None, sla_evidence_ids=None):
     exclude = set(exclude or [])
 
     if "category" not in exclude:
@@ -895,7 +900,7 @@ def _apply_ticket_filter_set(query, TicketModel, ticket_type: str, filters: Mapp
             query = query.filter(priority_condition)
 
     if "sla" not in exclude:
-        sla_condition = _ticket_sla_filter_condition(TicketModel, filters.get("sla"))
+        sla_condition = _ticket_sla_filter_condition(TicketModel, filters.get("sla"), sla_evidence_ids)
         if sla_condition is not None:
             query = query.filter(sla_condition)
 
@@ -1016,14 +1021,17 @@ def _ticket_condition_facet(query, TicketModel, specs, condition_builder):
     return items
 
 
-def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: Mapping[str, Any], filtered_total: int):
-    status_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"status"})
-    category_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"category"})
-    channel_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"channel"})
-    agent_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"agent"})
-    priority_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"priority"})
-    sla_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"sla"})
-    unread_query = _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters, exclude={"unread"})
+def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: Mapping[str, Any], filtered_total: int, sla_evidence_ids):
+    def facet_query(exclude):
+        return _apply_ticket_filter_set(scoped_query, TicketModel, ticket_type, filters,
+            exclude={exclude}, sla_evidence_ids=sla_evidence_ids)
+    status_query = facet_query("status")
+    category_query = facet_query("category")
+    channel_query = facet_query("channel")
+    agent_query = facet_query("agent")
+    priority_query = facet_query("priority")
+    sla_query = facet_query("sla")
+    unread_query = facet_query("unread")
 
     priority_specs = [
         ("alta", "Alta"),
@@ -1034,15 +1042,17 @@ def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: M
         ("risk", "Riesgo"),
         ("vencido", "Vencido"),
         ("por_vencer", "Por vencer"),
-        ("sin_asignar", "Sin asignar"),
-        ("seguimiento", "Seguimiento"),
-        ("ok", "Al dia"),
+        ("ok", "Dentro del SLA confirmado"),
+        ("unknown", "Sin SLA verificable"),
+        ("not_eligible", "SLA no aplicable"),
         ("resuelto", "Resuelto"),
     ]
     unread_specs = [
         ("unread", "No leidos"),
         ("read", "Leidos"),
     ]
+    sla_facets = _ticket_condition_facet(sla_query, TicketModel, sla_specs,
+        lambda model, value: _ticket_sla_filter_condition(model, value, sla_evidence_ids))
 
     return {
         "contract_version": "tickets.facets.v1",
@@ -1056,8 +1066,8 @@ def _build_ticket_facets(scoped_query, TicketModel, ticket_type: str, filters: M
         "channels": _ticket_grouped_facet(channel_query, TicketModel, _ticket_channel_column(TicketModel)),
         "agents": _ticket_agent_facet(agent_query, TicketModel),
         "priorities": _ticket_condition_facet(priority_query, TicketModel, priority_specs, _ticket_priority_filter_condition),
-        "sla": _ticket_condition_facet(sla_query, TicketModel, sla_specs, _ticket_sla_filter_condition),
-        "slaStatuses": _ticket_condition_facet(sla_query, TicketModel, sla_specs, _ticket_sla_filter_condition),
+        "sla": sla_facets,
+        "slaStatuses": sla_facets,
         "unread": _ticket_condition_facet(
             unread_query,
             TicketModel,
@@ -2502,7 +2512,40 @@ def get_tickets_del_usuario_logic(current_user: User):
     g.current_user = current_user
 
     try:
-        tenant_for_query = get_current_tenant_profile(allow_fallback=False)
+        selected_tenant, has_explicit_selection = _explicit_admin_request_tenant()
+        slug_values = [value for key in TENANT_QUERY_KEYS for value in request.args.getlist(key)]
+        slug_values.extend(request.headers.get(key) for key in TENANT_HEADER_KEYS if key in request.headers)
+        id_values = [*request.args.getlist("tenant_id")]
+        if "X-Tenant-Id" in request.headers:
+            id_values.append(request.headers.get("X-Tenant-Id"))
+        has_explicit_selection = has_explicit_selection or bool(slug_values or id_values)
+        slugs = {str(value).strip().lower() for value in slug_values}
+        invalid_selection = any(not str(value).strip() for value in [*slug_values, *id_values]) or len(slugs) > 1
+        try:
+            selected_ids = {int(value) for value in id_values}
+            invalid_selection = invalid_selection or any(value <= 0 for value in selected_ids) or len(selected_ids) > 1
+        except (TypeError, ValueError):
+            invalid_selection = True
+        if has_explicit_selection:
+            if selected_tenant is None and not invalid_selection and slugs:
+                selected_tenant = TenantProfile.query.filter(func.lower(TenantProfile.slug) == next(iter(slugs))).one_or_none()
+            if (invalid_selection or selected_tenant is None
+                    or (slugs and slugs != {selected_tenant.slug.strip().lower()})
+                    or (id_values and selected_ids != {selected_tenant.id})):
+                return _ticket_access_contract_response(current_user, reason_code="invalid_tenant_selector",
+                    message="La organización solicitada es desconocida o sus selectores no coinciden.",
+                    status_code=400, action_hint="check_tenant_slug")
+            tenant_for_query = selected_tenant
+        else:
+            tenant_for_query = get_current_tenant_profile(allow_fallback=False)
+        membership = resolve_consistent_user_tenant(current_user)
+        if not is_authorized_superadmin_user(current_user):
+            # A panel read belongs to the real account, never public/host state.
+            if not has_explicit_selection and membership is not None:
+                tenant_for_query = membership
+            if tenant_for_query is not None and (membership is None or membership.id != tenant_for_query.id):
+                return _ticket_access_contract_response(current_user, reason_code="tenant_forbidden",
+                    message="No tenés acceso a la organización solicitada.", tenant=tenant_for_query)
         tenant_slug = getattr(tenant_for_query, "slug", None)
 
         ticket_filters = _ticket_request_filter_payload()
@@ -2520,7 +2563,8 @@ def get_tickets_del_usuario_logic(current_user: User):
             tenant_owner_pyme_id = tenant_for_query.pyme_id
 
         def _authorized_for_tenant() -> bool:
-            return _authorized_for_tenant_scope(current_user, tenant_for_query)
+            return bool(tenant_for_query and (is_authorized_superadmin_user(current_user)
+                or (membership is not None and membership.id == tenant_for_query.id)))
 
         # Determinar el tipo de ticket usando tenant_slug primero y luego `tipo_chat`.
         if tenant_owner_municipio_id or (
@@ -2565,11 +2609,8 @@ def get_tickets_del_usuario_logic(current_user: User):
             TicketModel = PymeTicket
             current_app.logger.info(f"[DEBUG] Usuario PYME: id={current_user.id}, rubro_id={current_user.rubro_id}, rol={current_user.rol}, tipo_chat={current_user.tipo_chat}")
 
-            tenant_pyme = getattr(current_user, "tenant_profile_pyme", None)
             if tenant_for_query and _authorized_for_tenant():
                 query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_for_query.id)
-            elif tenant_pyme:
-                query_base = TicketModel.query.filter(PymeTicket.tenant_id == tenant_pyme.id)
             else:
                 current_app.logger.warning("Usuario PYME %s sin tenant verificable intentando acceder a /tickets", current_user.id)
                 return _ticket_access_contract_response(
@@ -2599,6 +2640,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             current_user,
             TicketModel,
         )
+        sla_evidence_ids = _ticket_sla_evidence_ids(scoped_query, TicketModel)
 
         query_base = _apply_ticket_category_filter(
             scoped_query,
@@ -2652,6 +2694,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             TicketModel,
             tipo_ticket_str,
             ticket_filters,
+            sla_evidence_ids=sla_evidence_ids,
         )
 
         try:
@@ -2680,6 +2723,7 @@ def get_tickets_del_usuario_logic(current_user: User):
             tipo_ticket_str,
             ticket_filters,
             filtered_total_tickets,
+            sla_evidence_ids,
         )
         ordered_query = final_tickets_query.order_by(TicketModel.fecha.desc())
         if per_page > 0:

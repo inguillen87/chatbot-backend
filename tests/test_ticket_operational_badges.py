@@ -108,6 +108,7 @@ class TicketOperationalBadgesTest(unittest.TestCase):
             estado="nuevo",
             fecha=get_local_now() - timedelta(hours=9),
             ultima_actividad=get_local_now() - timedelta(hours=9),
+            datos_extra={"sla": {"due_at": (get_local_now() + timedelta(hours=2)).isoformat()}},
         )
         db.session.add(ticket)
         db.session.commit()
@@ -158,6 +159,29 @@ class TicketOperationalBadgesTest(unittest.TestCase):
         )
         self.assertNotIn("demo_runtime", payload["description"])
         self.assertNotIn("chat_session_id", payload["description"])
+
+    def test_old_unknown_sla_does_not_create_overdue_badges_or_health(self):
+        ticket = MunicipioTicket(municipio_id=self.admin.id, pregunta="Local SLA fixture",
+            nro_ticket="SLA-UNKNOWN", estado="nuevo", fecha=get_local_now() - timedelta(days=60),
+            ultima_actividad=get_local_now() - timedelta(days=60), asignado_a_id=self.admin.id,
+            detalles="Legacy human text without an SLA", datos_extra={})
+        db.session.add(ticket)
+        db.session.commit()
+        payload = serialize_ticket_to_json(ticket, "municipio", compact=True)
+        self.assertEqual(payload["sla_status"], "unknown")
+        self.assertIn("sla_unknown", payload["operational_badges"])
+        self.assertNotIn("vencido", payload["operational_badges"])
+        self.assertNotIn("por_vencer", payload["operational_badges"])
+        self.assertNotIn("ok", payload["operational_badges"])
+        self.assertEqual(payload["crm_queue"]["label"], "SLA sin verificar")
+        self.assertNotEqual(payload["crm_queue"]["state"], "sla_attention")
+
+    def test_persisted_sla_identity_literals_reject_non_integer_inputs(self):
+        from routes.ticket import _ticket_persisted_id_condition
+        for value in (True, False, 0, -1, 1.0, float("inf"), float("nan"), "1", "1 OR TRUE"):
+            with self.subTest(value_type=type(value).__name__):
+                with self.assertRaises(ValueError):
+                    _ticket_persisted_id_condition(MunicipioTicket, [value])
 
     def test_ticket_payload_uses_explicit_human_summary_from_structured_details(self):
         ticket = MunicipioTicket(
@@ -284,8 +308,10 @@ class TicketOperationalBadgesTest(unittest.TestCase):
 
         payload = _serialize_ticket_details(ticket, "municipio")
 
-        self.assertEqual(payload["sla_status"], "seguimiento")
+        self.assertEqual(payload["sla_status"], "unknown")
         self.assertIn("respuesta_pendiente", payload["operational_badges"])
+        self.assertNotIn("vencido", payload["operational_badges"])
+        self.assertNotIn("por_vencer", payload["operational_badges"])
         self.assertGreaterEqual(payload["operational_metrics"]["inactivity_hours"], 3)
 
     def test_ticket_payload_exposes_only_consented_profile_avatar(self):

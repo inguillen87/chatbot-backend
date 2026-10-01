@@ -1,4 +1,6 @@
 import jwt
+import json
+import pytest
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -719,6 +721,7 @@ def test_backoffice_v2_inbox_summary_prioritizes_real_ticket_work(client):
         canal_ingreso="whatsapp",
         nombre_vecino="Vecina Uno",
         telefono_vecino="+549261111111",
+        datos_extra={"sla": {"status": "at_risk"}},
     )
     unassigned = MunicipioTicket(
         municipio_id=owner.id,
@@ -728,6 +731,7 @@ def test_backoffice_v2_inbox_summary_prioritizes_real_ticket_work(client):
         estado="pendiente",
         fecha=old,
         canal_ingreso="web",
+        detalles=json.dumps({"sla": {"due_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()}}),
     )
     resolved = MunicipioTicket(
         municipio_id=owner.id,
@@ -767,6 +771,238 @@ def test_backoffice_v2_inbox_summary_prioritizes_real_ticket_work(client):
     assert first_item["detail_endpoint"].startswith("/tickets/municipio/")
     assert "allowed_actions" in first_item
     assert first_item["sla_status"] in {"risk", "overdue"}
+
+
+def _sla_contract_tenant(kind, suffix):
+    owner = User(email=f"sla-{kind}-{suffix}@example.invalid", name="SLA contract fixture", rol="admin", tipo_chat=kind)
+    owner.set_password("local-test-fixture")
+    db.session.add(owner)
+    db.session.flush()
+    tenant = TenantProfile(slug=f"sla-{kind}-{suffix}", nombre="SLA fixture", tipo=kind,
+        municipio_id=owner.id if kind == "municipio" else None,
+        pyme_id=owner.id if kind == "pyme" else None, plan="enterprise")
+    db.session.add(tenant)
+    db.session.flush()
+    owner.tenant_id, owner.tenant_slug = tenant.id, tenant.slug
+    return owner, tenant
+
+
+def _sla_contract_ticket(kind, owner, tenant, number, *, created, metadata, state="nuevo", details=None):
+    values = dict(tenant_id=tenant.id, pregunta=f"SLA fixture {number}", categoria="general",
+        estado=state, fecha=created, datos_extra=metadata)
+    if kind == "municipio":
+        return MunicipioTicket(**values, municipio_id=owner.id, ultima_actividad=created,
+            detalles=json.dumps(details) if details is not None else None)
+    return PymeTicket(**values, nro_ticket=number)
+
+
+@pytest.mark.parametrize("kind", ["municipio", "pyme"])
+def test_home_sla_matches_reports_evidence_not_ticket_age(client, kind):
+    """Local HTTP/ORM fixtures exercise both real handlers, not Preview acceptance."""
+    owner, tenant = _sla_contract_tenant(kind, "mixed")
+    foreign_owner, foreign_tenant = _sla_contract_tenant(kind, "foreign")
+    now = datetime.now(timezone.utc)
+    recent, old = now - timedelta(minutes=10), now - timedelta(days=30)
+    cases = [
+        (old, {}, "nuevo", None),  # Old age cannot establish any SLA.
+        (recent, {"sla": {"due_at": (now - timedelta(hours=2)).isoformat()}}, "nuevo", None),
+        (old, {"sla": {"due_at": (now + timedelta(days=2)).isoformat()}}, "nuevo",
+            {"sla": {"due_at": (now - timedelta(days=1)).isoformat()}}),  # datos_extra wins.
+        (recent, {"sla": {"due_at": (now + timedelta(hours=2)).isoformat()}}, "nuevo", None),
+        (old, {"sla": {"due_at": "invalid-deadline"}}, "nuevo", None),
+        (old, {"sla": {"state": "paused", "due_at": (now - timedelta(days=1)).isoformat()}}, "nuevo", None),
+        (old, {"sla": {"due_at": (now - timedelta(days=1)).isoformat()}}, "cerrado", None),
+    ]
+    tickets = [_sla_contract_ticket(kind, owner, tenant, 700 + index,
+        created=created, metadata=metadata, state=state, details=details)
+        for index, (created, metadata, state, details) in enumerate(cases)]
+    foreign = _sla_contract_ticket(kind, foreign_owner, foreign_tenant, 900,
+        created=old, metadata={"sla": {"state": "breached"}})
+    db.session.add_all([*tickets, foreign])
+    db.session.commit()
+    headers = {**_auth_headers(owner), "X-Tenant": tenant.slug}
+    home = client.get("/api/v2/backoffice/operations/inbox-summary",
+        query_string={"tenant_slug": tenant.slug, "scope": kind}, headers=headers)
+    reports = client.get("/api/v2/analytics/operations/dashboard",
+        query_string={"tenant_slug": tenant.slug, "days": 7}, headers=headers)
+    assert home.status_code == reports.status_code == 200
+    payload = home.get_json()
+    summary = payload["summary"]
+    assert summary["total"] == 7
+    assert summary["open"] == 6
+    assert summary["sla_risk"] == 2
+    assert summary["sla_breached"] == summary["sla_at_risk"] == 1
+    assert summary["sla_known"] == 3
+    assert summary["sla_unknown"] == 2
+    assert summary["sla_eligible"] == 5
+    report_sla = reports.get_json()["queue_truth"]["queue_snapshot"]["sla"]
+    for home_field, report_field in (("sla_breached", "breached"), ("sla_at_risk", "at_risk"),
+            ("sla_known", "known"), ("sla_unknown", "unknown"), ("sla_eligible", "eligible")):
+        assert summary[home_field] == report_sla[report_field]
+    items = {item["id"]: item for item in payload["items"]}
+    assert items[tickets[0].id]["sla_status"] == "unknown"
+    assert items[tickets[1].id]["sla_status"] == "overdue"
+    assert items[tickets[2].id]["sla_status"] == "ok"
+    assert items[tickets[3].id]["sla_status"] == "risk"
+    assert items[tickets[4].id]["sla_status"] == "unknown"
+    assert items[tickets[5].id]["sla_status"] == "not_eligible"
+    assert len(items) == 6  # Closed and foreign cases are excluded from the active list.
+
+
+@pytest.mark.parametrize("kind", ["municipio", "pyme"])
+def test_home_unknown_sla_backlog_never_becomes_overdue_recommendation(client, kind):
+    owner, tenant = _sla_contract_tenant(kind, "unknown")
+    old = datetime.now(timezone.utc) - timedelta(days=60)
+    db.session.add_all([_sla_contract_ticket(kind, owner, tenant, 1000 + number,
+        created=old, metadata={}) for number in range(55)])
+    db.session.commit()
+    response = client.get("/api/v2/backoffice/operations/inbox-summary",
+        query_string={"tenant_slug": tenant.slug, "scope": kind}, headers=_auth_headers(owner))
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["summary"]["open"] == 55
+    assert payload["summary"]["sla_risk"] == payload["summary"]["sla_breached"] == payload["summary"]["sla_at_risk"] == 0
+    assert payload["summary"]["sla_known"] == 0
+    assert payload["summary"]["sla_unknown"] == payload["summary"]["sla_eligible"] == 55
+    assert not any(view["id"] == "sla_risk" for view in payload["recommended_views"])
+    assert all(item["sla_status"] == "unknown" for item in payload["items"])
+    assert {item["id"]: item["count"] for item in payload["filters"]["sla_statuses"]} == {"unknown": 55}
+    assert payload["data_quality_notes"]
+    executive = client.post("/api/v2/backoffice/executive-summary",
+        json={"tenant_slug": tenant.slug}, headers=_auth_headers(owner))
+    assert executive.status_code == 200
+    summary = executive.get_json()
+    assert "55 sin SLA verificable" in summary["headline"]
+    assert not any(risk["id"] == "sla_risk" for risk in summary["risks"])
+    assert any("sin evidencia SLA verificable" in note for note in summary["data_quality_notes"])
+
+
+@pytest.mark.parametrize("kind", ["municipio", "pyme"])
+def test_legacy_sla_filter_matches_evidence_scope_facets_and_pagination(client, kind):
+    owner, tenant = _sla_contract_tenant(kind, "ticket-filter")
+    foreign_owner, foreign_tenant = _sla_contract_tenant(kind, "ticket-filter-foreign")
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=60)
+    specs = [
+        (old, {}, "a", "nuevo", None),
+        (now - timedelta(minutes=1), {"sla": {"due_at": (now - timedelta(hours=2)).isoformat()}}, "a", "nuevo", None),
+        (now - timedelta(minutes=2), {"sla": {"due_at": (now + timedelta(hours=2)).isoformat()}}, "a", "nuevo", None),
+        (old, {"sla": {"due_at": "invalid"}}, "a", "nuevo", "not-json"),
+        (old, {"sla": {"state": "breached"}}, "a", "cerrado", None),
+        (old, {"sla": {"state": "breached"}}, "b", "nuevo", None),
+    ]
+    tickets = []
+    for number, (created, metadata, category, state, malformed_details) in enumerate(specs):
+        ticket = _sla_contract_ticket(kind, owner, tenant, 2000 + number,
+            created=created, metadata=metadata, state=state)
+        ticket.categoria = category
+        if kind == "municipio" and malformed_details:
+            ticket.detalles = malformed_details
+        tickets.append(ticket)
+    foreign = _sla_contract_ticket(kind, foreign_owner, foreign_tenant, 2900,
+        created=now, metadata={"sla": {"state": "breached"}})
+    foreign.categoria = "a"
+    employee = User(email=f"sla-{kind}-employee@example.invalid", name="Category-limited fixture",
+        rol="empleado", tipo_chat=kind, es_empleado=True, tenant_id=tenant.id, tenant_slug=tenant.slug,
+        municipio_id=owner.id if kind == "municipio" else None,
+        pyme_id=owner.id if kind == "pyme" else None,
+        accesibilidad={"employee_scope": {"categorias": ["a"]}})
+    employee.set_password("local-test-fixture")
+    db.session.add_all([*tickets, foreign, employee])
+    db.session.commit()
+    headers = {**_auth_headers(owner), "X-Tenant": tenant.slug}
+    query = {"sla": "risk", "categoria": "a", "per_page": 1, "include": "compact"}
+    first = client.get("/api/tickets", query_string=query, headers=headers)
+    second = client.get("/api/tickets", query_string={**query, "page": 2}, headers=headers)
+    assert first.status_code == second.status_code == 200
+    one, two = first.get_json(), second.get_json()
+    assert one["pagination"]["total_items"] == two["pagination"]["total_items"] == 2
+    assert one["tickets"][0]["id"] == tickets[1].id
+    assert one["tickets"][0]["sla_status"] == "vencido"
+    assert two["tickets"][0]["id"] == tickets[2].id
+    assert two["tickets"][0]["sla_status"] == "por_vencer"
+    assert one["facets"]["sla"] == one["facets"]["slaStatuses"]
+    sla_facets = {item["value"]: item["count"] for item in one["facets"]["sla"]}
+    assert sla_facets["risk"] == sla_facets["unknown"] == 2
+    assert sla_facets["vencido"] == sla_facets["por_vencer"] == sla_facets["resuelto"] == 1
+    unknown = client.get("/api/tickets", query_string={**query, "sla": "unknown", "per_page": 0}, headers=headers)
+    assert unknown.status_code == 200
+    assert {item["id"] for item in unknown.get_json()["tickets"]} == {tickets[0].id, tickets[3].id}
+    assert all(item["sla_status"] == "unknown" for item in unknown.get_json()["tickets"])
+    employee_headers = {**_auth_headers(employee), "X-Tenant": tenant.slug}
+    allowed = client.get("/api/tickets", query_string={"sla": "risk", "include": "compact"}, headers=employee_headers)
+    denied_category = client.get("/api/tickets", query_string={**query, "categoria": "b"}, headers=employee_headers)
+    assert allowed.status_code == denied_category.status_code == 200
+    assert allowed.get_json()["pagination"]["total_items"] == 2
+    assert denied_category.get_json()["pagination"]["total_items"] == 0
+    assert denied_category.get_json()["tickets"] == []
+    foreign_scope = client.get("/api/tickets", query_string=query,
+        headers={**_auth_headers(owner), "X-Tenant": foreign_tenant.slug})
+    assert foreign_scope.status_code == 403
+    implicit = client.get("/api/tickets", query_string=query, headers=_auth_headers(owner))
+    by_id = client.get("/api/tickets", query_string={**query, "tenant_id": tenant.id}, headers=_auth_headers(owner))
+    assert implicit.status_code == by_id.status_code == 200
+    assert implicit.get_json()["pagination"]["total_items"] == by_id.get_json()["pagination"]["total_items"] == 2
+    unknown_scope = client.get("/api/tickets", query_string=query,
+        headers={**_auth_headers(owner), "X-Tenant": "unknown-organization"})
+    contradictory = client.get("/api/tickets", query_string={**query, "tenant_slug": foreign_tenant.slug}, headers=headers)
+    duplicate = client.get("/api/tickets", query_string=[*query.items(),
+        ("tenant_slug", tenant.slug), ("tenant_slug", foreign_tenant.slug)], headers=_auth_headers(owner))
+    assert unknown_scope.status_code == contradictory.status_code == duplicate.status_code == 400
+    assert unknown_scope.get_json()["reason_code"] == "invalid_tenant_selector"
+    employee.tenant_id, employee.tenant_slug = None, None
+    db.session.commit()
+    legacy_employee = client.get("/api/tickets", query_string={"sla": "risk", "include": "compact"}, headers=_auth_headers(employee))
+    assert legacy_employee.status_code == 200
+    assert legacy_employee.get_json()["pagination"]["total_items"] == 2
+    owner.tenant_slug = foreign_tenant.slug
+    db.session.commit()
+    contradictory_membership = client.get("/api/tickets", query_string=query, headers=headers)
+    assert contradictory_membership.status_code == 403
+
+
+def test_legacy_sla_filter_large_id_scope_is_single_projection_and_not_page_truncated(client):
+    owner, tenant = _sla_contract_tenant("municipio", "bulk-filter")
+    foreign_owner, foreign_tenant = _sla_contract_tenant("municipio", "bulk-filter-foreign")
+    now = datetime.now(timezone.utc)
+    tickets = [_sla_contract_ticket("municipio", owner, tenant, 3000 + number,
+        created=now - timedelta(minutes=number + 1),
+        metadata={"sla": {"due_at": (now - timedelta(hours=2)).isoformat()}}) for number in range(1005)]
+    for ticket in tickets:
+        ticket.categoria = "a"
+    unknown = _sla_contract_ticket("municipio", owner, tenant, 5001,
+        created=now - timedelta(days=60), metadata={})
+    unknown.categoria = "a"
+    other_category = _sla_contract_ticket("municipio", owner, tenant, 5002,
+        created=now, metadata={"sla": {"state": "breached"}})
+    other_category.categoria = "b"
+    foreign = _sla_contract_ticket("municipio", foreign_owner, foreign_tenant, 5003,
+        created=now, metadata={"sla": {"state": "breached"}})
+    foreign.categoria = "a"
+    db.session.add_all([*tickets, unknown, other_category, foreign])
+    db.session.commit()
+    projection_columns, bind_counts = [], []
+    def inspect_sql(_connection, _cursor, statement, parameters, _context, _many):
+        sql = statement.strip().lower()
+        if sql.startswith("select municipio_ticket.id as municipio_ticket_id, municipio_ticket.estado"):
+            projection_columns.append(sql.split("\nfrom", 1)[0])
+        bind_counts.append(len(parameters))
+    event.listen(db.engine, "before_cursor_execute", inspect_sql)
+    try:
+        response = client.get("/api/tickets", query_string={"sla": "risk", "categoria": "a",
+            "page": 1001, "per_page": 1, "include": "compact"},
+            headers={**_auth_headers(owner), "X-Tenant": tenant.slug})
+    finally:
+        event.remove(db.engine, "before_cursor_execute", inspect_sql)
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["pagination"]["total_items"] == payload["pagination"]["total_pages"] == 1005
+    assert payload["tickets"][0]["id"] == tickets[1000].id
+    assert len(projection_columns) == 1
+    assert "municipio_ticket.datos_extra" in projection_columns[0]
+    assert "municipio_ticket.detalles" in projection_columns[0]
+    assert "nombre_vecino" not in projection_columns[0] and "pregunta" not in projection_columns[0]
+    assert max(bind_counts) < 100  # IDs use validated integer literal chunks, not >1,000 binds.
 
 
 def test_backoffice_v2_orders_summary_uses_validated_order_amounts(client):

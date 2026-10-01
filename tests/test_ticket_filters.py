@@ -18,6 +18,8 @@ class TestConfig(Config):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = "sqlite:///:memory:"
     WTF_CSRF_ENABLED = False
+    ENABLE_RUNTIME_SCHEMA_SYNC = False
+    ENABLE_RUNTIME_TENANT_INIT = False
 
 class DummyQuery:
     def __init__(self, items):
@@ -143,10 +145,10 @@ class TicketFiltersTests(unittest.TestCase):
         with self.app.test_request_context(headers={'X-Tenant-Slug': 'tenant-inexistente'}):
             response = get_tickets_del_usuario_logic(owner_like_employee)
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 400)
         data = response.get_json()
         self.assertEqual(data["access_contract"]["contract_version"], "tickets.access.v1")
-        self.assertEqual(data["reason_code"], "missing_municipal_scope")
+        self.assertEqual(data["reason_code"], "invalid_tenant_selector")
         self.assertIsNone(data["current_scope"]["tenant_slug"])
 
     def test_estado_filter_uses_filtered_pagination_total(self):
@@ -358,6 +360,7 @@ class TicketFiltersTests(unittest.TestCase):
             municipio_id=admin_user.id,
             tenant_id=tenant.id,
             asignado_a_id=None,
+            datos_extra={"sla": {"due_at": (get_local_now() + timedelta(hours=2)).isoformat()}},
         )
         db.session.add_all([recent_ticket, risk_ticket])
         db.session.commit()

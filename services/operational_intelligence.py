@@ -963,6 +963,23 @@ def _sla_observation(
     }
 
 
+def observe_legacy_ticket_sla(
+    ticket: Any, *, as_of: datetime | None = None,
+    source_model: str | None = None,
+) -> dict[str, Any]:
+    """Use the same SLA evidence for records and metadata-only projections.
+
+    Creation/activity dates describe age; they never establish an SLA deadline.
+    Municipality metadata preserves the existing datos_extra-over-detalles rule.
+    """
+    extra = _as_dict(getattr(ticket, "datos_extra", None))
+    details = (_json_object(getattr(ticket, "detalles", None))
+        if isinstance(ticket, MunicipioTicket) or source_model == "MunicipioTicket" else {})
+    return _sla_observation(
+        status=_norm(ticket.estado, "nuevo"), metadata={**details, **extra}, as_of=as_of
+    )
+
+
 def _tenant_ticket_record(ticket: TenantTicket, *, as_of: datetime | None = None) -> dict[str, Any]:
     extra = _as_dict(ticket.datos_extra)
     location = _ticket_location_evidence(
@@ -1016,7 +1033,7 @@ def _municipio_ticket_record(ticket: MunicipioTicket, *, as_of: datetime | None 
         zone=getattr(ticket, "distrito", None),
         metadata=metadata,
     )
-    sla = _sla_observation(status=status, metadata=metadata, as_of=as_of)
+    sla = observe_legacy_ticket_sla(ticket, as_of=as_of)
     category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "municipio_ticket",
@@ -1055,11 +1072,7 @@ def _pyme_ticket_record(ticket: PymeTicket, *, as_of: datetime | None = None) ->
         address=getattr(ticket, "direccion", None),
         metadata=extra,
     )
-    sla = _sla_observation(
-        status=status,
-        metadata=extra,
-        as_of=as_of,
-    )
+    sla = observe_legacy_ticket_sla(ticket, as_of=as_of)
     category = canonicalize_territorial_category(ticket.categoria)
     return {
         "source": "pyme_ticket",

@@ -33,6 +33,7 @@ from services.employee_ticket_access import (
     apply_employee_ticket_category_scope,
     employee_ticket_category_scope,
 )
+from services.operational_intelligence import observe_legacy_ticket_sla
 from services.survey_response_provenance import (
     SURVEY_RESPONSE_ORIGIN_LEGACY_UNVERIFIED,
     SURVEY_RESPONSE_ORIGIN_REAL,
@@ -1118,23 +1119,9 @@ def _ticket_priority(ticket: Any) -> str | None:
 def _ticket_sla_status(ticket: Any, now: datetime) -> str:
     if _is_closed_state(getattr(ticket, "estado", None)):
         return "closed"
-    references = [
-        value
-        for value in (
-            _as_utc(getattr(ticket, "fecha", None)),
-            _as_utc(getattr(ticket, "ultima_actividad", None)),
-        )
-        if value
-    ]
-    reference = min(references) if references else None
-    if not reference:
-        return "unknown"
-    age = now - reference
-    if age >= timedelta(hours=48):
-        return "overdue"
-    if age >= timedelta(hours=24):
-        return "risk"
-    return "ok"
+    state = observe_legacy_ticket_sla(ticket, as_of=now)["state"]
+    # Preserve the established inbox aliases while using Reports' evidence.
+    return {"breached": "overdue", "at_risk": "risk", "healthy": "ok"}.get(state, state)
 
 
 def _count_unread_tickets(ticket_type: str, tickets: list[Any], current_user: User) -> int:
@@ -1243,7 +1230,15 @@ def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id
         sla_counts[status] = sla_counts.get(status, 0) + 1
     unassigned = sum(1 for ticket in open_tickets if not getattr(ticket, "asignado_a_id", None))
     unread = _count_unread_tickets(ticket_type, tickets, current_user)
-    sla_risk = sum(1 for ticket in open_tickets if _ticket_sla_status(ticket, now) in {"risk", "overdue"})
+    open_sla_counts: dict[str, int] = {}
+    for ticket in open_tickets:
+        status = _ticket_sla_status(ticket, now)
+        open_sla_counts[status] = open_sla_counts.get(status, 0) + 1
+    sla_breached = open_sla_counts.get("overdue", 0)
+    sla_at_risk = open_sla_counts.get("risk", 0)
+    sla_risk = sla_breached + sla_at_risk
+    sla_known = sla_risk + open_sla_counts.get("ok", 0)
+    sla_unknown = open_sla_counts.get("unknown", 0)
     employees = _employees_for_tenant(tenant)
     workload_by_agent: dict[int, int] = {}
     for ticket in open_tickets:
@@ -1298,6 +1293,11 @@ def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id
             "open": len(open_tickets),
             "unread": unread,
             "sla_risk": sla_risk,
+            "sla_breached": sla_breached,
+            "sla_at_risk": sla_at_risk,
+            "sla_known": sla_known,
+            "sla_unknown": sla_unknown,
+            "sla_eligible": sla_known + sla_unknown,
             "resolved": resolved,
             "unassigned": unassigned,
         },
@@ -1320,6 +1320,7 @@ def _inbox_summary_payload(current_user: User, tenant: TenantProfile, request_id
             ],
         },
         "recommended_views": recommended_views,
+        "data_quality_notes": ([f"{sla_unknown} casos abiertos sin evidencia SLA verificable; no se clasifican como vencidos, en riesgo ni saludables."] if sla_unknown else []),
         "items": [_ticket_item(ticket_type, ticket, now=now, request_id=request_id) for ticket in sorted_items[:25]],
     }
 
@@ -1799,13 +1800,14 @@ def _executive_summary_payload(tenant: TenantProfile, current_user: User, reques
     data_quality_notes: list[str] = []
     if confidence == "low":
         data_quality_notes.append("Muestra insuficiente para conclusiones fuertes; mostrar como lectura inicial.")
+    data_quality_notes.extend(inbox.get("data_quality_notes") or [])
     data_quality_notes.extend(orders.get("data_quality_notes") or [])
 
     return {
         "contract_version": "backoffice.executive_summary.v1",
         "request_id": request_id,
         "tenant_slug": tenant.slug,
-        "headline": f"{inbox['summary']['open']} casos abiertos, {inbox['summary']['sla_risk']} en riesgo SLA y {orders['summary']['active']} pedidos activos.",
+        "headline": f"{inbox['summary']['open']} casos abiertos, {inbox['summary']['sla_risk']} en riesgo SLA confirmado, {inbox['summary']['sla_unknown']} sin SLA verificable y {orders['summary']['active']} pedidos activos.",
         "risks": risks,
         "opportunities": opportunities,
         "recommended_actions": recommended_actions,

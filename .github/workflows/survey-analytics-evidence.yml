@@ -32,6 +32,14 @@ name: Survey and organization evidence
       - routes/auth.py
       - routes/v2/saas.py
       - services/analytics/rbac.py
+      - routes/backoffice.py
+      - routes/ticket.py
+      - services/operational_intelligence.py
+      - tests/test_backoffice_contracts.py
+      - tests/test_ticket_filters.py
+      - tests/test_ticket_operational_badges.py
+      - tests/test_v2_operational_analytics.py
+      - tests/test_v2_sla_truth.py
       - services/twilio_tech_provider.py
       - tests/v2_tenant_membership_http.py
       - services/native_admin_membership.py
@@ -101,6 +109,12 @@ jobs:
       - run: python -m tests.organization_access_regression
       - name: Consistent tenant membership on real application routes
         run: python -m tests.v2_tenant_membership_http
+      - name: Shared SLA evidence, scoped filters, and pagination
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .qa-artifacts/sla-evidence
+          python -m pytest tests/test_backoffice_contracts.py tests/test_ticket_filters.py tests/test_ticket_operational_badges.py tests/test_v2_operational_analytics.py tests/test_v2_sla_truth.py -q 2>&1 | tee .qa-artifacts/sla-evidence/tests.log
       - name: Native administrator membership and PostgreSQL audit transactions
         shell: bash
         run: |
@@ -137,6 +151,15 @@ jobs:
         with:
           name: native-admin-membership-evidence
           path: .qa-artifacts/native-admin-membership/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Scoped SLA evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: scoped-sla-evidence
+          path: .qa-artifacts/sla-evidence/tests.log
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
