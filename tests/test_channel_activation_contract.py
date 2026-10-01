@@ -415,3 +415,60 @@ def test_channel_activation_contract_blocks_clerk_development_keys_for_productio
     assert "entorno Clerk:development" in identity["evidence"]
     assert "pk_test_visible_key" not in str(payload)
     assert "whsec_secret_value" not in str(payload)
+
+
+def test_routing_count_projects_only_scalar_identity(client, monkeypatch):
+    from sqlalchemy.dialects import postgresql
+    from services import channel_activation as activation
+    _, tenant = _create_owner_and_tenant(slug='scalar-routing-count', plan='full')
+    captured = []
+    def capture(query):
+        captured.append(query)
+        return 0
+    monkeypatch.setattr(activation, '_safe_count', capture)
+    activation._counts(tenant)
+    routing = captured[-1]
+    selected = list(routing.statement.selected_columns)
+    assert len(selected) == 1
+    assert selected[0].name == 'id'
+    assert selected[0].table.name == 'user'
+    compiled = str(routing.statement.compile(dialect=postgresql.dialect()))
+    assert 'DISTINCT' in compiled
+    assert 'accesibilidad' not in compiled
+
+
+def test_routing_count_deduplicates_categories_without_json_equality(client):
+    from services.channel_activation import _counts
+    _, tenant = _create_owner_and_tenant(slug='multi-category-count', plan='full')
+    worker = User(name='Synthetic worker', email='worker-count@example.invalid',
+                  tenant_id=tenant.id, es_empleado=True, rol='empleado',
+                  accesibilidad={'preferences': {'text': True}})
+    categories = [CategoriaTicket(nombre='A', tipo='ticket', tenant_id=tenant.id),
+                  CategoriaTicket(nombre='B', tipo='ticket', tenant_id=tenant.id)]
+    worker.set_password("local-fixture-only")
+    db.session.add_all([worker, *categories])
+    db.session.flush()
+    worker.categorias_ticket.extend(categories)
+    db.session.commit()
+    assert _counts(tenant)['routed_team_members'] == 1
+
+
+def test_routing_count_keeps_tenant_and_category_filters(client):
+    from services.channel_activation import _counts
+    _, tenant = _create_owner_and_tenant(slug='routing-scope-a', plan='full')
+    _, other = _create_owner_and_tenant(slug='routing-scope-b', plan='full')
+    local = User(name='Local', email='local-routing@example.invalid',
+                 tenant_id=tenant.id, es_empleado=True, rol='empleado')
+    foreign = User(name='Foreign', email='foreign-routing@example.invalid',
+                   tenant_id=other.id, es_empleado=True, rol='empleado')
+    information = CategoriaTicket(nombre='Info', tipo='informacion', tenant_id=tenant.id)
+    wrong_scope = CategoriaTicket(nombre='Other scope', tipo='ticket', tenant_id=other.id)
+    valid = CategoriaTicket(nombre='Valid', tipo='ticket', tenant_id=tenant.id)
+    local.set_password("local-fixture-only")
+    foreign.set_password("local-fixture-only")
+    db.session.add_all([local, foreign, information, wrong_scope, valid])
+    db.session.flush()
+    local.categorias_ticket.extend([information, wrong_scope])
+    foreign.categorias_ticket.append(valid)
+    db.session.commit()
+    assert _counts(tenant)['routed_team_members'] == 0
