@@ -45,6 +45,81 @@ class KnowledgeHTTPTests(ExistingResponderCases, unittest.TestCase):
     def seed(self,client):
         response=self.put(client,'import',None,sample(self.accounts['acceptance-a']['tenant_id'],'acceptance-a'))
         self.assertEqual(response.status_code,200,response.get_json());return response.get_json()
+    def node_url(self,revision,node='requirements',public=False):
+        return self.url(public)+'/nodes/'+node+'?revision='+revision
+    def test_canonical_get_matches_menu_post_without_model_or_database_commit(self):
+        from database import db
+        from models import TenantConfig,AuditEvent
+        client=self.login();state=self.seed(client)
+        with self.app.app_context():
+            before=deepcopy(TenantConfig.query.filter_by(tenant_id=self.accounts['acceptance-a']['tenant_id'],key='institutional_assistant').one().json_value)
+            audit_before=AuditEvent.query.count()
+        with patch('services.institutional_assistant.select_nodes',side_effect=AssertionError('canonical GET must not call selection')),patch.object(db.session,'commit',side_effect=AssertionError('canonical GET must not commit')):
+            response=client.get(self.node_url(state['revision']))
+        self.assertEqual(response.status_code,200,response.get_json())
+        payload=response.get_json()
+        self.assertFalse(payload['selection_performed']);self.assertFalse(payload['business_writes_performed'])
+        self.assertEqual(payload['text'],'Respuesta institucional de prueba.')
+        self.assertEqual(payload['nodes'][0]['sources'][0]['pages'],[2])
+        self.assertNotIn('PRIVATE',str(payload))
+        self.assertEqual(response.headers['Cache-Control'],'private, no-store')
+        old=client.post(self.url()+'/answer',json={'revision':state['revision'],'node_id':'requirements'})
+        self.assertEqual(old.status_code,200,old.get_json());self.assertEqual(payload,old.get_json())
+        with self.app.app_context():
+            self.assertEqual(TenantConfig.query.filter_by(tenant_id=self.accounts['acceptance-a']['tenant_id'],key='institutional_assistant').one().json_value,before)
+            self.assertEqual(AuditEvent.query.count(),audit_before)
+    def test_canonical_get_rejects_noncanonical_queries_and_foreign_private_access(self):
+        client=self.login();state=self.seed(client);path=self.node_url(state['revision'])
+        for suffix in ('&question=consulta','&revision='+state['revision'],'&node_id=start','&unknown=1','&tenant=acceptance-b'):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(client.get(path+suffix).status_code,400)
+        for revision in ('','not-a-revision','A'*64):
+            self.assertEqual(client.get(self.node_url(revision)).status_code,400)
+        self.assertEqual(client.get(self.url()+'/nodes/requirements').status_code,400)
+        self.assertEqual(client.get(path,json={'question':'consulta'}).status_code,400)
+        self.assertEqual(client.get(path,headers={'X-Tenant':'acceptance-b'}).status_code,400)
+        self.assertEqual(client.get(self.node_url(state['revision'],'missing')).status_code,400)
+        self.assertEqual(client.get(self.node_url('0'*64)).status_code,412)
+        self.assertIn(self.app.test_client().get(path).status_code,(401,403))
+        for account in ('acceptance-b','viewer'):
+            self.assertEqual(self.login(account).get(path).status_code,403)
+        self.assertEqual(client.get(path.replace('/acceptance-a/','/missing-tenant/')).status_code,404)
+    def test_public_canonical_get_exposes_only_current_published_state(self):
+        client=self.login();state=self.seed(client);public=self.app.test_client()
+        self.assertEqual(public.get(self.node_url(state['revision'],public=True)).status_code,404)
+        published=self.put(client,'publish',state['revision']).get_json()
+        response=public.get(self.node_url(published['revision'],public=True))
+        self.assertEqual(response.status_code,200,response.get_json())
+        self.assertFalse(response.get_json()['selection_performed'])
+        self.assertFalse(response.get_json()['business_writes_performed'])
+        self.assertEqual(public.get(self.node_url(state['revision'],public=True)).status_code,412)
+        self.assertEqual(public.get(self.node_url(published['revision'],public=True)+'&question=consulta').status_code,400)
+        self.assertEqual(self.put(client,'retire',published['revision']).status_code,200)
+        self.assertEqual(public.get(self.node_url(published['revision'],public=True)).status_code,404)
+    def test_canonical_get_real_http_login_isolation_and_publication(self):
+        import requests
+        from threading import Thread
+        from werkzeug.serving import make_server
+        client=self.login();state=self.seed(client)
+        server=make_server('127.0.0.1',0,self.app,threaded=True)
+        thread=Thread(target=server.serve_forever,daemon=True);thread.start()
+        base='http://127.0.0.1:'+str(server.server_port)
+        owner=requests.Session();foreign=requests.Session();anonymous=requests.Session()
+        try:
+            for session,account in ((owner,'acceptance-a'),(foreign,'acceptance-b')):
+                login=session.post(base+'/auth/login',json={'email':self.accounts[account]['email'],'password':self.password},timeout=10)
+                self.assertEqual(login.status_code,200)
+            path=self.node_url(state['revision'])
+            own=owner.get(base+path,timeout=10);self.assertEqual(own.status_code,200)
+            self.assertEqual(own.json()['tenant']['slug'],'acceptance-a')
+            self.assertEqual(foreign.get(base+path,timeout=10).status_code,403)
+            self.assertIn(anonymous.get(base+path,timeout=10).status_code,(401,403))
+            self.assertEqual(owner.get(base+self.node_url('0'*64),timeout=10).status_code,412)
+            self.assertEqual(anonymous.get(base+self.node_url(state['revision'],public=True),timeout=10).status_code,404)
+            published=self.put(client,'publish',state['revision']).get_json()
+            self.assertEqual(anonymous.get(base+self.node_url(published['revision'],public=True),timeout=10).status_code,200)
+        finally:
+            owner.close();foreign.close();anonymous.close();server.shutdown();thread.join(timeout=5);server.server_close()
     def test_empty_workspace_is_truthful(self):
         state=self.get(self.login());self.assertIsNone(state['knowledge']);self.assertIsNone(state['revision'])
         self.assertEqual(self.app.test_client().get(self.url(True)).status_code,404)
