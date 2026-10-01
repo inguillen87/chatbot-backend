@@ -10,12 +10,177 @@ from unittest.mock import patch
 
 from bootstrap_wsgi import (
     LazyApplication,
+    _mutation_request_wait_seconds,
     _safe_request_wait_seconds,
     _warmup_delay_seconds,
 )
 
 
 class LazyApplicationTests(unittest.TestCase):
+    def test_mutation_wait_requires_explicit_preview_opt_in_and_is_bounded(self) -> None:
+        for environment, override, expected in (
+            ('preview', None, 0.0), ('preview', '5', 5.0), ('preview', '99', 5.0),
+            ('preview', '0.05', 0.05), ('preview', '-1', 0.0), ('preview', 'invalid', 0.0),
+            ('preview', 'nan', 0.0), ('preview', 'inf', 0.0), ('preview', '-inf', 0.0),
+            ('production', '5', 0.0), ('development', '5', 0.0), ('', '5', 0.0),
+        ):
+            variables = {'VERCEL_ENV': environment}
+            if override is not None:
+                variables['VERCEL_WSGI_MUTATION_REQUEST_WAIT_SECONDS'] = override
+            with self.subTest(environment=environment, override=override), patch.dict(os.environ, variables, clear=True):
+                self.assertEqual(_mutation_request_wait_seconds(), expected)
+                application = LazyApplication(lambda: None, mutation_request_wait_seconds=99)
+                self.assertEqual(application._mutation_request_wait_seconds, 5.0 if environment == 'preview' else 0.0)
+                for non_finite in (float('nan'), float('inf')):
+                    self.assertEqual(LazyApplication(lambda: None, mutation_request_wait_seconds=non_finite)
+                                     ._mutation_request_wait_seconds, 0.0)
+
+    def test_preview_cold_mutation_waits_then_dispatches_original_request_exactly_once(self) -> None:
+        request_body = b'{"action":"isolated-acceptance"}'
+        observed = []
+        loads = []
+
+        def target(environ, start_response):
+            observed.append((environ, environ['wsgi.input'].read(), environ['HTTP_IDEMPOTENCY_KEY']))
+            start_response('200 OK', [('Set-Cookie', 'isolated-response=1')])
+            return [b'accepted']
+
+        def loader():
+            loads.append('loaded')
+            time.sleep(4.1)
+            return target
+
+        with patch.dict(os.environ, {'VERCEL_ENV': 'preview', 'VERCEL_WSGI_MUTATION_REQUEST_WAIT_SECONDS': '5'}, clear=True):
+            application = LazyApplication(loader, background_warmup=True, warmup_delay_seconds=0,
+                                          mutation_request_wait_seconds=_mutation_request_wait_seconds())
+        environ = {'PATH_INFO': '/api/v2/isolated-action', 'REQUEST_METHOD': 'POST',
+                   'CONTENT_LENGTH': str(len(request_body)), 'CONTENT_TYPE': 'application/json',
+                   'HTTP_IDEMPOTENCY_KEY': 'isolated-request-1', 'wsgi.input': BytesIO(request_body)}
+        statuses, headers = [], []
+        response = application(environ, lambda status, values: (statuses.append(status), headers.extend(values)))
+        self.assertEqual(statuses, ['200 OK'])
+        self.assertEqual(response, [b'accepted'])
+        self.assertEqual(loads, ['loaded'])
+        self.assertEqual(len(observed), 1)
+        self.assertIs(observed[0][0], environ)
+        self.assertEqual(observed[0][1:], (request_body, 'isolated-request-1'))
+        self.assertEqual(dict(headers)['Set-Cookie'], 'isolated-response=1')
+
+    def test_preview_mutation_timeout_never_dispatches_later_and_preserves_receipt(self) -> None:
+        for method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+            with self.subTest(method=method):
+                release = threading.Event()
+                dispatches = []
+
+                def target(environ, start_response):
+                    dispatches.append(environ)
+                    start_response('200 OK', [])
+                    return [b'accepted']
+
+                def loader():
+                    release.wait(1)
+                    return target
+
+                with patch.dict(os.environ, {'VERCEL_ENV': 'preview'}, clear=True):
+                    application = LazyApplication(loader, background_warmup=True, warmup_delay_seconds=0,
+                                                  mutation_request_wait_seconds=.03)
+                input_stream = BytesIO(b'original-body')
+                environ = {'REQUEST_METHOD': method, 'wsgi.input': input_stream, 'HTTP_ORIGIN': 'https://preview.example.invalid'}
+                statuses, headers = [], []
+                started = time.monotonic()
+                result = application(environ, lambda status, values: (statuses.append(status), headers.extend(values)))
+                self.assertLess(time.monotonic() - started, .2)
+                self.assertEqual(statuses, ['503 Service Unavailable'])
+                payload = json.loads(b''.join(result))
+                self.assertEqual(payload['contract_version'], 'chatboc.bootstrap.v1')
+                self.assertFalse(payload['request_dispatched'])
+                self.assertEqual(payload['reason_code'], 'application_initializing')
+                self.assertTrue(payload['retryable'])
+                self.assertEqual(input_stream.tell(), 0)
+                self.assertEqual(dict(headers)['X-Chatboc-Bootstrap'], 'initializing')
+                self.assertEqual(dict(headers)['Retry-After'], '2')
+                self.assertEqual(dict(headers)['Cache-Control'], 'no-store')
+                self.assertEqual(dict(headers)['Vary'], 'Origin')
+                self.assertNotIn('Set-Cookie', dict(headers))
+                release.set()
+                self.assertTrue(application._ready.wait(.5))
+                self.assertEqual(dispatches, [])
+                self.assertEqual(input_stream.tell(), 0)
+
+    def test_preview_waiting_mutation_initialization_failure_never_dispatches(self) -> None:
+        def loader():
+            raise RuntimeError('private-runtime-secret')
+
+        with patch.dict(os.environ, {'VERCEL_ENV': 'preview'}, clear=True):
+            application = LazyApplication(loader, background_warmup=True, warmup_delay_seconds=0,
+                                          mutation_request_wait_seconds=.5)
+        statuses, headers = [], []
+        body = BytesIO(b'original-body')
+        response = application({'REQUEST_METHOD': 'POST', 'wsgi.input': body},
+                               lambda status, values: (statuses.append(status), headers.extend(values)))
+        payload = json.loads(b''.join(response))
+        self.assertEqual(statuses, ['503 Service Unavailable'])
+        self.assertEqual(payload['reason_code'], 'application_initialization_failed')
+        self.assertFalse(payload['retryable'])
+        self.assertFalse(payload['request_dispatched'])
+        self.assertEqual(body.tell(), 0)
+        self.assertNotIn(b'private-runtime-secret', b''.join(response))
+        self.assertEqual(dict(headers)['X-Chatboc-Bootstrap'], 'failed')
+        self.assertNotIn('Set-Cookie', dict(headers))
+
+    def test_preview_concurrent_mutations_share_loader_and_each_dispatch_only_once(self) -> None:
+        loader_started, release = threading.Event(), threading.Event()
+        count_lock = threading.Lock()
+        loads, observed, statuses = [], [], []
+
+        def target(environ, start_response):
+            with count_lock:
+                observed.append((environ['chatboc.request_id'], environ['wsgi.input'].read()))
+            start_response('200 OK', [])
+            return [b'accepted']
+
+        def loader():
+            loads.append('loaded')
+            loader_started.set()
+            release.wait(1)
+            return target
+
+        with patch.dict(os.environ, {'VERCEL_ENV': 'preview'}, clear=True):
+            application = LazyApplication(loader, background_warmup=True, warmup_delay_seconds=0,
+                                          mutation_request_wait_seconds=.5)
+
+        def request(request_id):
+            def capture(status, headers):
+                with count_lock:
+                    statuses.append(status)
+            application({'REQUEST_METHOD': ('POST', 'PUT', 'PATCH', 'DELETE')[request_id % 4],
+                         'chatboc.request_id': request_id, 'wsgi.input': BytesIO(str(request_id).encode())}, capture)
+
+        threads = [threading.Thread(target=request, args=(index,)) for index in range(12)]
+        for thread in threads:
+            thread.start()
+        self.assertTrue(loader_started.wait(.5))
+        self.assertEqual(observed, [])
+        release.set()
+        for thread in threads:
+            thread.join(1)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(loads, ['loaded'])
+        self.assertEqual(statuses, ['200 OK'] * 12)
+        self.assertEqual(sorted(observed), [(index, str(index).encode()) for index in range(12)])
+
+    def test_loaded_preview_application_does_not_wait_again(self) -> None:
+        def target(environ, start_response):
+            start_response('200 OK', [])
+            return [b'accepted']
+
+        with patch.dict(os.environ, {'VERCEL_ENV': 'preview'}, clear=True):
+            application = LazyApplication(lambda: target, background_warmup=True,
+                                          mutation_request_wait_seconds=5)
+        application._load_and_cache()
+        with patch.object(application._ready, 'wait', side_effect=AssertionError('Loaded app must not wait')):
+            self.assertEqual(application({'REQUEST_METHOD': 'POST'}, lambda status, headers: None), [b'accepted'])
+
     def test_vercel_warmup_delay_default_and_override_stay_below_readiness_budget(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(_warmup_delay_seconds(), 0.1)
